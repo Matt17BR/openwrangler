@@ -1,7 +1,7 @@
 {
   "name": "data-explorer",
   "displayName": "Data Explorer",
-  "description": "A visualization-first dataframe explorer for VS Code with native Polars and Pandas support.",
+  "description": "A visualization-first dataframe explorer for VS Code-compatible editors with native Polars and Pandas support.",
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
@@ -39,6 +39,7 @@
     "test": "npm run test:ts && npm run test:python",
     "test:ts": "vitest run",
     "test:python": ".venv/bin/python -m pytest python/tests -q",
+    "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "package": "vsce package"
   },
   "activationEvents": [

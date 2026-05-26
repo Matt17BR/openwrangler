@@ -7,6 +7,7 @@ media/webview.css
 media/notebookRenderer.js
 media/notebookRenderer.js.map
 *.vsix
+tmp/
 .venv/
 __pycache__/
 .pytest_cache/

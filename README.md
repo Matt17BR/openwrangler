@@ -1,10 +1,12 @@
 # Data Explorer
 
-Data Explorer is a visualization-first VS Code extension for exploring dataframes and local data files. It focuses on fast viewing, paging, summaries, and Excel-like filters instead of transformation pipelines.
+Data Explorer is a visualization-first extension for VS Code-compatible editors, including forks such as Cursor, for exploring dataframes and local data files. It focuses on fast viewing, paging, summaries, and Excel-like filters instead of transformation pipelines.
 
-It is loosely inspired by Microsoft’s VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
+It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
 
 ## Screenshots
+
+These screenshots are generated from the real built webview/notebook renderer using `npm run capture:screenshots`. The capture script loads `fixtures/sample.csv` through the Polars runtime and executes `fixtures/example.ipynb` with `nbclient` to capture the current notebook MIME renderer output.
 
 ![Data Explorer grid view](docs/images/grid-view.png)
 
