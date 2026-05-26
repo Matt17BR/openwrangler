@@ -164,10 +164,17 @@ function writeNotebookHarness(fileName, payload, outputName) {
 </head>
 <body>
   <div class="notebook-shell">
-    <div class="cell">import polars as pl
+    <div class="cell">from pathlib import Path
+
+import polars as pl
 from data_wrangler_runtime.notebook import show
 
-df = pl.read_csv("fixtures/sample.csv")
+candidates = (Path("fixtures/sample.csv"), Path("sample.csv"))
+csv_path = next((path for path in candidates if path.exists()), None)
+if csv_path is None:
+    raise FileNotFoundError("Could not find sample.csv from the repo root or fixtures directory.")
+
+df = pl.read_csv(csv_path)
 show(df, label="sample.csv")</div>
     <div id="notebook-output"></div>
   </div>

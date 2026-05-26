@@ -71,7 +71,7 @@ Polars dataframes stay Polars in the runtime. The Polars backend uses native ope
 
 The test suite asserts that Polars file sessions do not call `to_pandas()`.
 
-## Install Locally In Cursor
+## Test Locally In Cursor Or Another VS Code-Compatible Editor
 
 ```bash
 npm install
@@ -82,7 +82,13 @@ npm run package
 cursor --install-extension data-explorer-0.1.0.vsix --force
 ```
 
-The extension setting `dataExplorer.pythonPath` defaults to `.venv/bin/python`, so the local development install uses the editable runtime environment above.
+Reload the editor after installing the VSIX. Then:
+
+- Open `fixtures/sample.csv`, right-click the editor tab or Explorer item, and run **Data Explorer: Open Current File**.
+- Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. It should render an inline Data Explorer preview from a real Polars dataframe.
+- From an open notebook, run **Data Explorer: Open Notebook Variable** and enter `df` to open the dataframe in the full Data Explorer webview.
+
+The extension setting `dataExplorer.pythonPath` defaults to `.venv/bin/python`, so the local development install uses the editable runtime environment above. If your editor opens the notebook with `fixtures/` as its working directory, `fixtures/example.ipynb` still works because it checks both `fixtures/sample.csv` and `sample.csv`.
 
 ## Development
 
