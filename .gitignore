@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.vscode/
+media/webview.js
+media/webview.js.map
+media/webview.css
+media/notebookRenderer.js
+media/notebookRenderer.js.map
+*.vsix
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+python/.mypy_cache/

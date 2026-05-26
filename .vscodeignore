@@ -1,0 +1,12 @@
+.venv/**
+node_modules/**
+src/**
+python/tests/**
+fixtures/**
+**/*.map
+**/.pytest_cache/**
+**/*.egg-info/**
+.vscode/**
+**/__pycache__/**
+tsconfig*.json
+vite.config.ts

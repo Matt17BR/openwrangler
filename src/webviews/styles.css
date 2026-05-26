@@ -1,0 +1,275 @@
+:root {
+  color-scheme: light dark;
+  font-family: var(--vscode-font-family, system-ui, sans-serif);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: 0;
+  border-radius: 3px;
+  padding: 4px 8px;
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+input,
+select {
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-error {
+  padding: 24px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.toolbar p {
+  margin: 3px 0 0;
+  opacity: 0.8;
+}
+
+.toolbarStats {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolbarStats span:first-child {
+  text-transform: uppercase;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.layout {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+}
+
+.sidebar {
+  overflow: auto;
+  border-right: 1px solid var(--vscode-panel-border);
+}
+
+.panel {
+  padding: 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.panelHeader,
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panelHeader {
+  justify-content: space-between;
+}
+
+.panel label,
+.predicateBuilder {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.valueList {
+  max-height: 180px;
+  overflow: auto;
+  margin: 8px 0;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+}
+
+.checkboxRow {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 4px 6px;
+}
+
+.checkboxRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gridShell {
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.loading {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 2;
+  background: var(--vscode-notifications-background);
+  border: 1px solid var(--vscode-notifications-border);
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.dataGrid {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.gridControls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.tableScroller {
+  overflow: auto;
+  flex: 1;
+}
+
+table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+}
+
+th,
+td {
+  border-right: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  max-width: 320px;
+  min-width: 120px;
+  padding: 5px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+  text-align: left;
+}
+
+th small {
+  display: block;
+  opacity: 0.65;
+  font-weight: normal;
+}
+
+.rowHeader {
+  min-width: 52px;
+  max-width: 70px;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-descriptionForeground);
+}
+
+th.rowHeader {
+  z-index: 2;
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+}
+
+.missingCell {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.summaryPanel details {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: 8px 0;
+}
+
+.summaryPanel summary {
+  cursor: pointer;
+}
+
+.summaryPanel summary small {
+  display: block;
+  opacity: 0.65;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 8px;
+}
+
+dt {
+  color: var(--vscode-descriptionForeground);
+}
+
+dd {
+  margin: 0;
+}
+
+.barRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.barRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emptyState {
+  padding: 24px;
+}

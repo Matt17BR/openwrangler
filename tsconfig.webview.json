@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2022"
+    ],
+    "allowSyntheticDefaultImports": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/webviews/**/*.ts",
+    "src/webviews/**/*.tsx",
+    "src/shared/**/*.ts",
+    "src/test/**/*.ts",
+    "src/test/**/*.tsx"
+  ]
+}

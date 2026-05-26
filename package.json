@@ -1,0 +1,154 @@
+{
+  "name": "data-explorer",
+  "displayName": "Data Explorer",
+  "description": "A visualization-first dataframe explorer for VS Code with native Polars and Pandas support.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization"
+  ],
+  "main": "./dist/extension/activate.js",
+  "scripts": {
+    "build": "npm run build:extension && npm run build:webview",
+    "build:extension": "tsc -p tsconfig.extension.json",
+    "build:webview": "vite build",
+    "watch": "npm-run-all --parallel watch:extension watch:webview",
+    "watch:extension": "tsc -w -p tsconfig.extension.json",
+    "watch:webview": "vite build --watch",
+    "test": "npm run test:ts && npm run test:python",
+    "test:ts": "vitest run",
+    "test:python": ".venv/bin/python -m pytest python/tests -q",
+    "package": "vsce package"
+  },
+  "activationEvents": [
+    "onCommand:dataExplorer.openFile",
+    "onCommand:dataExplorer.openPath",
+    "onCommand:dataExplorer.openNotebookVariable",
+    "onCommand:dataExplorer.checkJupyterIntegration",
+    "onCustomEditor:dataExplorer.viewer",
+    "onNotebook:jupyter-notebook"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "dataExplorer.openFile",
+        "title": "Data Explorer: Open Current File"
+      },
+      {
+        "command": "dataExplorer.openPath",
+        "title": "Data Explorer: Open File Path"
+      },
+      {
+        "command": "dataExplorer.openNotebookVariable",
+        "title": "Data Explorer: Open Notebook Variable"
+      },
+      {
+        "command": "dataExplorer.checkJupyterIntegration",
+        "title": "Data Explorer: Check Jupyter Integration"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "dataExplorer.viewer",
+        "displayName": "Data Explorer",
+        "selector": [
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          },
+          {
+            "filenamePattern": "*.parquet"
+          },
+          {
+            "filenamePattern": "*.jsonl"
+          },
+          {
+            "filenamePattern": "*.xlsx"
+          },
+          {
+            "filenamePattern": "*.xls"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "notebookRenderer": [
+      {
+        "id": "dataExplorer.renderer",
+        "displayName": "Data Explorer Renderer",
+        "entrypoint": "./media/notebookRenderer.js",
+        "mimeTypes": [
+          "application/vnd.data-explorer.viewer.v1+json"
+        ]
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "dataExplorer.openFile",
+          "when": "resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/",
+          "group": "navigation@50"
+        }
+      ],
+      "notebook/title": [
+        {
+          "command": "dataExplorer.openNotebookVariable",
+          "when": "notebookType == jupyter-notebook",
+          "group": "navigation@50"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Data Explorer",
+      "properties": {
+        "dataExplorer.defaultBackend": {
+          "type": "string",
+          "enum": [
+            "polars",
+            "pandas"
+          ],
+          "default": "polars",
+          "description": "Default backend for file-backed Data Explorer sessions."
+        },
+        "dataExplorer.pageSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 25,
+          "maximum": 2000,
+          "description": "Number of rows to fetch per grid page."
+        },
+        "dataExplorer.pythonPath": {
+          "type": "string",
+          "default": ".venv/bin/python",
+          "description": "Python executable used for file-backed Data Explorer sessions."
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.120.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@vscode/vsce": "^3.9.1",
+    "jsdom": "^29.1.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14",
+    "vitest": "^4.1.7"
+  }
+}

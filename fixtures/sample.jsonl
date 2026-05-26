@@ -1,0 +1,4 @@
+{"city":"Milan","year":2024,"sales":10.5,"active":true}
+{"city":"Rome","year":2024,"sales":8.25,"active":true}
+{"city":"Berlin","year":2023,"sales":12.0,"active":false}
+{"city":"Paris","year":2022,"sales":null,"active":true}

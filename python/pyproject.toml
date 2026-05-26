@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-wrangler-runtime"
+version = "0.1.0"
+description = "Runtime backend for the Data Explorer VS Code extension."
+requires-python = ">=3.9"
+dependencies = [
+  "polars",
+  "pandas",
+  "pyarrow",
+  "openpyxl",
+  "ipython"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["data_wrangler_runtime*"]
