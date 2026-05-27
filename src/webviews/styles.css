@@ -114,6 +114,13 @@ select {
   justify-content: space-between;
 }
 
+.panelNote {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0 0 10px;
+}
+
 .panel label,
 .predicateBuilder {
   display: grid;
@@ -156,6 +163,13 @@ select {
   border: 1px solid var(--vscode-notifications-border);
   padding: 6px 10px;
   border-radius: 4px;
+}
+
+.errorBanner {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  color: var(--vscode-inputValidation-warningForeground);
+  padding: 8px 12px;
 }
 
 .dataGrid {

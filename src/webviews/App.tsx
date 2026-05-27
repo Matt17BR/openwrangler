@@ -59,6 +59,10 @@ export function App(): JSX.Element {
     () => new Map(metadata?.schema.map((column) => [column.name, column]) ?? []),
     [metadata]
   );
+  const readOnlyReason =
+    metadata?.source.kind === "notebookOutput"
+      ? "This expanded notebook output is a static preview. Use Data Explorer: Open Notebook Variable for live filters and sorting."
+      : undefined;
 
   const requestPage = (offset: number, model = filterModel) => {
     setLoading(true);
@@ -98,7 +102,7 @@ export function App(): JSX.Element {
     });
   };
 
-  if (error) {
+  if (error && !metadata) {
     return (
       <main className="app app-error">
         <h1>Data Explorer</h1>
@@ -130,12 +134,14 @@ export function App(): JSX.Element {
             metadata={metadata}
             model={filterModel}
             values={columnValues}
+            disabledReason={readOnlyReason}
             onApply={applyFilters}
             onRequestValues={requestValues}
           />
           <SummaryPanel summaries={summaries} schemaByName={schemaByName} />
         </aside>
         <section className="gridShell">
+          {error && <div className="errorBanner">{error}</div>}
           {loading && <div className="loading">Loading...</div>}
           {metadata && page ? (
             <DataGrid metadata={metadata} page={page} onPage={requestPage} pageSize={pageSize} />

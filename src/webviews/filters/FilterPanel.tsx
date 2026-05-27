@@ -6,13 +6,21 @@ interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
   model: FilterModel;
   values: Record<string, ValuesResponse>;
+  disabledReason?: string;
   onApply(model: FilterModel): void;
   onRequestValues(column: string, search?: string): void;
 }
 
 const operators: PredicateOperator[] = ["contains", "equals", "gt", "gte", "lt", "lte", "between"];
 
-export function FilterPanel({ metadata, model, values, onApply, onRequestValues }: FilterPanelProps): JSX.Element {
+export function FilterPanel({
+  metadata,
+  model,
+  values,
+  disabledReason,
+  onApply,
+  onRequestValues
+}: FilterPanelProps): JSX.Element {
   const firstColumn = metadata?.schema[0]?.name ?? "";
   const [column, setColumn] = useState(firstColumn);
   const [search, setSearch] = useState("");
@@ -35,6 +43,9 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
   }
 
   const updateFilter = (nextFilter: ColumnFilter) => {
+    if (disabledReason) {
+      return;
+    }
     const filters = model.filters.filter((item) => item.column !== nextFilter.column);
     onApply({ ...model, filters: [...filters, nextFilter] });
   };
@@ -87,6 +98,9 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
   };
 
   const applySort = () => {
+    if (disabledReason) {
+      return;
+    }
     onApply({
       ...model,
       sort: [
@@ -97,6 +111,9 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
   };
 
   const clearColumn = () => {
+    if (disabledReason) {
+      return;
+    }
     onApply({
       filters: model.filters.filter((item) => item.column !== activeColumn),
       sort: model.sort.filter((rule) => rule.column !== activeColumn)
@@ -107,10 +124,11 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
     <section className="panel">
       <div className="panelHeader">
         <h2>Filters</h2>
-        <button type="button" onClick={() => onApply({ filters: [], sort: [] })}>
+        <button type="button" disabled={Boolean(disabledReason)} onClick={() => onApply({ filters: [], sort: [] })}>
           Clear all
         </button>
       </div>
+      {disabledReason && <p className="panelNote">{disabledReason}</p>}
 
       <label>
         Column
@@ -124,11 +142,15 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
       </label>
 
       <div className="row">
-        <select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as SortDirection)}>
+        <select
+          value={sortDirection}
+          disabled={Boolean(disabledReason)}
+          onChange={(event) => setSortDirection(event.target.value as SortDirection)}
+        >
           <option value="asc">Sort A to Z</option>
           <option value="desc">Sort Z to A</option>
         </select>
-        <button type="button" onClick={applySort}>
+        <button type="button" disabled={Boolean(disabledReason)} onClick={applySort}>
           Add sort
         </button>
       </div>
@@ -137,6 +159,7 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
         <input
           value={search}
           placeholder="Search values"
+          disabled={Boolean(disabledReason)}
           onChange={(event) => setSearch(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -144,7 +167,7 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
             }
           }}
         />
-        <button type="button" onClick={() => onRequestValues(activeColumn, search)}>
+        <button type="button" disabled={Boolean(disabledReason)} onClick={() => onRequestValues(activeColumn, search)}>
           Values
         </button>
       </div>
@@ -152,7 +175,12 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
       <div className="valueList">
         {(columnValueResponse?.values ?? []).map((item) => (
           <label key={item.value} className="checkboxRow">
-            <input type="checkbox" checked={selectedValues.has(item.value)} onChange={() => toggleValue(item.value)} />
+            <input
+              type="checkbox"
+              checked={selectedValues.has(item.value)}
+              disabled={Boolean(disabledReason)}
+              onChange={() => toggleValue(item.value)}
+            />
             <span>{item.value}</span>
             <small>{item.count}</small>
           </label>
@@ -161,27 +189,37 @@ export function FilterPanel({ metadata, model, values, onApply, onRequestValues 
       </div>
 
       <div className="predicateBuilder">
-        <select value={predicateOperator} onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}>
+        <select
+          value={predicateOperator}
+          disabled={Boolean(disabledReason)}
+          onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
+        >
           {operators.map((operator) => (
             <option key={operator} value={operator}>
               {operator}
             </option>
           ))}
         </select>
-        <input value={predicateValue} placeholder="Value" onChange={(event) => setPredicateValue(event.target.value)} />
+        <input
+          value={predicateValue}
+          disabled={Boolean(disabledReason)}
+          placeholder="Value"
+          onChange={(event) => setPredicateValue(event.target.value)}
+        />
         {predicateOperator === "between" && (
           <input
             value={secondPredicateValue}
+            disabled={Boolean(disabledReason)}
             placeholder="And"
             onChange={(event) => setSecondPredicateValue(event.target.value)}
           />
         )}
-        <button type="button" onClick={addPredicate}>
+        <button type="button" disabled={Boolean(disabledReason)} onClick={addPredicate}>
           Add predicate
         </button>
       </div>
 
-      <button type="button" onClick={clearColumn}>
+      <button type="button" disabled={Boolean(disabledReason)} onClick={clearColumn}>
         Clear column
       </button>
     </section>
