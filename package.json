@@ -101,6 +101,7 @@
         "id": "dataExplorer.renderer",
         "displayName": "Data Explorer Renderer",
         "entrypoint": "./media/notebookRenderer.js",
+        "requiresMessaging": "always",
         "mimeTypes": [
           "application/vnd.data-explorer.viewer.v1+json"
         ]
