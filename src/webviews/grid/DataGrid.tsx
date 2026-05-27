@@ -1,16 +1,18 @@
-import type { GridPage, SessionMetadata } from "../../shared/protocol";
+import type { ColumnSummary, GridPage, SessionMetadata } from "../../shared/protocol";
 
 interface DataGridProps {
   metadata: SessionMetadata;
   page: GridPage;
+  summaries: ColumnSummary[];
   pageSize: number;
   onPage(offset: number): void;
 }
 
-export function DataGrid({ metadata, page, pageSize, onPage }: DataGridProps): JSX.Element {
+export function DataGrid({ metadata, page, summaries, pageSize, onPage }: DataGridProps): JSX.Element {
   const previousOffset = Math.max(0, page.offset - pageSize);
   const nextOffset = page.offset + pageSize;
   const canGoNext = nextOffset < page.totalRows;
+  const summaryByColumn = new Map(summaries.map((summary) => [summary.column, summary]));
 
   return (
     <div className="dataGrid">
@@ -38,6 +40,30 @@ export function DataGrid({ metadata, page, pageSize, onPage }: DataGridProps): J
                   <small>{column.type}</small>
                 </th>
               ))}
+            </tr>
+            <tr className="insightRow">
+              <th className="rowHeader"> </th>
+              {metadata.schema.map((column) => {
+                const summary = summaryByColumn.get(column.name);
+                const topValue = summary?.topValues[0];
+                return (
+                  <th key={`${column.name}-insight`}>
+                    {summary ? (
+                      <div className="columnInsight">
+                        <span>Missing {summary.nullCount.toLocaleString()}</span>
+                        <span>Distinct {summary.distinctCount?.toLocaleString() ?? "n/a"}</span>
+                        {topValue && (
+                          <span className="miniBar" title={`Top value: ${topValue.value} (${topValue.count})`}>
+                            <i />
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="columnInsight emptyInsight">No summary</span>
+                    )}
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>

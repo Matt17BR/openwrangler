@@ -51,7 +51,7 @@ select {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 10px 14px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
@@ -61,8 +61,21 @@ select {
 }
 
 .toolbar p {
+  align-items: center;
+  display: flex;
+  gap: 8px;
   margin: 3px 0 0;
   opacity: 0.8;
+}
+
+.modeBadge {
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  text-transform: uppercase;
 }
 
 .toolbarStats {
@@ -85,16 +98,19 @@ select {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
 }
 
 .sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: auto;
   border-right: 1px solid var(--vscode-panel-border);
 }
 
 .panel {
-  padding: 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--vscode-panel-border);
 }
 
@@ -129,7 +145,7 @@ select {
 }
 
 .valueList {
-  max-height: 180px;
+  max-height: 132px;
   overflow: auto;
   margin: 8px 0;
   border: 1px solid var(--vscode-panel-border);
@@ -202,7 +218,7 @@ td {
   border-right: 1px solid var(--vscode-panel-border);
   border-bottom: 1px solid var(--vscode-panel-border);
   max-width: 320px;
-  min-width: 120px;
+  min-width: 140px;
   padding: 5px 8px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -221,6 +237,41 @@ th small {
   display: block;
   opacity: 0.65;
   font-weight: normal;
+}
+
+.insightRow th {
+  top: 43px;
+  background: var(--vscode-editor-background);
+  font-weight: normal;
+  vertical-align: top;
+}
+
+.columnInsight {
+  color: var(--vscode-descriptionForeground);
+  display: grid;
+  font-size: 11px;
+  gap: 2px;
+  line-height: 1.25;
+}
+
+.miniBar {
+  background: var(--vscode-progressBar-background, #264f78);
+  border-radius: 999px;
+  height: 4px;
+  margin-top: 3px;
+  overflow: hidden;
+  width: 72px;
+}
+
+.miniBar i {
+  background: #89c889;
+  display: block;
+  height: 100%;
+  width: 72%;
+}
+
+.emptyInsight {
+  opacity: 0.65;
 }
 
 .rowHeader {
@@ -246,6 +297,12 @@ th.rowHeader {
 .summaryPanel details {
   border-top: 1px solid var(--vscode-panel-border);
   padding: 8px 0;
+}
+
+.summaryPanel {
+  flex: 0 1 52%;
+  max-height: 52%;
+  overflow: auto;
 }
 
 .summaryPanel summary {

@@ -40,7 +40,7 @@ const page: GridPage = {
 
 describe("DataGrid", () => {
   it("renders schema headers and cell values", () => {
-    render(<DataGrid metadata={metadata} page={page} pageSize={2} onPage={() => undefined} />);
+    render(<DataGrid metadata={metadata} page={page} summaries={[]} pageSize={2} onPage={() => undefined} />);
 
     expect(screen.getByText("city")).toBeTruthy();
     expect(screen.getByText("sales")).toBeTruthy();
