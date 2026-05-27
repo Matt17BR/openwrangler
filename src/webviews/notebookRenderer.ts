@@ -7,6 +7,7 @@ interface RendererOutputItem {
 interface RendererContext {
   setState?(state: unknown): void;
   getState?(): unknown;
+  postMessage?(message: unknown): void;
 }
 
 interface RendererApi {
@@ -18,22 +19,48 @@ interface NotebookPayload {
   page: GridPage;
 }
 
-export function activate(_context: RendererContext): RendererApi {
+export function activate(context: RendererContext): RendererApi {
   return {
     renderOutputItem(outputItem, element) {
       const payload = outputItem.json() as NotebookPayload;
       element.innerHTML = "";
-      element.appendChild(renderPayload(payload));
+      element.appendChild(renderPayload(payload, context));
     }
   };
 }
 
-function renderPayload(payload: NotebookPayload): HTMLElement {
+function renderPayload(payload: NotebookPayload, context: RendererContext): HTMLElement {
   const root = document.createElement("section");
   root.className = "data-explorer-notebook";
 
   const header = document.createElement("header");
-  header.textContent = `Data Explorer preview: ${payload.metadata.source.label} (${payload.metadata.backend}) - ${payload.metadata.shape.rows} x ${payload.metadata.shape.columns}`;
+  header.style.alignItems = "center";
+  header.style.display = "flex";
+  header.style.gap = "12px";
+  header.style.justifyContent = "space-between";
+
+  const title = document.createElement("span");
+  title.textContent = `Data Explorer preview: ${payload.metadata.source.label} (${payload.metadata.backend}) - ${payload.metadata.shape.rows} x ${payload.metadata.shape.columns}`;
+  header.appendChild(title);
+
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.textContent = "Open Data Explorer";
+  openButton.title = "Open this notebook output in the full Data Explorer view";
+  openButton.style.background = "var(--vscode-button-background)";
+  openButton.style.border = "0";
+  openButton.style.borderRadius = "3px";
+  openButton.style.color = "var(--vscode-button-foreground)";
+  openButton.style.cursor = "pointer";
+  openButton.style.padding = "4px 8px";
+  openButton.addEventListener("click", () => {
+    context.postMessage?.({
+      kind: "openInDataExplorer",
+      payload
+    });
+  });
+  header.appendChild(openButton);
+
   root.appendChild(header);
 
   const scroller = document.createElement("div");

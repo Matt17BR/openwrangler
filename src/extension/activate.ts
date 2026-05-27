@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { registerFileCommands } from "./files/fileOpen";
 import { registerNotebookCommands } from "./notebooks/jupyterBridge";
+import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
 import { PythonBridge } from "./pythonBridge";
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -9,6 +10,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   registerFileCommands(context, bridge);
   registerNotebookCommands(context, bridge);
+  registerNotebookRendererMessaging(context, bridge);
 }
 
 export function deactivate(): void {

@@ -1,6 +1,12 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import type { DataBackend, DataExplorerRequest, DataExplorerResponse, SessionSource } from "../shared/protocol";
+import type {
+  DataBackend,
+  DataExplorerRequest,
+  DataExplorerResponse,
+  SessionOpenedResponse,
+  SessionSource
+} from "../shared/protocol";
 import { PythonBridge } from "./pythonBridge";
 
 export class DataExplorerPanel {
@@ -12,7 +18,8 @@ export class DataExplorerPanel {
     private readonly context: vscode.ExtensionContext,
     private readonly bridge: PythonBridge,
     private readonly source: SessionSource,
-    private readonly backend?: DataBackend
+    private readonly backend?: DataBackend,
+    private readonly initialResponse?: SessionOpenedResponse
   ) {
     this.panel.webview.html = this.renderHtml();
     this.panel.webview.onDidReceiveMessage((message: unknown) => this.handleMessage(message), undefined, this.disposables);
@@ -39,6 +46,32 @@ export class DataExplorerPanel {
     return new DataExplorerPanel(panel, context, bridge, source, backend);
   }
 
+  static createFromPayload(
+    context: vscode.ExtensionContext,
+    bridge: PythonBridge,
+    response: SessionOpenedResponse
+  ): DataExplorerPanel {
+    const panel = vscode.window.createWebviewPanel(
+      "dataExplorer.viewer",
+      `Data Explorer: ${response.metadata.source.label}`,
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, "media"))]
+      }
+    );
+
+    return new DataExplorerPanel(
+      panel,
+      context,
+      bridge,
+      response.metadata.source,
+      response.metadata.backend,
+      response
+    );
+  }
+
   async open(): Promise<void> {
     const pageSize = vscode.workspace.getConfiguration("dataExplorer").get<number>("pageSize", 200);
     await this.forward({
@@ -61,7 +94,21 @@ export class DataExplorerPanel {
     }
 
     if (message.kind === "ready") {
+      if (this.initialResponse) {
+        this.sessionId = this.initialResponse.metadata.sessionId;
+        await this.post(this.initialResponse);
+        return;
+      }
       await this.open();
+      return;
+    }
+
+    if (this.initialResponse) {
+      await this.post({
+        kind: "error",
+        message:
+          "Expanded notebook output is a static preview. Use Data Explorer: Open Notebook Variable for live paging, filtering, and sorting."
+      });
       return;
     }
 
