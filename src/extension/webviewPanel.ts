@@ -103,15 +103,6 @@ export class DataExplorerPanel {
       return;
     }
 
-    if (this.initialResponse) {
-      await this.post({
-        kind: "error",
-        message:
-          "Expanded notebook output is a static preview. Use Data Explorer: Open Notebook Variable for live paging, filtering, and sorting."
-      });
-      return;
-    }
-
     if (!this.sessionId) {
       await this.post({ kind: "error", message: "Session has not been opened yet." });
       return;
