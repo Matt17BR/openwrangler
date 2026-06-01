@@ -51,21 +51,32 @@ select {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 9px 14px;
-  border-bottom: 1px solid var(--vscode-panel-border);
-}
-
-.toolbar h1 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.toolbar p {
   align-items: center;
-  display: flex;
-  gap: 8px;
-  margin: 3px 0 0;
-  opacity: 0.8;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorGroupHeader-tabsBackground);
+}
+
+.toolbarIdentity {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.toolbarIdentity strong,
+.toolbarIdentity span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbarIdentity strong {
+  font-size: 13px;
+}
+
+.toolbarIdentity span {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
 }
 
 .modeBadge {
@@ -78,20 +89,39 @@ select {
   text-transform: uppercase;
 }
 
-.toolbarStats {
-  display: flex;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 4px;
+.backendBadge {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  text-transform: uppercase;
 }
 
-.toolbarStats span:first-child {
-  text-transform: uppercase;
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbarButton {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border);
+}
+
+.goToColumn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+
+.goToColumn select {
+  width: 160px;
 }
 
 .layout {
@@ -294,7 +324,14 @@ th.rowHeader {
   font-style: italic;
 }
 
-.summaryPanel details {
+.summaryPanel h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  margin: 14px 0 6px;
+  text-transform: uppercase;
+}
+
+.summaryGroup {
   border-top: 1px solid var(--vscode-panel-border);
   padding: 8px 0;
 }
@@ -320,6 +357,10 @@ dl {
   gap: 3px 8px;
 }
 
+.dataSummaryStats {
+  margin: 0 0 8px;
+}
+
 dt {
   color: var(--vscode-descriptionForeground);
 }
@@ -339,6 +380,18 @@ dd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mutedText {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.missingList {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
 }
 
 .emptyState {

@@ -26,6 +26,7 @@ export function App(): JSX.Element {
   const [snapshotRows, setSnapshotRows] = useState<DataRow[] | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
+  const [goToColumn, setGoToColumn] = useState("");
 
   useEffect(() => {
     const listener = (event: MessageEvent<DataExplorerResponse>) => {
@@ -133,26 +134,40 @@ export function App(): JSX.Element {
   return (
     <main className="app">
       <header className="toolbar">
-        <div>
-          <h1>Data Explorer</h1>
-          <p>
-            {metadata?.source.label ?? "Loading dataframe..."}
-            {snapshotMode && <span className="modeBadge">Notebook snapshot</span>}
-          </p>
+        <div className="toolbarIdentity">
+          <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
+          <span>
+            {metadata
+              ? `${metadata.filteredShape.rows.toLocaleString()} rows x ${metadata.filteredShape.columns.toLocaleString()} columns`
+              : "Preparing session"}
+          </span>
         </div>
         {metadata && (
-          <div className="toolbarStats">
-            <span>{metadata.backend}</span>
-            <span>
-              {metadata.filteredShape.rows.toLocaleString()} rows x {metadata.filteredShape.columns.toLocaleString()} cols
-            </span>
+          <div className="toolbarActions">
+            <button type="button" className="toolbarButton">
+              Export as file
+            </button>
+            <label className="goToColumn">
+              <span>Go to column</span>
+              <select value={goToColumn} onChange={(event) => setGoToColumn(event.target.value)}>
+                <option value="">Select column</option>
+                {metadata.schema.map((column) => (
+                  <option key={column.name} value={column.name}>
+                    {column.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="modeBadge">Viewing</span>
+            <span className="backendBadge">{metadata.backend}</span>
+            {snapshotMode && <span className="modeBadge">Snapshot</span>}
           </div>
         )}
       </header>
 
       <section className="layout">
         <aside className="sidebar">
-          <SummaryPanel summaries={summaries} schemaByName={schemaByName} />
+          <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
           <FilterPanel
             metadata={metadata}
             model={filterModel}
