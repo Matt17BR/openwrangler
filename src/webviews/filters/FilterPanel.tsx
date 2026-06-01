@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SessionMetadata, ValuesResponse } from "../../shared/protocol";
 import type { ColumnFilter, FilterModel, PredicateOperator, SortDirection } from "../../shared/filterModel";
 
@@ -6,7 +6,7 @@ interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
   model: FilterModel;
   values: Record<string, ValuesResponse>;
-  disabledReason?: string;
+  activeColumn?: string;
   onApply(model: FilterModel): void;
   onRequestValues(column: string, search?: string): void;
 }
@@ -17,7 +17,7 @@ export function FilterPanel({
   metadata,
   model,
   values,
-  disabledReason,
+  activeColumn: requestedColumn,
   onApply,
   onRequestValues
 }: FilterPanelProps): JSX.Element {
@@ -28,6 +28,16 @@ export function FilterPanel({
   const [predicateValue, setPredicateValue] = useState("");
   const [secondPredicateValue, setSecondPredicateValue] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  useEffect(() => {
+    if (requestedColumn) {
+      setColumn(requestedColumn);
+      return;
+    }
+    if (!column && firstColumn) {
+      setColumn(firstColumn);
+    }
+  }, [column, firstColumn, requestedColumn]);
 
   const activeColumn = column || firstColumn;
   const columnSchema = metadata?.schema.find((item) => item.name === activeColumn);
@@ -43,9 +53,6 @@ export function FilterPanel({
   }
 
   const updateFilter = (nextFilter: ColumnFilter) => {
-    if (disabledReason) {
-      return;
-    }
     const filters = model.filters.filter((item) => item.column !== nextFilter.column);
     onApply({ ...model, filters: [...filters, nextFilter] });
   };
@@ -98,9 +105,6 @@ export function FilterPanel({
   };
 
   const applySort = () => {
-    if (disabledReason) {
-      return;
-    }
     onApply({
       ...model,
       sort: [
@@ -111,9 +115,6 @@ export function FilterPanel({
   };
 
   const clearColumn = () => {
-    if (disabledReason) {
-      return;
-    }
     onApply({
       filters: model.filters.filter((item) => item.column !== activeColumn),
       sort: model.sort.filter((rule) => rule.column !== activeColumn)
@@ -121,107 +122,106 @@ export function FilterPanel({
   };
 
   return (
-    <section className="panel">
+    <section className="panel filterSortPanel">
       <div className="panelHeader">
-        <h2>Filters</h2>
-        <button type="button" disabled={Boolean(disabledReason)} onClick={() => onApply({ filters: [], sort: [] })}>
+        <h2>Filters / Sorts</h2>
+        <button type="button" onClick={() => onApply({ filters: [], sort: [] })}>
           Clear all
         </button>
       </div>
-      {disabledReason && <p className="panelNote">{disabledReason}</p>}
 
-      <label>
-        Column
-        <select value={activeColumn} onChange={(event) => setColumn(event.target.value)}>
-          {metadata.schema.map((item) => (
-            <option key={item.name} value={item.name}>
-              {item.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <details className="filterSection" open>
+        <summary>FILTERS</summary>
+        <label>
+          Column
+          <select value={activeColumn} onChange={(event) => setColumn(event.target.value)}>
+            {metadata.schema.map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <div className="row">
-        <select
-          value={sortDirection}
-          disabled={Boolean(disabledReason)}
-          onChange={(event) => setSortDirection(event.target.value as SortDirection)}
-        >
-          <option value="asc">Sort A to Z</option>
-          <option value="desc">Sort Z to A</option>
-        </select>
-        <button type="button" disabled={Boolean(disabledReason)} onClick={applySort}>
-          Add sort
-        </button>
-      </div>
-
-      <div className="row">
-        <input
-          value={search}
-          placeholder="Search values"
-          disabled={Boolean(disabledReason)}
-          onChange={(event) => setSearch(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              onRequestValues(activeColumn, search);
-            }
-          }}
-        />
-        <button type="button" disabled={Boolean(disabledReason)} onClick={() => onRequestValues(activeColumn, search)}>
-          Values
-        </button>
-      </div>
-
-      <div className="valueList">
-        {(columnValueResponse?.values ?? []).map((item) => (
-          <label key={item.value} className="checkboxRow">
-            <input
-              type="checkbox"
-              checked={selectedValues.has(item.value)}
-              disabled={Boolean(disabledReason)}
-              onChange={() => toggleValue(item.value)}
-            />
-            <span>{item.value}</span>
-            <small>{item.count}</small>
-          </label>
-        ))}
-        {columnValueResponse?.hasMore && <small>More values available. Refine the search to narrow results.</small>}
-      </div>
-
-      <div className="predicateBuilder">
-        <select
-          value={predicateOperator}
-          disabled={Boolean(disabledReason)}
-          onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
-        >
-          {operators.map((operator) => (
-            <option key={operator} value={operator}>
-              {operator}
-            </option>
-          ))}
-        </select>
-        <input
-          value={predicateValue}
-          disabled={Boolean(disabledReason)}
-          placeholder="Value"
-          onChange={(event) => setPredicateValue(event.target.value)}
-        />
-        {predicateOperator === "between" && (
+        <div className="row">
           <input
-            value={secondPredicateValue}
-            disabled={Boolean(disabledReason)}
-            placeholder="And"
-            onChange={(event) => setSecondPredicateValue(event.target.value)}
+            value={search}
+            placeholder="Search values"
+            onChange={(event) => setSearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                onRequestValues(activeColumn, search);
+              }
+            }}
           />
-        )}
-        <button type="button" disabled={Boolean(disabledReason)} onClick={addPredicate}>
-          Add predicate
-        </button>
-      </div>
+          <button type="button" onClick={() => onRequestValues(activeColumn, search)}>
+            Values
+          </button>
+        </div>
 
-      <button type="button" disabled={Boolean(disabledReason)} onClick={clearColumn}>
-        Clear column
-      </button>
+        <div className="valueList">
+          {(columnValueResponse?.values ?? []).map((item) => (
+            <label key={item.value} className="checkboxRow">
+              <input type="checkbox" checked={selectedValues.has(item.value)} onChange={() => toggleValue(item.value)} />
+              <span>{item.value}</span>
+              <small>{item.count}</small>
+            </label>
+          ))}
+          {columnValueResponse?.hasMore && <small>More values available. Refine the search to narrow results.</small>}
+        </div>
+
+        <div className="predicateBuilder">
+          <select value={predicateOperator} onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}>
+            {operators.map((operator) => (
+              <option key={operator} value={operator}>
+                {operator}
+              </option>
+            ))}
+          </select>
+          <input value={predicateValue} placeholder="Value" onChange={(event) => setPredicateValue(event.target.value)} />
+          {predicateOperator === "between" && (
+            <input value={secondPredicateValue} placeholder="And" onChange={(event) => setSecondPredicateValue(event.target.value)} />
+          )}
+          <button type="button" onClick={addPredicate}>
+            Add predicate
+          </button>
+        </div>
+
+        <button type="button" onClick={clearColumn}>
+          Clear column
+        </button>
+      </details>
+
+      <details className="filterSection" open={model.sort.length > 0}>
+        <summary>SORTS</summary>
+        <label>
+          Column
+          <select value={activeColumn} onChange={(event) => setColumn(event.target.value)}>
+            {metadata.schema.map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="row">
+          <select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as SortDirection)}>
+            <option value="asc">Sort ascending</option>
+            <option value="desc">Sort descending</option>
+          </select>
+          <button type="button" onClick={applySort}>
+            Add sort
+          </button>
+        </div>
+        <div className="activeRules">
+          {model.sort.length === 0 && <span className="mutedText">No active sorts.</span>}
+          {model.sort.map((rule) => (
+            <span key={rule.column} className="rulePill">
+              {rule.column} {rule.direction === "asc" ? "asc" : "desc"}
+            </span>
+          ))}
+        </div>
+      </details>
     </section>
   );
 }

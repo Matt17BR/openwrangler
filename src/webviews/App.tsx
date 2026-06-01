@@ -27,6 +27,7 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
   const [goToColumn, setGoToColumn] = useState("");
+  const [filterColumn, setFilterColumn] = useState("");
 
   useEffect(() => {
     const listener = (event: MessageEvent<DataExplorerResponse>) => {
@@ -172,6 +173,7 @@ export function App(): JSX.Element {
             metadata={metadata}
             model={filterModel}
             values={columnValues}
+            activeColumn={filterColumn}
             onApply={applyFilters}
             onRequestValues={requestValues}
           />
@@ -196,7 +198,10 @@ export function App(): JSX.Element {
                   ]
                 })
               }
-              onOpenFilter={(column) => requestValues(column)}
+              onOpenFilter={(column) => {
+                setFilterColumn(column);
+                requestValues(column);
+              }}
             />
           ) : (
             <div className="emptyState">Opening session...</div>

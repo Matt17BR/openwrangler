@@ -174,12 +174,45 @@ select {
   margin: 8px 0;
 }
 
+.filterSortPanel {
+  flex: 1 1 auto;
+  min-height: 260px;
+}
+
+.filterSection {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding: 8px 0;
+}
+
+.filterSection summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 .valueList {
   max-height: 132px;
   overflow: auto;
   margin: 8px 0;
   border: 1px solid var(--vscode-panel-border);
   border-radius: 4px;
+}
+
+.activeRules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.rulePill {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  padding: 2px 7px;
 }
 
 .checkboxRow {
