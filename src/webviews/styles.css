@@ -269,6 +269,71 @@ th small {
   font-weight: normal;
 }
 
+.columnHeader {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.typeIcon {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-weight: 600;
+  min-width: 22px;
+  padding: 0 3px;
+  text-align: center;
+}
+
+.columnTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.columnMenu {
+  position: relative;
+}
+
+.columnMenu summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  list-style: none;
+}
+
+.columnMenu summary::-webkit-details-marker {
+  display: none;
+}
+
+.columnMenuContent {
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
+  display: grid;
+  min-width: 150px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: 18px;
+  z-index: 10;
+}
+
+.columnMenuContent button {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.columnMenuContent button:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+}
+
 .insightRow th {
   top: 43px;
   background: var(--vscode-editor-background);
@@ -298,6 +363,60 @@ th small {
   display: block;
   height: 100%;
   width: 72%;
+}
+
+.miniChart {
+  display: block;
+  height: 28px;
+  margin-top: 4px;
+  width: 96px;
+}
+
+.miniChart rect {
+  fill: var(--vscode-charts-blue, #3794ff);
+}
+
+.stackedMiniChart {
+  background: var(--vscode-editorWidget-background);
+  border-radius: 999px;
+  display: flex;
+  height: 7px;
+  margin-top: 6px;
+  overflow: hidden;
+  width: 96px;
+}
+
+.stackedMiniChart i {
+  background: var(--vscode-charts-green, #89d185);
+}
+
+.stackedMiniChart b {
+  background: var(--vscode-charts-red, #f14c4c);
+}
+
+.categoryMiniChart {
+  display: grid;
+  gap: 2px;
+  margin-top: 4px;
+  width: 96px;
+}
+
+.categoryMiniChart i {
+  background: var(--vscode-charts-blue, #3794ff);
+  border-radius: 999px;
+  display: block;
+  height: 4px;
+  min-width: 2px;
+}
+
+.datetimeMiniChart {
+  color: var(--vscode-descriptionForeground);
+  display: block;
+  font-size: 10px;
+  margin-top: 4px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .emptyInsight {

@@ -180,7 +180,24 @@ export function App(): JSX.Element {
           {error && <div className="errorBanner">{error}</div>}
           {loading && <div className="loading">Loading...</div>}
           {metadata && page ? (
-            <DataGrid metadata={metadata} page={page} summaries={summaries} onPage={requestPage} pageSize={pageSize} />
+            <DataGrid
+              metadata={metadata}
+              page={page}
+              summaries={summaries}
+              onPage={requestPage}
+              pageSize={pageSize}
+              goToColumn={goToColumn}
+              onSortColumn={(column, direction) =>
+                applyFilters({
+                  ...filterModel,
+                  sort: [
+                    ...filterModel.sort.filter((rule) => rule.column !== column),
+                    { column, direction, nulls: "last" }
+                  ]
+                })
+              }
+              onOpenFilter={(column) => requestValues(column)}
+            />
           ) : (
             <div className="emptyState">Opening session...</div>
           )}
