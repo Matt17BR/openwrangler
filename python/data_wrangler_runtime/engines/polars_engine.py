@@ -3,7 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .base import DataFrameEngine, EngineError, infer_semantic_type, normalize_cell
+from .base import (
+    DataFrameEngine,
+    EngineError,
+    boolean_visualization,
+    categorical_visualization,
+    datetime_visualization,
+    infer_semantic_type,
+    normalize_cell,
+    numeric_visualization,
+)
 
 
 class PolarsEngine(DataFrameEngine):
@@ -153,6 +162,7 @@ class PolarsEngine(DataFrameEngine):
                 ],
             }
             if semantic_type in {"integer", "float"}:
+                numeric_values = series.drop_nulls().to_list()
                 summary["numeric"] = {
                     "min": _maybe_float(series.min()),
                     "max": _maybe_float(series.max()),
@@ -160,8 +170,51 @@ class PolarsEngine(DataFrameEngine):
                     "median": _maybe_float(series.median()),
                     "std": _maybe_float(series.std()),
                 }
+                summary["visualization"] = numeric_visualization(numeric_values)
+            elif semantic_type == "boolean":
+                summary["visualization"] = boolean_visualization(series.drop_nulls().to_list())
+            elif semantic_type in {"datetime", "date"}:
+                summary["visualization"] = datetime_visualization(series.min(), series.max())
+            else:
+                summary["visualization"] = categorical_visualization(
+                    summary["topValues"], int(df.height) - int(null_counts.get(column, 0)) - summary["nanCount"]
+                )
             summaries.append(summary)
         return summaries
+
+    def header_stats(self, frame: Any) -> dict[str, Any]:
+        import polars as pl
+
+        df = self.normalize(frame)
+        if df.width == 0:
+            return {"missingCells": 0, "missingRows": 0, "duplicateRows": 0, "missingValuesByColumn": []}
+
+        missing_by_column = []
+        missing_row_expression = None
+        missing_cells = 0
+        for column in df.columns:
+            series = df[column]
+            null_count = int(series.null_count())
+            nan_count = self._nan_count(series)
+            count = null_count + nan_count
+            missing_cells += count
+            missing_by_column.append({"column": column, "count": count})
+            current = pl.col(column).is_null()
+            if infer_semantic_type(str(series.dtype)) == "float":
+                current = current | pl.col(column).is_nan()
+            missing_row_expression = current if missing_row_expression is None else missing_row_expression | current
+
+        missing_rows = (
+            int(df.select(missing_row_expression.sum().alias("missingRows")).item())
+            if missing_row_expression is not None and df.height
+            else 0
+        )
+        return {
+            "missingCells": missing_cells,
+            "missingRows": missing_rows,
+            "duplicateRows": int(df.is_duplicated().sum()) if df.height else 0,
+            "missingValuesByColumn": missing_by_column,
+        }
 
     def column_values(
         self, frame: Any, column: str, search: str | None = None, limit: int = 100

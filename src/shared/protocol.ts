@@ -55,6 +55,41 @@ export interface NumericSummary {
   std?: number;
 }
 
+export interface NumericBin {
+  min: number;
+  max: number;
+  count: number;
+}
+
+export interface NumericVisualization {
+  kind: "numeric";
+  bins: NumericBin[];
+}
+
+export interface CategoricalVisualization {
+  kind: "categorical";
+  categories: ValueCount[];
+  otherCount: number;
+}
+
+export interface BooleanVisualization {
+  kind: "boolean";
+  trueCount: number;
+  falseCount: number;
+}
+
+export interface DatetimeVisualization {
+  kind: "datetime";
+  min?: string;
+  max?: string;
+}
+
+export type ColumnVisualization =
+  | NumericVisualization
+  | CategoricalVisualization
+  | BooleanVisualization
+  | DatetimeVisualization;
+
 export interface ColumnSummary {
   column: string;
   type: ColumnType;
@@ -64,7 +99,20 @@ export interface ColumnSummary {
   nanCount: number;
   distinctCount?: number;
   numeric?: NumericSummary;
+  visualization?: ColumnVisualization;
   topValues: ValueCount[];
+}
+
+export interface MissingValueByColumn {
+  column: string;
+  count: number;
+}
+
+export interface DatasetStats {
+  missingCells: number;
+  missingRows: number;
+  duplicateRows: number;
+  missingValuesByColumn: MissingValueByColumn[];
 }
 
 export interface SessionMetadata {
@@ -75,6 +123,7 @@ export interface SessionMetadata {
   filteredShape: DataShape;
   schema: ColumnSchema[];
   filterModel: FilterModel;
+  stats?: DatasetStats;
 }
 
 export interface OpenSessionRequest {

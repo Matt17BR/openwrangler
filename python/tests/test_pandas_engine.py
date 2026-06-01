@@ -21,6 +21,8 @@ def test_pandas_file_session_matches_protocol():
     assert opened["metadata"]["backend"] == "pandas"
     assert opened["metadata"]["shape"] == {"rows": 4, "columns": 4}
     assert opened["metadata"]["schema"][0]["name"] == "city"
+    assert opened["metadata"]["stats"]["duplicateRows"] == 0
+    assert opened["summaries"][0]["visualization"]["kind"] == "categorical"
 
     filter_model = {
         "filters": [

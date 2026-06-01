@@ -104,6 +104,7 @@ class SessionManager:
             "filteredShape": session.engine.shape(session.filtered),
             "schema": session.engine.schema(session.original),
             "filterModel": session.filter_model,
+            "stats": session.engine.header_stats(session.filtered),
         }
 
     def _session(self, session_id: str) -> Session:

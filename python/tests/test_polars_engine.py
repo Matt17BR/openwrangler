@@ -25,6 +25,7 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
 
     assert opened["metadata"]["backend"] == "polars"
     assert opened["metadata"]["shape"] == {"rows": 4, "columns": 4}
+    assert opened["metadata"]["stats"]["missingValuesByColumn"][0] == {"column": "city", "count": 0}
     assert opened["page"]["rows"][0]["values"][0]["display"] == "Milan"
 
     filter_model = {
@@ -45,6 +46,8 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
 
     summary = manager.get_summary(opened["metadata"]["sessionId"], filter_model, ["sales"])
     assert summary["summaries"][0]["numeric"]["max"] == 12.0
+    assert summary["summaries"][0]["visualization"]["kind"] == "numeric"
+    assert summary["summaries"][0]["visualization"]["bins"]
 
 
 def test_polars_column_values_and_parquet(tmp_path):

@@ -3,7 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .base import DataFrameEngine, EngineError, infer_semantic_type, normalize_cell
+from .base import (
+    DataFrameEngine,
+    EngineError,
+    boolean_visualization,
+    categorical_visualization,
+    datetime_visualization,
+    infer_semantic_type,
+    normalize_cell,
+    numeric_visualization,
+)
 
 
 class PandasEngine(DataFrameEngine):
@@ -113,20 +122,22 @@ class PandasEngine(DataFrameEngine):
         for column in selected:
             series = df[column]
             raw_type = str(series.dtype)
+            semantic_type = infer_semantic_type(raw_type)
+            top_values = [
+                {"value": str(index), "count": int(value)}
+                for index, value in series.value_counts(dropna=True).head(10).items()
+            ]
             summary: dict[str, Any] = {
                 "column": str(column),
-                "type": infer_semantic_type(raw_type),
+                "type": semantic_type,
                 "rawType": raw_type,
                 "totalCount": int(len(series)),
                 "nullCount": int(series.isna().sum()),
                 "nanCount": int(series.isna().sum()) if raw_type.startswith("float") else 0,
                 "distinctCount": int(series.nunique(dropna=True)),
-                "topValues": [
-                    {"value": str(index), "count": int(value)}
-                    for index, value in series.value_counts(dropna=True).head(10).items()
-                ],
+                "topValues": top_values,
             }
-            if infer_semantic_type(raw_type) in {"integer", "float"}:
+            if semantic_type in {"integer", "float"}:
                 numeric = series.dropna()
                 summary["numeric"] = {
                     "min": _maybe_float(numeric.min()),
@@ -135,8 +146,31 @@ class PandasEngine(DataFrameEngine):
                     "median": _maybe_float(numeric.median()),
                     "std": _maybe_float(numeric.std()),
                 }
+                summary["visualization"] = numeric_visualization(numeric.tolist())
+            elif semantic_type == "boolean":
+                summary["visualization"] = boolean_visualization(series.dropna().tolist())
+            elif semantic_type in {"datetime", "date"}:
+                values = series.dropna()
+                summary["visualization"] = datetime_visualization(
+                    values.min() if not values.empty else None,
+                    values.max() if not values.empty else None,
+                )
+            else:
+                summary["visualization"] = categorical_visualization(top_values, int(series.notna().sum()))
             summaries.append(summary)
         return summaries
+
+    def header_stats(self, frame: Any) -> dict[str, Any]:
+        df = self.normalize(frame)
+        missing_by_column = []
+        for column in df.columns:
+            missing_by_column.append({"column": str(column), "count": int(df[column].isna().sum())})
+        return {
+            "missingCells": int(df.isna().sum().sum()),
+            "missingRows": int(df.isna().any(axis=1).sum()),
+            "duplicateRows": int(df.duplicated().sum()),
+            "missingValuesByColumn": missing_by_column,
+        }
 
     def column_values(
         self, frame: Any, column: str, search: str | None = None, limit: int = 100

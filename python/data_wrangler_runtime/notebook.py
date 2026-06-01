@@ -28,6 +28,7 @@ def show(value: Any, label: str = "dataframe", backend: str | None = None, page_
             "filteredShape": engine.shape(filtered),
             "schema": engine.schema(frame),
             "filterModel": {"filters": [], "sort": []},
+            "stats": engine.header_stats(filtered),
         },
         "page": engine.page(filtered, 0, page_size),
         "summaries": engine.summaries(filtered),
