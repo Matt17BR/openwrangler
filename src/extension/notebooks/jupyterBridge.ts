@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
 import { DataExplorerPanel } from "../webviewPanel";
 import { KernelBridge } from "./kernelBridge";
+import { SessionCoordinator } from "../sessionCoordinator";
 
 interface NotebookVariableArgument {
   name?: unknown;
@@ -17,10 +18,10 @@ interface NotebookVariableArgument {
 }
 
 interface JupyterLikeApi {
-  getKernelService?: () => Promise<unknown>;
+  kernels: { getKernel(uri: vscode.Uri): Promise<unknown> | unknown };
 }
 
-export const registerNotebookCommands = (context: vscode.ExtensionContext): void => {
+export const registerNotebookCommands = (context: vscode.ExtensionContext, coordinator: SessionCoordinator): void => {
   context.subscriptions.push(
     vscode.commands.registerCommand("dataExplorer.launchDataViewer", async (...args: unknown[]) => {
       const variableName = variableNameFromArgs(args);
@@ -29,7 +30,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext): void
         return;
       }
 
-      await openLiveNotebookVariable(context, variableName, notebookUriFromArgs(args));
+      await openLiveNotebookVariable(context, coordinator, variableName, notebookUriFromArgs(args));
     })
   );
 
@@ -53,7 +54,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext): void
         return;
       }
 
-      await openLiveNotebookVariable(context, variableName, notebook.uri);
+      await openLiveNotebookVariable(context, coordinator, variableName, notebook.uri);
     })
   );
 
@@ -66,14 +67,21 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext): void
         );
         return;
       }
-      await jupyter.activate();
-      vscode.window.showInformationMessage("Data Explorer found the Jupyter extension.");
+      const api = await jupyter.activate();
+      const notebook = vscode.window.activeNotebookEditor?.notebook.uri;
+      const kernel = notebook ? await api.kernels.getKernel(notebook) : undefined;
+      vscode.window.showInformationMessage(
+        kernel
+          ? "Data Explorer can access the selected Jupyter kernel."
+          : "Data Explorer found Jupyter, but no active notebook kernel is selected."
+      );
     })
   );
 };
 
 async function openLiveNotebookVariable(
   context: vscode.ExtensionContext,
+  coordinator: SessionCoordinator,
   variableName: string,
   notebookUri?: vscode.Uri
 ): Promise<void> {
@@ -88,8 +96,7 @@ async function openLiveNotebookVariable(
     label: variableName,
     variableName
   };
-  const panel = DataExplorerPanel.create(context, new KernelBridge(context, notebook), source);
-  await panel.open();
+  DataExplorerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook)), source);
 }
 
 function variableNameFromArgs(args: unknown[]): string | undefined {

@@ -11,6 +11,9 @@ import type { DataExplorerBridge } from "./dataBridge";
 
 export class DataExplorerPanel {
   private sessionId: string | undefined;
+  private sessionRevision = 0;
+  private snapshot: SessionOpenedResponse | undefined;
+  private opening: Promise<void> | undefined;
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -28,6 +31,13 @@ export class DataExplorerPanel {
       this.disposables
     );
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
+    this.panel.onDidChangeViewState(
+      ({ webviewPanel }) => {
+        if (webviewPanel.active && this.sessionId) this.bridge.setActiveSession?.(this.sessionId);
+      },
+      undefined,
+      this.disposables
+    );
   }
 
   static create(
@@ -70,16 +80,27 @@ export class DataExplorerPanel {
   }
 
   async open(): Promise<void> {
+    if (this.opening) return this.opening;
     const pageSize = vscode.workspace.getConfiguration("dataExplorer").get<number>("pageSize", 200);
-    await this.forward({
+    this.opening = this.forward({
       kind: "openSession",
       source: this.source,
       backend: this.backend,
       pageSize
     });
+    await this.opening;
+    if (!this.sessionId) this.opening = undefined;
   }
 
   dispose(): void {
+    if (this.sessionId && !this.initialResponse) {
+      void this.bridge.request({
+        kind: "closeSession",
+        sessionId: this.sessionId,
+        revision: this.sessionRevision
+      });
+      this.sessionId = undefined;
+    }
     while (this.disposables.length) {
       this.disposables.pop()?.dispose();
     }
@@ -91,9 +112,13 @@ export class DataExplorerPanel {
     }
 
     if (message.kind === "ready") {
-      if (this.initialResponse) {
-        this.sessionId = this.initialResponse.metadata.sessionId;
-        await this.post(this.initialResponse);
+      if (!this.snapshot && this.initialResponse) {
+        this.snapshot = this.initialResponse;
+        this.sessionId = this.snapshot.metadata.sessionId;
+        this.sessionRevision = this.snapshot.metadata.revision;
+      }
+      if (this.snapshot) {
+        await this.post(this.snapshot);
         return;
       }
       await this.open();
@@ -101,11 +126,20 @@ export class DataExplorerPanel {
     }
 
     if (!this.sessionId) {
-      await this.post({ kind: "error", message: "Session has not been opened yet." });
+      await this.post({
+        kind: "error",
+        code: "session_not_open",
+        message: "Session has not been opened yet.",
+        recoverable: true
+      });
       return;
     }
 
-    const request = { ...message.request, sessionId: this.sessionId } as DataExplorerRequest;
+    const request = {
+      ...message.request,
+      sessionId: this.sessionId,
+      revision: this.sessionRevision
+    } as DataExplorerRequest;
     await this.forward(request);
   }
 
@@ -114,15 +148,26 @@ export class DataExplorerPanel {
       const response = await this.bridge.request(request);
       if (response.kind === "sessionOpened") {
         this.sessionId = response.metadata.sessionId;
+        this.sessionRevision = response.metadata.revision;
+        this.snapshot = response;
       }
       if (response.kind === "page") {
         this.sessionId = response.metadata.sessionId;
+        this.sessionRevision = response.metadata.revision;
+        if (this.snapshot) {
+          this.snapshot = { ...this.snapshot, metadata: response.metadata, page: response.page };
+        }
+      }
+      if (response.kind === "summary" && this.snapshot) {
+        this.snapshot = { ...this.snapshot, summaries: response.summaries };
       }
       await this.post(response);
     } catch (error) {
       await this.post({
         kind: "error",
-        message: error instanceof Error ? error.message : String(error)
+        code: "bridge_error",
+        message: error instanceof Error ? error.message : String(error),
+        recoverable: true
       });
     }
   }

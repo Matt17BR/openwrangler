@@ -1,13 +1,13 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
-import { PythonBridge } from "../pythonBridge";
+import type { DataExplorerBridge } from "../dataBridge";
 import { DataExplorerPanel } from "../webviewPanel";
 
 export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly bridge: PythonBridge
+    private readonly bridge: DataExplorerBridge
   ) {}
 
   openCustomDocument(uri: vscode.Uri): vscode.CustomDocument {
@@ -20,12 +20,11 @@ export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEd
   async resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
     const source = fileSource(document.uri);
     const defaultBackend = getDefaultBackend();
-    const panel = new DataExplorerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
-    await panel.open();
+    new DataExplorerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
   }
 }
 
-export const registerFileCommands = (context: vscode.ExtensionContext, bridge: PythonBridge): void => {
+export const registerFileCommands = (context: vscode.ExtensionContext, bridge: DataExplorerBridge): void => {
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       "dataExplorer.viewer",
@@ -47,8 +46,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: P
         return;
       }
 
-      const panel = DataExplorerPanel.create(context, bridge, fileSource(target), getDefaultBackend());
-      await panel.open();
+      DataExplorerPanel.create(context, bridge, fileSource(target), getDefaultBackend());
     })
   );
 
@@ -65,8 +63,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: P
         return;
       }
 
-      const panel = DataExplorerPanel.create(context, bridge, fileSource(selected), getDefaultBackend());
-      await panel.open();
+      DataExplorerPanel.create(context, bridge, fileSource(selected), getDefaultBackend());
     })
   );
 };
@@ -77,5 +74,9 @@ const fileSource = (uri: vscode.Uri): SessionSource => ({
   path: uri.fsPath
 });
 
-const getDefaultBackend = (): DataBackend =>
-  vscode.workspace.getConfiguration("dataExplorer").get<DataBackend>("defaultBackend", "polars");
+const getDefaultBackend = (): DataBackend | undefined => {
+  const configured = vscode.workspace
+    .getConfiguration("dataExplorer")
+    .get<DataBackend | "auto">("defaultBackend", "auto");
+  return configured === "auto" ? undefined : configured;
+};

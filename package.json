@@ -54,7 +54,9 @@
     "format:check": "prettier --check .",
     "format:write": "prettier --write .",
     "docs:check": "node scripts/check-docs.mjs",
-    "check": "npm run format:check && npm run lint && npm run lint:python && npm run typecheck && npm run docs:check",
+    "generate:protocol": "node scripts/generate-protocol.mjs",
+    "protocol:check": "node scripts/generate-protocol.mjs --check",
+    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run typecheck && npm run docs:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
     "watch:webview": "vite build --watch",
@@ -73,6 +75,9 @@
     "onCommand:dataExplorer.launchDataViewer",
     "onCommand:dataExplorer.openNotebookVariable",
     "onCommand:dataExplorer.checkJupyterIntegration",
+    "onCommand:dataExplorer.changeRuntime",
+    "onCommand:dataExplorer.clearRuntime",
+    "onCommand:dataExplorer.installRuntimeDependencies",
     "onCustomEditor:dataExplorer.viewer",
     "onNotebook:jupyter-notebook"
   ],
@@ -97,6 +102,18 @@
       {
         "command": "dataExplorer.checkJupyterIntegration",
         "title": "Data Explorer: Check Jupyter Integration"
+      },
+      {
+        "command": "dataExplorer.changeRuntime",
+        "title": "Data Explorer: Change Runtime"
+      },
+      {
+        "command": "dataExplorer.clearRuntime",
+        "title": "Data Explorer: Clear Runtime Override"
+      },
+      {
+        "command": "dataExplorer.installRuntimeDependencies",
+        "title": "Data Explorer: Install Runtime Dependencies"
       }
     ],
     "jupyterVariableViewers": [
@@ -175,11 +192,12 @@
         "dataExplorer.defaultBackend": {
           "type": "string",
           "enum": [
+            "auto",
             "polars",
             "pandas"
           ],
-          "default": "polars",
-          "description": "Default backend for file-backed Data Explorer sessions."
+          "default": "auto",
+          "description": "Default backend for file-backed sessions. Auto prefers Polars and falls back to Pandas when required."
         },
         "dataExplorer.pageSize": {
           "type": "number",
@@ -190,8 +208,15 @@
         },
         "dataExplorer.pythonPath": {
           "type": "string",
-          "default": ".venv/bin/python",
-          "description": "Python executable used for file-backed Data Explorer sessions."
+          "default": "",
+          "description": "Optional Python 3.10-3.14 executable override. When empty, Data Explorer uses the selected Python extension environment, then a system interpreter."
+        },
+        "dataExplorer.requestTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Maximum runtime request duration before recovery restarts and replays the session."
         }
       }
     }
@@ -216,6 +241,7 @@
     "eslint-plugin-react-hooks": "^7.0.0",
     "globals": "^16.3.0",
     "jsdom": "^29.1.1",
+    "json-schema-to-typescript": "^15.0.4",
     "npm-run-all": "^4.1.5",
     "prettier": "^3.6.2",
     "pyright": "^1.1.405",

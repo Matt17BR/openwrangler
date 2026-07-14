@@ -12,11 +12,13 @@ The source dataframe is immutable from Data Explorer's perspective. A session st
 
 ## Runtime and engines
 
-The runtime exposes one protocol across standalone and notebook transports. Requests are correlated and versioned. Standalone requests use a framed standard-input/standard-output transport; notebook requests use the stable Jupyter kernel API and a marker-delimited encoded envelope.
+The runtime exposes one protocol across standalone and notebook transports. `protocol/data-explorer.v2.schema.json` is the canonical contract; `npm run generate:protocol` produces `src/shared/protocol.generated.ts`, and CI rejects stale generated types. Python's explicit decoder rejects malformed versions, correlation IDs, priorities, request shapes, revisions, and import descriptors before dispatch. Standalone requests use newline-delimited envelopes on standard input/output; notebook requests use the stable `@vscode/jupyter-extension` `kernels.getKernel()` and `executeCode()` surface with a marker-delimited encoded envelope.
 
 Pandas and Polars adapters implement the same engine contract for schema, blocks, profiling, viewing queries, transformations, code generation, and exports. Engine results must agree on semantic output while generated code remains idiomatic to the source engine. Polars adapters may use eager frames for notebook values and lazy scans/plans for files; they never convert through Pandas.
 
-Sessions serialize operations within a dataframe, can run independently of other sessions, and have bounded caches. Closing an editor releases its session. Runtime loss invalidates caches, rejects pending requests, and allows the extension to recreate file sessions or reacquire a notebook kernel and replay the serialized plan.
+The extension host assigns stable public session IDs while each runtime owns replaceable internal IDs. Sessions serialize requests within a dataframe and run concurrently across dataframes. Requests carry the current revision; stale requests and responses are rejected. Closing an editor sends `closeSession`. A request timeout restarts the standalone runtime, while the coordinator recreates the source session and retries against its new internal ID. Notebook execution reacquires the stable kernel API after a restart.
+
+Runtime discovery resolves an explicit `dataExplorer.pythonPath`, then the active Python extension environment, then system interpreters. It accepts Python 3.10–3.14 and probes only engine/format-specific modules. Missing packages produce a structured diagnostic; installation always requires a modal user confirmation.
 
 ## UI composition
 

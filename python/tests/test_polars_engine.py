@@ -38,12 +38,12 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
         ],
         "sort": [{"column": "sales", "direction": "desc", "nulls": "last"}],
     }
-    page = manager.get_page(opened["metadata"]["sessionId"], 0, 10, filter_model)
+    page = manager.get_page(opened["metadata"]["sessionId"], 0, 0, 10, filter_model)
 
     assert page["metadata"]["filteredShape"]["rows"] == 3
     assert [row["values"][0]["display"] for row in page["page"]["rows"]] == ["Berlin", "Milan", "Paris"]
 
-    summary = manager.get_summary(opened["metadata"]["sessionId"], filter_model, ["sales"])
+    summary = manager.get_summary(opened["metadata"]["sessionId"], 0, filter_model, ["sales"])
     assert summary["summaries"][0]["numeric"]["max"] == 12.0
     assert summary["summaries"][0]["visualization"]["kind"] == "numeric"
     assert summary["summaries"][0]["visualization"]["bins"]
@@ -56,6 +56,6 @@ def test_polars_column_values_and_parquet(tmp_path):
 
     manager = SessionManager()
     opened = manager.open_session({"kind": "file", "label": "sample.parquet", "path": str(path)}, backend="polars")
-    values = manager.get_column_values(opened["metadata"]["sessionId"], "group", {"filters": [], "sort": []})
+    values = manager.get_column_values(opened["metadata"]["sessionId"], 0, "group", {"filters": [], "sort": []})
 
     assert values["values"] == [{"value": "a", "count": 2}, {"value": "b", "count": 1}]

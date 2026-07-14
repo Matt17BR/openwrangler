@@ -2,6 +2,7 @@
 node_modules/**
 src/**
 python/tests/**
+protocol/**
 fixtures/**
 tmp/**
 .github/**

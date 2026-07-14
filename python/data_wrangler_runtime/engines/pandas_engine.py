@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -57,12 +58,14 @@ class PandasEngine(DataFrameEngine):
         df = self.normalize(frame)
         return [
             {
+                "id": f"c:{position}",
                 "name": str(column),
+                "position": position,
                 "rawType": str(dtype),
                 "type": infer_semantic_type(str(dtype)),
-                "nullable": bool(df[column].isna().any()),
+                "nullable": bool(df.iloc[:, position].isna().any()),
             }
-            for column, dtype in df.dtypes.items()
+            for position, (column, dtype) in enumerate(df.dtypes.items())
         ]
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
@@ -105,8 +108,9 @@ class PandasEngine(DataFrameEngine):
         for row_number, (_, row) in enumerate(sliced.iterrows(), start=offset):
             rows.append(
                 {
+                    "id": f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [normalize_cell(row[column]) for column in columns],
+                    "values": [normalize_cell(row.iloc[position]) for position, _ in enumerate(columns)],
                 }
             )
         return {
@@ -212,6 +216,7 @@ class PandasEngine(DataFrameEngine):
 
 def _maybe_float(value: Any) -> float | None:
     try:
-        return None if value is None else float(value)
+        result = None if value is None else float(value)
+        return result if result is None or isfinite(result) else None
     except (TypeError, ValueError):
         return None

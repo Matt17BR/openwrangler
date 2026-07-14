@@ -4,15 +4,26 @@ import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
 const metadata: SessionMetadata = {
+  protocolVersion: 2,
   sessionId: "session",
+  revision: 0,
   backend: "polars",
+  mode: "editing",
   source: { kind: "file", label: "sample.csv", path: "sample.csv" },
+  capabilities: {
+    editable: true,
+    lazy: true,
+    cancel: true,
+    exportCsv: true,
+    exportParquet: true,
+    notebookInsert: false
+  },
   shape: { rows: 2, columns: 2 },
   filteredShape: { rows: 2, columns: 2 },
   filterModel: { filters: [], sort: [] },
   schema: [
-    { name: "city", rawType: "String", type: "string", nullable: false },
-    { name: "sales", rawType: "Float64", type: "float", nullable: true }
+    { id: "c:0", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
+    { id: "c:1", name: "sales", position: 1, rawType: "Float64", type: "float", nullable: true }
   ]
 };
 
@@ -22,17 +33,19 @@ const page: GridPage = {
   totalRows: 2,
   rows: [
     {
+      id: "r:0",
       rowNumber: 0,
       values: [
-        { raw: "Milan", display: "Milan", isNull: false, isNaN: false },
-        { raw: 10.5, display: "10.5", isNull: false, isNaN: false }
+        { kind: "string", raw: "Milan", display: "Milan", isNull: false, isNaN: false },
+        { kind: "number", raw: 10.5, display: "10.5", isNull: false, isNaN: false }
       ]
     },
     {
+      id: "r:1",
       rowNumber: 1,
       values: [
-        { raw: "Paris", display: "Paris", isNull: false, isNaN: false },
-        { raw: null, display: "", isNull: true, isNaN: false }
+        { kind: "string", raw: "Paris", display: "Paris", isNull: false, isNaN: false },
+        { kind: "null", raw: null, display: "", isNull: true, isNaN: false }
       ]
     }
   ]

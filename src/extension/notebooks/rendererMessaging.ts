@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { SessionOpenedResponse } from "../../shared/protocol";
-import { PythonBridge } from "../pythonBridge";
+import type { DataExplorerBridge } from "../dataBridge";
+import { SessionCoordinator } from "../sessionCoordinator";
 import { DataExplorerPanel } from "../webviewPanel";
 import { KernelBridge } from "./kernelBridge";
 
@@ -13,7 +14,11 @@ interface OpenInDataExplorerMessage {
   };
 }
 
-export function registerNotebookRendererMessaging(context: vscode.ExtensionContext, bridge: PythonBridge): void {
+export function registerNotebookRendererMessaging(
+  context: vscode.ExtensionContext,
+  bridge: DataExplorerBridge,
+  coordinator: SessionCoordinator
+): void {
   const messaging = vscode.notebooks.createRendererMessaging("dataExplorer.renderer");
   context.subscriptions.push(
     messaging.onDidReceiveMessage(({ message }) => {
@@ -24,9 +29,9 @@ export function registerNotebookRendererMessaging(context: vscode.ExtensionConte
       const notebook = vscode.window.activeNotebookEditor?.notebook.uri;
       const variableName = message.payload.metadata.source.variableName;
       if (notebook && variableName && isPythonIdentifier(variableName)) {
-        const panel = DataExplorerPanel.create(
+        DataExplorerPanel.create(
           context,
-          new KernelBridge(context, notebook),
+          coordinator.createBridge(new KernelBridge(context, notebook)),
           {
             kind: "notebookVariable",
             label: variableName,
@@ -34,7 +39,6 @@ export function registerNotebookRendererMessaging(context: vscode.ExtensionConte
           },
           message.payload.metadata.backend
         );
-        void panel.open();
         return;
       }
 
