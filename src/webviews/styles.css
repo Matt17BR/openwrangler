@@ -378,8 +378,8 @@ tbody tr:hover td {
 }
 
 th small {
+  color: var(--vscode-descriptionForeground);
   display: block;
-  opacity: 0.65;
   font-weight: normal;
 }
 
@@ -387,7 +387,7 @@ th small {
   align-items: center;
   display: grid;
   gap: 6px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   position: relative;
 }
 
@@ -404,26 +404,33 @@ th small {
 }
 
 .columnMenu {
+  min-height: 30px;
+  min-width: 30px;
   position: relative;
 }
 
 .columnMenu summary {
+  align-items: center;
   color: var(--vscode-descriptionForeground);
   cursor: pointer;
+  display: flex;
+  justify-content: center;
   list-style: none;
+  min-height: 30px;
+  min-width: 30px;
 }
 
 .columnResizeHandle {
+  align-items: center;
   background: transparent;
-  border-radius: 0;
-  bottom: -52px;
+  color: var(--vscode-descriptionForeground);
   cursor: col-resize;
+  display: flex;
+  justify-content: center;
+  margin: -7px -8px -7px -4px;
+  min-height: 30px;
   padding: 0;
-  position: absolute;
-  right: -9px;
-  top: -4px;
-  width: 7px;
-  z-index: 4;
+  width: 30px;
 }
 
 .columnResizeHandle:hover,

@@ -34,6 +34,7 @@ Run the narrowest relevant tests while iterating, then run all of these before a
 npm run check
 npm test
 npm run test:extension-host
+npm run test:webview-acceptance
 npm run test:packaged-editors -- data-explorer.vsix # after packaging
 npm run clean
 npm run build

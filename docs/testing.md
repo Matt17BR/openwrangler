@@ -8,6 +8,7 @@
 - `npm run test:python` covers Pandas/Polars engines, transformations, code generation, exports, and runtime dispatch.
 - `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and validates activation, commands, native contributions, and fixture opening.
 - `npm run test:packaged-editors -- data-explorer.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs the same session-backed acceptance from a separate harness extension so checkout code cannot shadow the package.
+- `npm run test:webview-acceptance` renders the production bundles in Chrome, compares every screenshot with its checked-in baseline, and runs WCAG 2.0/2.1/2.2 axe rules through Playwright.
 - `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content from a package.
@@ -26,9 +27,9 @@ By-example tests must exercise every candidate family, deterministic tie orderin
 
 ## Visual and accessibility coverage
 
-`npm run build && npm run capture:screenshots` generates the browser harness from real Polars protocol responses and the production webview bundle. Checked-in baselines currently cover light, dark, and high contrast at 800, 1280, and 1920 pixels, plus 80%, 100%, 150%, and 200% zoom. The wide fixture contains 1,000 rows by 40 columns and supplies five independent 200-row blocks.
+`npm run build && npm run capture:screenshots` updates the browser baselines from real Polars protocol responses and the production webview bundle. `npm run test:webview-acceptance` writes separate actual images under `tmp/`, fails above a 1% anti-aliasing-tolerant pixel delta, and never overwrites the baselines. Coverage includes light, dark, high contrast dark/light, 800/1280/1920px widths, and 80/100/150/200% zoom. The wide fixture contains 1,000 rows by 40 columns and supplies five independent 200-row blocks.
 
-The current browser acceptance records keyboard cell navigation, far-column focus restoration, bounded row/column DOM counts, responsive drawer layout, advanced predicate interaction, the complete operation catalog, draft/diff presentation, by-example input/warning states, and editable CodeMirror code preview. Checked-in editing baselines include `operation-dialog-dark-1280.png`, `draft-preview-dark-1280.png`, `by-example-dialog-dark-1280.png`, `by-example-preview-dark-1280.png`, and `code-preview-dark-1280.png`. High-contrast light, automated axe scanning and image diffs, long/Unicode content, and explicit empty/loading/error/recovery states remain release gates; do not mark those matrix rows Done until the harness implements them.
+The browser acceptance records keyboard cell navigation and resizing, far-column focus restoration, bounded row/column DOM counts, responsive drawer layout, advanced predicate interaction, the complete operation catalog, draft/diff presentation, by-example input/warning states, and editable CodeMirror code preview. Dedicated baselines cover long/Unicode values plus empty, loading, malformed-file error, and runtime-recovery states. Playwright injects axe into all 23 generated editor, notebook, and Code Preview harnesses and fails on every non-minor WCAG violation.
 
 ## VS Code and Cursor release checklist
 

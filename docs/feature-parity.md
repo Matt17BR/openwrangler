@@ -138,6 +138,14 @@ Packaged editor slice, 2026-07-15:
 
 This advances cross-editor/package evidence but keeps UI rows **Partial** until the full operation/export/reload/theme interaction checklist and screenshots are recorded from both packaged editors.
 
+Visual and accessibility hardening slice, 2026-07-15:
+
+- `npm run test:webview-acceptance` renders the production editor, notebook renderer, and Code Preview bundles into 23 Playwright-readable harnesses. It compares actual screenshots against checked-in baselines with an anti-aliasing-tolerant 1% pixel-delta gate and never mutates baselines during verification.
+- Automated axe runs cover WCAG 2.0, 2.1, and 2.2 A/AA rules across dark, light, high-contrast dark/light, 800/1280/1920px widths, 80/100/150/200% zoom, operation/draft/by-example states, and explicit empty/loading/error/recovery/Unicode fixtures. Every non-minor violation is a CI failure.
+- Scan findings produced product fixes: column menus and resizers now remain 24px targets at 80% zoom, resizers support Arrow/Home/End keys, generated-code overflow is keyboard focusable, empty grids announce `No rows`, and status/error regions use live semantics. Light-theme type labels now meet contrast requirements.
+
+This advances theme and accessibility evidence but keeps the row **Partial** until the same core theme/zoom checklist is recorded in packaged VS Code and Cursor.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.

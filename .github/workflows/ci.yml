@@ -26,6 +26,7 @@ jobs:
       - run: python -m pip install -e "python[dev]"
       - run: npm run check
       - run: npm test
+      - run: npm run test:webview-acceptance
       - run: npm audit --omit=dev
       - run: python -m pip_audit
       - run: npm run package -- --out data-explorer.vsix

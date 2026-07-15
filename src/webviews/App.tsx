@@ -248,7 +248,7 @@ export function App() {
     return (
       <main className="app app-error">
         <h1>Data Explorer</h1>
-        <p>{error}</p>
+        <p role="alert">{error}</p>
       </main>
     );
   }
@@ -345,8 +345,16 @@ export function App() {
 
       <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
         <section className="gridShell">
-          {error && <div className="errorBanner">{error}</div>}
-          {loading && <div className="loading">Loading...</div>}
+          {error && (
+            <div className="errorBanner" role="alert">
+              {error}
+            </div>
+          )}
+          {loading && (
+            <div className="loading" role="status" aria-live="polite">
+              Loading...
+            </div>
+          )}
           {metadata && page ? (
             <DataGrid
               metadata={metadata}
@@ -434,7 +442,7 @@ export function App() {
             <summary>
               Generated {metadata.backend === "pandas" ? "Pandas" : "Polars"} code · edit in Code Preview panel
             </summary>
-            <pre>
+            <pre tabIndex={0} aria-label="Generated Python code preview">
               <code>{generatedCode}</code>
             </pre>
           </details>
