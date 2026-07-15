@@ -61,7 +61,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Successful code-copy and script-export notifications no longer hold command completion open while awaiting toast dismissal.
 - Notebook kernels receive the packaged pure-Python runtime through the stable execution API and no longer require access to the local extension filesystem.
 - Saved notebook snapshots no longer treat null numeric cells as zero, and their multi-column sorts honor explicit null placement independently of direction.
-- Visual and accessibility acceptance use the lockfile-pinned Chromium revision instead of a moving system browser.
+- Visual and accessibility acceptance use the lockfile-pinned Chromium revision and deterministic harness font tokens instead of a moving system-browser/font fallback.
 
 ### Release status
 

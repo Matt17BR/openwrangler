@@ -428,11 +428,11 @@ function writeNotebookHarness(fileName, payload, outputName) {
       --vscode-panel-border: #3c3c3c;
       color: #d4d4d4;
       background: #1e1e1e;
-      font-family: Inter, "Segoe UI", sans-serif;
+      font-family: "DejaVu Sans", sans-serif;
     }
     body { margin: 0; padding: 32px; background: #1e1e1e; }
     .notebook-shell { border: 1px solid #3c3c3c; border-radius: 10px; overflow: hidden; background: #202020; }
-    .cell { padding: 18px 22px; border-bottom: 1px solid #3c3c3c; font-family: "JetBrains Mono", Consolas, monospace; white-space: pre; color: #d4d4d4; }
+    .cell { padding: 18px 22px; border-bottom: 1px solid #3c3c3c; font-family: "DejaVu Sans Mono", monospace; white-space: pre; color: #d4d4d4; }
     .data-explorer-notebook header { padding: 14px 18px; background: #252526; font-weight: 700; }
     .data-explorer-notebook table { background: #202020; }
     .data-explorer-notebook th { background: #2d2d30; }
@@ -638,5 +638,7 @@ function themeTokens(theme) {
     --vscode-focusBorder: ${palette.focus};
     --vscode-notifications-background: ${palette.header};
     --vscode-notifications-border: ${palette.border};
+    --vscode-font-family: "DejaVu Sans", sans-serif;
+    --vscode-editor-font-family: "DejaVu Sans Mono", monospace;
   }`;
 }
