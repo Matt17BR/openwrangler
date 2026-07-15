@@ -79,6 +79,11 @@ textarea {
   min-width: 0;
 }
 
+select option:checked {
+  color: var(--vscode-list-activeSelectionForeground, #ffffff);
+  background: var(--vscode-list-activeSelectionBackground, #04395e);
+}
+
 textarea {
   resize: vertical;
 }

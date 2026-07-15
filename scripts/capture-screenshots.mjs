@@ -576,7 +576,9 @@ function themeTokens(theme) {
       focus: "#007fd4",
       scrollbar: "#79797966",
       scrollbarHover: "#646464b3",
-      scrollbarActive: "#bfbfbf66"
+      scrollbarActive: "#bfbfbf66",
+      selection: "#04395e",
+      selectionForeground: "#ffffff"
     },
     light: {
       foreground: "#333333",
@@ -594,7 +596,9 @@ function themeTokens(theme) {
       focus: "#0090f1",
       scrollbar: "#64646466",
       scrollbarHover: "#646464b3",
-      scrollbarActive: "#00000099"
+      scrollbarActive: "#00000099",
+      selection: "#0060c0",
+      selectionForeground: "#ffffff"
     },
     highContrast: {
       foreground: "#ffffff",
@@ -612,7 +616,9 @@ function themeTokens(theme) {
       focus: "#ffff00",
       scrollbar: "#ffffff99",
       scrollbarHover: "#ffffffcc",
-      scrollbarActive: "#ffffff"
+      scrollbarActive: "#ffffff",
+      selection: "#000000",
+      selectionForeground: "#ffffff"
     },
     highContrastLight: {
       foreground: "#000000",
@@ -630,7 +636,9 @@ function themeTokens(theme) {
       focus: "#0f4a85",
       scrollbar: "#00000099",
       scrollbarHover: "#000000cc",
-      scrollbarActive: "#000000"
+      scrollbarActive: "#000000",
+      selection: "#ffffff",
+      selectionForeground: "#000000"
     }
   };
   const palette = palettes[theme] ?? palettes.dark;
@@ -651,6 +659,8 @@ function themeTokens(theme) {
     --vscode-scrollbarSlider-background: ${palette.scrollbar};
     --vscode-scrollbarSlider-hoverBackground: ${palette.scrollbarHover};
     --vscode-scrollbarSlider-activeBackground: ${palette.scrollbarActive};
+    --vscode-list-activeSelectionBackground: ${palette.selection};
+    --vscode-list-activeSelectionForeground: ${palette.selectionForeground};
     --vscode-notifications-background: ${palette.header};
     --vscode-notifications-border: ${palette.border};
     --vscode-font-family: "Liberation Sans", Arial, sans-serif;
