@@ -35,11 +35,23 @@ if (!candidates.some((editor) => editor.key === "vscode") && (!requested?.length
 }
 if (!candidates.length) throw new Error("No supported VS Code or Cursor desktop executable was found.");
 
+const hostedPython = process.env.pythonLocation
+  ? process.platform === "win32"
+    ? resolve(process.env.pythonLocation, "python.exe")
+    : resolve(process.env.pythonLocation, "bin", "python")
+  : undefined;
 const localPython =
   process.platform === "win32"
     ? resolve(root, ".venv", "Scripts", "python.exe")
     : resolve(root, ".venv", "bin", "python");
-process.env.DATA_EXPLORER_TEST_PYTHON ??= existsSync(localPython) ? localPython : "python";
+process.env.DATA_EXPLORER_TEST_PYTHON ??=
+  hostedPython && existsSync(hostedPython)
+    ? hostedPython
+    : existsSync(localPython)
+      ? localPython
+      : process.platform === "win32"
+        ? "python"
+        : "python3";
 
 for (const editor of candidates) {
   const profile = mkdtempSync(join(tmpdir(), `data-explorer-packaged-${editor.key}-`));
