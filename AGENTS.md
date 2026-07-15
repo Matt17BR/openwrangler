@@ -30,7 +30,7 @@ This repository builds the open-source Data Explorer extension and its bundled P
 12. Standalone runtime startup is single-flight. Restart must invalidate any pending start, and closing the final session must stop the Python process; packaged seed/verify acceptance guards these lifecycle rules.
 13. Cleaning-plan shortcuts must be state-scoped, mirrored inside the webview, documented in the generated reference, and tested without intercepting editable-field undo.
 14. Saved notebook-output queries use the pure `src/webviews/snapshotModel.ts` model. Null/NaN predicates and per-sort null placement must match live runtime semantics and remain directly unit-tested.
-15. Visual baselines and axe acceptance use the lockfile-pinned Playwright Chromium plus deterministic DejaVu Sans/Mono harness tokens. Install Chromium with `npx playwright-core install chromium`; do not silently fall back to a moving system browser or distribution font.
+15. Visual baselines and axe acceptance use the lockfile-pinned Playwright Chromium plus deterministic Liberation Sans/Mono harness tokens. Install Chromium with `npx playwright-core install chromium`; do not silently fall back to a moving system browser or distribution font. CI must retain actual/diff artifacts on failure.
 
 ## Required checks
 

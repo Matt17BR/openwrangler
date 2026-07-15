@@ -28,6 +28,14 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run test:webview-acceptance
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: webview-visual-evidence
+          path: |
+            tmp/screenshots-actual/
+            tmp/screenshots-diff/
+          if-no-files-found: ignore
       - run: npm run license:check
       - run: npm audit --omit=dev
       - run: python -m pip_audit
