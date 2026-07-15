@@ -18,6 +18,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Advanced AND/OR viewing predicates with null/NaN operators and cross-engine tests.
 - Light, dark, high-contrast, responsive-width, zoom, and wide-data browser acceptance baselines.
 - Isolated VS Code extension-host acceptance and minimum/current editor CI coverage.
+- A validated 26-operation transformation registry with native Pandas and Polars execution and standalone code generation.
 
 ### Changed
 
@@ -29,7 +30,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 
 ### Known gaps
 
-- Editing operations, notebook MIME v2, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Draft editing UI, notebook MIME v2, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 
