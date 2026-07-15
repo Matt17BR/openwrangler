@@ -6,6 +6,7 @@
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
 - `npm run test:ts` covers shared models, extension helpers, reducers, and React behavior.
 - `npm run test:python` covers Pandas/Polars engines, transformations, code generation, exports, and runtime dispatch.
+- `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and validates activation, commands, native contributions, and fixture opening.
 - `npm run docs:check` enforces required documentation and release/version alignment.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content from a package.
 
@@ -13,7 +14,9 @@ Protocol fixtures and engine-operation cases must run through both TypeScript an
 
 ## Visual and accessibility coverage
 
-The browser harness captures the built webviews in light, dark, high contrast, and high-contrast light themes at 800, 1280, and 1920 pixels. It covers 80%, 100%, 150%, and 200% zoom; empty, loading, error, recovery, preview, and diff states; long and Unicode values; wide and tall datasets; and keyboard-only interaction. Playwright runs axe checks and screenshot comparisons.
+`npm run build && npm run capture:screenshots` generates the browser harness from real Polars protocol responses and the production webview bundle. Checked-in baselines currently cover light, dark, and high contrast at 800, 1280, and 1920 pixels, plus 80%, 100%, 150%, and 200% zoom. The wide fixture contains 1,000 rows by 40 columns and supplies five independent 200-row blocks.
+
+The current browser acceptance records keyboard cell navigation, far-column focus restoration, bounded row/column DOM counts, responsive drawer layout, and advanced predicate interaction. High-contrast light, automated axe scanning and image diffs, long/Unicode content, and explicit empty/loading/error/recovery/preview/diff states remain release gates; do not mark those matrix rows Done until the harness implements them.
 
 ## VS Code and Cursor release checklist
 
@@ -29,6 +32,8 @@ Use isolated `--user-data-dir` and `--extensions-dir` directories. Never install
 8. Repeat core flows in light, dark, and high-contrast themes and at 200% zoom.
 
 Record the editor versions and evidence link in `docs/feature-parity.md` before a release.
+
+CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and current stable release under Xvfb. Local packaged-install checks use dedicated `--user-data-dir` and `--extensions-dir` paths for both VS Code and Cursor.
 
 ## Performance fixtures
 

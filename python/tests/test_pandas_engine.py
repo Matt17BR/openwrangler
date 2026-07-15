@@ -20,8 +20,11 @@ def test_pandas_file_session_matches_protocol():
     assert opened["metadata"]["backend"] == "pandas"
     assert opened["metadata"]["shape"] == {"rows": 4, "columns": 4}
     assert opened["metadata"]["schema"][0]["name"] == "city"
-    assert opened["metadata"]["stats"]["duplicateRows"] == 0
+    assert "stats" not in opened["metadata"]
     assert opened["summaries"][0]["visualization"]["kind"] == "categorical"
+
+    stats = manager.get_dataset_stats(opened["metadata"]["sessionId"], 0, {"filters": [], "sort": []})
+    assert stats["stats"]["duplicateRows"] == 0
 
     filter_model = {
         "filters": [
@@ -53,3 +56,22 @@ def test_pandas_excel_file_session(tmp_path):
     opened = manager.open_session({"kind": "file", "label": "sample.xlsx", "path": str(path)}, backend="pandas")
 
     assert opened["metadata"]["shape"] == {"rows": 2, "columns": 2}
+
+
+def test_pandas_csv_import_options(tmp_path):
+    path = tmp_path / "latin1.csv"
+    path.write_bytes("city;value\nM\xfcnchen;7\n".encode("latin-1"))
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "file",
+            "label": "latin1.csv",
+            "path": str(path),
+            "importOptions": {"delimiter": ";", "encoding": "latin-1", "hasHeader": True, "quoteChar": '"'},
+        },
+        backend="pandas",
+    )
+
+    assert opened["metadata"]["schema"][0]["name"] == "city"
+    assert opened["page"]["rows"][0]["values"][0]["display"] == "München"

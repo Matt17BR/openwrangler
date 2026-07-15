@@ -9,9 +9,9 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Import option, malformed-file, and editor tests |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                |
 | Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 and persisted-output tests           |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Planned | Visual, keyboard, and performance tests         |
-| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Exact-count and typed-chart fixtures            |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Partial | Cross-engine predicate matrix                   |
+| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD  |
+| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive exact stats green; typed edges TBD  |
+| Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
 | Multi-column viewing sorts                          |    Yes |    Yes | Partial | Null-order and stability tests                  |
 | Editing mode and operation catalog                  |    Yes |    Yes | Planned | Real-editor operation search tests              |
 | Draft preview and data diff                         |    Yes |    Yes | Planned | Row/column/cell diff fixtures                   |
@@ -29,8 +29,21 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Copy/script/notebook code export                    |    Yes |    Yes | Planned | Clipboard/file/notebook edit tests              |
 | CSV and Parquet data export                         |    Yes |    Yes | Planned | Atomic-write and source-protection tests        |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Planned | VS Code/Cursor visual checklist                 |
+| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
 | Runtime crash/reload/session replay                 |    Yes |    Yes | Partial | Contract tests green; editor injection TBD      |
+
+## Recorded acceptance evidence
+
+Viewing slice, 2026-07-15:
+
+- `npm test`: 9 TypeScript and 16 Python tests passed. The Polars file test asserts a lazy source and fails if `to_pandas()` is called.
+- `npm run test:extension-host` passed against local VS Code 1.128.0, activating the extension, verifying commands/views/settings, and opening `fixtures/sample.csv` through the real custom-editor contribution.
+- The allowlisted 44-entry VSIX installed successfully into isolated VS Code 1.128.0 and Cursor 3.11.19 profiles as `matt17br.data-explorer@0.2.0-alpha.1`.
+- The in-app browser exercised the built webview at 800px: drawer open/close, advanced OR selection, value-free null predicates, settled progressive requests, keyboard cell navigation, and column search/focus restoration.
+- The 1,000 by 40 wide harness retained 7 rendered data columns and 39 rendered rows while exposing the full 41-column/1,001-row accessible grid counts. It jumped to column 39 and fetched rows 201–400 without unbounding the DOM.
+- Approved browser baselines are checked into `docs/images/acceptance/` for light, dark, high contrast, 800/1280/1920px widths, and 80/100/150/200% zoom. `docs/images/wide-grid.png` records the wide-grid fixture.
+
+This evidence advances viewing rows to **Partial**, not **Done**. Full interactive Cursor acceptance, malformed/type-edge fixtures, automated accessibility scans, and performance gates are still mandatory.
 
 ## Explicitly deferred from 1.0
 

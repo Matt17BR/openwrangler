@@ -5,7 +5,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: [".venv/**", "dist/**", "media/**", "node_modules/**", "tmp/**", "python/**"]
+    ignores: [".venv/**", "dist/**", "dist-test/**", "media/**", "node_modules/**", "tmp/**", "python/**"]
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

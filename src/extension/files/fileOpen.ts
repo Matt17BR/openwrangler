@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
 import type { DataExplorerBridge } from "../dataBridge";
 import { DataExplorerPanel } from "../webviewPanel";
+import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "./importOptions";
 
 export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
   constructor(
@@ -18,7 +19,7 @@ export class DataExplorerCustomEditorProvider implements vscode.CustomReadonlyEd
   }
 
   async resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
-    const source = fileSource(document.uri);
+    const source = fileSource(document.uri, defaultImportOptions(document.uri));
     const defaultBackend = getDefaultBackend();
     new DataExplorerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
   }
@@ -45,17 +46,37 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: D
         await vscode.commands.executeCommand("dataExplorer.openPath");
         return;
       }
+      if (!isEnabledFileType(target)) {
+        await vscode.window.showWarningMessage(
+          `${path.extname(target.fsPath) || "This file type"} is disabled in Data Explorer settings.`
+        );
+        return;
+      }
 
-      DataExplorerPanel.create(context, bridge, fileSource(target), getDefaultBackend());
+      try {
+        DataExplorerPanel.create(
+          context,
+          bridge,
+          fileSource(target, await promptImportOptions(target)),
+          getDefaultBackend()
+        );
+      } catch (error) {
+        if (!(error instanceof ImportCancelledError)) throw error;
+      }
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("dataExplorer.openPath", async () => {
+      const enabledFileTypes = getEnabledFileTypes();
+      if (enabledFileTypes.length === 0) {
+        await vscode.window.showWarningMessage("Enable at least one Data Explorer file type in Settings.");
+        return;
+      }
       const files = await vscode.window.showOpenDialog({
         canSelectMany: false,
         filters: {
-          "Data files": ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"]
+          "Data files": enabledFileTypes
         }
       });
       const selected = files?.[0];
@@ -63,15 +84,26 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: D
         return;
       }
 
-      DataExplorerPanel.create(context, bridge, fileSource(selected), getDefaultBackend());
+      try {
+        DataExplorerPanel.create(
+          context,
+          bridge,
+          fileSource(selected, await promptImportOptions(selected)),
+          getDefaultBackend()
+        );
+      } catch (error) {
+        if (!(error instanceof ImportCancelledError)) throw error;
+      }
     })
   );
 };
 
-const fileSource = (uri: vscode.Uri): SessionSource => ({
+const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOptions"]): SessionSource => ({
   kind: "file",
   label: path.basename(uri.fsPath),
-  path: uri.fsPath
+  path: uri.fsPath,
+  uri: uri.toString(),
+  importOptions
 });
 
 const getDefaultBackend = (): DataBackend | undefined => {
@@ -80,3 +112,11 @@ const getDefaultBackend = (): DataBackend | undefined => {
     .get<DataBackend | "auto">("defaultBackend", "auto");
   return configured === "auto" ? undefined : configured;
 };
+
+const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"];
+
+const getEnabledFileTypes = (): string[] =>
+  vscode.workspace.getConfiguration("dataExplorer").get<string[]>("enabledFileTypes", allFileTypes);
+
+const isEnabledFileType = (uri: vscode.Uri): boolean =>
+  getEnabledFileTypes().includes(path.extname(uri.fsPath).slice(1).toLowerCase());

@@ -291,6 +291,7 @@
       "properties": {
         "column": { "type": "string" },
         "type": { "$ref": "#/definitions/ColumnType" },
+        "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
         "valueFilter": {
           "type": "object",
           "additionalProperties": false,
@@ -311,6 +312,7 @@
       "additionalProperties": false,
       "required": ["filters", "sort"],
       "properties": {
+        "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
         "filters": { "type": "array", "items": { "$ref": "#/definitions/ColumnFilter" } },
         "sort": {
           "type": "array",
@@ -414,6 +416,17 @@
         "columns": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "DatasetStatsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "filterModel"],
+      "properties": {
+        "kind": { "const": "getDatasetStats" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "filterModel": { "$ref": "#/definitions/FilterModel" }
+      }
+    },
     "ValuesRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -453,6 +466,7 @@
         { "$ref": "#/definitions/OpenSessionRequest" },
         { "$ref": "#/definitions/PageRequest" },
         { "$ref": "#/definitions/SummaryRequest" },
+        { "$ref": "#/definitions/DatasetStatsRequest" },
         { "$ref": "#/definitions/ValuesRequest" },
         { "$ref": "#/definitions/CloseSessionRequest" },
         { "$ref": "#/definitions/CancelRequest" }
@@ -499,6 +513,16 @@
         "kind": { "const": "summary" },
         "revision": { "type": "integer", "minimum": 0 },
         "summaries": { "type": "array", "items": { "$ref": "#/definitions/ColumnSummary" } }
+      }
+    },
+    "DatasetStatsResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "stats"],
+      "properties": {
+        "kind": { "const": "datasetStats" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "stats": { "$ref": "#/definitions/DatasetStats" }
       }
     },
     "ValuesResponse": {
@@ -550,6 +574,7 @@
         { "$ref": "#/definitions/SessionOpenedResponse" },
         { "$ref": "#/definitions/PageResponse" },
         { "$ref": "#/definitions/SummaryResponse" },
+        { "$ref": "#/definitions/DatasetStatsResponse" },
         { "$ref": "#/definitions/ValuesResponse" },
         { "$ref": "#/definitions/SessionClosedResponse" },
         { "$ref": "#/definitions/CancelledResponse" },

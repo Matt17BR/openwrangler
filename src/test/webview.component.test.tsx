@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -59,9 +60,12 @@ describe("DataGrid", () => {
         page={page}
         summaries={[]}
         pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
+        onRequestSummary={() => undefined}
       />
     );
 
@@ -69,5 +73,32 @@ describe("DataGrid", () => {
     expect(screen.getByText("sales")).toBeTruthy();
     expect(screen.getByText("Milan")).toBeTruthy();
     expect(screen.getByText("Paris")).toBeTruthy();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "3");
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
+  });
+
+  it("supports roving keyboard focus across typed cells", async () => {
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onRequestSummary={() => undefined}
+      />
+    );
+
+    const city = screen.getByText("Milan").closest("td");
+    const sales = screen.getByText("10.5").closest("td");
+    expect(city).toHaveAttribute("tabindex", "0");
+    city?.focus();
+    fireEvent.keyDown(city as HTMLTableCellElement, { key: "ArrowRight" });
+    await waitFor(() => expect(document.activeElement).toBe(sales));
+    expect(screen.queryByText("Profiling…")).toBeNull();
   });
 });

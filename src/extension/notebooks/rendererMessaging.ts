@@ -19,6 +19,9 @@ export function registerNotebookRendererMessaging(
   bridge: DataExplorerBridge,
   coordinator: SessionCoordinator
 ): void {
+  if (!vscode.workspace.getConfiguration("dataExplorer").get<boolean>("renderer.enabled", true)) {
+    return;
+  }
   const messaging = vscode.notebooks.createRendererMessaging("dataExplorer.renderer");
   context.subscriptions.push(
     messaging.onDidReceiveMessage(({ message }) => {

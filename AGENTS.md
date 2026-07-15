@@ -32,8 +32,10 @@ Run the narrowest relevant tests while iterating, then run all of these before a
 ```bash
 npm run check
 npm test
+npm run test:extension-host
 npm run clean
 npm run build
+npm run capture:screenshots # for visible changes
 npm run package -- --out data-explorer.vsix
 npm run verify:vsix -- data-explorer.vsix
 ```

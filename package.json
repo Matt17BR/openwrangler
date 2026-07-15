@@ -47,6 +47,7 @@
     "clean": "node scripts/clean.mjs",
     "build": "npm run build:extension && npm run build:webview",
     "build:extension": "tsc -p tsconfig.extension.json",
+    "build:test-extension": "tsc -p tsconfig.extension-test.json",
     "build:webview": "vite build",
     "typecheck": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "lint": "eslint .",
@@ -63,6 +64,7 @@
     "test": "npm run test:ts && npm run test:python",
     "test:ts": "vitest run",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
+    "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
     "test:coverage": "vitest run --coverage",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",
@@ -78,7 +80,14 @@
     "onCommand:dataExplorer.changeRuntime",
     "onCommand:dataExplorer.clearRuntime",
     "onCommand:dataExplorer.installRuntimeDependencies",
+    "onCommand:dataExplorer.openSettings",
+    "onCommand:dataExplorer.reportIssue",
     "onCustomEditor:dataExplorer.viewer",
+    "onView:dataExplorer.operations",
+    "onView:dataExplorer.summary",
+    "onView:dataExplorer.filters",
+    "onView:dataExplorer.cleaningSteps",
+    "onView:dataExplorer.codePreview",
     "onNotebook:jupyter-notebook"
   ],
   "contributes": {
@@ -114,6 +123,65 @@
       {
         "command": "dataExplorer.installRuntimeDependencies",
         "title": "Data Explorer: Install Runtime Dependencies"
+      },
+      {
+        "command": "dataExplorer.openSettings",
+        "title": "Data Explorer: Open Settings",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "dataExplorer.reportIssue",
+        "title": "Data Explorer: Report Issue",
+        "icon": "$(github)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dataExplorer",
+          "title": "Data Explorer",
+          "icon": "media/activity-icon.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "dataExplorerCode",
+          "title": "Data Explorer Code",
+          "icon": "media/activity-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "dataExplorer": [
+        {
+          "id": "dataExplorer.operations",
+          "name": "Operations"
+        },
+        {
+          "id": "dataExplorer.summary",
+          "name": "Summary"
+        },
+        {
+          "id": "dataExplorer.filters",
+          "name": "Filters / Sorts"
+        },
+        {
+          "id": "dataExplorer.cleaningSteps",
+          "name": "Cleaning Steps"
+        }
+      ],
+      "dataExplorerCode": [
+        {
+          "type": "webview",
+          "id": "dataExplorer.codePreview",
+          "name": "Code Preview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "dataExplorer.operations",
+        "contents": "Open a data file or notebook dataframe to start exploring.\n[Open a data file](command:dataExplorer.openPath)"
       }
     ],
     "jupyterVariableViewers": [
@@ -184,6 +252,18 @@
           "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
           "group": "navigation@50"
         }
+      ],
+      "view/title": [
+        {
+          "command": "dataExplorer.openSettings",
+          "when": "viewContainer == dataExplorer",
+          "group": "navigation@90"
+        },
+        {
+          "command": "dataExplorer.reportIssue",
+          "when": "viewContainer == dataExplorer",
+          "group": "navigation@91"
+        }
       ]
     },
     "configuration": {
@@ -199,12 +279,97 @@
           "default": "auto",
           "description": "Default backend for file-backed sessions. Auto prefers Polars and falls back to Pandas when required."
         },
+        "dataExplorer.fileStartMode": {
+          "type": "string",
+          "enum": [
+            "editing",
+            "viewing"
+          ],
+          "default": "editing",
+          "description": "Initial mode for file-backed sessions. Editing remains non-destructive until an explicit export."
+        },
+        "dataExplorer.notebookStartMode": {
+          "type": "string",
+          "enum": [
+            "viewing",
+            "editing"
+          ],
+          "default": "viewing",
+          "description": "Initial mode for notebook dataframe sessions."
+        },
+        "dataExplorer.enabledFileTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "csv",
+              "tsv",
+              "parquet",
+              "jsonl",
+              "xlsx",
+              "xls"
+            ]
+          },
+          "uniqueItems": true,
+          "default": [
+            "csv",
+            "tsv",
+            "parquet",
+            "jsonl",
+            "xlsx",
+            "xls"
+          ],
+          "description": "File types offered by Data Explorer file pickers. Explicit custom-editor selection remains available."
+        },
+        "dataExplorer.insightsOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show progressive per-column insights when a grid opens."
+        },
+        "dataExplorer.filterMode": {
+          "type": "string",
+          "enum": [
+            "basic",
+            "advanced"
+          ],
+          "default": "basic",
+          "description": "Default filter builder. Advanced mode exposes AND/OR condition composition."
+        },
+        "dataExplorer.defaultColumnWidth": {
+          "type": "number",
+          "default": 190,
+          "minimum": 80,
+          "maximum": 640,
+          "description": "Initial grid column width in CSS pixels."
+        },
+        "dataExplorer.fetchBlockSize": {
+          "type": "number",
+          "default": 200,
+          "minimum": 25,
+          "maximum": 2000,
+          "description": "Number of rows fetched for each virtual grid block."
+        },
         "dataExplorer.pageSize": {
           "type": "number",
           "default": 200,
           "minimum": 25,
           "maximum": 2000,
-          "description": "Number of rows to fetch per grid page."
+          "description": "Deprecated alias for fetchBlockSize."
+        },
+        "dataExplorer.panelRevealBehavior": {
+          "type": "string",
+          "enum": [
+            "onDraft",
+            "always",
+            "never"
+          ],
+          "default": "onDraft",
+          "description": "When to reveal the bottom-panel Code Preview."
+        },
+        "dataExplorer.renderer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Data Explorer notebook MIME renderer messaging. Saved v1 and v2 outputs remain readable."
         },
         "dataExplorer.pythonPath": {
           "type": "string",
@@ -236,6 +401,7 @@
     "@types/vscode": "^1.105.0",
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.7",
+    "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.9.1",
     "eslint": "^9.32.0",
     "eslint-plugin-react-hooks": "^7.0.0",

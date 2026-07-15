@@ -24,8 +24,13 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
 
     assert opened["metadata"]["backend"] == "polars"
     assert opened["metadata"]["shape"] == {"rows": 4, "columns": 4}
-    assert opened["metadata"]["stats"]["missingValuesByColumn"][0] == {"column": "city", "count": 0}
+    assert "stats" not in opened["metadata"]
     assert opened["page"]["rows"][0]["values"][0]["display"] == "Milan"
+
+    session = manager.sessions[opened["metadata"]["sessionId"]]
+    assert isinstance(session.original, pl.LazyFrame)
+    stats = manager.get_dataset_stats(opened["metadata"]["sessionId"], 0, {"filters": [], "sort": []})
+    assert stats["stats"]["missingValuesByColumn"][0] == {"column": "city", "count": 0}
 
     filter_model = {
         "filters": [

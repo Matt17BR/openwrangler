@@ -15,7 +15,8 @@ import { DataGrid } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
 import { vscode } from "./vscodeApi";
 
-const pageSize = 200;
+const webviewConfig = readWebviewConfig();
+const pageSize = webviewConfig.fetchBlockSize;
 
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
@@ -28,6 +29,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [goToColumn, setGoToColumn] = useState("");
   const [filterColumn, setFilterColumn] = useState("");
+  const [sidePanelOpen, setSidePanelOpen] = useState(false);
 
   useEffect(() => {
     const listener = (event: MessageEvent<DataExplorerResponse>) => {
@@ -44,6 +46,15 @@ export function App() {
         setPage(response.page);
         setSummaries(response.summaries);
         setSnapshotRows(response.metadata.source.kind === "notebookOutput" ? response.page.rows : undefined);
+        if (response.metadata.source.kind !== "notebookOutput") {
+          vscode.postMessage({
+            kind: "runtimeRequest",
+            request: {
+              kind: "getDatasetStats",
+              filterModel: response.metadata.filterModel
+            }
+          });
+        }
       }
       if (response.kind === "page") {
         setMetadata(response.metadata);
@@ -52,10 +63,19 @@ export function App() {
         setSnapshotRows(undefined);
       }
       if (response.kind === "summary") {
-        setSummaries(response.summaries);
+        setSummaries((current) => {
+          const merged = new Map(current.map((summary) => [summary.column, summary]));
+          for (const summary of response.summaries) merged.set(summary.column, summary);
+          return [...merged.values()];
+        });
       }
       if (response.kind === "columnValues") {
         setColumnValues((current) => ({ ...current, [response.column]: response }));
+      }
+      if (response.kind === "datasetStats") {
+        setMetadata((current) =>
+          current && current.revision === response.revision ? { ...current, stats: response.stats } : current
+        );
       }
     };
     window.addEventListener("message", listener);
@@ -82,6 +102,13 @@ export function App() {
         kind: "getPage",
         offset,
         limit: pageSize,
+        filterModel: model
+      }
+    });
+    vscode.postMessage({
+      kind: "runtimeRequest",
+      request: {
+        kind: "getDatasetStats",
         filterModel: model
       }
     });
@@ -123,6 +150,18 @@ export function App() {
     });
   };
 
+  const requestSummaries = (columns: string[]) => {
+    if (snapshotRows) return;
+    vscode.postMessage({
+      kind: "runtimeRequest",
+      request: {
+        kind: "getSummary",
+        filterModel,
+        columns
+      }
+    });
+  };
+
   if (error && !metadata) {
     return (
       <main className="app app-error">
@@ -145,40 +184,36 @@ export function App() {
         </div>
         {metadata && (
           <div className="toolbarActions">
-            <button type="button" className="toolbarButton">
-              Export as file
+            <button
+              type="button"
+              className="toolbarButton"
+              aria-expanded={sidePanelOpen}
+              onClick={() => setSidePanelOpen((current) => !current)}
+            >
+              Insights & filters
             </button>
             <label className="goToColumn">
-              <span>Go to column</span>
-              <select value={goToColumn} onChange={(event) => setGoToColumn(event.target.value)}>
-                <option value="">Select column</option>
+              <span>Column</span>
+              <input
+                list="data-explorer-columns"
+                value={goToColumn}
+                placeholder="Search columns"
+                onChange={(event) => setGoToColumn(event.target.value)}
+              />
+              <datalist id="data-explorer-columns">
                 {metadata.schema.map((column) => (
-                  <option key={column.name} value={column.name}>
-                    {column.name}
-                  </option>
+                  <option key={column.id} value={column.name} />
                 ))}
-              </select>
+              </datalist>
             </label>
-            <span className="modeBadge">Viewing</span>
+            <span className="modeBadge">{metadata.mode}</span>
             <span className="backendBadge">{metadata.backend}</span>
             {snapshotMode && <span className="modeBadge">Snapshot</span>}
           </div>
         )}
       </header>
 
-      <section className="layout">
-        <aside className="sidebar">
-          <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
-          <FilterPanel
-            key={filterColumn}
-            metadata={metadata}
-            model={filterModel}
-            values={columnValues}
-            activeColumn={filterColumn}
-            onApply={applyFilters}
-            onRequestValues={requestValues}
-          />
-        </aside>
+      <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
         <section className="gridShell">
           {error && <div className="errorBanner">{error}</div>}
           {loading && <div className="loading">Loading...</div>}
@@ -189,6 +224,8 @@ export function App() {
               summaries={summaries}
               onPage={requestPage}
               pageSize={pageSize}
+              defaultColumnWidth={webviewConfig.defaultColumnWidth}
+              insightsOnOpen={webviewConfig.insightsOnOpen}
               goToColumn={goToColumn}
               onSortColumn={(column, direction) =>
                 applyFilters({
@@ -201,13 +238,39 @@ export function App() {
               }
               onOpenFilter={(column) => {
                 setFilterColumn(column);
+                setSidePanelOpen(true);
                 requestValues(column);
               }}
+              onRequestSummary={requestSummaries}
             />
           ) : (
             <div className="emptyState">Opening session...</div>
           )}
         </section>
+        {sidePanelOpen && (
+          <aside className="sidebar" aria-label="Insights and filters">
+            <div className="drawerHeader">
+              <strong>Insights & filters</strong>
+              <button
+                type="button"
+                className="iconButton codicon codicon-close"
+                aria-label="Close panel"
+                onClick={() => setSidePanelOpen(false)}
+              />
+            </div>
+            <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
+            <FilterPanel
+              key={filterColumn}
+              metadata={metadata}
+              model={filterModel}
+              values={columnValues}
+              activeColumn={filterColumn}
+              defaultAdvanced={webviewConfig.filterMode === "advanced"}
+              onApply={applyFilters}
+              onRequestValues={requestValues}
+            />
+          </aside>
+        )}
       </section>
     </main>
   );
@@ -236,8 +299,27 @@ export function App() {
   }
 }
 
+function readWebviewConfig(): {
+  fetchBlockSize: number;
+  defaultColumnWidth: number;
+  insightsOnOpen: boolean;
+  filterMode: "basic" | "advanced";
+} {
+  const fetchBlockSize = Number(document.body.dataset.fetchBlockSize ?? 200);
+  const defaultColumnWidth = Number(document.body.dataset.defaultColumnWidth ?? 190);
+  return {
+    fetchBlockSize: Number.isFinite(fetchBlockSize) ? Math.max(25, Math.min(2000, fetchBlockSize)) : 200,
+    defaultColumnWidth: Number.isFinite(defaultColumnWidth) ? Math.max(80, Math.min(640, defaultColumnWidth)) : 190,
+    insightsOnOpen: document.body.dataset.insightsOnOpen !== "false",
+    filterMode: document.body.dataset.filterMode === "advanced" ? "advanced" : "basic"
+  };
+}
+
 function applySnapshotFilters(metadata: SessionMetadata, rows: DataRow[], model: FilterModel): DataRow[] {
-  const filtered = rows.filter((row) => model.filters.every((filter) => snapshotFilterMatches(metadata, row, filter)));
+  const filtered = rows.filter((row) => {
+    const matches = model.filters.map((filter) => snapshotFilterMatches(metadata, row, filter));
+    return (model.logic ?? "and") === "or" ? matches.length === 0 || matches.some(Boolean) : matches.every(Boolean);
+  });
   const [firstSort, ...remainingSorts] = model.sort;
   if (!firstSort) {
     return filtered;
@@ -262,18 +344,20 @@ function snapshotFilterMatches(metadata: SessionMetadata, row: DataRow, filter: 
   }
   const cell = row.values[index];
   const valueText = cell.display.toLowerCase();
+  const conditions: boolean[] = [];
   const valueFilter = filter.valueFilter;
-  if (valueFilter) {
+  if (valueFilter && (valueFilter.selectedValues.length > 0 || valueFilter.includeNulls || valueFilter.includeNaN)) {
     const selected = new Set(valueFilter.selectedValues.map(String));
-    const selectedMatch = selected.size === 0 || selected.has(cell.display);
+    const selectedMatch = selected.has(cell.display);
     const nullMatch = valueFilter.includeNulls && cell.isNull;
     const nanMatch = valueFilter.includeNaN && cell.isNaN;
-    if (!selectedMatch && !nullMatch && !nanMatch) {
-      return false;
-    }
+    conditions.push(selectedMatch || nullMatch || nanMatch);
   }
 
-  return filter.predicates.every((predicate) => predicateMatches(cell, valueText, predicate));
+  conditions.push(...filter.predicates.map((predicate) => predicateMatches(cell, valueText, predicate)));
+  return (filter.logic ?? "and") === "or"
+    ? conditions.length === 0 || conditions.some(Boolean)
+    : conditions.every(Boolean);
 }
 
 function predicateMatches(cell: CellValue, valueText: string, predicate: PredicateFilter): boolean {
@@ -302,6 +386,14 @@ function predicateMatches(cell: CellValue, valueText: string, predicate: Predica
       return raw <= predicateNumber;
     case "between":
       return raw >= predicateNumber && raw <= secondNumber;
+    case "isNull":
+      return cell.isNull;
+    case "isNotNull":
+      return !cell.isNull;
+    case "isNaN":
+      return cell.isNaN;
+    case "isNotNaN":
+      return !cell.isNaN;
     default:
       return true;
   }

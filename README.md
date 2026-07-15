@@ -1,6 +1,6 @@
 # Data Explorer
 
-Data Explorer is a visualization-first extension for VS Code-compatible editors, including forks such as Cursor, for exploring dataframes and local data files. It focuses on fast viewing, paging, Data Wrangler-style quick insights, summaries, and Excel-like filters instead of transformation pipelines.
+Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease has a fast Polars/Pandas viewing foundation; the 1.0 plan adds non-destructive cleaning, generated engine-native code, history, diffs, notebook insertion, and exports.
 
 It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
 
@@ -12,15 +12,18 @@ These screenshots are generated from the real built webview/notebook renderer us
 
 ![Excel-like filter panel](docs/images/filter-panel.png)
 
+![Virtualized wide grid](docs/images/wide-grid.png)
+
 ![Notebook preview](docs/images/notebook-preview.png)
 
 ## Features
 
 - Native Polars and Pandas runtime backends, including live notebook sessions backed by the active Jupyter kernel.
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
-- Paged dataframe grid with sticky headers, row numbers, type icons, and per-column Quick Insights.
+- Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, and progressive Quick Insights.
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
-- Multi-column sorting and column filters from the webview or column header menus.
+- Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
+- Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
 - Lightweight notebook output renderer for `data_wrangler_runtime.notebook.show(...)`.
 
@@ -31,7 +34,9 @@ These screenshots are generated from the real built webview/notebook renderer us
 1. Install the extension in Cursor or VS Code.
 2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
 3. Choose **Data Explorer: Open Current File**.
-4. Use the left panel to select columns, search values, add predicates, and sort.
+4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
+
+CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `dataExplorer.*` settings.
 
 File-backed sessions use `auto` by default: Data Explorer prefers Polars and falls back to Pandas when the selected environment or format requires it. You can pin either engine with `dataExplorer.defaultBackend`.
 
@@ -63,7 +68,7 @@ This emits `application/vnd.data-explorer.viewer.v1+json`, which the bundled not
 
 Polars dataframes stay Polars in the runtime. The Polars backend uses native operations for:
 
-- file reads with `polars.read_csv`, `read_parquet`, `read_ndjson`, and `read_excel`
+- lazy file scans with `polars.scan_csv`, `scan_parquet`, and `scan_ndjson`; Excel uses `read_excel`
 - paging with `slice`
 - filters with Polars expressions
 - sorting with `DataFrame.sort`
@@ -79,7 +84,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
 npm run build
 npm run package
-cursor --install-extension data-explorer-0.1.0.vsix --force
+cursor --install-extension data-explorer-0.2.0-alpha.1.vsix --force
 ```
 
 Reload the editor after installing the VSIX. Then:
@@ -117,11 +122,12 @@ npm run package
 
 ## Current Scope
 
-Data Explorer currently prioritizes visualization and exploration:
+Data Explorer currently prioritizes a release-grade visualization and exploration base:
 
 - grid viewing
 - file-backed sessions
 - live notebook variable and notebook output entry points
 - filters, sorting, schema, summaries, and Quick Insights
+- native session-aware VS Code views and an original Activity Bar/gallery identity
 
 It intentionally does not yet implement Data Wrangler-style cleaning step history, transform code generation, or by-example/FlashFill operations.

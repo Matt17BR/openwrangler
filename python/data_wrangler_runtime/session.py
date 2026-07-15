@@ -19,6 +19,9 @@ class Session:
     original: Any
     filtered: Any
     filter_model: dict[str, Any]
+    stats: dict[str, Any] | None
+    source_shape: dict[str, int]
+    source_schema: list[dict[str, Any]]
     revision: int
     mode: str
     lock: Any
@@ -57,10 +60,13 @@ class SessionManager:
     ) -> dict[str, Any]:
         engine = self._engine_for_source(source, backend)
         frame = self._load_source(source, engine)
-        frame = getattr(engine, "normalize", lambda value: value)(frame)
+        if source.get("kind") != "file":
+            frame = getattr(engine, "normalize", lambda value: value)(frame)
         session_id = str(uuid.uuid4())
         filter_model = {"filters": [], "sort": []}
         filtered = engine.apply_filter_model(frame, filter_model)
+        source_shape = engine.shape(frame)
+        source_schema = engine.schema(frame)
         session = Session(
             session_id=session_id,
             source=dict(source),
@@ -69,6 +75,9 @@ class SessionManager:
             original=frame,
             filtered=filtered,
             filter_model=filter_model,
+            stats=None,
+            source_shape=source_shape,
+            source_schema=source_schema,
             revision=0,
             mode=mode or ("editing" if source.get("kind") == "file" else "viewing"),
             lock=threading.RLock(),
@@ -79,7 +88,10 @@ class SessionManager:
             "kind": "sessionOpened",
             "metadata": self._metadata(session),
             "page": engine.page(filtered, 0, page_size),
-            "summaries": engine.summaries(filtered),
+            "summaries": engine.summaries(
+                filtered,
+                [column["name"] for column in source_schema[:8]],
+            ),
         }
 
     def get_page(
@@ -140,6 +152,23 @@ class SessionManager:
                 "hasMore": has_more,
             }
 
+    def get_dataset_stats(
+        self,
+        session_id: str,
+        revision: int,
+        filter_model: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            filtered = self._filtered(session, filter_model)
+            session.stats = session.engine.header_stats(filtered)
+            return {
+                "kind": "datasetStats",
+                "revision": session.revision,
+                "stats": session.stats,
+            }
+
     def close_session(self, session_id: str, revision: int) -> dict[str, Any]:
         self._assert_revision(self._session(session_id), revision)
         with self._sessions_lock:
@@ -153,10 +182,11 @@ class SessionManager:
         if model != session.filter_model:
             session.filtered = session.engine.apply_filter_model(session.original, model)
             session.filter_model = model
+            session.stats = None
         return session.filtered
 
     def _metadata(self, session: Session) -> dict[str, Any]:
-        return {
+        metadata = {
             "protocolVersion": 2,
             "sessionId": session.session_id,
             "revision": session.revision,
@@ -164,12 +194,14 @@ class SessionManager:
             "mode": session.mode,
             "source": session.source,
             "capabilities": self._capabilities(session),
-            "shape": session.engine.shape(session.original),
+            "shape": session.source_shape,
             "filteredShape": session.engine.shape(session.filtered),
-            "schema": session.engine.schema(session.original),
+            "schema": session.source_schema,
             "filterModel": session.filter_model,
-            "stats": session.engine.header_stats(session.filtered),
         }
+        if session.stats is not None:
+            metadata["stats"] = session.stats
+        return metadata
 
     def _session(self, session_id: str) -> Session:
         with self._sessions_lock:
@@ -219,7 +251,8 @@ class SessionManager:
             path = source.get("path")
             if not path:
                 raise EngineError("File source is missing a path.")
-            return engine.read_file(str(path))
+            options = source.get("importOptions")
+            return engine.read_file(str(path), options if isinstance(options, Mapping) else None)
         if kind in {"notebookVariable", "notebookOutput"}:
             return self._resolve_notebook_variable(source)
         raise EngineError(f"Unsupported source kind: {kind}")
