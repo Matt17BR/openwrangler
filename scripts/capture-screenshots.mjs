@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pixelmatch from "pixelmatch";
@@ -10,7 +10,19 @@ const tmpDir = resolve(root, "tmp", "screenshots");
 const actualDir = resolve(root, "tmp", "screenshots-actual");
 const diffDir = resolve(root, "tmp", "screenshots-diff");
 const docsDir = resolve(root, "docs", "images");
-const python = resolve(root, ".venv", "bin", "python");
+const hostedPython = process.env.pythonLocation
+  ? process.platform === "win32"
+    ? resolve(process.env.pythonLocation, "python.exe")
+    : resolve(process.env.pythonLocation, "bin", "python")
+  : undefined;
+const localPython =
+  process.platform === "win32"
+    ? resolve(root, ".venv", "Scripts", "python.exe")
+    : resolve(root, ".venv", "bin", "python");
+const python =
+  [process.env.DATA_EXPLORER_PYTHON, hostedPython, localPython].find(
+    (candidate) => candidate && existsSync(candidate)
+  ) ?? (process.platform === "win32" ? "python" : "python3");
 const chrome = process.env.CHROME_BIN ?? "google-chrome";
 const verify = process.argv.includes("--verify");
 

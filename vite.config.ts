@@ -26,6 +26,16 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: ["src/test/**/*.test.ts", "src/test/**/*.test.tsx"]
+    include: ["src/test/**/*.test.ts", "src/test/**/*.test.tsx"],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary", "html"],
+      thresholds: {
+        statements: 60,
+        branches: 55,
+        functions: 60,
+        lines: 65
+      }
+    }
   }
 });

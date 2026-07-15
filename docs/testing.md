@@ -11,7 +11,11 @@
 - `npm run test:webview-acceptance` renders the production bundles in Chrome, compares every screenshot with its checked-in baseline, and runs WCAG 2.0/2.1/2.2 axe rules through Playwright.
 - `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment.
+- `npm run test:coverage` enforces TypeScript/webview and Python regression floors and produces HTML/JSON/XML reports.
+- `npm run license:check` verifies every bundled production dependency against the approved SPDX policy and third-party notice groups.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content from a package.
+
+Coverage is a regression guard, not a substitute for scenario acceptance. TypeScript/webview floors are 60% statements, 55% branches, 60% functions, and 65% lines; Python runtime coverage must remain at or above 78%. The required PR coverage job uploads both reports.
 
 Protocol fixtures and engine-operation cases must run through both TypeScript and Python decoders. Polars tests monkeypatch `DataFrame.to_pandas` to fail. Cross-engine operation tests compare normalized semantic output and separately validate engine-native generated code.
 

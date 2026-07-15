@@ -6,6 +6,8 @@ python/benchmarks/**
 protocol/**
 fixtures/**
 tmp/**
+coverage/**
+.coverage
 .github/**
 .vscode/**
 .git/**

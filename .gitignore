@@ -5,6 +5,8 @@ dist-test/
 media/
 *.vsix
 tmp/
+coverage/
+.coverage
 .venv/
 __pycache__/
 .pytest_cache/

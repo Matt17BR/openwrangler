@@ -182,6 +182,15 @@ Packaged reload and recovery slice, 2026-07-15:
 
 This makes runtime crash/reload/session replay **Done**. Cleaning-history, export, and editor rows remain **Partial** because their remaining keyboard, Parquet-command, and full interactive operation/theme checklists are tracked separately.
 
+Release-guardrail slice, 2026-07-15:
+
+- Required CI coverage now enforces TypeScript/webview floors of 60% statements, 55% branches, 60% functions, and 65% lines plus a 78% Python-runtime floor. The initial accepted reports are 63.36/59.28/66.12/67.94% and 80.37%, respectively, and CI uploads their HTML/JSON/XML artifacts.
+- A production dependency policy resolves the actual installed manifest for every non-development package, accepts only explicitly approved licenses, and requires a matching notice group. The current webview bundle contains 17 MIT packages and one CC-BY-4.0 Codicons package; the notice file now reflects Codicons' actual license.
+- Pull-request validation retains npm and Python vulnerability audits. Main pushes and tag builds package and verify on Linux/Python 3.10, macOS/Python 3.12, and Windows/Python 3.14; the release artifact job is blocked on that matrix.
+- Screenshot capture now resolves the hosted CI interpreter before a local `.venv`, fixing the first full validate run's only failure while keeping local deterministic-environment preference.
+
+These are release guardrails rather than user-visible parity rows. They remain mandatory for every subsequent slice and release tag.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.

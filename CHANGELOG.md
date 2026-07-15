@@ -36,6 +36,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Native nested-Polars and Pandas/NumPy nullable typed-cell fixtures covering large integers, decimals, time zones, containers, binary, durations, NaN/infinity, zero-column frames, and long Unicode values.
 - Cross-engine operation-edge acceptance for stable per-column null sorts, missing/duplicate modes, categorical collisions, Unicode casing, non-finite numerics, nullable ordered groups, and custom-code diagnostics.
 - Two-process installed-VSIX acceptance in VS Code and Cursor for persisted Polars plans/view state, concurrent Pandas/Polars runtime recovery, source-safe export, and final process cleanup.
+- Required TypeScript/Python coverage floors, bundled-production license policy checks, and Linux/macOS/Windows tag validation.
 
 ### Changed
 
@@ -49,6 +50,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Polars nested dtypes are classified by their outer container, Excel sheet indexes follow the public zero-based contract, and failed lazy-file opens no longer retain partial sessions.
 - Transformation IR validation now rejects malformed option types, filter predicates, sorts, and group aliases before execution; runtime and generated Pandas/Polars code share deterministic null, category, group, numeric, and Unicode behavior.
 - Standalone Python startup is single-flight, restart-safe, and automatically stops after the final session closes.
+- Screenshot generation resolves hosted CI Python environments as well as local virtual environments.
 
 ### Known gaps
 
