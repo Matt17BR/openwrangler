@@ -146,6 +146,14 @@ Visual and accessibility hardening slice, 2026-07-15:
 
 This advances theme and accessibility evidence but keeps the row **Partial** until the same core theme/zoom checklist is recorded in packaged VS Code and Cursor.
 
+Performance hardening slice, 2026-07-15:
+
+- On the reference Linux workstation, `npm run benchmark:runtime` returned the first complete 100k×50 CSV grid in 309.326ms and the first 1M×20 Parquet grid in 2,189.545ms, below the 3s/5s release limits. The source and every block remained native lazy Polars.
+- Cached runtime page p95 was 66.800ms for CSV and 72.630ms for Parquet; distributed uncached page p95 was 68.077ms and 73.578ms, below the 100ms/500ms gates. Every close left zero retained `SessionManager` entries.
+- Playwright measured the production 1,000×40 virtual grid independently at 31.6ms cached-scroll p95 and 92.8ms uncached-block p95. A smoke fixture runs in the normal Python suite, while a scheduled strict workflow uploads full-size JSON reports.
+
+This advances the virtual-grid and recovery rows but keeps them **Partial** until packaged-editor reload/multi-session disposal and the remaining editor checklist are recorded.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.

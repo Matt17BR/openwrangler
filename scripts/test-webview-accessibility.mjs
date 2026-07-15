@@ -47,6 +47,7 @@ try {
     }
     await page.close();
   }
+  await verifyWideGridPerformance(browser);
 } finally {
   await browser.close();
 }
@@ -82,4 +83,50 @@ function findChrome() {
     }
   }
   throw new Error("Chrome or Chromium is required for webview accessibility acceptance.");
+}
+
+async function verifyWideGridPerformance(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+  await page.waitForSelector('[data-grid-row="0"]');
+
+  const cached = [];
+  for (const row of [1, 4, 8, 12, 16, 20, 24, 28]) {
+    cached.push(
+      await page.evaluate(async (targetRow) => {
+        const scroller = document.querySelector("[data-testid='data-grid-scroller']");
+        const started = performance.now();
+        scroller.scrollTop = targetRow * 29;
+        await new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame)));
+        return performance.now() - started;
+      }, row)
+    );
+  }
+
+  const uncached = [];
+  for (const row of [200, 400, 600, 800]) {
+    const started = performance.now();
+    await page.locator("[data-testid='data-grid-scroller']").evaluate((scroller, targetRow) => {
+      scroller.scrollTop = targetRow * 29;
+    }, row);
+    await page.waitForSelector(`[data-grid-row="${row}"]`);
+    uncached.push(performance.now() - started);
+  }
+  await page.close();
+
+  const cachedP95 = percentile(cached, 0.95);
+  const uncachedP95 = percentile(uncached, 0.95);
+  if (cachedP95 > 100 || uncachedP95 > 500) {
+    throw new Error(
+      `Wide-grid performance failed: cached p95 ${cachedP95.toFixed(1)}ms (limit 100ms), uncached p95 ${uncachedP95.toFixed(1)}ms (limit 500ms).`
+    );
+  }
+  console.log(
+    `Wide-grid performance verified: cached p95 ${cachedP95.toFixed(1)}ms, uncached p95 ${uncachedP95.toFixed(1)}ms.`
+  );
+}
+
+function percentile(values, ratio) {
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.max(0, Math.ceil(ordered.length * ratio) - 1)];
 }

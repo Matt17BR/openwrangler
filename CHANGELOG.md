@@ -31,6 +31,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Restart-aware Jupyter kernel lifecycle with bounded execution, active cancellation, one-shot recovery, and real Pandas/Polars formatter/transport acceptance.
 - Isolated installed-VSIX acceptance for VS Code and Cursor, including a live packaged Polars session and source reopening.
 - Playwright/axe WCAG scanning and pixel-diff visual acceptance across 23 production-bundle harnesses, including high-contrast light, Unicode, empty, loading, error, and recovery states.
+- Strict release-size Polars benchmarks with JSON evidence, session-cleanup assertions, rendered cached/uncached scroll gates, and scheduled CI regression checks.
 
 ### Changed
 

@@ -12,10 +12,13 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
 npm run package -- --out data-explorer.vsix
 npm run verify:vsix -- data-explorer.vsix
+npm run benchmark:runtime
 sha256sum data-explorer.vsix
 ```
 
 The VSIX may contain production extension bundles, webview assets, the Python runtime source, package metadata, README, changelog, license, and third-party notices. It must not contain source TypeScript, tests, fixtures, scripts, profiles, source maps, caches, virtual environments, `.env` files, credentials, or untracked scratch files. After allowlist verification, `npm run test:packaged-editors -- data-explorer.vsix` must install and exercise the artifact from isolated profiles; development-host success is not a substitute.
+
+The strict runtime benchmark and Playwright cached/uncached scroll gates must pass on the release reference workstation. Attach the generated `tmp/performance/report.json` values to parity evidence; scheduled CI reports provide regression history but do not replace final local acceptance.
 
 ## GitHub workflow
 

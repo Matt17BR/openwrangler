@@ -125,6 +125,7 @@ Useful checks:
 npm run test:ts
 npm run test:python
 npm run test:webview-acceptance
+npm run benchmark:runtime
 npm run reference:check
 npm run build
 npm run package

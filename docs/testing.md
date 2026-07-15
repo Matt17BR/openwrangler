@@ -52,4 +52,6 @@ CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and cur
 
 ## Performance fixtures
 
-Release benchmarks include a 100k by 50 CSV and 1M by 20 Parquet. On the reference Linux workstation with warm dependencies, first usable Polars grids must appear within 3 and 5 seconds respectively, cached scroll work within 100ms, and uncached block fetches within 500ms at p95. Repeated open/close cycles must leave no runtime process or retained session.
+`npm run benchmark:runtime` creates deterministic 100k×50 CSV and 1M×20 Parquet fixtures under ignored `tmp/performance`, measures the complete native Polars `openSession` response, samples cached and distributed block fetches, asserts session disposal, and writes a JSON report. Exact release limits are 3s and 5s for the first usable CSV/Parquet grids, 100ms cached p95, and 500ms uncached p95. The scheduled `Performance gates` workflow repeats the strict benchmark and uploads its report.
+
+The Playwright wide-grid acceptance independently measures rendered scrolling against the same 100ms cached and 500ms uncached p95 limits. Repeated extension-host and installed-package runs verify process/session cleanup; a benchmark is not accepted if `SessionManager.sessions` retains an entry after close.

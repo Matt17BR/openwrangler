@@ -73,6 +73,7 @@
     "test:visual": "npm run build && node scripts/capture-screenshots.mjs --verify",
     "test:accessibility": "node scripts/test-webview-accessibility.mjs",
     "test:webview-acceptance": "npm run test:visual && npm run test:accessibility",
+    "benchmark:runtime": "node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",
     "package": "vsce package",
     "verify:vsix": "node scripts/verify-vsix.mjs"
