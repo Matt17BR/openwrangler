@@ -59,14 +59,32 @@ for (const editor of candidates) {
       })
     );
     writeFileSync(resolve(profile, "extension.js"), "exports.activate = function () {};\n");
+    const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
     execFileSync(
       editor.cli,
-      ["--user-data-dir", userData, "--extensions-dir", extensions, "--install-extension", vsix, "--force"],
+      [
+        "--user-data-dir",
+        userData,
+        "--extensions-dir",
+        extensions,
+        "--install-extension",
+        vsix,
+        "--force",
+        ...sandboxArgs
+      ],
       { encoding: "utf8", stdio: "pipe" }
     );
     const installed = execFileSync(
       editor.cli,
-      ["--user-data-dir", userData, "--extensions-dir", extensions, "--list-extensions", "--show-versions"],
+      [
+        "--user-data-dir",
+        userData,
+        "--extensions-dir",
+        extensions,
+        "--list-extensions",
+        "--show-versions",
+        ...sandboxArgs
+      ],
       { encoding: "utf8" }
     );
     if (!installed.toLowerCase().includes(expectedExtension)) {
@@ -85,7 +103,8 @@ for (const editor of candidates) {
         extensions,
         "--disable-workspace-trust",
         "--skip-welcome",
-        "--skip-release-notes"
+        "--skip-release-notes",
+        ...sandboxArgs
       ]
     });
     console.log(`${editor.name} packaged acceptance passed for ${basename(vsix)}.`);

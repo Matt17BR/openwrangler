@@ -33,7 +33,8 @@ try {
       "--disable-extensions",
       "--disable-workspace-trust",
       "--skip-welcome",
-      "--skip-release-notes"
+      "--skip-release-notes",
+      ...(process.platform === "linux" ? ["--no-sandbox"] : [])
     ]
   });
 } finally {

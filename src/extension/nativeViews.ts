@@ -287,7 +287,7 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
 
   context.subscriptions.push(
     vscode.commands.registerCommand("dataExplorer.openSourceFile", async () => {
-      const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 10_000));
+      const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 30_000));
       const source = snapshot ? sourceUri(snapshot) : undefined;
       if (!source) {
         void vscode.window.showInformationMessage("The active Data Explorer session has no reopenable source.");

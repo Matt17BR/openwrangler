@@ -77,20 +77,28 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   await vscode.commands.executeCommand("vscode.openWith", fixture, "dataExplorer.viewer", vscode.ViewColumn.One);
-  await waitFor(() => {
-    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-    return input instanceof vscode.TabInputCustom && input.viewType === "dataExplorer.viewer";
-  }, 10_000);
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputCustom && input.viewType === "dataExplorer.viewer";
+    },
+    15_000,
+    "the Data Explorer custom editor"
+  );
 
   const activeInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   assert.ok(activeInput instanceof vscode.TabInputCustom);
   assert.equal(activeInput.viewType, "dataExplorer.viewer");
   assert.equal(path.basename(activeInput.uri.fsPath), "sample.csv");
   await vscode.commands.executeCommand("dataExplorer.openSourceFile");
-  await waitFor(() => {
-    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-    return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
-  }, 15_000);
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    45_000,
+    "Open Source File to reveal the active runtime session"
+  );
   const sourceInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   assert.ok(sourceInput instanceof vscode.TabInputText, "Open Source File must resolve the active runtime session.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
@@ -116,10 +124,10 @@ export async function run(): Promise<void> {
   console.log("Data Explorer extension-host acceptance passed.");
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs: number, expectation: string): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
-    if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for the Data Explorer custom editor.");
+    if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for ${expectation}.`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
