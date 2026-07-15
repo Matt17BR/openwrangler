@@ -140,7 +140,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     this.restart("Python runtime selection changed.");
   }
 
-  async installMissingDependencies(): Promise<boolean> {
+  async installMissingDependencies(confirmed?: boolean): Promise<boolean> {
     const missing = this.lastMissingDependencies;
     if (!missing || missing.modules.length === 0) {
       await vscode.window.showInformationMessage("Data Explorer has no unresolved runtime dependencies.");
@@ -150,12 +150,15 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
       await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
       return false;
     }
-    const choice = await vscode.window.showWarningMessage(
-      `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
-      { modal: true, detail: "Data Explorer never installs packages without this confirmation." },
-      "Install"
-    );
-    if (choice !== "Install") return false;
+    if (confirmed !== true) {
+      if (confirmed === false) return false;
+      const choice = await vscode.window.showWarningMessage(
+        `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
+        { modal: true, detail: "Data Explorer never installs packages without this confirmation." },
+        "Install"
+      );
+      if (choice !== "Install") return false;
+    }
 
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Installing Data Explorer dependencies" },

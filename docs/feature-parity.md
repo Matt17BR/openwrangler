@@ -4,33 +4,33 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Data Explorer 1.0 requires every in-scope row to be **Done**.
 
-| Surface                                             | Pandas | Polars | Status  | Required evidence                                |
-| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------ |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Format/options/errors and packaged editors green |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                 |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD       |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD   |
-| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive and nested-type tests green          |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD       |
-| Multi-column viewing sorts                          |    Yes |    Yes | Partial | Per-column null order/stability green; editor    |
-| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Full registry plus packaged group matrix green   |
-| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green  |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green        |
-| Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green         |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Native/code edges plus packaged preview/apply    |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Native/code matrix plus packaged preview/apply   |
-| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Null/NaN, keep modes, generated-code parity      |
-| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity   |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply    |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply        |
-| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply       |
-| Custom engine-native code                           |    Yes |    Yes | Done    | Trust, diagnostics, packaged crash/replay green  |
-| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation      |
-| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD    |
-| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green   |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD  |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD       |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green          |
+| Surface                                             | Pandas | Polars | Status  | Required evidence                                 |
+| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------- |
+| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Format/options/errors and packaged editors green  |
+| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                  |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD        |
+| Virtual grid, column sizing, navigation             |    Yes |    Yes | Done    | Browser perf/a11y plus packaged paging green      |
+| Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green  |
+| Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green        |
+| Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green       |
+| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Full registry plus packaged group matrix green    |
+| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green   |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green         |
+| Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green    |
+| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Native/code edges plus packaged preview/apply     |
+| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Native/code matrix plus packaged preview/apply    |
+| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Null/NaN, keep modes, generated-code parity       |
+| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity    |
+| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply     |
+| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply         |
+| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply        |
+| Custom engine-native code                           |    Yes |    Yes | Done    | Trust, diagnostics, packaged crash/replay green   |
+| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation       |
+| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD     |
+| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green    |
+| Runtime selection, setup, change, clear             |    Yes |    Yes | Done    | Resolver plus packaged missing/decline flow green |
+| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD        |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green           |
 
 ## Recorded acceptance evidence
 
@@ -218,6 +218,25 @@ Packaged operation-group slice, 2026-07-15:
 - This matrix passes the development host plus the exact allowlisted VSIX in isolated VS Code 1.128.0 and Cursor 3.11.19 profiles. The production-bundle browser suite separately exercises the complete operation dialog, validated forms, draft/diff/code layout, by-example warnings, and apply/discard/edit/undo keyboard paths.
 
 This makes the editing catalog, draft/diff, every deterministic operation family, custom code, and by-example rows **Done**. Generated-code editing/export remains a separate **Partial** row until its clipboard/script/originating-notebook command matrix is fully recorded.
+
+Packaged viewing-query slice, 2026-07-15:
+
+- Independent Pandas and Polars viewing sessions run an advanced OR predicate across string and numeric columns followed by a two-column sort. The installed VSIX must return the same two typed rows in the same order, retain the exact view model, and keep the cleaning plan empty.
+- Both engines resolve filtered column summaries, numeric profile bounds, exact missing/duplicate dataset counts, and searched distinct values through protocol v2. The source remains byte-identical and every session close waits for the standalone runtime to stop.
+- The same matrix passes the development extension host and the exact package in isolated VS Code 1.128.0 and Cursor 3.11.19. Native engine fixtures separately cover AND/OR, null/NaN predicates, value filters, per-column null ordering, stable ties, typed/nested summaries, and lazy Polars query pushdown.
+- The production-bundle Playwright gate covers row and column virtualization, bounded prefetch, column search, keyboard navigation/resizing, focus restoration, advanced-filter interaction, responsive layouts, all supported themes/zooms, and WCAG scans. Its wide-grid p95 is 31.6ms cached and 92.8ms uncached, below the 100ms/500ms limits; release-size runtime gates are also green.
+
+This makes virtual grid/navigation, summaries/Quick Insights, viewing filters, and multi-column viewing sorts **Done**. Import error-state interaction and editor chrome/theme sign-off remain tracked under their separate rows.
+
+Editable code and runtime-selection slice, 2026-07-15:
+
+- After every packaged Pandas and Polars representative plan, acceptance replaces the Code Preview buffer with an identifiable edit, invokes the real Copy Code command, reads the editor clipboard, invokes Export Python Script with an isolated destination, and verifies both outputs byte-for-byte. The production CodeMirror bundle separately covers editing, syntax highlighting, overflow/focus behavior, and VS Code tokens under the visual/axe matrix.
+- Successful copy/export notifications no longer block command completion while awaiting toast dismissal; clipboard and file writes remain awaited. The generated function before editing is still executed against both engines and compared with the native adapter result, with Polars conversion prohibited.
+- Runtime acceptance invokes Change Runtime with an executable wrapper around the same supported interpreter but isolated from site packages. A Polars open returns the structured `missing_dependencies` diagnostic before process startup, points to the explicit install command, and retains no session.
+- The Install Runtime Dependencies command receives an explicit decline and returns without running pip, changing configuration, or starting a process. Clear Runtime removes the workspace override and reveals the configured fallback. Resolver tests cover relative/absolute paths, the exact Python 3.10–3.14 range, and engine/format-specific modules; normal resolution still prefers explicit configuration, then the Python extension, then system interpreters.
+- These command paths pass the development host and the rebuilt allowlisted VSIX in isolated VS Code 1.128.0 and Cursor 3.11.19. All temporary scripts and exported code are removed with the editor profile.
+
+This makes generated-code preview/editing and runtime selection/setup/change/clear **Done**. The combined code-export row remains **Partial** only for its originating-notebook command path.
 
 ## Explicitly deferred from 1.0
 

@@ -40,6 +40,8 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - State-scoped, accessible keyboard shortcuts for draft apply/discard and latest-step edit/undo, with production-bundle Playwright acceptance.
 - Installed VS Code/Cursor input acceptance for CSV, TSV, JSONL, Parquet, and Excel plus native Pandas/Polars CSV and Parquet export verification.
 - Installed VS Code/Cursor acceptance for representative steps from every operation group on Pandas and Polars, including preview/diff/code/apply, deterministic by-example confirmation, custom-code crash replay, immutable sources, and leak-free disposal.
+- Installed VS Code/Cursor acceptance for native Pandas/Polars paging, advanced OR filters, multi-column sorts, progressive summaries, exact stats, searched values, view/plan separation, immutable sources, and leak-free disposal.
+- Installed VS Code/Cursor acceptance for edited Code Preview clipboard/script output and explicit runtime change, dependency diagnostics, declined installation, and fallback clearing.
 
 ### Changed
 
@@ -54,10 +56,11 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Transformation IR validation now rejects malformed option types, filter predicates, sorts, and group aliases before execution; runtime and generated Pandas/Polars code share deterministic null, category, group, numeric, and Unicode behavior.
 - Standalone Python startup is single-flight, restart-safe, and automatically stops after the final session closes.
 - Screenshot generation resolves hosted CI Python environments as well as local virtual environments.
+- Successful code-copy and script-export notifications no longer hold command completion open while awaiting toast dismissal.
 
 ### Known gaps
 
-- Remote-kernel acceptance and the remaining isolated VS Code/Cursor viewing, code-export, runtime-setup, and theme matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Remote-kernel acceptance and the remaining isolated VS Code/Cursor notebook-export and editor-theme matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

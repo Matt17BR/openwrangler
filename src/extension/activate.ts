@@ -15,6 +15,7 @@ export interface DataExplorerTestApi {
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  setCodeForExport(code: string): void;
 }
 
 export interface DataExplorerExtensionApi {
@@ -28,7 +29,7 @@ export function activate(context: vscode.ExtensionContext): DataExplorerExtensio
   context.subscriptions.push(coordinator, bridge);
 
   registerFileCommands(context, coordinatedBridge);
-  registerNativeViews(context, coordinator);
+  const nativeViews = registerNativeViews(context, coordinator);
   registerRuntimeCommands(context, bridge);
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinatedBridge, coordinator);
@@ -42,7 +43,8 @@ export function activate(context: vscode.ExtensionContext): DataExplorerExtensio
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,
-        runtimeRunning: () => bridge.runtimeRunning
+        runtimeRunning: () => bridge.runtimeRunning,
+        setCodeForExport: (code) => nativeViews.setCodeForExport(code)
       }
     };
   }

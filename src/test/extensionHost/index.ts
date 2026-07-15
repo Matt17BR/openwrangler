@@ -1,6 +1,6 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -26,6 +26,7 @@ interface TestApi {
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  setCodeForExport(code: string): void;
 }
 
 interface ExtensionApi {
@@ -184,7 +185,11 @@ export async function run(): Promise<void> {
     "the custom-editor session to close"
   );
 
-  if (testPython) await exercisePackagedFileInputs(testing, workspace, testPython);
+  if (testPython) {
+    await exerciseRuntimeSelectionCommands(testing, fixture, testPython);
+    await exercisePackagedFileInputs(testing, workspace, testPython);
+  }
+  await exercisePackagedViewingQueries(testing, fixture);
   await exercisePackagedOperationGroups(testing, fixture);
 
   const notebookDirectory = mkdtempSync(path.join(tmpdir(), "data-explorer-notebook-"));
@@ -551,6 +556,160 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
   }
 }
 
+async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscode.Uri, python: string): Promise<void> {
+  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-runtime-selection-"));
+  const isolatedPython = path.join(directory, "python-without-site-packages");
+  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
+  writeFileSync(isolatedPython, `#!/bin/sh\nexec ${quotedPython} -I -S "$@"\n`);
+  chmodSync(isolatedPython, 0o755);
+
+  try {
+    assert.equal(await vscode.commands.executeCommand("dataExplorer.changeRuntime", isolatedPython), isolatedPython);
+    const config = vscode.workspace.getConfiguration("dataExplorer");
+    assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, isolatedPython);
+
+    const rejected = await testing.request({
+      kind: "openSession",
+      source: csvSource(fixture),
+      backend: "polars",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(rejected.kind, "error");
+    if (rejected.kind === "error") {
+      assert.equal(rejected.code, "missing_dependencies");
+      assert.match(rejected.message, /Missing: polars/);
+      assert.match(rejected.detail ?? "", /Install Runtime Dependencies/);
+    }
+    assert.equal(testing.runtimeRunning(), false, "Missing dependencies must fail before runtime startup.");
+    assert.equal(
+      await vscode.commands.executeCommand("dataExplorer.installRuntimeDependencies", false),
+      false,
+      "A declined dependency prompt must not install or restart anything."
+    );
+    assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, isolatedPython);
+
+    assert.equal(await vscode.commands.executeCommand("dataExplorer.clearRuntime"), true);
+    assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, undefined);
+    assert.equal(
+      vscode.workspace.getConfiguration("dataExplorer").get<string>("pythonPath"),
+      python,
+      "Clearing the workspace override must reveal the fallback."
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+  const original = readFileSync(fixture.fsPath, "utf8");
+  const filterModel: FilterModel = {
+    logic: "or",
+    filters: [
+      {
+        column: "city",
+        type: "string",
+        predicates: [{ kind: "predicate", operator: "startsWith", value: "M" }]
+      },
+      {
+        column: "sales",
+        type: "float",
+        predicates: [{ kind: "predicate", operator: "gt", value: 11 }]
+      }
+    ],
+    sort: [
+      { column: "active", direction: "asc", nulls: "last" },
+      { column: "sales", direction: "desc", nulls: "last" }
+    ]
+  };
+
+  for (const backend of ["pandas", "polars"] as const) {
+    const opened = await testing.request({
+      kind: "openSession",
+      source: csvSource(fixture),
+      backend,
+      pageSize: 2,
+      mode: "viewing"
+    });
+    assert.equal(opened.kind, "sessionOpened", `${backend} viewing session must open.`);
+    if (opened.kind !== "sessionOpened") continue;
+
+    const page = await testing.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      offset: 0,
+      limit: 2,
+      filterModel
+    });
+    assert.equal(page.kind, "page", `${backend} advanced filter and multi-sort must return a page.`);
+    if (page.kind !== "page") continue;
+    assert.equal(page.page.totalRows, 2);
+    assert.deepEqual(
+      page.page.rows.map((row) => row.values[0]?.display),
+      ["Berlin", "Milan"]
+    );
+    assert.equal(page.metadata.steps.length, 0, "Viewing queries must not become cleaning steps.");
+    assert.deepEqual(page.metadata.filterModel, filterModel);
+
+    const summary = await testing.request({
+      kind: "getSummary",
+      sessionId: opened.metadata.sessionId,
+      revision: page.revision,
+      filterModel
+    });
+    assert.equal(summary.kind, "summary", `${backend} progressive summary must resolve.`);
+    if (summary.kind === "summary") {
+      assert.equal(summary.summaries.length, 4);
+      assert.ok(summary.summaries.every((column) => column.totalCount === 2));
+      assert.equal(summary.summaries.find((column) => column.column === "sales")?.numeric?.max, 12);
+    }
+
+    const stats = await testing.request({
+      kind: "getDatasetStats",
+      sessionId: opened.metadata.sessionId,
+      revision: page.revision,
+      filterModel
+    });
+    assert.equal(stats.kind, "datasetStats", `${backend} exact dataset stats must resolve.`);
+    if (stats.kind === "datasetStats") {
+      assert.equal(stats.stats.missingCells, 0);
+      assert.equal(stats.stats.missingRows, 0);
+      assert.equal(stats.stats.duplicateRows, 0);
+    }
+
+    const values = await testing.request({
+      kind: "getColumnValues",
+      sessionId: opened.metadata.sessionId,
+      revision: page.revision,
+      column: "city",
+      filterModel,
+      search: "il",
+      limit: 10
+    });
+    assert.equal(values.kind, "columnValues", `${backend} searchable column values must resolve.`);
+    if (values.kind === "columnValues") {
+      assert.deepEqual(values.values, [{ value: "Milan", count: 1 }]);
+      assert.equal(values.hasMore, false);
+    }
+
+    assert.equal(testing.activeSession()?.metadata.steps.length, 0);
+    const closed = await testing.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: page.revision
+    });
+    assert.equal(closed.kind, "sessionClosed");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `${backend} viewing-query session to dispose`
+    );
+  }
+
+  assert.equal(readFileSync(fixture.fsPath, "utf8"), original, "Viewing queries must not alter the source.");
+}
+
 async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-operation-groups-"));
   const sourcePath = path.join(directory, "operations.csv");
@@ -681,6 +840,14 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         active?.metadata.schema.map((column) => column.name),
         ["active", "total_sales"]
       );
+
+      const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
+      testing.setCodeForExport(editedCode);
+      await vscode.commands.executeCommand("dataExplorer.copyCode");
+      assert.equal(await vscode.env.clipboard.readText(), editedCode, `${backend} must copy the edited code buffer.`);
+      const scriptPath = path.join(directory, `${backend}.clean.py`);
+      await vscode.commands.executeCommand("dataExplorer.exportCode", vscode.Uri.file(scriptPath));
+      assert.equal(readFileSync(scriptPath, "utf8"), editedCode, `${backend} must export the edited code buffer.`);
 
       const closed = await testing.request({
         kind: "closeSession",
