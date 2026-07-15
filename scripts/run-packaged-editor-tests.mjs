@@ -31,7 +31,13 @@ const candidates = [
 );
 if (!candidates.some((editor) => editor.key === "vscode") && (!requested?.length || requested.includes("vscode"))) {
   const executable = await downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION ?? "stable");
-  candidates.unshift({ name: "VS Code", key: "vscode", executable, cli: executable });
+  const downloadedCli = process.platform === "linux" ? resolve(dirname(executable), "bin", "code") : executable;
+  candidates.unshift({
+    name: "VS Code",
+    key: "vscode",
+    executable,
+    cli: existsSync(downloadedCli) ? downloadedCli : executable
+  });
 }
 if (!candidates.length) throw new Error("No supported VS Code or Cursor desktop executable was found.");
 
@@ -84,7 +90,7 @@ for (const editor of candidates) {
         "--force",
         ...sandboxArgs
       ],
-      { encoding: "utf8", stdio: "pipe" }
+      { encoding: "utf8", stdio: "pipe", timeout: 60_000 }
     );
     const installed = execFileSync(
       editor.cli,
@@ -97,7 +103,7 @@ for (const editor of candidates) {
         "--show-versions",
         ...sandboxArgs
       ],
-      { encoding: "utf8" }
+      { encoding: "utf8", timeout: 60_000 }
     );
     if (!installed.toLowerCase().includes(expectedExtension)) {
       throw new Error(`${editor.name} did not report the installed Data Explorer package. Output: ${installed}`);
