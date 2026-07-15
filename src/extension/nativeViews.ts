@@ -287,10 +287,10 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
 
   context.subscriptions.push(
     vscode.commands.registerCommand("dataExplorer.openSourceFile", async () => {
-      const snapshot = coordinator.activeSession();
+      const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 10_000));
       const source = snapshot ? sourceUri(snapshot) : undefined;
       if (!source) {
-        await vscode.window.showInformationMessage("The active Data Explorer session has no reopenable source.");
+        void vscode.window.showInformationMessage("The active Data Explorer session has no reopenable source.");
         return;
       }
       await vscode.commands.executeCommand("vscode.open", source);
@@ -309,6 +309,28 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
       )
     )
   );
+}
+
+async function waitForActiveSession(
+  coordinator: SessionCoordinator,
+  timeoutMs: number
+): Promise<ActiveSessionSnapshot | undefined> {
+  const current = coordinator.activeSession();
+  if (current) return current;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (snapshot: ActiveSessionSnapshot | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      subscription.dispose();
+      resolve(snapshot);
+    };
+    const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
+      if (snapshot) finish(snapshot);
+    });
+    const timeout = setTimeout(() => finish(undefined), timeoutMs);
+  });
 }
 
 export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefined {

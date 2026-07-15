@@ -27,6 +27,10 @@ export class DataExplorerPanel {
     private readonly initialResponse?: SessionOpenedResponse
   ) {
     DataExplorerPanel.activePanel = this;
+    this.panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
+    };
     this.panel.webview.html = this.renderHtml();
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => this.handleMessage(message),

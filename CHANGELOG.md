@@ -29,6 +29,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Source reopening and Getting Started walkthrough commands.
 - Private row lineage and deterministic column identities for accurate structural diffs across sorting, renaming, reordering, grouping, latest-step edits, and duplicate Pandas labels.
 - Restart-aware Jupyter kernel lifecycle with bounded execution, active cancellation, one-shot recovery, and real Pandas/Polars formatter/transport acceptance.
+- Isolated installed-VSIX acceptance for VS Code and Cursor, including a live packaged Polars session and source reopening.
 
 ### Changed
 
@@ -37,6 +38,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Supported Python versions are 3.10 through 3.14.
 - File-backed Polars CSV/TSV, Parquet, and JSONL inputs now stay lazy through viewing filters, sorts, projections, and page slices.
 - GitHub workflows use the current Node 24-based official action majors.
+- Custom-editor panels now enable their webview scripts and resources consistently, allowing file sessions to initialize through the contributed editor path.
 
 ### Known gaps
 

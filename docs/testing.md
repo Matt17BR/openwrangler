@@ -7,6 +7,7 @@
 - `npm run test:ts` covers shared models, extension helpers, reducers, and React behavior.
 - `npm run test:python` covers Pandas/Polars engines, transformations, code generation, exports, and runtime dispatch.
 - `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and validates activation, commands, native contributions, and fixture opening.
+- `npm run test:packaged-editors -- data-explorer.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs the same session-backed acceptance from a separate harness extension so checkout code cannot shadow the package.
 - `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content from a package.
@@ -43,6 +44,8 @@ Use isolated `--user-data-dir` and `--extensions-dir` directories. Never install
 8. Repeat core flows in light, dark, and high-contrast themes and at 200% zoom.
 
 Record the editor versions and evidence link in `docs/feature-parity.md` before a release.
+
+The packaged harness auto-detects local VS Code and Cursor installations; set `DATA_EXPLORER_PACKAGED_EDITORS=vscode` in Linux CI. It verifies the publisher/gallery icon, Activity Bar icon, both notebook MIME registrations, all public commands, the walkthrough, an actual Polars custom-editor session, source reopening, and notebook cell insertion. Editor directories are temporary and removed in `finally`.
 
 CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and current stable release under Xvfb. Local packaged-install checks use dedicated `--user-data-dir` and `--extensions-dir` paths for both VS Code and Cursor.
 

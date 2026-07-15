@@ -67,6 +67,7 @@
     "test:ts": "vitest run",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
+    "test:packaged-editors": "npm run build:test-extension && node scripts/run-packaged-editor-tests.mjs",
     "test:coverage": "vitest run --coverage",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",

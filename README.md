@@ -127,6 +127,7 @@ npm run test:python
 npm run reference:check
 npm run build
 npm run package
+npm run test:packaged-editors -- data-explorer.vsix
 ```
 
 The generated [interface reference](docs/reference.md) lists every public command, setting, transformation, protocol message, and notebook MIME type. Run `npm run generate:reference` after changing any of those registries; CI rejects stale output.

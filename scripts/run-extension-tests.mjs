@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const localPython =
+  process.platform === "win32"
+    ? resolve(root, ".venv", "Scripts", "python.exe")
+    : resolve(root, ".venv", "bin", "python");
+process.env.DATA_EXPLORER_TEST_PYTHON ??= existsSync(localPython) ? localPython : "python";
 const profile = mkdtempSync(join(tmpdir(), "data-explorer-extension-host-"));
 const requestedVersion = process.env.VSCODE_TEST_VERSION;
 const installedExecutable = "/usr/share/code/code";

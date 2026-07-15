@@ -129,6 +129,15 @@ Jupyter recovery slice, 2026-07-15:
 
 This advances notebook recovery and formatter evidence but keeps the notebook rows **Partial** until remote kernels and packaged VS Code/Cursor permission, restart, saved-output, and originating-notebook interaction are recorded.
 
+Packaged editor slice, 2026-07-15:
+
+- The 53-entry allowlisted VSIX installed into fresh VS Code 1.128.0 and Cursor 3.11.19 user/extension directories. Tests ran from a separate harness extension, ensuring no TypeScript checkout or development extension shadowed `matt17br.data-explorer@0.2.0-alpha.1`.
+- Both editors activated the package, verified its publisher/gallery and Activity Bar assets, all 21 commands, Getting Started walkthrough, and v1/v2 MIME contributions. Each opened the CSV custom editor, completed a real Polars runtime session through the packaged Python source, reopened the exact source URI, and applied a real notebook cell edit.
+- This stronger test exposed and fixed the custom-editor path failing to enable webview scripts; previous tab-only extension-host acceptance could not detect that the runtime session never opened. Open Source File now also waits briefly for an in-flight active session instead of blocking on a notification.
+- Linux CI now installs and exercises the VSIX against current VS Code after allowlist verification. Local release acceptance auto-detects and repeats the package test in Cursor without touching normal profiles.
+
+This advances cross-editor/package evidence but keeps UI rows **Partial** until the full operation/export/reload/theme interaction checklist and screenshots are recorded from both packaged editors.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.
