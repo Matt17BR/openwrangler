@@ -60,7 +60,7 @@ The packaged harness auto-detects local VS Code and Cursor installations; set `D
 
 CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and current stable release under Xvfb. Distribution downloads receive three bounded attempts so a transient CDN connection failure does not masquerade as an extension regression. Local packaged-install checks use dedicated `--user-data-dir` and `--extensions-dir` paths for both VS Code and Cursor. Current VS Code also receives an isolated shared-data directory so application-level workspace state cannot fall through to the normal profile; Cursor versions without that private flag remain isolated by their user-data directory.
 
-The main/release runtime matrix must pass on Linux/Python 3.10, macOS/Python 3.12, and Windows/Python 3.14. Test fixtures must build filesystem expectations with the host path implementation, and mixed-label Pandas fixtures use an object `Index` so supported Python/Pandas type environments agree on the constructor contract.
+The main/release runtime matrix must pass on Linux/Python 3.10, macOS/Python 3.12, and Windows/Python 3.14. Test fixtures must build filesystem expectations with the host path implementation, mixed-label Pandas fixtures use an object `Index` so supported Python/Pandas type environments agree on the constructor contract, and `.gitattributes` keeps text checkouts LF-normalized while exempting binary release/test assets.
 
 ## Performance fixtures
 
