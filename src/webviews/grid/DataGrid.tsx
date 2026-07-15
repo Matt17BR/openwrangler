@@ -141,8 +141,9 @@ export function DataGrid({
           Previous block
         </button>
         <span>
-          Loaded rows {page.offset + 1}–{Math.min(page.offset + page.rows.length, page.totalRows)} of{" "}
-          {page.totalRows.toLocaleString()}
+          {page.totalRows === 0
+            ? "No rows"
+            : `Loaded rows ${page.offset + 1}–${Math.min(page.offset + page.rows.length, page.totalRows)} of ${page.totalRows.toLocaleString()}`}
         </span>
         <button
           type="button"
@@ -297,6 +298,15 @@ function ColumnHeader({
     window.addEventListener("pointerup", end, { once: true });
   };
 
+  const resizeWithKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowLeft") onResize(Math.max(80, width - 10));
+    else if (event.key === "ArrowRight") onResize(Math.min(640, width + 10));
+    else if (event.key === "Home") onResize(80);
+    else if (event.key === "End") onResize(640);
+    else return;
+    event.preventDefault();
+  };
+
   return (
     <th data-column={column.name} title={`${column.rawType}${column.nullable ? " nullable" : ""}`}>
       <div className="columnHeader">
@@ -318,9 +328,10 @@ function ColumnHeader({
         </details>
         <button
           type="button"
-          className="columnResizeHandle"
+          className="columnResizeHandle codicon codicon-gripper"
           aria-label={`Resize ${column.name} column`}
           onPointerDown={beginResize}
+          onKeyDown={resizeWithKeyboard}
         />
       </div>
       <small>{column.rawType}</small>

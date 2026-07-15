@@ -6,7 +6,11 @@ It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it i
 
 ## Screenshots
 
-These screenshots are generated from the real built webview/notebook renderer using `npm run capture:screenshots`. The capture script loads `fixtures/sample.csv` through the Polars runtime and executes `fixtures/example.ipynb` with `nbclient` to capture the current notebook MIME renderer output.
+The full-workbench screenshots come from the real packaged VSIX installed into isolated VS Code and Cursor profiles. The focused UI screenshots are generated from the same production webview/notebook bundles using `npm run capture:screenshots`; the capture loads `fixtures/sample.csv` through Polars and executes `fixtures/example.ipynb` with `nbclient`.
+
+![Packaged Data Explorer in VS Code](docs/images/editor-acceptance/vscode-dark.png)
+
+![Packaged Data Explorer in Cursor](docs/images/editor-acceptance/cursor-light.png)
 
 ![Data Explorer grid view](docs/images/grid-view.png)
 
@@ -26,12 +30,15 @@ These screenshots are generated from the real built webview/notebook renderer us
 
 - Native Polars and Pandas runtime backends, including live notebook sessions backed by the active Jupyter kernel.
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
+- Typed rendering and profiling for nullable values, large integers, decimals, time zones, nested Polars lists/structs, binary, categorical, duration, NaN, and infinity values.
 - Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, and progressive Quick Insights.
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
 - Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.
 - A searchable 27-operation catalog with native Pandas/Polars execution for row, column, text, categorical, numeric, datetime, grouping, by-example, and custom-code transforms.
+- Deterministic cross-engine edge semantics for per-column null sorting, missing/duplicate modes, Unicode casing, finite numeric scaling, nullable groups, and collision-safe categorical output.
 - Draft-first editing with typed data diffs, explicit apply/discard, latest-step editing, undo replay, and editable CodeMirror Python preview.
+- Keyboard cleaning workflow: `Ctrl/Cmd+Enter` applies a draft, `Escape` discards it, `Ctrl/Cmd+Shift+E` edits the latest step, and `Ctrl/Cmd+Alt+Z` undoes it.
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
@@ -46,7 +53,7 @@ These screenshots are generated from the real built webview/notebook renderer us
 2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
 3. Choose **Data Explorer: Open Current File**.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
-5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Applied steps can be edited from the latest step or undone. The plan, an optional draft, and viewing query are restored when the same source is reopened in the workspace.
+5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, an optional draft, and viewing query are restored when the same source is reopened in the workspace.
 6. Run **Data Explorer: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `dataExplorer.*` settings.
@@ -88,7 +95,7 @@ Polars dataframes stay Polars in the runtime. The Polars backend uses native ope
 - summaries with Polars null counts, distinct counts, value counts, and numeric aggregates
 - the complete transformation catalog and generated Polars code
 
-The test suite asserts that Polars file sessions do not call `to_pandas()`.
+The test suite asserts that Polars file sessions do not call `to_pandas()`, including nested Parquet profiling and every transformation family. Polars Excel support uses `fastexcel`; setup diagnostics request it only when that format/backend combination is selected.
 
 ## Test Locally In Cursor Or Another VS Code-Compatible Editor
 
@@ -124,6 +131,8 @@ Useful checks:
 ```bash
 npm run test:ts
 npm run test:python
+npm run test:webview-acceptance
+npm run benchmark:runtime
 npm run reference:check
 npm run build
 npm run package
@@ -149,4 +158,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. Real-kernel restart/permission matrices, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.
+Every in-scope row in the checked-in Data Wrangler 1.24.2 clean-room behavior matrix is now backed by automated or recorded acceptance evidence. This build remains an alpha prerelease while the cross-platform release/tag workflow is validated; intentionally deferred scope is listed in `docs/feature-parity.md`.

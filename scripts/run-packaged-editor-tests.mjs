@@ -1,9 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
+import { downloadAndUnzipVSCode } from "@vscode/test-electron";
+import {
+  downloadEditorWithRetry,
+  runEditorAcceptancePhase,
+  writeEditorAcceptanceHarness,
+  writeFakeJupyterExtension
+} from "./editor-acceptance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const vsix = resolve(root, process.argv[2] ?? "data-explorer.vsix");
@@ -17,26 +23,29 @@ const candidates = [
     name: "VS Code",
     key: "vscode",
     executable: "/usr/share/code/code",
-    cli: "/usr/share/code/bin/code"
+    cli: "/usr/share/code/bin/code",
+    sharedDataDir: true
   },
   {
     name: "Cursor",
     key: "cursor",
     executable: "/usr/share/cursor/cursor",
-    cli: "/usr/share/cursor/bin/cursor"
+    cli: "/usr/share/cursor/bin/cursor",
+    sharedDataDir: false
   }
 ].filter(
   (editor) =>
     existsSync(editor.executable) && existsSync(editor.cli) && (!requested?.length || requested.includes(editor.key))
 );
 if (!candidates.some((editor) => editor.key === "vscode") && (!requested?.length || requested.includes("vscode"))) {
-  const executable = await downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION ?? "stable");
+  const executable = await downloadEditorWithRetry(downloadAndUnzipVSCode, process.env.VSCODE_TEST_VERSION ?? "stable");
   const downloadedCli = process.platform === "linux" ? resolve(dirname(executable), "bin", "code") : executable;
   candidates.unshift({
     name: "VS Code",
     key: "vscode",
     executable,
-    cli: existsSync(downloadedCli) ? downloadedCli : executable
+    cli: existsSync(downloadedCli) ? downloadedCli : executable,
+    sharedDataDir: true
   });
 }
 if (!candidates.length) throw new Error("No supported VS Code or Cursor desktop executable was found.");
@@ -58,25 +67,16 @@ process.env.DATA_EXPLORER_TEST_PYTHON ??=
       : process.platform === "win32"
         ? "python"
         : "python3";
+process.env.DATA_EXPLORER_EXTENSION_TESTS = "1";
 
 for (const editor of candidates) {
   const profile = mkdtempSync(join(tmpdir(), `data-explorer-packaged-${editor.key}-`));
   const userData = resolve(profile, "user-data");
   const extensions = resolve(profile, "extensions");
   try {
-    writeFileSync(
-      resolve(profile, "package.json"),
-      JSON.stringify({
-        name: "data-explorer-packaged-test-harness",
-        displayName: "Data Explorer packaged test harness",
-        version: "0.0.0",
-        publisher: "data-explorer-tests",
-        engines: { vscode: "^1.105.0" },
-        main: "./extension.js",
-        activationEvents: ["*"]
-      })
-    );
-    writeFileSync(resolve(profile, "extension.js"), "exports.activate = function () {};\n");
+    writeEditorAcceptanceHarness(profile);
+    const fakeJupyter = resolve(profile, "fake-jupyter");
+    writeFakeJupyterExtension(fakeJupyter);
     const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
     execFileSync(
       editor.cli,
@@ -109,22 +109,21 @@ for (const editor of candidates) {
       throw new Error(`${editor.name} did not report the installed Data Explorer package. Output: ${installed}`);
     }
 
-    await runTests({
-      vscodeExecutablePath: editor.executable,
-      extensionDevelopmentPath: profile,
-      extensionTestsPath: resolve(root, "dist-test", "test", "extensionHost", "index.js"),
-      launchArgs: [
-        root,
-        "--user-data-dir",
+    const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
+    const resultPath = resolve(profile, "result.json");
+    for (const phase of ["seed", "verify"]) {
+      await runEditorAcceptancePhase({
+        editor,
+        workspace: root,
         userData,
-        "--extensions-dir",
         extensions,
-        "--disable-workspace-trust",
-        "--skip-welcome",
-        "--skip-release-notes",
-        ...sandboxArgs
-      ]
-    });
+        developmentPaths: [profile, fakeJupyter],
+        testModule,
+        python: process.env.DATA_EXPLORER_TEST_PYTHON,
+        phase,
+        resultPath
+      });
+    }
     console.log(`${editor.name} packaged acceptance passed for ${basename(vsix)}.`);
   } finally {
     rmSync(profile, { recursive: true, force: true });

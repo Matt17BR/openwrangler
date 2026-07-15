@@ -9,6 +9,36 @@ body {
   margin: 0;
 }
 
+* {
+  scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4)) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background-color: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, 0.4));
+}
+
 button,
 input,
 select,
@@ -47,6 +77,11 @@ textarea {
   border-radius: 3px;
   padding: 4px 6px;
   min-width: 0;
+}
+
+select option:checked {
+  color: var(--vscode-list-activeSelectionForeground, #ffffff);
+  background: var(--vscode-list-activeSelectionBackground, #04395e);
 }
 
 textarea {
@@ -378,8 +413,8 @@ tbody tr:hover td {
 }
 
 th small {
+  color: var(--vscode-descriptionForeground);
   display: block;
-  opacity: 0.65;
   font-weight: normal;
 }
 
@@ -387,7 +422,7 @@ th small {
   align-items: center;
   display: grid;
   gap: 6px;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   position: relative;
 }
 
@@ -404,26 +439,33 @@ th small {
 }
 
 .columnMenu {
+  min-height: 30px;
+  min-width: 30px;
   position: relative;
 }
 
 .columnMenu summary {
+  align-items: center;
   color: var(--vscode-descriptionForeground);
   cursor: pointer;
+  display: flex;
+  justify-content: center;
   list-style: none;
+  min-height: 30px;
+  min-width: 30px;
 }
 
 .columnResizeHandle {
+  align-items: center;
   background: transparent;
-  border-radius: 0;
-  bottom: -52px;
+  color: var(--vscode-descriptionForeground);
   cursor: col-resize;
+  display: flex;
+  justify-content: center;
+  margin: -7px -8px -7px -4px;
+  min-height: 30px;
   padding: 0;
-  position: absolute;
-  right: -9px;
-  top: -4px;
-  width: 7px;
-  z-index: 4;
+  width: 30px;
 }
 
 .columnResizeHandle:hover,

@@ -117,6 +117,11 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return this.snapshot && this.generatedCode ? this.displayedCode : undefined;
   }
 
+  setCodeForExportForTests(code: string): void {
+    this.displayedCode = code;
+    this.render();
+  }
+
   private render(): void {
     if (!this.view) return;
     void this.view.webview.postMessage({ kind: "codePreview", code: this.displayedCode });
@@ -131,7 +136,24 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 }
 
-export function registerNativeViews(context: vscode.ExtensionContext, coordinator: SessionCoordinator): void {
+export interface NativeViewsTestController {
+  setCodeForExport(code: string): void;
+}
+
+export function registerNativeViews(
+  context: vscode.ExtensionContext,
+  coordinator: SessionCoordinator
+): NativeViewsTestController {
+  const updatePlanContexts = (snapshot: ActiveSessionSnapshot | undefined) => {
+    void vscode.commands.executeCommand("setContext", "dataExplorer.hasDraft", Boolean(snapshot?.metadata.draftStep));
+    void vscode.commands.executeCommand(
+      "setContext",
+      "dataExplorer.canChangePlan",
+      Boolean(snapshot && !snapshot.metadata.draftStep && snapshot.metadata.steps.length > 0)
+    );
+  };
+  updatePlanContexts(coordinator.activeSession());
+  const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
   const providers = {
     "dataExplorer.operations": new DataExplorerTreeProvider("operations", coordinator),
     "dataExplorer.summary": new DataExplorerTreeProvider("summary", coordinator),
@@ -143,6 +165,7 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
   }
   const codePreview = new CodePreviewViewProvider(context, coordinator);
   context.subscriptions.push(
+    contextSubscription,
     vscode.commands.registerCommand("dataExplorer.startOperation", async (kind?: OperationKind) => {
       if (!kind || !operationCatalog.some((operation) => operation.kind === kind)) return;
       if (!DataExplorerPanel.sendEditorAction({ action: "openOperation", operationKind: kind })) {
@@ -168,9 +191,9 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
         return;
       }
       await vscode.env.clipboard.writeText(code);
-      await vscode.window.showInformationMessage("Data Explorer code copied to the clipboard.");
+      void vscode.window.showInformationMessage("Data Explorer code copied to the clipboard.");
     }),
-    vscode.commands.registerCommand("dataExplorer.exportCode", async () => {
+    vscode.commands.registerCommand("dataExplorer.exportCode", async (providedDestination?: unknown) => {
       if (!(await requireTrustedWorkspace("export code"))) return;
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
@@ -178,15 +201,18 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
         await vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
         return;
       }
-      const destination = await vscode.window.showSaveDialog({
-        title: "Export Data Explorer Python Code",
-        defaultUri: defaultExportUri(snapshot, ".clean.py"),
-        filters: { "Python script": ["py"] },
-        saveLabel: "Export code"
-      });
+      const destination =
+        providedDestination instanceof vscode.Uri
+          ? providedDestination
+          : await vscode.window.showSaveDialog({
+              title: "Export Data Explorer Python Code",
+              defaultUri: defaultExportUri(snapshot, ".clean.py"),
+              filters: { "Python script": ["py"] },
+              saveLabel: "Export code"
+            });
       if (!destination) return;
       await vscode.workspace.fs.writeFile(destination, Buffer.from(code, "utf8"));
-      await vscode.window.showInformationMessage(`Exported Data Explorer code to ${destination.fsPath}.`);
+      void vscode.window.showInformationMessage(`Exported Data Explorer code to ${destination.fsPath}.`);
     }),
     vscode.commands.registerCommand("dataExplorer.insertNotebookCode", async () => {
       if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return;
@@ -225,7 +251,7 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
         await vscode.window.showErrorMessage("VS Code could not insert the generated Data Explorer function.");
         return;
       }
-      await vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
+      void vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
     }),
     vscode.commands.registerCommand("dataExplorer.exportData", async () => {
       if (!(await requireTrustedWorkspace("export cleaned data"))) return;
@@ -309,6 +335,10 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
       )
     )
   );
+
+  return {
+    setCodeForExport: (code) => codePreview.setCodeForExportForTests(code)
+  };
 }
 
 async function waitForActiveSession(

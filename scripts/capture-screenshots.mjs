@@ -1,16 +1,35 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import pixelmatch from "pixelmatch";
+import { chromium } from "playwright-core";
+import { PNG } from "pngjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
+const actualDir = resolve(root, "tmp", "screenshots-actual");
+const diffDir = resolve(root, "tmp", "screenshots-diff");
 const docsDir = resolve(root, "docs", "images");
-const python = resolve(root, ".venv", "bin", "python");
-const chrome = process.env.CHROME_BIN ?? "google-chrome";
+const hostedPython = process.env.pythonLocation
+  ? process.platform === "win32"
+    ? resolve(process.env.pythonLocation, "python.exe")
+    : resolve(process.env.pythonLocation, "bin", "python")
+  : undefined;
+const localPython =
+  process.platform === "win32"
+    ? resolve(root, ".venv", "Scripts", "python.exe")
+    : resolve(root, ".venv", "bin", "python");
+const python =
+  [process.env.DATA_EXPLORER_PYTHON, hostedPython, localPython].find(
+    (candidate) => candidate && existsSync(candidate)
+  ) ?? (process.platform === "win32" ? "python" : "python3");
+const chrome = process.env.CHROME_BIN ?? chromium.executablePath();
+const verify = process.argv.includes("--verify");
 
 mkdirSync(tmpDir, { recursive: true });
 mkdirSync(docsDir, { recursive: true });
+if (verify) mkdirSync(actualDir, { recursive: true });
 
 const payloads = JSON.parse(
   execFileSync(
@@ -136,6 +155,30 @@ wide_pages = {
     for offset in range(0, 1000, 200)
 }
 
+empty_path = root / "tmp" / "screenshots" / "empty.csv"
+empty_path.write_text("name,value\n", encoding="utf-8")
+empty = manager.open_session(
+    {"kind": "file", "label": "empty.csv", "path": str(empty_path)},
+    backend="polars",
+    page_size=20,
+)
+
+unicode_path = root / "tmp" / "screenshots" / "unicode.csv"
+pl.DataFrame({
+    "city 🧭": ["München", "東京", "São Paulo", "مرحبا"],
+    "description": [
+        "A very long value designed to verify truncation without losing the full accessible cell title " * 2,
+        "combining marks: e\u0301 · emoji: 🧪📊 · CJK: 数据探索",
+        "Português — naïve façade — Ελληνικά",
+        "bidirectional text and punctuation (مرحبا بالعالم)",
+    ],
+}).write_csv(unicode_path)
+unicode = manager.open_session(
+    {"kind": "file", "label": "unicode 🧪.csv", "path": str(unicode_path)},
+    backend="polars",
+    page_size=20,
+)
+
 notebook = nbformat.read(root / "fixtures" / "example.ipynb", as_version=4)
 client = NotebookClient(notebook, timeout=60, kernel_name="python3", resources={"metadata": {"path": str(root)}})
 client.execute()
@@ -173,6 +216,8 @@ print(json.dumps({
     "exampleDraft": example_draft,
     "wide": wide,
     "widePages": wide_pages,
+    "empty": empty,
+    "unicode": unicode,
     "notebook": mime_payload,
     "legacyNotebook": legacy_mime_payload,
 }))
@@ -220,6 +265,42 @@ writeNotebookHarness(
   "acceptance/notebook-v1-compat-dark-1280.png"
 );
 writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages);
+writeWebviewHarness("empty-state.html", payloads.empty, {}, "acceptance/empty-state-dark-1280.png");
+writeWebviewHarness("unicode-state.html", payloads.unicode, {}, "acceptance/unicode-state-dark-1280.png");
+writeWebviewHarness(
+  "loading-state.html",
+  payloads.opened,
+  {},
+  "acceptance/loading-state-dark-1280.png",
+  {},
+  { sendInitial: false }
+);
+writeWebviewHarness(
+  "error-state.html",
+  {
+    kind: "error",
+    code: "fixture_error",
+    message: "Data Explorer could not read this malformed fixture. Review the delimiter and encoding settings.",
+    recoverable: true
+  },
+  {},
+  "acceptance/error-state-dark-1280.png"
+);
+writeWebviewHarness(
+  "recovery-state.html",
+  payloads.opened,
+  {},
+  "acceptance/recovery-state-dark-1280.png",
+  {},
+  {
+    followupMessage: {
+      kind: "error",
+      code: "runtime_restarted",
+      message: "The Python runtime restarted. The saved plan is being replayed.",
+      recoverable: true
+    }
+  }
+);
 writeWebviewHarness("grid-dark-800.html", payloads.opened, {}, "acceptance/grid-dark-800.png", {}, { width: 800 });
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
 writeWebviewHarness(
@@ -238,6 +319,14 @@ writeWebviewHarness(
   {},
   { theme: "highContrast" }
 );
+writeWebviewHarness(
+  "grid-high-contrast-light-1280.html",
+  payloads.opened,
+  {},
+  "acceptance/grid-high-contrast-light-1280.png",
+  {},
+  { theme: "highContrastLight" }
+);
 for (const zoom of [0.8, 1.5, 2]) {
   writeWebviewHarness(
     `grid-zoom-${String(zoom).replace(".", "-")}.html`,
@@ -251,7 +340,7 @@ for (const zoom of [0.8, 1.5, 2]) {
 
 function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName, suppliedPages = {}, appearance = {}) {
   const htmlPath = resolve(tmpDir, fileName);
-  const outputPath = resolve(docsDir, outputName);
+  const outputPath = screenshotOutput(outputName);
   const mediaDir = "../../media";
   const theme = appearance.theme ?? "dark";
   const zoom = appearance.zoom ?? 1;
@@ -259,10 +348,11 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const height = appearance.height ?? 760;
   const editorAction = appearance.editorAction;
   const html = `<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Data Explorer webview acceptance</title>
   <link rel="stylesheet" href="${mediaDir}/webview.css" />
   <style>
     ${themeTokens(theme)}
@@ -270,13 +360,17 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   </style>
   <script>
     const sessionPayload = ${JSON.stringify(sessionPayload)};
+    window.dataExplorerSessionPayload = sessionPayload;
     const columnValues = ${JSON.stringify(columnValues)};
     const pages = ${JSON.stringify(suppliedPages)};
+    window.dataExplorerMessages = [];
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
+        window.dataExplorerMessages.push(message);
         if (message.kind === "ready") {
-          setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);
+          ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);'}
           ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}
+          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)} })), 120);` : ""}
           for (const value of Object.values(columnValues)) {
             setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: value })), 80);
           }
@@ -321,23 +415,24 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 
 function writeNotebookHarness(fileName, payload, outputName) {
   const htmlPath = resolve(tmpDir, fileName);
-  const outputPath = resolve(docsDir, outputName);
+  const outputPath = screenshotOutput(outputName);
   const rendererUrl = "../../media/notebookRenderer.js";
   const html = `<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Data Explorer notebook renderer acceptance</title>
   <style>
     :root {
       --vscode-panel-border: #3c3c3c;
       color: #d4d4d4;
       background: #1e1e1e;
-      font-family: Inter, "Segoe UI", sans-serif;
+      font-family: "Liberation Sans", Arial, sans-serif;
     }
     body { margin: 0; padding: 32px; background: #1e1e1e; }
     .notebook-shell { border: 1px solid #3c3c3c; border-radius: 10px; overflow: hidden; background: #202020; }
-    .cell { padding: 18px 22px; border-bottom: 1px solid #3c3c3c; font-family: "JetBrains Mono", Consolas, monospace; white-space: pre; color: #d4d4d4; }
+    .cell { padding: 18px 22px; border-bottom: 1px solid #3c3c3c; font-family: "Liberation Mono", monospace; white-space: pre; color: #d4d4d4; }
     .data-explorer-notebook header { padding: 14px 18px; background: #252526; font-weight: 700; }
     .data-explorer-notebook table { background: #202020; }
     .data-explorer-notebook th { background: #2d2d30; }
@@ -361,7 +456,10 @@ show(df, label="sample.csv")</div>
   </div>
   <script type="module">
     import { activate } from "${rendererUrl}";
-    const renderer = activate({});
+    window.dataExplorerNotebookMessages = [];
+    const renderer = activate({
+      postMessage(message) { window.dataExplorerNotebookMessages.push(message); }
+    });
     renderer.renderOutputItem({ json: () => (${JSON.stringify(payload)}) }, document.getElementById("notebook-output"));
   </script>
 </body>
@@ -372,12 +470,13 @@ show(df, label="sample.csv")</div>
 
 function writeCodePreviewHarness(fileName, code, outputName) {
   const htmlPath = resolve(tmpDir, fileName);
-  const outputPath = resolve(docsDir, outputName);
+  const outputPath = screenshotOutput(outputName);
   const html = `<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Data Explorer code preview acceptance</title>
   <style>
     ${themeTokens("dark")}
     html, body, #root { height: 100%; margin: 0; overflow: hidden; background: var(--vscode-editor-background); }
@@ -425,6 +524,38 @@ function screenshot(htmlPath, outputPath, width = 1280, height = 760) {
   }
   const size = readFileSync(outputPath).byteLength;
   console.log(`Captured ${outputPath} (${size} bytes)`);
+  if (verify) compareScreenshot(outputPath);
+}
+
+function screenshotOutput(outputName) {
+  return resolve(verify ? actualDir : docsDir, outputName);
+}
+
+function compareScreenshot(actualPath) {
+  const relativePath = relative(actualDir, actualPath);
+  const baselinePath = resolve(docsDir, relativePath);
+  const baseline = PNG.sync.read(readFileSync(baselinePath));
+  const actual = PNG.sync.read(readFileSync(actualPath));
+  if (baseline.width !== actual.width || baseline.height !== actual.height) {
+    throw new Error(
+      `Visual regression for ${relativePath}: expected ${baseline.width}x${baseline.height}, received ${actual.width}x${actual.height}.`
+    );
+  }
+  const diff = new PNG({ width: actual.width, height: actual.height });
+  const changed = pixelmatch(baseline.data, actual.data, diff.data, actual.width, actual.height, {
+    threshold: 0.2,
+    includeAA: false
+  });
+  const ratio = changed / (actual.width * actual.height);
+  if (ratio > 0.01) {
+    const diffPath = resolve(diffDir, relativePath);
+    mkdirSync(dirname(diffPath), { recursive: true });
+    writeFileSync(diffPath, PNG.sync.write(diff));
+    throw new Error(
+      `Visual regression for ${relativePath}: ${(ratio * 100).toFixed(2)}% of pixels changed (limit 1.00%). Diff: ${diffPath}`
+    );
+  }
+  console.log(`Verified ${relativePath} (${(ratio * 100).toFixed(3)}% changed).`);
 }
 
 function themeTokens(theme) {
@@ -442,7 +573,12 @@ function themeTokens(theme) {
       buttonForeground: "#ffffff",
       badge: "#4d4d4d",
       badgeForeground: "#ffffff",
-      focus: "#007fd4"
+      focus: "#007fd4",
+      scrollbar: "#79797966",
+      scrollbarHover: "#646464b3",
+      scrollbarActive: "#bfbfbf66",
+      selection: "#04395e",
+      selectionForeground: "#ffffff"
     },
     light: {
       foreground: "#333333",
@@ -457,7 +593,12 @@ function themeTokens(theme) {
       buttonForeground: "#ffffff",
       badge: "#c4c4c4",
       badgeForeground: "#333333",
-      focus: "#0090f1"
+      focus: "#0090f1",
+      scrollbar: "#64646466",
+      scrollbarHover: "#646464b3",
+      scrollbarActive: "#00000099",
+      selection: "#0060c0",
+      selectionForeground: "#ffffff"
     },
     highContrast: {
       foreground: "#ffffff",
@@ -472,7 +613,32 @@ function themeTokens(theme) {
       buttonForeground: "#ffffff",
       badge: "#000000",
       badgeForeground: "#ffffff",
-      focus: "#ffff00"
+      focus: "#ffff00",
+      scrollbar: "#ffffff99",
+      scrollbarHover: "#ffffffcc",
+      scrollbarActive: "#ffffff",
+      selection: "#000000",
+      selectionForeground: "#ffffff"
+    },
+    highContrastLight: {
+      foreground: "#000000",
+      description: "#000000",
+      editor: "#ffffff",
+      header: "#ffffff",
+      sidebar: "#ffffff",
+      border: "#000000",
+      input: "#ffffff",
+      inputForeground: "#000000",
+      button: "#ffffff",
+      buttonForeground: "#000000",
+      badge: "#ffffff",
+      badgeForeground: "#000000",
+      focus: "#0f4a85",
+      scrollbar: "#00000099",
+      scrollbarHover: "#000000cc",
+      scrollbarActive: "#000000",
+      selection: "#ffffff",
+      selectionForeground: "#000000"
     }
   };
   const palette = palettes[theme] ?? palettes.dark;
@@ -490,7 +656,18 @@ function themeTokens(theme) {
     --vscode-badge-background: ${palette.badge};
     --vscode-badge-foreground: ${palette.badgeForeground};
     --vscode-focusBorder: ${palette.focus};
+    --vscode-scrollbarSlider-background: ${palette.scrollbar};
+    --vscode-scrollbarSlider-hoverBackground: ${palette.scrollbarHover};
+    --vscode-scrollbarSlider-activeBackground: ${palette.scrollbarActive};
+    --vscode-list-activeSelectionBackground: ${palette.selection};
+    --vscode-list-activeSelectionForeground: ${palette.selectionForeground};
     --vscode-notifications-background: ${palette.header};
     --vscode-notifications-border: ${palette.border};
+    --vscode-font-family: "Liberation Sans", Arial, sans-serif;
+    --vscode-editor-font-family: "Liberation Mono", monospace;
+    font-kerning: none;
+    font-optical-sizing: none;
+    font-variant-ligatures: none;
+    font-synthesis: none;
   }`;
 }

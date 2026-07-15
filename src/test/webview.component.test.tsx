@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
@@ -101,5 +101,44 @@ describe("DataGrid", () => {
     fireEvent.keyDown(city as HTMLTableCellElement, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(sales));
     expect(screen.queryByText("Profiling…")).toBeNull();
+  });
+
+  it("resizes columns from the keyboard and labels an empty grid", () => {
+    const { rerender } = render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onRequestSummary={() => undefined}
+      />
+    );
+
+    const resize = screen.getByRole("button", { name: "Resize city column" });
+    fireEvent.keyDown(resize, { key: "ArrowRight" });
+    expect(document.querySelectorAll("col")[1]).toHaveStyle({ width: "200px" });
+
+    rerender(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 0, columns: 2 }, filteredShape: { rows: 0, columns: 2 } }}
+        page={{ offset: 0, limit: 2, totalRows: 0, rows: [] }}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={vi.fn()}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onRequestSummary={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("No rows")).toBeInTheDocument();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
   });
 });

@@ -59,7 +59,7 @@
     "reference:check": "node scripts/generate-reference.mjs --check",
     "generate:protocol": "node scripts/generate-protocol.mjs",
     "protocol:check": "node scripts/generate-protocol.mjs --check",
-    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check",
+    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check && npm run license:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
     "watch:webview": "vite build --watch",
@@ -68,8 +68,15 @@
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
     "test:packaged-editors": "npm run build:test-extension && node scripts/run-packaged-editor-tests.mjs",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "npm run test:coverage:ts && npm run test:coverage:python",
+    "test:coverage:ts": "vitest run --coverage",
+    "test:coverage:python": "node scripts/run-python.mjs -m pytest python/tests -q --cov=data_wrangler_runtime --cov-report=term --cov-report=xml:tmp/coverage/python.xml --cov-fail-under=78",
+    "license:check": "node scripts/check-licenses.mjs",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
+    "test:visual": "npm run build && node scripts/capture-screenshots.mjs --verify",
+    "test:accessibility": "node scripts/test-webview-accessibility.mjs",
+    "test:webview-acceptance": "npm run test:visual && npm run test:accessibility",
+    "benchmark:runtime": "node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",
     "package": "vsce package",
     "verify:vsix": "node scripts/verify-vsix.mjs"
@@ -201,6 +208,31 @@
         "command": "dataExplorer.reportIssue",
         "title": "Data Explorer: Report Issue",
         "icon": "$(github)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "dataExplorer.applyStep",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+      },
+      {
+        "command": "dataExplorer.discardStep",
+        "key": "escape",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+      },
+      {
+        "command": "dataExplorer.editLatestStep",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+      },
+      {
+        "command": "dataExplorer.undoStep",
+        "key": "ctrl+alt+z",
+        "mac": "cmd+alt+z",
+        "when": "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
       }
     ],
     "viewsContainers": {
@@ -532,12 +564,16 @@
     "@vitest/coverage-v8": "^4.1.7",
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.9.1",
+    "axe-core": "^4.12.1",
     "eslint": "^9.32.0",
     "eslint-plugin-react-hooks": "^7.0.0",
     "globals": "^16.3.0",
     "jsdom": "^29.1.1",
     "json-schema-to-typescript": "^15.0.4",
     "npm-run-all": "^4.1.5",
+    "pixelmatch": "^7.2.0",
+    "playwright-core": "^1.61.1",
+    "pngjs": "^7.0.0",
     "prettier": "^3.6.2",
     "pyright": "^1.1.405",
     "typescript": "^6.0.3",

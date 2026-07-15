@@ -31,11 +31,13 @@ const execFileAsync = promisify(execFile);
 
 export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
   private process: ChildProcessWithoutNullStreams | undefined;
+  private processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
   private runtimeExitError: Error | undefined;
   private stderrBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
   private readonly output = vscode.window.createOutputChannel("Data Explorer");
   private generation = 0;
+  private runtimeEpoch = 0;
   private disposed = false;
   private environmentPromise: Promise<PythonEnvironment> | undefined;
   private readonly dependencyCache = new Map<string, string[]>();
@@ -45,6 +47,10 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
 
   get runtimeGeneration(): number {
     return this.generation;
+  }
+
+  get runtimeRunning(): boolean {
+    return Boolean((this.process && !this.process.killed) || this.processStart);
   }
 
   async request(request: DataExplorerRequest, options: BridgeRequestOptions = {}): Promise<DataExplorerResponse> {
@@ -114,10 +120,18 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
 
   restart(reason = "Data Explorer runtime restarted."): void {
     this.output.appendLine(reason);
+    this.runtimeEpoch += 1;
     const proc = this.process;
     this.process = undefined;
+    this.processStart = undefined;
     this.rejectAll(new Error(reason));
     proc?.kill();
+  }
+
+  onIdle(): void {
+    if (this.runtimeRunning) {
+      this.restart("Data Explorer runtime stopped after its last session closed.");
+    }
   }
 
   clearRuntimeSelection(): void {
@@ -126,7 +140,7 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     this.restart("Python runtime selection changed.");
   }
 
-  async installMissingDependencies(): Promise<boolean> {
+  async installMissingDependencies(confirmed?: boolean): Promise<boolean> {
     const missing = this.lastMissingDependencies;
     if (!missing || missing.modules.length === 0) {
       await vscode.window.showInformationMessage("Data Explorer has no unresolved runtime dependencies.");
@@ -136,12 +150,15 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
       await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
       return false;
     }
-    const choice = await vscode.window.showWarningMessage(
-      `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
-      { modal: true, detail: "Data Explorer never installs packages without this confirmation." },
-      "Install"
-    );
-    if (choice !== "Install") return false;
+    if (confirmed !== true) {
+      if (confirmed === false) return false;
+      const choice = await vscode.window.showWarningMessage(
+        `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
+        { modal: true, detail: "Data Explorer never installs packages without this confirmation." },
+        "Install"
+      );
+      if (choice !== "Install") return false;
+    }
 
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Installing Data Explorer dependencies" },
@@ -168,6 +185,20 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     if (this.process && !this.process.killed) {
       return this.process;
     }
+    if (this.processStart) return this.processStart;
+
+    const epoch = this.runtimeEpoch;
+    const start = this.startProcess(request, epoch);
+    this.processStart = start;
+    try {
+      return await start;
+    } finally {
+      if (this.processStart === start) this.processStart = undefined;
+    }
+  }
+
+  private async startProcess(request: DataExplorerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams> {
+    if (this.process && !this.process.killed) return this.process;
 
     this.runtimeExitError = undefined;
     this.stderrBuffer = "";
@@ -175,6 +206,10 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     const resource =
       request.kind === "openSession" && request.source.path ? vscode.Uri.file(request.source.path) : undefined;
     const environment = await this.environment(resource);
+    if (this.disposed || epoch !== this.runtimeEpoch) {
+      throw new Error("Data Explorer runtime start was cancelled.");
+    }
+    if (this.process && !this.process.killed) return this.process;
     const pythonPath = environment.executable;
     const runtimeRoot = path.join(this.context.extensionPath, "python");
 

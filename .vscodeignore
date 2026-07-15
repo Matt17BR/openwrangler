@@ -2,9 +2,12 @@
 node_modules/**
 src/**
 python/tests/**
+python/benchmarks/**
 protocol/**
 fixtures/**
 tmp/**
+coverage/**
+.coverage
 .github/**
 .vscode/**
 .git/**

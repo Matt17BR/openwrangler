@@ -22,10 +22,21 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: npm ci
+      - run: npx playwright-core install --with-deps chromium
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
       - run: npm run check
       - run: npm test
+      - run: npm run test:webview-acceptance
+      - if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: webview-visual-evidence
+          path: |
+            tmp/screenshots-actual/
+            tmp/screenshots-diff/
+          if-no-files-found: ignore
+      - run: npm run license:check
       - run: npm audit --omit=dev
       - run: python -m pip_audit
       - run: npm run package -- --out data-explorer.vsix
@@ -38,6 +49,28 @@ jobs:
         with:
           name: data-explorer-vsix
           path: data-explorer.vsix
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@v6
+        with:
+          name: coverage-reports
+          path: |
+            coverage/
+            tmp/coverage/python.xml
 
   python-matrix:
     runs-on: ubuntu-latest
