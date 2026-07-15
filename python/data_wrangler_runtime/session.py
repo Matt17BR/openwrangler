@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import os
+import tempfile
 import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 from .engines import DataFrameEngine, EngineError, PandasEngine, PolarsEngine
 from .operations import OperationError, validate_step
@@ -268,6 +271,54 @@ class SessionManager:
             session.plan_input_schemas.pop()
             session.committed = self._replay(session, session.plan)
             return self._finish_plan_change(session, "undo", offset, limit, reset_view=True)
+
+    def export_data(
+        self,
+        session_id: str,
+        revision: int,
+        path: str,
+        format_name: Literal["csv", "parquet"],
+    ) -> dict[str, Any]:
+        session = self._session(session_id)
+        with session.lock:
+            self._assert_revision(session, revision)
+            self._assert_editable(session)
+            if session.draft_step is not None:
+                raise EngineError("Apply or discard the draft step before exporting cleaned data.")
+            if format_name not in {"csv", "parquet"}:
+                raise EngineError(f"Unsupported export format: {format_name}")
+
+            destination = Path(path).expanduser().resolve()
+            source_path = session.source.get("path")
+            if source_path and destination == Path(str(source_path)).expanduser().resolve():
+                raise EngineError("Choose a new destination. Data Explorer never overwrites the source file.")
+            if not destination.parent.is_dir():
+                raise EngineError(f"Export directory does not exist: {destination.parent}")
+
+            temporary_path: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=f".{destination.name}.",
+                    suffix=".tmp",
+                    dir=destination.parent,
+                    delete=False,
+                ) as temporary:
+                    temporary_path = temporary.name
+                session.engine.export_data(session.committed, temporary_path, format_name)
+                os.replace(temporary_path, destination)
+                temporary_path = None
+            finally:
+                if temporary_path is not None:
+                    Path(temporary_path).unlink(missing_ok=True)
+
+            return {
+                "kind": "dataExported",
+                "revision": session.revision,
+                "path": str(destination),
+                "format": format_name,
+                "shape": session.engine.shape(session.committed),
+            }
 
     def close_session(self, session_id: str, revision: int) -> dict[str, Any]:
         self._assert_revision(self._session(session_id), revision)

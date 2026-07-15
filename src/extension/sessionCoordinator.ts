@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import type {
   DataExplorerRequest,
   DataExplorerResponse,
+  DataExportedResponse,
   ErrorResponse,
   OpenSessionRequest,
   PageResponse,
@@ -79,6 +80,21 @@ export class SessionCoordinator implements vscode.Disposable {
           code: session.code
         }
       : undefined;
+  }
+
+  async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
+    const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+    if (!session) throw new Error("Open a dataframe in Data Explorer before exporting cleaned data.");
+    const response = await this.request(session.delegate, {
+      kind: "exportData",
+      sessionId: session.publicId,
+      revision: session.publicRevision,
+      path,
+      format
+    });
+    if (response.kind === "error") throw new Error(response.message);
+    if (response.kind !== "dataExported") throw new Error("The runtime returned an unexpected export response.");
+    return response;
   }
 
   dispose(): void {
@@ -253,6 +269,12 @@ export class SessionCoordinator implements vscode.Disposable {
     if (response.kind === "summary" || response.kind === "columnValues") {
       if (response.revision < requestRuntimeRevision) {
         return protocolError("stale_response", "Ignored a stale profiling response.", true, session.publicId);
+      }
+      return { ...response, revision: session.publicRevision };
+    }
+    if (response.kind === "dataExported") {
+      if (response.revision < requestRuntimeRevision) {
+        return protocolError("stale_response", "Ignored a stale export response.", true, session.publicId);
       }
       return { ...response, revision: session.publicRevision };
     }

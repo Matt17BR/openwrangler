@@ -87,6 +87,10 @@ class DataFrameEngine(ABC):
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+        raise NotImplementedError
+
 
 def normalize_cell(value: Any) -> dict[str, Any]:
     is_null = value is None

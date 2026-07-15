@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from math import ceil, floor, isfinite
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .base import (
     DataFrameEngine,
@@ -54,6 +54,16 @@ class PandasEngine(DataFrameEngine):
         if isinstance(value, pd.Series):
             return value.to_frame()
         return value
+
+    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+        df = self.normalize(frame)
+        if format_name == "csv":
+            df.to_csv(path, index=False)
+            return
+        if format_name == "parquet":
+            df.to_parquet(path, index=False)
+            return
+        raise EngineError(f"Unsupported Pandas export format: {format_name}")
 
     def shape(self, frame: Any) -> dict[str, int]:
         df = self.normalize(frame)

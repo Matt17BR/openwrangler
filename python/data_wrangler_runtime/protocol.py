@@ -18,6 +18,7 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "applyDraft": ("sessionId", "revision", "offset", "limit"),
     "discardDraft": ("sessionId", "revision", "offset", "limit"),
     "undoStep": ("sessionId", "revision", "offset", "limit"),
+    "exportData": ("sessionId", "revision", "path", "format"),
     "closeSession": ("sessionId", "revision"),
     "cancelRequest": ("targetRequestId",),
 }
@@ -32,6 +33,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
     "applyDraft": {"kind", "sessionId", "revision", "offset", "limit"},
     "discardDraft": {"kind", "sessionId", "revision", "offset", "limit"},
     "undoStep": {"kind", "sessionId", "revision", "offset", "limit"},
+    "exportData": {"kind", "sessionId", "revision", "path", "format"},
     "closeSession": {"kind", "sessionId", "revision"},
     "cancelRequest": {"kind", "targetRequestId"},
 }
@@ -87,6 +89,11 @@ def decode_request(value: Any) -> dict[str, Any]:
             not isinstance(request["replaceStepId"], str) or not request["replaceStepId"]
         ):
             raise ProtocolError("replaceStepId must be a non-empty string.")
+    if kind == "exportData":
+        if not isinstance(request["path"], str) or not request["path"]:
+            raise ProtocolError("path must be a non-empty string.")
+        if request["format"] not in {"csv", "parquet"}:
+            raise ProtocolError("format must be csv or parquet.")
     return dict(request)
 
 

@@ -16,7 +16,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD     |
 | Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD  |
 | Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Partial | Runtime/UI green; persistence/shortcuts TBD     |
-| Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror green; export TBD   |
+| Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green        |
 | Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
 | Missing/duplicate row operations                    |    Yes |    Yes | Partial | Core null/duplicate tests green; edges TBD      |
@@ -26,8 +26,8 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Group and aggregate                                 |    Yes |    Yes | Partial | Core aggregation tests green; typed edges TBD   |
 | Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD      |
 | String/datetime/new-column by example               |    Yes |    Yes | Planned | Candidate ranking and ambiguity fixtures        |
-| Copy/script/notebook code export                    |    Yes |    Yes | Planned | Clipboard/file/notebook edit tests              |
-| CSV and Parquet data export                         |    Yes |    Yes | Planned | Atomic-write and source-protection tests        |
+| Copy/script/notebook code export                    |    Yes |    Yes | Partial | Clipboard/script green; notebook insertion TBD  |
+| CSV and Parquet data export                         |    Yes |    Yes | Partial | Cross-engine atomic/source tests green          |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
 | Runtime crash/reload/session replay                 |    Yes |    Yes | Partial | Runtime/workspace replay green; injection TBD   |
@@ -77,6 +77,14 @@ Persistence slice, 2026-07-15:
 - `npm run test:extension-host` remained green on VS Code 1.128.0 after enabling workspace-state restoration.
 
 This advances reload replay but keeps the row **Partial** until a failure-injected packaged-editor test applies a plan, reloads VS Code and Cursor, and verifies the reconstructed grid and cleanup behavior.
+
+Export slice, 2026-07-15:
+
+- `npm test`: 16 TypeScript and 43 Python tests passed. Both engines export committed plans to CSV and Parquet; Polars export fails the test if `to_pandas()` is called.
+- Runtime tests prove view-only filters do not enter exported data, pending drafts and source overwrite are rejected, successful writes replace an existing destination, and failed writes preserve it while removing temporary files.
+- Protocol v2 carries revision-checked export requests and typed completion responses. VS Code commands copy the editable code buffer, save a Python script, and prompt for an explicit cleaned-data destination under Workspace Trust.
+
+This advances export rows to **Partial**. Notebook insertion, command-dialog integration tests, dependency diagnostics for Pandas-to-Parquet export, and packaged VS Code/Cursor interaction remain mandatory.
 
 ## Explicitly deferred from 1.0
 

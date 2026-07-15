@@ -64,6 +64,26 @@ class PolarsEngine(DataFrameEngine):
             return value.collect()
         return value
 
+    def export_data(self, frame: Any, path: str, format_name: Literal["csv", "parquet"]) -> None:
+        import polars as pl
+
+        if isinstance(frame, pl.LazyFrame):
+            if format_name == "csv":
+                frame.sink_csv(path)
+                return
+            if format_name == "parquet":
+                frame.sink_parquet(path)
+                return
+        else:
+            df = self.normalize(frame)
+            if format_name == "csv":
+                df.write_csv(path)
+                return
+            if format_name == "parquet":
+                df.write_parquet(path)
+                return
+        raise EngineError(f"Unsupported Polars export format: {format_name}")
+
     def shape(self, frame: Any) -> dict[str, int]:
         import polars as pl
 

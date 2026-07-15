@@ -22,6 +22,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Revision-safe draft preview, typed page diffs, apply/discard/latest-step edit/undo, and runtime plan replay.
 - A searchable VS Code-native operation builder, synchronized Cleaning Steps view, draft diff surface, and editable CodeMirror code panel.
 - Workspace-scoped persistence and validated replay for applied steps, an optional draft, and independent viewing state.
+- Editable-code clipboard/script export and atomic native Pandas/Polars cleaned-data export to CSV or Parquet.
 
 ### Changed
 
@@ -33,7 +34,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 
 ### Known gaps
 
-- Persisted editing plans, by-example operations, exports, notebook MIME v2, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- By-example operations, notebook insertion, notebook MIME v2, packaged reload recovery, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

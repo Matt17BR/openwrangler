@@ -112,6 +112,10 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.subscription.dispose();
   }
 
+  codeForExport(): string | undefined {
+    return this.snapshot && this.generatedCode ? this.displayedCode : undefined;
+  }
+
   private render(): void {
     if (!this.view) return;
     void this.view.webview.postMessage({ kind: "codePreview", code: this.displayedCode });
@@ -156,6 +160,85 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
     vscode.commands.registerCommand("dataExplorer.undoStep", () =>
       DataExplorerPanel.sendEditorAction({ action: "undoStep" })
     ),
+    vscode.commands.registerCommand("dataExplorer.copyCode", async () => {
+      const code = codePreview.codeForExport();
+      if (!code) {
+        await vscode.window.showInformationMessage("Add a cleaning step before copying generated code.");
+        return;
+      }
+      await vscode.env.clipboard.writeText(code);
+      await vscode.window.showInformationMessage("Data Explorer code copied to the clipboard.");
+    }),
+    vscode.commands.registerCommand("dataExplorer.exportCode", async () => {
+      if (!(await requireTrustedWorkspace("export code"))) return;
+      const snapshot = coordinator.activeSession();
+      const code = codePreview.codeForExport();
+      if (!snapshot || !code) {
+        await vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
+        return;
+      }
+      const destination = await vscode.window.showSaveDialog({
+        title: "Export Data Explorer Python Code",
+        defaultUri: defaultExportUri(snapshot, ".clean.py"),
+        filters: { "Python script": ["py"] },
+        saveLabel: "Export code"
+      });
+      if (!destination) return;
+      await vscode.workspace.fs.writeFile(destination, Buffer.from(code, "utf8"));
+      await vscode.window.showInformationMessage(`Exported Data Explorer code to ${destination.fsPath}.`);
+    }),
+    vscode.commands.registerCommand("dataExplorer.exportData", async () => {
+      if (!(await requireTrustedWorkspace("export cleaned data"))) return;
+      const snapshot = coordinator.activeSession();
+      if (!snapshot) {
+        await vscode.window.showInformationMessage("Open a dataframe in Data Explorer before exporting cleaned data.");
+        return;
+      }
+      if (snapshot.metadata.draftStep) {
+        await vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+        return;
+      }
+      const choices = [
+        snapshot.metadata.capabilities.exportCsv
+          ? { label: "CSV", description: "Comma-separated values", format: "csv" as const }
+          : undefined,
+        snapshot.metadata.capabilities.exportParquet
+          ? { label: "Parquet", description: "Typed columnar data", format: "parquet" as const }
+          : undefined
+      ].filter((choice): choice is NonNullable<typeof choice> => Boolean(choice));
+      if (!choices.length) {
+        await vscode.window.showWarningMessage("The active dataframe does not support cleaned-data export.");
+        return;
+      }
+      const selected = await vscode.window.showQuickPick(choices, {
+        title: "Export Cleaned Data",
+        placeHolder: "Choose a file format"
+      });
+      if (!selected) return;
+      const extension = selected.format === "csv" ? ".cleaned.csv" : ".cleaned.parquet";
+      const destination = await vscode.window.showSaveDialog({
+        title: "Export Cleaned Data",
+        defaultUri: defaultExportUri(snapshot, extension),
+        filters: selected.format === "csv" ? { CSV: ["csv"] } : { Parquet: ["parquet"] },
+        saveLabel: "Export data"
+      });
+      if (!destination) return;
+      if (destination.scheme !== "file") {
+        await vscode.window.showErrorMessage("Cleaned-data export currently requires a file-system destination.");
+        return;
+      }
+      try {
+        const exported = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
+          () => coordinator.exportActiveData(destination.fsPath, selected.format)
+        );
+        await vscode.window.showInformationMessage(
+          `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`
+        );
+      } catch (error) {
+        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+      }
+    }),
     codePreview,
     vscode.window.registerWebviewViewProvider("dataExplorer.codePreview", codePreview, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -260,6 +343,21 @@ function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {
   return snapshot
     ? `# ${snapshot.metadata.source.label}\n# Add or select a cleaning step to preview generated code.`
     : "# Open a dataframe to preview generated code.";
+}
+
+function defaultExportUri(snapshot: ActiveSessionSnapshot, suffix: string): vscode.Uri {
+  const sourcePath = snapshot.metadata.source.path;
+  const baseName = path.basename(snapshot.metadata.source.label, path.extname(snapshot.metadata.source.label));
+  const fileName = `${baseName || "cleaned-data"}${suffix}`;
+  if (sourcePath) return vscode.Uri.file(path.join(path.dirname(sourcePath), fileName));
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+  return workspace ? vscode.Uri.joinPath(workspace, fileName) : vscode.Uri.file(path.join(process.cwd(), fileName));
+}
+
+async function requireTrustedWorkspace(action: string): Promise<boolean> {
+  if (vscode.workspace.isTrusted) return true;
+  await vscode.window.showWarningMessage(`Trust this workspace before Data Explorer can ${action}.`);
+  return false;
 }
 
 function isCodePreviewMessage(message: unknown): message is { kind: "ready" } | { kind: "codeChanged"; code: string } {

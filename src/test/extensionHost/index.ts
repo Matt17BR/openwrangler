@@ -18,6 +18,9 @@ export async function run(): Promise<void> {
     "dataExplorer.discardStep",
     "dataExplorer.editLatestStep",
     "dataExplorer.undoStep",
+    "dataExplorer.copyCode",
+    "dataExplorer.exportCode",
+    "dataExplorer.exportData",
     "dataExplorer.openSettings",
     "dataExplorer.reportIssue"
   ]) {

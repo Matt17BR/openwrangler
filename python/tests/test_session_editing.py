@@ -146,3 +146,100 @@ def test_latest_structural_step_keeps_its_input_schema_for_editing(tmp_path, bac
         replace_step_id="drop",
     )
     assert [column["name"] for column in edited["metadata"]["schema"]] == ["name"]
+
+
+@pytest.mark.parametrize("backend", ["pandas", "polars"])
+@pytest.mark.parametrize("format_name", ["csv", "parquet"])
+def test_export_is_atomic_native_and_excludes_view_filters(tmp_path, backend, format_name, monkeypatch):
+    source = "group,value\na,1\na,2\nb,3\n"
+    source_path = tmp_path / "source.csv"
+    source_path.write_text(source, encoding="utf-8")
+    if backend == "polars":
+        monkeypatch.setattr(
+            pl.DataFrame,
+            "to_pandas",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Polars export must stay native")),
+            raising=False,
+        )
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source_path.name, "path": str(source_path)},
+        backend=backend,
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    manager.preview_step(
+        session_id,
+        0,
+        transform("score", "formula", leftColumn="value", operator="multiply", value=2, newColumn="score"),
+        0,
+        10,
+    )
+    manager.apply_draft(session_id, 1, 0, 10)
+    view_filter = {
+        "filters": [
+            {
+                "column": "group",
+                "type": "string",
+                "predicates": [{"kind": "predicate", "operator": "equals", "value": "a"}],
+            }
+        ],
+        "sort": [],
+    }
+    manager.get_page(session_id, 2, 0, 10, view_filter)
+
+    destination = tmp_path / f"cleaned.{format_name}"
+    destination.write_text("existing destination", encoding="utf-8")
+    exported = manager.export_data(session_id, 2, str(destination), format_name)
+    result = pl.read_csv(destination) if format_name == "csv" else pl.read_parquet(destination)
+
+    assert exported["kind"] == "dataExported"
+    assert exported["shape"] == {"rows": 3, "columns": 3}
+    assert result.to_dict(as_series=False) == {
+        "group": ["a", "a", "b"],
+        "value": [1, 2, 3],
+        "score": [2, 4, 6],
+    }
+    assert source_path.read_text(encoding="utf-8") == source
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+def test_export_rejects_pending_drafts_and_source_overwrite(tmp_path):
+    source_path = tmp_path / "source.csv"
+    source_path.write_text("value\n1\n", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
+    )
+    session_id = opened["metadata"]["sessionId"]
+    manager.preview_step(session_id, 0, transform("clone", "cloneColumn", column="value", newName="copy"), 0, 10)
+
+    with pytest.raises(EngineError, match="Apply or discard"):
+        manager.export_data(session_id, 1, str(tmp_path / "cleaned.csv"), "csv")
+    manager.discard_draft(session_id, 1, 0, 10)
+    with pytest.raises(EngineError, match="never overwrites"):
+        manager.export_data(session_id, 2, str(source_path), "csv")
+
+
+def test_failed_export_preserves_existing_destination_and_removes_temporary_file(tmp_path, monkeypatch):
+    source_path = tmp_path / "source.csv"
+    source_path.write_text("value\n1\n", encoding="utf-8")
+    destination = tmp_path / "cleaned.csv"
+    destination.write_text("keep me", encoding="utf-8")
+    manager = SessionManager()
+    opened = manager.open_session(
+        {"kind": "file", "label": source_path.name, "path": str(source_path)}, backend="pandas"
+    )
+
+    def fail_export(_frame, path, _format):
+        with open(path, "w", encoding="utf-8") as temporary:
+            temporary.write("partial")
+        raise EngineError("simulated export failure")
+
+    monkeypatch.setattr(manager.engines["pandas"], "export_data", fail_export)
+    with pytest.raises(EngineError, match="simulated"):
+        manager.export_data(opened["metadata"]["sessionId"], 0, str(destination), "csv")
+
+    assert destination.read_text(encoding="utf-8") == "keep me"
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))

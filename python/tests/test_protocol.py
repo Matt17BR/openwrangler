@@ -63,6 +63,25 @@ def test_protocol_v2_rejects_malformed_transformation_steps() -> None:
         )
 
 
+def test_protocol_v2_validates_export_format() -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "export-1",
+        "priority": "interactive",
+        "request": {
+            "kind": "exportData",
+            "sessionId": "session-1",
+            "revision": 2,
+            "path": "/tmp/cleaned.csv",
+            "format": "csv",
+        },
+    }
+    assert decode_envelope(envelope)[2]["format"] == "csv"
+    envelope["request"]["format"] = "xlsx"
+    with pytest.raises(ProtocolError, match="csv or parquet"):
+        decode_envelope(envelope)
+
+
 @pytest.mark.parametrize(
     "envelope",
     [

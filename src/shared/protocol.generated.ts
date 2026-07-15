@@ -17,6 +17,7 @@ export type DataExplorerRequest =
   | ApplyDraftRequest
   | DiscardDraftRequest
   | UndoStepRequest
+  | ExportDataRequest
   | CloseSessionRequest
   | CancelRequest;
 export type DataBackend = "polars" | "pandas";
@@ -78,6 +79,7 @@ export type DataExplorerResponse =
   | ValuesResponse
   | StepPreviewResponse
   | PlanUpdatedResponse
+  | DataExportedResponse
   | SessionClosedResponse
   | CancelledResponse
   | ErrorResponse;
@@ -258,6 +260,13 @@ export interface UndoStepRequest {
   offset: number;
   limit: number;
 }
+export interface ExportDataRequest {
+  kind: "exportData";
+  sessionId: string;
+  revision: number;
+  path: string;
+  format: "csv" | "parquet";
+}
 export interface CloseSessionRequest {
   kind: "closeSession";
   sessionId: string;
@@ -433,6 +442,13 @@ export interface PlanUpdatedResponse {
   metadata: SessionMetadata;
   page: GridPage;
   code: string;
+}
+export interface DataExportedResponse {
+  kind: "dataExported";
+  revision: number;
+  path: string;
+  format: "csv" | "parquet";
+  shape: DataShape;
 }
 export interface SessionClosedResponse {
   kind: "sessionClosed";

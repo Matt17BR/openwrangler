@@ -83,6 +83,13 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request.get("offset", 0)),
             int(request.get("limit", 200)),
         )
+    if kind == "exportData":
+        return manager.export_data(
+            request["sessionId"],
+            int(request["revision"]),
+            request["path"],
+            request["format"],
+        )
     if kind == "closeSession":
         return manager.close_session(request["sessionId"], int(request["revision"]))
     raise ProtocolError(f"Unsupported request kind: {kind}")
