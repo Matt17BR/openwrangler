@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+*.png binary
+*.ttf binary
+*.xlsx binary
+*.parquet binary
+*.vsix binary
