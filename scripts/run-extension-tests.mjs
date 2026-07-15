@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
 import {
+  downloadEditorWithRetry,
   runEditorAcceptancePhase,
   writeEditorAcceptanceHarness,
   writeFakeJupyterExtension
@@ -32,10 +33,10 @@ const profile = mkdtempSync(join(tmpdir(), "data-explorer-extension-host-"));
 const requestedVersion = process.env.VSCODE_TEST_VERSION;
 const installedExecutable = "/usr/share/code/code";
 const vscodeExecutablePath = requestedVersion
-  ? await downloadAndUnzipVSCode(requestedVersion)
+  ? await downloadEditorWithRetry(downloadAndUnzipVSCode, requestedVersion)
   : existsSync(installedExecutable)
     ? installedExecutable
-    : await downloadAndUnzipVSCode("stable");
+    : await downloadEditorWithRetry(downloadAndUnzipVSCode, "stable");
 const fakeJupyter = resolve(profile, "fake-jupyter");
 writeFakeJupyterExtension(fakeJupyter);
 

@@ -4,6 +4,25 @@ import { createServer } from "node:net";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+export async function downloadEditorWithRetry(download, version, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await download(version);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) break;
+      const waitMs = attempt * 2_000;
+      console.warn(
+        `Editor download ${version} failed on attempt ${attempt}/${attempts}; retrying in ${waitMs}ms.`,
+        error instanceof Error ? error.message : String(error)
+      );
+      await delay(waitMs);
+    }
+  }
+  throw lastError;
+}
+
 export function writeEditorAcceptanceHarness(directory) {
   mkdirSync(directory, { recursive: true });
   writeFileSync(

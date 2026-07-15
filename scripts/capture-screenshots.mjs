@@ -573,7 +573,10 @@ function themeTokens(theme) {
       buttonForeground: "#ffffff",
       badge: "#4d4d4d",
       badgeForeground: "#ffffff",
-      focus: "#007fd4"
+      focus: "#007fd4",
+      scrollbar: "#79797966",
+      scrollbarHover: "#646464b3",
+      scrollbarActive: "#bfbfbf66"
     },
     light: {
       foreground: "#333333",
@@ -588,7 +591,10 @@ function themeTokens(theme) {
       buttonForeground: "#ffffff",
       badge: "#c4c4c4",
       badgeForeground: "#333333",
-      focus: "#0090f1"
+      focus: "#0090f1",
+      scrollbar: "#64646466",
+      scrollbarHover: "#646464b3",
+      scrollbarActive: "#00000099"
     },
     highContrast: {
       foreground: "#ffffff",
@@ -603,7 +609,10 @@ function themeTokens(theme) {
       buttonForeground: "#ffffff",
       badge: "#000000",
       badgeForeground: "#ffffff",
-      focus: "#ffff00"
+      focus: "#ffff00",
+      scrollbar: "#ffffff99",
+      scrollbarHover: "#ffffffcc",
+      scrollbarActive: "#ffffff"
     },
     highContrastLight: {
       foreground: "#000000",
@@ -618,7 +627,10 @@ function themeTokens(theme) {
       buttonForeground: "#000000",
       badge: "#ffffff",
       badgeForeground: "#000000",
-      focus: "#0f4a85"
+      focus: "#0f4a85",
+      scrollbar: "#00000099",
+      scrollbarHover: "#000000cc",
+      scrollbarActive: "#000000"
     }
   };
   const palette = palettes[theme] ?? palettes.dark;
@@ -636,6 +648,9 @@ function themeTokens(theme) {
     --vscode-badge-background: ${palette.badge};
     --vscode-badge-foreground: ${palette.badgeForeground};
     --vscode-focusBorder: ${palette.focus};
+    --vscode-scrollbarSlider-background: ${palette.scrollbar};
+    --vscode-scrollbarSlider-hoverBackground: ${palette.scrollbarHover};
+    --vscode-scrollbarSlider-activeBackground: ${palette.scrollbarActive};
     --vscode-notifications-background: ${palette.header};
     --vscode-notifications-border: ${palette.border};
     --vscode-font-family: "Liberation Sans", Arial, sans-serif;

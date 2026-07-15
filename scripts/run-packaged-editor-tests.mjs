@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode } from "@vscode/test-electron";
 import {
+  downloadEditorWithRetry,
   runEditorAcceptancePhase,
   writeEditorAcceptanceHarness,
   writeFakeJupyterExtension
@@ -37,7 +38,7 @@ const candidates = [
     existsSync(editor.executable) && existsSync(editor.cli) && (!requested?.length || requested.includes(editor.key))
 );
 if (!candidates.some((editor) => editor.key === "vscode") && (!requested?.length || requested.includes("vscode"))) {
-  const executable = await downloadAndUnzipVSCode(process.env.VSCODE_TEST_VERSION ?? "stable");
+  const executable = await downloadEditorWithRetry(downloadAndUnzipVSCode, process.env.VSCODE_TEST_VERSION ?? "stable");
   const downloadedCli = process.platform === "linux" ? resolve(dirname(executable), "bin", "code") : executable;
   candidates.unshift({
     name: "VS Code",

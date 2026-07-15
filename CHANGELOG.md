@@ -63,6 +63,8 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Saved notebook snapshots no longer treat null numeric cells as zero, and their multi-column sorts honor explicit null placement independently of direction.
 - Visual and accessibility acceptance use the lockfile-pinned Chromium revision, metric-compatible harness font tokens, and always-uploaded CI diffs instead of a moving system-browser/font fallback.
 - Real-kernel acceptance uses a single bounded execution deadline with short message polls, tolerating cold shared-runner imports without hiding a hung kernel.
+- Webview scrollbars now use VS Code theme tokens for consistent native contrast and deterministic rendering across editor and CI hosts.
+- Editor compatibility jobs retry transient VS Code distribution downloads with a bounded backoff.
 
 ### Release status
 
