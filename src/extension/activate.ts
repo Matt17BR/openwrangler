@@ -5,6 +5,7 @@ import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging
 import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
+import { registerNativeViews } from "./nativeViews";
 
 export function activate(context: vscode.ExtensionContext): void {
   const bridge = new PythonBridge(context);
@@ -13,6 +14,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(coordinator, bridge);
 
   registerFileCommands(context, coordinatedBridge);
+  registerNativeViews(context, coordinator);
   registerRuntimeCommands(context, bridge);
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinatedBridge, coordinator);

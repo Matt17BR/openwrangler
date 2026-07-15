@@ -27,6 +27,15 @@ button:disabled {
   opacity: 0.45;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[role="gridcell"]:focus-visible,
+td:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: -2px;
+}
+
 input,
 select {
   color: var(--vscode-input-foreground);
@@ -120,7 +129,7 @@ select {
   font-size: 12px;
 }
 
-.goToColumn select {
+.goToColumn input {
   width: 160px;
 }
 
@@ -128,7 +137,12 @@ select {
   min-height: 0;
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+}
+
+.layout.sidePanelOpen {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
 }
 
 .sidebar {
@@ -136,7 +150,27 @@ select {
   flex-direction: column;
   min-height: 0;
   overflow: auto;
-  border-right: 1px solid var(--vscode-panel-border);
+  border-left: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+}
+
+.drawerHeader {
+  align-items: center;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 8px 0 12px;
+}
+
+.iconButton,
+.secondaryButton {
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+.iconButton {
+  padding: 5px;
 }
 
 .panel {
@@ -263,6 +297,7 @@ select {
   gap: 10px;
   padding: 8px;
   border-bottom: 1px solid var(--vscode-panel-border);
+  min-height: 36px;
 }
 
 .tableScroller {
@@ -272,6 +307,7 @@ select {
 
 table {
   border-collapse: collapse;
+  table-layout: fixed;
   width: max-content;
   min-width: 100%;
 }
@@ -280,8 +316,8 @@ th,
 td {
   border-right: 1px solid var(--vscode-panel-border);
   border-bottom: 1px solid var(--vscode-panel-border);
-  max-width: 360px;
-  min-width: 200px;
+  box-sizing: border-box;
+  min-width: 0;
   padding: 4px 8px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -295,6 +331,7 @@ th {
   z-index: 1;
   background: var(--vscode-editorGroupHeader-tabsBackground);
   text-align: left;
+  vertical-align: top;
 }
 
 tbody tr:hover td {
@@ -312,6 +349,7 @@ th small {
   display: grid;
   gap: 6px;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  position: relative;
 }
 
 .typeIcon {
@@ -334,6 +372,24 @@ th small {
   color: var(--vscode-descriptionForeground);
   cursor: pointer;
   list-style: none;
+}
+
+.columnResizeHandle {
+  background: transparent;
+  border-radius: 0;
+  bottom: -52px;
+  cursor: col-resize;
+  padding: 0;
+  position: absolute;
+  right: -9px;
+  top: -4px;
+  width: 7px;
+  z-index: 4;
+}
+
+.columnResizeHandle:hover,
+.columnResizeHandle:focus-visible {
+  background: var(--vscode-focusBorder);
 }
 
 .columnMenu summary::-webkit-details-marker {
@@ -367,19 +423,19 @@ th small {
   color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
 }
 
-.insightRow th {
-  top: 39px;
-  background: var(--vscode-editor-background);
-  font-weight: normal;
-  vertical-align: top;
-}
-
 .columnInsight {
   color: var(--vscode-descriptionForeground);
   display: grid;
   font-size: 11px;
   gap: 2px;
   line-height: 1.25;
+}
+
+.sampledLabel {
+  color: var(--vscode-charts-yellow, #cca700);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .miniBar {
@@ -457,13 +513,23 @@ th small {
 }
 
 .rowHeader {
-  min-width: 52px;
-  max-width: 70px;
+  width: 58px;
   position: sticky;
   left: 0;
   z-index: 1;
   background: var(--vscode-editor-background);
   color: var(--vscode-descriptionForeground);
+}
+
+.virtualSpacer {
+  border-left: 0;
+  border-right: 0;
+  padding: 0;
+}
+
+.virtualRowSpacer td {
+  border: 0;
+  padding: 0;
 }
 
 th.rowHeader {
@@ -490,7 +556,6 @@ th.rowHeader {
 
 .summaryPanel {
   flex: 0 1 52%;
-  max-height: 52%;
   overflow: auto;
 }
 
@@ -548,4 +613,65 @@ dd {
 
 .emptyState {
   padding: 24px;
+}
+
+@media (max-width: 900px) {
+  .layout.sidePanelOpen {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    bottom: 0;
+    box-shadow: -8px 0 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+    max-width: min(88vw, 360px);
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 100%;
+    z-index: 20;
+  }
+
+  .toolbar {
+    align-items: flex-start;
+  }
+
+  .toolbarActions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 620px) {
+  .toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .toolbarActions {
+    justify-content: flex-start;
+  }
+
+  .goToColumn {
+    flex: 1;
+  }
+
+  .goToColumn input {
+    width: min(46vw, 220px);
+  }
+
+  .gridControls span {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  button,
+  input,
+  select,
+  th,
+  td,
+  .toolbar,
+  .sidebar {
+    border-color: CanvasText;
+  }
 }

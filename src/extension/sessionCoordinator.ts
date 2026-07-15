@@ -186,6 +186,13 @@ export class SessionCoordinator implements vscode.Disposable {
         return protocolError("stale_response", "Ignored a stale profiling response.", true, session.publicId);
       }
     }
+    if (response.kind === "datasetStats") {
+      if (response.revision < session.revision) {
+        return protocolError("stale_response", "Ignored stale dataset statistics.", true, session.publicId);
+      }
+      session.metadata = { ...session.metadata, stats: response.stats };
+      this.setActive(session.publicId);
+    }
     if (response.kind === "error" && response.sessionId) {
       return { ...response, sessionId: session.publicId };
     }

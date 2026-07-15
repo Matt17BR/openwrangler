@@ -27,20 +27,25 @@ class PandasEngine(DataFrameEngine):
             return False
         return isinstance(value, (pd.DataFrame, pd.Series))
 
-    def read_file(self, path: str) -> Any:
+    def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         import pandas as pd
 
+        options = options or {}
         extension = Path(path).suffix.lower()
-        if extension == ".csv":
-            return pd.read_csv(path)
-        if extension == ".tsv":
-            return pd.read_csv(path, sep="\t")
+        if extension in {".csv", ".tsv"}:
+            return pd.read_csv(
+                path,
+                sep=options.get("delimiter", "\t" if extension == ".tsv" else ","),
+                encoding=options.get("encoding", "utf-8"),
+                quotechar=options.get("quoteChar", '"'),
+                header=0 if options.get("hasHeader", True) else None,
+            )
         if extension == ".parquet":
             return pd.read_parquet(path)
         if extension == ".jsonl":
             return pd.read_json(path, lines=True)
         if extension in {".xlsx", ".xls"}:
-            return pd.read_excel(path)
+            return pd.read_excel(path, sheet_name=options.get("sheet", 0))
         raise EngineError(f"Unsupported file extension for Pandas backend: {extension}")
 
     def normalize(self, value: Any) -> Any:
@@ -70,26 +75,37 @@ class PandasEngine(DataFrameEngine):
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
         df = self.normalize(frame)
-        filtered = df
+        column_masks = []
         for column_filter in model.get("filters", []):
             column = column_filter.get("column")
-            if column not in filtered.columns:
+            if column not in df.columns:
                 continue
-            mask = None
+            conditions = []
             value_filter = column_filter.get("valueFilter")
-            if value_filter:
+            if value_filter and (
+                value_filter.get("selectedValues") or value_filter.get("includeNulls") or value_filter.get("includeNaN")
+            ):
                 selected = [str(value) for value in value_filter.get("selectedValues", [])]
-                current = filtered[column].astype(str).isin(selected)
-                if value_filter.get("includeNulls"):
-                    current = current | filtered[column].isna()
-                mask = current if mask is None else mask & current
+                current = df[column].astype(str).isin(selected)
+                if value_filter.get("includeNulls") or value_filter.get("includeNaN"):
+                    current = current | df[column].isna()
+                conditions.append(current)
 
             for predicate in column_filter.get("predicates", []):
-                current = self._predicate_mask(filtered[column], predicate)
-                mask = current if mask is None else mask & current
+                conditions.append(self._predicate_mask(df[column], predicate))
 
-            if mask is not None:
-                filtered = filtered[mask]
+            if conditions:
+                mask = conditions[0]
+                for condition in conditions[1:]:
+                    mask = mask | condition if column_filter.get("logic") == "or" else mask & condition
+                column_masks.append(mask)
+
+        filtered = df
+        if column_masks:
+            mask = column_masks[0]
+            for column_mask in column_masks[1:]:
+                mask = mask | column_mask if model.get("logic") == "or" else mask & column_mask
+            filtered = df[mask]
 
         sort_rules = model.get("sort", [])
         if sort_rules:
@@ -211,6 +227,14 @@ class PandasEngine(DataFrameEngine):
             return series <= value
         if operator == "between":
             return (series >= value) & (series <= predicate.get("secondValue"))
+        if operator == "isNull":
+            return series.isna()
+        if operator == "isNotNull":
+            return series.notna()
+        if operator == "isNaN":
+            return series.isna()
+        if operator == "isNotNaN":
+            return series.notna()
         return series.notna()
 
 

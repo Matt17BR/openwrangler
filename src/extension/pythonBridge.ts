@@ -63,7 +63,11 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
     const envelope: RuntimeRequestEnvelope = {
       protocolVersion: PROTOCOL_VERSION,
       requestId,
-      priority: options.priority ?? (runtimeRequest.kind === "getSummary" ? "background" : "interactive"),
+      priority:
+        options.priority ??
+        (runtimeRequest.kind === "getSummary" || runtimeRequest.kind === "getDatasetStats"
+          ? "background"
+          : "interactive"),
       request: runtimeRequest
     };
     const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs();
@@ -274,7 +278,13 @@ export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
   private async prepareRequest(request: DataExplorerRequest): Promise<DataExplorerRequest | ErrorResponse> {
     if (request.kind !== "openSession" || request.source.kind !== "file") return request;
     const environment = await this.environment(vscode.Uri.file(request.source.path ?? request.source.label));
-    const backends = request.backend ? [request.backend] : (["polars", "pandas"] as const);
+    const encoding = request.source.importOptions?.encoding?.toLowerCase();
+    const polarsEncoding = !encoding || ["utf-8", "utf8", "utf8-lossy"].includes(encoding);
+    const backends = request.backend
+      ? [request.backend]
+      : polarsEncoding
+        ? (["polars", "pandas"] as const)
+        : (["pandas"] as const);
     const failures: Array<{ backend: "polars" | "pandas"; missing: string[] }> = [];
     for (const backend of backends) {
       const modules = requiredModules(backend, request.source);

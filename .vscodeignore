@@ -29,4 +29,5 @@ package-lock.json
 **/__pycache__/**
 python/pyproject.toml
 tsconfig*.json
+dist-test/**
 vite.config.ts

@@ -81,12 +81,19 @@ export class DataExplorerPanel {
 
   async open(): Promise<void> {
     if (this.opening) return this.opening;
-    const pageSize = vscode.workspace.getConfiguration("dataExplorer").get<number>("pageSize", 200);
+    const configuration = vscode.workspace.getConfiguration("dataExplorer");
+    const pageSize = configuredBlockSize(configuration);
+    const isFile = this.source.kind === "file";
+    const mode = configuration.get<"editing" | "viewing">(
+      isFile ? "fileStartMode" : "notebookStartMode",
+      isFile ? "editing" : "viewing"
+    );
     this.opening = this.forward({
       kind: "openSession",
       source: this.source,
       backend: this.backend,
-      pageSize
+      pageSize,
+      mode
     });
     await this.opening;
     if (!this.sessionId) this.opening = undefined;
@@ -161,6 +168,12 @@ export class DataExplorerPanel {
       if (response.kind === "summary" && this.snapshot) {
         this.snapshot = { ...this.snapshot, summaries: response.summaries };
       }
+      if (response.kind === "datasetStats" && this.snapshot) {
+        this.snapshot = {
+          ...this.snapshot,
+          metadata: { ...this.snapshot.metadata, stats: response.stats }
+        };
+      }
       await this.post(response);
     } catch (error) {
       await this.post({
@@ -195,6 +208,11 @@ export class DataExplorerPanel {
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
     );
     const nonce = randomNonce();
+    const configuration = vscode.workspace.getConfiguration("dataExplorer");
+    const fetchBlockSize = configuredBlockSize(configuration);
+    const defaultColumnWidth = configuration.get<number>("defaultColumnWidth", 190);
+    const insightsOnOpen = configuration.get<boolean>("insightsOnOpen", true);
+    const filterMode = configuration.get<"basic" | "advanced">("filterMode", "basic");
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -205,7 +223,7 @@ export class DataExplorerPanel {
   <link rel="stylesheet" href="${styleUri}">
   <title>Data Explorer</title>
 </head>
-<body>
+<body data-fetch-block-size="${fetchBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}">
   <div id="root"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -221,3 +239,15 @@ const randomNonce = (): string => {
   }
   return nonce;
 };
+
+function configuredBlockSize(configuration: vscode.WorkspaceConfiguration): number {
+  const inspected = configuration.inspect<number>("fetchBlockSize");
+  const explicitlyConfigured =
+    inspected?.globalValue ??
+    inspected?.workspaceValue ??
+    inspected?.workspaceFolderValue ??
+    inspected?.globalLanguageValue ??
+    inspected?.workspaceLanguageValue ??
+    inspected?.workspaceFolderLanguageValue;
+  return explicitlyConfigured ?? configuration.get<number>("pageSize", 200);
+}

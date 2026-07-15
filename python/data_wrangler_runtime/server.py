@@ -38,6 +38,12 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             request.get("filterModel", {"filters": [], "sort": []}),
             request.get("columns"),
         )
+    if kind == "getDatasetStats":
+        return manager.get_dataset_stats(
+            request["sessionId"],
+            int(request["revision"]),
+            request.get("filterModel", {"filters": [], "sort": []}),
+        )
     if kind == "getColumnValues":
         return manager.get_column_values(
             request["sessionId"],

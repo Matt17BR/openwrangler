@@ -11,6 +11,7 @@ export type DataExplorerRequest =
   | OpenSessionRequest
   | PageRequest
   | SummaryRequest
+  | DatasetStatsRequest
   | ValuesRequest
   | CloseSessionRequest
   | CancelRequest;
@@ -42,6 +43,7 @@ export type DataExplorerResponse =
   | SessionOpenedResponse
   | PageResponse
   | SummaryResponse
+  | DatasetStatsResponse
   | ValuesResponse
   | SessionClosedResponse
   | CancelledResponse
@@ -123,6 +125,7 @@ export interface SessionRequestBase {
   [k: string]: unknown;
 }
 export interface FilterModel {
+  logic?: "and" | "or";
   filters: ColumnFilter[];
   sort: {
     column: string;
@@ -133,6 +136,7 @@ export interface FilterModel {
 export interface ColumnFilter {
   column: string;
   type: ColumnType;
+  logic?: "and" | "or";
   valueFilter?: {
     kind: "values";
     selectedValues: unknown[];
@@ -168,6 +172,12 @@ export interface SummaryRequest {
   revision: number;
   filterModel: FilterModel;
   columns?: string[];
+}
+export interface DatasetStatsRequest {
+  kind: "getDatasetStats";
+  sessionId: string;
+  revision: number;
+  filterModel: FilterModel;
 }
 export interface ValuesRequest {
   kind: "getColumnValues";
@@ -305,6 +315,11 @@ export interface SummaryResponse {
   kind: "summary";
   revision: number;
   summaries: ColumnSummary[];
+}
+export interface DatasetStatsResponse {
+  kind: "datasetStats";
+  revision: number;
+  stats: DatasetStats;
 }
 export interface ValuesResponse {
   kind: "columnValues";

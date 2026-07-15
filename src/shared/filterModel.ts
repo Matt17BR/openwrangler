@@ -7,6 +7,7 @@ export type PredicateOperator = PredicateFilter["operator"];
 export type ValueFilter = NonNullable<ColumnFilter["valueFilter"]>;
 
 export const emptyFilterModel = (): FilterModel => ({
+  logic: "and",
   filters: [],
   sort: []
 });

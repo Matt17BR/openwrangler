@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-test",
+    "rootDir": "src/test/extensionHost",
+    "lib": ["ES2022"],
+    "types": ["node", "vscode"]
+  },
+  "include": ["src/test/extensionHost/**/*.ts"]
+}

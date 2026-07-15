@@ -34,7 +34,9 @@ export class KernelBridge implements DataExplorerBridge {
     const envelope: RuntimeRequestEnvelope = {
       protocolVersion: PROTOCOL_VERSION,
       requestId,
-      priority: options.priority ?? (request.kind === "getSummary" ? "background" : "interactive"),
+      priority:
+        options.priority ??
+        (request.kind === "getSummary" || request.kind === "getDatasetStats" ? "background" : "interactive"),
       request
     };
     const marker = requestId.replace(/-/g, "");

@@ -46,7 +46,7 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def read_file(self, path: str) -> Any:
+    def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         raise NotImplementedError
 
     @abstractmethod

@@ -12,16 +12,24 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Protocol v2 JSON Schema, generated TypeScript contract, explicit Python validation, typed cell encodings, request cancellation, timeouts, and structured diagnostics.
 - Stable extension-host session IDs with per-session serialization, concurrent dataframe sessions, cleanup, stale-revision rejection, and runtime replay.
 - Python 3.10-3.14 environment resolution, engine/format dependency probes, and confirm-before-install runtime commands.
+- Two-axis grid virtualization, resizable columns, roving keyboard navigation, column search, responsive insights drawer, and progressive profiling.
+- Activity Bar Operations, Summary, Filters/Sorts, and Cleaning Steps views plus a bottom-panel Code Preview surface.
+- CSV/TSV delimiter, encoding, quote, and header prompts; Excel sheet selection; configurable viewing behavior and file types.
+- Advanced AND/OR viewing predicates with null/NaN operators and cross-engine tests.
+- Light, dark, high-contrast, responsive-width, zoom, and wide-data browser acceptance baselines.
+- Isolated VS Code extension-host acceptance and minimum/current editor CI coverage.
 
 ### Changed
 
 - Package publisher changed from `local` to `Matt17BR`.
 - File-only use no longer declares Jupyter as a hard extension dependency.
 - Supported Python versions are 3.10 through 3.14.
+- File-backed Polars CSV/TSV, Parquet, and JSONL inputs now stay lazy through viewing filters, sorts, projections, and page slices.
+- GitHub workflows use the current Node 24-based official action majors.
 
 ### Known gaps
 
-- Editing operations, native views, and release-grade editor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Editing operations, notebook MIME v2, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

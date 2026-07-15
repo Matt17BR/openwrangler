@@ -7,17 +7,34 @@ interface FilterPanelProps {
   model: FilterModel;
   values: Record<string, ValuesResponse>;
   activeColumn?: string;
+  defaultAdvanced?: boolean;
   onApply(model: FilterModel): void;
   onRequestValues(column: string, search?: string): void;
 }
 
-const operators: PredicateOperator[] = ["contains", "equals", "gt", "gte", "lt", "lte", "between"];
+const operators: PredicateOperator[] = [
+  "contains",
+  "startsWith",
+  "endsWith",
+  "equals",
+  "notEquals",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+  "between",
+  "isNull",
+  "isNotNull",
+  "isNaN",
+  "isNotNaN"
+];
 
 export function FilterPanel({
   metadata,
   model,
   values,
   activeColumn: requestedColumn,
+  defaultAdvanced = false,
   onApply,
   onRequestValues
 }: FilterPanelProps) {
@@ -28,6 +45,7 @@ export function FilterPanel({
   const [predicateValue, setPredicateValue] = useState("");
   const [secondPredicateValue, setSecondPredicateValue] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [advanced, setAdvanced] = useState(defaultAdvanced);
 
   const activeColumn = column || firstColumn;
   const columnSchema = metadata?.schema.find((item) => item.name === activeColumn);
@@ -60,6 +78,7 @@ export function FilterPanel({
     updateFilter({
       column: activeColumn,
       type: columnSchema.type,
+      logic: model.filters.find((item) => item.column === activeColumn)?.logic ?? "and",
       valueFilter: {
         kind: "values",
         selectedValues: [...nextSelected],
@@ -72,13 +91,14 @@ export function FilterPanel({
   };
 
   const addPredicate = () => {
-    if (!columnSchema || !predicateValue) {
+    if (!columnSchema || (operatorRequiresValue(predicateOperator) && !predicateValue)) {
       return;
     }
     const existing = model.filters.find((item) => item.column === activeColumn);
     updateFilter({
       column: activeColumn,
       type: columnSchema.type,
+      logic: existing?.logic ?? "and",
       valueFilter: existing?.valueFilter,
       predicates: [
         ...(existing?.predicates ?? []),
@@ -106,6 +126,7 @@ export function FilterPanel({
 
   const clearColumn = () => {
     onApply({
+      ...model,
       filters: model.filters.filter((item) => item.column !== activeColumn),
       sort: model.sort.filter((rule) => rule.column !== activeColumn)
     });
@@ -122,6 +143,21 @@ export function FilterPanel({
 
       <details className="filterSection" open>
         <summary>FILTERS</summary>
+        <button type="button" className="secondaryButton" onClick={() => setAdvanced((current) => !current)}>
+          {advanced ? "Use basic filters" : "Use advanced filters"}
+        </button>
+        {advanced && (
+          <label>
+            Across columns
+            <select
+              value={model.logic ?? "and"}
+              onChange={(event) => onApply({ ...model, logic: event.target.value as "and" | "or" })}
+            >
+              <option value="and">Match every filtered column</option>
+              <option value="or">Match any filtered column</option>
+            </select>
+          </label>
+        )}
         <label>
           Column
           <select value={activeColumn} onChange={(event) => setColumn(event.target.value)}>
@@ -165,7 +201,28 @@ export function FilterPanel({
         </div>
 
         <div className="predicateBuilder">
+          {advanced && (
+            <select
+              aria-label="Condition combination"
+              value={model.filters.find((item) => item.column === activeColumn)?.logic ?? "and"}
+              onChange={(event) => {
+                if (!columnSchema) return;
+                const existing = model.filters.find((item) => item.column === activeColumn);
+                updateFilter({
+                  column: activeColumn,
+                  type: columnSchema.type,
+                  logic: event.target.value as "and" | "or",
+                  valueFilter: existing?.valueFilter,
+                  predicates: existing?.predicates ?? []
+                });
+              }}
+            >
+              <option value="and">All conditions</option>
+              <option value="or">Any condition</option>
+            </select>
+          )}
           <select
+            aria-label="Predicate operator"
             value={predicateOperator}
             onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
           >
@@ -175,11 +232,13 @@ export function FilterPanel({
               </option>
             ))}
           </select>
-          <input
-            value={predicateValue}
-            placeholder="Value"
-            onChange={(event) => setPredicateValue(event.target.value)}
-          />
+          {operatorRequiresValue(predicateOperator) && (
+            <input
+              value={predicateValue}
+              placeholder="Value"
+              onChange={(event) => setPredicateValue(event.target.value)}
+            />
+          )}
           {predicateOperator === "between" && (
             <input
               value={secondPredicateValue}
@@ -190,6 +249,15 @@ export function FilterPanel({
           <button type="button" onClick={addPredicate}>
             Add predicate
           </button>
+        </div>
+
+        <div className="activeRules">
+          {(model.filters.find((item) => item.column === activeColumn)?.predicates ?? []).map((predicate, index) => (
+            <span key={`${predicate.operator}-${index}`} className="rulePill">
+              {predicate.operator}
+              {predicate.value === undefined ? "" : ` ${String(predicate.value)}`}
+            </span>
+          ))}
         </div>
 
         <button type="button" onClick={clearColumn}>
@@ -210,7 +278,11 @@ export function FilterPanel({
           </select>
         </label>
         <div className="row">
-          <select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as SortDirection)}>
+          <select
+            aria-label="Sort direction"
+            value={sortDirection}
+            onChange={(event) => setSortDirection(event.target.value as SortDirection)}
+          >
             <option value="asc">Sort ascending</option>
             <option value="desc">Sort descending</option>
           </select>
@@ -235,3 +307,6 @@ const coercePredicateValue = (value: string): string | number => {
   const numeric = Number(value);
   return Number.isFinite(numeric) && value.trim() !== "" ? numeric : value;
 };
+
+const operatorRequiresValue = (operator: PredicateOperator): boolean =>
+  !["isNull", "isNotNull", "isNaN", "isNotNaN"].includes(operator);
