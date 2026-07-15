@@ -55,9 +55,11 @@
     "format:check": "prettier --check .",
     "format:write": "prettier --write .",
     "docs:check": "node scripts/check-docs.mjs",
+    "generate:reference": "node scripts/generate-reference.mjs",
+    "reference:check": "node scripts/generate-reference.mjs --check",
     "generate:protocol": "node scripts/generate-protocol.mjs",
     "protocol:check": "node scripts/generate-protocol.mjs --check",
-    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run typecheck && npm run docs:check",
+    "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
     "watch:webview": "vite build --watch",
@@ -65,6 +67,7 @@
     "test:ts": "vitest run",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
+    "test:packaged-editors": "npm run build:test-extension && node scripts/run-packaged-editor-tests.mjs",
     "test:coverage": "vitest run --coverage",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",
@@ -87,7 +90,10 @@
     "onCommand:dataExplorer.undoStep",
     "onCommand:dataExplorer.copyCode",
     "onCommand:dataExplorer.exportCode",
+    "onCommand:dataExplorer.insertNotebookCode",
     "onCommand:dataExplorer.exportData",
+    "onCommand:dataExplorer.openSourceFile",
+    "onCommand:dataExplorer.openWalkthrough",
     "onCommand:dataExplorer.openSettings",
     "onCommand:dataExplorer.reportIssue",
     "onCustomEditor:dataExplorer.viewer",
@@ -167,9 +173,24 @@
         "icon": "$(save-as)"
       },
       {
+        "command": "dataExplorer.insertNotebookCode",
+        "title": "Data Explorer: Insert Function into Originating Notebook",
+        "icon": "$(notebook)"
+      },
+      {
         "command": "dataExplorer.exportData",
         "title": "Data Explorer: Export Cleaned Data",
         "icon": "$(export)"
+      },
+      {
+        "command": "dataExplorer.openSourceFile",
+        "title": "Data Explorer: Open Source File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "dataExplorer.openWalkthrough",
+        "title": "Data Explorer: Open Getting Started",
+        "icon": "$(book)"
       },
       {
         "command": "dataExplorer.openSettings",
@@ -281,7 +302,37 @@
         "entrypoint": "./media/notebookRenderer.js",
         "requiresMessaging": "always",
         "mimeTypes": [
-          "application/vnd.data-explorer.viewer.v1+json"
+          "application/vnd.data-explorer.viewer.v1+json",
+          "application/vnd.data-explorer.viewer.v2+json"
+        ]
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "gettingStarted",
+        "title": "Get started with Data Explorer",
+        "description": "Explore, clean, and export Pandas or Polars dataframes without modifying the source.",
+        "steps": [
+          {
+            "id": "openData",
+            "title": "Open a data source",
+            "description": "Use [Open File Path](command:dataExplorer.openPath) for CSV, TSV, Parquet, JSONL, or Excel, or launch Data Explorer from a notebook dataframe."
+          },
+          {
+            "id": "explore",
+            "title": "Explore without changing data",
+            "description": "Use column insights, filters, sorts, search, and the virtual grid. Viewing state remains separate from cleaning steps."
+          },
+          {
+            "id": "clean",
+            "title": "Preview a cleaning step",
+            "description": "Choose [Add Cleaning Step](command:dataExplorer.startOperation), inspect its diff and generated code, then apply or discard it."
+          },
+          {
+            "id": "export",
+            "title": "Export explicitly",
+            "description": "Copy or save generated code, insert it into the originating notebook, or export cleaned data to a new CSV or Parquet file."
+          }
         ]
       }
     ],
@@ -310,6 +361,21 @@
           "command": "dataExplorer.exportCode",
           "when": "view == dataExplorer.codePreview",
           "group": "navigation@11"
+        },
+        {
+          "command": "dataExplorer.insertNotebookCode",
+          "when": "view == dataExplorer.codePreview",
+          "group": "navigation@12"
+        },
+        {
+          "command": "dataExplorer.openSourceFile",
+          "when": "viewContainer == dataExplorer",
+          "group": "navigation@80"
+        },
+        {
+          "command": "dataExplorer.openWalkthrough",
+          "when": "viewContainer == dataExplorer",
+          "group": "navigation@89"
         },
         {
           "command": "dataExplorer.openSettings",

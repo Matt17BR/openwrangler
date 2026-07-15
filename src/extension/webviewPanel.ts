@@ -16,6 +16,7 @@ export class DataExplorerPanel {
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
   private opening: Promise<void> | undefined;
+  private disposed = false;
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(
@@ -27,12 +28,23 @@ export class DataExplorerPanel {
     private readonly initialResponse?: SessionOpenedResponse
   ) {
     DataExplorerPanel.activePanel = this;
-    this.panel.webview.html = this.renderHtml();
+    this.panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
+    };
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => this.handleMessage(message),
       undefined,
       this.disposables
     );
+    if (this.initialResponse) {
+      this.snapshot = this.initialResponse;
+      this.sessionId = this.initialResponse.metadata.sessionId;
+      this.sessionRevision = this.initialResponse.metadata.revision;
+    } else {
+      void this.open();
+    }
+    this.panel.webview.html = this.renderHtml();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
@@ -116,6 +128,7 @@ export class DataExplorerPanel {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (DataExplorerPanel.activePanel === this) DataExplorerPanel.activePanel = undefined;
     if (this.sessionId && !this.initialResponse) {
       void this.bridge.request({
@@ -136,11 +149,6 @@ export class DataExplorerPanel {
     }
 
     if (message.kind === "ready") {
-      if (!this.snapshot && this.initialResponse) {
-        this.snapshot = this.initialResponse;
-        this.sessionId = this.snapshot.metadata.sessionId;
-        this.sessionRevision = this.snapshot.metadata.revision;
-      }
       if (this.snapshot) {
         await this.post(this.snapshot);
         return;
@@ -179,6 +187,16 @@ export class DataExplorerPanel {
   private async forward(request: DataExplorerRequest): Promise<void> {
     try {
       const response = await this.bridge.request(request);
+      if (this.disposed) {
+        if (response.kind === "sessionOpened" && !this.initialResponse) {
+          await this.bridge.request({
+            kind: "closeSession",
+            sessionId: response.metadata.sessionId,
+            revision: response.metadata.revision
+          });
+        }
+        return;
+      }
       if (response.kind === "sessionOpened") {
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.metadata.revision;

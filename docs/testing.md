@@ -7,6 +7,8 @@
 - `npm run test:ts` covers shared models, extension helpers, reducers, and React behavior.
 - `npm run test:python` covers Pandas/Polars engines, transformations, code generation, exports, and runtime dispatch.
 - `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and validates activation, commands, native contributions, and fixture opening.
+- `npm run test:packaged-editors -- data-explorer.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs the same session-backed acceptance from a separate harness extension so checkout code cannot shadow the package.
+- `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment.
 - `npm run verify:vsix -- <file>` rejects development, user, secret, test, and source-map content from a package.
 
@@ -14,7 +16,11 @@ Protocol fixtures and engine-operation cases must run through both TypeScript an
 
 Persistence tests must assert that only serializable replay state is stored, malformed operation kinds are rejected, import options participate in source identity, and runtime/public session identifiers never enter workspace state. Packaged release acceptance must still apply a plan, reload the editor, and verify the restored grid in both VS Code and Cursor.
 
+Notebook compatibility tests must exercise complete MIME v2 snapshots, saved MIME v1 normalization, malformed versions, Pandas/Polars formatter registration after kernel permission, source notebook URI retention, and insertion of the edited generated function. The real-kernel suite must render both engines, use protocol v2, restart, recover, and always terminate its kernel. Lifecycle tests must cover permission/acquisition denial, cancellation, timeout, one retry, and repeated failure. Browser baselines include current v2 output and `notebook-v1-compat-dark-1280.png`; release acceptance must repeat both in packaged VS Code and Cursor.
+
 Export tests must cover both engines and both supported formats. They must prove committed-plan output, exclusion of view filters, pending-draft rejection, source-path rejection, atomic replacement, failed-write cleanup, and the Polars-to-Pandas prohibition. Code export acceptance must verify the edited CodeMirror buffer, not only the original generated string.
+
+Identity tests must prove stable row tokens through filtering, sorting, projections, and value changes; deterministic new generations for group/custom results; column lineage through renames, reorders, drops, latest-step edits, and duplicate labels; and identity exclusion from schema, summaries, duplicate counts, custom code, generated code, and exports.
 
 By-example tests must exercise every candidate family, deterministic tie ordering, ambiguity warnings, failure diagnostics, persisted-program revalidation, native execution, and generated-code equivalence in both engines. A synthesized step is not accepted without draft/diff confirmation and apply/discard coverage.
 
@@ -38,6 +44,8 @@ Use isolated `--user-data-dir` and `--extensions-dir` directories. Never install
 8. Repeat core flows in light, dark, and high-contrast themes and at 200% zoom.
 
 Record the editor versions and evidence link in `docs/feature-parity.md` before a release.
+
+The packaged harness auto-detects local VS Code and Cursor installations; set `DATA_EXPLORER_PACKAGED_EDITORS=vscode` in Linux CI. It verifies the publisher/gallery icon, Activity Bar icon, both notebook MIME registrations, all public commands, the walkthrough, an actual Polars custom-editor session, source reopening, and notebook cell insertion. Editor directories are temporary and removed in `finally`.
 
 CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and current stable release under Xvfb. Local packaged-install checks use dedicated `--user-data-dir` and `--extensions-dir` paths for both VS Code and Cursor.
 

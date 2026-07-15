@@ -8,7 +8,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | --------------------------------------------------- | -----: | -----: | ------- | ----------------------------------------------- |
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Import option, malformed-file, and editor tests |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 and persisted-output tests           |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD      |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD  |
 | Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive exact stats green; typed edges TBD  |
 | Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
@@ -26,7 +26,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Group and aggregate                                 |    Yes |    Yes | Partial | Core aggregation tests green; typed edges TBD   |
 | Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD      |
 | String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green     |
-| Copy/script/notebook code export                    |    Yes |    Yes | Partial | Clipboard/script green; notebook insertion TBD  |
+| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD   |
 | CSV and Parquet data export                         |    Yes |    Yes | Partial | Cross-engine atomic/source tests green          |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
@@ -94,6 +94,49 @@ By-example slice, 2026-07-15:
 - The operation builder validates example JSON before dispatch; protocol-normalized steps persist the selected program so reload does not reselect a different candidate.
 
 This advances by-example to **Partial**. More compound programs, null/type-edge inference, editable example-row capture from the real grid, keyboard acceptance, and packaged editor testing remain mandatory.
+
+Notebook MIME and insertion slice, 2026-07-15:
+
+- `npm test`: 20 TypeScript and 62 Python tests passed. New Pandas/Polars helpers emit complete MIME v2 snapshots and remain native; explicit legacy v1 output is still available for fixtures.
+- Shared TypeScript normalization upgrades saved v1 metadata to a read-only current session shape and rejects malformed/unknown-version payloads. The renderer registers both MIME identifiers and presents invalid output as an accessible error.
+- Formatters are registered inside the active kernel only after trusted stable-API access. Live-variable sources retain their originating notebook URI.
+- The insertion command uses the currently edited CodeMirror buffer and a tagged Python cell. The real VS Code extension-host suite applies and verifies the notebook edit against an untitled Jupyter notebook.
+
+This advances notebook rows to **Partial**. Real local/remote kernel formatter display, permission denial, kernel restart, persisted v1 output in packaged VS Code/Cursor, and originating-notebook interaction remain mandatory.
+
+Interface documentation and navigation slice, 2026-07-15:
+
+- `docs/reference.md` is generated from the package command/settings/MIME contributions, Python operation IR registry, and canonical protocol schema. `npm run reference:check` reproduces it in memory and fails on byte-level drift as part of every strict check and package build.
+- The extension contributes a native Getting Started walkthrough plus Open Source File and Open Getting Started commands. The extension-host suite verifies all 21 public commands and the walkthrough contribution against a real VS Code host.
+- `npm run check`, all 20 TypeScript and 62 Python tests, the VS Code 1.128 extension-host suite, production build, and 51-entry VSIX allowlist verification passed.
+
+This closes public-interface documentation drift and command-surface gaps, but does not advance feature rows to **Done** without the remaining packaged cross-editor acceptance.
+
+Identity and structural-diff slice, 2026-07-15:
+
+- Both engines attach private session row identities and preserve them through filters, sorts, projections, row deletion, and value transformations. Group/custom results receive a new identity generation; no identity enters user schema, profiling, duplicate counts, custom-code input, generated code, or CSV/Parquet exports.
+- Column lineage is independent of names and positions. Automated tests cover rename, reorder, deletion, latest-step replacement, group keys/aggregates, and duplicate Pandas labels with deterministic IDs.
+- Page diffs now join rows and columns by identity, so a sort is no longer reported as changed cells and a rename is no longer reported as a remove/add pair. Group replacements report the old and new row sets explicitly.
+- All 20 TypeScript and 69 Python tests pass, including native Pandas/Polars lineage fixtures and the hard Polars-to-Pandas prohibition. Pandas viewing additionally covers duplicate and non-string labels; the 52-entry production VSIX passes the package allowlist.
+
+This advances structural diff and typed-edge evidence but keeps the rows **Partial** until identifier-based operation parameters, packaged editor interaction, and the remaining nested/type matrix are green.
+
+Jupyter recovery slice, 2026-07-15:
+
+- A real local IPykernel test bootstraps the bundled agent, registers automatic MIME v2 formatters, renders live Pandas and Polars dataframes, opens both engines through protocol v2, restarts the kernel, bootstraps again, and receives a valid response after restart.
+- The extension kernel lifecycle caches and bootstraps once, performs at most one reacquire/bootstrap retry after execution failure, and never retries acquisition/permission denial or cancellation. Configured timeouts actively cancel kernel execution before recovery.
+- All 25 TypeScript and 70 Python tests pass. The lifecycle suite covers success, restart, repeated failure, denial/cancellation, and timeout; the real-kernel test guarantees cleanup in `finally`, and the 53-entry production VSIX passes its allowlist.
+
+This advances notebook recovery and formatter evidence but keeps the notebook rows **Partial** until remote kernels and packaged VS Code/Cursor permission, restart, saved-output, and originating-notebook interaction are recorded.
+
+Packaged editor slice, 2026-07-15:
+
+- The 53-entry allowlisted VSIX installed into fresh VS Code 1.128.0 and Cursor 3.11.19 user/extension directories. Tests ran from a separate harness extension, ensuring no TypeScript checkout or development extension shadowed `matt17br.data-explorer@0.2.0-alpha.1`.
+- Both editors activated the package, verified its publisher/gallery and Activity Bar assets, all 21 commands, Getting Started walkthrough, and v1/v2 MIME contributions. Each opened the CSV custom editor, completed a real Polars runtime session through the packaged Python source, reopened the exact source URI, and applied a real notebook cell edit.
+- This stronger test exposed and fixed the custom-editor path failing to enable webview scripts; previous tab-only extension-host acceptance could not detect that the runtime session never opened. Open Source File now also waits briefly for an in-flight active session instead of blocking on a notification.
+- Linux CI now installs and exercises the VSIX against current VS Code after allowlist verification. Local release acceptance auto-detects and repeats the package test in Cursor without touching normal profiles.
+
+This advances cross-editor/package evidence but keeps UI rows **Partial** until the full operation/export/reload/theme interaction checklist and screenshots are recorded from both packaged editors.
 
 ## Explicitly deferred from 1.0
 

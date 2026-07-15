@@ -4,6 +4,7 @@ import { operationCatalog, operationByKind } from "../shared/operations";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { DataExplorerPanel } from "./webviewPanel";
+import { insertGeneratedNotebookCell } from "./notebooks/notebookInsertion";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
 
@@ -187,6 +188,45 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
       await vscode.workspace.fs.writeFile(destination, Buffer.from(code, "utf8"));
       await vscode.window.showInformationMessage(`Exported Data Explorer code to ${destination.fsPath}.`);
     }),
+    vscode.commands.registerCommand("dataExplorer.insertNotebookCode", async () => {
+      if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return;
+      const snapshot = coordinator.activeSession();
+      const code = codePreview.codeForExport();
+      if (!snapshot || !code) {
+        await vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
+        return;
+      }
+      if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
+        await vscode.window.showWarningMessage(
+          "The active Data Explorer session did not originate from a notebook variable."
+        );
+        return;
+      }
+      const sourceUri = snapshot.metadata.source.uri;
+      const notebookUri = sourceUri ? vscode.Uri.parse(sourceUri) : vscode.window.activeNotebookEditor?.notebook.uri;
+      const notebook = notebookUri
+        ? vscode.workspace.notebookDocuments.find((document) => document.uri.toString() === notebookUri.toString())
+        : undefined;
+      if (!notebook || !notebookUri) {
+        await vscode.window.showWarningMessage("Reopen the originating notebook before inserting generated code.");
+        return;
+      }
+      const activeEditor = vscode.window.activeNotebookEditor;
+      const insertionIndex =
+        activeEditor?.notebook.uri.toString() === notebookUri.toString()
+          ? (activeEditor.selections[0]?.end ?? notebook.cellCount)
+          : notebook.cellCount;
+      if (
+        !(await insertGeneratedNotebookCell(notebook, insertionIndex, code, {
+          source: snapshot.metadata.source.label,
+          backend: snapshot.metadata.backend
+        }))
+      ) {
+        await vscode.window.showErrorMessage("VS Code could not insert the generated Data Explorer function.");
+        return;
+      }
+      await vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
+    }),
     vscode.commands.registerCommand("dataExplorer.exportData", async () => {
       if (!(await requireTrustedWorkspace("export cleaned data"))) return;
       const snapshot = coordinator.activeSession();
@@ -246,6 +286,18 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("dataExplorer.openSourceFile", async () => {
+      const snapshot = coordinator.activeSession() ?? (await waitForActiveSession(coordinator, 30_000));
+      const source = snapshot ? sourceUri(snapshot) : undefined;
+      if (!source) {
+        void vscode.window.showInformationMessage("The active Data Explorer session has no reopenable source.");
+        return;
+      }
+      await vscode.commands.executeCommand("vscode.open", source);
+    }),
+    vscode.commands.registerCommand("dataExplorer.openWalkthrough", () =>
+      vscode.commands.executeCommand("workbench.action.openWalkthrough", "Matt17BR.data-explorer#gettingStarted", false)
+    ),
     vscode.commands.registerCommand("dataExplorer.openSettings", () =>
       vscode.commands.executeCommand("workbench.action.openSettings", "@ext:Matt17BR.data-explorer")
     ),
@@ -257,6 +309,39 @@ export function registerNativeViews(context: vscode.ExtensionContext, coordinato
       )
     )
   );
+}
+
+async function waitForActiveSession(
+  coordinator: SessionCoordinator,
+  timeoutMs: number
+): Promise<ActiveSessionSnapshot | undefined> {
+  const current = coordinator.activeSession();
+  if (current) return current;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (snapshot: ActiveSessionSnapshot | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      subscription.dispose();
+      resolve(snapshot);
+    };
+    const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
+      if (snapshot) finish(snapshot);
+    });
+    const timeout = setTimeout(() => finish(undefined), timeoutMs);
+  });
+}
+
+export function sourceUri(snapshot: ActiveSessionSnapshot): vscode.Uri | undefined {
+  const source = snapshot.metadata.source;
+  if (source.path) return vscode.Uri.file(source.path);
+  if (!source.uri) return undefined;
+  try {
+    return vscode.Uri.parse(source.uri, true);
+  } catch {
+    return undefined;
+  }
 }
 
 function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {

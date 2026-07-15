@@ -30,6 +30,10 @@ jobs:
       - run: python -m pip_audit
       - run: npm run package -- --out data-explorer.vsix
       - run: npm run verify:vsix -- data-explorer.vsix
+      - run: xvfb-run -a npm run test:packaged-editors -- data-explorer.vsix
+        env:
+          DATA_EXPLORER_PACKAGED_EDITORS: vscode
+          VSCODE_TEST_VERSION: stable
       - uses: actions/upload-artifact@v6
         with:
           name: data-explorer-vsix

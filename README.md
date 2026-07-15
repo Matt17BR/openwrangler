@@ -1,6 +1,6 @@
 # Data Explorer
 
-Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, and explicit exports. Notebook insertion remains 1.0 work in progress.
+Data Explorer is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, explicit exports, and notebook code insertion.
 
 It is loosely inspired by Microsoft's VS Code Data Wrangler experience, but it is an independent implementation. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or implement backend-native features like first-class Polars support. Data Explorer exists to make that exploration layer open, hackable, and Polars-friendly from the start.
 
@@ -35,7 +35,8 @@ These screenshots are generated from the real built webview/notebook renderer us
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
-- Lightweight notebook output renderer for `data_wrangler_runtime.notebook.show(...)`.
+- MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters, while saved MIME v1 outputs remain renderable.
+- Notebook-origin sessions can insert the edited generated cleaning function back into the exact originating notebook.
 
 ## Example Usage
 
@@ -74,7 +75,7 @@ df = pl.read_csv("sales.csv")
 show(df, label="sales")
 ```
 
-This emits `application/vnd.data-explorer.viewer.v1+json`, which the bundled notebook renderer displays as a compact grid preview.
+This emits `application/vnd.data-explorer.viewer.v2+json`, which the bundled notebook renderer displays as a compact, typed grid preview. Saved `application/vnd.data-explorer.viewer.v1+json` output remains supported. Pass `variable_name="df"` when the **Open Data Explorer** button should reconnect the snapshot to a live kernel variable; otherwise it opens the immutable saved snapshot.
 
 ## Polars Support
 
@@ -123,9 +124,13 @@ Useful checks:
 ```bash
 npm run test:ts
 npm run test:python
+npm run reference:check
 npm run build
 npm run package
+npm run test:packaged-editors -- data-explorer.vsix
 ```
+
+The generated [interface reference](docs/reference.md) lists every public command, setting, transformation, protocol message, and notebook MIME type. Run `npm run generate:reference` after changing any of those registries; CI rejects stale output.
 
 Run the extension from Cursor or VS Code with `Launch Extension`, or package it with:
 
@@ -144,4 +149,4 @@ Data Explorer currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-It does not yet claim Data Wrangler parity. Notebook code insertion, MIME v2, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.
+It does not yet claim Data Wrangler parity. Real-kernel restart/permission matrices, exhaustive edge fixtures, broader by-example inference, packaged reload testing, and final VS Code/Cursor release acceptance are still tracked in `docs/feature-parity.md`.

@@ -24,6 +24,12 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Workspace-scoped persistence and validated replay for applied steps, an optional draft, and independent viewing state.
 - Editable-code clipboard/script export and atomic native Pandas/Polars cleaned-data export to CSV or Parquet.
 - Deterministic by-example synthesis with ranked expression programs, ambiguity warnings, native engine execution, and generated code.
+- Complete notebook MIME v2 snapshots, saved MIME v1 normalization, permission-aware kernel formatters, and originating-notebook code insertion.
+- Generated command, setting, operation, protocol, and MIME references with byte-for-byte CI drift detection.
+- Source reopening and Getting Started walkthrough commands.
+- Private row lineage and deterministic column identities for accurate structural diffs across sorting, renaming, reordering, grouping, latest-step edits, and duplicate Pandas labels.
+- Restart-aware Jupyter kernel lifecycle with bounded execution, active cancellation, one-shot recovery, and real Pandas/Polars formatter/transport acceptance.
+- Isolated installed-VSIX acceptance for VS Code and Cursor, including a live packaged Polars session and source reopening.
 
 ### Changed
 
@@ -32,10 +38,11 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Supported Python versions are 3.10 through 3.14.
 - File-backed Polars CSV/TSV, Parquet, and JSONL inputs now stay lazy through viewing filters, sorts, projections, and page slices.
 - GitHub workflows use the current Node 24-based official action majors.
+- Custom-editor panels now enable their webview scripts and resources consistently, allowing file sessions to initialize through the contributed editor path.
 
 ### Known gaps
 
-- Notebook insertion, notebook MIME v2, broader by-example inference, packaged reload recovery, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Remote/restarted-kernel acceptance, broader by-example inference, packaged reload recovery, and release-grade isolated VS Code/Cursor tests are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 
