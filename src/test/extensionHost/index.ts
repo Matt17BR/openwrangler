@@ -1,15 +1,22 @@
 import * as assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
-import type { DataExplorerRequest, DataExplorerResponse, FilterModel, SessionSource } from "../../shared/protocol";
+import type {
+  DataExplorerRequest,
+  DataExplorerResponse,
+  FilterModel,
+  SessionMetadata,
+  SessionSource
+} from "../../shared/protocol";
 
 interface TestApi {
   request(request: DataExplorerRequest): Promise<DataExplorerResponse>;
   setActiveSession(sessionId: string | undefined): void;
-  activeSession(): { sessionId: string } | undefined;
+  activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
@@ -170,6 +177,13 @@ export async function run(): Promise<void> {
   assert.ok(sourceInput instanceof vscode.TabInputText, "Open Source File must resolve the active runtime session.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the custom-editor session to close"
+  );
+
+  if (testPython) await exercisePackagedFileInputs(testing, workspace, testPython);
 
   const notebookDirectory = mkdtempSync(path.join(tmpdir(), "data-explorer-notebook-"));
   try {
@@ -333,6 +347,7 @@ async function verifyPersistedReplayAndRecovery(
   assert.deepEqual(restored.metadata.filterModel.sort, [{ column: "sales", direction: "desc", nulls: "last" }]);
 
   const secondFixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv");
+  const secondSourceText = readFileSync(secondFixture.fsPath, "utf8");
   const second = await testing.request({
     kind: "openSession",
     source: tsvSource(secondFixture),
@@ -386,17 +401,45 @@ async function verifyPersistedReplayAndRecovery(
 
   const exportDirectory = mkdtempSync(path.join(tmpdir(), "data-explorer-export-"));
   try {
-    const destination = path.join(exportDirectory, "cleaned.csv");
-    const exported = await testing.request({
-      kind: "exportData",
-      sessionId: restored.metadata.sessionId,
-      revision: restoredPage.revision,
-      path: destination,
-      format: "csv"
-    });
-    assert.equal(exported.kind, "dataExported");
-    assert.match(readFileSync(destination, "utf8"), /city,year,sales,active,score/);
+    for (const target of [
+      {
+        name: "polars",
+        sessionId: restored.metadata.sessionId,
+        revision: restoredPage.revision,
+        columns: 5
+      },
+      { name: "pandas", sessionId: second.metadata.sessionId, revision: secondPage.revision, columns: 4 }
+    ]) {
+      const csvDestination = path.join(exportDirectory, `${target.name}.csv`);
+      const csvExported = await testing.request({
+        kind: "exportData",
+        sessionId: target.sessionId,
+        revision: target.revision,
+        path: csvDestination,
+        format: "csv"
+      });
+      assert.equal(csvExported.kind, "dataExported");
+      if (csvExported.kind === "dataExported") assert.equal(csvExported.shape.columns, target.columns);
+      assert.match(readFileSync(csvDestination, "utf8"), /city,year,sales,active/);
+
+      const parquetDestination = path.join(exportDirectory, `${target.name}.parquet`);
+      const parquetExported = await testing.request({
+        kind: "exportData",
+        sessionId: target.sessionId,
+        revision: target.revision,
+        path: parquetDestination,
+        format: "parquet"
+      });
+      assert.equal(parquetExported.kind, "dataExported");
+      if (parquetExported.kind === "dataExported") assert.equal(parquetExported.shape.columns, target.columns);
+      assert.equal(readFileSync(parquetDestination).subarray(0, 4).toString("ascii"), "PAR1");
+    }
     assert.equal(readFileSync(fixture.fsPath, "utf8"), sourceText, "Export must not modify the source fixture.");
+    assert.equal(
+      readFileSync(secondFixture.fsPath, "utf8"),
+      secondSourceText,
+      "Pandas export must not modify the source fixture."
+    );
   } finally {
     rmSync(exportDirectory, { recursive: true, force: true });
   }
@@ -418,6 +461,92 @@ async function verifyPersistedReplayAndRecovery(
     10_000,
     "all recovered sessions and the standalone runtime to close"
   );
+}
+
+async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Uri, python: string): Promise<void> {
+  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-file-inputs-"));
+  const config = vscode.workspace.getConfiguration("dataExplorer");
+  const originalBackend = config.get<"auto" | "polars" | "pandas">("defaultBackend", "auto");
+  try {
+    execFileSync(
+      python,
+      [
+        "-c",
+        [
+          "import sys",
+          "from pathlib import Path",
+          "import polars as pl",
+          "from openpyxl import Workbook",
+          "root = Path(sys.argv[1])",
+          "pl.DataFrame({'name': ['alpha', 'beta'], 'value': [1, 2], 'active': [True, False]}).write_parquet(root / 'sample.parquet')",
+          "workbook = Workbook()",
+          "sheet = workbook.active",
+          "sheet.title = 'Sales'",
+          "sheet.append(['name', 'value', 'active'])",
+          "sheet.append(['alpha', 1, True])",
+          "sheet.append(['beta', 2, False])",
+          "workbook.save(root / 'sample.xlsx')"
+        ].join("\n"),
+        directory
+      ],
+      { encoding: "utf8" }
+    );
+
+    const fixtures = [
+      {
+        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
+        backend: "pandas" as const,
+        shape: { rows: 4, columns: 4 }
+      },
+      {
+        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
+        backend: "polars" as const,
+        shape: { rows: 4, columns: 4 }
+      },
+      {
+        uri: vscode.Uri.file(path.join(directory, "sample.parquet")),
+        backend: "polars" as const,
+        shape: { rows: 2, columns: 3 }
+      },
+      {
+        uri: vscode.Uri.file(path.join(directory, "sample.xlsx")),
+        backend: "polars" as const,
+        shape: { rows: 2, columns: 3 }
+      }
+    ];
+
+    for (const fixture of fixtures) {
+      await config.update("defaultBackend", fixture.backend, vscode.ConfigurationTarget.Global);
+      await vscode.commands.executeCommand(
+        "vscode.openWith",
+        fixture.uri,
+        "dataExplorer.viewer",
+        vscode.ViewColumn.One
+      );
+      await waitFor(
+        () => {
+          const active = testing.activeSession();
+          return (
+            active?.metadata.source.path === fixture.uri.fsPath &&
+            active.metadata.backend === fixture.backend &&
+            active.metadata.shape.rows === fixture.shape.rows &&
+            active.metadata.shape.columns === fixture.shape.columns
+          );
+        },
+        30_000,
+        `${path.basename(fixture.uri.fsPath)} to open through the packaged custom editor`
+      );
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        10_000,
+        `${path.basename(fixture.uri.fsPath)} to dispose its session and runtime`
+      );
+    }
+  } finally {
+    await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function csvSource(uri: vscode.Uri): SessionSource {

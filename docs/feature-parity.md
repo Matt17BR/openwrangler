@@ -4,33 +4,33 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Data Explorer 1.0 requires every in-scope row to be **Done**.
 
-| Surface                                             | Pandas | Polars | Status  | Required evidence                               |
-| --------------------------------------------------- | -----: | -----: | ------- | ----------------------------------------------- |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Format/option/error matrix green; editor TBD    |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD      |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD  |
-| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive and nested-type tests green         |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD      |
-| Multi-column viewing sorts                          |    Yes |    Yes | Partial | Per-column null order/stability green; editor   |
-| Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD     |
-| Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD  |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green       |
-| Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green        |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green         |
-| Missing/duplicate row operations                    |    Yes |    Yes | Partial | Null/NaN and keep-mode edges green; editor TBD  |
-| One-hot and multi-label binarization                |    Yes |    Yes | Partial | Null/blank/collision edges green; editor TBD    |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Partial | Unicode/null cross-engine tests green           |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Partial | Non-finite/constant edges green; editor TBD     |
-| Group and aggregate                                 |    Yes |    Yes | Partial | Ordered nullable aggregates green; editor TBD   |
-| Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD      |
-| String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green     |
-| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD   |
-| CSV and Parquet data export                         |    Yes |    Yes | Partial | Cross-engine atomic/source tests green          |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green         |
+| Surface                                             | Pandas | Polars | Status  | Required evidence                                |
+| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------ |
+| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Format/options/errors and packaged editors green |
+| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Real-kernel VS Code/Cursor tests                 |
+| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Partial | MIME v1/v2 compatibility green; editor TBD       |
+| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Browser/keyboard green; editor/performance TBD   |
+| Dataset summary and quick insights                  |    Yes |    Yes | Partial | Progressive and nested-type tests green          |
+| Basic and advanced viewing filters                  |    Yes |    Yes | Partial | AND/OR cross-engine green; full matrix TBD       |
+| Multi-column viewing sorts                          |    Yes |    Yes | Partial | Per-column null order/stability green; editor    |
+| Editing mode and operation catalog                  |    Yes |    Yes | Partial | Registry/UI search green; editor matrix TBD      |
+| Draft preview and data diff                         |    Yes |    Yes | Partial | Runtime/UI page diff green; identity edges TBD   |
+| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Runtime, reload, keyboard, packaged green        |
+| Generated code preview and editing                  |    Yes |    Yes | Partial | Native execution/CodeMirror/export green         |
+| Sort/filter cleaning steps                          |    Yes |    Yes | Partial | Core cross-engine operation tests green          |
+| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Partial | Core cross-engine operation tests green          |
+| Missing/duplicate row operations                    |    Yes |    Yes | Partial | Null/NaN and keep-mode edges green; editor TBD   |
+| One-hot and multi-label binarization                |    Yes |    Yes | Partial | Null/blank/collision edges green; editor TBD     |
+| Find/replace/strip/split/case transforms            |    Yes |    Yes | Partial | Unicode/null cross-engine tests green            |
+| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Partial | Non-finite/constant edges green; editor TBD      |
+| Group and aggregate                                 |    Yes |    Yes | Partial | Ordered nullable aggregates green; editor TBD    |
+| Custom engine-native code                           |    Yes |    Yes | Partial | Native execution green; trust/recovery TBD       |
+| String/datetime/new-column by example               |    Yes |    Yes | Partial | Native ranked candidates and warnings green      |
+| Copy/script/notebook code export                    |    Yes |    Yes | Partial | All paths implemented; real-kernel editor TBD    |
+| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green   |
+| Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD  |
+| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD       |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green          |
 
 ## Recorded acceptance evidence
 
@@ -199,6 +199,15 @@ Cleaning-history keyboard slice, 2026-07-15:
 - The generated public reference includes the keybinding table. Real extension-host and installed-VSIX acceptance verify the exact VS Code/Cursor keybinding contributions, stateful history replay, and final cleanup.
 
 This makes cleaning-step history/edit/discard/undo **Done**. The wider editing-mode row remains **Partial** until its complete packaged operation interaction checklist is green.
+
+Packaged file and data-export slice, 2026-07-15:
+
+- The installed VSIX custom editor now opens CSV, TSV, JSONL, Parquet, and XLSX in both isolated VS Code 1.128.0 and Cursor 3.11.19 runs. Acceptance pins TSV to Pandas and JSONL/Parquet/Excel to Polars, verifies exact shapes/backends through the active coordinator, closes every editor, and waits for zero sessions and a stopped runtime before continuing.
+- The packaged test environment creates Parquet and a named Excel sheet through independent libraries, so those readers exercise real typed files rather than renamed or mocked payloads. The runtime suite separately covers both engines, CSV delimiter/quote/header/encoding variants, Excel name and zero-based index selection, malformed/missing inputs, lazy Polars formats, and typed edge data.
+- After an injected runtime restart, both the transformed Polars session and concurrent Pandas session export CSV and Parquet. Acceptance verifies response shapes, CSV schemas, Parquet `PAR1` framing, and byte-identical CSV/TSV source fixtures. Unit/runtime coverage continues to enforce view-filter exclusion, draft/source-path rejection, atomic replacement, failure cleanup, and no Polars-to-Pandas conversion.
+- The same expanded matrix passes development-host, installed-VSIX, reload/replay, and cleanup paths; temporary generated inputs and outputs are removed from isolated test directories.
+
+This makes file entry points and CSV/Parquet data export **Done**. Code/notebook export remains a separate **Partial** row until its remaining real-kernel command interactions are green.
 
 ## Explicitly deferred from 1.0
 
