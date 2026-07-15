@@ -1,12 +1,29 @@
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
+from base64 import b64encode
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from math import isfinite, isnan
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from math import isfinite, isinf, isnan
 from typing import Any, Literal
 
-ColumnType = Literal["string", "integer", "float", "boolean", "datetime", "date", "unknown"]
+ColumnType = Literal[
+    "string",
+    "integer",
+    "float",
+    "decimal",
+    "boolean",
+    "datetime",
+    "date",
+    "duration",
+    "binary",
+    "list",
+    "struct",
+    "unknown",
+]
 
 
 class EngineError(RuntimeError):
@@ -66,25 +83,83 @@ class DataFrameEngine(ABC):
 def normalize_cell(value: Any) -> dict[str, Any]:
     is_null = value is None
     is_nan = False
+    infinity_sign: int | None = None
     if isinstance(value, float):
         is_nan = isnan(value)
+        if isinf(value):
+            infinity_sign = -1 if value < 0 else 1
 
     if is_null:
+        kind = "null"
         display = ""
         raw: Any = None
     elif is_nan:
+        kind = "nan"
         display = "NaN"
         raw = None
-    else:
+    elif isinstance(value, float) and isinf(value):
+        kind = "infinity"
+        display = "-Infinity" if value < 0 else "Infinity"
+        raw = None
+    elif isinstance(value, bool):
+        kind = "boolean"
         display = str(value)
-        raw = value if isinstance(value, (str, int, float, bool)) else display
+        raw = value
+    elif isinstance(value, int):
+        kind = "integer"
+        display = str(value)
+        raw = value if -(2**53) + 1 <= value <= (2**53) - 1 else display
+    elif isinstance(value, Decimal):
+        kind = "decimal"
+        display = str(value)
+        raw = display
+    elif isinstance(value, datetime):
+        kind = "datetime"
+        display = value.isoformat()
+        raw = display
+    elif isinstance(value, date):
+        kind = "date"
+        display = value.isoformat()
+        raw = display
+    elif isinstance(value, timedelta):
+        kind = "duration"
+        display = str(value)
+        raw = value.total_seconds()
+    elif isinstance(value, bytes):
+        kind = "binary"
+        display = b64encode(value).decode("ascii")
+        raw = display
+    elif isinstance(value, (list, tuple)):
+        kind = "list"
+        raw = _json_safe(value)
+        display = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+    elif isinstance(value, Mapping):
+        kind = "struct"
+        raw = _json_safe(value)
+        display = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+    elif isinstance(value, float):
+        kind = "number"
+        display = str(value)
+        raw = value
+    elif isinstance(value, str):
+        kind = "string"
+        display = value
+        raw = value
+    else:
+        kind = "unknown"
+        display = str(value)
+        raw = display
 
-    return {
+    cell = {
+        "kind": kind,
         "raw": raw,
         "display": display,
         "isNull": is_null,
         "isNaN": is_nan,
     }
+    if kind == "infinity":
+        cell["sign"] = infinity_sign
+    return cell
 
 
 def infer_semantic_type(raw_type: str) -> ColumnType:
@@ -92,6 +167,8 @@ def infer_semantic_type(raw_type: str) -> ColumnType:
     if any(token in lowered for token in ("int", "uint")):
         return "integer"
     if any(token in lowered for token in ("float", "double", "decimal")):
+        if "decimal" in lowered:
+            return "decimal"
         return "float"
     if "bool" in lowered:
         return "boolean"
@@ -99,6 +176,14 @@ def infer_semantic_type(raw_type: str) -> ColumnType:
         return "datetime"
     if lowered == "date" or lowered.endswith("[date]"):
         return "date"
+    if any(token in lowered for token in ("duration", "timedelta")):
+        return "duration"
+    if any(token in lowered for token in ("binary", "bytes")):
+        return "binary"
+    if any(token in lowered for token in ("list", "array")):
+        return "list"
+    if any(token in lowered for token in ("struct", "dict")):
+        return "struct"
     if any(token in lowered for token in ("str", "utf8", "object", "category", "categorical")):
         return "string"
     return "unknown"
@@ -173,3 +258,19 @@ def _maybe_float(value: Any) -> float | None:
         return None if value is None else float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return b64encode(value).decode("ascii")
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return str(value)

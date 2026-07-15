@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -61,12 +62,14 @@ class PolarsEngine(DataFrameEngine):
         null_counts = df.null_count().to_dicts()[0] if df.height else {column: 0 for column in df.columns}
         return [
             {
+                "id": f"c:{position}",
                 "name": name,
+                "position": position,
                 "rawType": str(dtype),
                 "type": infer_semantic_type(str(dtype)),
                 "nullable": bool(null_counts.get(name, 0) > 0),
             }
-            for name, dtype in df.schema.items()
+            for position, (name, dtype) in enumerate(df.schema.items())
         ]
 
     def apply_filter_model(self, frame: Any, model: Mapping[str, Any]) -> Any:
@@ -120,6 +123,7 @@ class PolarsEngine(DataFrameEngine):
         for row_number, row in enumerate(sliced.iter_rows(named=True), start=offset):
             rows.append(
                 {
+                    "id": f"r:{row_number}",
                     "rowNumber": row_number,
                     "values": [normalize_cell(row.get(column)) for column in columns],
                 }
@@ -264,6 +268,7 @@ class PolarsEngine(DataFrameEngine):
 
 def _maybe_float(value: Any) -> float | None:
     try:
-        return None if value is None else float(value)
+        result = None if value is None else float(value)
+        return result if result is None or isfinite(result) else None
     except (TypeError, ValueError):
         return None

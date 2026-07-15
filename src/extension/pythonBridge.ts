@@ -1,42 +1,72 @@
-import { ChildProcessWithoutNullStreams, spawn } from "child_process";
-import { randomUUID } from "crypto";
-import { existsSync } from "fs";
-import * as path from "path";
-import * as readline from "readline";
+import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import * as path from "node:path";
+import * as readline from "node:readline";
+import { promisify } from "node:util";
 import * as vscode from "vscode";
-import type { DataExplorerRequest, DataExplorerResponse } from "../shared/protocol";
-import { resolvePythonExecutable } from "./pythonPath";
+import type {
+  DataExplorerRequest,
+  DataExplorerResponse,
+  ErrorResponse,
+  RuntimeRequestEnvelope,
+  RuntimeResponseEnvelope
+} from "../shared/protocol";
+import { PROTOCOL_VERSION } from "../shared/protocol";
+import type { BridgeRequestOptions, DataExplorerBridge } from "./dataBridge";
+import {
+  probeDependencies,
+  requiredModules,
+  resolvePythonEnvironment,
+  type PythonEnvironment
+} from "./pythonEnvironment";
 
 interface PendingRequest {
   resolve: (response: DataExplorerResponse) => void;
   reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+  cancellation?: { dispose(): void };
 }
 
-interface RuntimeEnvelope {
-  id: string;
-  request: DataExplorerRequest;
-}
+const execFileAsync = promisify(execFile);
 
-interface RuntimeResponseEnvelope {
-  id: string;
-  response?: DataExplorerResponse;
-  error?: string;
-  detail?: string;
-}
-
-export class PythonBridge implements vscode.Disposable {
+export class PythonBridge implements DataExplorerBridge, vscode.Disposable {
   private process: ChildProcessWithoutNullStreams | undefined;
   private runtimeExitError: Error | undefined;
   private stderrBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
-  private readonly disposables: vscode.Disposable[] = [];
+  private readonly output = vscode.window.createOutputChannel("Data Explorer");
+  private generation = 0;
+  private disposed = false;
+  private environmentPromise: Promise<PythonEnvironment> | undefined;
+  private readonly dependencyCache = new Map<string, string[]>();
+  private lastMissingDependencies: { environment: PythonEnvironment; modules: string[] } | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  async request(request: DataExplorerRequest): Promise<DataExplorerResponse> {
-    const proc = this.ensureProcess();
-    const id = randomUUID();
-    const envelope: RuntimeEnvelope = { id, request };
+  get runtimeGeneration(): number {
+    return this.generation;
+  }
+
+  async request(request: DataExplorerRequest, options: BridgeRequestOptions = {}): Promise<DataExplorerResponse> {
+    if (this.disposed) {
+      throw new Error("Data Explorer runtime bridge has been disposed.");
+    }
+    if (options.cancellation?.isCancellationRequested) {
+      return { kind: "cancelled", targetRequestId: "not-started" };
+    }
+
+    const prepared = await this.prepareRequest(request);
+    if (prepared.kind === "error") return prepared;
+    const runtimeRequest = prepared;
+    const proc = await this.ensureProcess(runtimeRequest);
+    const requestId = randomUUID();
+    const envelope: RuntimeRequestEnvelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      requestId,
+      priority: options.priority ?? (runtimeRequest.kind === "getSummary" ? "background" : "interactive"),
+      request: runtimeRequest
+    };
+    const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs();
 
     return new Promise<DataExplorerResponse>((resolve, reject) => {
       if (this.runtimeExitError) {
@@ -48,34 +78,89 @@ export class PythonBridge implements vscode.Disposable {
         return;
       }
 
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        const pending = this.takePending(requestId);
+        if (!pending) return;
+        this.sendCancellation(requestId);
+        pending.reject(
+          new Error(`Data Explorer runtime request ${runtimeRequest.kind} timed out after ${timeoutMs} ms.`)
+        );
+        this.restart("Runtime request timed out; restarting so sessions can be replayed.");
+      }, timeoutMs);
+      const cancellation = options.cancellation?.onCancellationRequested(() => {
+        const pending = this.takePending(requestId);
+        if (!pending) return;
+        this.sendCancellation(requestId);
+        pending.resolve({ kind: "cancelled", targetRequestId: requestId });
+      });
+      this.pending.set(requestId, { resolve, reject, timer, cancellation });
+
       try {
         proc.stdin.write(`${JSON.stringify(envelope)}\n`, (error) => {
-          if (error) {
-            this.pending.delete(id);
-            reject(this.runtimeUnavailableError(error));
-          }
+          if (!error) return;
+          const pending = this.takePending(requestId);
+          pending?.reject(this.runtimeUnavailableError(error));
         });
       } catch (error) {
-        this.pending.delete(id);
-        reject(this.runtimeUnavailableError(error));
+        const pending = this.takePending(requestId);
+        pending?.reject(this.runtimeUnavailableError(error));
       }
     });
   }
 
-  dispose(): void {
-    for (const disposable of this.disposables) {
-      disposable.dispose();
-    }
-    for (const request of this.pending.values()) {
-      request.reject(new Error("Data Explorer runtime stopped."));
-    }
-    this.pending.clear();
-    this.process?.kill();
+  restart(reason = "Data Explorer runtime restarted."): void {
+    this.output.appendLine(reason);
+    const proc = this.process;
     this.process = undefined;
+    this.rejectAll(new Error(reason));
+    proc?.kill();
   }
 
-  private ensureProcess(): ChildProcessWithoutNullStreams {
+  clearRuntimeSelection(): void {
+    this.environmentPromise = undefined;
+    this.dependencyCache.clear();
+    this.restart("Python runtime selection changed.");
+  }
+
+  async installMissingDependencies(): Promise<boolean> {
+    const missing = this.lastMissingDependencies;
+    if (!missing || missing.modules.length === 0) {
+      await vscode.window.showInformationMessage("Data Explorer has no unresolved runtime dependencies.");
+      return false;
+    }
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
+      return false;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
+      { modal: true, detail: "Data Explorer never installs packages without this confirmation." },
+      "Install"
+    );
+    if (choice !== "Install") return false;
+
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Installing Data Explorer dependencies" },
+      async () => {
+        await execFileAsync(missing.environment.executable, ["-m", "pip", "install", ...missing.modules], {
+          timeout: 10 * 60_000
+        });
+      }
+    );
+    this.lastMissingDependencies = undefined;
+    this.dependencyCache.clear();
+    this.restart("Python dependencies changed; restarting the Data Explorer runtime.");
+    await vscode.window.showInformationMessage("Data Explorer runtime dependencies were installed.");
+    return true;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.restart("Data Explorer runtime stopped.");
+    this.output.dispose();
+  }
+
+  private async ensureProcess(request: DataExplorerRequest): Promise<ChildProcessWithoutNullStreams> {
     if (this.process && !this.process.killed) {
       return this.process;
     }
@@ -83,77 +168,134 @@ export class PythonBridge implements vscode.Disposable {
     this.runtimeExitError = undefined;
     this.stderrBuffer = "";
 
-    const config = vscode.workspace.getConfiguration("dataExplorer");
-    const configuredPythonPath = config.get<string>("pythonPath", ".venv/bin/python");
-    const pythonPath = resolvePythonExecutable(
-      configuredPythonPath,
-      vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
-      this.context.extensionPath,
-      existsSync
-    );
-    const workspacePythonPath = path.join(this.context.extensionPath, "python");
+    const resource =
+      request.kind === "openSession" && request.source.path ? vscode.Uri.file(request.source.path) : undefined;
+    const environment = await this.environment(resource);
+    const pythonPath = environment.executable;
+    const runtimeRoot = path.join(this.context.extensionPath, "python");
 
     const proc = spawn(pythonPath, ["-m", "data_wrangler_runtime.server"], {
       cwd: this.context.extensionPath,
       env: {
         ...process.env,
-        PYTHONPATH: [workspacePythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+        PYTHONPATH: [runtimeRoot, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
       }
     });
+    this.generation += 1;
+    this.output.appendLine(
+      `Starting protocol v2 runtime with ${pythonPath} (Python ${environment.version}, ${environment.source}, generation ${this.generation}).`
+    );
 
     const reader = readline.createInterface({ input: proc.stdout });
     reader.on("line", (line) => this.handleRuntimeLine(line));
     proc.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
-      this.stderrBuffer = `${this.stderrBuffer}${text}`.slice(-4000);
-      console.error(`[Data Explorer runtime] ${text}`);
+      this.stderrBuffer = `${this.stderrBuffer}${text}`.slice(-8000);
+      this.output.append(text);
     });
-    proc.on("error", (error) => {
-      this.runtimeExitError = this.runtimeUnavailableError(error, pythonPath);
-      for (const request of this.pending.values()) {
-        request.reject(this.runtimeExitError);
-      }
-      this.pending.clear();
-      this.process = undefined;
-    });
+    proc.on("error", (error) => this.handleProcessFailure(proc, this.runtimeUnavailableError(error, pythonPath)));
     proc.on("exit", (code, signal) => {
-      this.runtimeExitError = this.runtimeUnavailableError(
-        new Error(`Runtime exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}.`),
-        pythonPath
+      reader.close();
+      this.handleProcessFailure(
+        proc,
+        this.runtimeUnavailableError(
+          new Error(`Runtime exited with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}.`),
+          pythonPath
+        )
       );
-      for (const request of this.pending.values()) {
-        request.reject(this.runtimeExitError);
-      }
-      this.pending.clear();
-      this.process = undefined;
     });
 
-    this.disposables.push({ dispose: () => reader.close() });
     this.process = proc;
     return proc;
+  }
+
+  private handleProcessFailure(proc: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.process !== proc) return;
+    this.runtimeExitError = error;
+    this.process = undefined;
+    this.output.appendLine(error.message);
+    this.rejectAll(error);
   }
 
   private handleRuntimeLine(line: string): void {
     let envelope: RuntimeResponseEnvelope;
     try {
-      envelope = JSON.parse(line) as RuntimeResponseEnvelope;
+      const parsed: unknown = JSON.parse(line);
+      if (!isRuntimeResponseEnvelope(parsed)) {
+        throw new Error("Response does not match the protocol v2 envelope.");
+      }
+      envelope = parsed;
     } catch (error) {
-      console.error(`[Data Explorer runtime] Invalid JSON response: ${line}`, error);
+      this.output.appendLine(`Invalid runtime response: ${line}`);
+      this.output.appendLine(error instanceof Error ? error.message : String(error));
       return;
     }
 
-    const pending = this.pending.get(envelope.id);
-    if (!pending) {
-      return;
-    }
+    const pending = this.takePending(envelope.requestId);
+    pending?.resolve(envelope.response);
+  }
 
-    this.pending.delete(envelope.id);
-    if (envelope.response) {
-      pending.resolve(envelope.response);
-      return;
-    }
+  private takePending(requestId: string): PendingRequest | undefined {
+    const pending = this.pending.get(requestId);
+    if (!pending) return undefined;
+    this.pending.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.cancellation?.dispose();
+    return pending;
+  }
 
-    pending.reject(new Error(envelope.error ?? "Unknown Data Explorer runtime error."));
+  private rejectAll(error: Error): void {
+    for (const requestId of [...this.pending.keys()]) {
+      this.takePending(requestId)?.reject(error);
+    }
+  }
+
+  private sendCancellation(targetRequestId: string): void {
+    const proc = this.process;
+    if (!proc?.stdin.writable) return;
+    const envelope: RuntimeRequestEnvelope = {
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: randomUUID(),
+      priority: "interactive",
+      request: { kind: "cancelRequest", targetRequestId }
+    };
+    proc.stdin.write(`${JSON.stringify(envelope)}\n`);
+  }
+
+  private defaultTimeoutMs(): number {
+    return vscode.workspace.getConfiguration("dataExplorer").get<number>("requestTimeoutMs", 30_000);
+  }
+
+  private environment(resource?: vscode.Uri): Promise<PythonEnvironment> {
+    this.environmentPromise ??= resolvePythonEnvironment(this.context, resource);
+    return this.environmentPromise;
+  }
+
+  private async prepareRequest(request: DataExplorerRequest): Promise<DataExplorerRequest | ErrorResponse> {
+    if (request.kind !== "openSession" || request.source.kind !== "file") return request;
+    const environment = await this.environment(vscode.Uri.file(request.source.path ?? request.source.label));
+    const backends = request.backend ? [request.backend] : (["polars", "pandas"] as const);
+    const failures: Array<{ backend: "polars" | "pandas"; missing: string[] }> = [];
+    for (const backend of backends) {
+      const modules = requiredModules(backend, request.source);
+      const key = `${environment.executable}:${modules.join(",")}`;
+      let missing = this.dependencyCache.get(key);
+      if (!missing) {
+        missing = (await probeDependencies(environment.executable, modules)).missing;
+        this.dependencyCache.set(key, missing);
+      }
+      if (missing.length === 0) return { ...request, backend };
+      failures.push({ backend, missing });
+    }
+    const missing = [...new Set(failures.flatMap((failure) => failure.missing))];
+    this.lastMissingDependencies = { environment, modules: failures[0]?.missing ?? missing };
+    return {
+      kind: "error",
+      code: "missing_dependencies",
+      message: `The selected Python ${environment.version} environment cannot open this source. Missing: ${missing.join(", ")}.`,
+      detail: "Use Data Explorer: Install Runtime Dependencies to review and confirm installation.",
+      recoverable: true
+    };
   }
 
   private runtimeUnavailableError(error?: unknown, pythonPath?: string): Error {
@@ -163,7 +305,19 @@ export class PythonBridge implements vscode.Disposable {
     const stderrHint = stderr ? ` Runtime stderr: ${stderr}` : "";
     return new Error(
       `Data Explorer could not talk to its Python runtime (${reason}).${pathHint}${stderrHint} ` +
-        'Check the dataExplorer.pythonPath setting and make sure the runtime dependencies are installed with `.venv/bin/python -m pip install -e "python[dev]"`.'
+        "Select a compatible Python 3.10-3.14 environment with the Data Explorer: Change Runtime command."
     );
   }
+}
+
+function isRuntimeResponseEnvelope(value: unknown): value is RuntimeResponseEnvelope {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<RuntimeResponseEnvelope>;
+  return (
+    candidate.protocolVersion === PROTOCOL_VERSION &&
+    typeof candidate.requestId === "string" &&
+    typeof candidate.response === "object" &&
+    candidate.response !== null &&
+    typeof (candidate.response as { kind?: unknown }).kind === "string"
+  );
 }

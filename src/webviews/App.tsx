@@ -349,6 +349,7 @@ function snapshotColumnValues(
 
   return {
     kind: "columnValues",
+    revision: metadata.revision,
     column,
     values: [...counts.entries()]
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))

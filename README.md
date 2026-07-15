@@ -33,7 +33,7 @@ These screenshots are generated from the real built webview/notebook renderer us
 3. Choose **Data Explorer: Open Current File**.
 4. Use the left panel to select columns, search values, add predicates, and sort.
 
-File-backed sessions default to Polars. Change `dataExplorer.defaultBackend` to `pandas` if you want Pandas file loading instead.
+File-backed sessions use `auto` by default: Data Explorer prefers Polars and falls back to Pandas when the selected environment or format requires it. You can pin either engine with `dataExplorer.defaultBackend`.
 
 ### Open a notebook variable
 
@@ -88,7 +88,7 @@ Reload the editor after installing the VSIX. Then:
 - Open `fixtures/example.ipynb`, select the `.venv` Python kernel, and run the notebook cell. The dataframe is a real Polars dataframe.
 - From the notebook, use **Open in Data Explorer** when Jupyter offers it for `df`, or run **Data Explorer: Open Notebook Variable** and enter `df`. The full Data Explorer webview should page, filter, sort, and summarize the live kernel dataframe.
 
-The extension setting `dataExplorer.pythonPath` defaults to `.venv/bin/python`, so the local development install uses the editable runtime environment above. If your editor opens the notebook with `fixtures/` as its working directory, `fixtures/example.ipynb` still works because it checks both `fixtures/sample.csv` and `sample.csv`.
+For development, set `dataExplorer.pythonPath` to the workspace `.venv/bin/python` if it is not already the environment selected by the Python extension. In normal use the setting is empty: Data Explorer resolves the selected Python extension environment first and then a system Python. It validates Python 3.10-3.14 and asks before installing any missing engine or format dependency.
 
 ## Development
 

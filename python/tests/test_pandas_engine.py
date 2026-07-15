@@ -39,7 +39,7 @@ def test_pandas_file_session_matches_protocol():
         ],
         "sort": [{"column": "sales", "direction": "asc", "nulls": "last"}],
     }
-    page = manager.get_page(opened["metadata"]["sessionId"], 0, 10, filter_model)
+    page = manager.get_page(opened["metadata"]["sessionId"], 0, 0, 10, filter_model)
 
     assert page["metadata"]["filteredShape"]["rows"] == 2
     assert [row["values"][0]["display"] for row in page["page"]["rows"]] == ["Rome", "Milan"]

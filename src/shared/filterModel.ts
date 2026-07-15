@@ -1,42 +1,10 @@
-export type ColumnType = "string" | "integer" | "float" | "boolean" | "datetime" | "date" | "unknown";
+import type { ColumnFilter, ColumnType, FilterModel, PredicateFilter } from "./protocol.generated";
 
-export type SortDirection = "asc" | "desc";
-
-export interface SortRule {
-  column: string;
-  direction: SortDirection;
-  nulls: "first" | "last";
-}
-
-export type PredicateOperator =
-  "equals" | "notEquals" | "contains" | "startsWith" | "endsWith" | "gt" | "gte" | "lt" | "lte" | "between";
-
-export interface PredicateFilter {
-  kind: "predicate";
-  operator: PredicateOperator;
-  value: unknown;
-  secondValue?: unknown;
-}
-
-export interface ValueFilter {
-  kind: "values";
-  selectedValues: unknown[];
-  includeNulls: boolean;
-  includeNaN: boolean;
-  search?: string;
-}
-
-export interface ColumnFilter {
-  column: string;
-  type: ColumnType;
-  valueFilter?: ValueFilter;
-  predicates: PredicateFilter[];
-}
-
-export interface FilterModel {
-  filters: ColumnFilter[];
-  sort: SortRule[];
-}
+export type { ColumnFilter, ColumnType, FilterModel, PredicateFilter };
+export type SortRule = FilterModel["sort"][number];
+export type SortDirection = SortRule["direction"];
+export type PredicateOperator = PredicateFilter["operator"];
+export type ValueFilter = NonNullable<ColumnFilter["valueFilter"]>;
 
 export const emptyFilterModel = (): FilterModel => ({
   filters: [],

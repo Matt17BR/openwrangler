@@ -1,0 +1,581 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Matt17BR/data-explorer/protocol/data-explorer.v2.schema.json",
+  "title": "DataExplorerTransportMessage",
+  "description": "Canonical standalone and Jupyter transport contract for Data Explorer protocol v2.",
+  "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
+  "definitions": {
+    "ProtocolVersion": { "type": "integer", "enum": [2] },
+    "DataBackend": { "type": "string", "enum": ["polars", "pandas"] },
+    "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
+    "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
+    "SessionSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["file", "notebookVariable", "notebookOutput"] },
+        "label": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" },
+        "uri": { "type": "string" },
+        "variableName": { "type": "string" },
+        "importOptions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "delimiter": { "type": "string", "minLength": 1, "maxLength": 1 },
+            "encoding": { "type": "string" },
+            "quoteChar": { "type": "string", "minLength": 1, "maxLength": 1 },
+            "hasHeader": { "type": "boolean" },
+            "sheet": { "oneOf": [{ "type": "string" }, { "type": "integer", "minimum": 0 }] }
+          }
+        }
+      }
+    },
+    "SourceCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["editable", "lazy", "cancel", "exportCsv", "exportParquet", "notebookInsert"],
+      "properties": {
+        "editable": { "type": "boolean" },
+        "lazy": { "type": "boolean" },
+        "cancel": { "type": "boolean" },
+        "exportCsv": { "type": "boolean" },
+        "exportParquet": { "type": "boolean" },
+        "notebookInsert": { "type": "boolean" }
+      }
+    },
+    "ColumnType": {
+      "type": "string",
+      "enum": [
+        "string",
+        "integer",
+        "float",
+        "decimal",
+        "boolean",
+        "datetime",
+        "date",
+        "duration",
+        "binary",
+        "list",
+        "struct",
+        "unknown"
+      ]
+    },
+    "ColumnSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "position", "rawType", "type", "nullable"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "position": { "type": "integer", "minimum": 0 },
+        "rawType": { "type": "string" },
+        "type": { "$ref": "#/definitions/ColumnType" },
+        "nullable": { "type": "boolean" }
+      }
+    },
+    "DataShape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "columns"],
+      "properties": {
+        "rows": { "type": "integer", "minimum": 0 },
+        "columns": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "TypedCellKind": {
+      "type": "string",
+      "enum": [
+        "null",
+        "nan",
+        "infinity",
+        "boolean",
+        "number",
+        "integer",
+        "string",
+        "decimal",
+        "datetime",
+        "date",
+        "duration",
+        "binary",
+        "list",
+        "struct",
+        "unknown"
+      ]
+    },
+    "CellValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "display", "isNull", "isNaN"],
+      "properties": {
+        "kind": { "$ref": "#/definitions/TypedCellKind" },
+        "raw": {},
+        "display": { "type": "string" },
+        "isNull": { "type": "boolean" },
+        "isNaN": { "type": "boolean" },
+        "sign": { "type": "integer", "enum": [-1, 1] }
+      }
+    },
+    "DataRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "rowNumber", "values"],
+      "properties": {
+        "id": { "type": "string" },
+        "rowNumber": { "type": "integer", "minimum": 0 },
+        "values": { "type": "array", "items": { "$ref": "#/definitions/CellValue" } }
+      }
+    },
+    "GridPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["offset", "limit", "totalRows", "rows"],
+      "properties": {
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1 },
+        "totalRows": { "type": "integer", "minimum": 0 },
+        "rows": { "type": "array", "items": { "$ref": "#/definitions/DataRow" } }
+      }
+    },
+    "ValueCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "count"],
+      "properties": {
+        "value": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "NumericSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "mean": { "type": "number" },
+        "median": { "type": "number" },
+        "std": { "type": "number" }
+      }
+    },
+    "NumericBin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max", "count"],
+      "properties": {
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ColumnVisualization": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "bins"],
+          "properties": {
+            "kind": { "const": "numeric" },
+            "bins": { "type": "array", "items": { "$ref": "#/definitions/NumericBin" } },
+            "sampled": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "categories", "otherCount"],
+          "properties": {
+            "kind": { "const": "categorical" },
+            "categories": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
+            "otherCount": { "type": "integer", "minimum": 0 },
+            "sampled": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "trueCount", "falseCount"],
+          "properties": {
+            "kind": { "const": "boolean" },
+            "trueCount": { "type": "integer", "minimum": 0 },
+            "falseCount": { "type": "integer", "minimum": 0 },
+            "sampled": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "datetime" },
+            "min": { "type": ["string", "null"] },
+            "max": { "type": ["string", "null"] },
+            "sampled": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "ColumnSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
+      "properties": {
+        "column": { "type": "string" },
+        "type": { "$ref": "#/definitions/ColumnType" },
+        "rawType": { "type": "string" },
+        "totalCount": { "type": "integer", "minimum": 0 },
+        "nullCount": { "type": "integer", "minimum": 0 },
+        "nanCount": { "type": "integer", "minimum": 0 },
+        "distinctCount": { "type": "integer", "minimum": 0 },
+        "numeric": { "$ref": "#/definitions/NumericSummary" },
+        "visualization": { "$ref": "#/definitions/ColumnVisualization" },
+        "topValues": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
+        "sampled": { "type": "boolean" }
+      }
+    },
+    "DatasetStats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["missingCells", "missingRows", "duplicateRows", "missingValuesByColumn"],
+      "properties": {
+        "missingCells": { "type": "integer", "minimum": 0 },
+        "missingRows": { "type": "integer", "minimum": 0 },
+        "duplicateRows": { "type": "integer", "minimum": 0 },
+        "missingValuesByColumn": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column", "count"],
+            "properties": {
+              "column": { "type": "string" },
+              "count": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "PredicateFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "operator"],
+      "properties": {
+        "kind": { "const": "predicate" },
+        "operator": {
+          "type": "string",
+          "enum": [
+            "equals",
+            "notEquals",
+            "contains",
+            "startsWith",
+            "endsWith",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "between",
+            "isNull",
+            "isNotNull",
+            "isNaN",
+            "isNotNaN"
+          ]
+        },
+        "value": {},
+        "secondValue": {}
+      }
+    },
+    "ColumnFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "type", "predicates"],
+      "properties": {
+        "column": { "type": "string" },
+        "type": { "$ref": "#/definitions/ColumnType" },
+        "valueFilter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "selectedValues", "includeNulls", "includeNaN"],
+          "properties": {
+            "kind": { "const": "values" },
+            "selectedValues": { "type": "array", "items": {} },
+            "includeNulls": { "type": "boolean" },
+            "includeNaN": { "type": "boolean" },
+            "search": { "type": "string" }
+          }
+        },
+        "predicates": { "type": "array", "items": { "$ref": "#/definitions/PredicateFilter" } }
+      }
+    },
+    "FilterModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filters", "sort"],
+      "properties": {
+        "filters": { "type": "array", "items": { "$ref": "#/definitions/ColumnFilter" } },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column", "direction", "nulls"],
+            "properties": {
+              "column": { "type": "string" },
+              "direction": { "type": "string", "enum": ["asc", "desc"] },
+              "nulls": { "type": "string", "enum": ["first", "last"] }
+            }
+          }
+        }
+      }
+    },
+    "SessionMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocolVersion",
+        "sessionId",
+        "revision",
+        "backend",
+        "mode",
+        "source",
+        "capabilities",
+        "shape",
+        "filteredShape",
+        "schema",
+        "filterModel"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "backend": { "$ref": "#/definitions/DataBackend" },
+        "mode": { "$ref": "#/definitions/SessionMode" },
+        "source": { "$ref": "#/definitions/SessionSource" },
+        "capabilities": { "$ref": "#/definitions/SourceCapabilities" },
+        "shape": { "$ref": "#/definitions/DataShape" },
+        "filteredShape": { "$ref": "#/definitions/DataShape" },
+        "schema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
+        "filterModel": { "$ref": "#/definitions/FilterModel" },
+        "stats": { "$ref": "#/definitions/DatasetStats" }
+      }
+    },
+    "InitializeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "initialize" } }
+    },
+    "OpenSessionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "pageSize"],
+      "properties": {
+        "kind": { "const": "openSession" },
+        "source": { "$ref": "#/definitions/SessionSource" },
+        "backend": { "$ref": "#/definitions/DataBackend" },
+        "mode": { "$ref": "#/definitions/SessionMode" },
+        "pageSize": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "SessionRequestBase": {
+      "type": "object",
+      "required": ["sessionId", "revision"],
+      "properties": {
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "PageRequest": {
+      "allOf": [
+        { "$ref": "#/definitions/SessionRequestBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "sessionId", "revision", "offset", "limit", "filterModel"],
+          "properties": {
+            "kind": { "const": "getPage" },
+            "sessionId": { "type": "string" },
+            "revision": { "type": "integer", "minimum": 0 },
+            "offset": { "type": "integer", "minimum": 0 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
+            "filterModel": { "$ref": "#/definitions/FilterModel" }
+          }
+        }
+      ]
+    },
+    "SummaryRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "filterModel"],
+      "properties": {
+        "kind": { "const": "getSummary" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "filterModel": { "$ref": "#/definitions/FilterModel" },
+        "columns": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ValuesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "column", "filterModel", "limit"],
+      "properties": {
+        "kind": { "const": "getColumnValues" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "column": { "type": "string" },
+        "filterModel": { "$ref": "#/definitions/FilterModel" },
+        "search": { "type": "string" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
+    "CloseSessionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision"],
+      "properties": {
+        "kind": { "const": "closeSession" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "CancelRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "targetRequestId"],
+      "properties": {
+        "kind": { "const": "cancelRequest" },
+        "targetRequestId": { "type": "string" }
+      }
+    },
+    "DataExplorerRequest": {
+      "oneOf": [
+        { "$ref": "#/definitions/InitializeRequest" },
+        { "$ref": "#/definitions/OpenSessionRequest" },
+        { "$ref": "#/definitions/PageRequest" },
+        { "$ref": "#/definitions/SummaryRequest" },
+        { "$ref": "#/definitions/ValuesRequest" },
+        { "$ref": "#/definitions/CloseSessionRequest" },
+        { "$ref": "#/definitions/CancelRequest" }
+      ]
+    },
+    "InitializedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "protocolVersion", "runtimeVersion", "capabilities"],
+      "properties": {
+        "kind": { "const": "initialized" },
+        "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
+        "runtimeVersion": { "type": "string" },
+        "capabilities": { "$ref": "#/definitions/SourceCapabilities" }
+      }
+    },
+    "SessionOpenedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "metadata", "page", "summaries"],
+      "properties": {
+        "kind": { "const": "sessionOpened" },
+        "metadata": { "$ref": "#/definitions/SessionMetadata" },
+        "page": { "$ref": "#/definitions/GridPage" },
+        "summaries": { "type": "array", "items": { "$ref": "#/definitions/ColumnSummary" } }
+      }
+    },
+    "PageResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "page", "metadata"],
+      "properties": {
+        "kind": { "const": "page" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "page": { "$ref": "#/definitions/GridPage" },
+        "metadata": { "$ref": "#/definitions/SessionMetadata" }
+      }
+    },
+    "SummaryResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "summaries"],
+      "properties": {
+        "kind": { "const": "summary" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "summaries": { "type": "array", "items": { "$ref": "#/definitions/ColumnSummary" } }
+      }
+    },
+    "ValuesResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "revision", "column", "values", "hasMore"],
+      "properties": {
+        "kind": { "const": "columnValues" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "column": { "type": "string" },
+        "values": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
+        "hasMore": { "type": "boolean" }
+      }
+    },
+    "SessionClosedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId"],
+      "properties": {
+        "kind": { "const": "sessionClosed" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "CancelledResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "targetRequestId"],
+      "properties": {
+        "kind": { "const": "cancelled" },
+        "targetRequestId": { "type": "string" }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "code", "message", "recoverable"],
+      "properties": {
+        "kind": { "const": "error" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "detail": { "type": "string" },
+        "recoverable": { "type": "boolean" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "DataExplorerResponse": {
+      "oneOf": [
+        { "$ref": "#/definitions/InitializedResponse" },
+        { "$ref": "#/definitions/SessionOpenedResponse" },
+        { "$ref": "#/definitions/PageResponse" },
+        { "$ref": "#/definitions/SummaryResponse" },
+        { "$ref": "#/definitions/ValuesResponse" },
+        { "$ref": "#/definitions/SessionClosedResponse" },
+        { "$ref": "#/definitions/CancelledResponse" },
+        { "$ref": "#/definitions/ErrorResponse" }
+      ]
+    },
+    "RuntimeRequestEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "requestId", "priority", "request"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
+        "requestId": { "type": "string", "minLength": 1 },
+        "priority": { "$ref": "#/definitions/RequestPriority" },
+        "request": { "$ref": "#/definitions/DataExplorerRequest" }
+      }
+    },
+    "RuntimeResponseEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "requestId", "response"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/definitions/ProtocolVersion" },
+        "requestId": { "type": "string", "minLength": 1 },
+        "response": { "$ref": "#/definitions/DataExplorerResponse" }
+      }
+    }
+  }
+}

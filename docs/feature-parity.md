@@ -28,9 +28,9 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | String/datetime/new-column by example               |    Yes |    Yes | Planned | Candidate ranking and ambiguity fixtures        |
 | Copy/script/notebook code export                    |    Yes |    Yes | Planned | Clipboard/file/notebook edit tests              |
 | CSV and Parquet data export                         |    Yes |    Yes | Planned | Atomic-write and source-protection tests        |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Planned | Missing/dependency/permission tests             |
+| Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Planned | VS Code/Cursor visual checklist                 |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Planned | Failure-injection integration tests             |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Partial | Contract tests green; editor injection TBD      |
 
 ## Explicitly deferred from 1.0
 
