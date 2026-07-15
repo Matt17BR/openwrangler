@@ -39,8 +39,21 @@ export interface ActiveSessionSnapshot {
   code: string;
 }
 
+export interface SessionCoordinatorDiagnostics {
+  activeSessionId?: string;
+  sessionCount: number;
+  sessions: Array<{
+    publicId: string;
+    runtimeId: string;
+    publicRevision: number;
+    runtimeRevision: number;
+    sourceLabel: string;
+  }>;
+}
+
 export class SessionCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, CoordinatedSession>();
+  private readonly pendingOpens = new Map<DataExplorerBridge, number>();
   private readonly activeSessionEmitter = new vscode.EventEmitter<ActiveSessionSnapshot | undefined>();
   private activeSessionId: string | undefined;
   private disposed = false;
@@ -80,6 +93,20 @@ export class SessionCoordinator implements vscode.Disposable {
           code: session.code
         }
       : undefined;
+  }
+
+  diagnostics(): SessionCoordinatorDiagnostics {
+    return {
+      activeSessionId: this.activeSessionId,
+      sessionCount: this.sessions.size,
+      sessions: [...this.sessions.values()].map((session) => ({
+        publicId: session.publicId,
+        runtimeId: session.runtimeId,
+        publicRevision: session.publicRevision,
+        runtimeRevision: session.runtimeRevision,
+        sourceLabel: session.openRequest.source.label
+      }))
+    };
   }
 
   async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
@@ -147,6 +174,22 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private async open(
+    delegate: DataExplorerBridge,
+    request: OpenSessionRequest,
+    options?: BridgeRequestOptions
+  ): Promise<DataExplorerResponse> {
+    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    try {
+      return await this.openTracked(delegate, request, options);
+    } finally {
+      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
+      else this.pendingOpens.delete(delegate);
+      this.releaseDelegateIfIdle(delegate);
+    }
+  }
+
+  private async openTracked(
     delegate: DataExplorerBridge,
     request: OpenSessionRequest,
     options?: BridgeRequestOptions
@@ -248,6 +291,7 @@ export class SessionCoordinator implements vscode.Disposable {
     if (response.kind === "sessionClosed") {
       this.sessions.delete(session.publicId);
       if (this.activeSessionId === session.publicId) this.setActive(undefined);
+      this.releaseDelegateIfIdle(session.delegate);
       return { ...response, sessionId: session.publicId };
     }
     if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
@@ -399,6 +443,15 @@ export class SessionCoordinator implements vscode.Disposable {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private releaseDelegateIfIdle(delegate: DataExplorerBridge): void {
+    if (
+      !this.pendingOpens.has(delegate) &&
+      ![...this.sessions.values()].some((session) => session.delegate === delegate)
+    ) {
+      delegate.onIdle?.();
     }
   }
 }

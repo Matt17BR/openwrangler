@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
+import { runEditorAcceptancePhase, writeEditorAcceptanceHarness } from "./editor-acceptance.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const hostedPython = process.env.pythonLocation
@@ -22,6 +23,7 @@ process.env.DATA_EXPLORER_TEST_PYTHON ??=
       : process.platform === "win32"
         ? "python"
         : "python3";
+process.env.DATA_EXPLORER_EXTENSION_TESTS = "1";
 const profile = mkdtempSync(join(tmpdir(), "data-explorer-extension-host-"));
 const requestedVersion = process.env.VSCODE_TEST_VERSION;
 const installedExecutable = "/usr/share/code/code";
@@ -32,6 +34,7 @@ const vscodeExecutablePath = requestedVersion
     : await downloadAndUnzipVSCode("stable");
 
 try {
+  process.env.DATA_EXPLORER_TEST_PHASE = "single";
   await runTests({
     vscodeExecutablePath,
     extensionDevelopmentPath: root,
@@ -39,9 +42,9 @@ try {
     launchArgs: [
       root,
       "--user-data-dir",
-      resolve(profile, "user-data"),
+      resolve(profile, "runner-user-data"),
       "--extensions-dir",
-      resolve(profile, "extensions"),
+      resolve(profile, "runner-extensions"),
       "--disable-extensions",
       "--disable-workspace-trust",
       "--skip-welcome",
@@ -49,6 +52,27 @@ try {
       ...(process.platform === "linux" ? ["--no-sandbox"] : [])
     ]
   });
+
+  const harness = resolve(profile, "harness");
+  const userData = resolve(profile, "reload-user-data");
+  const extensions = resolve(profile, "reload-extensions");
+  const resultPath = resolve(profile, "reload-result.json");
+  const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
+  writeEditorAcceptanceHarness(harness);
+  const editor = { name: "VS Code", executable: vscodeExecutablePath, sharedDataDir: true };
+  for (const phase of ["seed", "verify"]) {
+    await runEditorAcceptancePhase({
+      editor,
+      workspace: root,
+      userData,
+      extensions,
+      developmentPaths: [root, harness],
+      testModule,
+      python: process.env.DATA_EXPLORER_TEST_PYTHON,
+      phase,
+      resultPath
+    });
+  }
 } finally {
   rmSync(profile, { recursive: true, force: true });
 }

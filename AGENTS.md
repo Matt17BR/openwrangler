@@ -27,6 +27,7 @@ This repository builds the open-source Data Explorer extension and its bundled P
 9. Do not describe the project as feature-parity complete until every in-scope row in `docs/feature-parity.md` is green.
 10. File readers expose a shared zero-based Excel sheet index. Failed eager or lazy opens must produce `EngineError` and must not retain a session; nested and scalar values must remain strict-JSON-safe.
 11. Every operation change needs matching Pandas/Polars runtime and executable generated-code tests. Generated categorical columns may not collide, and engine-specific null/Unicode/aggregate defaults must be normalized explicitly.
+12. Standalone runtime startup is single-flight. Restart must invalidate any pending start, and closing the final session must stop the Python process; packaged seed/verify acceptance guards these lifecycle rules.
 
 ## Required checks
 

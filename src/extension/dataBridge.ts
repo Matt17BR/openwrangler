@@ -14,4 +14,5 @@ export interface BridgeRequestOptions {
 export interface DataExplorerBridge {
   request(request: DataExplorerRequest, options?: BridgeRequestOptions): Promise<DataExplorerResponse>;
   setActiveSession?(sessionId: string | undefined): void;
+  onIdle?(): void;
 }

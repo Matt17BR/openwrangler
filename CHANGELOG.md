@@ -35,6 +35,7 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Cross-engine file acceptance for quoted/headerless CSV, TSV, JSONL, Parquet, and named/indexed Excel sheets plus missing/malformed diagnostics.
 - Native nested-Polars and Pandas/NumPy nullable typed-cell fixtures covering large integers, decimals, time zones, containers, binary, durations, NaN/infinity, zero-column frames, and long Unicode values.
 - Cross-engine operation-edge acceptance for stable per-column null sorts, missing/duplicate modes, categorical collisions, Unicode casing, non-finite numerics, nullable ordered groups, and custom-code diagnostics.
+- Two-process installed-VSIX acceptance in VS Code and Cursor for persisted Polars plans/view state, concurrent Pandas/Polars runtime recovery, source-safe export, and final process cleanup.
 
 ### Changed
 
@@ -47,10 +48,11 @@ All notable changes to Data Explorer are documented here. The project follows Se
 - Column actions and resizing now provide zoom-safe touch targets plus keyboard resizing; loading, recovery, and generated-code regions expose explicit accessible status/focus semantics.
 - Polars nested dtypes are classified by their outer container, Excel sheet indexes follow the public zero-based contract, and failed lazy-file opens no longer retain partial sessions.
 - Transformation IR validation now rejects malformed option types, filter predicates, sorts, and group aliases before execution; runtime and generated Pandas/Polars code share deterministic null, category, group, numeric, and Unicode behavior.
+- Standalone Python startup is single-flight, restart-safe, and automatically stops after the final session closes.
 
 ### Known gaps
 
-- Remote-kernel acceptance, remaining operation edges, broader by-example inference, packaged reload recovery, and final isolated VS Code/Cursor interaction matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
+- Remote-kernel acceptance, identifier-based duplicate-column operations, broader by-example inference, and the remaining isolated VS Code/Cursor interaction/theme matrices are tracked in `docs/feature-parity.md` and are not yet parity complete.
 
 ## [0.1.0] - 2026-06-01
 

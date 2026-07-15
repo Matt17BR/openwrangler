@@ -30,7 +30,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | CSV and Parquet data export                         |    Yes |    Yes | Partial | Cross-engine atomic/source tests green          |
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Partial | Unit-tested resolver/probes; editor prompts TBD |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Browser matrix green; editor checklist TBD      |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Partial | Runtime/workspace replay green; injection TBD   |
+| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green         |
 
 ## Recorded acceptance evidence
 
@@ -171,6 +171,16 @@ Operation-edge hardening slice, 2026-07-15:
 - Unicode casing uses one deterministic mapping across engines (`ß`, dotted `İ`, accents), nulls are preserved, and engine exceptions from custom code become structured diagnostics. Expanded IR validation rejects malformed sort/filter, categorical, text, numeric, datetime, and boolean parameters before execution.
 
 This completes the listed automated operation-edge evidence but keeps operation rows **Partial** until identifier-based duplicate-column parameters and the packaged VS Code/Cursor operation checklist are green.
+
+Packaged reload and recovery slice, 2026-07-15:
+
+- The installed 53-entry VSIX passed a two-process seed/verify acceptance in isolated VS Code 1.128.0 and Cursor 3.11.19 profiles. The seed process applied a real Polars formula step, committed an independent descending viewing sort, closed the session, verified the Python runtime stopped, and reopened the source once before process exit.
+- A fresh editor process reopened the same URI from workspace state and verified the step, sort, transformed schema, first row, and generated value. It then opened a concurrent Pandas TSV session, switched active-session ownership, injected a standalone runtime restart, and fetched both sessions concurrently.
+- Recovery started exactly one replacement Python process, assigned both sessions new runtime IDs, replayed the Polars plan/view and Pandas source, and preserved both public session identities. A real CSV export matched the committed plan while the original fixture remained byte-for-byte unchanged.
+- Both sessions were explicitly closed; acceptance waited for zero coordinator sessions and a stopped runtime. Runtime startup is single-flight across concurrent requests, stale starts are invalidated by a restart epoch, and the final session releases the standalone process.
+- The extension-host acceptance also performs the seed/verify split with shared isolated VS Code state. Test controls are returned by activation only when `DATA_EXPLORER_EXTENSION_TESTS=1`; production activation exposes no recovery or diagnostics surface.
+
+This makes runtime crash/reload/session replay **Done**. Cleaning-history, export, and editor rows remain **Partial** because their remaining keyboard, Parquet-command, and full interactive operation/theme checklists are tracked separately.
 
 ## Explicitly deferred from 1.0
 

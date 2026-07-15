@@ -6,8 +6,8 @@
 - `npm run lint` and `npm run lint:python` enforce TypeScript/JavaScript and Python quality.
 - `npm run test:ts` covers shared models, extension helpers, reducers, and React behavior.
 - `npm run test:python` covers Pandas/Polars engines, transformations, code generation, exports, and runtime dispatch.
-- `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile and validates activation, commands, native contributions, and fixture opening.
-- `npm run test:packaged-editors -- data-explorer.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs the same session-backed acceptance from a separate harness extension so checkout code cannot shadow the package.
+- `npm run test:extension-host` launches the real custom editor in an isolated VS Code profile, then uses separate seed/verify editor processes to validate workspace-state replay and injected runtime recovery.
+- `npm run test:packaged-editors -- data-explorer.vsix` installs the release artifact into isolated VS Code/Cursor profiles and runs the seed/verify session acceptance from a separate harness extension so checkout code cannot shadow the package.
 - `npm run test:webview-acceptance` renders the production bundles in Chrome, compares every screenshot with its checked-in baseline, and runs WCAG 2.0/2.1/2.2 axe rules through Playwright.
 - `npm run reference:check` regenerates command, setting, operation, protocol, and MIME reference content in memory and fails on drift.
 - `npm run docs:check` enforces required documentation and release/version alignment.
@@ -19,7 +19,7 @@ Operation-edge fixtures must exercise runtime and executable generated code for 
 
 File-source tests must cover quoted/delimited and headerless CSV, a non-UTF-8 Pandas CSV, TSV, JSONL, Parquet, and Excel by sheet name and zero-based sheet index in both engines. They must reject missing and malformed inputs as structured engine errors, prove failed opens retain no session, and assert Polars CSV/TSV/JSONL/Parquet sources remain lazy. Typed-cell fixtures cover NumPy/Pandas nullable scalars and strict JSON, while nested Polars fixtures cover unsigned large integers, decimals, time zones, lists, structs, binary, categoricals, durations, null/NaN/infinity, and long Unicode text without a Pandas conversion. Both engines must remain page-safe with zero visible columns.
 
-Persistence tests must assert that only serializable replay state is stored, malformed operation kinds are rejected, import options participate in source identity, and runtime/public session identifiers never enter workspace state. Packaged release acceptance must still apply a plan, reload the editor, and verify the restored grid in both VS Code and Cursor.
+Persistence tests must assert that only serializable replay state is stored, malformed operation kinds are rejected, import options participate in source identity, and runtime/public session identifiers never enter workspace state. Packaged release acceptance applies a plan and view sort in one process, reopens the same source in a fresh process, and verifies the restored transformed grid in both VS Code and Cursor.
 
 Notebook compatibility tests must exercise complete MIME v2 snapshots, saved MIME v1 normalization, malformed versions, Pandas/Polars formatter registration after kernel permission, source notebook URI retention, and insertion of the edited generated function. The real-kernel suite must render both engines, use protocol v2, restart, recover, and always terminate its kernel. Lifecycle tests must cover permission/acquisition denial, cancellation, timeout, one retry, and repeated failure. Browser baselines include current v2 output and `notebook-v1-compat-dark-1280.png`; release acceptance must repeat both in packaged VS Code and Cursor.
 
@@ -50,9 +50,9 @@ Use isolated `--user-data-dir` and `--extensions-dir` directories. Never install
 
 Record the editor versions and evidence link in `docs/feature-parity.md` before a release.
 
-The packaged harness auto-detects local VS Code and Cursor installations; set `DATA_EXPLORER_PACKAGED_EDITORS=vscode` in Linux CI. It verifies the publisher/gallery icon, Activity Bar icon, both notebook MIME registrations, all public commands, the walkthrough, an actual Polars custom-editor session, source reopening, and notebook cell insertion. Editor directories are temporary and removed in `finally`.
+The packaged harness auto-detects local VS Code and Cursor installations; set `DATA_EXPLORER_PACKAGED_EDITORS=vscode` in Linux CI. Its first process commits a real Polars step and viewing query. Its second process verifies replay, opens a concurrent Pandas session, injects one runtime restart, verifies both sessions recover through one replacement process, exports CSV without changing the source, and confirms final session/process cleanup. It also verifies the publisher/gallery icon, Activity Bar icon, both notebook MIME registrations, all public commands, the walkthrough, custom-editor/source navigation, and notebook cell insertion. Editor directories, shared state, extensions, and results are temporary. The harness first requests an in-app close, then scopes a termination fallback to its own temporary editor child; it never discovers or signals editor processes from normal profiles.
 
-CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and current stable release under Xvfb. Local packaged-install checks use dedicated `--user-data-dir` and `--extensions-dir` paths for both VS Code and Cursor.
+CI runs the extension-host suite on the minimum declared VS Code 1.105.0 and current stable release under Xvfb. Local packaged-install checks use dedicated `--user-data-dir` and `--extensions-dir` paths for both VS Code and Cursor. Current VS Code also receives an isolated shared-data directory so application-level workspace state cannot fall through to the normal profile; Cursor versions without that private flag remain isolated by their user-data directory.
 
 ## Performance fixtures
 
