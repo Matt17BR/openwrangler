@@ -50,7 +50,9 @@ try {
     await page.close();
   }
   await verifyNotebookExpansion(browser);
+  await verifyCodePreviewOrigin(browser);
   await verifyCleaningKeyboardShortcuts(browser);
+  await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
@@ -76,6 +78,27 @@ async function verifyNotebookExpansion(browser) {
   }
   await page.close();
   console.log("Notebook MIME v2 full-view expansion verified.");
+}
+
+async function verifyCodePreviewOrigin(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 420 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "code-preview.html")).href, { waitUntil: "load" });
+  await page.waitForFunction(() => document.querySelector(".cm-content")?.textContent?.includes("def clean_data"));
+  const before = await page.locator(".cm-content").textContent();
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { kind: "codePreview", code: "# untrusted replacement" },
+        origin: "https://untrusted.invalid"
+      })
+    );
+  });
+  const after = await page.locator(".cm-content").textContent();
+  await page.close();
+  if (after !== before) {
+    throw new Error("Code preview accepted a message from another origin.");
+  }
+  console.log("Code-preview host origin validation verified.");
 }
 
 if (failures.length > 0) {
@@ -175,12 +198,84 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   console.log("Cleaning-plan keyboard shortcuts verified.");
 }
 
+async function verifyStepInspectionWorkflow(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "step-inspection.html")).href, { waitUntil: "load" });
+  await waitForRuntimeRequest(page, "inspectStep");
+
+  const inspection = page.getByLabel("Selected applied-step inspection");
+  await inspection.waitFor();
+  const filters = page.getByRole("button", { name: "Filters paused during inspection" });
+  if (!(await filters.isDisabled())) {
+    throw new Error("Applied-step inspection did not disable filters and insights.");
+  }
+
+  const diffSummary = page.getByLabel("Selected step data diff summary");
+  await diffSummary.waitFor();
+  if (!(await diffSummary.textContent())?.includes("+1 columns")) {
+    throw new Error("Applied-step inspection did not report its added column.");
+  }
+
+  const addedHeader = page.getByRole("columnheader", { name: "adjusted_sales, added column" });
+  await addedHeader.waitFor();
+  if ((await addedHeader.getAttribute("data-diff-state")) !== "added") {
+    throw new Error("Applied-step inspection did not expose the added-column diff state.");
+  }
+  const addedCell = page.getByRole("gridcell", {
+    name: /adjusted_sales, row 1: added column; before column absent; after/u
+  });
+  await addedCell.waitFor();
+  if ((await addedCell.getAttribute("data-diff-state")) !== "added") {
+    throw new Error("Applied-step inspection did not expose an accessible added-cell diff state.");
+  }
+
+  const pageRequestsBeforeClear = await runtimeRequestCount(page, "getPage");
+  const showConfirmed = page.getByRole("button", { name: "Show confirmed data" });
+  await showConfirmed.focus();
+  await page.keyboard.press("Escape");
+  await inspection.waitFor({ state: "detached" });
+  await page.waitForFunction(() =>
+    globalThis.openWranglerMessages.some((message) => message.kind === "clearStepInspection")
+  );
+
+  if ((await runtimeRequestCount(page, "getPage")) !== pageRequestsBeforeClear) {
+    throw new Error("Clearing applied-step inspection fetched the confirmed grid again.");
+  }
+  const restoredFilters = page.getByRole("button", { name: "Insights & filters" });
+  await restoredFilters.waitFor();
+  if (await restoredFilters.isDisabled()) {
+    throw new Error("Clearing applied-step inspection did not restore filter controls.");
+  }
+  const restoredHeader = page.locator('th[data-column="adjusted_sales"]');
+  await restoredHeader.waitFor();
+  if (await restoredHeader.getAttribute("data-diff-state")) {
+    throw new Error("Clearing applied-step inspection left diff state on the confirmed grid.");
+  }
+  if ((await page.locator("[data-diff-state]").count()) !== 0) {
+    throw new Error("Clearing applied-step inspection left diff annotations in the confirmed grid.");
+  }
+
+  await page.close();
+  console.log("Applied-step diff, accessibility, Escape clear, and local confirmed-grid restoration verified.");
+}
+
 async function verifyFilterKeyboardWorkflow(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
   await page.goto(pathToFileURL(resolve(harnessDir, "filter-panel.html")).href, { waitUntil: "load" });
   await page.getByRole("complementary", { name: "Insights and filters" }).waitFor();
   await waitForRuntimeRequestCount(page, "getColumnValues", 1);
   await page.getByRole("checkbox").first().waitFor();
+
+  const columnMenu = page.locator("details.columnMenu[open] .columnMenuContent");
+  await columnMenu.waitFor();
+  const menuBackground = await columnMenu.evaluate((element) => {
+    const color = getComputedStyle(element).backgroundColor;
+    const alpha = color.match(/^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)$/u)?.[1];
+    return { color, alpha: color === "transparent" ? 0 : alpha === undefined ? 1 : Number(alpha) };
+  });
+  if (menuBackground.alpha < 1) {
+    throw new Error(`Column menu background is not opaque (${menuBackground.color}).`);
+  }
 
   const search = page.getByRole("textbox", { name: /Search values for/ });
   await search.focus();
@@ -321,7 +416,8 @@ async function showAppliedStep(page) {
     const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
     window.dispatchEvent(
       new MessageEvent("message", {
-        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code }
+        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code },
+        origin: window.location.origin
       })
     );
   });
@@ -362,6 +458,16 @@ async function waitForRuntimeRequestCount(page, kind, count) {
         (message) => message.kind === "runtimeRequest" && message.request?.kind === requestKind
       ).length >= minimum,
     { requestKind: kind, minimum: count }
+  );
+}
+
+async function runtimeRequestCount(page, kind) {
+  return page.evaluate(
+    (requestKind) =>
+      globalThis.openWranglerMessages.filter(
+        (message) => message.kind === "runtimeRequest" && message.request?.kind === requestKind
+      ).length,
+    kind
   );
 }
 

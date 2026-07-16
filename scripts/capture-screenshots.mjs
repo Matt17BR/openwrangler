@@ -112,6 +112,18 @@ draft["metadata"]["stats"] = manager.get_dataset_stats(
     draft["revision"],
     {"logic": "and", "filters": [], "sort": []},
 )["stats"]
+applied = manager.apply_draft(session_id, draft["revision"], 0, 4)
+applied["harnessSummaries"] = manager.get_summary(
+    session_id,
+    applied["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
+applied["metadata"]["stats"] = manager.get_dataset_stats(
+    session_id,
+    applied["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["stats"]
+inspection = manager.inspect_step(session_id, applied["revision"], "adjusted-sales", 0, 4)
 
 example_path = root / "tmp" / "screenshots" / "by-example.csv"
 example_path.write_text("value\na\nb\n", encoding="utf-8")
@@ -225,6 +237,8 @@ print(json.dumps({
     },
     "values": values,
     "draft": draft,
+    "applied": applied,
+    "inspection": inspection,
     "exampleDraft": example_draft,
     "wide": wide,
     "widePages": wide_pages,
@@ -248,6 +262,17 @@ writeWebviewHarness(
   { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "formula" } }
 );
 writeWebviewHarness("draft-preview.html", payloads.draft, {}, "acceptance/draft-preview-dark-1280.png");
+writeWebviewHarness(
+  "step-inspection.html",
+  payloads.applied,
+  {},
+  "acceptance/step-inspection-dark-1280.png",
+  {},
+  {
+    editorAction: { kind: "editorAction", action: "selectStep", stepId: "adjusted-sales" },
+    stepInspections: { "adjusted-sales:0": payloads.inspection }
+  }
+);
 writeWebviewHarness(
   "by-example-dialog.html",
   payloads.opened,
@@ -356,6 +381,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const height = appearance.height ?? 760;
   const editorAction = appearance.editorAction;
   const openColumnFilter = appearance.openColumnFilter;
+  const stepInspections = appearance.stepInspections ?? {};
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -373,14 +399,15 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     const profileSummaries = sessionPayload.harnessSummaries ?? sessionPayload.summaries ?? [];
     const columnValues = ${JSON.stringify(columnValues)};
     const pages = ${JSON.stringify(suppliedPages)};
+    const stepInspections = ${JSON.stringify(stepInspections)};
     window.openWranglerMessages = [];
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
         window.openWranglerMessages.push(message);
         if (message.kind === "ready") {
-          ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);'}
-          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}
-          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)} })), 120);` : ""}
+          ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload, origin: window.location.origin })), 20);'}
+          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)}, origin: window.location.origin })), 90);` : ""}
+          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)}, origin: window.location.origin })), 120);` : ""}
           ${
             openColumnFilter
               ? `setTimeout(() => {
@@ -399,7 +426,8 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           const value = columnValues[message.request.column];
           if (value) {
             setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-              data: { ...value, viewRequestId: message.request.viewRequestId }
+              data: { ...value, viewRequestId: message.request.viewRequestId },
+              origin: window.location.origin
             })), 20);
           }
         }
@@ -407,17 +435,34 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           const metadata = { ...sessionPayload.metadata, filterModel: message.request.filterModel };
           const page = pages[String(message.request.offset)] ?? sessionPayload.page;
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "page", revision: metadata.revision, viewRequestId: message.request.viewRequestId, metadata, page }
+            data: { kind: "page", revision: metadata.revision, viewRequestId: message.request.viewRequestId, metadata, page },
+            origin: window.location.origin
           })), 20);
+        }
+        if (message.kind === "runtimeRequest" && message.request.kind === "inspectStep") {
+          const response = stepInspections[message.request.stepId + ":" + message.request.offset];
+          if (response) {
+            setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
+              data: {
+                kind: "stepInspectionResult",
+                stepId: message.request.stepId,
+                offset: message.request.offset,
+                response
+              },
+              origin: window.location.origin
+            })), 20);
+          }
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getSummary") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columns?.includes(summary.column)) }
+            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columns?.includes(summary.column)) },
+            origin: window.location.origin
           })), 20);
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getDatasetStats") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "datasetStats", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, stats: sessionPayload.metadata.stats }
+            data: { kind: "datasetStats", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, stats: sessionPayload.metadata.stats },
+            origin: window.location.origin
           })), 20);
         }
       },
@@ -508,7 +553,8 @@ function writeCodePreviewHarness(fileName, code, outputName) {
       postMessage(message) {
         if (message.kind === "ready") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "codePreview", code: ${JSON.stringify(code)} }
+            data: { kind: "codePreview", code: ${JSON.stringify(code)} },
+            origin: window.location.origin
           })), 20);
         }
       }

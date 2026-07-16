@@ -1,13 +1,17 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type {
+  CellDiff,
+  CellValue,
   ColumnSchema,
   ColumnSummary,
   ColumnVisualization,
+  DataDiff,
   GridPage,
   SessionMetadata
 } from "../../shared/protocol";
 import type { SortDirection } from "../../shared/filterModel";
+import type { GridViewState } from "../../shared/viewState";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -19,16 +23,25 @@ interface DataGridProps {
   busy?: boolean;
   viewContextId?: string;
   goToColumn?: string;
+  viewState?: GridViewState;
+  viewStateRestoreVersion?: number;
+  diff?: DataDiff;
+  beforePage?: GridPage;
+  beforeSchema?: ColumnSchema[];
+  viewControlsDisabled?: boolean;
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onOpenFilter(column: string): void;
   onVisibleSummaryColumnsChange(columns: string[]): void;
+  onViewStateChange?(state: GridViewState): void;
 }
 
 const rowHeight = 29;
 const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
+const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
+const ignoreViewStateChange = (): void => undefined;
 
 export function DataGrid({
   metadata,
@@ -40,22 +53,52 @@ export function DataGrid({
   busy = false,
   viewContextId,
   goToColumn,
+  viewState = defaultViewState,
+  viewStateRestoreVersion = 0,
+  diff,
+  beforePage,
+  beforeSchema,
+  viewControlsDisabled = false,
   onPage,
   onSortColumn,
   onOpenFilter,
-  onVisibleSummaryColumnsChange
+  onVisibleSummaryColumnsChange,
+  onViewStateChange = ignoreViewStateChange
 }: DataGridProps) {
   const summaryByColumn = useMemo(() => new Map(summaries.map((summary) => [summary.column, summary])), [summaries]);
+  const diffPresentation = useMemo(
+    () => buildDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
+    [beforePage, beforeSchema, diff, metadata.schema, page]
+  );
   const scrollerRef = useRef<HTMLDivElement>(null);
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
   const previousViewContext = useRef(logicalViewContext);
   const focusRequested = useRef(false);
   const preserveGridFocusAfterScroll = useRef(false);
+  const viewStateRef = useRef(viewState);
+  const restorationRef = useRef({ viewState, metadata, page, pageSize });
+  useLayoutEffect(() => {
+    restorationRef.current = { viewState, metadata, page, pageSize };
+  }, [metadata, page, pageSize, viewState]);
   const [showInsights, setShowInsights] = useState(insightsOnOpen);
-  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [viewport, setViewport] = useState({ scrollLeft: 0, scrollTop: 0, width: 1200, height: 600 });
-  const [focusedCell, setFocusedCell] = useState({ row: page.offset, column: 0 });
+  const [focusedCell, setFocusedCell] = useState({
+    row: viewState.viewport.firstVisibleRow,
+    column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
+  });
+
+  useEffect(() => {
+    viewStateRef.current = viewState;
+  }, [viewState]);
+
+  const reportViewState = useCallback(
+    (next: GridViewState): void => {
+      viewStateRef.current = next;
+      onViewStateChange(next);
+    },
+    [onViewStateChange]
+  );
 
   useLayoutEffect(() => {
     if (previousViewContext.current === logicalViewContext) return;
@@ -63,18 +106,47 @@ export function DataGrid({
     requestedOffset.current = page.offset;
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
-    setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column: 0 });
+    const column = selectedColumnPosition(metadata.schema, viewStateRef.current.selectedColumnId);
+    const selectedColumnId = metadata.schema[column]?.id;
+    setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column });
     const scroller = scrollerRef.current;
     if (!scroller) return;
     scroller.scrollTop = page.offset * rowHeight;
-    scroller.scrollLeft = 0;
     setViewport({
-      scrollLeft: 0,
+      scrollLeft: scroller.scrollLeft,
       scrollTop: page.offset * rowHeight,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
-  }, [logicalViewContext, page.offset, page.rows]);
+    reportViewState({
+      ...viewStateRef.current,
+      ...(selectedColumnId ? { selectedColumnId } : {}),
+      viewport: { firstVisibleRow: page.offset, scrollLeft: scroller.scrollLeft }
+    });
+  }, [logicalViewContext, metadata.schema, page.offset, page.rows, reportViewState]);
+
+  useLayoutEffect(() => {
+    const restoration = restorationRef.current;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const row = Math.max(
+      0,
+      Math.min(restoration.viewState.viewport.firstVisibleRow, Math.max(0, restoration.page.totalRows - 1))
+    );
+    const column = selectedColumnPosition(restoration.metadata.schema, restoration.viewState.selectedColumnId);
+    requestedOffset.current = Math.floor(row / restoration.pageSize) * restoration.pageSize;
+    focusRequested.current = false;
+    preserveGridFocusAfterScroll.current = false;
+    setFocusedCell({ row, column });
+    scroller.scrollTop = row * rowHeight;
+    scroller.scrollLeft = restoration.viewState.viewport.scrollLeft;
+    setViewport({
+      scrollLeft: restoration.viewState.viewport.scrollLeft,
+      scrollTop: row * rowHeight,
+      width: scroller.clientWidth,
+      height: scroller.clientHeight
+    });
+  }, [viewStateRestoreVersion]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
@@ -93,6 +165,16 @@ export function DataGrid({
       };
       setViewport(next);
       const row = Math.max(0, Math.min(Math.floor(next.scrollTop / rowHeight), Math.max(0, page.totalRows - 1)));
+      const currentViewState = viewStateRef.current;
+      if (
+        currentViewState.viewport.firstVisibleRow !== row ||
+        currentViewState.viewport.scrollLeft !== next.scrollLeft
+      ) {
+        reportViewState({
+          ...currentViewState,
+          viewport: { firstVisibleRow: row, scrollLeft: next.scrollLeft }
+        });
+      }
       const offset = Math.floor(row / pageSize) * pageSize;
       if (!busy && offset !== requestedOffset.current && offset < page.totalRows) {
         requestedOffset.current = offset;
@@ -109,11 +191,11 @@ export function DataGrid({
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [busy, onPage, page.totalRows, pageSize]);
+  }, [busy, onPage, page.totalRows, pageSize, reportViewState]);
 
   const widths = useMemo(
-    () => metadata.schema.map((column) => columnWidths[column.id] ?? defaultColumnWidth),
-    [columnWidths, defaultColumnWidth, metadata.schema]
+    () => metadata.schema.map((column) => viewState.columnWidths[column.id] ?? defaultColumnWidth),
+    [defaultColumnWidth, metadata.schema, viewState.columnWidths]
   );
   const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width);
   const visibleColumns = useMemo(
@@ -172,9 +254,18 @@ export function DataGrid({
       const scroller = scrollerRef.current;
       if (scroller) scroller.scrollLeft = Math.max(0, sum(widths.slice(0, index)) - scroller.clientWidth / 3);
       setFocusedCell((current) => ({ ...current, column: index }));
+      const currentViewState = viewStateRef.current;
+      reportViewState({
+        ...currentViewState,
+        selectedColumnId: metadata.schema[index].id,
+        viewport: {
+          ...currentViewState.viewport,
+          scrollLeft: scroller?.scrollLeft ?? currentViewState.viewport.scrollLeft
+        }
+      });
     });
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [goToColumn, metadata.schema, widths]);
+  }, [goToColumn, metadata.schema, reportViewState, widths]);
 
   useEffect(() => {
     if (!focusRequested.current) return;
@@ -222,6 +313,36 @@ export function DataGrid({
         </button>
       </div>
 
+      {diffPresentation && (diffPresentation.addedColumns.length > 0 || diffPresentation.removedColumns.length > 0) && (
+        <section className="gridColumnChanges" aria-label="Column changes">
+          <strong>Column changes</strong>
+          <ul>
+            {diffPresentation.addedColumns.map((column, index) => (
+              <li
+                key={`added-${column.name}-${index}`}
+                className="gridColumnChange"
+                data-diff-state="added"
+                aria-label={`Added column ${column.name}${column.rawType ? `, type ${column.rawType}` : ""}`}
+              >
+                <span className="codicon codicon-add" aria-hidden="true" />
+                <span>Added: {column.name}</span>
+              </li>
+            ))}
+            {diffPresentation.removedColumns.map((column, index) => (
+              <li
+                key={`removed-${column.name}-${index}`}
+                className="gridColumnChange"
+                data-diff-state="removed"
+                aria-label={`Removed column ${column.name}${column.rawType ? `, previous type ${column.rawType}` : ""}`}
+              >
+                <span className="codicon codicon-remove" aria-hidden="true" />
+                <span>Removed: {column.name}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <div className="tableScroller" ref={scrollerRef} data-testid="data-grid-scroller">
         <table
           role="grid"
@@ -250,11 +371,22 @@ export function DataGrid({
                   column={column}
                   ariaColumnIndex={column.position + 2}
                   width={widths[column.position]}
+                  selected={viewState.selectedColumnId === column.id}
+                  added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                   showInsights={showInsights}
                   summary={summaryByColumn.get(column.name)}
-                  onOpenFilter={onOpenFilter}
+                  viewControlsDisabled={viewControlsDisabled}
+                  onOpenFilter={(name) => {
+                    reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                    onOpenFilter(name);
+                  }}
                   onSortColumn={onSortColumn}
-                  onResize={(width) => setColumnWidths((current) => ({ ...current, [column.id]: width }))}
+                  onResize={(width) =>
+                    reportViewState({
+                      ...viewStateRef.current,
+                      columnWidths: { ...viewStateRef.current.columnWidths, [column.id]: width }
+                    })
+                  }
                 />
               ))}
               {rightSpacerWidth > 0 && <th className="virtualSpacer" aria-hidden="true" />}
@@ -272,18 +404,36 @@ export function DataGrid({
                 {leftSpacerWidth > 0 && <td className="virtualSpacer" aria-hidden="true" />}
                 {visibleColumns.map((column) => {
                   const cell = row.values[column.position];
+                  const cellDiff = diffPresentation?.changedCells.get(diffCellKey(row.rowNumber, column.id));
+                  const addedColumn = diffPresentation?.addedColumnIds.has(column.id) ?? false;
+                  const diffLabel = cellDiff
+                    ? changedCellLabel(column.name, row.rowNumber, cellDiff)
+                    : addedColumn
+                      ? addedCellLabel(column.name, row.rowNumber, cell)
+                      : undefined;
                   return (
                     <td
                       key={`${row.id}-${column.id}`}
                       data-grid-row={row.rowNumber}
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
+                      aria-selected={viewState.selectedColumnId === column.id}
+                      aria-label={diffLabel}
+                      data-diff-state={cellDiff ? "changed" : addedColumn ? "added" : undefined}
                       tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
-                      className={cell?.isNull || cell?.isNaN ? "missingCell" : undefined}
-                      title={cell?.display}
+                      className={[
+                        cell?.isNull || cell?.isNaN ? "missingCell" : "",
+                        viewState.selectedColumnId === column.id ? "selectedColumn" : "",
+                        cellDiff ? "diffChangedCell" : "",
+                        addedColumn ? "diffAddedColumn" : ""
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      title={diffLabel ?? cell?.display}
                       onFocus={() => {
                         focusRequested.current = false;
                         setFocusedCell({ row: row.rowNumber, column: column.position });
+                        reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                       }}
                       onKeyDown={(event) =>
                         navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, page.totalRows)
@@ -340,16 +490,220 @@ export function DataGrid({
       scroller.scrollTop = Math.max(0, nextRow * rowHeight - scroller.clientHeight / 2);
       scroller.scrollLeft = Math.max(0, sum(widths.slice(0, nextColumn)) - scroller.clientWidth / 3);
     }
+    const currentViewState = viewStateRef.current;
+    reportViewState({
+      ...currentViewState,
+      selectedColumnId: metadata.schema[nextColumn]?.id,
+      viewport: {
+        firstVisibleRow: Math.max(0, Math.floor((scroller?.scrollTop ?? 0) / rowHeight)),
+        scrollLeft: scroller?.scrollLeft ?? currentViewState.viewport.scrollLeft
+      }
+    });
     if (block !== page.offset) goToPage(nextRow, true);
   }
+}
+
+interface GridDiffPresentation {
+  addedColumnIds: Set<string>;
+  addedColumns: Array<{ name: string; rawType: string | undefined }>;
+  removedColumns: Array<{ name: string; rawType: string | undefined }>;
+  changedCells: Map<string, CellDiff>;
+}
+
+function buildDiffPresentation(
+  diff: DataDiff | undefined,
+  page: GridPage,
+  schema: ColumnSchema[],
+  beforePage: GridPage | undefined,
+  beforeSchema: ColumnSchema[] | undefined
+): GridDiffPresentation | undefined {
+  if (!diff) return undefined;
+
+  const addedColumnIds = resolveAddedColumnIds(diff.addedColumns, schema, beforeSchema);
+  const changedCells = new Map<string, CellDiff>();
+  const derivedCellsByName = new Map<string, CellDiff[]>();
+  const rowsByNumber = new Map(page.rows.map((row) => [row.rowNumber, row]));
+  const beforeRowsById = new Map(beforePage?.rows.map((row) => [row.id, row]) ?? []);
+  const beforePositionById = new Map(beforeSchema?.map((column) => [column.id, column.position]) ?? []);
+  const rememberChangedCell = (columnId: string, cellDiff: CellDiff, derived = false) => {
+    changedCells.set(diffCellKey(cellDiff.rowNumber, columnId), cellDiff);
+    if (!derived) return;
+    const nameKey = diffNameKey(cellDiff.rowNumber, cellDiff.column);
+    const matchingName = derivedCellsByName.get(nameKey);
+    if (matchingName) matchingName.push(cellDiff);
+    else derivedCellsByName.set(nameKey, [cellDiff]);
+  };
+
+  if (beforePage && beforeSchema) {
+    for (const row of page.rows) {
+      const beforeRow = beforeRowsById.get(row.id);
+      if (!beforeRow) continue;
+      for (const column of schema) {
+        const beforePosition = beforePositionById.get(column.id);
+        if (beforePosition === undefined) continue;
+        const before = beforeRow.values[beforePosition];
+        const after = row.values[column.position];
+        if (!before || !after || sameCellValue(before, after)) continue;
+        rememberChangedCell(
+          column.id,
+          {
+            rowNumber: row.rowNumber,
+            column: column.name,
+            before,
+            after
+          },
+          true
+        );
+      }
+    }
+  }
+
+  for (const cellDiff of diff.cells) {
+    if (takeMatchingCellDiff(derivedCellsByName.get(diffNameKey(cellDiff.rowNumber, cellDiff.column)), cellDiff)) {
+      continue;
+    }
+    const row = rowsByNumber.get(cellDiff.rowNumber);
+    if (!row) continue;
+    const candidates = schema.filter(
+      (column) =>
+        column.name === cellDiff.column &&
+        !changedCells.has(diffCellKey(cellDiff.rowNumber, column.id)) &&
+        sameCellValue(row.values[column.position], cellDiff.after)
+    );
+    const matchingBefore = candidates.find((column) => {
+      const beforeRow = beforeRowsById.get(row.id);
+      const beforePosition = beforePositionById.get(column.id);
+      return beforeRow && beforePosition !== undefined
+        ? sameCellValue(beforeRow.values[beforePosition], cellDiff.before)
+        : false;
+    });
+    const column = matchingBefore ?? candidates[0] ?? schema.find((candidate) => candidate.name === cellDiff.column);
+    if (column) rememberChangedCell(column.id, cellDiff);
+  }
+
+  return {
+    addedColumnIds,
+    addedColumns: diff.addedColumns.map((name) => ({
+      name,
+      rawType: schema.find((column) => column.name === name)?.rawType
+    })),
+    removedColumns: diff.removedColumns.map((name) => ({
+      name,
+      rawType: beforeSchema?.find((column) => column.name === name)?.rawType
+    })),
+    changedCells
+  };
+}
+
+function resolveAddedColumnIds(
+  addedColumnNames: string[],
+  schema: ColumnSchema[],
+  beforeSchema: ColumnSchema[] | undefined
+): Set<string> {
+  const remainingByName = countNames(addedColumnNames);
+  const beforeIds = new Set(beforeSchema?.map((column) => column.id) ?? []);
+  const addedIds = new Set<string>();
+  const takeMatchingColumns = (columns: ColumnSchema[]) => {
+    for (const column of columns) {
+      const remaining = remainingByName.get(column.name) ?? 0;
+      if (remaining <= 0 || addedIds.has(column.id)) continue;
+      addedIds.add(column.id);
+      remainingByName.set(column.name, remaining - 1);
+    }
+  };
+  if (beforeSchema) takeMatchingColumns(schema.filter((column) => !beforeIds.has(column.id)));
+  takeMatchingColumns(schema);
+  return addedIds;
+}
+
+function countNames(names: string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return counts;
+}
+
+function takeMatchingCellDiff(changedCells: CellDiff[] | undefined, candidate: CellDiff): boolean {
+  const index =
+    changedCells?.findIndex(
+      (current) =>
+        current.rowNumber === candidate.rowNumber &&
+        current.column === candidate.column &&
+        sameCellValue(current.before, candidate.before) &&
+        sameCellValue(current.after, candidate.after)
+    ) ?? -1;
+  if (index < 0) return false;
+  changedCells!.splice(index, 1);
+  return true;
+}
+
+function sameCellValue(left: CellValue | null | undefined, right: CellValue | null | undefined): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.kind === right.kind &&
+    left.display === right.display &&
+    left.isNull === right.isNull &&
+    left.isNaN === right.isNaN &&
+    left.sign === right.sign &&
+    sameJsonValue(left.raw, right.raw)
+  );
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index]))
+    );
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && sameJsonValue(leftRecord[key], rightRecord[key]))
+  );
+}
+
+function diffCellKey(rowNumber: number, columnId: string): string {
+  return `${rowNumber}\u0000${columnId}`;
+}
+
+function diffNameKey(rowNumber: number, columnName: string): string {
+  return `${rowNumber}\u0000${columnName}`;
+}
+
+function changedCellLabel(column: string, rowNumber: number, diff: CellDiff): string {
+  return `${column}, row ${rowNumber + 1}: changed from ${describeCellValue(diff.before)} to ${describeCellValue(diff.after)}`;
+}
+
+function addedCellLabel(column: string, rowNumber: number, value: CellValue | undefined): string {
+  return `${column}, row ${rowNumber + 1}: added column; before column absent; after ${describeCellValue(value)}`;
+}
+
+function describeCellValue(value: CellValue | null | undefined): string {
+  if (!value) return "no value";
+  if (value.isNull) return "null";
+  if (value.isNaN) return "NaN";
+  if (value.display.length === 0) return value.kind === "string" ? "empty string" : "empty value";
+  const normalized = value.display.replace(/\s+/gu, " ");
+  return normalized.length > 160 ? `${normalized.slice(0, 159)}…` : normalized;
 }
 
 function ColumnHeader({
   column,
   ariaColumnIndex,
   width,
+  selected,
+  added,
   showInsights,
   summary,
+  viewControlsDisabled,
   onOpenFilter,
   onSortColumn,
   onResize
@@ -357,12 +711,16 @@ function ColumnHeader({
   column: ColumnSchema;
   ariaColumnIndex: number;
   width: number;
+  selected: boolean;
+  added: boolean;
   showInsights: boolean;
   summary: ColumnSummary | undefined;
+  viewControlsDisabled: boolean;
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onResize(width: number): void;
 }) {
+  const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     const start = event.clientX;
@@ -388,7 +746,11 @@ function ColumnHeader({
     <th
       data-column={column.name}
       aria-colindex={ariaColumnIndex}
-      title={`${column.rawType}${column.nullable ? " nullable" : ""}`}
+      aria-selected={selected}
+      aria-label={added ? `${column.name}, added column` : undefined}
+      data-diff-state={added ? "added" : undefined}
+      className={[selected ? "selectedColumn" : "", added ? "diffAddedColumn" : ""].filter(Boolean).join(" ")}
+      title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
     >
       <div className="columnHeader">
         <span className={`typeIcon codicon ${typeIcon(column.type)}`} aria-hidden="true" />
@@ -396,13 +758,36 @@ function ColumnHeader({
         <details className="columnMenu">
           <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
           <div className="columnMenuContent">
-            <button type="button" onClick={() => onOpenFilter(column.name)}>
+            {viewControlsDisabled && (
+              <span id={disabledDescriptionId} className="columnMenuNotice">
+                View controls are unavailable while inspecting an applied step.
+              </span>
+            )}
+            <button
+              type="button"
+              disabled={viewControlsDisabled}
+              aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
+              title={viewControlsDisabled ? "Unavailable while inspecting an applied step" : undefined}
+              onClick={() => onOpenFilter(column.name)}
+            >
               Filter…
             </button>
-            <button type="button" onClick={() => onSortColumn(column.name, "asc")}>
+            <button
+              type="button"
+              disabled={viewControlsDisabled}
+              aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
+              title={viewControlsDisabled ? "Unavailable while inspecting an applied step" : undefined}
+              onClick={() => onSortColumn(column.name, "asc")}
+            >
               Sort ascending
             </button>
-            <button type="button" onClick={() => onSortColumn(column.name, "desc")}>
+            <button
+              type="button"
+              disabled={viewControlsDisabled}
+              aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
+              title={viewControlsDisabled ? "Unavailable while inspecting an applied step" : undefined}
+              onClick={() => onSortColumn(column.name, "desc")}
+            >
               Sort descending
             </button>
           </div>
@@ -502,6 +887,12 @@ function columnRange(widths: number[], scrollLeft: number, viewportWidth: number
     start: Math.max(0, start - overscanColumns),
     end: Math.min(widths.length, end + overscanColumns)
   };
+}
+
+function selectedColumnPosition(schema: ColumnSchema[], selectedColumnId: string | undefined): number {
+  if (!schema.length) return 0;
+  const selected = selectedColumnId ? schema.findIndex((column) => column.id === selectedColumnId) : -1;
+  return selected >= 0 ? selected : 0;
 }
 
 function sum(values: number[]): number {

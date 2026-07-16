@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- Added selectable Cleaning Steps history: each applied step opens a paged input→output inspection with identity-aware cell/column highlighting and generated code through that step, while Original Data restores the exact confirmed view.
 - Added a native, lazy DuckDB file backend for UTF-8 CSV/TSV, Parquet, and JSONL viewing, profiling, all 27 deterministic operations, executable code generation, draft/history workflows, and atomic CSV/Parquet export without conversion through Pandas, Polars, or Arrow.
 - Added opt-in Pandas and DuckDB runtime benchmark modes with deterministic synthetic fixtures, native/lazy frame evidence, machine and package provenance, process-memory samples, and an explicit boundary separating runtime timings from editor first paint. Polars remains the strict release-performance gate.
 - Added pull-request CodeQL analysis for JavaScript/TypeScript and Python, cross-platform pull-request runtime coverage, canonical single-artifact release validation, and repository rules protecting `main` and `v*` release tags.
@@ -28,6 +29,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added canonical stdio protocol round-trip and instrumented active-profile overlap gates with a release-blocking 500ms cache-miss ceiling, and limited cancellation acknowledgements to work that was genuinely still queued so running results remain authoritative.
 - Made the bundled Python runtime version a package-wide source of truth and added a documentation gate that rejects extension/runtime prerelease drift.
 - Made every runtime mutation and matching webview transition transactional, including rollback of revisions, plans, drafts, cached blocks, confirmed view state, values, profiling ownership, and focus after late failures or cancellations.
+- Hardened webview host-message intake with explicit same-origin rejection and kept column-derived diagnostic keys in `Map` storage instead of dynamic object properties.
 - Made terminal runtime cleanup accept the caller's last confirmed revision after an ambiguous mutation, recursively isolated Pandas object cells before live/generated custom code, and aligned live/generated null-versus-NaN filters with saved notebook snapshots.
 - Made orderly runtime shutdown drain every session after cleanup faults and return their deterministic aggregate to initiating, joining, and later callers.
 - Added a release-blocking warm-dependency/cold-source stdio first-grid gate with per-file Linux cache-eviction evidence, and required the runtime version module in packaged-VSIX verification.
@@ -39,6 +41,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Pinned persisted plans and recovery requests to the confirmed engine so automatic dependency fallback cannot replay a cleaning plan with different backend semantics.
 - Replaced module-only dependency checks with version-aware engine/format probes; DuckDB is accepted only in the tested `>=1.4.5,<1.6` range and dependency installation remains an explicit user-confirmed action.
 - Split engine shutdown interruption from request-level cancellation capabilities so DuckDB cleanup can interrupt terminal work without promising cancellation semantics the protocol cannot guarantee.
+- Corrected legacy `.xls` support end to end: Pandas now probes and uses `xlrd>=2.0.1` instead of `openpyxl`, Polars explicitly uses its Calamine/`fastexcel>=0.9` reader, and real BIFF workbook acceptance covers both runtime engines plus extension dependency diagnostics.
+- Defined `utf8-lossy` as a Pandas replacement-decoding policy: automatic file opens bypass Polars and DuckDB, invalid bytes become the Unicode replacement character, and the sentinel is never passed to Python as a codec name.
+- Split workspace persistence into explicit cleaning and non-destructive viewing sections; filters/sorts, stable-ID widths and column selection, and vertical/horizontal position now restore by source and confirmed backend across reload and runtime recovery, with the active selection mirrored in native views.
 - Moved preview releases to Marketplace-compatible numeric versions with `preview: true`; the release workflow now validates and publishes one checksummed VSIX byte-for-byte across its platform matrix.
 
 ## [0.2.0-alpha.1] - 2026-07-15
@@ -108,7 +113,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Release status
 
-- Every in-scope row in the checked-in clean-room parity matrix has automated or recorded acceptance evidence. The version remains on the preview channel until the expanded engine and cross-platform release gates pass; no `1.0.0` tag is created by this preview.
+- That checkpoint recorded the then-known parity evidence, but it remained a preview and created no `1.0.0` tag. The current matrix is authoritative when later audits reopen incomplete behavior or acceptance gates.
 
 ## [0.1.0] - 2026-06-01
 

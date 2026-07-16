@@ -46,10 +46,13 @@ class PandasEngine(DataFrameEngine):
         options = options or {}
         extension = Path(path).suffix.lower()
         if extension in {".csv", ".tsv"}:
+            requested_encoding = str(options.get("encoding") or "utf-8").lower()
+            lossy_utf8 = requested_encoding == "utf8-lossy"
             return pd.read_csv(
                 path,
                 sep=options.get("delimiter", "\t" if extension == ".tsv" else ","),
-                encoding=options.get("encoding", "utf-8"),
+                encoding="utf-8" if lossy_utf8 else requested_encoding,
+                encoding_errors="replace" if lossy_utf8 else "strict",
                 quotechar=options.get("quoteChar", '"'),
                 header=0 if options.get("hasHeader", True) else None,
             )
@@ -57,8 +60,10 @@ class PandasEngine(DataFrameEngine):
             return pd.read_parquet(path)
         if extension == ".jsonl":
             return pd.read_json(path, lines=True)
-        if extension in {".xlsx", ".xls"}:
-            return pd.read_excel(path, sheet_name=options.get("sheet", 0))
+        if extension == ".xlsx":
+            return pd.read_excel(path, sheet_name=options.get("sheet", 0), engine="openpyxl")
+        if extension == ".xls":
+            return pd.read_excel(path, sheet_name=options.get("sheet", 0), engine="xlrd")
         raise EngineError(f"Unsupported file extension for Pandas backend: {extension}")
 
     def normalize(self, value: Any) -> Any:

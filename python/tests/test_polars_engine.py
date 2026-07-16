@@ -69,6 +69,22 @@ def test_polars_column_values_and_parquet(tmp_path):
     assert values["values"] == [{"value": "a", "count": 2}, {"value": "b", "count": 1}]
 
 
+def test_polars_excel_reader_pins_the_probed_calamine_engine(monkeypatch):
+    calls: list[tuple[str, int, str]] = []
+
+    def read_excel(path: str, *, sheet_id: int, engine: str) -> pl.DataFrame:
+        calls.append((path, sheet_id, engine))
+        return pl.DataFrame({"value": [1]})
+
+    monkeypatch.setattr(pl, "read_excel", read_excel)
+    runtime = PolarsEngine()
+
+    runtime.read_file("modern.xlsx", {"sheet": 1})
+    runtime.read_file("legacy.xls", {"sheet": 1})
+
+    assert calls == [("modern.xlsx", 2, "calamine"), ("legacy.xls", 2, "calamine")]
+
+
 def test_lazy_polars_schema_discovery_does_not_collect_column_profiles(monkeypatch):
     frame = pl.DataFrame({"complete": [1, 2], "with_null": [1, None]}).lazy()
 

@@ -418,6 +418,10 @@ class SessionManager:
             except OperationError as error:
                 raise EngineError(str(error)) from error
 
+            retained_steps = session.plan if replace_step_id is None else session.plan[:-1]
+            if any(applied["id"] == normalized["id"] for applied in retained_steps):
+                raise EngineError(f"Applied step IDs must be unique: {normalized['id']}")
+
             diff_base = session.committed
             diff_base_lineage = session.committed_lineage
             diff_base_shape = session.committed_shape
@@ -470,6 +474,80 @@ class SessionManager:
                 ),
                 "code": session.engine.compile_plan(candidate_plan),
                 "warnings": list(normalized["params"].get("warnings", [])),
+            }
+
+    def inspect_step(
+        self,
+        session_id: str,
+        revision: int,
+        step_id: str,
+        offset: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Reconstruct one applied step's boundary without publishing session state."""
+        session = self._session(session_id)
+        with self._shared_session_read(session), self._validated_source_read(session):
+            self._assert_revision(session, revision)
+            matches = [index for index, step in enumerate(session.plan) if step["id"] == step_id]
+            if not matches:
+                raise EngineError(f"Unknown applied step: {step_id}")
+            if len(matches) != 1:
+                raise EngineError(f"Applied step ID is not unique: {step_id}")
+            if len(session.plan_input_schemas) != len(session.plan):
+                raise EngineError("The applied cleaning-step history is inconsistent.")
+
+            step_index = matches[0]
+            step = session.plan[step_index]
+            before, _, before_shape, before_raw_schema = self._replay(session, session.plan[:step_index])
+            after = session.engine.apply_transform(before, step)
+            after = session.engine.ensure_row_ids(after, f"{session.session_id}:{step['id']}")
+            after_shape = session.engine.shape(after)
+            after_raw_schema = session.engine.schema(after)
+
+            input_schema = deepcopy(session.plan_input_schemas[step_index])
+            output_schema = (
+                deepcopy(session.plan_input_schemas[step_index + 1])
+                if step_index + 1 < len(session.plan_input_schemas)
+                else schema_with_lineage(session.committed_schema, session.committed_lineage)
+            )
+            before_lineage = self._lineage_from_schema(input_schema)
+            after_lineage = self._lineage_from_schema(output_schema)
+            # Validate that the replayed engine frames still match the recorded
+            # identity boundary before returning it to an untrusted caller.
+            try:
+                input_schema = schema_with_lineage(before_raw_schema, before_lineage)
+                output_schema = schema_with_lineage(after_raw_schema, after_lineage)
+            except ValueError as error:
+                raise EngineError("The applied cleaning-step history is inconsistent.") from error
+            input_page = session.engine.page(before, offset, limit, total_rows=before_shape["rows"])
+            output_page = session.engine.page(after, offset, limit, total_rows=after_shape["rows"])
+
+            return {
+                "kind": "stepInspection",
+                "revision": session.revision,
+                "stepId": step_id,
+                "stepIndex": step_index,
+                "inputPage": input_page,
+                "outputPage": output_page,
+                "inputSchema": input_schema,
+                "outputSchema": output_schema,
+                "diff": self._diff(
+                    session,
+                    before,
+                    after,
+                    before_lineage,
+                    after_lineage,
+                    before_shape,
+                    after_shape,
+                    before_raw_schema,
+                    after_raw_schema,
+                    step,
+                    offset,
+                    limit,
+                    before_page=input_page,
+                    after_page=output_page,
+                ),
+                "code": session.engine.compile_plan(session.plan[: step_index + 1]),
             }
 
     def apply_draft(self, session_id: str, revision: int, offset: int, limit: int) -> dict[str, Any]:
@@ -820,14 +898,19 @@ class SessionManager:
         step: Mapping[str, Any],
         offset: int,
         limit: int,
+        *,
+        before_page: Mapping[str, Any] | None = None,
+        after_page: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         before_schema = schema_with_lineage(before_raw_schema, before_lineage)
         after_schema = schema_with_lineage(after_raw_schema, after_lineage)
         before_ids = [column["id"] for column in before_schema]
         after_ids = [column["id"] for column in after_schema]
         common_ids = [identifier for identifier in before_ids if identifier in after_ids]
-        before_page = session.engine.page(before, offset, limit, total_rows=before_shape["rows"])
-        after_page = session.engine.page(after, offset, limit, total_rows=after_shape["rows"])
+        if before_page is None:
+            before_page = session.engine.page(before, offset, limit, total_rows=before_shape["rows"])
+        if after_page is None:
+            after_page = session.engine.page(after, offset, limit, total_rows=after_shape["rows"])
         before_positions = {identifier: index for index, identifier in enumerate(before_ids)}
         after_positions = {identifier: index for index, identifier in enumerate(after_ids)}
         after_names = {column["id"]: column["name"] for column in after_schema}
@@ -865,9 +948,13 @@ class SessionManager:
             "changedCells": changed_cells,
             "cells": cells,
             "truncated": changed_cells > len(cells)
-            or before_page["totalRows"] > offset + limit
-            or after_page["totalRows"] > offset + limit,
+            or before_page["totalRows"] > len(before_page["rows"])
+            or after_page["totalRows"] > len(after_page["rows"]),
         }
+
+    @staticmethod
+    def _lineage_from_schema(schema: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return [{"id": str(column["id"]), "name": str(column["name"])} for column in schema]
 
     def _assert_editable(self, session: Session) -> None:
         if session.mode != "editing":

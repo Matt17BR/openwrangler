@@ -14,13 +14,24 @@ import type {
   FilterModel,
   SessionMetadata,
   SessionSource,
+  StepInspectionResponse,
   TransformStep
 } from "../../shared/protocol";
+import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
   setActiveSession(sessionId: string | undefined): void;
-  activeSession(): { sessionId: string; metadata: SessionMetadata; code?: string } | undefined;
+  activeSession():
+    | {
+        sessionId: string;
+        metadata: SessionMetadata;
+        code?: string;
+        viewState: PersistedViewingState;
+        stepInspection?: StepInspectionResponse;
+      }
+    | undefined;
+  updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
@@ -84,6 +95,7 @@ export async function run(): Promise<void> {
     "openWrangler.applyStep",
     "openWrangler.discardStep",
     "openWrangler.editLatestStep",
+    "openWrangler.selectStep",
     "openWrangler.undoStep",
     "openWrangler.copyCode",
     "openWrangler.exportCode",
@@ -115,6 +127,10 @@ export async function run(): Promise<void> {
   );
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
+  const enabledFileTypes = contributions.configuration?.properties?.["openWrangler.enabledFileTypes"] as
+    { items?: { enum?: string[] }; default?: string[] } | undefined;
+  assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
+  assert.ok(enabledFileTypes?.default?.includes("xls"));
   assert.deepEqual(
     contributions.keybindings?.map((binding) => ({
       command: binding.command,
@@ -182,6 +198,7 @@ export async function run(): Promise<void> {
   assert.ok(activeInput instanceof vscode.TabInputCustom);
   assert.equal(activeInput.viewType, "openWrangler.viewer");
   assert.equal(path.basename(activeInput.uri.fsPath), "sample.csv");
+  await exercisePackagedStepInspection(testing, fixture);
   await vscode.commands.executeCommand("openWrangler.openSourceFile");
   await waitFor(
     () => {
@@ -213,6 +230,93 @@ export async function run(): Promise<void> {
   }
 
   console.log("Open Wrangler extension-host acceptance passed.");
+}
+
+async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.Uri): Promise<void> {
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.path === fixture.fsPath &&
+        active.metadata.steps.some((step) => step.id === "packaged-score")
+      );
+    },
+    30_000,
+    "the packaged custom editor to restore its applied cleaning step"
+  );
+  await waitForSettledViewState(testing, "the confirmed packaged-editor view before step selection");
+
+  const beforeSelection = testing.activeSession();
+  assert.ok(beforeSelection, "The packaged custom editor must publish its active session.");
+  assert.equal(beforeSelection.stepInspection, undefined);
+  const confirmedMetadata = structuredClone(beforeSelection.metadata);
+  const confirmedView = structuredClone(beforeSelection.viewState);
+  const confirmedCode = beforeSelection.code;
+
+  await vscode.commands.executeCommand("openWrangler.selectStep", "packaged-score");
+  await waitFor(
+    () => testing.activeSession()?.stepInspection?.stepId === "packaged-score",
+    30_000,
+    "the packaged editor to inspect the selected applied step"
+  );
+
+  const selected = testing.activeSession();
+  assert.ok(selected?.stepInspection, "Selecting an applied step must publish its inspection snapshot.");
+  const inspection = selected.stepInspection;
+  assert.equal(inspection.revision, confirmedMetadata.revision, "Inspection must not advance the session revision.");
+  assert.equal(inspection.stepIndex, 0);
+  assert.deepEqual(
+    inspection.inputSchema.map((column) => column.name),
+    ["city", "year", "sales", "active"]
+  );
+  assert.deepEqual(
+    inspection.outputSchema.map((column) => column.name),
+    ["city", "year", "sales", "active", "score"]
+  );
+  assert.deepEqual(inspection.diff.addedColumns, ["score"]);
+  assert.deepEqual(inspection.diff.removedColumns, []);
+  assert.equal(inspection.diff.truncated, false);
+  assert.match(inspection.code, /def clean_data\(df\):/u);
+  assert.match(inspection.code, /score/u);
+  assert.deepEqual(selected.metadata, confirmedMetadata, "Inspection must leave the confirmed metadata unchanged.");
+  assert.deepEqual(selected.viewState, confirmedView, "Inspection must leave the confirmed view unchanged.");
+
+  await vscode.commands.executeCommand("openWrangler.selectStep");
+  await waitFor(
+    () => testing.activeSession()?.stepInspection === undefined,
+    10_000,
+    "Original Data to clear the selected applied-step inspection"
+  );
+  await waitForSettledViewState(testing, "the confirmed packaged-editor view after clearing step selection");
+
+  const restored = testing.activeSession();
+  assert.ok(restored, "Clearing an inspection must retain the active dataframe session.");
+  assert.equal(restored.stepInspection, undefined);
+  assert.deepEqual(restored.metadata, confirmedMetadata, "Clearing must restore the exact confirmed metadata.");
+  assert.deepEqual(
+    restored.viewState,
+    confirmedView,
+    "Clearing must restore filters, sorts, widths, selection, and viewport exactly."
+  );
+  assert.equal(restored.code, confirmedCode, "Clearing must restore the full-plan generated code.");
+}
+
+async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {
+  const started = Date.now();
+  let previous = "";
+  let unchangedSince = started;
+  while (Date.now() - started <= 10_000) {
+    const active = testing.activeSession();
+    const current = active ? JSON.stringify(active.viewState) : "";
+    if (current !== previous) {
+      previous = current;
+      unchangedSince = Date.now();
+    } else if (active && Date.now() - unchangedSince >= 300) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for ${expectation}.`);
 }
 
 async function capturePackagedEditorScreenshots(
@@ -677,8 +781,22 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     sort: [{ column: "sales", direction: "desc", nulls: "last" }]
   };
   for (const target of [
-    { backend: "polars" as const, stepId: "packaged-score", multiplier: 2, score: "24.0" },
-    { backend: "duckdb" as const, stepId: "packaged-duckdb-score", multiplier: 3, score: "36.0" }
+    {
+      backend: "polars" as const,
+      stepId: "packaged-score",
+      multiplier: 2,
+      score: "24.0",
+      width: 250,
+      scrollLeft: 35
+    },
+    {
+      backend: "duckdb" as const,
+      stepId: "packaged-duckdb-score",
+      multiplier: 3,
+      score: "36.0",
+      width: 310,
+      scrollLeft: 75
+    }
   ]) {
     const opened = await testing.request({
       kind: "openSession",
@@ -732,6 +850,13 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       page.metadata.steps.map((step) => step.id),
       [target.stepId]
     );
+    const salesColumnId = page.metadata.schema.find((column) => column.name === "sales")?.id;
+    assert.ok(salesColumnId);
+    await testing.updateViewState(opened.metadata.sessionId, {
+      columnWidths: { [salesColumnId]: target.width },
+      selectedColumnId: salesColumnId,
+      viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
+    });
 
     const closed = await testing.request({
       kind: "closeSession",
@@ -759,6 +884,12 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       [target.stepId]
     );
     assert.equal(readback.page.rows[0]?.values[4]?.display, target.score);
+    assert.deepEqual(testing.activeSession()?.viewState, {
+      filterModel: { ...filterModel, logic: "and" },
+      columnWidths: { [salesColumnId]: target.width },
+      selectedColumnId: salesColumnId,
+      viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
+    });
     const readbackClosed = await testing.request({
       kind: "closeSession",
       sessionId: readback.metadata.sessionId,
@@ -797,6 +928,14 @@ async function verifyPersistedReplayAndRecovery(
   assert.equal(restored.page.rows[0]?.values[0]?.display, "Berlin");
   assert.equal(restored.page.rows[0]?.values[4]?.display, "24.0");
   assert.deepEqual(restored.metadata.filterModel.sort, [{ column: "sales", direction: "desc", nulls: "last" }]);
+  const restoredSalesId = restored.metadata.schema.find((column) => column.name === "sales")?.id;
+  assert.ok(restoredSalesId);
+  assert.deepEqual(testing.activeSession()?.viewState, {
+    filterModel: restored.metadata.filterModel,
+    columnWidths: { [restoredSalesId]: 250 },
+    selectedColumnId: restoredSalesId,
+    viewport: { firstVisibleRow: 1, scrollLeft: 35 }
+  });
 
   const secondFixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv");
   const secondSourceText = readFileSync(secondFixture.fsPath, "utf8");
@@ -827,6 +966,14 @@ async function verifyPersistedReplayAndRecovery(
   assert.equal(third.page.rows[0]?.values[0]?.display, "Berlin");
   assert.equal(third.page.rows[0]?.values[4]?.display, "36.0");
   assert.deepEqual(third.metadata.filterModel.sort, [{ column: "sales", direction: "desc", nulls: "last" }]);
+  const duckdbSalesId = third.metadata.schema.find((column) => column.name === "sales")?.id;
+  assert.ok(duckdbSalesId);
+  assert.deepEqual(testing.activeSession()?.viewState, {
+    filterModel: third.metadata.filterModel,
+    columnWidths: { [duckdbSalesId]: 310 },
+    selectedColumnId: duckdbSalesId,
+    viewport: { firstVisibleRow: 1, scrollLeft: 75 }
+  });
   assert.notEqual(third.metadata.sessionId, restored.metadata.sessionId);
   assert.notEqual(third.metadata.sessionId, second.metadata.sessionId);
   assert.equal(testing.diagnostics().sessionCount, 3);
@@ -990,7 +1137,6 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       ],
       { encoding: "utf8" }
     );
-
     const fixtures = [
       {
         uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
@@ -1105,6 +1251,46 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       assert.equal(rejectedDuckDB.code, "missing_dependencies");
       assert.match(rejectedDuckDB.message, /Missing: duckdb>=1\.4\.5,<1\.6/);
       assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
+    }
+    const rejectedLossyUtf8 = await testing.request({
+      kind: "openSession",
+      source: {
+        ...csvSource(fixture),
+        importOptions: {
+          delimiter: ",",
+          encoding: "utf8-lossy",
+          quoteChar: '"',
+          hasHeader: true
+        }
+      },
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(rejectedLossyUtf8.kind, "error");
+    if (rejectedLossyUtf8.kind === "error") {
+      assert.equal(rejectedLossyUtf8.code, "missing_dependencies");
+      assert.match(rejectedLossyUtf8.message, /Missing: pandas/);
+      assert.doesNotMatch(rejectedLossyUtf8.message, /polars|duckdb/iu);
+      assert.match(rejectedLossyUtf8.detail ?? "", /Install Runtime Dependencies/);
+    }
+    const rejectedLegacyExcel = await testing.request({
+      kind: "openSession",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: path.join(directory, "legacy.xls"),
+        importOptions: { sheet: 0 }
+      },
+      backend: "pandas",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(rejectedLegacyExcel.kind, "error");
+    if (rejectedLegacyExcel.kind === "error") {
+      assert.equal(rejectedLegacyExcel.code, "missing_dependencies");
+      assert.match(rejectedLegacyExcel.message, /Missing: pandas, xlrd>=2\.0\.1/);
+      assert.doesNotMatch(rejectedLegacyExcel.message, /openpyxl/);
+      assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }
     assert.equal(testing.runtimeRunning(), false, "Missing dependencies must fail before runtime startup.");
     assert.equal(

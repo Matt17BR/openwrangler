@@ -52,6 +52,21 @@ const citySummary: ColumnSummary = {
 describe("App progressive profiling and view correlation", () => {
   beforeEach(() => postMessage.mockClear());
 
+  it("ignores messages from another origin", () => {
+    render(<App />);
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { kind: "sessionOpened", metadata, page, summaries: [] },
+          origin: "https://untrusted.invalid"
+        })
+      )
+    );
+
+    expect(screen.getByText("Loading dataframe...")).toBeInTheDocument();
+    expect(screen.queryByText("Berlin")).toBeNull();
+  });
+
   it("opens without exact stats and profiles each visible column independently", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -68,6 +83,88 @@ describe("App progressive profiling and view correlation", () => {
     expect(nextPage).toMatchObject({ offset: 200, limit: 200, filterModel: metadata.filterModel });
     expect(nextPage.viewRequestId).toMatch(/^view-.+-\d+$/);
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+  });
+
+  it("restores host-owned grid presentation and publishes bounded changes independently from runtime requests", async () => {
+    render(<App />);
+    const restoredPage = {
+      ...page,
+      offset: 200,
+      rows: page.rows.map((row, index) => ({ ...row, id: `r:${index + 200}`, rowNumber: index + 200 }))
+    };
+    dispatch({ kind: "sessionOpened", metadata, page: restoredPage, summaries: [] });
+    dispatch({
+      kind: "viewState",
+      state: {
+        columnWidths: { "c:1": 275 },
+        selectedColumnId: "c:1",
+        viewport: { firstVisibleRow: 200, scrollLeft: 90 }
+      }
+    });
+
+    const scroller = screen.getByTestId("data-grid-scroller");
+    expect(scroller.scrollTop).toBe(200 * 29);
+    expect(scroller.scrollLeft).toBe(90);
+    expect(document.querySelectorAll("col")[2]).toHaveStyle({ width: "275px" });
+    expect(document.querySelector('th[data-column="sales"]')).toHaveAttribute("aria-selected", "true");
+
+    postMessage.mockClear();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize sales column" }), { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith({
+        kind: "updateViewState",
+        state: {
+          columnWidths: { "c:1": 285 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 200, scrollLeft: 90 }
+        }
+      })
+    );
+    expect(requestsOfKind("getPage")).toHaveLength(0);
+  });
+
+  it.each(["pagehide", "beforeunload"])("flushes the final pending grid presentation on %s", (eventName) => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "viewState",
+      state: {
+        columnWidths: { "c:1": 275 },
+        selectedColumnId: "c:1",
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    });
+    postMessage.mockClear();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize sales column" }), { key: "ArrowRight" });
+    expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "updateViewState" }));
+
+    act(() => window.dispatchEvent(new Event(eventName)));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      kind: "updateViewState",
+      state: {
+        columnWidths: { "c:1": 285 },
+        selectedColumnId: "c:1",
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    });
+  });
+
+  it("clears host-invalidated applied-step inspection locally without echoing the clear", () => {
+    const step = { id: "round-sales", kind: "roundNumber", params: { column: "sales", decimals: 0 } } as const;
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: { ...metadata, steps: [step] }, page, summaries: [] });
+    postMessage.mockClear();
+    dispatch({ kind: "editorAction", action: "selectStep", stepId: step.id });
+    expect(screen.getByLabelText("Selected applied-step inspection")).toBeInTheDocument();
+    expect(requestsOfKind("inspectStep")).toHaveLength(1);
+
+    postMessage.mockClear();
+    dispatch({ kind: "stepInspectionCleared", resumeProfiling: true });
+
+    expect(screen.queryByLabelText("Selected applied-step inspection")).not.toBeInTheDocument();
+    expect(postMessage).not.toHaveBeenCalledWith({ kind: "clearStepInspection" });
   });
 
   it("accepts only the newest page across A to B to A and out-of-order completion", async () => {
@@ -775,14 +872,27 @@ function openCityFilter(): void {
   fireEvent.click(within(cityHeader).getByRole("button", { name: "Filter…" }));
 }
 
-function dispatch(data: OpenWranglerResponse | EditorActionMessage): void {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data })));
+function dispatch(
+  data: OpenWranglerResponse | EditorActionMessage | ViewStateMessage | StepInspectionClearedMessage
+): void {
+  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
 }
 
 interface EditorActionMessage {
   kind: "editorAction";
-  action: "undoStep" | "openOperation";
+  action: "undoStep" | "openOperation" | "selectStep";
   operationKind?: "customCode";
+  stepId?: string;
+}
+
+interface ViewStateMessage {
+  kind: "viewState";
+  state: unknown;
+}
+
+interface StepInspectionClearedMessage {
+  kind: "stepInspectionCleared";
+  resumeProfiling: boolean;
 }
 
 interface RuntimeRequest {

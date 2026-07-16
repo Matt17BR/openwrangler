@@ -200,6 +200,15 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         isBoundedPageSize(candidate.limit)
       );
     }
+    case "inspectStep": {
+      const candidate = exactRecord(value, ["kind", "sessionId", "revision", "stepId", "offset", "limit"]);
+      return (
+        isSessionRequest(candidate, "inspectStep") &&
+        isNonEmptyString(candidate.stepId) &&
+        isNonNegativeInteger(candidate.offset) &&
+        isBoundedPageSize(candidate.limit)
+      );
+    }
     case "applyDraft":
     case "discardDraft":
     case "undoStep": {
@@ -263,6 +272,8 @@ export function isOpenWranglerResponse(value: unknown): value is OpenWranglerRes
       return isValuesResponse(value);
     case "stepPreview":
       return isStepPreviewResponse(value);
+    case "stepInspection":
+      return isStepInspectionResponse(value);
     case "planUpdated":
       return isPlanUpdatedResponse(value);
     case "dataExported":
@@ -358,6 +369,34 @@ function isStepPreviewResponse(value: unknown): boolean {
     isDataDiff(candidate.diff) &&
     isString(candidate.code) &&
     optional(candidate, "warnings", (warnings) => isArrayOf(warnings, isString))
+  );
+}
+
+function isStepInspectionResponse(value: unknown): boolean {
+  const candidate = exactRecord(value, [
+    "kind",
+    "revision",
+    "stepId",
+    "stepIndex",
+    "inputPage",
+    "outputPage",
+    "inputSchema",
+    "outputSchema",
+    "diff",
+    "code"
+  ]);
+  return (
+    candidate !== undefined &&
+    candidate.kind === "stepInspection" &&
+    isNonNegativeInteger(candidate.revision) &&
+    isNonEmptyString(candidate.stepId) &&
+    isNonNegativeInteger(candidate.stepIndex) &&
+    isGridPage(candidate.inputPage) &&
+    isGridPage(candidate.outputPage) &&
+    isArrayOf(candidate.inputSchema, isColumnSchema) &&
+    isArrayOf(candidate.outputSchema, isColumnSchema) &&
+    isDataDiff(candidate.diff) &&
+    isString(candidate.code)
   );
 }
 

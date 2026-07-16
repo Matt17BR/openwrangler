@@ -68,6 +68,22 @@ def test_pandas_excel_file_session(tmp_path):
     assert opened["metadata"]["shape"] == {"rows": 2, "columns": 2}
 
 
+def test_pandas_excel_reader_matches_the_format_dependency(monkeypatch):
+    calls: list[tuple[str, int, str]] = []
+
+    def read_excel(path: str, *, sheet_name: int, engine: str) -> pd.DataFrame:
+        calls.append((path, sheet_name, engine))
+        return pd.DataFrame({"value": [1]})
+
+    monkeypatch.setattr(pd, "read_excel", read_excel)
+    runtime = PandasEngine()
+
+    runtime.read_file("modern.xlsx", {"sheet": 1})
+    runtime.read_file("legacy.xls", {"sheet": 1})
+
+    assert calls == [("modern.xlsx", 1, "openpyxl"), ("legacy.xls", 1, "xlrd")]
+
+
 def test_pandas_csv_import_options(tmp_path):
     path = tmp_path / "latin1.csv"
     path.write_bytes("city;value\nM\xfcnchen;7\n".encode("latin-1"))
@@ -85,6 +101,24 @@ def test_pandas_csv_import_options(tmp_path):
 
     assert opened["metadata"]["schema"][0]["name"] == "city"
     assert opened["page"]["rows"][0]["values"][0]["display"] == "München"
+
+
+def test_pandas_utf8_lossy_is_a_replacement_policy_not_a_codec(tmp_path):
+    path = tmp_path / "damaged.csv"
+    path.write_bytes(b"name,value\nsafe,1\nbroken-\xff,2\n")
+
+    manager = SessionManager()
+    opened = manager.open_session(
+        {
+            "kind": "file",
+            "label": path.name,
+            "path": str(path),
+            "importOptions": {"encoding": "utf8-lossy", "hasHeader": True},
+        },
+        backend="pandas",
+    )
+
+    assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["safe", "broken-�"]
 
 
 def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():

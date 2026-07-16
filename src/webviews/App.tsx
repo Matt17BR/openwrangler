@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   ColumnSummary,
+  ColumnSchema,
   DataDiff,
   DataRow,
   OpenWranglerResponse,
   GridPage,
   OperationKind,
   SessionMetadata,
+  StepInspectionResponse,
   TransformStep,
   ValuesResponse
 } from "../shared/protocol";
 import { emptyFilterModel, type FilterModel } from "../shared/filterModel";
+import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
+import { operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
@@ -29,10 +33,12 @@ export function App() {
   const [page, setPage] = useState<GridPage | undefined>();
   const [summaries, setSummaries] = useState<ColumnSummary[]>([]);
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
-  const [columnValues, setColumnValues] = useState<Record<string, ValuesResponse>>({});
+  const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [snapshotRows, setSnapshotRows] = useState<DataRow[] | undefined>();
   const [foregroundError, setForegroundError] = useState<string | undefined>();
-  const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<Record<string, BackgroundDiagnostic>>({});
+  const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<ReadonlyMap<string, BackgroundDiagnostic>>(
+    () => new Map()
+  );
   const [failedPageRequest, setFailedPageRequest] = useState<PendingPageRequest | undefined>();
   const [loading, setLoading] = useState(true);
   const [mutationPending, setMutationPending] = useState(false);
@@ -45,11 +51,22 @@ export function App() {
   const [diff, setDiff] = useState<DataDiff | undefined>();
   const [generatedCode, setGeneratedCode] = useState("");
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
+  const [stepInspection, setStepInspection] = useState<StepInspectionResponse | undefined>();
+  const [pendingStepInspection, setPendingStepInspection] = useState<PendingStepInspection | undefined>();
+  const [stepInspectionTarget, setStepInspectionTarget] = useState<PendingStepInspection | undefined>();
+  const [stepInspectionError, setStepInspectionError] = useState<string | undefined>();
+  const [draftBefore, setDraftBefore] = useState<DiffBeforeState | undefined>();
   const [activeViewContextId, setActiveViewContextId] = useState("");
+  const [gridViewState, setGridViewState] = useState<GridViewState>(emptyGridViewState);
+  const [viewStateRestoreVersion, setViewStateRestoreVersion] = useState(0);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
+  const pageRef = useRef<GridPage | undefined>(undefined);
+  const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
+  const pendingStepInspectionRef = useRef<PendingStepInspection | undefined>(undefined);
+  const stepInspectionTargetRef = useRef<PendingStepInspection | undefined>(undefined);
   const summariesRef = useRef<ColumnSummary[]>([]);
-  const columnValuesRef = useRef<Record<string, ValuesResponse>>({});
-  const backgroundDiagnosticsRef = useRef<Record<string, BackgroundDiagnostic>>({});
+  const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
+  const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const snapshotRowsRef = useRef<DataRow[] | undefined>(undefined);
   const sidePanelOpenRef = useRef(false);
@@ -71,6 +88,9 @@ export function App() {
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
   const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
+  const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
+  const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
+  const gridViewStateTimer = useRef<number | undefined>(undefined);
 
   const nextViewRequestId = useCallback(() => {
     lastViewRequestSequence += 1;
@@ -80,6 +100,26 @@ export function App() {
   const storeMetadata = useCallback((next: SessionMetadata | undefined) => {
     metadataRef.current = next;
     setMetadata(next);
+  }, []);
+
+  const storePage = useCallback((next: GridPage | undefined) => {
+    pageRef.current = next;
+    setPage(next);
+  }, []);
+
+  const storeStepInspection = useCallback((next: StepInspectionResponse | undefined) => {
+    stepInspectionRef.current = next;
+    setStepInspection(next);
+  }, []);
+
+  const storePendingStepInspection = useCallback((next: PendingStepInspection | undefined) => {
+    pendingStepInspectionRef.current = next;
+    setPendingStepInspection(next);
+  }, []);
+
+  const storeStepInspectionTarget = useCallback((next: PendingStepInspection | undefined) => {
+    stepInspectionTargetRef.current = next;
+    setStepInspectionTarget(next);
   }, []);
 
   const storeFilterModel = useCallback((next: FilterModel) => {
@@ -92,7 +132,7 @@ export function App() {
     setSummaries(next);
   }, []);
 
-  const storeColumnValues = useCallback((next: Record<string, ValuesResponse>) => {
+  const storeColumnValues = useCallback((next: ReadonlyMap<string, ValuesResponse>) => {
     columnValuesRef.current = next;
     setColumnValues(next);
   }, []);
@@ -102,11 +142,48 @@ export function App() {
     setFailedPageRequest(next);
   }, []);
 
+  const storeGridViewState = useCallback((next: GridViewState) => {
+    gridViewStateRef.current = next;
+    setGridViewState(next);
+  }, []);
+
+  const flushGridViewState = useCallback(() => {
+    if (gridViewStateTimer.current !== undefined) {
+      window.clearTimeout(gridViewStateTimer.current);
+      gridViewStateTimer.current = undefined;
+    }
+    const pending = pendingGridViewState.current;
+    pendingGridViewState.current = undefined;
+    if (pending) vscode.postMessage({ kind: "updateViewState", state: pending });
+  }, []);
+
+  const publishGridViewState = useCallback(
+    (next: GridViewState) => {
+      storeGridViewState(next);
+      pendingGridViewState.current = next;
+      if (gridViewStateTimer.current === undefined) {
+        gridViewStateTimer.current = window.setTimeout(flushGridViewState, 100);
+      }
+    },
+    [flushGridViewState, storeGridViewState]
+  );
+
+  useEffect(() => {
+    const flushPendingGridViewState = () => flushGridViewState();
+    window.addEventListener("pagehide", flushPendingGridViewState);
+    window.addEventListener("beforeunload", flushPendingGridViewState);
+    return () => {
+      window.removeEventListener("pagehide", flushPendingGridViewState);
+      window.removeEventListener("beforeunload", flushPendingGridViewState);
+      flushGridViewState();
+    };
+  }, [flushGridViewState]);
+
   const storeBackgroundDiagnostics = useCallback(
     (
       update:
-        | Record<string, BackgroundDiagnostic>
-        | ((current: Record<string, BackgroundDiagnostic>) => Record<string, BackgroundDiagnostic>)
+        | ReadonlyMap<string, BackgroundDiagnostic>
+        | ((current: ReadonlyMap<string, BackgroundDiagnostic>) => ReadonlyMap<string, BackgroundDiagnostic>)
     ) => {
       const next = typeof update === "function" ? update(backgroundDiagnosticsRef.current) : update;
       backgroundDiagnosticsRef.current = next;
@@ -119,9 +196,9 @@ export function App() {
     (pending: PendingBackgroundRequest) => {
       const key = backgroundDiagnosticKey(pending);
       storeBackgroundDiagnostics((current) => {
-        if (!(key in current)) return current;
-        const next = { ...current };
-        delete next[key];
+        if (!current.has(key)) return current;
+        const next = new Map(current);
+        next.delete(key);
         return next;
       });
     },
@@ -181,9 +258,9 @@ export function App() {
         vscode.postMessage({ kind: "cancelViewRequests", viewRequestIds: cancelledIds });
       }
       storeBackgroundDiagnostics((current) => {
-        const next: Record<string, BackgroundDiagnostic> = {};
-        for (const [key, diagnostic] of Object.entries(current)) {
-          if (!diagnosticKeys.has(key) && !shouldCancel(diagnostic.pending)) next[key] = diagnostic;
+        const next = new Map<string, BackgroundDiagnostic>();
+        for (const [key, diagnostic] of current) {
+          if (!diagnosticKeys.has(key) && !shouldCancel(diagnostic.pending)) next.set(key, diagnostic);
         }
         return next;
       });
@@ -194,7 +271,7 @@ export function App() {
   const clearProgressiveData = useCallback(
     (preserveColumnValues = false) => {
       storeSummaries([]);
-      if (!preserveColumnValues) storeColumnValues({});
+      if (!preserveColumnValues) storeColumnValues(new Map());
     },
     [storeColumnValues, storeSummaries]
   );
@@ -204,7 +281,7 @@ export function App() {
       cancelBackgroundRequests();
       clearDrawerSummaryScheduling();
       clearProgressiveData(preserveColumnValues);
-      storeBackgroundDiagnostics({});
+      storeBackgroundDiagnostics(new Map());
     },
     [cancelBackgroundRequests, clearDrawerSummaryScheduling, clearProgressiveData, storeBackgroundDiagnostics]
   );
@@ -227,6 +304,7 @@ export function App() {
     return Boolean(
       confirmed &&
       confirmed.viewContextId === viewContextId &&
+      !stepInspectionTargetRef.current &&
       foregroundRequest.current !== "mutation" &&
       (!pendingPage || pendingPage.viewContextId === confirmed.viewContextId)
     );
@@ -419,13 +497,15 @@ export function App() {
 
   const captureConfirmedViewState = useCallback((): ConfirmedViewState | undefined => {
     const currentMetadata = metadataRef.current;
+    const currentPage = pageRef.current;
     const currentView = confirmedView.current;
-    if (!currentMetadata || !currentView) return undefined;
+    if (!currentMetadata || !currentPage || !currentView) return undefined;
     return {
       view: { ...currentView },
       metadata: currentMetadata,
+      page: currentPage,
       summaries: [...summariesRef.current],
-      columnValues: { ...columnValuesRef.current },
+      columnValues: new Map(columnValuesRef.current),
       backgroundDiagnostics: cloneBackgroundDiagnostics(backgroundDiagnosticsRef.current)
     };
   }, []);
@@ -451,10 +531,53 @@ export function App() {
     ]
   );
 
+  const clearStepInspection = useCallback(
+    (notifyHost = true, resumeProfiling = true) => {
+      storePendingStepInspection(undefined);
+      storeStepInspection(undefined);
+      storeStepInspectionTarget(undefined);
+      setStepInspectionError(undefined);
+      if (notifyHost) vscode.postMessage({ kind: "clearStepInspection" });
+      if (resumeProfiling) restartProfilingForConfirmedView();
+    },
+    [restartProfilingForConfirmedView, storePendingStepInspection, storeStepInspection, storeStepInspectionTarget]
+  );
+
+  const requestStepInspection = useCallback(
+    (stepId: string, offset = 0) => {
+      const currentMetadata = metadataRef.current;
+      if (foregroundRequest.current === "mutation" || !currentMetadata?.steps.some((step) => step.id === stepId)) {
+        return;
+      }
+      const pending = { stepId, offset };
+      storeStepInspectionTarget(pending);
+      storePendingStepInspection(pending);
+      if (stepInspectionRef.current?.stepId !== stepId) storeStepInspection(undefined);
+      setStepInspectionError(undefined);
+      cancelBackgroundRequests();
+      clearDrawerSummaryScheduling();
+      sidePanelOpenRef.current = false;
+      setSidePanelOpen(false);
+      vscode.postMessage({
+        kind: "runtimeRequest",
+        request: { kind: "inspectStep", stepId, offset, limit: pageSize }
+      });
+    },
+    [
+      cancelBackgroundRequests,
+      clearDrawerSummaryScheduling,
+      storePendingStepInspection,
+      storeStepInspection,
+      storeStepInspectionTarget
+    ]
+  );
+
   const beginMutation = useCallback((): boolean => {
     if (foregroundRequest.current) return false;
     const previous = captureConfirmedViewState();
     if (!previous) return false;
+    clearStepInspection(false, false);
+    flushGridViewState();
     mutationSnapshot.current = previous;
     resetViewProfiling();
     storeMetadata(withoutDatasetStats(previous.metadata));
@@ -464,7 +587,14 @@ export function App() {
     setForegroundError(undefined);
     setLoading(true);
     return true;
-  }, [captureConfirmedViewState, resetViewProfiling, storeFailedPageRequest, storeMetadata]);
+  }, [
+    captureConfirmedViewState,
+    clearStepInspection,
+    flushGridViewState,
+    resetViewProfiling,
+    storeFailedPageRequest,
+    storeMetadata
+  ]);
 
   const pruneSummaryOwners = useCallback(
     (nextMetadata: SessionMetadata) => {
@@ -488,14 +618,71 @@ export function App() {
 
   useEffect(() => {
     const timers = retryTimers.current;
-    const listener = (event: MessageEvent<OpenWranglerResponse | EditorActionMessage>) => {
+    const listener = (
+      event: MessageEvent<
+        | OpenWranglerResponse
+        | EditorActionMessage
+        | ViewStateMessage
+        | StepInspectionResultMessage
+        | StepInspectionClearedMessage
+      >
+    ) => {
+      if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "stepInspectionCleared") {
+        if (stepInspectionTargetRef.current || pendingStepInspectionRef.current || stepInspectionRef.current) {
+          clearStepInspection(false, response.resumeProfiling);
+        }
+        return;
+      }
+      if (response.kind === "stepInspectionResult") {
+        const pending = pendingStepInspectionRef.current;
+        if (!pending || pending.stepId !== response.stepId || pending.offset !== response.offset) return;
+        storePendingStepInspection(undefined);
+        const result = response.response;
+        if (result.kind === "error") {
+          setStepInspectionError(result.message);
+          return;
+        }
+        if (result.kind === "cancelled") {
+          setStepInspectionError("Applied-step inspection was cancelled.");
+          return;
+        }
+        const currentMetadata = metadataRef.current;
+        if (
+          result.kind !== "stepInspection" ||
+          result.stepId !== response.stepId ||
+          result.revision !== currentMetadata?.revision ||
+          result.inputPage.offset !== response.offset ||
+          result.outputPage.offset !== response.offset
+        ) {
+          setStepInspectionError("Ignored an invalid applied-step inspection response.");
+          return;
+        }
+        storeStepInspection(result);
+        setStepInspectionError(undefined);
+        return;
+      }
+      if (response.kind === "viewState") {
+        const state = decodeGridViewState(response.state);
+        if (!state) return;
+        pendingGridViewState.current = undefined;
+        if (gridViewStateTimer.current !== undefined) {
+          window.clearTimeout(gridViewStateTimer.current);
+          gridViewStateTimer.current = undefined;
+        }
+        storeGridViewState(state);
+        setViewStateRestoreVersion((current) => current + 1);
+        return;
+      }
       if (response.kind === "editorAction") {
         if (response.action === "openOperation") {
+          if (stepInspectionTargetRef.current) clearStepInspection();
           setEditingStep(undefined);
           setOperationKind(response.operationKind);
           setOperationOpen(true);
         } else if (response.action === "editLatest") {
+          if (stepInspectionTargetRef.current) clearStepInspection();
           setMetadata((current) => {
             const latest = current?.steps.at(-1);
             if (latest) {
@@ -505,6 +692,9 @@ export function App() {
             }
             return current;
           });
+        } else if (response.action === "selectStep") {
+          if (response.stepId) requestStepInspection(response.stepId);
+          else clearStepInspection();
         } else {
           if (!beginMutation()) return;
           vscode.postMessage({
@@ -538,10 +728,11 @@ export function App() {
           pendingBackgroundRequests.current.delete(response.viewRequestId);
           releaseBackgroundRequest(response.viewRequestId, pending);
           if (canProfileConfirmedView(pending.viewContextId)) {
-            storeBackgroundDiagnostics((current) => ({
-              ...current,
-              [backgroundDiagnosticKey(pending)]: { message: response.message, pending }
-            }));
+            storeBackgroundDiagnostics((current) => {
+              const next = new Map(current);
+              next.set(backgroundDiagnosticKey(pending), { message: response.message, pending });
+              return next;
+            });
             const retryScheduled = scheduleBackgroundRetry(pending);
             if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.column, true);
           } else if (pending.kind === "summary") {
@@ -614,12 +805,19 @@ export function App() {
         setLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
+        storeGridViewState(emptyGridViewState());
+        storePendingStepInspection(undefined);
+        storeStepInspection(undefined);
+        storeStepInspectionTarget(undefined);
+        setStepInspectionError(undefined);
+        setDraftBefore(undefined);
+        setDiff(undefined);
         resetViewProfiling();
         summaryOwnersByColumn.current.clear();
         confirmView(response.metadata, nextViewRequestId());
         storeMetadata(response.metadata);
         storeFilterModel(response.metadata.filterModel);
-        setPage(response.page);
+        storePage(response.page);
         storeSummaries(response.summaries);
         const rows = response.metadata.source.kind === "notebookOutput" ? response.page.rows : undefined;
         snapshotRowsRef.current = rows;
@@ -657,7 +855,7 @@ export function App() {
         confirmView(nextMetadata, pendingPage.viewContextId);
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
-        setPage(response.page);
+        storePage(response.page);
         snapshotRowsRef.current = undefined;
         setSnapshotRows(undefined);
         restartProfilingForConfirmedView();
@@ -671,6 +869,7 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        const previous = mutationSnapshot.current;
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -684,11 +883,21 @@ export function App() {
         confirmView(nextMetadata, nextViewRequestId());
         storeMetadata(nextMetadata);
         storeFilterModel(nextMetadata.filterModel);
-        setPage(response.page);
+        storePage(response.page);
         snapshotRowsRef.current = undefined;
         setSnapshotRows(undefined);
         setGeneratedCode(response.code);
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
+        setDraftBefore(
+          response.kind === "stepPreview" && previous
+            ? {
+                schema: response.metadata.latestStepInputSchema ?? previous.metadata.schema,
+                ...(response.metadata.draftReplacesStepId === undefined && previous.page.offset === response.page.offset
+                  ? { page: previous.page }
+                  : {})
+              }
+            : undefined
+        );
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") setOperationOpen(false);
         restartProfilingForConfirmedView();
@@ -726,7 +935,7 @@ export function App() {
           return;
         }
         latestValuesByColumn.current.delete(response.column);
-        storeColumnValues({ ...columnValuesRef.current, [response.column]: response });
+        storeColumnValues(new Map(columnValuesRef.current).set(response.column, response));
         clearBackgroundDiagnostic(pending);
         return;
       }
@@ -766,12 +975,14 @@ export function App() {
     beginMutation,
     canProfileConfirmedView,
     clearBackgroundDiagnostic,
+    clearStepInspection,
     confirmView,
     finishDrawerSummaryColumn,
     nextViewRequestId,
     pruneSummaryOwners,
     releaseBackgroundRequest,
     requestStatsForConfirmedView,
+    requestStepInspection,
     restartProfilingForConfirmedView,
     restoreConfirmedViewState,
     restoreViewAfterPageFailure,
@@ -781,7 +992,12 @@ export function App() {
     storeColumnValues,
     storeFailedPageRequest,
     storeFilterModel,
+    storeGridViewState,
     storeMetadata,
+    storePage,
+    storePendingStepInspection,
+    storeStepInspection,
+    storeStepInspectionTarget,
     storeSummaries
   ]);
 
@@ -789,6 +1005,31 @@ export function App() {
     () => new Map(metadata?.schema.map((column) => [column.name, column]) ?? []),
     [metadata]
   );
+  const inspectionMode = Boolean(stepInspectionTarget);
+  const displayMetadata = useMemo<SessionMetadata | undefined>(() => {
+    if (!metadata || !stepInspection) return metadata;
+    const shape = { rows: stepInspection.outputPage.totalRows, columns: stepInspection.outputSchema.length };
+    return {
+      ...metadata,
+      shape,
+      filteredShape: shape,
+      schema: stepInspection.outputSchema
+    };
+  }, [metadata, stepInspection]);
+  const displayPage = inspectionMode ? (pendingStepInspection ? undefined : stepInspection?.outputPage) : page;
+  const selectedInspectionStep = metadata?.steps.find((step) => step.id === stepInspectionTarget?.stepId);
+  const inspectionGridViewState = useMemo<GridViewState>(() => {
+    const columnIds = new Set(stepInspection?.outputSchema.map((column) => column.id) ?? []);
+    return {
+      columnWidths: Object.fromEntries(
+        Object.entries(gridViewState.columnWidths).filter(([columnId]) => columnIds.has(columnId))
+      ),
+      viewport: {
+        firstVisibleRow: stepInspection?.outputPage.offset ?? stepInspectionTarget?.offset ?? 0,
+        scrollLeft: gridViewState.viewport.scrollLeft
+      }
+    };
+  }, [gridViewState.columnWidths, gridViewState.viewport.scrollLeft, stepInspection, stepInspectionTarget]);
   const snapshotMode = metadata?.source.kind === "notebookOutput" && snapshotRows !== undefined;
 
   const requestPage = (
@@ -796,7 +1037,9 @@ export function App() {
     model = filterModelRef.current,
     options: PageRequestOptions = {}
   ): string | undefined => {
-    if (foregroundRequest.current === "mutation") return undefined;
+    if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
+      return undefined;
+    }
     const currentMetadata = metadataRef.current;
     const currentSnapshotRows = snapshotRowsRef.current;
     if (currentMetadata && currentSnapshotRows) {
@@ -837,6 +1080,7 @@ export function App() {
   };
 
   const requestValues = (column: string, search?: string) => {
+    if (stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
     const currentSnapshotRows = snapshotRowsRef.current;
     const confirmed = confirmedView.current;
@@ -852,7 +1096,7 @@ export function App() {
         search,
         viewRequestId
       );
-      storeColumnValues({ ...columnValuesRef.current, [column]: values });
+      storeColumnValues(new Map(columnValuesRef.current).set(column, values));
       return;
     }
     if (!currentMetadata || !confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
@@ -884,7 +1128,9 @@ export function App() {
   };
 
   const applyFilters = (model: FilterModel) => {
-    if (foregroundRequest.current === "mutation") return;
+    if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
+      return;
+    }
     const pendingPage = latestPageRequest.current;
     const sameDesiredModel = sameFilterModel(model, filterModelRef.current);
     if (sameDesiredModel && pendingPage && sameFilterModel(model, pendingPage.model)) {
@@ -937,6 +1183,7 @@ export function App() {
 
   const openNewOperation = (kind?: OperationKind) => {
     if (foregroundRequest.current) return;
+    if (stepInspectionTargetRef.current) clearStepInspection();
     setEditingStep(undefined);
     setOperationKind(kind);
     setOperationOpen(true);
@@ -944,6 +1191,7 @@ export function App() {
 
   const editLatestStep = () => {
     if (foregroundRequest.current) return;
+    if (stepInspectionTargetRef.current) clearStepInspection();
     const latest = metadata?.steps.at(-1);
     if (!latest) return;
     setEditingStep(latest);
@@ -963,6 +1211,9 @@ export function App() {
           setOperationOpen(false);
           handled = true;
         }
+      } else if (stepInspectionTargetRef.current) {
+        clearStepInspection();
+        handled = true;
       } else if (metadata?.draftStep) {
         sendPlanAction("discardDraft");
         handled = true;
@@ -1014,7 +1265,7 @@ export function App() {
     });
   };
 
-  const backgroundDiagnosticMessages = Object.values(backgroundDiagnostics).map((diagnostic) => diagnostic.message);
+  const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
 
   if (foregroundError && !metadata) {
     return (
@@ -1032,7 +1283,7 @@ export function App() {
           <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
           <span>
             {metadata
-              ? `${metadata.filteredShape.rows.toLocaleString()} rows x ${metadata.filteredShape.columns.toLocaleString()} columns`
+              ? `${(displayMetadata ?? metadata).filteredShape.rows.toLocaleString()} rows x ${(displayMetadata ?? metadata).filteredShape.columns.toLocaleString()} columns`
               : "Preparing session"}
           </span>
         </div>
@@ -1048,6 +1299,8 @@ export function App() {
               type="button"
               className="toolbarButton"
               aria-expanded={sidePanelOpen}
+              disabled={inspectionMode}
+              title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
               onClick={(event) => {
                 if (sidePanelOpenRef.current) {
                   closeSidePanel();
@@ -1058,7 +1311,7 @@ export function App() {
                 setSidePanelOpen(true);
               }}
             >
-              Insights & filters
+              {inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
             </button>
             <label className="goToColumn">
               <span>Column</span>
@@ -1069,7 +1322,7 @@ export function App() {
                 onChange={(event) => setGoToColumn(event.target.value)}
               />
               <datalist id="openwrangler-columns">
-                {metadata.schema.map((column) => (
+                {(displayMetadata ?? metadata).schema.map((column) => (
                   <option key={column.id} value={column.name} />
                 ))}
               </datalist>
@@ -1077,6 +1330,7 @@ export function App() {
             <span className="modeBadge">{metadata.mode}</span>
             <span className="backendBadge">{metadata.backend}</span>
             {snapshotMode && <span className="modeBadge">Snapshot</span>}
+            {inspectionMode && <span className="inspectionBadge">Step inspection</span>}
           </div>
         )}
       </header>
@@ -1141,6 +1395,56 @@ export function App() {
         </section>
       )}
 
+      {metadata && inspectionMode && (
+        <section className="inspectionPanel" aria-label="Selected applied-step inspection">
+          <header>
+            <div>
+              <strong>
+                {pendingStepInspection ? "Loading" : "Inspecting"}{" "}
+                {selectedInspectionStep ? operationByKind(selectedInspectionStep.kind).title : "applied step"}
+              </strong>
+              <span>
+                This is that step&apos;s input → output boundary. The confirmed dataframe view and filters are
+                unchanged.
+              </span>
+            </div>
+            <button type="button" className="secondaryButton" onClick={() => clearStepInspection()}>
+              Show confirmed data
+            </button>
+          </header>
+          {pendingStepInspection && (
+            <div role="status" aria-live="polite">
+              Loading inspection rows {pendingStepInspection.offset + 1}–{pendingStepInspection.offset + pageSize}…
+            </div>
+          )}
+          {stepInspectionError && (
+            <div className="errorBanner" role="alert">
+              {stepInspectionError}
+            </div>
+          )}
+          {stepInspection && (
+            <>
+              <div className="diffStats" aria-label="Selected step data diff summary">
+                <span>+{stepInspection.diff.addedRows} rows</span>
+                <span>-{stepInspection.diff.removedRows} rows</span>
+                <span>+{stepInspection.diff.addedColumns.length} columns</span>
+                <span>-{stepInspection.diff.removedColumns.length} columns</span>
+                <span>
+                  {stepInspection.diff.changedCells} changed cells
+                  {stepInspection.diff.truncated ? " in this block" : ""}
+                </span>
+              </div>
+              <details className="draftCode">
+                <summary>Generated code through this applied step</summary>
+                <pre tabIndex={0} aria-label="Selected step generated Python code">
+                  <code>{stepInspection.code}</code>
+                </pre>
+              </details>
+            </>
+          )}
+        </section>
+      )}
+
       <section className={`layout${sidePanelOpen ? " sidePanelOpen" : ""}`}>
         <section className="gridShell">
           {foregroundError && (
@@ -1163,28 +1467,50 @@ export function App() {
               Loading...
             </div>
           )}
-          {metadata && page ? (
+          {displayMetadata && displayPage ? (
             <DataGrid
-              metadata={metadata}
-              page={page}
-              summaries={summaries}
-              onPage={requestPage}
+              key={
+                inspectionMode
+                  ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}`
+                  : `confirmed:${displayMetadata.sessionId}`
+              }
+              metadata={displayMetadata}
+              page={displayPage}
+              summaries={inspectionMode ? [] : summaries}
+              onPage={(offset) => {
+                const stepId = stepInspectionTarget?.stepId;
+                if (stepId) requestStepInspection(stepId, offset);
+                else requestPage(offset);
+              }}
               pageSize={pageSize}
               defaultColumnWidth={webviewConfig.defaultColumnWidth}
-              insightsOnOpen={webviewConfig.insightsOnOpen}
-              busy={loading}
-              viewContextId={activeViewContextId}
+              insightsOnOpen={inspectionMode ? false : webviewConfig.insightsOnOpen}
+              busy={loading || Boolean(pendingStepInspection)}
+              viewContextId={
+                inspectionMode ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}` : activeViewContextId
+              }
               goToColumn={goToColumn}
+              viewState={inspectionMode ? inspectionGridViewState : gridViewState}
+              viewStateRestoreVersion={
+                inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
+              }
+              diff={stepInspection?.diff ?? (metadata?.draftStep ? diff : undefined)}
+              beforePage={stepInspection?.inputPage ?? draftBefore?.page}
+              beforeSchema={stepInspection?.inputSchema ?? draftBefore?.schema}
+              viewControlsDisabled={inspectionMode}
               onSortColumn={(column, direction) =>
-                applyFilters({
-                  ...filterModel,
-                  sort: [
-                    ...filterModel.sort.filter((rule) => rule.column !== column),
-                    { column, direction, nulls: "last" }
-                  ]
-                })
+                inspectionMode
+                  ? undefined
+                  : applyFilters({
+                      ...filterModel,
+                      sort: [
+                        ...filterModel.sort.filter((rule) => rule.column !== column),
+                        { column, direction, nulls: "last" }
+                      ]
+                    })
               }
               onOpenFilter={(column) => {
+                if (inspectionMode) return;
                 sidePanelReturnFocus.current =
                   document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
                 setFilterColumn(column);
@@ -1192,13 +1518,16 @@ export function App() {
                 setSidePanelOpen(true);
                 requestValues(column);
               }}
-              onVisibleSummaryColumnsChange={updateVisibleSummaryColumns}
+              onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
+              onViewStateChange={inspectionMode ? () => undefined : publishGridViewState}
             />
           ) : (
-            <div className="emptyState">Opening session...</div>
+            <div className="emptyState">
+              {inspectionMode ? "Loading selected-step inspection…" : "Opening session..."}
+            </div>
           )}
         </section>
-        {sidePanelOpen && (
+        {sidePanelOpen && !inspectionMode && (
           <aside className="sidebar" aria-label="Insights and filters">
             <div className="drawerHeader">
               <strong>Insights & filters</strong>
@@ -1224,7 +1553,7 @@ export function App() {
           </aside>
         )}
       </section>
-      {metadata?.draftStep && (
+      {metadata?.draftStep && !inspectionMode && (
         <section className="draftPanel" aria-label="Draft preview">
           <header>
             <div>
@@ -1296,7 +1625,7 @@ export function App() {
     metadataRef.current = nextMetadata;
     filterModelRef.current = model;
     setFilterModel(model);
-    setPage({
+    storePage({
       offset,
       limit: pageSize,
       totalRows: filteredRows.length,
@@ -1314,8 +1643,26 @@ export function App() {
 
 interface EditorActionMessage {
   kind: "editorAction";
-  action: "openOperation" | "editLatest" | "applyDraft" | "discardDraft" | "undoStep";
+  action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
+  stepId?: string;
+}
+
+interface ViewStateMessage {
+  kind: "viewState";
+  state: unknown;
+}
+
+interface StepInspectionResultMessage {
+  kind: "stepInspectionResult";
+  stepId: string;
+  offset: number;
+  response: OpenWranglerResponse;
+}
+
+interface StepInspectionClearedMessage {
+  kind: "stepInspectionCleared";
+  resumeProfiling: boolean;
 }
 
 interface ConfirmedView {
@@ -1327,9 +1674,20 @@ interface ConfirmedView {
 interface ConfirmedViewState {
   view: ConfirmedView;
   metadata: SessionMetadata;
+  page: GridPage;
   summaries: ColumnSummary[];
-  columnValues: Record<string, ValuesResponse>;
-  backgroundDiagnostics: Record<string, BackgroundDiagnostic>;
+  columnValues: ReadonlyMap<string, ValuesResponse>;
+  backgroundDiagnostics: ReadonlyMap<string, BackgroundDiagnostic>;
+}
+
+interface PendingStepInspection {
+  stepId: string;
+  offset: number;
+}
+
+interface DiffBeforeState {
+  schema: ColumnSchema[];
+  page?: GridPage;
 }
 
 interface PendingPageRequest {
@@ -1370,10 +1728,10 @@ function backgroundDiagnosticKey(pending: PendingBackgroundRequest): string {
 }
 
 function cloneBackgroundDiagnostics(
-  diagnostics: Record<string, BackgroundDiagnostic>
-): Record<string, BackgroundDiagnostic> {
-  return Object.fromEntries(
-    Object.entries(diagnostics).map(([key, diagnostic]) => [
+  diagnostics: ReadonlyMap<string, BackgroundDiagnostic>
+): ReadonlyMap<string, BackgroundDiagnostic> {
+  return new Map(
+    [...diagnostics].map(([key, diagnostic]) => [
       key,
       {
         ...diagnostic,

@@ -6,11 +6,13 @@ import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
 import { registerNativeViews } from "./nativeViews";
+import type { GridViewState } from "../shared/viewState";
 
 export interface OpenWranglerTestApi {
   request: ReturnType<SessionCoordinator["createBridge"]>["request"];
   setActiveSession(sessionId: string | undefined): void;
   activeSession: SessionCoordinator["activeSession"];
+  updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
@@ -45,6 +47,7 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         request: (request, options) => coordinatedBridge.request(request, options),
         setActiveSession: (sessionId) => coordinator.setActive(sessionId),
         activeSession: () => coordinator.activeSession(),
+        updateViewState: async (sessionId, state) => coordinatedBridge.updateViewState?.(sessionId, state),
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,

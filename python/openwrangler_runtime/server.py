@@ -78,6 +78,14 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
             int(request.get("limit", 200)),
             request.get("replaceStepId"),
         )
+    if kind == "inspectStep":
+        return manager.inspect_step(
+            request["sessionId"],
+            int(request["revision"]),
+            request["stepId"],
+            int(request.get("offset", 0)),
+            int(request.get("limit", 200)),
+        )
     if kind == "applyDraft":
         return manager.apply_draft(
             request["sessionId"],

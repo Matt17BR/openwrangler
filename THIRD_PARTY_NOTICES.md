@@ -12,7 +12,8 @@ The bundled pure-Python runtime interoperates with, but does not redistribute, t
 - Polars — MIT License. Loaded from the user's selected Python environment.
 - DuckDB — MIT License. Loaded from the user's selected Python environment.
 - PyArrow — Apache License 2.0. Loaded when required by a selected format/engine.
-- openpyxl — MIT License. Loaded when required for Excel files.
-- fastexcel — MIT License. Loaded when Polars opens Excel files.
+- openpyxl — MIT License. Loaded when Pandas opens modern `.xlsx` workbooks.
+- xlrd — BSD licenses. Loaded when Pandas opens legacy `.xls` workbooks.
+- fastexcel — MIT License. Loaded when Polars opens `.xlsx` or `.xls` workbooks.
 
 Build and test tooling is not shipped in the VSIX. `npm run license:check` rejects a new bundled production package until its SPDX license and notice group are explicitly approved. Microsoft Data Wrangler is a behavioral reference only; its code and assets are not included.

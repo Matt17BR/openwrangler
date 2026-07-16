@@ -10,6 +10,7 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
+import { decodeGridViewState, type GridViewState } from "../shared/viewState";
 import type { OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 
@@ -32,7 +33,6 @@ export class OpenWranglerPanel {
     private readonly backend?: DataBackend,
     private readonly initialResponse?: SessionOpenedResponse
   ) {
-    OpenWranglerPanel.activePanel = this;
     this.panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.file(path.join(this.context.extensionPath, "media"))]
@@ -51,12 +51,10 @@ export class OpenWranglerPanel {
     }
     this.panel.webview.html = this.renderHtml();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
+    this.activate();
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
-        if (webviewPanel.active) {
-          OpenWranglerPanel.activePanel = this;
-          if (this.sessionId) this.bridge.setActiveSession?.(this.sessionId);
-        }
+        if (webviewPanel.active) this.activate();
       },
       undefined,
       this.disposables
@@ -66,7 +64,7 @@ export class OpenWranglerPanel {
   static sendEditorAction(message: EditorActionMessage): boolean {
     const active = OpenWranglerPanel.activePanel;
     if (!active) return false;
-    if (message.action === "openOperation" || message.action === "editLatest") {
+    if (message.action === "openOperation" || message.action === "editLatest" || message.action === "selectStep") {
       active.panel.reveal(active.panel.viewColumn, false);
     }
     void active.panel.webview.postMessage({ kind: "editorAction", ...message });
@@ -159,8 +157,11 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "ready") {
+      if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
+      await this.postStepInspectionCleared(false);
       if (this.snapshot) {
         await this.post(this.snapshot);
+        await this.postViewState();
         return;
       }
       await this.open();
@@ -177,6 +178,16 @@ export class OpenWranglerPanel {
       if (this.sessionId && decoded.viewRequestIds.length) {
         this.bridge.cancelViewRequests?.(this.sessionId, decoded.viewRequestIds);
       }
+      return;
+    }
+
+    if (decoded.kind === "updateViewState") {
+      if (this.sessionId) await this.bridge.updateViewState?.(this.sessionId, decoded.state);
+      return;
+    }
+
+    if (decoded.kind === "clearStepInspection") {
+      if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
       return;
     }
 
@@ -226,6 +237,7 @@ export class OpenWranglerPanel {
         this.sessionRevision = response.metadata.revision;
         this.snapshot = response;
         this.snapshotViewContextId = undefined;
+        if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         this.sessionId = response.metadata.sessionId;
@@ -276,9 +288,12 @@ export class OpenWranglerPanel {
           metadata: { ...this.snapshot.metadata, stats: response.stats }
         };
       }
-      await this.post(response);
+      await this.postRuntimeResponse(request, response);
+      if (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated") {
+        await this.postViewState();
+      }
     } catch (error) {
-      await this.post({
+      await this.postRuntimeResponse(request, {
         kind: "error",
         code: "bridge_error",
         message: error instanceof Error ? error.message : String(error),
@@ -290,6 +305,41 @@ export class OpenWranglerPanel {
 
   private async post(response: OpenWranglerResponse): Promise<void> {
     await this.panel.webview.postMessage(response);
+  }
+
+  private activate(): void {
+    if (this.disposed) return;
+    const previous = OpenWranglerPanel.activePanel;
+    if (previous !== this) {
+      OpenWranglerPanel.activePanel = this;
+      if (previous) void previous.postStepInspectionCleared(false);
+      void this.postStepInspectionCleared(true);
+    }
+    this.bridge.setActiveSession?.(this.sessionId);
+  }
+
+  private async postStepInspectionCleared(resumeProfiling: boolean): Promise<void> {
+    if (this.disposed) return;
+    await this.panel.webview.postMessage({ kind: "stepInspectionCleared", resumeProfiling });
+  }
+
+  private async postRuntimeResponse(request: OpenWranglerRequest, response: OpenWranglerResponse): Promise<void> {
+    if (request.kind === "inspectStep") {
+      await this.panel.webview.postMessage({
+        kind: "stepInspectionResult",
+        stepId: request.stepId,
+        offset: request.offset,
+        response
+      });
+      return;
+    }
+    await this.post(response);
+  }
+
+  private async postViewState(): Promise<void> {
+    if (!this.sessionId) return;
+    const state = this.bridge.getViewState?.(this.sessionId);
+    if (state) await this.panel.webview.postMessage({ kind: "viewState", state });
   }
 
   private decodeWebviewMessage(message: unknown): WebviewRequest | undefined {
@@ -308,6 +358,14 @@ export class OpenWranglerPanel {
         message.viewRequestIds.every(isNonEmptyString)
         ? { kind: "cancelViewRequests", viewRequestIds: [...message.viewRequestIds] }
         : undefined;
+    }
+    if (message.kind === "updateViewState") {
+      if (!hasExactKeys(message, ["kind", "state"])) return undefined;
+      const state = decodeGridViewState(message.state);
+      return state ? { kind: "updateViewState", state } : undefined;
+    }
+    if (message.kind === "clearStepInspection") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "clearStepInspection" } : undefined;
     }
     if (
       message.kind !== "runtimeRequest" ||
@@ -383,6 +441,8 @@ type WebviewRequest =
   | { kind: "ready" }
   | { kind: "setViewContext"; viewContextId: string }
   | { kind: "cancelViewRequests"; viewRequestIds: string[] }
+  | { kind: "updateViewState"; state: GridViewState }
+  | { kind: "clearStepInspection" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;
@@ -394,6 +454,7 @@ const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "getSummary",
   "getDatasetStats",
   "getColumnValues",
+  "inspectStep",
   "previewStep",
   "applyDraft",
   "discardDraft",
@@ -421,8 +482,9 @@ function hasExactKeys(
 }
 
 export interface EditorActionMessage {
-  action: "openOperation" | "editLatest" | "applyDraft" | "discardDraft" | "undoStep";
+  action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
+  stepId?: string;
 }
 
 const randomNonce = (): string => {
