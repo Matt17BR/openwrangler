@@ -105,6 +105,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private persistenceTail: Promise<void> = Promise.resolve();
   private shutdownPromise: Promise<void> | undefined;
   private readonly detachedCleanups = new Set<Promise<void>>();
+  private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
 
   constructor(
     private readonly workspaceState?: vscode.Memento,
@@ -298,7 +299,7 @@ export class SessionCoordinator implements vscode.Disposable {
   ): Promise<OpenWranglerResponse> {
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
     try {
-      return await this.openTracked(delegate, request, options);
+      return await this.serializeSessionEstablishment(delegate, () => this.openTracked(delegate, request, options));
     } finally {
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
@@ -1197,7 +1198,26 @@ export class SessionCoordinator implements vscode.Disposable {
     return page;
   }
 
-  private async replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
+  private replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
+    return this.serializeSessionEstablishment(session.delegate, () => this.replayExclusive(session, options));
+  }
+
+  private serializeSessionEstablishment<T>(delegate: OpenWranglerBridge, establish: () => Promise<T>): Promise<T> {
+    const preceding = this.sessionEstablishmentTails.get(delegate) ?? Promise.resolve();
+    const result = preceding.then(establish, establish);
+    const tail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    this.sessionEstablishmentTails.set(delegate, tail);
+    void tail.finally(() => {
+      if (this.sessionEstablishmentTails.get(delegate) === tail) this.sessionEstablishmentTails.delete(delegate);
+    });
+    return result;
+  }
+
+  private async replayExclusive(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
+    if (!this.isLiveSession(session) || session.closing) return false;
     const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
     const previous: RuntimeSessionState = {
       publicId: session.publicId,

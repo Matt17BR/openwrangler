@@ -668,12 +668,23 @@ async function exercisePackagedFileLaunchSurfaces(
 }
 
 async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
-  for (const title of ["Delimiter", "Text encoding", "Header row", "Quote character"]) {
+  for (const { title, option } of [
+    { title: "Delimiter", option: "Comma" },
+    { title: "Text encoding", option: "utf-8" },
+    { title: "Header row", option: "First row contains column names" }
+  ]) {
     const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
     await quickInput.waitFor({ state: "visible", timeout: 10_000 });
-    await page.waitForTimeout(150);
-    await page.keyboard.press("Enter");
+    const defaultOption = quickInput.locator(".monaco-list-row").filter({ hasText: option }).first();
+    await defaultOption.waitFor({ state: "visible", timeout: 10_000 });
+    await defaultOption.click();
   }
+  const quoteInput = page.locator(".quick-input-widget:visible").filter({ hasText: "Quote character" }).last();
+  await quoteInput.waitFor({ state: "visible", timeout: 10_000 });
+  const field = quoteInput.locator(".quick-input-box input").first();
+  await field.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await field.inputValue(), '"');
+  await field.press("Enter");
 }
 
 async function connectToEditorWorkbench(): Promise<Page> {
@@ -2392,9 +2403,9 @@ async function verifyPersistedReplayAndRecovery(
       filterModel: third.metadata.filterModel
     })
   ]);
-  assert.equal(restoredPage.kind, "page");
-  assert.equal(secondPage.kind, "page");
-  assert.equal(thirdPage.kind, "page");
+  assert.equal(restoredPage.kind, "page", `Polars recovery returned ${JSON.stringify(restoredPage)}.`);
+  assert.equal(secondPage.kind, "page", `Pandas recovery returned ${JSON.stringify(secondPage)}.`);
+  assert.equal(thirdPage.kind, "page", `DuckDB recovery returned ${JSON.stringify(thirdPage)}.`);
   if (restoredPage.kind !== "page" || secondPage.kind !== "page" || thirdPage.kind !== "page") return;
   assert.equal(testing.runtimeGeneration(), generation + 1, "Concurrent recovery must start exactly one runtime.");
   assert.equal(restoredPage.page.rows[0]?.values[4]?.display, "24.0");

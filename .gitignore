@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-test/
 .vscode/
+.vscode-test/
 media/
 *.vsix
 tmp/
