@@ -17,6 +17,7 @@ export interface OpenWranglerTestApi {
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  declineRuntimeDependencyInstallation(): Promise<boolean>;
   setCodeForExport(code: string): void;
 }
 
@@ -52,6 +53,7 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
+        declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
         setCodeForExport: (code) => nativeViews.setCodeForExport(code)
       }
     };

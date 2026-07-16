@@ -69,12 +69,27 @@ exports.activate = async function (context) {
     console.error(error);
     outcome = { ok: false, error: error instanceof Error ? error.stack || error.message : String(error) };
   }
-  fs.writeFileSync(process.env.OPEN_WRANGLER_TEST_RESULT, JSON.stringify(outcome));
+  const resultPath = process.env.OPEN_WRANGLER_TEST_RESULT;
+  const temporaryResultPath = resultPath + "." + process.pid + ".tmp";
+  try {
+    fs.writeFileSync(temporaryResultPath, JSON.stringify(outcome), { encoding: "utf8", flag: "wx" });
+    fs.renameSync(temporaryResultPath, resultPath);
+  } finally {
+    try { fs.rmSync(temporaryResultPath, { force: true }); } catch {}
+  }
   setTimeout(() => void vscode.commands.executeCommand("workbench.action.quit"), 2_000);
   setTimeout(() => void vscode.commands.executeCommand("workbench.action.closeWindow"), 500);
 };
 `
   );
+}
+
+export function writeEditorSettings(userDataDirectory, settings) {
+  const userDirectory = resolve(userDataDirectory, "User");
+  const settingsPath = resolve(userDirectory, "settings.json");
+  mkdirSync(userDirectory, { recursive: true });
+  const current = existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, "utf8")) : {};
+  writeFileSync(settingsPath, `${JSON.stringify({ ...current, ...settings }, null, 2)}\n`);
 }
 
 export function writeFakeJupyterExtension(directory) {
@@ -336,31 +351,77 @@ export async function runEditorAcceptancePhase({
     }
   );
 
-  const exit = new Promise((resolveExit, rejectExit) => {
-    child.once("error", rejectExit);
+  const exit = new Promise((resolveExit) => {
+    child.once("error", (error) => resolveExit({ error }));
     child.once("exit", (code, signal) => resolveExit({ code, signal }));
   });
-  const isRunning = () => child.exitCode === null && child.signalCode === null;
-  const deadline = Date.now() + 180_000;
-  while (!existsSync(resultPath) && isRunning() && Date.now() < deadline) {
-    await delay(100);
+  const isRunning = () => child.exitCode === null && child.signalCode === null && child.pid !== undefined;
+  let outcome;
+  let acceptanceError;
+  try {
+    const deadline = Date.now() + 180_000;
+    while (!existsSync(resultPath) && isRunning() && Date.now() < deadline) {
+      await delay(100);
+    }
+
+    if (!existsSync(resultPath)) {
+      throw new Error(`${editor.name} ${phase} acceptance exited without writing a result.`);
+    }
+
+    try {
+      outcome = JSON.parse(readFileSync(resultPath, "utf8"));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`${editor.name} ${phase} acceptance wrote an unreadable result: ${detail}`);
+    }
+    if (!outcome || typeof outcome !== "object" || typeof outcome.ok !== "boolean") {
+      throw new Error(`${editor.name} ${phase} acceptance wrote a malformed result payload.`);
+    }
+  } catch (error) {
+    acceptanceError = error;
   }
 
-  if (!existsSync(resultPath)) {
-    if (isRunning()) child.kill("SIGTERM");
-    throw new Error(`${editor.name} ${phase} acceptance exited without writing a result.`);
+  try {
+    await terminateEditorChild(child, exit, isRunning);
+  } catch (error) {
+    acceptanceError = acceptanceError
+      ? new AggregateError(
+          [acceptanceError, error],
+          `${editor.name} ${phase} acceptance failed and its editor process did not shut down cleanly.`
+        )
+      : error;
   }
-  const outcome = JSON.parse(readFileSync(resultPath, "utf8"));
 
-  const closedInApp = await Promise.race([exit.then(() => true), delay(3_500).then(() => false)]);
-  if (!closedInApp && isRunning()) {
-    child.kill("SIGTERM");
-    const terminated = await Promise.race([exit.then(() => true), delay(10_000).then(() => false)]);
-    if (!terminated && isRunning()) child.kill("SIGKILL");
-  }
+  if (acceptanceError) throw acceptanceError;
 
   if (!outcome.ok) {
     throw new Error(`${editor.name} ${phase} acceptance failed:\n${outcome.error ?? "Unknown error"}`);
+  }
+}
+
+async function terminateEditorChild(child, exit, isRunning) {
+  if (await waitForChildExit(exit, 3_500)) return;
+
+  if (isRunning()) child.kill("SIGTERM");
+  if (await waitForChildExit(exit, 10_000)) return;
+
+  if (isRunning()) child.kill("SIGKILL");
+  if (await waitForChildExit(exit, 10_000)) return;
+
+  throw new Error(`The spawned editor process ${child.pid ?? "(unknown pid)"} did not exit after SIGKILL.`);
+}
+
+async function waitForChildExit(exit, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      exit.then(() => true),
+      new Promise((resolveTimeout) => {
+        timer = setTimeout(() => resolveTimeout(false), timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

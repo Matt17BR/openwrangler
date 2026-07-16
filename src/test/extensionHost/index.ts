@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { chromium, type Page } from "playwright-core";
+import { chromium, type Locator, type Page } from "playwright-core";
 import { getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
@@ -42,6 +42,7 @@ interface TestApi {
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  declineRuntimeDependencyInstallation(): Promise<boolean>;
   setCodeForExport(code: string): void;
 }
 
@@ -686,6 +687,32 @@ async function connectToEditorWorkbench(): Promise<Page> {
   const workbench = pages.find((page) => page.url().includes("workbench"));
   assert.ok(workbench, "The editor CDP endpoint must expose its workbench page.");
   return workbench;
+}
+
+async function waitForVisibleEditorDialog(workbench: Page, text: string): Promise<{ page: Page; dialog: Locator }> {
+  const deadline = Date.now() + 10_000;
+  do {
+    const browser = workbench.context().browser();
+    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+    for (const page of pages) {
+      const dialog = page.locator(".monaco-dialog-box:visible").filter({ hasText: text }).last();
+      if ((await dialog.count()) > 0 && (await dialog.isVisible())) return { page, dialog };
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  const browser = workbench.context().browser();
+  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+  const diagnostics = await Promise.all(
+    pages.map(async (page) => ({
+      url: page.url(),
+      title: await page.title().catch(() => ""),
+      dialogs: await page.locator(".monaco-dialog-box:visible").allInnerTexts()
+    }))
+  );
+  throw new Error(
+    `Timed out waiting for the real editor dialog containing ${JSON.stringify(text)}: ${JSON.stringify(diagnostics)}`
+  );
 }
 
 async function captureWorkbenchScreenshot(page: Page, destination: string): Promise<void> {
@@ -2595,13 +2622,19 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
 async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscode.Uri, python: string): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-runtime-selection-"));
   const isolatedPython = path.join(directory, "python-without-site-packages");
+  const invocationLog = path.join(directory, "python-invocations.log");
   const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
-  writeFileSync(isolatedPython, `#!/bin/sh\nexec ${quotedPython} -I -S "$@"\n`);
+  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
+  writeFileSync(
+    isolatedPython,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`
+  );
   chmodSync(isolatedPython, 0o755);
+  const config = vscode.workspace.getConfiguration("openWrangler");
+  const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
 
   try {
     assert.equal(await vscode.commands.executeCommand("openWrangler.changeRuntime", isolatedPython), isolatedPython);
-    const config = vscode.workspace.getConfiguration("openWrangler");
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, isolatedPython);
 
     const rejected = await testing.request({
@@ -2675,18 +2708,89 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       assert.match(rejectedLegacyExcel.detail ?? "", /Install Runtime Dependencies/);
     }
     assert.equal(testing.runtimeRunning(), false, "Missing dependencies must fail before runtime startup.");
+    const invocationsBeforeDecline = readFileSync(invocationLog, "utf8");
+    const generationBeforeDecline = testing.runtimeGeneration();
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      const page = await connectToEditorWorkbench();
+      const commandOutcome = vscode.commands
+        .executeCommand<boolean>("openWrangler.installRuntimeDependencies", true)
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (error: unknown) => ({ status: "rejected" as const, error })
+        );
+      const earlyOutcome = await Promise.race([
+        commandOutcome.then((outcome) => ({ kind: "settled" as const, outcome })),
+        new Promise<{ kind: "pending" }>((resolve) => setTimeout(() => resolve({ kind: "pending" }), 500))
+      ]);
+      assert.equal(
+        earlyOutcome.kind,
+        "pending",
+        `The public dependency command must wait for its real modal, not settle from a caller argument: ${JSON.stringify(earlyOutcome)}`
+      );
+      const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
+        page,
+        "Install pandas, xlrd>=2.0.1"
+      );
+      try {
+        await confirmationPage.bringToFront();
+        const confirmationMessage = await confirmation.locator(".dialog-message-text").innerText();
+        const confirmationDetail = await confirmation.locator(".dialog-message-detail").innerText();
+        assert.equal(
+          confirmationMessage,
+          `Install pandas, xlrd>=2.0.1 into ${isolatedPython}?`,
+          "The real dependency confirmation must identify the exact requirements and interpreter."
+        );
+        assert.equal(confirmationDetail, "Open Wrangler never installs packages without this confirmation.");
+        assert.equal(
+          await confirmation.getByRole("button", { name: "Install", exact: true }).count(),
+          1,
+          "The dependency modal must expose exactly one affirmative Install action."
+        );
+        await confirmationPage.keyboard.press("Escape");
+        await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
+        const outcome = await commandOutcome;
+        if (outcome.status === "rejected") throw outcome.error;
+        assert.equal(
+          outcome.value,
+          false,
+          "A hostile truthy command argument must not bypass the real dependency confirmation."
+        );
+      } finally {
+        if (await confirmation.isVisible().catch(() => false)) {
+          await confirmationPage.bringToFront();
+          await confirmationPage.keyboard.press("Escape");
+          await confirmation.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+        }
+      }
+    } else {
+      assert.equal(
+        await testing.declineRuntimeDependencyInstallation(),
+        false,
+        "The gated non-UI test path must decline without installing dependencies."
+      );
+    }
     assert.equal(
-      await vscode.commands.executeCommand("openWrangler.installRuntimeDependencies", false),
-      false,
-      "A declined dependency prompt must not install or restart anything."
+      readFileSync(invocationLog, "utf8"),
+      invocationsBeforeDecline,
+      "Declining dependency installation must not invoke the selected Python environment."
     );
+    assert.equal(
+      testing.runtimeGeneration(),
+      generationBeforeDecline,
+      "Declining dependency installation must not restart the runtime."
+    );
+    assert.equal(testing.runtimeRunning(), false, "Declining dependency installation must not start the runtime.");
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, isolatedPython);
 
     assert.equal(await vscode.commands.executeCommand("openWrangler.clearRuntime"), true);
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, undefined);
     assert.equal(getSetting("pythonPath", ""), python, "Clearing the workspace override must reveal the fallback.");
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    try {
+      await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   }
 }
 

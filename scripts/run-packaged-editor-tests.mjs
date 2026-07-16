@@ -8,6 +8,7 @@ import {
   downloadEditorWithRetry,
   runEditorAcceptancePhase,
   writeEditorAcceptanceHarness,
+  writeEditorSettings,
   writeFakeJupyterExtension
 } from "./editor-acceptance.mjs";
 
@@ -78,6 +79,7 @@ for (const editor of candidates) {
     mkdirSync(workspace, { recursive: true });
     cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
     writeEditorAcceptanceHarness(profile);
+    writeEditorSettings(userData, { "window.dialogStyle": "custom" });
     const fakeJupyter = resolve(profile, "fake-jupyter");
     writeFakeJupyterExtension(fakeJupyter);
     const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];

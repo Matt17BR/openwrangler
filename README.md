@@ -109,7 +109,7 @@ The test suite asserts that Polars file sessions do not call `to_pandas()`, incl
 
 DuckDB file sessions remain native lazy `DuckDBPyRelation` plans for CSV, TSV, Parquet, and JSONL. Paging, filters, sorting, profiling, the complete transformation catalog, generated code, and CSV/Parquet exports execute through DuckDB without converting to Pandas, Polars, or Arrow.
 
-The selected Python environment must provide `duckdb>=1.4.5,<1.6`. The editable `python[dev]` install below includes that dependency; the packaged extension probes the selected interpreter and asks before installing anything. DuckDB support is currently file-backed: DuckDB Excel ingestion, browsing tables inside `.duckdb` database files, and DuckDB notebook variables/formatters are explicitly deferred. Excel remains available through Polars or Pandas, and notebook sessions remain Pandas/Polars.
+The selected Python environment must provide `duckdb>=1.4.5,<1.6`. The editable `python[dev]` install below includes that dependency; the packaged extension probes the selected interpreter and always shows a modal naming the exact packages and interpreter before installing anything. Command arguments cannot bypass that confirmation. DuckDB support is currently file-backed: DuckDB Excel ingestion, browsing tables inside `.duckdb` database files, and DuckDB notebook variables/formatters are explicitly deferred. Excel remains available through Polars or Pandas, and notebook sessions remain Pandas/Polars.
 
 ## PySpark Status
 
@@ -175,4 +175,4 @@ Open Wrangler currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-The checked-in Data Wrangler 1.24.2 clean-room behavior matrix is the release gate. Several rows still require complete structural-operation installed-editor evidence, Restricted Mode, released-Jupyter, editor first-grid timing, or cross-platform acceptance named there, so this build remains an explicitly incomplete preview. Intentionally deferred scope is listed separately in `docs/feature-parity.md`.
+The checked-in Data Wrangler 1.24.2 clean-room behavior matrix is the release gate. Several rows still require packaged import-error and legacy-Excel interaction, Restricted Mode, released-Jupyter and coordinator-owned saved-output sessions, editor first-grid timing, or cross-platform acceptance named there, so this build remains an explicitly incomplete preview. Intentionally deferred scope is listed separately in `docs/feature-parity.md`.
