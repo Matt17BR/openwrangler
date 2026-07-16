@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 import { chromium } from "playwright-core";
 import { getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
-import { OPEN_WRANGLER_MIME_V1, OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
+import { OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -64,9 +64,6 @@ export async function run(): Promise<void> {
   if (testPython) {
     await vscode.workspace
       .getConfiguration("openWrangler")
-      .update("pythonPath", undefined, vscode.ConfigurationTarget.Global);
-    await vscode.workspace
-      .getConfiguration("dataExplorer")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   }
 
@@ -95,8 +92,6 @@ export async function run(): Promise<void> {
     "openWrangler.reportIssue"
   ]) {
     assert.ok(commands.includes(command), `Expected registered command: ${command}`);
-    const legacyCommand = command.replace("openWrangler.", "dataExplorer.");
-    assert.ok(commands.includes(legacyCommand), `Expected compatibility command: ${legacyCommand}`);
   }
 
   const contributions = extension.packageJSON.contributes as {
@@ -151,10 +146,7 @@ export async function run(): Promise<void> {
       }
     ]
   );
-  assert.deepEqual(contributions.notebookRenderer?.[0]?.mimeTypes, [
-    "application/vnd.data-explorer.viewer.v1+json",
-    "application/vnd.data-explorer.viewer.v2+json"
-  ]);
+  assert.deepEqual(contributions.notebookRenderer?.[0]?.mimeTypes, ["application/vnd.openwrangler.viewer.v2+json"]);
   assert.ok(
     extension.packageJSON.contributes.walkthroughs?.some(
       (walkthrough: { id?: string }) => walkthrough.id === "gettingStarted"
@@ -414,19 +406,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     ]
   };
   const schema = [{ id: "c:0", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }];
-  const legacyPayload = {
-    metadata: {
-      sessionId: "legacy",
-      backend: "pandas",
-      source: { kind: "notebookOutput", label: "legacy frame" },
-      shape: { rows: 1, columns: 1 },
-      filteredShape: { rows: 1, columns: 1 },
-      schema,
-      filterModel: { filters: [], sort: [] }
-    },
-    page,
-    summaries: []
-  };
   const currentPayload = {
     mimeVersion: 2,
     metadata: {
@@ -467,7 +446,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
               metadata: {},
               data: {
                 "text/plain": ["Open Wrangler saved output"],
-                [OPEN_WRANGLER_MIME_V1]: legacyPayload,
                 [OPEN_WRANGLER_MIME_V2]: currentPayload
               }
             }
@@ -486,7 +464,6 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     const notebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
     await vscode.window.showNotebookDocument(notebook);
     const outputMimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
-    assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V1), "Saved MIME v1 output must remain readable.");
     assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
 
     const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
@@ -1245,14 +1222,8 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
       const priorClipboard = await vscode.env.clipboard.readText();
       testing.setCodeForExport(editedCode);
-      await vscode.commands.executeCommand("openWrangler.copyCode");
-      let copied = false;
-      const clipboardDeadline = Date.now() + 5_000;
-      while (!copied && Date.now() < clipboardDeadline) {
-        copied = (await vscode.env.clipboard.readText()) === editedCode;
-        if (!copied) await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      assert.ok(copied, `${backend} must copy the edited code buffer.`);
+      const copiedCode = await vscode.commands.executeCommand<string>("openWrangler.copyCode");
+      assert.equal(copiedCode, editedCode, `${backend} must copy the edited code buffer.`);
       if ((await vscode.env.clipboard.readText()) === editedCode) {
         await vscode.env.clipboard.writeText(priorClipboard);
       }

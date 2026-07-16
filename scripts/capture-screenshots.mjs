@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pixelmatch from "pixelmatch";
@@ -27,9 +27,14 @@ const python =
 const chrome = process.env.CHROME_BIN ?? chromium.executablePath();
 const verify = process.argv.includes("--verify");
 
+rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir, { recursive: true });
 mkdirSync(docsDir, { recursive: true });
-if (verify) mkdirSync(actualDir, { recursive: true });
+if (verify) {
+  rmSync(actualDir, { recursive: true, force: true });
+  rmSync(diffDir, { recursive: true, force: true });
+  mkdirSync(actualDir, { recursive: true });
+}
 
 const payloads = JSON.parse(
   execFileSync(
@@ -186,22 +191,13 @@ mime_payload = None
 for cell in notebook.cells:
     for output in cell.get("outputs", []):
         data = output.get("data", {})
-        if "application/vnd.data-explorer.viewer.v2+json" in data:
-            mime_payload = data["application/vnd.data-explorer.viewer.v2+json"]
-            break
-        if "application/vnd.data-explorer.viewer.v1+json" in data:
-            mime_payload = data["application/vnd.data-explorer.viewer.v1+json"]
+        if "application/vnd.openwrangler.viewer.v2+json" in data:
+            mime_payload = data["application/vnd.openwrangler.viewer.v2+json"]
             break
     if mime_payload:
         break
 if mime_payload is None:
     raise RuntimeError("Notebook did not emit an Open Wrangler MIME payload")
-legacy_mime_payload = dict(mime_payload)
-legacy_mime_payload.pop("mimeVersion", None)
-legacy_mime_payload["metadata"] = {
-    key: mime_payload["metadata"][key]
-    for key in ("sessionId", "backend", "source", "shape", "filteredShape", "schema", "filterModel", "stats")
-}
 
 print(json.dumps({
     "opened": opened,
@@ -219,7 +215,6 @@ print(json.dumps({
     "empty": empty,
     "unicode": unicode,
     "notebook": mime_payload,
-    "legacyNotebook": legacy_mime_payload,
 }))
 `
     ],
@@ -259,11 +254,6 @@ writeWebviewHarness(
   "filter-panel.png"
 );
 writeNotebookHarness("notebook-preview.html", payloads.notebook, "notebook-preview.png");
-writeNotebookHarness(
-  "notebook-v1-preview.html",
-  payloads.legacyNotebook,
-  "acceptance/notebook-v1-compat-dark-1280.png"
-);
 writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages);
 writeWebviewHarness("empty-state.html", payloads.empty, {}, "acceptance/empty-state-dark-1280.png");
 writeWebviewHarness("unicode-state.html", payloads.unicode, {}, "acceptance/unicode-state-dark-1280.png");

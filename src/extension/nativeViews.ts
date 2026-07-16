@@ -148,9 +148,7 @@ export function registerNativeViews(
     const hasDraft = Boolean(snapshot?.metadata.draftStep);
     const canChangePlan = Boolean(snapshot && !snapshot.metadata.draftStep && snapshot.metadata.steps.length > 0);
     void vscode.commands.executeCommand("setContext", "openWrangler.hasDraft", hasDraft);
-    void vscode.commands.executeCommand("setContext", "dataExplorer.hasDraft", hasDraft);
     void vscode.commands.executeCommand("setContext", "openWrangler.canChangePlan", canChangePlan);
-    void vscode.commands.executeCommand("setContext", "dataExplorer.canChangePlan", canChangePlan);
   };
   updatePlanContexts(coordinator.activeSession());
   const contextSubscription = coordinator.onDidChangeActiveSession(updatePlanContexts);
@@ -192,6 +190,7 @@ export function registerNativeViews(
       }
       await vscode.env.clipboard.writeText(code);
       void vscode.window.showInformationMessage("Open Wrangler code copied to the clipboard.");
+      return code;
     }),
     vscode.commands.registerCommand("openWrangler.exportCode", async (providedDestination?: unknown) => {
       if (!(await requireTrustedWorkspace("export code"))) return;

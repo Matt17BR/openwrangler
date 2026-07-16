@@ -6,7 +6,6 @@ import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
 import { registerNativeViews } from "./nativeViews";
-import { registerLegacyCommandAliases } from "./identity";
 
 export interface OpenWranglerTestApi {
   request: ReturnType<SessionCoordinator["createBridge"]>["request"];
@@ -34,7 +33,6 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
   registerRuntimeCommands(context, bridge);
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinatedBridge, coordinator);
-  registerLegacyCommandAliases(context);
 
   if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") {
     return {

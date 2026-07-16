@@ -4,7 +4,8 @@ import type { DataBackend, SessionSource } from "../../shared/protocol";
 import type { OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
-import { CUSTOM_EDITOR_ID, LEGACY_CUSTOM_EDITOR_ID } from "../identity";
+
+const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "./importOptions";
 
 export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEditorProvider {
@@ -35,10 +36,7 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       retainContextWhenHidden: true
     }
   };
-  context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, providerOptions),
-    vscode.window.registerCustomEditorProvider(LEGACY_CUSTOM_EDITOR_ID, provider, providerOptions)
-  );
+  context.subscriptions.push(vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, providerOptions));
 
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.openFile", async (uri?: vscode.Uri) => {

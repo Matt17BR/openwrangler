@@ -4,7 +4,7 @@ Open Wrangler is an open-source dataframe wrangler for VS Code-compatible editor
 
 Open Wrangler is an independent, clean-room project explicitly inspired by Microsoft Data Wrangler for VS Code and deliberately targets parity with its documented viewing and cleaning workflows. It does not copy Microsoft code or assets. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or add backend-native capabilities such as first-class Polars support. Open Wrangler exists to make that workflow open, hackable, portable across VS Code-compatible editors, and engine-friendly from the start.
 
-The project was called Data Explorer through `0.2.0-alpha.1`. The renamed extension package is `Matt17BR.openwrangler`; uninstall the old package before installing Open Wrangler because both versions intentionally expose compatibility commands. Canonical commands and settings now use `openWrangler.*`. The prior `dataExplorer.*` command IDs, settings, custom-editor ID, and saved `application/vnd.data-explorer...` notebook outputs remain compatible. VS Code keeps workspace state private to an extension ID, so cleaning plans saved by the old package cannot be imported automatically after the package-ID rename; reopen the source and recreate those plans in Open Wrangler.
+The extension package identity is `Matt17BR.openwrangler`. Commands, settings, editor views, notebook output, runtime modules, and release artifacts all use the Open Wrangler name and `openWrangler.*` namespace.
 
 ## Screenshots
 
@@ -44,7 +44,7 @@ The full-workbench screenshots come from the real packaged VSIX installed into i
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
 - Clipboard and Python-script code export plus atomic cleaned-data export to CSV or Parquet. Data export uses the committed plan, excludes view-only filters, and never overwrites the source.
 - Jupyter variable viewer integration for Pandas and Polars dataframe names, with the full window reading from the live kernel.
-- MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters, while saved MIME v1 outputs remain renderable.
+- MIME v2 notebook snapshots and permission-aware automatic Pandas/Polars formatters.
 - Notebook-origin sessions can insert the edited generated cleaning function back into the exact originating notebook.
 
 ## Example Usage
@@ -84,7 +84,7 @@ df = pl.read_csv("sales.csv")
 show(df, label="sales")
 ```
 
-This emits `application/vnd.data-explorer.viewer.v2+json`, which the bundled notebook renderer displays as a compact, typed grid preview. Saved `application/vnd.data-explorer.viewer.v1+json` output remains supported. Pass `variable_name="df"` when the **Open in Open Wrangler** button should reconnect the snapshot to a live kernel variable; otherwise it opens the immutable saved snapshot.
+This emits `application/vnd.openwrangler.viewer.v2+json`, which the bundled notebook renderer displays as a compact, typed grid preview. Pass `variable_name="df"` when the **Open in Open Wrangler** button should reconnect the snapshot to a live kernel variable; otherwise it opens the immutable saved snapshot.
 
 ## Polars Support
 

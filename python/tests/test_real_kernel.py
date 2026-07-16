@@ -45,7 +45,7 @@ __ow_notebook.register_formatters()
     )
     _, pandas_mime = _execute_with_data(client, "pandas_frame")
     _, polars_mime = _execute_with_data(client, "polars_frame")
-    mime_type = "application/vnd.data-explorer.viewer.v2+json"
+    mime_type = "application/vnd.openwrangler.viewer.v2+json"
     assert pandas_mime[mime_type]["metadata"]["backend"] == "pandas"
     assert polars_mime[mime_type]["metadata"]["backend"] == "polars"
     pandas_opened = _dispatch(

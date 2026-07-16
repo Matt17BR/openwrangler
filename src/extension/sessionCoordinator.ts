@@ -17,7 +17,6 @@ import {
   decodePersistedSession,
   persistedStateFromMetadata,
   persistenceKey,
-  LEGACY_SESSION_STORAGE_KEY,
   SESSION_STORAGE_KEY,
   type PersistedSessionState
 } from "./sessionPersistence";
@@ -340,8 +339,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private loadPersistedSession(request: OpenSessionRequest): PersistedSessionState | undefined {
     const key = persistenceKey(request.source);
     const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
-    const legacy = this.workspaceState?.get<Record<string, unknown>>(LEGACY_SESSION_STORAGE_KEY, {});
-    return decodePersistedSession(stored?.[key] ?? legacy?.[key]);
+    return decodePersistedSession(stored?.[key]);
   }
 
   private async persistSession(session: CoordinatedSession): Promise<void> {

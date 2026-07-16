@@ -6,8 +6,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Renamed the product, VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts from Data Explorer to Open Wrangler.
-- Added canonical `openWrangler.*` commands and settings while retaining `dataExplorer.*`, the prior custom-editor ID, and both existing notebook MIME identifiers as compatibility interfaces. Documented that VS Code does not expose the old package's private workspace state to the renamed extension ID.
+- Established the Open Wrangler identity across the VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts.
+- Consolidated commands, settings, custom-editor state, and notebook rendering on the canonical `openWrangler.*` namespace and MIME v2 identifier.
 - Refreshed the product description to state the open-source dataframe-wrangling purpose directly and documented the project's independent inspiration from Microsoft Data Wrangler.
 
 ## [0.2.0-alpha.1] - 2026-07-15
@@ -32,13 +32,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Workspace-scoped persistence and validated replay for applied steps, an optional draft, and independent viewing state.
 - Editable-code clipboard/script export and atomic native Pandas/Polars cleaned-data export to CSV or Parquet.
 - Deterministic by-example synthesis with ranked expression programs, ambiguity warnings, native engine execution, and generated code.
-- Complete notebook MIME v2 snapshots, saved MIME v1 normalization, permission-aware kernel formatters, and originating-notebook code insertion.
+- Complete notebook MIME v2 snapshots, permission-aware kernel formatters, and originating-notebook code insertion.
 - Generated command, setting, operation, protocol, and MIME references with byte-for-byte CI drift detection.
 - Source reopening and Getting Started walkthrough commands.
 - Private row lineage and deterministic column identities for accurate structural diffs across sorting, renaming, reordering, grouping, latest-step edits, and duplicate Pandas labels.
 - Restart-aware Jupyter kernel lifecycle with bounded execution, active cancellation, one-shot recovery, and real Pandas/Polars formatter/transport acceptance.
 - Isolated installed-VSIX acceptance for VS Code and Cursor, including a live packaged Polars session and source reopening.
-- Playwright/axe WCAG scanning and pixel-diff visual acceptance across 23 production-bundle harnesses, including high-contrast light, Unicode, empty, loading, error, and recovery states.
+- Playwright/axe WCAG scanning and pixel-diff visual acceptance across 22 production-bundle harnesses, including high-contrast light, Unicode, empty, loading, error, and recovery states.
 - Strict release-size Polars benchmarks with JSON evidence, session-cleanup assertions, rendered cached/uncached scroll gates, and scheduled CI regression checks.
 - Cross-engine file acceptance for quoted/headerless CSV, TSV, JSONL, Parquet, and named/indexed Excel sheets plus missing/malformed diagnostics.
 - Native nested-Polars and Pandas/NumPy nullable typed-cell fixtures covering large integers, decimals, time zones, containers, binary, durations, NaN/infinity, zero-column frames, and long Unicode values.
@@ -50,7 +50,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Installed VS Code/Cursor acceptance for representative steps from every operation group on Pandas and Polars, including preview/diff/code/apply, deterministic by-example confirmation, custom-code crash replay, immutable sources, and leak-free disposal.
 - Installed VS Code/Cursor acceptance for native Pandas/Polars paging, advanced OR filters, multi-column sorts, progressive summaries, exact stats, searched values, view/plan separation, immutable sources, and leak-free disposal.
 - Installed VS Code/Cursor acceptance for edited Code Preview clipboard/script output and explicit runtime change, dependency diagnostics, declined installation, and fallback clearing.
-- Remote-compatible kernel runtime transfer plus installed VS Code/Cursor notebook acceptance for saved MIME v1/v2 output, live Pandas/Polars variables, permission denial, kernel replacement/replay, and edited originating-notebook insertion.
+- Remote-compatible kernel runtime transfer plus installed VS Code/Cursor notebook acceptance for saved MIME v2 output, live Pandas/Polars variables, permission denial, kernel replacement/replay, and edited originating-notebook insertion.
 - Real installed-VSIX workbench captures in VS Code and Cursor across dark, light, and high-contrast themes at 200% zoom, including the original Activity Bar/gallery identity and native views.
 
 ### Changed

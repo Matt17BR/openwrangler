@@ -51,22 +51,9 @@
 | `openWrangler.fetchBlockSize`      | `number`  | `200`                                          | —                                  | Number of rows fetched for each virtual grid block.                                                                                                 |
 | `openWrangler.pageSize`            | `number`  | `200`                                          | —                                  | Deprecated alias for fetchBlockSize.                                                                                                                |
 | `openWrangler.panelRevealBehavior` | `string`  | `"onDraft"`                                    | `"onDraft"`, `"always"`, `"never"` | When to reveal the bottom-panel Code Preview.                                                                                                       |
-| `openWrangler.renderer.enabled`    | `boolean` | `true`                                         | —                                  | Enable Open Wrangler notebook MIME renderer messaging. Saved v1 and v2 outputs remain readable.                                                     |
+| `openWrangler.renderer.enabled`    | `boolean` | `true`                                         | —                                  | Enable Open Wrangler notebook MIME v2 renderer messaging.                                                                                           |
 | `openWrangler.pythonPath`          | `string`  | `""`                                           | —                                  | Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter. |
 | `openWrangler.requestTimeoutMs`    | `number`  | `30000`                                        | —                                  | Maximum runtime request duration before recovery restarts and replays the session.                                                                  |
-| `dataExplorer.defaultBackend`      | `string`  | `"auto"`                                       | `"auto"`, `"polars"`, `"pandas"`   | undefined                                                                                                                                           |
-| `dataExplorer.fileStartMode`       | `string`  | `"editing"`                                    | `"editing"`, `"viewing"`           | undefined                                                                                                                                           |
-| `dataExplorer.notebookStartMode`   | `string`  | `"viewing"`                                    | `"viewing"`, `"editing"`           | undefined                                                                                                                                           |
-| `dataExplorer.enabledFileTypes`    | `array`   | `["csv","tsv","parquet","jsonl","xlsx","xls"]` | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.insightsOnOpen`      | `boolean` | `true`                                         | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.filterMode`          | `string`  | `"basic"`                                      | `"basic"`, `"advanced"`            | undefined                                                                                                                                           |
-| `dataExplorer.defaultColumnWidth`  | `number`  | `190`                                          | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.fetchBlockSize`      | `number`  | `200`                                          | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.pageSize`            | `number`  | `200`                                          | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.panelRevealBehavior` | `string`  | `"onDraft"`                                    | `"onDraft"`, `"always"`, `"never"` | undefined                                                                                                                                           |
-| `dataExplorer.renderer.enabled`    | `boolean` | `true`                                         | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.pythonPath`          | `string`  | `""`                                           | —                                  | undefined                                                                                                                                           |
-| `dataExplorer.requestTimeoutMs`    | `number`  | `30000`                                        | —                                  | undefined                                                                                                                                           |
 
 ## Transformation operations
 
@@ -134,5 +121,4 @@ Canonical schema: `protocol/openwrangler.v2.schema.json`. Protocol version: `2`.
 
 ## Notebook MIME types
 
-- `application/vnd.data-explorer.viewer.v1+json`
-- `application/vnd.data-explorer.viewer.v2+json`
+- `application/vnd.openwrangler.viewer.v2+json`

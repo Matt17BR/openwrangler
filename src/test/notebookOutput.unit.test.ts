@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   OPEN_WRANGLER_MIME,
-  OPEN_WRANGLER_MIME_V1,
   OPEN_WRANGLER_MIME_V2,
   normalizeNotebookOutputPayload,
   notebookPayloadAsOpened
@@ -42,36 +41,17 @@ const metadata = {
   steps: []
 };
 
-describe("notebook output compatibility", () => {
-  it("uses MIME v2 for new outputs", () => {
+describe("notebook output", () => {
+  it("uses the canonical MIME v2 payload", () => {
     expect(OPEN_WRANGLER_MIME).toBe(OPEN_WRANGLER_MIME_V2);
-    expect(OPEN_WRANGLER_MIME_V1).not.toBe(OPEN_WRANGLER_MIME_V2);
     const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [] });
     expect(normalized?.mimeVersion).toBe(2);
     expect(notebookPayloadAsOpened(normalized!).kind).toBe("sessionOpened");
   });
 
-  it("upgrades saved MIME v1 metadata without mutating its snapshot", () => {
-    const legacy = normalizeNotebookOutputPayload({
-      metadata: {
-        sessionId: "legacy",
-        backend: "pandas",
-        source: { kind: "notebookOutput", label: "old frame" },
-        shape: { rows: 1, columns: 1 },
-        filteredShape: { rows: 1, columns: 1 },
-        schema: metadata.schema,
-        filterModel: { filters: [], sort: [] }
-      },
-      page,
-      summaries: []
-    });
-    expect(legacy?.mimeVersion).toBe(1);
-    expect(legacy?.metadata).toMatchObject({ protocolVersion: 2, revision: 0, mode: "viewing", steps: [] });
-    expect(legacy?.metadata.capabilities.editable).toBe(false);
-  });
-
   it("rejects malformed and unknown-version outputs", () => {
     expect(normalizeNotebookOutputPayload({ mimeVersion: 3, metadata, page, summaries: [] })).toBeUndefined();
+    expect(normalizeNotebookOutputPayload({ metadata, page, summaries: [] })).toBeUndefined();
     expect(normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page: {}, summaries: [] })).toBeUndefined();
   });
 });
