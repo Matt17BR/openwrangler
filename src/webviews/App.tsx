@@ -1254,7 +1254,8 @@ export function App() {
           </header>
           <details className="draftCode" open>
             <summary>
-              Generated {metadata.backend === "pandas" ? "Pandas" : "Polars"} code · edit in Code Preview panel
+              Generated {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
+              code · edit in Code Preview panel
             </summary>
             <pre tabIndex={0} aria-label="Generated Python code preview">
               <code>{generatedCode}</code>

@@ -4,9 +4,9 @@ import { promisify } from "node:util";
 import * as vscode from "vscode";
 import { getSetting } from "./configuration";
 import { resolvePythonExecutable } from "./pythonPath";
-import { isSupportedPythonVersion } from "./pythonEnvironmentModel";
+import { isSupportedPythonVersion, type PythonDependency } from "./pythonEnvironmentModel";
 
-export { isSupportedPythonVersion, requiredModules } from "./pythonEnvironmentModel";
+export { automaticBackends, isSupportedPythonVersion, requiredDependencies } from "./pythonEnvironmentModel";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,19 +74,52 @@ export async function resolvePythonEnvironment(
   throw new Error(`No compatible Python 3.10-3.14 interpreter was found. ${failures.join(" ")}`);
 }
 
-export async function probeDependencies(executable: string, modules: readonly string[]): Promise<DependencyProbe> {
-  if (modules.length === 0) return { missing: [], available: [] };
+export async function probeDependencies(
+  executable: string,
+  dependencies: readonly PythonDependency[]
+): Promise<DependencyProbe> {
+  if (dependencies.length === 0) return { missing: [], available: [] };
   const program = [
-    "import importlib.util,json",
-    `mods=${JSON.stringify(modules)}`,
-    "print(json.dumps({m: importlib.util.find_spec(m) is not None for m in mods}))"
-  ].join(";");
+    "import importlib.metadata,importlib.util,json",
+    `deps=${JSON.stringify(dependencies)}`,
+    "out={}",
+    "for d in deps:",
+    " found=importlib.util.find_spec(d['importModule']) is not None",
+    " try: version=importlib.metadata.version(d['distribution']) if found else None",
+    " except importlib.metadata.PackageNotFoundError: version=None",
+    " out[d['importModule']]={'found':found,'version':version}",
+    "print(json.dumps(out))"
+  ].join("\n");
   const { stdout } = await execFileAsync(executable, ["-c", program], { timeout: 10_000 });
-  const result = JSON.parse(stdout.trim()) as Record<string, boolean>;
-  return {
-    missing: modules.filter((module) => !result[module]),
-    available: modules.filter((module) => result[module])
+  const result = JSON.parse(stdout.trim()) as Record<string, { found: boolean; version?: string }>;
+  const supported = (dependency: PythonDependency): boolean => {
+    const observed = result[dependency.importModule];
+    if (!observed?.found) return false;
+    if (dependency.minimumVersion && compareVersions(observed.version, dependency.minimumVersion) < 0) return false;
+    if (
+      dependency.maximumVersionExclusive &&
+      compareVersions(observed.version, dependency.maximumVersionExclusive) >= 0
+    ) {
+      return false;
+    }
+    return true;
   };
+  return {
+    missing: dependencies.filter((dependency) => !supported(dependency)).map((dependency) => dependency.installSpec),
+    available: dependencies.filter(supported).map((dependency) => dependency.importModule)
+  };
+}
+
+function compareVersions(observed: string | undefined, expected: string): number {
+  if (!observed) return -1;
+  const parts = (value: string): number[] => value.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const left = parts(observed);
+  const right = parts(expected);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 async function probeEnvironment(executable: string, source: PythonEnvironment["source"]): Promise<PythonEnvironment> {

@@ -27,7 +27,7 @@ describe("SessionCoordinator", () => {
       sort: [{ column: "sales", direction: "desc", nulls: "last" }]
     };
     const stored = {
-      [persistenceKey(openRequest.source)]: { steps: [], filterModel }
+      [persistenceKey(openRequest.source, "polars")]: { backend: "polars", steps: [], filterModel }
     };
     const workspaceState = {
       get: vi.fn((key: string) => (key === SESSION_STORAGE_KEY ? stored : undefined)),
@@ -417,6 +417,45 @@ describe("SessionCoordinator", () => {
       "close-runtime-1",
       "interactive-page-2"
     ]);
+  });
+
+  it("pins an automatically selected backend for crash replay", async () => {
+    const autoRequest = { ...openRequest, backend: undefined };
+    const openedBackends: Array<string | undefined> = [];
+    let openCount = 0;
+    let pageAttempts = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        openedBackends.push(request.backend);
+        return openedResponse(`duckdb-runtime-${openCount}`, "duckdb");
+      }
+      if (request.kind === "getPage") {
+        if (request.limit === 1) return pageResponse(request, `duckdb-runtime-${openCount}`, "duckdb");
+        pageAttempts += 1;
+        if (pageAttempts === 1) throw new Error("runtime crashed");
+        return pageResponse(request, `duckdb-runtime-${openCount}`, "duckdb");
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(autoRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the automatic session to open.");
+
+    const recovered = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "duckdb-recovery-page",
+      offset: 0,
+      limit: 100,
+      filterModel: opened.metadata.filterModel
+    });
+
+    expect(recovered).toMatchObject({ kind: "page", metadata: { backend: "duckdb" } });
+    expect(openedBackends).toEqual([undefined, "duckdb"]);
   });
 
   it("rejects a background response from the runtime replaced by concurrent recovery", async () => {
@@ -1374,8 +1413,8 @@ describe("SessionCoordinator", () => {
       filters: [{ column: "sales", type: "integer", predicates: [{ kind: "predicate", operator: "gt", value: 3 }] }],
       sort: []
     };
-    const key = persistenceKey(openRequest.source);
-    const savedA = { steps: [], filterModel: filterA };
+    const key = persistenceKey(openRequest.source, "polars");
+    const savedA = { backend: "polars", steps: [], filterModel: filterA };
     let stored: Record<string, unknown> = { [key]: savedA };
     const firstUpdate = deferred<void>();
     let updateCount = 0;
@@ -1584,7 +1623,7 @@ describe("SessionCoordinator", () => {
 
     expect(update).toHaveBeenCalledOnce();
     expect(activeChanges).toHaveBeenCalledOnce();
-    expect(stored[persistenceKey(openRequest.source)]).toMatchObject({
+    expect(stored[persistenceKey(openRequest.source, "polars")]).toMatchObject({
       filterModel: { ...changedFilter, logic: "and" }
     });
   });
@@ -1782,12 +1821,15 @@ describe("SessionCoordinator", () => {
   });
 });
 
-function openedResponse(sessionId = "runtime-session"): SessionOpenedResponse {
+function openedResponse(
+  sessionId = "runtime-session",
+  backend: SessionMetadata["backend"] = "polars"
+): SessionOpenedResponse {
   const metadata: SessionMetadata = {
     protocolVersion: 2,
     sessionId,
     revision: 0,
-    backend: "polars",
+    backend,
     mode: "editing",
     source: openRequest.source,
     capabilities: {
@@ -1814,9 +1856,10 @@ function openedResponse(sessionId = "runtime-session"): SessionOpenedResponse {
 
 function pageResponse(
   request: Extract<OpenWranglerRequest, { kind: "getPage" }>,
-  sessionId = "runtime-session"
+  sessionId = "runtime-session",
+  backend: SessionMetadata["backend"] = "polars"
 ): Extract<OpenWranglerResponse, { kind: "page" }> {
-  const opened = openedResponse(sessionId);
+  const opened = openedResponse(sessionId, backend);
   return {
     kind: "page",
     revision: opened.metadata.revision,

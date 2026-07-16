@@ -18,6 +18,7 @@ Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/py
 
 - Keep a pull request limited to one documented milestone or issue.
 - Add or update tests with every behavior change.
+- Keep Pandas, Polars, and DuckDB implementations native. An operation change must include live-runtime and executable generated-code coverage for every editing-capable engine.
 - Update the documentation listed in the `AGENTS.md` matrix.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.

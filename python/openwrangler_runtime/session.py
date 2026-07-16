@@ -615,7 +615,7 @@ class SessionManager:
             interruptible_sessions = [
                 session
                 for session in self.sessions.values()
-                if session.engine.capabilities.supports_interrupt and not session.disposed
+                if session.engine.capabilities.supports_shutdown_interrupt and not session.disposed
             ]
 
         # Interrupt must not wait for the session lock: the work that needs to be
@@ -893,7 +893,7 @@ class SessionManager:
         return {
             "editable": editable,
             "lazy": source_kind == "file" and extension.endswith(tuple(engine_capabilities.lazy_file_extensions)),
-            "cancel": engine_capabilities.supports_interrupt,
+            "cancel": engine_capabilities.supports_request_cancellation,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,
             "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
             "notebookInsert": source_kind == "notebookVariable",

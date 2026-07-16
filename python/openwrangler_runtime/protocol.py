@@ -85,8 +85,8 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("source.kind is not supported.")
         if not isinstance(source.get("label"), str) or not source["label"]:
             raise ProtocolError("source.label must be a non-empty string.")
-        if request.get("backend") not in {None, "pandas", "polars"}:
-            raise ProtocolError("backend must be pandas or polars.")
+        if request.get("backend") not in {None, "pandas", "polars", "duckdb"}:
+            raise ProtocolError("backend must be pandas, polars, or duckdb.")
         if request.get("mode") not in {None, "viewing", "editing"}:
             raise ProtocolError("mode must be viewing or editing.")
         requested_session_id = request.get("requestedSessionId")

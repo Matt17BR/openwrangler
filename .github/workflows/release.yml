@@ -6,10 +6,74 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release_metadata.outputs.version }}
+      prerelease: ${{ steps.release_metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - id: release_metadata
+        name: Validate release tag and manifest channel
+        shell: node {0}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          const { appendFileSync, readFileSync } = require("node:fs");
+
+          const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+          const numericVersion = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
+          if (typeof manifest.version !== "string" || !numericVersion.test(manifest.version)) {
+            throw new Error(
+              `Release versions must use Marketplace-compatible major.minor.patch numbers; received ${String(manifest.version)}`
+            );
+          }
+          if (manifest.preview !== undefined && typeof manifest.preview !== "boolean") {
+            throw new Error('The optional package.json "preview" release-channel flag must be boolean.');
+          }
+
+          const expectedTag = `v${manifest.version}`;
+          if (process.env.RELEASE_TAG !== expectedTag) {
+            throw new Error(`Release tag ${process.env.RELEASE_TAG} does not match package version ${expectedTag}.`);
+          }
+
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${manifest.version}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `prerelease=${manifest.preview === true}\n`);
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
+      - name: Create canonical checksum
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { readFileSync, writeFileSync } = require("node:fs");
+
+          const digest = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
+          writeFileSync("openwrangler.vsix.sha256", `${digest}  openwrangler.vsix\n`);
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openwrangler-release
+          path: |
+            openwrangler.vsix
+            openwrangler.vsix.sha256
+          if-no-files-found: error
+          compression-level: 0
+
   validate:
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -34,15 +98,34 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
+      - uses: actions/download-artifact@v8
+        with:
+          name: openwrangler-release
+          path: release
+      - name: Verify canonical checksum
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { readFileSync } = require("node:fs");
+
+          const expectedLine = readFileSync("release/openwrangler.vsix.sha256", "utf8").trim();
+          const match = /^([0-9a-f]{64})\s+\*?openwrangler\.vsix$/iu.exec(expectedLine);
+          if (!match) throw new Error(`Malformed canonical checksum: ${expectedLine}`);
+          const actual = createHash("sha256")
+            .update(readFileSync("release/openwrangler.vsix"))
+            .digest("hex");
+          if (actual !== match[1].toLowerCase()) {
+            throw new Error(`Canonical VSIX checksum mismatch: expected ${match[1]}, received ${actual}`);
+          }
       - run: npm run check
       - run: npm test
       - run: npm run license:check
-      - run: npm run package -- --out openwrangler.vsix
-      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: npm run verify:vsix -- release/openwrangler.vsix
 
-  release:
-    needs: validate
+  release-acceptance:
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -54,15 +137,77 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: npm ci
+      - run: npx playwright-core install --with-deps chromium
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: npm run package -- --out openwrangler.vsix
-      - run: npm run verify:vsix -- openwrangler.vsix
-      - run: sha256sum openwrangler.vsix > openwrangler.vsix.sha256
+      - uses: actions/download-artifact@v8
+        with:
+          name: openwrangler-release
+          path: release
+      - name: Verify canonical checksum
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { readFileSync } = require("node:fs");
+
+          const expectedLine = readFileSync("release/openwrangler.vsix.sha256", "utf8").trim();
+          const match = /^([0-9a-f]{64})\s+\*?openwrangler\.vsix$/iu.exec(expectedLine);
+          if (!match) throw new Error(`Malformed canonical checksum: ${expectedLine}`);
+          const actual = createHash("sha256")
+            .update(readFileSync("release/openwrangler.vsix"))
+            .digest("hex");
+          if (actual !== match[1].toLowerCase()) {
+            throw new Error(`Canonical VSIX checksum mismatch: expected ${match[1]}, received ${actual}`);
+          }
+      - run: npm run verify:vsix -- release/openwrangler.vsix
+      - run: npm run test:webview-acceptance
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-webview-visual-evidence
+          path: |
+            tmp/screenshots-actual/
+            tmp/screenshots-diff/
+          if-no-files-found: ignore
+      - run: npm run test:coverage
+      - run: npm audit --omit=dev
+      - run: python -m pip_audit
+      - run: npm run benchmark:runtime
+      - run: xvfb-run -a npm run test:packaged-editors -- release/openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          VSCODE_TEST_VERSION: stable
+
+  release:
+    needs: [build, validate, release-acceptance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: openwrangler-release
+          path: release
+      - name: Verify release checksum
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { readFileSync } = require("node:fs");
+
+          const expectedLine = readFileSync("release/openwrangler.vsix.sha256", "utf8").trim();
+          const match = /^([0-9a-f]{64})\s+\*?openwrangler\.vsix$/iu.exec(expectedLine);
+          if (!match) throw new Error(`Malformed canonical checksum: ${expectedLine}`);
+          const actual = createHash("sha256")
+            .update(readFileSync("release/openwrangler.vsix"))
+            .digest("hex");
+          if (actual !== match[1].toLowerCase()) {
+            throw new Error(`Release VSIX checksum mismatch: expected ${match[1]}, received ${actual}`);
+          }
       - uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
-            openwrangler.vsix
-            openwrangler.vsix.sha256
+            release/openwrangler.vsix
+            release/openwrangler.vsix.sha256

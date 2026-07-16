@@ -80,7 +80,8 @@ class ReadOnlyPandasEngine(TrackingPandasEngine):
         supports_editing=False,
         lazy_file_extensions=frozenset(),
         export_formats=frozenset(),
-        supports_interrupt=False,
+        supports_shutdown_interrupt=False,
+        supports_request_cancellation=False,
     )
 
 
@@ -90,7 +91,8 @@ class InterruptiblePandasEngine(TrackingPandasEngine):
         supports_editing=PandasEngine.capabilities.supports_editing,
         lazy_file_extensions=PandasEngine.capabilities.lazy_file_extensions,
         export_formats=PandasEngine.capabilities.export_formats,
-        supports_interrupt=True,
+        supports_shutdown_interrupt=True,
+        supports_request_cancellation=False,
     )
 
 
@@ -534,7 +536,9 @@ def test_interrupt_capability_and_orderly_shutdown_follow_the_engine_contract(tm
     engine = created[0]
     engine.block_pages = True
 
-    assert opened["metadata"]["capabilities"]["cancel"] is True
+    # Shutdown interruption lets the manager release blocked work without
+    # advertising request-level cancellation on the protocol.
+    assert opened["metadata"]["capabilities"]["cancel"] is False
     with ThreadPoolExecutor(max_workers=2) as executor:
         page_future = executor.submit(
             manager.get_page,

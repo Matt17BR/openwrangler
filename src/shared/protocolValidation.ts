@@ -127,7 +127,7 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         candidate.kind === "openSession" &&
         isSessionSource(candidate.source) &&
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
-        optional(candidate, "backend", (backend) => isOneOf(backend, ["polars", "pandas"])) &&
+        optional(candidate, "backend", (backend) => isOneOf(backend, ["polars", "duckdb", "pandas"])) &&
         optional(candidate, "mode", (mode) => isOneOf(mode, ["viewing", "editing"])) &&
         isBoundedPageSize(candidate.pageSize)
       );
@@ -443,7 +443,7 @@ function isSessionMetadata(value: unknown): boolean {
     candidate.protocolVersion === PROTOCOL_VERSION &&
     isString(candidate.sessionId) &&
     isNonNegativeInteger(candidate.revision) &&
-    isOneOf(candidate.backend, ["polars", "pandas"]) &&
+    isOneOf(candidate.backend, ["polars", "duckdb", "pandas"]) &&
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
     isSourceCapabilities(candidate.capabilities) &&

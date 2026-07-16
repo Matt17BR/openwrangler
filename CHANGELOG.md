@@ -2,7 +2,13 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
-## [0.2.0-alpha.2] - Unreleased
+## [0.3.0] - Unreleased
+
+### Added
+
+- Added a native, lazy DuckDB file backend for UTF-8 CSV/TSV, Parquet, and JSONL viewing, profiling, all 27 deterministic operations, executable code generation, draft/history workflows, and atomic CSV/Parquet export without conversion through Pandas, Polars, or Arrow.
+- Added opt-in Pandas and DuckDB runtime benchmark modes with deterministic synthetic fixtures, native/lazy frame evidence, machine and package provenance, process-memory samples, and an explicit boundary separating runtime timings from editor first paint. Polars remains the strict release-performance gate.
+- Added pull-request CodeQL analysis for JavaScript/TypeScript and Python, cross-platform pull-request runtime coverage, canonical single-artifact release validation, and repository rules protecting `main` and `v*` release tags.
 
 ### Changed
 
@@ -30,6 +36,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Made Jupyter acquisition and bootstrap single-flight and generation-safe under concurrency, applied one deadline across acquisition through response parsing, and prohibited automatic mutation/export/session retries after ambiguous dispatch. A later request reconstructs the last confirmed session before continuing after an uncertain mutation.
 - Assigned every live-kernel open a host-known candidate session identity and added bounded failure cleanup, preventing lost or malformed Jupyter output from leaving an unaddressable runtime session.
 - Added explicit grid/drawer ownership for progressive summaries, complete confirmed-state rollback after foreground failures, stable-ID filter selection through renames, empty-schema guards, and scroll paging that preserves keyboard focus.
+- Pinned persisted plans and recovery requests to the confirmed engine so automatic dependency fallback cannot replay a cleaning plan with different backend semantics.
+- Replaced module-only dependency checks with version-aware engine/format probes; DuckDB is accepted only in the tested `>=1.4.5,<1.6` range and dependency installation remains an explicit user-confirmed action.
+- Split engine shutdown interruption from request-level cancellation capabilities so DuckDB cleanup can interrupt terminal work without promising cancellation semantics the protocol cannot guarantee.
+- Moved preview releases to Marketplace-compatible numeric versions with `preview: true`; the release workflow now validates and publishes one checksummed VSIX byte-for-byte across its platform matrix.
 
 ## [0.2.0-alpha.1] - 2026-07-15
 
@@ -98,7 +108,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Release status
 
-- Every in-scope row in the checked-in clean-room parity matrix has automated or recorded acceptance evidence. The version remains an alpha until the cross-platform release/tag workflow passes; no `1.0.0` tag is created by this prerelease.
+- Every in-scope row in the checked-in clean-room parity matrix has automated or recorded acceptance evidence. The version remains on the preview channel until the expanded engine and cross-platform release gates pass; no `1.0.0` tag is created by this preview.
 
 ## [0.1.0] - 2026-06-01
 

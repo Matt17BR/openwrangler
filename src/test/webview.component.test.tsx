@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -94,11 +94,12 @@ describe("DataGrid", () => {
       />
     );
 
-    const city = screen.getByText("Milan").closest("td");
-    const sales = screen.getByText("10.5").closest("td");
+    const city = screen.getByRole("cell", { name: "Milan" });
+    const sales = screen.getByRole("cell", { name: "10.5" });
     expect(city).toHaveAttribute("tabindex", "0");
-    city?.focus();
-    fireEvent.keyDown(city as HTMLTableCellElement, { key: "ArrowRight" });
+    act(() => city.focus());
+    expect(document.activeElement).toBe(city);
+    fireEvent.keyDown(city, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(sales));
     expect(screen.queryByText("Profiling…")).toBeNull();
   });
@@ -235,7 +236,9 @@ describe("DataGrid", () => {
     Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
     fireEvent(window, new Event("resize"));
     const initialRovingCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
-    initialRovingCell?.focus();
+    expect(initialRovingCell).not.toBeNull();
+    act(() => initialRovingCell?.focus());
+    expect(document.activeElement).toBe(initialRovingCell);
     scroller.scrollTop = 20 * 29;
     fireEvent.scroll(scroller);
 
@@ -244,6 +247,48 @@ describe("DataGrid", () => {
       expect(rovingCells).toHaveLength(1);
       expect(Number(rovingCells[0].dataset.gridRow)).toBeGreaterThan(0);
       expect(document.activeElement).toBe(rovingCells[0]);
+    });
+  });
+
+  it("keeps explicit paging focus ahead of queued scroll-focus preservation", async () => {
+    const rows = Array.from({ length: 80 }, (_, rowNumber) => ({
+      id: `r:${rowNumber}`,
+      rowNumber,
+      values: page.rows[0].values
+    }));
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 80, columns: 2 }, filteredShape: { rows: 80, columns: 2 } }}
+        page={{ offset: 0, limit: 200, totalRows: 80, rows }}
+        summaries={[]}
+        pageSize={200}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 616 });
+    fireEvent(window, new Event("resize"));
+    const firstCell = document.querySelector<HTMLTableCellElement>('[data-grid-row="0"][data-grid-column="0"]');
+    expect(firstCell).not.toBeNull();
+    act(() => firstCell?.focus());
+    fireEvent.keyDown(firstCell!, { key: "PageDown" });
+    await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-row", "21"));
+
+    const pageDownCell = document.activeElement as HTMLTableCellElement;
+    act(() => {
+      fireEvent.scroll(scroller);
+      fireEvent.keyDown(pageDownCell, { key: "PageUp" });
+    });
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute("data-grid-row", "0");
+      expect(document.activeElement).toHaveAttribute("data-grid-column", "0");
     });
   });
 

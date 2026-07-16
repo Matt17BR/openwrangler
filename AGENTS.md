@@ -16,7 +16,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 
 ## Non-negotiable invariants
 
-1. Pandas and Polars paths remain engine-native. Polars code must never call `to_pandas()`.
+1. Pandas, Polars, and DuckDB paths remain engine-native. Polars code must never call `to_pandas()`; DuckDB code must never convert through Pandas, Polars, or Arrow.
 2. Viewing filters/sorts are separate from committed cleaning steps and never alter the source.
 3. User data is not overwritten. Exports use a new destination and atomic replacement.
 4. Python execution, dependency installation, custom code, and exports require a trusted workspace.
@@ -26,7 +26,7 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 8. `scratch.txt` and all other untracked user files are user-owned. Never edit, delete, stage, or package them.
 9. Do not describe the project as feature-parity complete until every in-scope row in `docs/feature-parity.md` is green.
 10. File readers expose a shared zero-based Excel sheet index. Failed eager or lazy opens must produce `EngineError` and must not retain a session; nested and scalar values must remain strict-JSON-safe.
-11. Every operation change needs matching Pandas/Polars runtime and executable generated-code tests. Generated categorical columns may not collide, and engine-specific null/Unicode/aggregate defaults must be normalized explicitly.
+11. Every operation change needs matching runtime and executable generated-code tests for every editing-capable engine. Generated categorical columns may not collide, and engine-specific null/Unicode/aggregate defaults must be normalized explicitly.
 12. Standalone runtime startup is single-flight. Restart must invalidate any pending start, and closing the final session must stop the Python process; packaged seed/verify acceptance guards these lifecycle rules.
 13. Cleaning-plan shortcuts must be state-scoped, mirrored inside the webview, documented in the generated reference, and tested without intercepting editable-field undo.
 14. Saved notebook-output queries use the pure `src/webviews/snapshotModel.ts` model. Null/NaN predicates and per-sort null placement must match live runtime semantics and remain directly unit-tested.
@@ -40,6 +40,8 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 22. `closeSession` is terminal cleanup: its revision is advisory so a caller holding the last confirmed revision can still dispose a runtime that may have committed an ambiguous response. Unknown sessions remain errors, and cleanup still runs at most once.
 23. Pandas custom code receives recursively isolated object-dtype cells so draft, rollback, and generated-code execution cannot mutate nested source objects. Live and generated filters must distinguish null from NaN exactly as typed cells and saved notebook snapshots do.
 24. Live-kernel opens carry a host-generated `requestedSessionId`. A failed, cancelled, timed-out, malformed, or mis-correlated open must issue a fresh bounded close for that known candidate ID so lost kernel output cannot orphan an unaddressable runtime session.
+25. DuckDB file sessions own a hardened connection with extension auto-install and autoload disabled. Lazy relations stay native, terminal reads use independently owned short-lived connections, shutdown interruption is not advertised as request cancellation, and every connection is closed deterministically.
+26. Persisted cleaning state is keyed by both source identity and confirmed backend. Recovery replays with that backend pinned; an automatic fallback must never reinterpret a saved plan through another engine.
 
 ## Required checks
 

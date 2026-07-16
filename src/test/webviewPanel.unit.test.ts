@@ -64,12 +64,12 @@ describe("OpenWranglerPanel retained view state", () => {
 
   it("loads the production webview as an ES module under a restrictive nonce CSP", () => {
     const harness = createPanelHarness({ request: vi.fn(async () => initialResponse) });
-    const script = harness.html.match(/<script type="module" nonce="([A-Za-z0-9]+)"[^>]*>/u);
+    const script = harness.html.match(/<script type="module" nonce="([A-Za-z0-9]+)" src="([^"]+)"><\/script>/u);
     expect(script).not.toBeNull();
     const nonce = script?.[1];
     expect(harness.html).toContain(`script-src mock-webview 'nonce-${nonce}';`);
     expect(harness.html).not.toContain("script-src 'unsafe-inline'");
-    expect(harness.html).toContain("media/webview.js");
+    expect(script?.[2].replaceAll("\\", "/")).toBe("file:///extension/media/webview.js");
   });
 
   it("rejects a stale profile from an older opaque view even when metadata and filters match", async () => {

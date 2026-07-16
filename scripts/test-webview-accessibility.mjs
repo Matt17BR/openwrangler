@@ -226,6 +226,8 @@ async function verifyFilterKeyboardWorkflow(browser) {
 
 async function verifyGridKeyboardWorkflow(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
   await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
   const scroller = page.locator("[data-testid='data-grid-scroller']");
   const firstCell = page.locator('[data-grid-row="0"][data-grid-column="0"]');
@@ -250,17 +252,24 @@ async function verifyGridKeyboardWorkflow(browser) {
   await page.keyboard.press("Home");
   await waitForFocusedGridCell(page, 0, 0);
 
-  await page.keyboard.press("PageDown");
-  await page.waitForFunction(() => {
-    const active = document.activeElement;
-    return active instanceof HTMLElement && active.dataset.gridColumn === "0" && Number(active.dataset.gridRow) > 0;
+  await scroller.evaluate((element) => {
+    element.style.flex = "none";
+    element.style.height = "560px";
   });
+  const pageRowCount = await scroller.evaluate((element) => Math.max(1, Math.floor(element.clientHeight / 29)));
+  await page.keyboard.press("PageDown");
+  await waitForFocusedGridCell(page, pageRowCount, 0);
   const pageDownRow = await focusedGridRow(page);
   await page.keyboard.press("PageUp");
   await waitForFocusedGridCell(page, 0, 0);
-  if (pageDownRow <= 0 || pageDownRow >= 200) {
-    throw new Error(`PageDown focused unexpected row ${pageDownRow}.`);
+  if (pageDownRow !== pageRowCount) {
+    throw new Error(`PageDown focused row ${pageDownRow}; expected one visible page (${pageRowCount} rows).`);
   }
+  await scroller.evaluate((element) => {
+    element.style.removeProperty("flex");
+    element.style.removeProperty("height");
+    window.dispatchEvent(new Event("resize"));
+  });
 
   await scroller.evaluate((element) => {
     element.scrollTop = 199 * 29;

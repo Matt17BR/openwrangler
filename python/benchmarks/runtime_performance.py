@@ -4,16 +4,20 @@ import argparse
 import json
 import math
 import os
+import platform
 import queue
 import subprocess
 import sys
 import tempfile
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 from statistics import median
 from time import perf_counter, perf_counter_ns
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -29,15 +33,20 @@ SERIALIZATION_EVIDENCE_MIN_MS = 5.0
 _BENCHMARK_EVENT_PREFIX = "__OPEN_WRANGLER_BENCHMARK_EVENT__ "
 _BENCHMARK_SERVER_BOOTSTRAP = r"""
 import json
+import os
 import sys
 import time
 
 from openwrangler_runtime import server
-from openwrangler_runtime.engines.polars_engine import PolarsEngine
-import polars as _benchmark_polars
+from openwrangler_runtime.engines.registry import default_engine_registry
 
 _PREFIX = "__OPEN_WRANGLER_BENCHMARK_EVENT__ "
-_original_header_stats = PolarsEngine.header_stats
+_backend = os.environ["OPENWRANGLER_BENCHMARK_BACKEND"]
+__import__(_backend)
+_probe = default_engine_registry().create(_backend)
+_engine_type = type(_probe)
+_probe.close()
+_original_header_stats = _engine_type.header_stats
 
 
 def _event(kind):
@@ -53,9 +62,11 @@ def _instrumented_header_stats(self, frame):
         _event("statsFinished")
 
 
-PolarsEngine.header_stats = _instrumented_header_stats
+_engine_type.header_stats = _instrumented_header_stats
 server.main()
 """
+Backend = Literal["polars", "pandas", "duckdb"]
+BACKENDS: tuple[Backend, ...] = ("polars", "pandas", "duckdb")
 RELEASE_LIMITS = {
     "csvColdSourceFirstGridMs": 3_000.0,
     "parquetColdSourceFirstGridMs": 5_000.0,
@@ -108,18 +119,179 @@ class FixtureSpec:
 _TRANSPORT_EOF = object()
 
 
+def _process_memory_snapshot(pid: int) -> dict[str, Any]:
+    """Return best-effort RSS evidence without adding a benchmark dependency."""
+    status_path = Path("/proc") / str(pid) / "status"
+    try:
+        status: dict[str, str] = {}
+        for line in status_path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition(":")
+            if separator:
+                status[key] = value.strip()
+        rss_kib = int(status["VmRSS"].split()[0])
+        peak_kib = int(status["VmHWM"].split()[0])
+        return {
+            "supported": True,
+            "sampler": "linux-proc-status",
+            "rssBytes": rss_kib * 1024,
+            "peakRssBytes": peak_kib * 1024,
+        }
+    except (FileNotFoundError, KeyError, OSError, ValueError):
+        pass
+
+    if pid == os.getpid():
+        try:
+            import resource
+
+            getrusage = getattr(resource, "getrusage", None)
+            usage_self = getattr(resource, "RUSAGE_SELF", None)
+            if not callable(getrusage) or usage_self is None:
+                raise AttributeError("resource usage sampling is unavailable")
+            usage = cast(Any, getrusage)(usage_self)
+            peak = int(usage.ru_maxrss)
+            # macOS reports bytes; Linux and the other supported Unix targets
+            # report KiB. Linux normally takes the /proc branch above.
+            peak_bytes = peak if sys.platform == "darwin" else peak * 1024
+            return {
+                "supported": True,
+                "sampler": "resource-getrusage",
+                "rssBytes": None,
+                "peakRssBytes": peak_bytes,
+            }
+        except (ImportError, OSError, ValueError):
+            pass
+
+    if os.name == "posix":
+        try:
+            completed = subprocess.run(
+                ["ps", "-o", "rss=", "-p", str(pid)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            rss_kib = int(completed.stdout.strip())
+            return {
+                "supported": True,
+                "sampler": "posix-ps-rss",
+                "rssBytes": rss_kib * 1024,
+                "peakRssBytes": None,
+            }
+        except (FileNotFoundError, OSError, subprocess.SubprocessError, ValueError):
+            pass
+
+    return {
+        "supported": False,
+        "sampler": "unavailable",
+        "rssBytes": None,
+        "peakRssBytes": None,
+    }
+
+
+def _resource_evidence(boundary: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
+    rss_values = [int(sample["rssBytes"]) for sample in samples if isinstance(sample.get("rssBytes"), int)]
+    peak_values = [int(sample["peakRssBytes"]) for sample in samples if isinstance(sample.get("peakRssBytes"), int)]
+    return {
+        "boundary": boundary,
+        "supported": any(bool(sample.get("supported")) for sample in samples),
+        "maxObservedRssBytes": max(rss_values) if rss_values else None,
+        "maxObservedPeakRssBytes": max(peak_values) if peak_values else None,
+        "samples": samples,
+    }
+
+
+def _total_memory_bytes() -> int | None:
+    try:
+        sysconf = getattr(os, "sysconf", None)
+        if not callable(sysconf):
+            return None
+        page_size = int(cast(Any, sysconf)("SC_PAGE_SIZE"))
+        pages = int(cast(Any, sysconf)("SC_PHYS_PAGES"))
+        return page_size * pages
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _cpu_model() -> str | None:
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip() in {"model name", "Hardware"}:
+                return value.strip()
+    except OSError:
+        pass
+    return platform.processor() or None
+
+
+def _source_revision() -> dict[str, Any]:
+    repository = Path(__file__).resolve().parents[2]
+    try:
+        revision = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        tracked_status = subprocess.run(
+            ["git", "-C", str(repository), "diff", "--quiet", "--ignore-submodules", "HEAD", "--"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        ).returncode
+        return {
+            "commit": revision,
+            "trackedWorktreeDirty": tracked_status == 1 if tracked_status in {0, 1} else None,
+        }
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return {"commit": None, "trackedWorktreeDirty": None}
+
+
+def _benchmark_provenance(backend: Backend) -> dict[str, Any]:
+    from openwrangler_runtime.version import __version__ as runtime_version
+
+    distributions = ("openwrangler-runtime", "polars", "pandas", "duckdb", "pyarrow")
+    versions: dict[str, str | None] = {}
+    for distribution in distributions:
+        try:
+            versions[distribution] = package_version(distribution)
+        except PackageNotFoundError:
+            versions[distribution] = None
+    return {
+        "generatedAtUtc": datetime.now(timezone.utc).isoformat(),
+        "selectedBackend": backend,
+        "source": _source_revision(),
+        "machine": {
+            "operatingSystem": platform.system(),
+            "operatingSystemRelease": platform.release(),
+            "architecture": platform.machine(),
+            "cpuModel": _cpu_model(),
+            "logicalCpuCount": os.cpu_count(),
+            "totalMemoryBytes": _total_memory_bytes(),
+        },
+        "runtime": {
+            "pythonVersion": platform.python_version(),
+            "pythonImplementation": platform.python_implementation(),
+            "openWranglerRuntimeVersion": runtime_version,
+        },
+        "packages": versions,
+    }
+
+
 class StdioRuntimeClient:
     """Small canonical protocol-v2 client for the real standalone runtime process."""
 
-    def __init__(self) -> None:
+    def __init__(self, backend: Backend = "polars") -> None:
         environment = os.environ.copy()
         python_root = str(Path(__file__).resolve().parents[1])
         environment["PYTHONPATH"] = os.pathsep.join(
             item for item in (python_root, environment.get("PYTHONPATH", "")) if item
         )
+        environment["OPENWRANGLER_BENCHMARK_BACKEND"] = backend
+        self.backend = backend
         self.process = subprocess.Popen(
             # The bootstrap changes no stdin/stdout behavior. It wraps only the
-            # Polars header-statistics call so the benchmark can prove, using
+            # selected engine's header-statistics call so the benchmark can prove, using
             # Python's process-wide monotonic clock, that the page was sent
             # while production runtime work was genuinely active.
             [sys.executable, "-c", _BENCHMARK_SERVER_BOOTSTRAP],
@@ -142,6 +314,7 @@ class StdioRuntimeClient:
         self.response_order: list[str] = []
         self.response_arrivals: dict[str, float] = {}
         self.request_send_completed_ns: dict[str, int] = {}
+        self.resource_samples: list[dict[str, Any]] = []
         self._stdout_thread = threading.Thread(
             target=self._read_stdout,
             name="openwrangler-benchmark-stdout",
@@ -154,6 +327,9 @@ class StdioRuntimeClient:
         )
         self._stdout_thread.start()
         self._stderr_thread.start()
+
+    def record_resources(self, stage: str) -> None:
+        self.resource_samples.append({"stage": stage, **_process_memory_snapshot(self.process.pid)})
 
     def __enter__(self) -> StdioRuntimeClient:
         return self
@@ -432,7 +608,21 @@ def _drop_source_file_cache(path: Path) -> dict[str, Any]:
     }
 
 
-def measure_fixture(path: Path, spec: FixtureSpec) -> dict[str, Any]:
+def _qualified_type_name(value: Any) -> str:
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}"
+
+
+def _is_native_lazy_frame(frame: Any, backend: Backend) -> bool:
+    if backend == "polars":
+        return isinstance(frame, pl.LazyFrame)
+    if backend == "duckdb":
+        sql_query = getattr(frame, "sql_query", None)
+        return type(frame).__name__ == "DuckDBPyRelation" and callable(sql_query) and isinstance(sql_query(), str)
+    return False
+
+
+def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") -> dict[str, Any]:
     fresh_manager_open_samples: list[float] = []
     manager: SessionManager | None = None
     opened: dict[str, Any] | None = None
@@ -452,11 +642,11 @@ def measure_fixture(path: Path, spec: FixtureSpec) -> dict[str, Any]:
         started = perf_counter()
         sample_opened = sample_manager.open_session(
             {"kind": "file", "label": path.name, "path": str(path.resolve())},
-            backend="polars",
+            backend=backend,
             page_size=PAGE_SIZE,
         )
         fresh_manager_open_samples.append((perf_counter() - started) * 1_000)
-        _assert_open_contract(sample_opened, spec, path)
+        _assert_open_contract(sample_opened, spec, path, backend)
 
         if sample == FRESH_MANAGER_OPEN_SAMPLES - 1:
             manager = sample_manager
@@ -469,12 +659,16 @@ def measure_fixture(path: Path, spec: FixtureSpec) -> dict[str, Any]:
 
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
-    lazy_frames = {
-        name: isinstance(getattr(session, name), pl.LazyFrame) for name in ("original", "committed", "filtered")
-    }
-    if not all(lazy_frames.values()):
+    frame_names = ("original", "committed", "filtered")
+    frame_types = {name: _qualified_type_name(getattr(session, name)) for name in frame_names}
+    native_frames = {name: bool(session.engine.detect(getattr(session, name))) for name in frame_names}
+    if not all(native_frames.values()):
+        bridged_names = ", ".join(name for name, is_native in native_frames.items() if not is_native)
+        raise AssertionError(f"{backend.title()} file session lost native frames in {bridged_names} for {path.name}.")
+    lazy_frames = {name: _is_native_lazy_frame(getattr(session, name), backend) for name in frame_names}
+    if backend in {"polars", "duckdb"} and not all(lazy_frames.values()):
         eager_names = ", ".join(name for name, is_lazy in lazy_frames.items() if not is_lazy)
-        raise AssertionError(f"Polars file session became eager in {eager_names} for {path.name}.")
+        raise AssertionError(f"{backend.title()} file session became eager in {eager_names} for {path.name}.")
 
     schema = opened["metadata"]["schema"]
     profiled_columns = [column["name"] for column in schema[:VISIBLE_PROFILE_COLUMNS]]
@@ -522,7 +716,7 @@ def measure_fixture(path: Path, spec: FixtureSpec) -> dict[str, Any]:
 
     _close_and_assert_empty(manager, session_id, path)
     retained_sessions = len(manager.sessions)
-    stdio_transport = measure_stdio_transport(path, spec)
+    stdio_transport = measure_stdio_transport(path, spec, backend)
     first_sample_ms = fresh_manager_open_samples[0]
     warm_reopen_samples = fresh_manager_open_samples[1:]
     warm_reopen_median_ms = median(warm_reopen_samples)
@@ -531,6 +725,7 @@ def measure_fixture(path: Path, spec: FixtureSpec) -> dict[str, Any]:
     warm_reopen_target = SLICE_TARGETS[f"{spec.kind}WarmSourceReopenMedianMs"]
 
     return {
+        "backend": backend,
         "path": path.name,
         "shape": opened["metadata"]["shape"],
         "expectedRows": spec.rows,
@@ -562,7 +757,16 @@ def measure_fixture(path: Path, spec: FixtureSpec) -> dict[str, Any]:
         "profiledColumns": profiled_columns,
         "initialSummaryCount": len(opened["summaries"]),
         "exactRowCounts": True,
-        "lazyPolarsRetained": all(lazy_frames.values()),
+        "engineMetadata": {
+            "name": session.backend,
+            "adapterClass": _qualified_type_name(session.engine),
+            "frameTypes": frame_types,
+            "nativeFrames": native_frames,
+            "lazyNativeFrames": lazy_frames,
+        },
+        "nativeEngineRetained": all(native_frames.values()),
+        "lazyNativeRetained": all(lazy_frames.values()) if backend in {"polars", "duckdb"} else False,
+        "lazyPolarsRetained": backend == "polars" and all(lazy_frames.values()),
         "lazyFrames": lazy_frames,
         "directRuntimeCachedPageP95Ms": round(cached_p95_ms, 3),
         "directRuntimeCacheMissPageP95Ms": round(uncached_p95_ms, 3),
@@ -617,27 +821,29 @@ def _profile_overlap_evidence(
     }
 
 
-def measure_stdio_transport(path: Path, spec: FixtureSpec) -> dict[str, Any]:
+def measure_stdio_transport(path: Path, spec: FixtureSpec, backend: Backend = "polars") -> dict[str, Any]:
     """Measure canonical JSON/envelope round trips through the real subprocess."""
     transport_samples: list[float] = []
     offsets = _uncached_offsets(spec.rows, 0)
-    with StdioRuntimeClient() as client:
+    with StdioRuntimeClient(backend) as client:
         initialized, initialize_ms = client.request({"kind": "initialize"}, label="initialize")
         _expect_response_kind(initialized, "initialized", "initialize")
+        client.record_resources("initialized")
         cold_source_cache_drop = _drop_source_file_cache(path)
 
         opened, open_ms = client.request(
             {
                 "kind": "openSession",
                 "source": {"kind": "file", "label": path.name, "path": str(path.resolve())},
-                "backend": "polars",
+                "backend": backend,
                 "mode": "editing",
                 "pageSize": PAGE_SIZE,
             },
             label=f"open-{spec.kind}",
         )
         _expect_response_kind(opened, "sessionOpened", f"open {path.name}")
-        _assert_open_contract(opened, spec, path)
+        _assert_open_contract(opened, spec, path, backend)
+        client.record_resources("session-opened")
         session_id = opened["metadata"]["sessionId"]
         revision = opened["metadata"]["revision"]
 
@@ -661,6 +867,7 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec) -> dict[str, Any]:
             if response["page"]["totalRows"] != spec.rows:
                 raise AssertionError(f"Transport page {offset} returned an inexact row count for {path.name}.")
             transport_samples.append(elapsed_ms)
+        client.record_resources("cache-miss-pages-complete")
 
         contention_offset = _contention_offset(spec.rows, offsets)
         stats_view_request_id = f"transport-{spec.kind}-contended-stats"
@@ -696,6 +903,7 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec) -> dict[str, Any]:
         stats = client.receive(stats_id)
         stats_ms = (client.response_arrivals[stats_id] - stats_started) * 1_000
         stats_finished_event = client.receive_benchmark_event("statsFinished")
+        client.record_resources("profile-contention-complete")
         _expect_response_kind(contended_page, "page", f"same-session contended page for {path.name}")
         _expect_response_kind(stats, "datasetStats", f"same-session dataset statistics for {path.name}")
         if contended_page.get("viewRequestId") != page_view_request_id:
@@ -725,11 +933,14 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec) -> dict[str, Any]:
             label=f"close-{spec.kind}",
         )
         _expect_response_kind(closed, "sessionClosed", f"close {path.name}")
+        client.record_resources("session-closed")
 
     return {
+        "backend": backend,
         "boundary": "standalone Python process using canonical protocol-v2 newline-delimited JSON envelopes",
         "statsStartProof": (
-            "benchmark-only Polars header_stats entry/exit events on stderr using process-wide perf_counter_ns"
+            f"benchmark-only {backend.title()} header_stats entry/exit events on stderr using process-wide "
+            "perf_counter_ns"
         ),
         "initializeRoundTripMs": round(initialize_ms, 3),
         "openRoundTripMs": round(open_ms, 3),
@@ -747,25 +958,56 @@ def measure_stdio_transport(path: Path, spec: FixtureSpec) -> dict[str, Any]:
         "responseOrder": [
             "stats" if item == stats_id else "page" for item in client.response_order if item in {stats_id, page_id}
         ],
+        "processResources": _resource_evidence(
+            "standalone Python runtime child only; excludes VS Code, Cursor, extension host, and webview",
+            client.resource_samples,
+        ),
         "closedCleanly": True,
     }
 
 
-def run_benchmark(directory: Path, smoke: bool = False) -> dict[str, Any]:
+def run_benchmark(directory: Path, smoke: bool = False, backend: Backend = "polars") -> dict[str, Any]:
+    process_samples = [{"stage": "benchmark-started", **_process_memory_snapshot(os.getpid())}]
     fixtures = create_fixtures(directory, smoke)
+    process_samples.append({"stage": "fixtures-ready", **_process_memory_snapshot(os.getpid())})
     specs = _fixture_specs(smoke)
+    csv = measure_fixture(fixtures["csv"], specs["csv"], backend)
+    parquet = measure_fixture(fixtures["parquet"], specs["parquet"], backend)
+    process_samples.append({"stage": "benchmark-complete", **_process_memory_snapshot(os.getpid())})
     return {
         "limits": RELEASE_LIMITS,
         "releaseGateMetrics": RELEASE_GATE_METRICS,
         "sliceTargets": SLICE_TARGETS,
         "sliceTargetsAreReleaseBlocking": False,
         "smoke": smoke,
-        "csv": measure_fixture(fixtures["csv"], specs["csv"]),
-        "parquet": measure_fixture(fixtures["parquet"], specs["parquet"]),
+        "backend": backend,
+        "benchmarkMetadata": {
+            "selectedBackend": backend,
+            "fixtures": "deterministic synthetic integer CSV and Parquet sources only",
+            "measurementBoundary": (
+                "Direct Python SessionManager calls and standalone runtime protocol-v2 round trips. "
+                "These are not VS Code, Cursor, webview, or editor first-paint timings."
+            ),
+            "releaseLimitsApplyToBackend": "polars",
+            "selectedBackendIsReleaseGated": backend == "polars",
+        },
+        "provenance": _benchmark_provenance(backend),
+        "processResources": _resource_evidence(
+            "benchmark driver, Polars fixture generation/validation, and in-process direct runtime; "
+            "excludes standalone child samples and editor processes",
+            process_samples,
+        ),
+        "csv": csv,
+        "parquet": parquet,
     }
 
 
 def assert_release_limits(report: dict[str, Any]) -> None:
+    reported_backend = report.get("backend", "polars")
+    if reported_backend != "polars":
+        raise AssertionError(
+            f"Performance release gates apply only to the native Polars path, not {reported_backend!r}."
+        )
     failures: list[str] = []
     checks = [
         (
@@ -872,9 +1114,13 @@ def _time_page(
     return elapsed_ms
 
 
-def _assert_open_contract(opened: dict[str, Any], spec: FixtureSpec, path: Path) -> None:
+def _assert_open_contract(opened: dict[str, Any], spec: FixtureSpec, path: Path, backend: Backend = "polars") -> None:
     if opened["summaries"]:
         raise AssertionError(f"First grid performed {len(opened['summaries'])} eager summaries for {path.name}.")
+    if opened["metadata"].get("backend") != backend:
+        raise AssertionError(
+            f"First grid selected backend {opened['metadata'].get('backend')!r} for {path.name}; expected {backend!r}."
+        )
     exact_counts = {
         "shape": opened["metadata"]["shape"]["rows"],
         "filteredShape": opened["metadata"]["filteredShape"]["rows"],
@@ -897,7 +1143,7 @@ def _assert_open_contract(opened: dict[str, Any], spec: FixtureSpec, path: Path)
     wrong_types = {
         column["name"]: (column["rawType"], column["type"])
         for column in schema
-        if column["rawType"] != "Int64" or column["type"] != "integer"
+        if column["type"] != "integer" or (backend == "polars" and column["rawType"] != "Int64")
     }
     if wrong_types:
         raise AssertionError(f"First grid returned unexpected column types for {path.name}: {wrong_types!r}.")
@@ -976,16 +1222,22 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark the release-size native Polars viewing path.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Benchmark a native Open Wrangler Python-runtime viewing path. "
+            "Reported timings do not measure editor or webview first paint."
+        )
+    )
     parser.add_argument("--fixture-dir", type=Path)
     parser.add_argument("--json-out", type=Path)
+    parser.add_argument("--backend", choices=BACKENDS, default="polars")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="openwrangler-benchmark-") as temporary:
         directory = args.fixture_dir or Path(temporary)
-        report = run_benchmark(directory, smoke=args.smoke)
+        report = run_benchmark(directory, smoke=args.smoke, backend=args.backend)
     payload = json.dumps(report, indent=2, sort_keys=True)
     print(payload)
     if args.json_out:
@@ -994,6 +1246,8 @@ def main() -> None:
     # Preserve the measured evidence even when a strict gate fails so CI can
     # upload the exact regression report instead of a stale prior run.
     if args.strict and not args.smoke:
+        if args.backend != "polars":
+            raise AssertionError("Strict release limits are defined only for the native Polars benchmark path.")
         assert_release_limits(report)
 
 

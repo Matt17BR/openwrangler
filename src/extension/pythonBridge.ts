@@ -5,6 +5,7 @@ import * as readline from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import type {
+  DataBackend,
   OpenWranglerRequest,
   OpenWranglerResponse,
   ErrorResponse,
@@ -16,8 +17,9 @@ import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import {
+  automaticBackends,
   probeDependencies,
-  requiredModules,
+  requiredDependencies,
   resolvePythonEnvironment,
   type PythonEnvironment
 } from "./pythonEnvironment";
@@ -48,7 +50,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private disposed = false;
   private environmentPromise: Promise<PythonEnvironment> | undefined;
   private readonly dependencyCache = new Map<string, string[]>();
-  private lastMissingDependencies: { environment: PythonEnvironment; modules: string[] } | undefined;
+  private lastMissingDependencies: { environment: PythonEnvironment; requirements: string[] } | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -168,7 +170,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   async installMissingDependencies(confirmed?: boolean): Promise<boolean> {
     const missing = this.lastMissingDependencies;
-    if (!missing || missing.modules.length === 0) {
+    if (!missing || missing.requirements.length === 0) {
       await vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
       return false;
     }
@@ -179,7 +181,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (confirmed !== true) {
       if (confirmed === false) return false;
       const choice = await vscode.window.showWarningMessage(
-        `Install ${missing.modules.join(", ")} into ${missing.environment.executable}?`,
+        `Install ${missing.requirements.join(", ")} into ${missing.environment.executable}?`,
         { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
         "Install"
       );
@@ -189,7 +191,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
       async () => {
-        await execFileAsync(missing.environment.executable, ["-m", "pip", "install", ...missing.modules], {
+        await execFileAsync(missing.environment.executable, ["-m", "pip", "install", ...missing.requirements], {
           timeout: 10 * 60_000
         });
       }
@@ -408,27 +410,21 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
     if (request.kind !== "openSession" || request.source.kind !== "file") return request;
     const environment = await this.environment(vscode.Uri.file(request.source.path ?? request.source.label));
-    const encoding = request.source.importOptions?.encoding?.toLowerCase();
-    const polarsEncoding = !encoding || ["utf-8", "utf8", "utf8-lossy"].includes(encoding);
-    const backends = request.backend
-      ? [request.backend]
-      : polarsEncoding
-        ? (["polars", "pandas"] as const)
-        : (["pandas"] as const);
-    const failures: Array<{ backend: "polars" | "pandas"; missing: string[] }> = [];
+    const backends = request.backend ? [request.backend] : automaticBackends(request.source);
+    const failures: Array<{ backend: DataBackend; missing: string[] }> = [];
     for (const backend of backends) {
-      const modules = requiredModules(backend, request.source);
-      const key = `${environment.executable}:${modules.join(",")}`;
+      const dependencies = requiredDependencies(backend, request.source);
+      const key = `${environment.executable}:${dependencies.map((dependency) => dependency.installSpec).join(",")}`;
       let missing = this.dependencyCache.get(key);
       if (!missing) {
-        missing = (await probeDependencies(environment.executable, modules)).missing;
+        missing = (await probeDependencies(environment.executable, dependencies)).missing;
         this.dependencyCache.set(key, missing);
       }
       if (missing.length === 0) return { ...request, backend };
       failures.push({ backend, missing });
     }
     const missing = [...new Set(failures.flatMap((failure) => failure.missing))];
-    this.lastMissingDependencies = { environment, modules: failures[0]?.missing ?? missing };
+    this.lastMissingDependencies = { environment, requirements: failures[0]?.missing ?? missing };
     return {
       kind: "error",
       code: "missing_dependencies",

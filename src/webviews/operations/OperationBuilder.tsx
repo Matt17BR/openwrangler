@@ -575,7 +575,8 @@ function OperationFields({
           spellCheck={false}
         />
         <small>
-          Assign a Pandas or Polars dataframe to <code>result</code>. Custom code runs only in a trusted workspace.
+          Assign an engine-native dataframe or relation to <code>result</code>. Custom code runs only in a trusted
+          workspace.
         </small>
       </label>
     );
