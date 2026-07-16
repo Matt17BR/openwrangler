@@ -1,5 +1,7 @@
 type Listener<T> = (event: T) => unknown;
 
+const configurationListeners = new Set<(event: { affectsConfiguration(section: string): boolean }) => unknown>();
+
 export class EventEmitter<T> {
   private readonly listeners = new Set<Listener<T>>();
 
@@ -51,12 +53,37 @@ export class CancellationTokenSource {
 }
 
 export const window = {
-  showWarningMessage: async (): Promise<undefined> => undefined
+  createOutputChannel: () => ({
+    append: () => undefined,
+    appendLine: () => undefined,
+    dispose: () => undefined
+  }),
+  showWarningMessage: async (): Promise<undefined> => undefined,
+  showInformationMessage: async (): Promise<undefined> => undefined,
+  showErrorMessage: async (): Promise<undefined> => undefined,
+  withProgress: async <T>(
+    _options: unknown,
+    task: (progress: { report(): void }, token: { isCancellationRequested: boolean }) => Promise<T>
+  ): Promise<T> => task({ report: () => undefined }, { isCancellationRequested: false })
+};
+
+export const ProgressLocation = {
+  Notification: 15
 };
 
 export const workspace = {
   isTrusted: true,
-  getConfiguration: () => ({ get: <T>(_key: string, fallback: T): T => fallback })
+  getConfiguration: () => ({ get: <T>(_key: string, fallback: T): T => fallback }),
+  onDidChangeConfiguration(listener: (event: { affectsConfiguration(section: string): boolean }) => unknown): {
+    dispose(): void;
+  } {
+    configurationListeners.add(listener);
+    return { dispose: () => configurationListeners.delete(listener) };
+  },
+  __fireDidChangeConfiguration(section: string): void {
+    const event = { affectsConfiguration: (candidate: string): boolean => candidate === section };
+    for (const listener of configurationListeners) listener(event);
+  }
 };
 
 export const extensions = {

@@ -10,6 +10,7 @@ coverage/**
 .coverage
 .github/**
 .vscode/**
+.vscode-test/**
 .git/**
 .gitignore
 .prettierignore

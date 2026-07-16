@@ -36,6 +36,12 @@ interface PendingRequest {
   dispatched: boolean;
 }
 
+interface MissingDependencies {
+  readonly environment: PythonEnvironment;
+  readonly requirements: readonly string[];
+  readonly selectionEpoch: number;
+}
+
 const execFileAsync = promisify(execFile);
 
 export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
@@ -46,14 +52,24 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly cancellationTargets = new Map<string, string>();
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
+  private readonly executeFile = execFileAsync;
+  private readonly configurationSubscription: vscode.Disposable;
   private generation = 0;
   private runtimeEpoch = 0;
+  private selectionEpoch = 0;
   private disposed = false;
   private environmentPromise: Promise<PythonEnvironment> | undefined;
   private readonly dependencyCache = new Map<string, string[]>();
-  private lastMissingDependencies: { environment: PythonEnvironment; requirements: string[] } | undefined;
+  private lastMissingDependencies: MissingDependencies | undefined;
+  private dependencyInstallPromise: Promise<boolean> | undefined;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) {
+    this.configurationSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!this.disposed && event.affectsConfiguration("openWrangler.pythonPath")) {
+        this.clearRuntimeSelection();
+      }
+    });
+  }
 
   get runtimeGeneration(): number {
     return this.generation;
@@ -71,13 +87,21 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
 
+    const selectionEpoch =
+      request.kind === "openSession" && request.source.kind === "file" ? this.selectionEpoch : undefined;
     const prepared = await this.prepareRequest(request);
+    if (selectionEpoch !== undefined && selectionEpoch !== this.selectionEpoch) {
+      return this.runtimeSelectionChangedError();
+    }
     if (prepared.kind === "error") return prepared;
     if (options.cancellation?.isCancellationRequested) {
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
     const runtimeRequest = prepared;
     const proc = await this.ensureProcess(runtimeRequest);
+    if (selectionEpoch !== undefined && selectionEpoch !== this.selectionEpoch) {
+      return this.runtimeSelectionChangedError();
+    }
     if (options.cancellation?.isCancellationRequested) {
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
@@ -164,12 +188,58 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   clearRuntimeSelection(): void {
-    this.environmentPromise = undefined;
-    this.dependencyCache.clear();
-    this.stopGracefully("Python runtime selection changed.");
+    this.invalidateRuntimeSelection("Python runtime selection changed.");
   }
 
-  async installMissingDependencies(confirmed?: boolean): Promise<boolean> {
+  private invalidateRuntimeSelection(reason: string, force = false): void {
+    if (
+      !force &&
+      !this.environmentPromise &&
+      this.dependencyCache.size === 0 &&
+      !this.lastMissingDependencies &&
+      !this.process &&
+      !this.processStart
+    ) {
+      return;
+    }
+    this.selectionEpoch += 1;
+    this.environmentPromise = undefined;
+    this.dependencyCache.clear();
+    this.lastMissingDependencies = undefined;
+    if (!this.disposed) this.stopGracefully(reason);
+  }
+
+  async installMissingDependencies(): Promise<boolean> {
+    return this.beginDependencyInstallation();
+  }
+
+  async declineMissingDependencyInstallForTesting(): Promise<boolean> {
+    if (process.env.OPEN_WRANGLER_EXTENSION_TESTS !== "1") {
+      throw new Error("Dependency-install decline is available only to the Open Wrangler test harness.");
+    }
+    const missing = this.lastMissingDependencies;
+    if (!missing || missing.requirements.length === 0) {
+      await vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
+      return false;
+    }
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
+    }
+    return false;
+  }
+
+  private beginDependencyInstallation(): Promise<boolean> {
+    if (this.dependencyInstallPromise) return this.dependencyInstallPromise;
+    const installation = this.installMissingDependenciesWithDecision();
+    this.dependencyInstallPromise = installation;
+    const clear = (): void => {
+      if (this.dependencyInstallPromise === installation) this.dependencyInstallPromise = undefined;
+    };
+    void installation.then(clear, clear);
+    return installation;
+  }
+
+  private async installMissingDependenciesWithDecision(): Promise<boolean> {
     const missing = this.lastMissingDependencies;
     if (!missing || missing.requirements.length === 0) {
       await vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
@@ -179,34 +249,85 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
       return false;
     }
-    if (confirmed !== true) {
-      if (confirmed === false) return false;
-      const choice = await vscode.window.showWarningMessage(
-        `Install ${missing.requirements.join(", ")} into ${missing.environment.executable}?`,
-        { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
-        "Install"
-      );
-      if (choice !== "Install") return false;
+    const selectionEpoch = this.selectionEpoch;
+    const executable = missing.environment.executable;
+    const requirements = [...missing.requirements];
+    if (!this.isCurrentDependencyInstallTarget(missing, selectionEpoch, executable, requirements)) {
+      await this.reportInvalidDependencyInstallTarget();
+      return false;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `Install ${requirements.join(", ")} into ${executable}?`,
+      { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
+      "Install"
+    );
+    if (choice !== "Install") return false;
+    if (!this.isCurrentDependencyInstallTarget(missing, selectionEpoch, executable, requirements)) {
+      await this.reportInvalidDependencyInstallTarget();
+      return false;
     }
 
+    let installationStarted = false;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
       async () => {
-        await execFileAsync(missing.environment.executable, ["-m", "pip", "install", ...missing.requirements], {
+        if (!this.isCurrentDependencyInstallTarget(missing, selectionEpoch, executable, requirements)) return;
+        installationStarted = true;
+        await this.executeFile(executable, ["-m", "pip", "install", ...requirements], {
           timeout: 10 * 60_000
         });
       }
     );
-    this.lastMissingDependencies = undefined;
-    this.dependencyCache.clear();
-    this.stopGracefully("Python dependencies changed; restarting the Open Wrangler runtime.");
-    await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
+    if (!installationStarted) {
+      await this.reportInvalidDependencyInstallTarget();
+      return false;
+    }
+    if (this.selectionEpoch === selectionEpoch) {
+      this.invalidateRuntimeSelection("Python dependencies changed; restarting the Open Wrangler runtime.", true);
+      if (!this.disposed) {
+        await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
+      }
+    } else if (!this.disposed) {
+      await vscode.window.showInformationMessage(
+        `Installed ${requirements.join(", ")} into ${executable}, but the active runtime selection, dependency target, or workspace trust changed and the current runtime was not restarted.`
+      );
+    }
     return true;
+  }
+
+  private isCurrentDependencyInstallTarget(
+    missing: MissingDependencies,
+    selectionEpoch: number,
+    executable: string,
+    requirements: readonly string[]
+  ): boolean {
+    return (
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      this.selectionEpoch === selectionEpoch &&
+      missing.selectionEpoch === selectionEpoch &&
+      this.lastMissingDependencies === missing &&
+      missing.environment.executable === executable &&
+      missing.requirements.length === requirements.length &&
+      missing.requirements.every((requirement, index) => requirement === requirements[index])
+    );
+  }
+
+  private async reportInvalidDependencyInstallTarget(): Promise<void> {
+    if (this.disposed) return;
+    if (!vscode.workspace.isTrusted) {
+      await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
+      return;
+    }
+    await vscode.window.showInformationMessage(
+      "The selected Python runtime or its missing dependencies changed before installation. Run Install Runtime Dependencies again."
+    );
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.configurationSubscription.dispose();
     this.stopGracefully("Open Wrangler runtime stopped.");
     this.output.dispose();
   }
@@ -409,27 +530,51 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
     if (request.kind !== "openSession" || request.source.kind !== "file") return request;
+    const selectionEpoch = this.selectionEpoch;
     const environment = await this.environment(sourceResource(request.source));
+    if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();
     const backends = request.backend ? [request.backend] : automaticBackends(request.source);
     const failures: Array<{ backend: DataBackend; missing: string[] }> = [];
     for (const backend of backends) {
+      if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();
       const dependencies = requiredDependencies(backend, request.source);
       const key = `${environment.executable}:${dependencies.map((dependency) => dependency.installSpec).join(",")}`;
       let missing = this.dependencyCache.get(key);
       if (!missing) {
-        missing = (await probeDependencies(environment.executable, dependencies)).missing;
+        const result = await probeDependencies(environment.executable, dependencies);
+        if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();
+        missing = result.missing;
         this.dependencyCache.set(key, missing);
       }
-      if (missing.length === 0) return { ...request, backend };
+      if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();
+      if (missing.length === 0) {
+        this.lastMissingDependencies = undefined;
+        return { ...request, backend };
+      }
       failures.push({ backend, missing });
     }
     const missing = [...new Set(failures.flatMap((failure) => failure.missing))];
-    this.lastMissingDependencies = { environment, requirements: failures[0]?.missing ?? missing };
+    if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();
+    this.lastMissingDependencies = {
+      environment,
+      requirements: [...(failures[0]?.missing ?? missing)],
+      selectionEpoch
+    };
     return {
       kind: "error",
       code: "missing_dependencies",
       message: `The selected Python ${environment.version} environment cannot open this source. Missing: ${missing.join(", ")}.`,
       detail: "Use Open Wrangler: Install Runtime Dependencies to review and confirm installation.",
+      recoverable: true
+    };
+  }
+
+  private runtimeSelectionChangedError(): ErrorResponse {
+    return {
+      kind: "error",
+      code: "runtime_selection_changed",
+      message: "The selected Python runtime changed while its dependencies were being checked.",
+      detail: "Retry the request with the current Open Wrangler runtime selection.",
       recoverable: true
     };
   }

@@ -1631,6 +1631,333 @@ describe("SessionCoordinator", () => {
     expect(openedBackends).toEqual([undefined, "duckdb"]);
   });
 
+  it("serializes concurrent recovery for sessions sharing one runtime delegate", async () => {
+    let openCount = 0;
+    let firstRecoveryRestoreStarted = false;
+    const firstRecoveryRestoreGate = deferred<void>();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        if (openCount <= 3) return openedResponse(`runtime-old-${openCount}`);
+        return openedResponse(`runtime-new-${openCount - 3}`);
+      }
+      if (request.kind === "getPage" && request.sessionId.startsWith("runtime-old-")) {
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: `Unknown session: ${request.sessionId}`,
+          recoverable: true,
+          sessionId: request.sessionId,
+          viewRequestId: request.viewRequestId
+        };
+      }
+      if (request.kind === "getPage" && request.sessionId === "runtime-new-1" && request.limit === 1) {
+        firstRecoveryRestoreStarted = true;
+        await firstRecoveryRestoreGate.promise;
+        return pageResponse(request, request.sessionId);
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened: SessionOpenedResponse[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const response = await bridge.request(openRequest);
+      if (response.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+      opened.push(response);
+    }
+
+    const recoveries = opened.map((session, index) =>
+      bridge.request({
+        kind: "getPage",
+        sessionId: session.metadata.sessionId,
+        revision: session.metadata.revision,
+        viewRequestId: `shared-runtime-recovery-${index}`,
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: session.metadata.filterModel
+      })
+    );
+
+    await vi.waitFor(() => expect(firstRecoveryRestoreStarted).toBe(true));
+    await Promise.resolve();
+    expect(openCount).toBe(4);
+    firstRecoveryRestoreGate.resolve();
+
+    await expect(Promise.all(recoveries)).resolves.toEqual(
+      opened.map((session, index) =>
+        expect.objectContaining({
+          kind: "page",
+          revision: session.metadata.revision,
+          viewRequestId: `shared-runtime-recovery-${index}`
+        })
+      )
+    );
+    expect(openCount).toBe(6);
+    expect(coordinator.diagnostics().sessions.map((session) => session.runtimeId)).toEqual([
+      "runtime-new-1",
+      "runtime-new-2",
+      "runtime-new-3"
+    ]);
+    await coordinator.shutdown();
+  });
+
+  it("keeps recovery concurrent for sessions backed by independent runtime delegates", async () => {
+    const recoveryRestoreGate = deferred<void>();
+    let activeRecoveryRestores = 0;
+    let enteredRecoveryRestores = 0;
+    let maximumConcurrentRecoveryRestores = 0;
+    const makeDelegate = (label: string): OpenWranglerBridge => {
+      let openCount = 0;
+      return {
+        request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (request.kind === "openSession") {
+            openCount += 1;
+            return openedResponse(`${label}-${openCount === 1 ? "old" : "new"}`);
+          }
+          if (request.kind === "getPage" && request.sessionId === `${label}-old`) {
+            return {
+              kind: "error",
+              code: "engine_error",
+              message: `Unknown session: ${request.sessionId}`,
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+          if (request.kind === "getPage" && request.limit === 1) {
+            enteredRecoveryRestores += 1;
+            activeRecoveryRestores += 1;
+            maximumConcurrentRecoveryRestores = Math.max(maximumConcurrentRecoveryRestores, activeRecoveryRestores);
+            try {
+              await recoveryRestoreGate.promise;
+              return pageResponse(request, request.sessionId);
+            } finally {
+              activeRecoveryRestores -= 1;
+            }
+          }
+          if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+          if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+          throw new Error(`Unexpected ${label} delegate request: ${request.kind}`);
+        })
+      };
+    };
+    const coordinator = new SessionCoordinator();
+    const firstBridge = coordinator.createBridge(makeDelegate("first-runtime"));
+    const secondBridge = coordinator.createBridge(makeDelegate("second-runtime"));
+    const firstOpened = await firstBridge.request(openRequest);
+    const secondOpened = await secondBridge.request(openRequest);
+    if (firstOpened.kind !== "sessionOpened" || secondOpened.kind !== "sessionOpened") {
+      throw new Error("Expected both independent sessions to open.");
+    }
+
+    const recoveries = Promise.all([
+      firstBridge.request({
+        kind: "getPage",
+        sessionId: firstOpened.metadata.sessionId,
+        revision: firstOpened.metadata.revision,
+        viewRequestId: "independent-recovery-first",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: firstOpened.metadata.filterModel
+      }),
+      secondBridge.request({
+        kind: "getPage",
+        sessionId: secondOpened.metadata.sessionId,
+        revision: secondOpened.metadata.revision,
+        viewRequestId: "independent-recovery-second",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: secondOpened.metadata.filterModel
+      })
+    ]);
+
+    try {
+      await vi.waitFor(() => expect(enteredRecoveryRestores).toBe(2));
+      expect(maximumConcurrentRecoveryRestores).toBe(2);
+    } finally {
+      recoveryRestoreGate.resolve();
+    }
+
+    await expect(recoveries).resolves.toEqual([
+      expect.objectContaining({ kind: "page", viewRequestId: "independent-recovery-first" }),
+      expect.objectContaining({ kind: "page", viewRequestId: "independent-recovery-second" })
+    ]);
+    expect(coordinator.diagnostics().sessions.map((session) => session.runtimeId)).toEqual([
+      "first-runtime-new",
+      "second-runtime-new"
+    ]);
+    await coordinator.shutdown();
+  });
+
+  it("does not establish a fresh session on a delegate while recovery is still restoring", async () => {
+    let openCount = 0;
+    let recoveryRestoreStarted = false;
+    const recoveryRestoreGate = deferred<void>();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        if (openCount === 1) return openedResponse("runtime-old");
+        if (openCount === 2) return openedResponse("runtime-recovery");
+        return openedResponse("runtime-fresh");
+      }
+      if (request.kind === "getPage" && request.sessionId === "runtime-old") {
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: `Unknown session: ${request.sessionId}`,
+          recoverable: true,
+          sessionId: request.sessionId,
+          viewRequestId: request.viewRequestId
+        };
+      }
+      if (request.kind === "getPage" && request.sessionId === "runtime-recovery" && request.limit === 1) {
+        recoveryRestoreStarted = true;
+        await recoveryRestoreGate.promise;
+        return pageResponse(request, request.sessionId);
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const onIdle = vi.fn();
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest, onIdle });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the original session to open.");
+    const recovery = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "recovery-before-fresh-open",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    const recoverySettlement = recovery.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason })
+    );
+
+    await vi.waitFor(() => expect(recoveryRestoreStarted).toBe(true));
+    const freshOpen = bridge.request({
+      ...openRequest,
+      source: { kind: "file", label: "fresh.csv", path: "/workspace/fresh.csv" }
+    });
+    const freshSettlement = freshOpen.then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason: unknown) => ({ status: "rejected" as const, reason })
+    );
+
+    try {
+      await Promise.resolve();
+      expect(openCount).toBe(2);
+    } finally {
+      recoveryRestoreGate.resolve();
+    }
+
+    const [recovered, fresh] = await Promise.all([recoverySettlement, freshSettlement]);
+    expect(recovered).toMatchObject({ status: "fulfilled", value: { kind: "page" } });
+    expect(fresh).toMatchObject({ status: "fulfilled", value: { kind: "sessionOpened" } });
+    expect(openCount).toBe(3);
+    expect(coordinator.diagnostics().sessions.map((session) => session.runtimeId)).toEqual([
+      "runtime-recovery",
+      "runtime-fresh"
+    ]);
+    await coordinator.shutdown();
+    expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  it("drains a serialized recovery chain before shutdown releases its runtime delegate", async () => {
+    let openCount = 0;
+    let recoveryRestoreStarted = false;
+    const recoveryRestoreGate = deferred<void>();
+    const events: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        return openedResponse(openCount <= 2 ? `runtime-old-${openCount}` : `runtime-candidate-${openCount - 2}`);
+      }
+      if (request.kind === "getPage" && request.sessionId.startsWith("runtime-old-")) {
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: `Unknown session: ${request.sessionId}`,
+          recoverable: true,
+          sessionId: request.sessionId,
+          viewRequestId: request.viewRequestId
+        };
+      }
+      if (request.kind === "getPage" && request.sessionId === "runtime-candidate-1" && request.limit === 1) {
+        recoveryRestoreStarted = true;
+        events.push("restore-candidate-1");
+        await recoveryRestoreGate.promise;
+        return pageResponse(request, request.sessionId);
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      if (request.kind === "closeSession") {
+        events.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const onIdle = vi.fn(() => events.push("idle"));
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest, onIdle });
+    const opened: SessionOpenedResponse[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const response = await bridge.request(openRequest);
+      if (response.kind !== "sessionOpened") throw new Error("Expected the original sessions to open.");
+      opened.push(response);
+    }
+
+    const recoverySettlements = Promise.allSettled(
+      opened.map((session, index) =>
+        bridge.request({
+          kind: "getPage",
+          sessionId: session.metadata.sessionId,
+          revision: session.metadata.revision,
+          viewRequestId: `shutdown-recovery-${index}`,
+          offset: 0,
+          limit: 100,
+          ...columnWindow,
+          filterModel: session.metadata.filterModel
+        })
+      )
+    );
+    await vi.waitFor(() => expect(recoveryRestoreStarted).toBe(true));
+
+    let shutdownSettled = false;
+    const shutdown = coordinator.shutdown(10_000).then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+    expect(onIdle).not.toHaveBeenCalled();
+    recoveryRestoreGate.resolve();
+
+    const [results] = await Promise.all([recoverySettlements, shutdown]);
+    expect(results).toEqual([
+      expect.objectContaining({ status: "fulfilled", value: expect.objectContaining({ kind: "error" }) }),
+      expect.objectContaining({ status: "fulfilled", value: expect.objectContaining({ kind: "error" }) })
+    ]);
+    expect(openCount).toBe(3);
+    expect(events).toContain("close-runtime-candidate-1");
+    expect(events).toContain("close-runtime-old-1");
+    expect(events).toContain("close-runtime-old-2");
+    expect(events.indexOf("close-runtime-candidate-1")).toBeLessThan(events.indexOf("close-runtime-old-1"));
+    expect(events.indexOf("close-runtime-candidate-1")).toBeLessThan(events.indexOf("close-runtime-old-2"));
+    expect(events.at(-1)).toBe("idle");
+    expect(onIdle).toHaveBeenCalledOnce();
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+  });
+
   it("rejects a background response from the runtime replaced by concurrent recovery", async () => {
     const oldStats = deferred<OpenWranglerResponse>();
     const executionOrder: string[] = [];
