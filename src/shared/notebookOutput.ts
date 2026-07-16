@@ -1,8 +1,8 @@
 import type { ColumnSummary, GridPage, SessionMetadata, SessionOpenedResponse } from "./protocol";
 
-export const DATA_EXPLORER_MIME_V1 = "application/vnd.data-explorer.viewer.v1+json";
-export const DATA_EXPLORER_MIME_V2 = "application/vnd.data-explorer.viewer.v2+json";
-export const DATA_EXPLORER_MIME = DATA_EXPLORER_MIME_V2;
+export const OPEN_WRANGLER_MIME_V1 = "application/vnd.data-explorer.viewer.v1+json";
+export const OPEN_WRANGLER_MIME_V2 = "application/vnd.data-explorer.viewer.v2+json";
+export const OPEN_WRANGLER_MIME = OPEN_WRANGLER_MIME_V2;
 
 export interface NotebookOutputPayload {
   mimeVersion: 1 | 2;

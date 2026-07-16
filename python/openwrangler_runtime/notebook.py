@@ -22,7 +22,7 @@ def show(
     variable_name: str | None = None,
     mime_version: Literal[1, 2] = 2,
 ) -> None:
-    """Display a deterministic dataframe snapshot using the Data Explorer renderer."""
+    """Display a deterministic dataframe snapshot using the Open Wrangler renderer."""
     payload = build_payload(value, label, backend, page_size, variable_name=variable_name, mime_version=mime_version)
     display({MIME_TYPE_V2 if mime_version == 2 else MIME_TYPE_V1: payload}, raw=True)
 
@@ -50,7 +50,7 @@ def build_payload(
         else next((candidate for candidate in manager.engines.values() if candidate.detect(value)), None)
     )
     if engine is None:
-        raise EngineError("Data Explorer notebook output supports Pandas and Polars dataframe or series values.")
+        raise EngineError("Open Wrangler notebook output supports Pandas and Polars dataframe or series values.")
     frame = getattr(engine, "normalize", lambda item: item)(value)
     filter_model = {"filters": [], "sort": []}
     filtered = engine.apply_filter_model(frame, filter_model)

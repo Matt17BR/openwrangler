@@ -1,12 +1,20 @@
 # Changelog
 
-All notable changes to Data Explorer are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
+All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
+
+## [0.2.0-alpha.2] - Unreleased
+
+### Changed
+
+- Renamed the product, VS Code package, bundled runtime, protocol schema, repository metadata, documentation, test harnesses, and release artifacts from Data Explorer to Open Wrangler.
+- Added canonical `openWrangler.*` commands and settings while retaining `dataExplorer.*`, the prior custom-editor ID, persisted workspace plans, and both existing notebook MIME identifiers as compatibility interfaces.
+- Refreshed the product description to state the open-source dataframe-wrangling purpose directly and documented the project's independent inspiration from Microsoft Data Wrangler.
 
 ## [0.2.0-alpha.1] - 2026-07-15
 
 ### Added
 
-- Data Explorer 1.0 parity milestone, contributor guardrails, CI, release automation, and documentation ownership.
+- Initial 1.0 parity milestone, contributor guardrails, CI, release automation, and documentation ownership.
 - Original extension and Activity Bar icon sources.
 - Strict TypeScript, Python, formatting, documentation, and VSIX-content checks.
 - Protocol v2 JSON Schema, generated TypeScript contract, explicit Python validation, typed cell encodings, request cancellation, timeouts, and structured diagnostics.

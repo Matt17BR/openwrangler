@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  DATA_EXPLORER_MIME,
-  DATA_EXPLORER_MIME_V1,
-  DATA_EXPLORER_MIME_V2,
+  OPEN_WRANGLER_MIME,
+  OPEN_WRANGLER_MIME_V1,
+  OPEN_WRANGLER_MIME_V2,
   normalizeNotebookOutputPayload,
   notebookPayloadAsOpened
 } from "../shared/notebookOutput";
@@ -44,8 +44,8 @@ const metadata = {
 
 describe("notebook output compatibility", () => {
   it("uses MIME v2 for new outputs", () => {
-    expect(DATA_EXPLORER_MIME).toBe(DATA_EXPLORER_MIME_V2);
-    expect(DATA_EXPLORER_MIME_V1).not.toBe(DATA_EXPLORER_MIME_V2);
+    expect(OPEN_WRANGLER_MIME).toBe(OPEN_WRANGLER_MIME_V2);
+    expect(OPEN_WRANGLER_MIME_V1).not.toBe(OPEN_WRANGLER_MIME_V2);
     const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [] });
     expect(normalized?.mimeVersion).toBe(2);
     expect(notebookPayloadAsOpened(normalized!).kind).toBe("sessionOpened");

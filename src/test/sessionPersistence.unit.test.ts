@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { SessionMetadata } from "../shared/protocol";
-import { decodePersistedSession, persistedStateFromMetadata, persistenceKey } from "../extension/sessionPersistence";
+import {
+  decodePersistedSession,
+  LEGACY_SESSION_STORAGE_KEY,
+  persistedStateFromMetadata,
+  persistenceKey,
+  SESSION_STORAGE_KEY
+} from "../extension/sessionPersistence";
 
 const metadata: SessionMetadata = {
   protocolVersion: 2,
@@ -29,6 +35,11 @@ const metadata: SessionMetadata = {
 };
 
 describe("session persistence", () => {
+  it("uses a canonical Open Wrangler key while retaining the prior key for migration", () => {
+    expect(SESSION_STORAGE_KEY).toBe("openWrangler.persistedSessions.v2");
+    expect(LEGACY_SESSION_STORAGE_KEY).toBe("dataExplorer.persistedSessions.v2");
+  });
+
   it("uses source identity and import options as a stable storage key", () => {
     const source = {
       kind: "file" as const,

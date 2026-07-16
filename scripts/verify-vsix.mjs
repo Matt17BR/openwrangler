@@ -27,10 +27,10 @@ const allowed = [
   /^extension\/media\/$/u,
   /^extension\/media\/(activity-icon\.svg|codicon\.ttf|icon(-128)?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|webview\.(css|js))$/u,
   /^extension\/python\/$/u,
-  /^extension\/python\/data_wrangler_runtime\/$/u,
-  /^extension\/python\/data_wrangler_runtime\/[^/]+\.py$/u,
-  /^extension\/python\/data_wrangler_runtime\/engines\/$/u,
-  /^extension\/python\/data_wrangler_runtime\/engines\/[^/]+\.py$/u
+  /^extension\/python\/openwrangler_runtime\/$/u,
+  /^extension\/python\/openwrangler_runtime\/[^/]+\.py$/u,
+  /^extension\/python\/openwrangler_runtime\/engines\/$/u,
+  /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u
 ];
 const forbidden = entries.filter((entry) => !allowed.some((pattern) => pattern.test(entry)));
 const required = [
@@ -39,7 +39,7 @@ const required = [
   "extension/media/webview.js",
   "extension/media/webview.css",
   "extension/media/icon.png",
-  "extension/python/data_wrangler_runtime/server.py"
+  "extension/python/openwrangler_runtime/server.py"
 ];
 const missing = required.filter((entry) => !entries.includes(entry));
 

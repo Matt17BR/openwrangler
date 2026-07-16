@@ -21,7 +21,7 @@ const localPython =
     ? resolve(root, ".venv", "Scripts", "python.exe")
     : resolve(root, ".venv", "bin", "python");
 const python =
-  [process.env.DATA_EXPLORER_PYTHON, hostedPython, localPython].find(
+  [process.env.OPEN_WRANGLER_PYTHON, hostedPython, localPython].find(
     (candidate) => candidate && existsSync(candidate)
   ) ?? (process.platform === "win32" ? "python" : "python3");
 const chrome = process.env.CHROME_BIN ?? chromium.executablePath();
@@ -42,7 +42,7 @@ from pathlib import Path
 import nbformat
 from nbclient import NotebookClient
 import polars as pl
-from data_wrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import SessionManager
 
 root = Path.cwd()
 manager = SessionManager()
@@ -195,7 +195,7 @@ for cell in notebook.cells:
     if mime_payload:
         break
 if mime_payload is None:
-    raise RuntimeError("Notebook did not emit a Data Explorer MIME payload")
+    raise RuntimeError("Notebook did not emit a Open Wrangler MIME payload")
 legacy_mime_payload = dict(mime_payload)
 legacy_mime_payload.pop("mimeVersion", None)
 legacy_mime_payload["metadata"] = {
@@ -280,7 +280,7 @@ writeWebviewHarness(
   {
     kind: "error",
     code: "fixture_error",
-    message: "Data Explorer could not read this malformed fixture. Review the delimiter and encoding settings.",
+    message: "Open Wrangler could not read this malformed fixture. Review the delimiter and encoding settings.",
     recoverable: true
   },
   {},
@@ -352,7 +352,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Data Explorer webview acceptance</title>
+  <title>Open Wrangler webview acceptance</title>
   <link rel="stylesheet" href="${mediaDir}/webview.css" />
   <style>
     ${themeTokens(theme)}
@@ -360,13 +360,13 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   </style>
   <script>
     const sessionPayload = ${JSON.stringify(sessionPayload)};
-    window.dataExplorerSessionPayload = sessionPayload;
+    window.openWranglerSessionPayload = sessionPayload;
     const columnValues = ${JSON.stringify(columnValues)};
     const pages = ${JSON.stringify(suppliedPages)};
-    window.dataExplorerMessages = [];
+    window.openWranglerMessages = [];
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
-        window.dataExplorerMessages.push(message);
+        window.openWranglerMessages.push(message);
         if (message.kind === "ready") {
           ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);'}
           ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}
@@ -422,7 +422,7 @@ function writeNotebookHarness(fileName, payload, outputName) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Data Explorer notebook renderer acceptance</title>
+  <title>Open Wrangler notebook renderer acceptance</title>
   <style>
     :root {
       --vscode-panel-border: #3c3c3c;
@@ -433,9 +433,9 @@ function writeNotebookHarness(fileName, payload, outputName) {
     body { margin: 0; padding: 32px; background: #1e1e1e; }
     .notebook-shell { border: 1px solid #3c3c3c; border-radius: 10px; overflow: hidden; background: #202020; }
     .cell { padding: 18px 22px; border-bottom: 1px solid #3c3c3c; font-family: "Liberation Mono", monospace; white-space: pre; color: #d4d4d4; }
-    .data-explorer-notebook header { padding: 14px 18px; background: #252526; font-weight: 700; }
-    .data-explorer-notebook table { background: #202020; }
-    .data-explorer-notebook th { background: #2d2d30; }
+    .openwrangler-notebook header { padding: 14px 18px; background: #252526; font-weight: 700; }
+    .openwrangler-notebook table { background: #202020; }
+    .openwrangler-notebook th { background: #2d2d30; }
   </style>
 </head>
 <body>
@@ -443,7 +443,7 @@ function writeNotebookHarness(fileName, payload, outputName) {
     <div class="cell">from pathlib import Path
 
 import polars as pl
-from data_wrangler_runtime.notebook import show
+from openwrangler_runtime.notebook import show
 
 candidates = (Path("fixtures/sample.csv"), Path("sample.csv"))
 csv_path = next((path for path in candidates if path.exists()), None)
@@ -456,9 +456,9 @@ show(df, label="sample.csv")</div>
   </div>
   <script type="module">
     import { activate } from "${rendererUrl}";
-    window.dataExplorerNotebookMessages = [];
+    window.openWranglerNotebookMessages = [];
     const renderer = activate({
-      postMessage(message) { window.dataExplorerNotebookMessages.push(message); }
+      postMessage(message) { window.openWranglerNotebookMessages.push(message); }
     });
     renderer.renderOutputItem({ json: () => (${JSON.stringify(payload)}) }, document.getElementById("notebook-output"));
   </script>
@@ -476,7 +476,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Data Explorer code preview acceptance</title>
+  <title>Open Wrangler code preview acceptance</title>
   <style>
     ${themeTokens("dark")}
     html, body, #root { height: 100%; margin: 0; overflow: hidden; background: var(--vscode-editor-background); }

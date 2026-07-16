@@ -4,8 +4,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-import data_wrangler_runtime.notebook as notebook
-from data_wrangler_runtime.engines import EngineError
+import openwrangler_runtime.notebook as notebook
+from openwrangler_runtime.engines import EngineError
 
 
 @pytest.mark.parametrize(

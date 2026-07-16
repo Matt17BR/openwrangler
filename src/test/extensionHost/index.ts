@@ -6,10 +6,10 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { chromium } from "playwright-core";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
-import { DATA_EXPLORER_MIME_V1, DATA_EXPLORER_MIME_V2 } from "../../shared/notebookOutput";
+import { OPEN_WRANGLER_MIME_V1, OPEN_WRANGLER_MIME_V2 } from "../../shared/notebookOutput";
 import type {
-  DataExplorerRequest,
-  DataExplorerResponse,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
   FilterModel,
   SessionMetadata,
   SessionSource,
@@ -17,7 +17,7 @@ import type {
 } from "../../shared/protocol";
 
 interface TestApi {
-  request(request: DataExplorerRequest): Promise<DataExplorerResponse>;
+  request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
   setActiveSession(sessionId: string | undefined): void;
   activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
   diagnostics(): {
@@ -46,48 +46,53 @@ interface FakeJupyterApi {
 }
 
 export async function run(): Promise<void> {
-  const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.data-explorer");
-  assert.ok(extension, "The Data Explorer extension must be discoverable.");
+  const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
+  assert.ok(extension, "The Open Wrangler extension must be discoverable.");
   const extensionApi = await extension.activate();
   const testing = extensionApi?.testing;
   assert.ok(testing, "The isolated acceptance harness must enable the test-only extension API.");
   assert.equal(extension.isActive, true, "The extension must activate successfully.");
+  assert.equal(extension.packageJSON.name, "openwrangler");
+  assert.equal(extension.packageJSON.displayName, "Open Wrangler");
+  assert.match(extension.packageJSON.description, /open-source dataframe wrangler/i);
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
-  const testPython = process.env.DATA_EXPLORER_TEST_PYTHON;
+  const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
   if (testPython) {
     await vscode.workspace
-      .getConfiguration("dataExplorer")
+      .getConfiguration("openWrangler")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   }
 
   const commands = await vscode.commands.getCommands(true);
   for (const command of [
-    "dataExplorer.openPath",
-    "dataExplorer.openFile",
-    "dataExplorer.launchDataViewer",
-    "dataExplorer.openNotebookVariable",
-    "dataExplorer.checkJupyterIntegration",
-    "dataExplorer.changeRuntime",
-    "dataExplorer.clearRuntime",
-    "dataExplorer.installRuntimeDependencies",
-    "dataExplorer.startOperation",
-    "dataExplorer.applyStep",
-    "dataExplorer.discardStep",
-    "dataExplorer.editLatestStep",
-    "dataExplorer.undoStep",
-    "dataExplorer.copyCode",
-    "dataExplorer.exportCode",
-    "dataExplorer.insertNotebookCode",
-    "dataExplorer.exportData",
-    "dataExplorer.openSourceFile",
-    "dataExplorer.openWalkthrough",
-    "dataExplorer.openSettings",
-    "dataExplorer.reportIssue"
+    "openWrangler.openPath",
+    "openWrangler.openFile",
+    "openWrangler.launchDataViewer",
+    "openWrangler.openNotebookVariable",
+    "openWrangler.checkJupyterIntegration",
+    "openWrangler.changeRuntime",
+    "openWrangler.clearRuntime",
+    "openWrangler.installRuntimeDependencies",
+    "openWrangler.startOperation",
+    "openWrangler.applyStep",
+    "openWrangler.discardStep",
+    "openWrangler.editLatestStep",
+    "openWrangler.undoStep",
+    "openWrangler.copyCode",
+    "openWrangler.exportCode",
+    "openWrangler.insertNotebookCode",
+    "openWrangler.exportData",
+    "openWrangler.openSourceFile",
+    "openWrangler.openWalkthrough",
+    "openWrangler.openSettings",
+    "openWrangler.reportIssue"
   ]) {
     assert.ok(commands.includes(command), `Expected registered command: ${command}`);
+    const legacyCommand = command.replace("openWrangler.", "dataExplorer.");
+    assert.ok(commands.includes(legacyCommand), `Expected compatibility command: ${legacyCommand}`);
   }
 
   const contributions = extension.packageJSON.contributes as {
@@ -99,15 +104,15 @@ export async function run(): Promise<void> {
   };
   assert.ok(
     contributions.viewsContainers?.activitybar?.some(
-      (container) => container.id === "dataExplorer" && container.icon === "media/activity-icon.svg"
+      (container) => container.id === "openWrangler" && container.icon === "media/activity-icon.svg"
     )
   );
   assert.deepEqual(
-    contributions.views?.dataExplorer?.map((view) => view.id),
-    ["dataExplorer.operations", "dataExplorer.summary", "dataExplorer.filters", "dataExplorer.cleaningSteps"]
+    contributions.views?.openWrangler?.map((view) => view.id),
+    ["openWrangler.operations", "openWrangler.summary", "openWrangler.filters", "openWrangler.cleaningSteps"]
   );
-  assert.ok(contributions.configuration?.properties?.["dataExplorer.fetchBlockSize"]);
-  assert.ok(contributions.configuration?.properties?.["dataExplorer.filterMode"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
   assert.deepEqual(
     contributions.keybindings?.map((binding) => ({
       command: binding.command,
@@ -117,28 +122,28 @@ export async function run(): Promise<void> {
     })),
     [
       {
-        command: "dataExplorer.applyStep",
+        command: "openWrangler.applyStep",
         key: "ctrl+enter",
         mac: "cmd+enter",
-        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+        when: "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
-        command: "dataExplorer.discardStep",
+        command: "openWrangler.discardStep",
         key: "escape",
         mac: undefined,
-        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.hasDraft"
+        when: "activeCustomEditor == openWrangler.viewer && openWrangler.hasDraft"
       },
       {
-        command: "dataExplorer.editLatestStep",
+        command: "openWrangler.editLatestStep",
         key: "ctrl+shift+e",
         mac: "cmd+shift+e",
-        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+        when: "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
       },
       {
-        command: "dataExplorer.undoStep",
+        command: "openWrangler.undoStep",
         key: "ctrl+alt+z",
         mac: "cmd+alt+z",
-        when: "activeCustomEditor == dataExplorer.viewer && dataExplorer.canChangePlan"
+        when: "activeCustomEditor == openWrangler.viewer && openWrangler.canChangePlan"
       }
     ]
   );
@@ -155,30 +160,30 @@ export async function run(): Promise<void> {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
-  const phase = process.env.DATA_EXPLORER_TEST_PHASE ?? "verify";
+  const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
   if (phase === "seed") {
     await seedPersistedPlan(testing, fixture);
-    console.log("Data Explorer extension-host persistence seed passed.");
+    console.log("Open Wrangler extension-host persistence seed passed.");
     return;
   }
 
   if (phase === "single") await seedPersistedPlan(testing, fixture);
   await verifyPersistedReplayAndRecovery(testing, workspace, fixture);
-  await vscode.commands.executeCommand("vscode.openWith", fixture, "dataExplorer.viewer", vscode.ViewColumn.One);
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => {
       const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-      return input instanceof vscode.TabInputCustom && input.viewType === "dataExplorer.viewer";
+      return input instanceof vscode.TabInputCustom && input.viewType === "openWrangler.viewer";
     },
     45_000,
-    "the Data Explorer custom editor"
+    "the Open Wrangler custom editor"
   );
 
   const activeInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   assert.ok(activeInput instanceof vscode.TabInputCustom);
-  assert.equal(activeInput.viewType, "dataExplorer.viewer");
+  assert.equal(activeInput.viewType, "openWrangler.viewer");
   assert.equal(path.basename(activeInput.uri.fsPath), "sample.csv");
-  await vscode.commands.executeCommand("dataExplorer.openSourceFile");
+  await vscode.commands.executeCommand("openWrangler.openSourceFile");
   await waitFor(
     () => {
       const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
@@ -204,11 +209,11 @@ export async function run(): Promise<void> {
   await exercisePackagedViewingQueries(testing, fixture);
   await exercisePackagedOperationGroups(testing, fixture);
   await exercisePackagedNotebookFlows(testing);
-  if (process.env.DATA_EXPLORER_CAPTURE_EDITOR_SCREENSHOTS) {
-    await capturePackagedEditorScreenshots(testing, fixture, process.env.DATA_EXPLORER_CAPTURE_EDITOR_SCREENSHOTS);
+  if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+    await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
 
-  console.log("Data Explorer extension-host acceptance passed.");
+  console.log("Open Wrangler extension-host acceptance passed.");
 }
 
 async function capturePackagedEditorScreenshots(
@@ -218,13 +223,13 @@ async function capturePackagedEditorScreenshots(
 ): Promise<void> {
   if (process.platform !== "linux") return;
   mkdirSync(outputDirectory, { recursive: true });
-  await vscode.commands.executeCommand("vscode.openWith", fixture, "dataExplorer.viewer", vscode.ViewColumn.One);
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
     30_000,
     "the custom editor before screenshot capture"
   );
-  await vscode.commands.executeCommand("workbench.view.extension.dataExplorer");
+  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
 
   const workbench = vscode.workspace.getConfiguration("workbench");
   const windowConfiguration = vscode.workspace.getConfiguration("window");
@@ -232,8 +237,8 @@ async function capturePackagedEditorScreenshots(
   const originalZoom = windowConfiguration.get<number>("zoomLevel");
   const originalAutoDetectColorScheme = windowConfiguration.get<boolean>("autoDetectColorScheme");
   const originalAutoDetectHighContrast = windowConfiguration.get<boolean>("autoDetectHighContrast");
-  const editor = process.env.DATA_EXPLORER_TEST_EDITOR ?? "editor";
-  const cdpPort = Number(process.env.DATA_EXPLORER_EDITOR_CDP_PORT);
+  const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
+  const cdpPort = Number(process.env.OPEN_WRANGLER_EDITOR_CDP_PORT);
   assert.ok(Number.isInteger(cdpPort) && cdpPort > 0, "Editor screenshot capture requires a CDP port.");
   const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   const pages = browser.contexts().flatMap((context) => context.pages());
@@ -329,9 +334,9 @@ async function capturePackagedEditorScreenshots(
 }
 
 async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
-  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-notebook-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-notebook-"));
   const notebookPath = path.join(directory, "notebook-acceptance.ipynb");
-  const configuration = vscode.workspace.getConfiguration("dataExplorer");
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
   const page = {
     offset: 0,
@@ -398,9 +403,9 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
               output_type: "display_data",
               metadata: {},
               data: {
-                "text/plain": ["Data Explorer saved output"],
-                [DATA_EXPLORER_MIME_V1]: legacyPayload,
-                [DATA_EXPLORER_MIME_V2]: currentPayload
+                "text/plain": ["Open Wrangler saved output"],
+                [OPEN_WRANGLER_MIME_V1]: legacyPayload,
+                [OPEN_WRANGLER_MIME_V2]: currentPayload
               }
             }
           ],
@@ -418,8 +423,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     const notebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
     await vscode.window.showNotebookDocument(notebook);
     const outputMimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
-    assert.ok(outputMimes.includes(DATA_EXPLORER_MIME_V1), "Saved MIME v1 output must remain readable.");
-    assert.ok(outputMimes.includes(DATA_EXPLORER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
+    assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V1), "Saved MIME v1 output must remain readable.");
+    assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
 
     const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
       source: "df",
@@ -428,7 +433,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(inserted, true);
     assert.equal(notebook.cellCount, 2);
     assert.equal(notebook.cellAt(1).document.getText(), "def clean_data(df):\n    return df\n");
-    assert.deepEqual(notebook.cellAt(1).metadata.dataExplorer, {
+    assert.deepEqual(notebook.cellAt(1).metadata.openWrangler, {
       source: "df",
       backend: "polars",
       generated: true
@@ -445,7 +450,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     ].join("\n");
     await jupyter.testing.execute(notebook.uri, setupCode);
 
-    await vscode.commands.executeCommand("dataExplorer.launchDataViewer", {
+    await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
       notebookUri: notebook.uri
     });
@@ -495,14 +500,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     const editedNotebookCode = "# edited notebook export\ndef clean_data(df):\n    return df\n";
     testing.setCodeForExport(editedNotebookCode);
     const insertionIndex = notebook.cellCount;
-    await vscode.commands.executeCommand("dataExplorer.insertNotebookCode");
+    await vscode.commands.executeCommand("openWrangler.insertNotebookCode");
     await waitFor(
       () => notebook.cellCount === insertionIndex + 1,
       10_000,
       "the notebook export command to insert a cell"
     );
     assert.equal(notebook.cellAt(insertionIndex).document.getText(), editedNotebookCode);
-    assert.deepEqual(notebook.cellAt(insertionIndex).metadata.dataExplorer, {
+    assert.deepEqual(notebook.cellAt(insertionIndex).metadata.openWrangler, {
       source: "pandas_frame",
       backend: "pandas",
       generated: true
@@ -516,7 +521,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
 
-    await vscode.commands.executeCommand("dataExplorer.launchDataViewer", {
+    await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "polars_frame",
       notebookUri: notebook.uri
     });
@@ -553,7 +558,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
 
     const denialCalls = jupyter.testing.denialCalls();
     jupyter.testing.setDenied(true);
-    await vscode.commands.executeCommand("dataExplorer.launchDataViewer", {
+    await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
       notebookUri: notebook.uri
     });
@@ -742,7 +747,7 @@ async function verifyPersistedReplayAndRecovery(
     assert.notEqual(after.runtimeId, before.runtimeId, `Expected runtime replay for ${before.sourceLabel}.`);
   }
 
-  const exportDirectory = mkdtempSync(path.join(tmpdir(), "data-explorer-export-"));
+  const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-export-"));
   try {
     for (const target of [
       {
@@ -807,8 +812,8 @@ async function verifyPersistedReplayAndRecovery(
 }
 
 async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Uri, python: string): Promise<void> {
-  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-file-inputs-"));
-  const config = vscode.workspace.getConfiguration("dataExplorer");
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-inputs-"));
+  const config = vscode.workspace.getConfiguration("openWrangler");
   const originalBackend = config.get<"auto" | "polars" | "pandas">("defaultBackend", "auto");
   try {
     execFileSync(
@@ -863,7 +868,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       await vscode.commands.executeCommand(
         "vscode.openWith",
         fixture.uri,
-        "dataExplorer.viewer",
+        "openWrangler.viewer",
         vscode.ViewColumn.One
       );
       await waitFor(
@@ -893,15 +898,15 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
 }
 
 async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscode.Uri, python: string): Promise<void> {
-  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-runtime-selection-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-runtime-selection-"));
   const isolatedPython = path.join(directory, "python-without-site-packages");
   const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
   writeFileSync(isolatedPython, `#!/bin/sh\nexec ${quotedPython} -I -S "$@"\n`);
   chmodSync(isolatedPython, 0o755);
 
   try {
-    assert.equal(await vscode.commands.executeCommand("dataExplorer.changeRuntime", isolatedPython), isolatedPython);
-    const config = vscode.workspace.getConfiguration("dataExplorer");
+    assert.equal(await vscode.commands.executeCommand("openWrangler.changeRuntime", isolatedPython), isolatedPython);
+    const config = vscode.workspace.getConfiguration("openWrangler");
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, isolatedPython);
 
     const rejected = await testing.request({
@@ -919,16 +924,16 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     }
     assert.equal(testing.runtimeRunning(), false, "Missing dependencies must fail before runtime startup.");
     assert.equal(
-      await vscode.commands.executeCommand("dataExplorer.installRuntimeDependencies", false),
+      await vscode.commands.executeCommand("openWrangler.installRuntimeDependencies", false),
       false,
       "A declined dependency prompt must not install or restart anything."
     );
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, isolatedPython);
 
-    assert.equal(await vscode.commands.executeCommand("dataExplorer.clearRuntime"), true);
+    assert.equal(await vscode.commands.executeCommand("openWrangler.clearRuntime"), true);
     assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, undefined);
     assert.equal(
-      vscode.workspace.getConfiguration("dataExplorer").get<string>("pythonPath"),
+      vscode.workspace.getConfiguration("openWrangler").get<string>("pythonPath"),
       python,
       "Clearing the workspace override must reveal the fallback."
     );
@@ -1047,7 +1052,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 }
 
 async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: vscode.Uri): Promise<void> {
-  const directory = mkdtempSync(path.join(tmpdir(), "data-explorer-operation-groups-"));
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-operation-groups-"));
   const sourcePath = path.join(directory, "operations.csv");
   const original = readFileSync(sourceFixture.fsPath, "utf8");
   writeFileSync(sourcePath, original);
@@ -1179,10 +1184,10 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
 
       const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
       testing.setCodeForExport(editedCode);
-      await vscode.commands.executeCommand("dataExplorer.copyCode");
+      await vscode.commands.executeCommand("openWrangler.copyCode");
       assert.equal(await vscode.env.clipboard.readText(), editedCode, `${backend} must copy the edited code buffer.`);
       const scriptPath = path.join(directory, `${backend}.clean.py`);
-      await vscode.commands.executeCommand("dataExplorer.exportCode", vscode.Uri.file(scriptPath));
+      await vscode.commands.executeCommand("openWrangler.exportCode", vscode.Uri.file(scriptPath));
       assert.equal(readFileSync(scriptPath, "utf8"), editedCode, `${backend} must export the edited code buffer.`);
 
       const closed = await testing.request({

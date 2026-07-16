@@ -1,7 +1,7 @@
 export {
-  DATA_EXPLORER_MIME,
-  DATA_EXPLORER_MIME_V1,
-  DATA_EXPLORER_MIME_V2,
+  OPEN_WRANGLER_MIME,
+  OPEN_WRANGLER_MIME_V1,
+  OPEN_WRANGLER_MIME_V2,
   normalizeNotebookOutputPayload,
   notebookPayloadAsOpened
 } from "../../shared/notebookOutput";

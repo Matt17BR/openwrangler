@@ -34,7 +34,7 @@ export async function resolvePythonEnvironment(
   context: vscode.ExtensionContext,
   resource?: vscode.Uri
 ): Promise<PythonEnvironment> {
-  const configured = vscode.workspace.getConfiguration("dataExplorer", resource).get<string>("pythonPath", "").trim();
+  const configured = vscode.workspace.getConfiguration("openWrangler", resource).get<string>("pythonPath", "").trim();
   if (configured) {
     const executable = resolvePythonExecutable(
       configured,
@@ -102,7 +102,7 @@ async function probeEnvironment(executable: string, source: PythonEnvironment["s
   }
   const [major, minor, patch] = JSON.parse(stdout) as [number, number, number];
   if (!isSupportedPythonVersion(major, minor)) {
-    throw new Error(`${executable} is Python ${major}.${minor}.${patch}; Data Explorer requires Python 3.10-3.14.`);
+    throw new Error(`${executable} is Python ${major}.${minor}.${patch}; Open Wrangler requires Python 3.10-3.14.`);
   }
   return { executable, version: `${major}.${minor}.${patch}`, source };
 }
