@@ -35,7 +35,8 @@ export function snapshotColumnValues(
   rows: DataRow[],
   model: FilterModel,
   column: string,
-  search?: string
+  search?: string,
+  viewRequestId = "snapshot"
 ): ValuesResponse {
   const index = metadata.schema.findIndex((schema) => schema.name === column);
   const searchText = search?.toLowerCase() ?? "";
@@ -54,6 +55,7 @@ export function snapshotColumnValues(
   return {
     kind: "columnValues",
     revision: metadata.revision,
+    viewRequestId,
     column,
     values: [...counts.entries()]
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))

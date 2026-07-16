@@ -56,6 +56,11 @@ opened = manager.open_session(
     backend="polars",
     page_size=4,
 )
+opened["harnessSummaries"] = manager.get_summary(
+    opened["metadata"]["sessionId"],
+    opened["metadata"]["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
 filter_model = {
     "logic": "and",
     "filters": [
@@ -167,6 +172,11 @@ empty = manager.open_session(
     backend="polars",
     page_size=20,
 )
+empty["harnessSummaries"] = manager.get_summary(
+    empty["metadata"]["sessionId"],
+    empty["metadata"]["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
 
 unicode_path = root / "tmp" / "screenshots" / "unicode.csv"
 pl.DataFrame({
@@ -183,6 +193,11 @@ unicode = manager.open_session(
     backend="polars",
     page_size=20,
 )
+unicode["harnessSummaries"] = manager.get_summary(
+    unicode["metadata"]["sessionId"],
+    unicode["metadata"]["revision"],
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
 
 notebook = nbformat.read(root / "fixtures" / "example.ipynb", as_version=4)
 client = NotebookClient(notebook, timeout=60, kernel_name="python3", resources={"metadata": {"path": str(root)}})
@@ -206,6 +221,7 @@ print(json.dumps({
         "metadata": filtered_page["metadata"],
         "page": filtered_page["page"],
         "summaries": filtered_summary["summaries"],
+        "harnessSummaries": filtered_summary["summaries"],
     },
     "values": values,
     "draft": draft,
@@ -251,7 +267,9 @@ writeWebviewHarness(
   "filter-panel.html",
   payloads.filtered,
   { [payloads.values.column]: payloads.values },
-  "filter-panel.png"
+  "filter-panel.png",
+  {},
+  { openColumnFilter: "city" }
 );
 writeNotebookHarness("notebook-preview.html", payloads.notebook, "notebook-preview.png");
 writeWebviewHarness("wide-view.html", payloads.wide, {}, "wide-grid.png", payloads.widePages);
@@ -337,6 +355,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const width = appearance.width ?? 1280;
   const height = appearance.height ?? 760;
   const editorAction = appearance.editorAction;
+  const openColumnFilter = appearance.openColumnFilter;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -351,6 +370,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   <script>
     const sessionPayload = ${JSON.stringify(sessionPayload)};
     window.openWranglerSessionPayload = sessionPayload;
+    const profileSummaries = sessionPayload.harnessSummaries ?? sessionPayload.summaries ?? [];
     const columnValues = ${JSON.stringify(columnValues)};
     const pages = ${JSON.stringify(suppliedPages)};
     window.openWranglerMessages = [];
@@ -361,31 +381,43 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload })), 20);'}
           ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)} })), 90);` : ""}
           ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)} })), 120);` : ""}
-          for (const value of Object.values(columnValues)) {
-            setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: value })), 80);
+          ${
+            openColumnFilter
+              ? `setTimeout(() => {
+            const header = document.querySelector(${JSON.stringify(`th[data-column="${openColumnFilter}"]`)});
+            const menu = header?.querySelector("details");
+            if (menu) menu.open = true;
+            const filter = [...(header?.querySelectorAll("button") ?? [])]
+              .find(button => button.textContent?.trim() === "Filter…");
+            filter?.focus();
+            filter?.click();
+          }, 100);`
+              : ""
           }
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getColumnValues") {
           const value = columnValues[message.request.column];
           if (value) {
-            setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: value })), 20);
+            setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
+              data: { ...value, viewRequestId: message.request.viewRequestId }
+            })), 20);
           }
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getPage") {
           const metadata = { ...sessionPayload.metadata, filterModel: message.request.filterModel };
           const page = pages[String(message.request.offset)] ?? sessionPayload.page;
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "page", revision: metadata.revision, metadata, page }
+            data: { kind: "page", revision: metadata.revision, viewRequestId: message.request.viewRequestId, metadata, page }
           })), 20);
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getSummary") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "summary", revision: sessionPayload.metadata.revision, summaries: sessionPayload.summaries }
+            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columns?.includes(summary.column)) }
           })), 20);
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getDatasetStats") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "datasetStats", revision: sessionPayload.metadata.revision, stats: sessionPayload.metadata.stats }
+            data: { kind: "datasetStats", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, stats: sessionPayload.metadata.stats }
           })), 20);
         }
       },
@@ -396,7 +428,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 </head>
 <body data-fetch-block-size="200" data-default-column-width="190" data-insights-on-open="true" data-filter-mode="advanced">
   <div id="root"></div>
-  <script src="${mediaDir}/webview.js"></script>
+  <script type="module" src="${mediaDir}/webview.js"></script>
 </body>
 </html>`;
   writeFileSync(htmlPath, html);

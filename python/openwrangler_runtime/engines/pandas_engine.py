@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from math import isfinite
+from copy import deepcopy
+from math import isfinite, isnan
+from numbers import Real
 from pathlib import Path
 from typing import Any, Literal
 
@@ -117,8 +119,10 @@ class PandasEngine(DataFrameEngine):
             ):
                 selected = [str(value) for value in value_filter.get("selectedValues", [])]
                 current = series.astype(str).isin(selected)
-                if value_filter.get("includeNulls") or value_filter.get("includeNaN"):
-                    current = current | series.isna()
+                if value_filter.get("includeNulls"):
+                    current = current | _null_mask(series)
+                if value_filter.get("includeNaN"):
+                    current = current | _nan_mask(series)
                 conditions.append(current)
 
             for predicate in column_filter.get("predicates", []):
@@ -154,7 +158,14 @@ class PandasEngine(DataFrameEngine):
                     )
         return filtered
 
-    def page(self, frame: Any, offset: int, limit: int) -> dict[str, Any]:
+    def page(
+        self,
+        frame: Any,
+        offset: int,
+        limit: int,
+        *,
+        total_rows: int | None = None,
+    ) -> dict[str, Any]:
         df = self.normalize(frame)
         sliced = df.iloc[offset : offset + limit]
         positions = self._visible_positions(df)
@@ -171,7 +182,7 @@ class PandasEngine(DataFrameEngine):
         return {
             "offset": offset,
             "limit": limit,
-            "totalRows": int(df.shape[0]),
+            "totalRows": int(df.shape[0]) if total_rows is None else int(total_rows),
             "rows": rows,
         }
 
@@ -188,6 +199,7 @@ class PandasEngine(DataFrameEngine):
             series = df.iloc[:, position]
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
+            null_count, nan_count = _missing_value_counts(series, raw_type)
             top_values = [
                 {"value": str(index), "count": int(value)}
                 for index, value in series.value_counts(dropna=True).head(10).items()
@@ -197,8 +209,8 @@ class PandasEngine(DataFrameEngine):
                 "type": semantic_type,
                 "rawType": raw_type,
                 "totalCount": int(len(series)),
-                "nullCount": int(series.isna().sum()),
-                "nanCount": int(series.isna().sum()) if raw_type.startswith("float") else 0,
+                "nullCount": null_count,
+                "nanCount": nan_count,
                 "distinctCount": int(series.nunique(dropna=True)),
                 "topValues": top_values,
             }
@@ -275,14 +287,14 @@ class PandasEngine(DataFrameEngine):
         if operator == "between":
             return (series >= value) & (series <= predicate.get("secondValue"))
         if operator == "isNull":
-            return series.isna()
+            return _null_mask(series)
         if operator == "isNotNull":
-            return series.notna()
+            return ~_null_mask(series)
         if operator == "isNaN":
-            return series.isna()
+            return _nan_mask(series)
         if operator == "isNotNaN":
-            return series.notna()
-        return series.notna()
+            return ~_nan_mask(series)
+        return ~_null_mask(series)
 
     def apply_transform(self, frame: Any, step: Mapping[str, Any]) -> Any:
         import numpy as np
@@ -403,7 +415,11 @@ class PandasEngine(DataFrameEngine):
             df[params["newColumn"]] = _pandas_by_example_expression(df, params["program"])
             return df
         if kind == "customCode":
-            namespace = {"df": self._visible_frame(df.copy()), "pd": pd}
+            # Pandas' documented deep copy still shares Python objects stored in
+            # object-dtype cells. Give arbitrary custom code a recursively
+            # isolated visible frame so in-place list/dict mutations cannot alter
+            # the immutable source, committed plan, or rollback snapshot.
+            namespace = {"df": _isolated_object_frame(self._visible_frame(self.normalize(frame))), "pd": pd}
             try:
                 exec(params["code"], namespace, namespace)
             except Exception as error:
@@ -464,17 +480,59 @@ class PandasEngine(DataFrameEngine):
         return frame.columns[position] if position is not None else requested
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
-        lines = [
-            "from collections import Counter",
-            "",
-            "import numpy as np",
-            "import pandas as pd",
-            "",
-            "",
-            "def clean_data(df):",
-            "    df = df.copy()",
-        ]
-        for index, step in enumerate(steps):
+        plan = list(steps)
+        needs_missing_helpers = any(step["kind"] == "filterRows" for step in plan)
+        needs_object_isolation = any(step["kind"] == "customCode" for step in plan)
+        lines = ["from collections import Counter"]
+        if needs_object_isolation:
+            lines.append("from copy import deepcopy")
+        if needs_missing_helpers:
+            lines.append("from numbers import Real")
+        lines.extend(["", "import numpy as np", "import pandas as pd", "", ""])
+        if needs_missing_helpers:
+            lines.extend(
+                [
+                    "def _open_wrangler_is_null(value):",
+                    "    return value is None or type(value).__name__ in {'NAType', 'NaTType'}",
+                    "",
+                    "",
+                    "def _open_wrangler_is_nan(value):",
+                    "    try:",
+                    "        return (",
+                    "            isinstance(value, Real)",
+                    "            and not isinstance(value, (bool, np.bool_))",
+                    "            and np.isnan(float(str(value)))",
+                    "        )",
+                    "    except (TypeError, ValueError, OverflowError):",
+                    "        return False",
+                    "",
+                    "",
+                    "def _open_wrangler_mask(series, predicate):",
+                    (
+                        "    return pd.Series([predicate(value) for value in series.array], "
+                        "index=series.index, dtype=bool)"
+                    ),
+                    "",
+                    "",
+                ]
+            )
+        if needs_object_isolation:
+            lines.extend(
+                [
+                    "def _open_wrangler_isolate_objects(df):",
+                    "    isolated = df.copy(deep=True)",
+                    "    memo = {}",
+                    "    for position, dtype in enumerate(isolated.dtypes):",
+                    "        if str(dtype) == 'object':",
+                    "            values = [deepcopy(value, memo) for value in isolated.iloc[:, position].array]",
+                    "            isolated.isetitem(position, values)",
+                    "    return isolated",
+                    "",
+                    "",
+                ]
+            )
+        lines.extend(["def clean_data(df):", "    df = df.copy()"])
+        for index, step in enumerate(plan):
             lines.extend(self._compile_step(step, index))
         lines.append("    return df")
         return "\n".join(lines) + "\n"
@@ -648,6 +706,7 @@ class PandasEngine(DataFrameEngine):
             function_name = f"_custom_step_{index}"
             code_lines = str(params["code"]).splitlines()
             return [
+                f"{prefix}df = _open_wrangler_isolate_objects(df)",
                 f"{prefix}def {function_name}(df):",
                 *[f"{prefix}    {line}" if line else f"{prefix}    " for line in code_lines],
                 f"{prefix}    return result",
@@ -781,8 +840,10 @@ def _compile_pandas_filter(model: Mapping[str, Any], index: int) -> list[str]:
             parts = []
             if value_filter.get("selectedValues"):
                 parts.append(f"{series}.astype(str).isin({[str(value) for value in value_filter['selectedValues']]!r})")
-            if value_filter.get("includeNulls") or value_filter.get("includeNaN"):
-                parts.append(f"{series}.isna()")
+            if value_filter.get("includeNulls"):
+                parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_null)")
+            if value_filter.get("includeNaN"):
+                parts.append(f"_open_wrangler_mask({series}, _open_wrangler_is_nan)")
             conditions.append("(" + " | ".join(parts) + ")")
         for predicate in column_filter.get("predicates", []):
             conditions.append(_pandas_predicate_expression(series, predicate))
@@ -824,11 +885,15 @@ def _pandas_predicate_expression(series: str, predicate: Mapping[str, Any]) -> s
         return f"({series} {symbol} {value!r})"
     if operator == "between":
         return f"(({series} >= {value!r}) & ({series} <= {predicate.get('secondValue')!r}))"
-    if operator in {"isNull", "isNaN"}:
-        return f"{series}.isna()"
-    if operator in {"isNotNull", "isNotNaN"}:
-        return f"{series}.notna()"
-    return f"{series}.notna()"
+    if operator == "isNull":
+        return f"_open_wrangler_mask({series}, _open_wrangler_is_null)"
+    if operator == "isNotNull":
+        return f"~_open_wrangler_mask({series}, _open_wrangler_is_null)"
+    if operator == "isNaN":
+        return f"_open_wrangler_mask({series}, _open_wrangler_is_nan)"
+    if operator == "isNotNaN":
+        return f"~_open_wrangler_mask({series}, _open_wrangler_is_nan)"
+    return f"~_open_wrangler_mask({series}, _open_wrangler_is_null)"
 
 
 def _maybe_float(value: Any) -> float | None:
@@ -837,3 +902,48 @@ def _maybe_float(value: Any) -> float | None:
         return result if result is None or isfinite(result) else None
     except (TypeError, ValueError):
         return None
+
+
+def _missing_value_counts(series: Any, raw_type: str) -> tuple[int, int]:
+    del raw_type
+    return int(_null_mask(series).sum()), int(_nan_mask(series).sum())
+
+
+def _null_mask(series: Any) -> Any:
+    return _scalar_mask(series, _is_null_value)
+
+
+def _nan_mask(series: Any) -> Any:
+    return _scalar_mask(series, _is_nan_value)
+
+
+def _scalar_mask(series: Any, predicate: Any) -> Any:
+    return type(series)([predicate(value) for value in series.array], index=series.index, dtype=bool)
+
+
+def _is_null_value(value: Any) -> bool:
+    return value is None or type(value).__name__ in {"NAType", "NaTType"}
+
+
+def _is_nan_value(value: Any) -> bool:
+    if not isinstance(value, Real) or isinstance(value, bool):
+        return False
+    try:
+        return isnan(float(str(value)))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _isolated_object_frame(frame: Any) -> Any:
+    isolated = frame.copy(deep=True)
+    memo: dict[int, Any] = {}
+    for position, dtype in enumerate(isolated.dtypes):
+        if str(dtype) != "object":
+            continue
+        try:
+            values = [deepcopy(value, memo) for value in isolated.iloc[:, position].array]
+        except Exception as error:
+            column = isolated.columns[position]
+            raise EngineError(f"Could not isolate Python objects in Pandas column {column!r}: {error}") from error
+        isolated.isetitem(position, values)
+    return isolated

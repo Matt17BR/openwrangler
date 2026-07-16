@@ -9,7 +9,6 @@ from IPython.display import display
 from .engines import EngineError, UnsupportedDataFrameError, default_engine_registry
 
 MIME_TYPE_V2 = "application/vnd.openwrangler.viewer.v2+json"
-MIME_TYPE = MIME_TYPE_V2
 
 
 def show(

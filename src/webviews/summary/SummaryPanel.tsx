@@ -30,7 +30,11 @@ export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanel
       </dl>
       <details className="summaryGroup" open={missingByColumn.length > 0}>
         <summary>Missing values (by column)</summary>
-        {missingByColumn.length === 0 ? (
+        {!metadata?.stats ? (
+          <p className="mutedText" role="status">
+            Profiling exact missing values…
+          </p>
+        ) : missingByColumn.length === 0 ? (
           <p className="mutedText">No missing values.</p>
         ) : (
           <div className="missingList">
@@ -57,7 +61,7 @@ export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanel
             </summary>
             <dl>
               <dt>Missing</dt>
-              <dd>{summary.nullCount.toLocaleString()}</dd>
+              <dd>{(summary.nullCount + summary.nanCount).toLocaleString()}</dd>
               <dt>Distinct</dt>
               <dd>{summary.distinctCount?.toLocaleString() ?? "n/a"}</dd>
               {summary.numeric && (

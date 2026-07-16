@@ -26,6 +26,7 @@ export type PageRequest = SessionRequestBase & {
   kind: "getPage";
   sessionId: string;
   revision: number;
+  viewRequestId: string;
   offset: number;
   limit: number;
   filterModel: FilterModel;
@@ -43,6 +44,39 @@ export type ColumnType =
   | "list"
   | "struct"
   | "unknown";
+export type TransformStep =
+  | SortRowsTransformStep
+  | FilterRowsTransformStep
+  | DropMissingRowsTransformStep
+  | DropDuplicatesTransformStep
+  | SelectColumnsTransformStep
+  | DropColumnsTransformStep
+  | RenameColumnTransformStep
+  | CloneColumnTransformStep
+  | CastColumnTransformStep
+  | FormulaTransformStep
+  | TextLengthTransformStep
+  | OneHotEncodeTransformStep
+  | MultiLabelBinarizeTransformStep
+  | FindReplaceTransformStep
+  | StripTextTransformStep
+  | SplitTextTransformStep
+  | CapitalizeTextTransformStep
+  | LowerTextTransformStep
+  | UpperTextTransformStep
+  | MinMaxScaleTransformStep
+  | RoundNumberTransformStep
+  | FloorNumberTransformStep
+  | CeilNumberTransformStep
+  | FormatDatetimeTransformStep
+  | GroupByTransformStep
+  | ByExampleTransformStep
+  | CustomCodeTransformStep;
+export type SortRowsTransformStep = TransformStepTemplate & {
+  kind: "sortRows";
+  params: SortRowsParams;
+  [k: string]: unknown;
+};
 export type OperationKind =
   | "sortRows"
   | "filterRows"
@@ -71,6 +105,208 @@ export type OperationKind =
   | "groupBy"
   | "byExample"
   | "customCode";
+export type FilterRowsTransformStep = TransformStepTemplate & {
+  kind: "filterRows";
+  params: FilterRowsParams;
+  [k: string]: unknown;
+};
+export type DropMissingRowsTransformStep = TransformStepTemplate & {
+  kind: "dropMissingRows";
+  params: DropMissingRowsParams;
+  [k: string]: unknown;
+};
+export type DropDuplicatesTransformStep = TransformStepTemplate & {
+  kind: "dropDuplicates";
+  params: DropDuplicatesParams;
+  [k: string]: unknown;
+};
+/**
+ * @minItems 1
+ */
+export type NonEmptyStringArray = [string, ...string[]];
+export type SelectColumnsTransformStep = TransformStepTemplate & {
+  kind: "selectColumns";
+  params: ColumnsParams;
+  [k: string]: unknown;
+};
+export type DropColumnsTransformStep = TransformStepTemplate & {
+  kind: "dropColumns";
+  params: ColumnsParams;
+  [k: string]: unknown;
+};
+export type RenameColumnTransformStep = TransformStepTemplate & {
+  kind: "renameColumn";
+  params: RenameColumnParams;
+  [k: string]: unknown;
+};
+export type CloneColumnTransformStep = TransformStepTemplate & {
+  kind: "cloneColumn";
+  params: RenameColumnParams;
+  [k: string]: unknown;
+};
+export type CastColumnTransformStep = TransformStepTemplate & {
+  kind: "castColumn";
+  params: CastColumnParams;
+  [k: string]: unknown;
+};
+export type FormulaTransformStep = TransformStepTemplate & {
+  kind: "formula";
+  params: FormulaParams;
+  [k: string]: unknown;
+};
+export type FormulaParams = {
+  leftColumn: string;
+  operator: "add" | "subtract" | "multiply" | "divide" | "modulo" | "power";
+  newColumn: string;
+  rightColumn?: string;
+  value?: number;
+} & FormulaParams1;
+export type FormulaParams1 = {
+  [k: string]: unknown;
+};
+export type TextLengthTransformStep = TransformStepTemplate & {
+  kind: "textLength";
+  params: ColumnOutputParams;
+  [k: string]: unknown;
+};
+export type OneHotEncodeTransformStep = TransformStepTemplate & {
+  kind: "oneHotEncode";
+  params: OneHotEncodeParams;
+  [k: string]: unknown;
+};
+export type MultiLabelBinarizeTransformStep = TransformStepTemplate & {
+  kind: "multiLabelBinarize";
+  params: MultiLabelBinarizeParams;
+  [k: string]: unknown;
+};
+export type FindReplaceTransformStep = TransformStepTemplate & {
+  kind: "findReplace";
+  params: FindReplaceParams;
+  [k: string]: unknown;
+};
+export type StripTextTransformStep = TransformStepTemplate & {
+  kind: "stripText";
+  params: StripTextParams;
+  [k: string]: unknown;
+};
+export type SplitTextTransformStep = TransformStepTemplate & {
+  kind: "splitText";
+  params: SplitTextParams;
+  [k: string]: unknown;
+};
+export type CapitalizeTextTransformStep = TransformStepTemplate & {
+  kind: "capitalizeText";
+  params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type LowerTextTransformStep = TransformStepTemplate & {
+  kind: "lowerText";
+  params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type UpperTextTransformStep = TransformStepTemplate & {
+  kind: "upperText";
+  params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type MinMaxScaleTransformStep = TransformStepTemplate & {
+  kind: "minMaxScale";
+  params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type RoundNumberTransformStep = TransformStepTemplate & {
+  kind: "roundNumber";
+  params: RoundNumberParams;
+  [k: string]: unknown;
+};
+export type FloorNumberTransformStep = TransformStepTemplate & {
+  kind: "floorNumber";
+  params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type CeilNumberTransformStep = TransformStepTemplate & {
+  kind: "ceilNumber";
+  params: ColumnOptionalOutputParams;
+  [k: string]: unknown;
+};
+export type FormatDatetimeTransformStep = TransformStepTemplate & {
+  kind: "formatDatetime";
+  params: FormatDatetimeParams;
+  [k: string]: unknown;
+};
+export type GroupByTransformStep = TransformStepTemplate & {
+  kind: "groupBy";
+  params: GroupByParams;
+  [k: string]: unknown;
+};
+export type ByExampleTransformStep = TransformStepTemplate & {
+  kind: "byExample";
+  params: ByExampleParams;
+  [k: string]: unknown;
+};
+export type JsonScalar = string | number | boolean | null;
+export type ByExampleProgram =
+  | {
+      kind: "column";
+      column: string;
+    }
+  | {
+      kind: "literal";
+      value: JsonScalar;
+    }
+  | {
+      kind: "slice";
+      input: ByExampleProgram;
+      start: number;
+      stop?: number | null;
+    }
+  | {
+      kind: "split";
+      input: ByExampleProgram;
+      delimiter: string;
+      index: number;
+    }
+  | {
+      kind: "concat";
+      /**
+       * @minItems 1
+       */
+      parts: [ByExampleProgram, ...ByExampleProgram[]];
+    }
+  | {
+      kind: "regexExtract";
+      input: ByExampleProgram;
+      pattern: string;
+      group: number;
+    }
+  | {
+      kind: "regexReplace";
+      input: ByExampleProgram;
+      pattern: string;
+      replacement: string;
+    }
+  | {
+      kind: "case";
+      style: "lower" | "upper" | "capitalize";
+      input: ByExampleProgram;
+    }
+  | {
+      kind: "datetimeFormat";
+      input: ByExampleProgram;
+      inputFormat: string;
+      outputFormat: string;
+    }
+  | {
+      kind: "arithmetic";
+      left: ByExampleProgram;
+      operator: "add" | "subtract" | "multiply" | "divide";
+      right: ByExampleProgram;
+    };
+export type CustomCodeTransformStep = TransformStepTemplate & {
+  kind: "customCode";
+  params: CustomCodeParams;
+  [k: string]: unknown;
+};
 export type OpenWranglerResponse =
   | InitializedResponse
   | SessionOpenedResponse
@@ -137,6 +373,7 @@ export interface InitializeRequest {
 export interface OpenSessionRequest {
   kind: "openSession";
   source: SessionSource;
+  requestedSessionId?: string;
   backend?: DataBackend;
   mode?: SessionMode;
   pageSize: number;
@@ -163,11 +400,7 @@ export interface SessionRequestBase {
 export interface FilterModel {
   logic?: "and" | "or";
   filters: ColumnFilter[];
-  sort: {
-    column: string;
-    direction: "asc" | "desc";
-    nulls: "first" | "last";
-  }[];
+  sort: SortRule[];
 }
 export interface ColumnFilter {
   column: string;
@@ -202,10 +435,16 @@ export interface PredicateFilter {
   value?: unknown;
   secondValue?: unknown;
 }
+export interface SortRule {
+  column: string;
+  direction: "asc" | "desc";
+  nulls: "first" | "last";
+}
 export interface SummaryRequest {
   kind: "getSummary";
   sessionId: string;
   revision: number;
+  viewRequestId: string;
   filterModel: FilterModel;
   columns?: string[];
 }
@@ -213,12 +452,14 @@ export interface DatasetStatsRequest {
   kind: "getDatasetStats";
   sessionId: string;
   revision: number;
+  viewRequestId: string;
   filterModel: FilterModel;
 }
 export interface ValuesRequest {
   kind: "getColumnValues";
   sessionId: string;
   revision: number;
+  viewRequestId: string;
   column: string;
   filterModel: FilterModel;
   search?: string;
@@ -233,12 +474,119 @@ export interface PreviewStepRequest {
   offset: number;
   limit: number;
 }
-export interface TransformStep {
+export interface TransformStepTemplate {
   id: string;
   kind: OperationKind;
   params: {
     [k: string]: unknown;
   };
+}
+export interface SortRowsParams {
+  /**
+   * @minItems 1
+   */
+  rules: [SortRule, ...SortRule[]];
+}
+export interface FilterRowsParams {
+  filterModel: FilterModel;
+}
+export interface DropMissingRowsParams {
+  columns?: string[];
+  how?: "any" | "all";
+}
+export interface DropDuplicatesParams {
+  columns?: NonEmptyStringArray;
+  keep?: "first" | "last" | "none";
+}
+export interface ColumnsParams {
+  columns: NonEmptyStringArray;
+}
+export interface RenameColumnParams {
+  column: string;
+  newName: string;
+}
+export interface CastColumnParams {
+  column: string;
+  dtype: "string" | "integer" | "float" | "boolean" | "date" | "datetime";
+}
+export interface ColumnOutputParams {
+  column: string;
+  newColumn: string;
+}
+export interface OneHotEncodeParams {
+  columns: NonEmptyStringArray;
+  prefixSeparator?: string;
+  dropOriginal?: boolean;
+}
+export interface MultiLabelBinarizeParams {
+  column: string;
+  delimiter: string;
+  prefix?: string;
+  dropOriginal?: boolean;
+}
+export interface FindReplaceParams {
+  column: string;
+  find: string;
+  replacement: string;
+  regex?: boolean;
+  newColumn?: string;
+}
+export interface StripTextParams {
+  column: string;
+  characters?: string | null;
+  newColumn?: string;
+}
+export interface SplitTextParams {
+  column: string;
+  delimiter: string;
+  index: number;
+  newColumn: string;
+}
+export interface ColumnOptionalOutputParams {
+  column: string;
+  newColumn?: string;
+}
+export interface RoundNumberParams {
+  column: string;
+  decimals?: number;
+  newColumn?: string;
+}
+export interface FormatDatetimeParams {
+  column: string;
+  format: string;
+  newColumn?: string;
+}
+export interface GroupByParams {
+  keys: NonEmptyStringArray;
+  /**
+   * @minItems 1
+   */
+  aggregations: [Aggregation, ...Aggregation[]];
+}
+export interface Aggregation {
+  column: string;
+  operation: "sum" | "mean" | "min" | "max" | "median" | "count" | "nUnique" | "first" | "last";
+  alias: string;
+}
+export interface ByExampleParams {
+  sourceColumns: NonEmptyStringArray;
+  newColumn: string;
+  /**
+   * @minItems 2
+   */
+  examples: [ByExampleItem, ByExampleItem, ...ByExampleItem[]];
+  program?: ByExampleProgram;
+  warnings?: string[];
+  candidateCount?: number;
+}
+export interface ByExampleItem {
+  inputs: {
+    [k: string]: JsonScalar;
+  };
+  output: JsonScalar;
+}
+export interface CustomCodeParams {
+  code: string;
 }
 export interface ApplyDraftRequest {
   kind: "applyDraft";
@@ -392,22 +740,26 @@ export interface ValueCount {
 export interface PageResponse {
   kind: "page";
   revision: number;
+  viewRequestId: string;
   page: GridPage;
   metadata: SessionMetadata;
 }
 export interface SummaryResponse {
   kind: "summary";
   revision: number;
+  viewRequestId: string;
   summaries: ColumnSummary[];
 }
 export interface DatasetStatsResponse {
   kind: "datasetStats";
   revision: number;
+  viewRequestId: string;
   stats: DatasetStats;
 }
 export interface ValuesResponse {
   kind: "columnValues";
   revision: number;
+  viewRequestId: string;
   column: string;
   values: ValueCount[];
   hasMore: boolean;
@@ -458,6 +810,7 @@ export interface SessionClosedResponse {
 export interface CancelledResponse {
   kind: "cancelled";
   targetRequestId: string;
+  viewRequestId?: string;
 }
 export interface ErrorResponse {
   kind: "error";
@@ -466,4 +819,5 @@ export interface ErrorResponse {
   detail?: string;
   recoverable: boolean;
   sessionId?: string;
+  viewRequestId?: string;
 }

@@ -72,6 +72,35 @@ describe("OperationBuilder", () => {
     );
   });
 
+  it("exposes preview progress and disables every dialog control while busy", () => {
+    const onClose = vi.fn();
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="renameColumn"
+        busy={true}
+        onClose={onClose}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("dialog", { name: "Add cleaning step" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Previewing changes…");
+    expect(screen.getByRole("button", { name: "Close operation picker" })).toBeDisabled();
+    expect(screen.getByPlaceholderText("Search operations")).toBeDisabled();
+    expect(screen.getByText("Rename column", { selector: "strong" }).closest("button")).toBeDisabled();
+    expect(screen.getByLabelText("New name")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close operation picker" }));
+    fireEvent.submit(screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
   it("copies viewing filters only through an explicit filter step", () => {
     const onPreview = vi.fn();
     const filterModel = {

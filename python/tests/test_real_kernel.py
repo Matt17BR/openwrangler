@@ -38,6 +38,43 @@ __ow_notebook.register_formatters()
     assert initialized["response"]["kind"] == "initialized"
     assert initialized["response"]["protocolVersion"] == 2
 
+    missing = _dispatch(
+        client,
+        "missing-session",
+        {
+            "kind": "getPage",
+            "sessionId": "missing",
+            "revision": 0,
+            "viewRequestId": "view-missing",
+            "offset": 0,
+            "limit": 10,
+            "filterModel": {"filters": [], "sort": []},
+        },
+    )
+    assert missing["protocolVersion"] == 2
+    assert missing["requestId"] == "missing-session"
+    assert missing["response"]["kind"] == "error"
+    assert missing["response"]["code"] == "engine_error"
+    assert missing["response"]["viewRequestId"] == "view-missing"
+
+    malformed = _dispatch(
+        client,
+        "malformed-page",
+        {
+            "kind": "getPage",
+            "sessionId": "missing",
+            "revision": 0,
+            "viewRequestId": "view-malformed",
+            "offset": 0,
+            "filterModel": {"filters": [], "sort": []},
+        },
+    )
+    assert malformed["protocolVersion"] == 2
+    assert malformed["requestId"] == "malformed-page"
+    assert malformed["response"]["kind"] == "error"
+    assert malformed["response"]["code"] == "invalid_request"
+    assert malformed["response"]["viewRequestId"] == "view-malformed"
+
     _execute(
         client,
         "import pandas as pd\nimport polars as pl\npandas_frame = pd.DataFrame({'value': [1, 2]})\n"

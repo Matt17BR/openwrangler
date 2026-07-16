@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, ValuesResponse } from "../shared/protocol";
@@ -44,6 +44,7 @@ const values: Record<string, ValuesResponse> = {
   city: {
     kind: "columnValues",
     revision: 0,
+    viewRequestId: "values-city",
     column: "city",
     values: [
       { value: "Berlin", count: 2 },
@@ -164,6 +165,7 @@ describe("FilterPanel", () => {
 
   it("handles an empty schema without dispatching invalid filters", () => {
     const onApply = vi.fn();
+    const onRequestValues = vi.fn();
     render(
       <FilterPanel
         metadata={{ ...metadata, schema: [], shape: { rows: 0, columns: 0 }, filteredShape: { rows: 0, columns: 0 } }}
@@ -171,12 +173,126 @@ describe("FilterPanel", () => {
         values={{}}
         defaultAdvanced={true}
         onApply={onApply}
-        onRequestValues={() => undefined}
+        onRequestValues={onRequestValues}
       />
     );
+
+    expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByLabelText("Condition combination")).toBeDisabled();
+    expect(screen.getByLabelText("Predicate operator")).toBeDisabled();
+    expect(screen.getByPlaceholderText("Value")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
+
+    fireEvent.click(screen.getByText("SORTS"));
+    for (const select of screen.getAllByLabelText("Column")) {
+      expect(select).toBeDisabled();
+      expect(select).toHaveValue("");
+    }
+    expect(screen.getByLabelText("Sort direction")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+
+    fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Values" }));
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
     fireEvent.change(screen.getByLabelText("Condition combination"), { target: { value: "or" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
     expect(onApply).not.toHaveBeenCalled();
+    expect(onRequestValues).not.toHaveBeenCalled();
+  });
+
+  it("disables every filter action while a foreground mutation is pending", () => {
+    const onApply = vi.fn();
+    const onRequestValues = vi.fn();
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={values}
+        defaultAdvanced={true}
+        disabled={true}
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Use basic filters" })).toBeDisabled();
+    expect(screen.getByLabelText("Across columns")).toBeDisabled();
+    expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /Berlin/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
+    fireEvent.click(screen.getByText("SORTS"));
+    expect(screen.getByLabelText("Sort direction")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+
+    fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Berlin/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onRequestValues).not.toHaveBeenCalled();
+  });
+
+  it("keeps a selected non-first column by schema ID through rename and emits its current name", async () => {
+    const onApply = vi.fn();
+    const onRequestValues = vi.fn();
+    const { rerender } = render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={{}}
+        activeColumn="city"
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+    const sortDisclosure = screen.getByText("SORTS").closest("details");
+    if (!sortDisclosure) throw new Error("Expected the sort disclosure.");
+    fireEvent.click(screen.getByText("SORTS"));
+    expect(sortDisclosure).toHaveAttribute("open");
+    fireEvent.change(screen.getAllByLabelText("Column")[0], { target: { value: "c:1" } });
+    for (const select of screen.getAllByLabelText("Column")) {
+      expect(select).toHaveValue("c:1");
+      expect(select).toHaveDisplayValue("sales");
+    }
+    fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
+    expect(sortDisclosure).toHaveAttribute("open");
+
+    const renamedMetadata = {
+      ...metadata,
+      schema: metadata.schema.map((column) => (column.id === "c:1" ? { ...column, name: "revenue" } : column))
+    };
+    rerender(
+      <FilterPanel
+        metadata={renamedMetadata}
+        model={{ filters: [], sort: [] }}
+        values={{}}
+        activeColumn="city"
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+    await waitFor(() => {
+      for (const select of screen.getAllByLabelText("Column")) {
+        expect(select).toHaveValue("c:1");
+        expect(select).toHaveDisplayValue("revenue");
+      }
+    });
+    expect(sortDisclosure).toHaveAttribute("open");
+
+    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    expect(onRequestValues).toHaveBeenLastCalledWith("revenue", "");
+    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sort: [expect.objectContaining({ column: "revenue", direction: "desc" })]
+      })
+    );
   });
 });
 
@@ -188,7 +304,7 @@ describe("SummaryPanel", () => {
       rawType: "float",
       totalCount: 4,
       nullCount: 1,
-      nanCount: 0,
+      nanCount: 2,
       distinctCount: 2,
       topValues: [
         { value: "12", count: 2 },
@@ -201,7 +317,7 @@ describe("SummaryPanel", () => {
   it("renders loading, empty, missing, numeric, and top-value summaries", () => {
     const { rerender } = render(<SummaryPanel metadata={undefined} summaries={[]} schemaByName={new Map()} />);
     expect(screen.getByText("Loading")).toBeInTheDocument();
-    expect(screen.getByText("No missing values.")).toBeInTheDocument();
+    expect(screen.getByText("Profiling exact missing values…")).toBeInTheDocument();
     expect(screen.getByText("No summary data yet.")).toBeInTheDocument();
 
     rerender(
@@ -215,6 +331,7 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Float64")).toBeInTheDocument();
     expect(screen.getByText("n/a")).toBeInTheDocument();
     expect(screen.getAllByText("sales")).toHaveLength(2);
+    expect(screen.getByText("Missing", { selector: "dt" }).nextElementSibling).toHaveTextContent("3");
     expect(screen.getByText("12", { selector: ".topValues span" })).toBeInTheDocument();
   });
 });

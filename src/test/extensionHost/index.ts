@@ -556,6 +556,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     if (!active) throw new Error("Pandas notebook session did not become active.");
     const pandasPage = await testing.request({
       kind: "getPage",
+      viewRequestId: "notebook-pandas-page",
       sessionId: active.sessionId,
       revision: active.metadata.revision,
       offset: 0,
@@ -629,6 +630,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.ok(replacementGeneration > generation);
     const recovered = await testing.request({
       kind: "getPage",
+      viewRequestId: "notebook-polars-recovery-page",
       sessionId: active.sessionId,
       revision: active.metadata.revision,
       offset: 0,
@@ -708,6 +710,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
   };
   const page = await testing.request({
     kind: "getPage",
+    viewRequestId: "persisted-plan-page",
     sessionId: opened.metadata.sessionId,
     revision: applied.revision,
     offset: 0,
@@ -809,6 +812,7 @@ async function verifyPersistedReplayAndRecovery(
   const [restoredPage, secondPage] = await Promise.all([
     testing.request({
       kind: "getPage",
+      viewRequestId: "restart-restored-page",
       sessionId: restored.metadata.sessionId,
       revision: restored.metadata.revision,
       offset: 0,
@@ -817,6 +821,7 @@ async function verifyPersistedReplayAndRecovery(
     }),
     testing.request({
       kind: "getPage",
+      viewRequestId: "restart-second-page",
       sessionId: second.metadata.sessionId,
       revision: second.metadata.revision,
       offset: 0,
@@ -1064,6 +1069,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 
     const page = await testing.request({
       kind: "getPage",
+      viewRequestId: `${backend}-filter-page`,
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       offset: 0,
@@ -1082,6 +1088,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 
     const summary = await testing.request({
       kind: "getSummary",
+      viewRequestId: `${backend}-filter-summary`,
       sessionId: opened.metadata.sessionId,
       revision: page.revision,
       filterModel
@@ -1095,6 +1102,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 
     const stats = await testing.request({
       kind: "getDatasetStats",
+      viewRequestId: `${backend}-filter-stats`,
       sessionId: opened.metadata.sessionId,
       revision: page.revision,
       filterModel
@@ -1108,6 +1116,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 
     const values = await testing.request({
       kind: "getColumnValues",
+      viewRequestId: `${backend}-filter-values`,
       sessionId: opened.metadata.sessionId,
       revision: page.revision,
       column: "city",
@@ -1249,6 +1258,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
           testing.restartRuntime(`${backend} custom-code replay acceptance`);
           const replayed = await testing.request({
             kind: "getPage",
+            viewRequestId: `${backend}-${step.kind}-replay-page`,
             sessionId: opened.metadata.sessionId,
             revision,
             offset: 0,

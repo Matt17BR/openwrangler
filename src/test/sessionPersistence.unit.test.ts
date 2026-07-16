@@ -66,5 +66,18 @@ describe("session persistence", () => {
         filterModel: { filters: [], sort: [] }
       })
     ).toBeUndefined();
+    expect(
+      decodePersistedSession({
+        steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["old"] } }],
+        filterModel: { filters: [], sort: [] }
+      })
+    ).toBeUndefined();
+    expect(
+      decodePersistedSession({
+        steps: [],
+        filterModel: { filters: [], sort: [] },
+        unexpected: true
+      })
+    ).toBeUndefined();
   });
 });

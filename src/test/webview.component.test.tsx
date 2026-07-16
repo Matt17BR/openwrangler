@@ -66,7 +66,7 @@ describe("DataGrid", () => {
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
-        onRequestSummary={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
       />
     );
 
@@ -90,7 +90,7 @@ describe("DataGrid", () => {
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
-        onRequestSummary={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
       />
     );
 
@@ -101,6 +101,245 @@ describe("DataGrid", () => {
     fireEvent.keyDown(city as HTMLTableCellElement, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(sales));
     expect(screen.queryByText("Profiling…")).toBeNull();
+  });
+
+  it("carries the scroll-requested row into the next block's roving focus", async () => {
+    const onPage = vi.fn();
+    const scrollMetadata = {
+      ...metadata,
+      shape: { rows: 6, columns: 2 },
+      filteredShape: { rows: 6, columns: 2 }
+    };
+    const scrollPage = { ...page, totalRows: 6 };
+    const props = {
+      metadata: scrollMetadata,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={scrollPage} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    scroller.scrollTop = 4 * 29;
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(onPage).toHaveBeenCalledWith(4));
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={{
+          ...scrollPage,
+          offset: 4,
+          rows: scrollPage.rows.map((row, index) => ({ ...row, id: `r:${index + 4}`, rowNumber: index + 4 }))
+        }}
+      />
+    );
+    await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-row", "4"));
+  });
+
+  it("reports ownership changes when horizontal virtualization replaces visible columns", async () => {
+    const columns = Array.from({ length: 8 }, (_, position) => ({
+      id: `c:${position}`,
+      name: `column-${position}`,
+      position,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    }));
+    const wideMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 1, columns: columns.length },
+      filteredShape: { rows: 1, columns: columns.length },
+      schema: columns
+    };
+    const widePage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      rows: [
+        {
+          id: "r:wide",
+          rowNumber: 0,
+          values: columns.map((column) => ({
+            kind: "string" as const,
+            raw: column.name,
+            display: column.name,
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    };
+    const onVisibleSummaryColumnsChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={wideMetadata}
+        page={widePage}
+        summaries={[]}
+        pageSize={1}
+        defaultColumnWidth={100}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() =>
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["column-0", "column-1", "column-2", "column-3"])
+    );
+
+    scroller.scrollLeft = 700;
+    fireEvent.scroll(scroller);
+    await waitFor(() =>
+      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["column-4", "column-5", "column-6", "column-7"])
+    );
+    expect(document.querySelector('th[data-column="column-4"]')).toHaveAttribute("aria-colindex", "6");
+    expect(document.querySelector('th[data-column="column-7"]')).toHaveAttribute("aria-colindex", "9");
+    await waitFor(() => {
+      const rovingCells = document.querySelectorAll<HTMLTableCellElement>('td[tabindex="0"]');
+      expect(rovingCells).toHaveLength(1);
+      expect(rovingCells[0]).toHaveAttribute("data-grid-column", "4");
+    });
+  });
+
+  it("keeps one roving tab stop when mouse scrolling virtualizes the focused row", async () => {
+    const rows = Array.from({ length: 40 }, (_, rowNumber) => ({
+      id: `r:${rowNumber}`,
+      rowNumber,
+      values: page.rows[0].values
+    }));
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 40, columns: 2 }, filteredShape: { rows: 40, columns: 2 } }}
+        page={{ offset: 0, limit: 200, totalRows: 40, rows }}
+        summaries={[]}
+        pageSize={200}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    fireEvent(window, new Event("resize"));
+    const initialRovingCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    initialRovingCell?.focus();
+    scroller.scrollTop = 20 * 29;
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => {
+      const rovingCells = document.querySelectorAll<HTMLTableCellElement>('td[tabindex="0"]');
+      expect(rovingCells).toHaveLength(1);
+      expect(Number(rovingCells[0].dataset.gridRow)).toBeGreaterThan(0);
+      expect(document.activeElement).toBe(rovingCells[0]);
+    });
+  });
+
+  it("resets both virtual axes and roving focus when a new logical view succeeds", async () => {
+    const laterPage: GridPage = {
+      ...page,
+      offset: 4,
+      totalRows: 6,
+      rows: page.rows.map((row, index) => ({ ...row, id: `r:${index + 4}`, rowNumber: index + 4 }))
+    };
+    const props = {
+      metadata: { ...metadata, shape: { rows: 6, columns: 2 }, filteredShape: { rows: 6, columns: 2 } },
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: () => undefined,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={laterPage} viewContextId="view-a" />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    scroller.scrollTop = 4 * 29;
+    scroller.scrollLeft = 200;
+    fireEvent.scroll(scroller);
+
+    rerender(<DataGrid {...props} page={page} viewContextId="view-b" />);
+
+    await waitFor(() => {
+      expect(scroller.scrollTop).toBe(0);
+      expect(scroller.scrollLeft).toBe(0);
+      const rovingCells = document.querySelectorAll<HTMLTableCellElement>('td[tabindex="0"]');
+      expect(rovingCells).toHaveLength(1);
+      expect(rovingCells[0]).toHaveAttribute("data-grid-row", "0");
+      expect(rovingCells[0]).toHaveAttribute("data-grid-column", "0");
+    });
+  });
+
+  it("reports the complete visible summary ownership as insights and visibility change", async () => {
+    const onVisibleSummaryColumnsChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
+      />
+    );
+
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
+    onVisibleSummaryColumnsChange.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["city", "sales"]));
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
+    fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["city", "sales"]));
+    expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(3);
+  });
+
+  it("reprofiles visible columns when the filter scope changes without a revision change", async () => {
+    const onVisibleSummaryColumnsChange = vi.fn();
+    const props = {
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: true,
+      onPage: () => undefined,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange
+    };
+    const { rerender } = render(<DataGrid {...props} metadata={metadata} />);
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <DataGrid
+        {...props}
+        metadata={{
+          ...metadata,
+          filterModel: { filters: [], sort: [{ column: "sales", direction: "asc", nulls: "last" }] }
+        }}
+      />
+    );
+
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(2));
+    expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["city", "sales"]);
   });
 
   it("resizes columns from the keyboard and labels an empty grid", () => {
@@ -115,7 +354,7 @@ describe("DataGrid", () => {
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
-        onRequestSummary={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
       />
     );
 
@@ -134,7 +373,7 @@ describe("DataGrid", () => {
         onPage={vi.fn()}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
-        onRequestSummary={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
       />
     );
 

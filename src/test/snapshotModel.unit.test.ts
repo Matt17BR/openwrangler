@@ -140,6 +140,7 @@ describe("saved notebook snapshot model", () => {
     expect(snapshotColumnValues(metadata, rows, { filters: [], sort: [] }, "city", "ber")).toEqual({
       kind: "columnValues",
       revision: 4,
+      viewRequestId: "snapshot",
       column: "city",
       values: [{ value: "Berlin", count: 2 }],
       hasMore: false
