@@ -10,6 +10,7 @@ The bundled pure-Python runtime interoperates with, but does not redistribute, t
 
 - Pandas — BSD 3-Clause License. Loaded from the user's selected Python environment.
 - Polars — MIT License. Loaded from the user's selected Python environment.
+- DuckDB — MIT License. Loaded from the user's selected Python environment.
 - PyArrow — Apache License 2.0. Loaded when required by a selected format/engine.
 - openpyxl — MIT License. Loaded when required for Excel files.
 - fastexcel — MIT License. Loaded when Polars opens Excel files.

@@ -1,6 +1,6 @@
 # Open Wrangler
 
-Open Wrangler is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current prerelease combines a fast Polars/Pandas viewing foundation with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, explicit exports, and notebook code insertion.
+Open Wrangler is an open-source dataframe wrangler for VS Code-compatible editors, including forks such as Cursor. The current preview combines fast Polars, DuckDB, and Pandas viewing foundations with non-destructive cleaning, draft diffs, history, deterministic by-example synthesis, engine-native code, explicit exports, and notebook code insertion.
 
 Open Wrangler is an independent, clean-room project explicitly inspired by Microsoft Data Wrangler for VS Code and deliberately targets parity with its documented viewing and cleaning workflows. It does not copy Microsoft code or assets. Data Wrangler is closed source, which makes it difficult to contribute features upstream, adapt it for VS Code forks such as Cursor, or add backend-native capabilities such as first-class Polars support. Open Wrangler exists to make that workflow open, hackable, portable across VS Code-compatible editors, and engine-friendly from the start.
 
@@ -30,7 +30,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 
 ## Features
 
-- Native Polars and Pandas runtime backends, including live notebook sessions backed by the active Jupyter kernel.
+- Native Polars, DuckDB, and Pandas runtime backends for files; live notebook sessions remain Pandas/Polars and run in the active Jupyter kernel.
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
 - Typed rendering and profiling for nullable values, large integers, decimals, time zones, nested Polars lists/structs, binary, categorical, duration, NaN, and infinity values.
 - Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, and progressive Quick Insights.
@@ -38,8 +38,8 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
 - Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.
-- A searchable 27-operation catalog with native Pandas/Polars execution for row, column, text, categorical, numeric, datetime, grouping, by-example, and custom-code transforms.
-- Deterministic cross-engine edge semantics for per-column null sorting, missing/duplicate modes, Unicode casing, finite numeric scaling, nullable groups, and collision-safe categorical output.
+- A searchable 27-operation catalog with native Polars, DuckDB, and Pandas execution for row, column, text, categorical, numeric, datetime, grouping, by-example, and custom-code transforms.
+- Validated engine-native edge semantics for per-column null sorting, missing/duplicate modes, Unicode casing, finite numeric scaling, nullable groups, and collision-safe categorical output.
 - Draft-first editing with typed data diffs, explicit apply/discard, latest-step editing, undo replay, and editable CodeMirror Python preview.
 - Keyboard cleaning workflow: `Ctrl/Cmd+Enter` applies a draft, `Escape` discards it, `Ctrl/Cmd+Shift+E` edits the latest step, and `Ctrl/Cmd+Alt+Z` undoes it.
 - Deterministic by-example synthesis for slicing, splitting, concatenation/literals, regex extraction/replacement, casing, datetime formatting, and arithmetic, with explicit ambiguity warnings.
@@ -61,7 +61,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `openWrangler.*` settings.
 
-File-backed sessions use `auto` by default: Open Wrangler prefers Polars and falls back to Pandas when the selected environment or format requires it. You can pin either engine with `openWrangler.defaultBackend`.
+File-backed sessions use `auto` by default. Candidate order is Polars, then DuckDB, then Pandas; unavailable or format-incompatible candidates are skipped. Set `openWrangler.defaultBackend` to `polars`, `duckdb`, or `pandas` to pin one engine.
 
 ### Open a notebook variable
 
@@ -100,6 +100,12 @@ Polars dataframes stay Polars in the runtime. The Polars backend uses native ope
 
 The test suite asserts that Polars file sessions do not call `to_pandas()`, including nested Parquet profiling and every transformation family. Polars Excel support uses `fastexcel`; setup diagnostics request it only when that format/backend combination is selected.
 
+## DuckDB Support
+
+DuckDB file sessions remain native lazy `DuckDBPyRelation` plans for CSV, TSV, Parquet, and JSONL. Paging, filters, sorting, profiling, the complete transformation catalog, generated code, and CSV/Parquet exports execute through DuckDB without converting to Pandas, Polars, or Arrow.
+
+The selected Python environment must provide `duckdb>=1.4.5,<1.6`. The editable `python[dev]` install below includes that dependency; the packaged extension probes the selected interpreter and asks before installing anything. DuckDB support is currently file-backed: DuckDB Excel ingestion, browsing tables inside `.duckdb` database files, and DuckDB notebook variables/formatters are explicitly deferred. Excel remains available through Polars or Pandas, and notebook sessions remain Pandas/Polars.
+
 ## Test Locally In Cursor Or Another VS Code-Compatible Editor
 
 ```bash
@@ -108,7 +114,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
 npm run build
 npm run package
-cursor --install-extension openwrangler-0.2.0-alpha.2.vsix --force
+cursor --install-extension openwrangler-0.3.0.vsix --force
 ```
 
 Reload the editor after installing the VSIX. Then:
@@ -161,4 +167,4 @@ Open Wrangler currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-Every in-scope row in the checked-in Data Wrangler 1.24.2 clean-room behavior matrix is now backed by automated or recorded acceptance evidence. This build remains an alpha prerelease while the cross-platform release/tag workflow is validated; intentionally deferred scope is listed in `docs/feature-parity.md`.
+Every in-scope row in the checked-in Data Wrangler 1.24.2 clean-room behavior matrix is backed by automated or recorded acceptance evidence. This build remains on the preview channel while cross-platform release evidence is completed; intentionally deferred scope is listed in `docs/feature-parity.md`.

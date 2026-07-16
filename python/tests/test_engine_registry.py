@@ -7,6 +7,7 @@ import pytest
 
 from openwrangler_runtime.engines import (
     DataFrameEngine,
+    DuckDBEngine,
     EngineError,
     EngineRegistry,
     PandasEngine,
@@ -37,8 +38,9 @@ def factory(engine: TrackedEngine) -> Callable[[], DataFrameEngine]:
 def test_default_registry_preserves_priority_and_creates_fresh_engines() -> None:
     registry = default_engine_registry()
 
-    assert registry.backends == ("polars", "pandas")
+    assert registry.backends == ("polars", "duckdb", "pandas")
     assert isinstance(registry.create("polars"), PolarsEngine)
+    assert isinstance(registry.create("duckdb"), DuckDBEngine)
     assert isinstance(registry.create("pandas"), PandasEngine)
     assert registry.create("polars") is not registry.create("polars")
 
@@ -51,17 +53,27 @@ def test_built_in_capabilities_are_immutable_and_match_current_behavior() -> Non
     assert pandas.supports_editing
     assert pandas.lazy_file_extensions == frozenset()
     assert pandas.export_formats == frozenset({"csv", "parquet"})
-    assert not pandas.supports_interrupt
+    assert not pandas.supports_shutdown_interrupt
+    assert not pandas.supports_request_cancellation
     assert polars.source_kinds == pandas.source_kinds
     assert polars.supports_editing
     assert polars.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl"})
     assert polars.export_formats == pandas.export_formats
-    assert not polars.supports_interrupt
+    assert not polars.supports_shutdown_interrupt
+    assert not polars.supports_request_cancellation
+
+    duckdb = DuckDBEngine.capabilities
+    assert duckdb.source_kinds == frozenset({"file"})
+    assert duckdb.supports_editing
+    assert duckdb.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl"})
+    assert duckdb.export_formats == frozenset({"csv", "parquet"})
+    assert duckdb.supports_shutdown_interrupt
+    assert not duckdb.supports_request_cancellation
 
 
 def test_create_preserves_unsupported_backend_error() -> None:
-    with pytest.raises(EngineError, match=r"^Unsupported backend: duckdb$"):
-        default_engine_registry().create("duckdb")
+    with pytest.raises(EngineError, match=r"^Unsupported backend: spark$"):
+        default_engine_registry().create("spark")
 
 
 def test_create_preserves_throwing_factory_diagnostic() -> None:

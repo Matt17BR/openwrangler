@@ -1,17 +1,19 @@
-import type { FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
+import type { DataBackend, FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
 import { isFilterModel, isTransformStep } from "../shared/protocolValidation";
 
-export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v2";
+export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v3";
 
 export interface PersistedSessionState {
+  backend: DataBackend;
   steps: TransformStep[];
   filterModel: FilterModel;
   draftStep?: TransformStep;
   draftReplacesStepId?: string;
 }
 
-export function persistenceKey(source: SessionSource): string {
+export function persistenceKey(source: SessionSource, backend: DataBackend): string {
   return JSON.stringify({
+    backend,
     kind: source.kind,
     path: source.path ?? null,
     uri: source.uri ?? null,
@@ -23,6 +25,7 @@ export function persistenceKey(source: SessionSource): string {
 
 export function persistedStateFromMetadata(metadata: SessionMetadata): PersistedSessionState {
   return {
+    backend: metadata.backend,
     steps: metadata.steps,
     filterModel: metadata.filterModel,
     draftStep: metadata.draftStep,
@@ -33,7 +36,10 @@ export function persistedStateFromMetadata(metadata: SessionMetadata): Persisted
 export function decodePersistedSession(value: unknown): PersistedSessionState | undefined {
   if (
     !isRecord(value) ||
-    Object.keys(value).some((key) => !["steps", "filterModel", "draftStep", "draftReplacesStepId"].includes(key)) ||
+    Object.keys(value).some(
+      (key) => !["backend", "steps", "filterModel", "draftStep", "draftReplacesStepId"].includes(key)
+    ) ||
+    !isDataBackend(value.backend) ||
     !Array.isArray(value.steps) ||
     !isFilterModel(value.filterModel)
   ) {
@@ -48,11 +54,16 @@ export function decodePersistedSession(value: unknown): PersistedSessionState | 
     return undefined;
   }
   return {
+    backend: value.backend,
     steps: steps as TransformStep[],
     filterModel: value.filterModel,
     draftStep,
     draftReplacesStepId
   };
+}
+
+function isDataBackend(value: unknown): value is DataBackend {
+  return value === "polars" || value === "duckdb" || value === "pandas";
 }
 
 function decodeStep(value: unknown): TransformStep | undefined {

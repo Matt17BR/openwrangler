@@ -266,7 +266,7 @@ export class SessionCoordinator implements vscode.Disposable {
       runtimeId: response.metadata.sessionId,
       publicRevision: response.metadata.revision,
       runtimeRevision: response.metadata.revision,
-      openRequest: request,
+      openRequest: { ...request, backend: response.metadata.backend },
       delegate,
       interactiveQueue: [],
       backgroundQueue: [],
@@ -277,7 +277,7 @@ export class SessionCoordinator implements vscode.Disposable {
       recoveryRequired: false
     };
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
-    const persisted = this.loadPersistedSession(request);
+    const persisted = this.loadPersistedSession(request, response.metadata.backend);
     if (persisted) {
       try {
         const page = await this.restoreRuntimeState(session, persisted, request.pageSize, options);
@@ -290,7 +290,7 @@ export class SessionCoordinator implements vscode.Disposable {
         };
       } catch {
         await this.closeRuntimeState(session, "saved-plan fallback runtime");
-        const clean = await delegate.request(request, options);
+        const clean = await delegate.request(session.openRequest, options);
         if (clean.kind === "error" || clean.kind === "cancelled") return clean;
         if (clean.kind !== "sessionOpened") {
           return protocolError(
@@ -795,15 +795,19 @@ export class SessionCoordinator implements vscode.Disposable {
     this.pendingOpenWaiters.clear();
   }
 
-  private loadPersistedSession(request: OpenSessionRequest): PersistedSessionState | undefined {
-    const key = persistenceKey(request.source);
+  private loadPersistedSession(
+    request: OpenSessionRequest,
+    backend: SessionMetadata["backend"]
+  ): PersistedSessionState | undefined {
+    const key = persistenceKey(request.source, backend);
     const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
-    return decodePersistedSession(stored?.[key]);
+    const state = decodePersistedSession(stored?.[key]);
+    return state?.backend === backend ? state : undefined;
   }
 
   private async persistSession(session: CoordinatedSession): Promise<void> {
     if (!this.workspaceState) return;
-    const key = persistenceKey(session.openRequest.source);
+    const key = persistenceKey(session.openRequest.source, session.metadata.backend);
     const state = persistedStateFromMetadata(session.metadata);
     const task = this.persistenceTail
       .catch(() => undefined)
@@ -827,7 +831,7 @@ export class SessionCoordinator implements vscode.Disposable {
       return true;
     }
 
-    const key = persistenceKey(session.openRequest.source);
+    const key = persistenceKey(session.openRequest.source, metadata.backend);
     const state = persistedStateFromMetadata(metadata);
     let committed = false;
     const task = this.persistenceTail

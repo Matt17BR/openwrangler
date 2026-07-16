@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -94,11 +94,12 @@ describe("DataGrid", () => {
       />
     );
 
-    const city = screen.getByText("Milan").closest("td");
-    const sales = screen.getByText("10.5").closest("td");
+    const city = screen.getByRole("cell", { name: "Milan" });
+    const sales = screen.getByRole("cell", { name: "10.5" });
     expect(city).toHaveAttribute("tabindex", "0");
-    city?.focus();
-    fireEvent.keyDown(city as HTMLTableCellElement, { key: "ArrowRight" });
+    act(() => city.focus());
+    expect(document.activeElement).toBe(city);
+    fireEvent.keyDown(city, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(sales));
     expect(screen.queryByText("Profiling…")).toBeNull();
   });
@@ -235,7 +236,9 @@ describe("DataGrid", () => {
     Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
     fireEvent(window, new Event("resize"));
     const initialRovingCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
-    initialRovingCell?.focus();
+    expect(initialRovingCell).not.toBeNull();
+    act(() => initialRovingCell?.focus());
+    expect(document.activeElement).toBe(initialRovingCell);
     scroller.scrollTop = 20 * 29;
     fireEvent.scroll(scroller);
 

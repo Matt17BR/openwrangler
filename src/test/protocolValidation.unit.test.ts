@@ -99,7 +99,7 @@ const summaries = [
 ];
 
 const responses: OpenWranglerResponse[] = [
-  { kind: "initialized", protocolVersion: 2, runtimeVersion: "0.2.0a2", capabilities },
+  { kind: "initialized", protocolVersion: 2, runtimeVersion: "0.3.0", capabilities },
   { kind: "sessionOpened", metadata, page, summaries },
   { kind: "page", revision: 3, viewRequestId: "view-1", page, metadata },
   { kind: "summary", revision: 3, viewRequestId: "view-1", summaries },
@@ -375,6 +375,19 @@ describe("protocol-v2 request validation", () => {
       ).toBe(true);
     }
   );
+
+  it("accepts DuckDB as a first-class file backend", () => {
+    expect(
+      isOpenWranglerRequest({
+        kind: "openSession",
+        source: metadata.source,
+        backend: "duckdb",
+        mode: "editing",
+        pageSize: 200
+      })
+    ).toBe(true);
+    expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
+  });
 
   it.each([
     {

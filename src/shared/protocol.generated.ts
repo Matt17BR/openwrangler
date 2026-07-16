@@ -20,7 +20,7 @@ export type OpenWranglerRequest =
   | ExportDataRequest
   | CloseSessionRequest
   | CancelRequest;
-export type DataBackend = "polars" | "pandas";
+export type DataBackend = "polars" | "duckdb" | "pandas";
 export type SessionMode = "viewing" | "editing";
 export type PageRequest = SessionRequestBase & {
   kind: "getPage";

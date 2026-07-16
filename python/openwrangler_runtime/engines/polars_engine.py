@@ -29,7 +29,8 @@ class PolarsEngine(DataFrameEngine):
         supports_editing=True,
         lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl"}),
         export_formats=frozenset({"csv", "parquet"}),
-        supports_interrupt=False,
+        supports_shutdown_interrupt=False,
+        supports_request_cancellation=False,
     )
 
     def detect(self, value: Any) -> bool:

@@ -7,7 +7,7 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 
-from openwrangler_runtime.engines.base import normalize_cell
+from openwrangler_runtime.engines.base import infer_semantic_type, normalize_cell
 
 
 def test_typed_cells_preserve_values_json_cannot_represent_directly() -> None:
@@ -53,3 +53,15 @@ def test_nested_typed_cells_are_strict_json_safe() -> None:
         "missing": None,
     }
     json.dumps(cell, allow_nan=False)
+
+
+def test_semantic_type_inference_covers_duckdb_scalar_and_nested_types() -> None:
+    assert infer_semantic_type("HUGEINT") == "integer"
+    assert infer_semantic_type("DECIMAL(38, 6)") == "decimal"
+    assert infer_semantic_type("TIMESTAMP WITH TIME ZONE") == "datetime"
+    assert infer_semantic_type("INTERVAL") == "duration"
+    assert infer_semantic_type("BLOB") == "binary"
+    assert infer_semantic_type("VARCHAR") == "string"
+    assert infer_semantic_type("UUID") == "string"
+    assert infer_semantic_type("INTEGER[]") == "list"
+    assert infer_semantic_type("MAP(VARCHAR, INTEGER)") == "struct"

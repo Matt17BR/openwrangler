@@ -6,7 +6,7 @@
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [2] },
-    "DataBackend": { "type": "string", "enum": ["polars", "pandas"] },
+    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
     "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
     "SessionSource": {

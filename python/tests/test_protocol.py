@@ -44,6 +44,25 @@ def test_open_session_accepts_only_a_non_empty_requested_session_identity() -> N
         decode_envelope(envelope)
 
 
+def test_open_session_accepts_duckdb_and_rejects_unknown_backends() -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "open-duckdb",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.parquet", "path": "/tmp/sample.parquet"},
+            "backend": "duckdb",
+            "pageSize": 200,
+        },
+    }
+
+    assert decode_envelope(envelope)[2]["backend"] == "duckdb"
+    envelope["request"]["backend"] = "sqlite"
+    with pytest.raises(ProtocolError, match="pandas, polars, or duckdb"):
+        decode_envelope(envelope)
+
+
 @pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
 def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
     request: dict[str, object] = {

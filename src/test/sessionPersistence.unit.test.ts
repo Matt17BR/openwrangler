@@ -35,19 +35,20 @@ const metadata: SessionMetadata = {
 
 describe("session persistence", () => {
   it("uses the canonical Open Wrangler storage key", () => {
-    expect(SESSION_STORAGE_KEY).toBe("openWrangler.persistedSessions.v2");
+    expect(SESSION_STORAGE_KEY).toBe("openWrangler.persistedSessions.v3");
   });
 
-  it("uses source identity and import options as a stable storage key", () => {
+  it("uses source, backend, and import options as a stable storage key", () => {
     const source = {
       kind: "file" as const,
       label: "sample.csv",
       path: "/workspace/sample.csv",
       importOptions: { delimiter: ";", hasHeader: true }
     };
-    expect(persistenceKey(source)).toBe(persistenceKey({ ...source }));
-    expect(persistenceKey(source)).not.toBe(
-      persistenceKey({ ...source, importOptions: { delimiter: ",", hasHeader: true } })
+    expect(persistenceKey(source, "polars")).toBe(persistenceKey({ ...source }, "polars"));
+    expect(persistenceKey(source, "polars")).not.toBe(persistenceKey(source, "duckdb"));
+    expect(persistenceKey(source, "polars")).not.toBe(
+      persistenceKey({ ...source, importOptions: { delimiter: ",", hasHeader: true } }, "polars")
     );
   });
 
@@ -56,28 +57,35 @@ describe("session persistence", () => {
     expect(decodePersistedSession(persisted)).toEqual(persisted);
     expect(persisted).not.toHaveProperty("sessionId");
     expect(persisted).not.toHaveProperty("stats");
+    expect(persisted.backend).toBe("polars");
   });
 
   it("rejects malformed and unknown saved operations", () => {
-    expect(decodePersistedSession({ steps: [], filterModel: { filters: [] } })).toBeUndefined();
+    expect(decodePersistedSession({ backend: "polars", steps: [], filterModel: { filters: [] } })).toBeUndefined();
     expect(
       decodePersistedSession({
+        backend: "polars",
         steps: [{ id: "bad", kind: "notAnOperation", params: {} }],
         filterModel: { filters: [], sort: [] }
       })
     ).toBeUndefined();
     expect(
       decodePersistedSession({
+        backend: "polars",
         steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["old"] } }],
         filterModel: { filters: [], sort: [] }
       })
     ).toBeUndefined();
     expect(
       decodePersistedSession({
+        backend: "polars",
         steps: [],
         filterModel: { filters: [], sort: [] },
         unexpected: true
       })
+    ).toBeUndefined();
+    expect(
+      decodePersistedSession({ backend: "spark", steps: [], filterModel: { filters: [], sort: [] } })
     ).toBeUndefined();
   });
 });

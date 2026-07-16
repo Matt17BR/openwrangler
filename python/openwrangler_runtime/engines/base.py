@@ -44,7 +44,8 @@ class EngineCapabilities:
     supports_editing: bool
     lazy_file_extensions: frozenset[str]
     export_formats: frozenset[ExportFormat]
-    supports_interrupt: bool
+    supports_shutdown_interrupt: bool
+    supports_request_cancellation: bool
 
 
 @dataclass(frozen=True)
@@ -222,10 +223,12 @@ def infer_semantic_type(raw_type: str) -> ColumnType:
     lowered = raw_type.lower()
     # Container dtypes include their children (for example ``List(Int64)``), so
     # classify the outer type before looking for numeric tokens.
-    if any(token in lowered for token in ("list", "array")):
+    if lowered.endswith("[]") or any(token in lowered for token in ("list", "array")):
         return "list"
-    if any(token in lowered for token in ("struct", "dict")):
+    if any(token in lowered for token in ("struct", "dict", "map")):
         return "struct"
+    if any(token in lowered for token in ("duration", "timedelta", "interval")):
+        return "duration"
     if any(token in lowered for token in ("int", "uint")):
         return "integer"
     if any(token in lowered for token in ("float", "double", "decimal")):
@@ -238,11 +241,12 @@ def infer_semantic_type(raw_type: str) -> ColumnType:
         return "datetime"
     if lowered == "date" or lowered.endswith("[date]"):
         return "date"
-    if any(token in lowered for token in ("duration", "timedelta")):
-        return "duration"
-    if any(token in lowered for token in ("binary", "bytes")):
+    if any(token in lowered for token in ("binary", "bytes", "blob")):
         return "binary"
-    if any(token in lowered for token in ("str", "utf8", "object", "category", "categorical")):
+    if any(
+        token in lowered
+        for token in ("str", "utf8", "object", "category", "categorical", "varchar", "char", "uuid", "enum")
+    ):
         return "string"
     return "unknown"
 

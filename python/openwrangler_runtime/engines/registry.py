@@ -5,6 +5,7 @@ from contextlib import suppress
 from typing import Any, cast
 
 from .base import DataFrameEngine, EngineError
+from .duckdb_engine import DuckDBEngine
 from .pandas_engine import PandasEngine
 from .polars_engine import PolarsEngine
 
@@ -83,4 +84,4 @@ class EngineRegistry:
 
 def default_engine_registry() -> EngineRegistry:
     """Return the built-in engines in automatic-detection priority order."""
-    return EngineRegistry((("polars", PolarsEngine), ("pandas", PandasEngine)))
+    return EngineRegistry((("polars", PolarsEngine), ("duckdb", DuckDBEngine), ("pandas", PandasEngine)))

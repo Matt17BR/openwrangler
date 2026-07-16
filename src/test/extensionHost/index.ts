@@ -46,6 +46,9 @@ interface FakeJupyterApi {
   };
 }
 
+const DUCKDB_FOREIGN_ENGINE_CONVERSION =
+  /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
+
 export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The Open Wrangler extension must be discoverable.");
@@ -669,98 +672,105 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {
   const source = csvSource(fixture);
-  const opened = await testing.request({
-    kind: "openSession",
-    source,
-    backend: "polars",
-    pageSize: 20,
-    mode: "editing"
-  });
-  assert.equal(opened.kind, "sessionOpened");
-  if (opened.kind !== "sessionOpened") return;
-
-  const preview = await testing.request({
-    kind: "previewStep",
-    sessionId: opened.metadata.sessionId,
-    revision: opened.metadata.revision,
-    step: {
-      id: "packaged-score",
-      kind: "formula",
-      params: { leftColumn: "sales", operator: "multiply", value: 2, newColumn: "score" }
-    },
-    offset: 0,
-    limit: 20
-  });
-  assert.equal(preview.kind, "stepPreview");
-  if (preview.kind !== "stepPreview") return;
-
-  const applied = await testing.request({
-    kind: "applyDraft",
-    sessionId: opened.metadata.sessionId,
-    revision: preview.revision,
-    offset: 0,
-    limit: 20
-  });
-  assert.equal(applied.kind, "planUpdated");
-  if (applied.kind !== "planUpdated") return;
-
   const filterModel: FilterModel = {
     filters: [],
     sort: [{ column: "sales", direction: "desc", nulls: "last" }]
   };
-  const page = await testing.request({
-    kind: "getPage",
-    viewRequestId: "persisted-plan-page",
-    sessionId: opened.metadata.sessionId,
-    revision: applied.revision,
-    offset: 0,
-    limit: 20,
-    filterModel
-  });
-  assert.equal(page.kind, "page");
-  if (page.kind !== "page") return;
-  assert.equal(page.page.rows[0]?.values[0]?.display, "Berlin");
-  assert.deepEqual(
-    page.metadata.steps.map((step) => step.id),
-    ["packaged-score"]
-  );
+  for (const target of [
+    { backend: "polars" as const, stepId: "packaged-score", multiplier: 2, score: "24.0" },
+    { backend: "duckdb" as const, stepId: "packaged-duckdb-score", multiplier: 3, score: "36.0" }
+  ]) {
+    const opened = await testing.request({
+      kind: "openSession",
+      source,
+      backend: target.backend,
+      pageSize: 20,
+      mode: "editing"
+    });
+    assert.equal(opened.kind, "sessionOpened");
+    if (opened.kind !== "sessionOpened") continue;
 
-  const closed = await testing.request({
-    kind: "closeSession",
-    sessionId: opened.metadata.sessionId,
-    revision: page.revision
-  });
-  assert.equal(closed.kind, "sessionClosed");
-  await waitFor(
-    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-    10_000,
-    "the seeded session and standalone runtime to close"
-  );
+    const preview = await testing.request({
+      kind: "previewStep",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      step: {
+        id: target.stepId,
+        kind: "formula",
+        params: { leftColumn: "sales", operator: "multiply", value: target.multiplier, newColumn: "score" }
+      },
+      offset: 0,
+      limit: 20
+    });
+    assert.equal(preview.kind, "stepPreview");
+    if (preview.kind !== "stepPreview") continue;
 
-  const readback = await testing.request({
-    kind: "openSession",
-    source,
-    backend: "polars",
-    pageSize: 20,
-    mode: "editing"
-  });
-  assert.equal(readback.kind, "sessionOpened");
-  if (readback.kind !== "sessionOpened") return;
-  assert.deepEqual(
-    readback.metadata.steps.map((step) => step.id),
-    ["packaged-score"]
-  );
-  const readbackClosed = await testing.request({
-    kind: "closeSession",
-    sessionId: readback.metadata.sessionId,
-    revision: readback.metadata.revision
-  });
-  assert.equal(readbackClosed.kind, "sessionClosed");
-  await waitFor(
-    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
-    10_000,
-    "the persistence readback session to close"
-  );
+    const applied = await testing.request({
+      kind: "applyDraft",
+      sessionId: opened.metadata.sessionId,
+      revision: preview.revision,
+      offset: 0,
+      limit: 20
+    });
+    assert.equal(applied.kind, "planUpdated");
+    if (applied.kind !== "planUpdated") continue;
+
+    const page = await testing.request({
+      kind: "getPage",
+      viewRequestId: `persisted-${target.backend}-plan-page`,
+      sessionId: opened.metadata.sessionId,
+      revision: applied.revision,
+      offset: 0,
+      limit: 20,
+      filterModel
+    });
+    assert.equal(page.kind, "page");
+    if (page.kind !== "page") continue;
+    assert.equal(page.page.rows[0]?.values[0]?.display, "Berlin");
+    assert.equal(page.page.rows[0]?.values[4]?.display, target.score);
+    assert.deepEqual(
+      page.metadata.steps.map((step) => step.id),
+      [target.stepId]
+    );
+
+    const closed = await testing.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: page.revision
+    });
+    assert.equal(closed.kind, "sessionClosed");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `the seeded ${target.backend} session and standalone runtime to close`
+    );
+
+    const readback = await testing.request({
+      kind: "openSession",
+      source,
+      backend: target.backend,
+      pageSize: 20,
+      mode: "editing"
+    });
+    assert.equal(readback.kind, "sessionOpened");
+    if (readback.kind !== "sessionOpened") continue;
+    assert.deepEqual(
+      readback.metadata.steps.map((step) => step.id),
+      [target.stepId]
+    );
+    assert.equal(readback.page.rows[0]?.values[4]?.display, target.score);
+    const readbackClosed = await testing.request({
+      kind: "closeSession",
+      sessionId: readback.metadata.sessionId,
+      revision: readback.metadata.revision
+    });
+    assert.equal(readbackClosed.kind, "sessionClosed");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `the ${target.backend} persistence readback session to close`
+    );
+  }
   await new Promise((resolve) => setTimeout(resolve, 1_000));
 }
 
@@ -800,16 +810,37 @@ async function verifyPersistedReplayAndRecovery(
   assert.equal(second.kind, "sessionOpened");
   if (second.kind !== "sessionOpened") return;
   assert.notEqual(second.metadata.sessionId, restored.metadata.sessionId);
-  assert.equal(testing.diagnostics().sessionCount, 2);
+  const third = await testing.request({
+    kind: "openSession",
+    source: csvSource(fixture),
+    backend: "duckdb",
+    pageSize: 20,
+    mode: "editing"
+  });
+  assert.equal(third.kind, "sessionOpened");
+  if (third.kind !== "sessionOpened") return;
+  assert.deepEqual(
+    third.metadata.steps.map((step) => step.id),
+    ["packaged-duckdb-score"]
+  );
+  assert.equal(third.metadata.shape.columns, 5);
+  assert.equal(third.page.rows[0]?.values[0]?.display, "Berlin");
+  assert.equal(third.page.rows[0]?.values[4]?.display, "36.0");
+  assert.deepEqual(third.metadata.filterModel.sort, [{ column: "sales", direction: "desc", nulls: "last" }]);
+  assert.notEqual(third.metadata.sessionId, restored.metadata.sessionId);
+  assert.notEqual(third.metadata.sessionId, second.metadata.sessionId);
+  assert.equal(testing.diagnostics().sessionCount, 3);
   testing.setActiveSession(second.metadata.sessionId);
   assert.equal(testing.activeSession()?.sessionId, second.metadata.sessionId);
+  testing.setActiveSession(third.metadata.sessionId);
+  assert.equal(testing.activeSession()?.sessionId, third.metadata.sessionId);
   testing.setActiveSession(restored.metadata.sessionId);
   assert.equal(testing.activeSession()?.sessionId, restored.metadata.sessionId);
 
   const beforeRestart = testing.diagnostics();
   const generation = testing.runtimeGeneration();
   testing.restartRuntime("Injected packaged-editor recovery test.");
-  const [restoredPage, secondPage] = await Promise.all([
+  const [restoredPage, secondPage, thirdPage] = await Promise.all([
     testing.request({
       kind: "getPage",
       viewRequestId: "restart-restored-page",
@@ -827,16 +858,29 @@ async function verifyPersistedReplayAndRecovery(
       offset: 0,
       limit: 20,
       filterModel: second.metadata.filterModel
+    }),
+    testing.request({
+      kind: "getPage",
+      viewRequestId: "restart-duckdb-page",
+      sessionId: third.metadata.sessionId,
+      revision: third.metadata.revision,
+      offset: 0,
+      limit: 20,
+      filterModel: third.metadata.filterModel
     })
   ]);
   assert.equal(restoredPage.kind, "page");
   assert.equal(secondPage.kind, "page");
-  if (restoredPage.kind !== "page" || secondPage.kind !== "page") return;
+  assert.equal(thirdPage.kind, "page");
+  if (restoredPage.kind !== "page" || secondPage.kind !== "page" || thirdPage.kind !== "page") return;
   assert.equal(testing.runtimeGeneration(), generation + 1, "Concurrent recovery must start exactly one runtime.");
   assert.equal(restoredPage.page.rows[0]?.values[4]?.display, "24.0");
   assert.equal(secondPage.metadata.shape.columns, 4);
+  assert.equal(thirdPage.metadata.backend, "duckdb");
+  assert.equal(thirdPage.metadata.shape.columns, 5);
+  assert.equal(thirdPage.page.rows[0]?.values[4]?.display, "36.0");
   const afterRestart = testing.diagnostics();
-  assert.equal(afterRestart.sessionCount, 2);
+  assert.equal(afterRestart.sessionCount, 3);
   for (const before of beforeRestart.sessions) {
     const after = afterRestart.sessions.find((session) => session.publicId === before.publicId);
     assert.ok(after);
@@ -852,7 +896,8 @@ async function verifyPersistedReplayAndRecovery(
         revision: restoredPage.revision,
         columns: 5
       },
-      { name: "pandas", sessionId: second.metadata.sessionId, revision: secondPage.revision, columns: 4 }
+      { name: "pandas", sessionId: second.metadata.sessionId, revision: secondPage.revision, columns: 4 },
+      { name: "duckdb", sessionId: third.metadata.sessionId, revision: thirdPage.revision, columns: 5 }
     ]) {
       const csvDestination = path.join(exportDirectory, `${target.name}.csv`);
       const csvExported = await testing.request({
@@ -898,8 +943,14 @@ async function verifyPersistedReplayAndRecovery(
     sessionId: second.metadata.sessionId,
     revision: secondPage.revision
   });
+  const thirdClosed = await testing.request({
+    kind: "closeSession",
+    sessionId: third.metadata.sessionId,
+    revision: thirdPage.revision
+  });
   assert.equal(firstClosed.kind, "sessionClosed");
   assert.equal(secondClosed.kind, "sessionClosed");
+  assert.equal(thirdClosed.kind, "sessionClosed");
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
@@ -910,8 +961,12 @@ async function verifyPersistedReplayAndRecovery(
 async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Uri, python: string): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-file-inputs-"));
   const config = vscode.workspace.getConfiguration("openWrangler");
-  const originalBackend = config.get<"auto" | "polars" | "pandas">("defaultBackend", "auto");
+  const originalBackend = config.get<"auto" | "polars" | "duckdb" | "pandas">("defaultBackend", "auto");
   try {
+    writeFileSync(
+      path.join(directory, "sample.csv"),
+      readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.csv").fsPath)
+    );
     execFileSync(
       python,
       [
@@ -943,13 +998,33 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         shape: { rows: 4, columns: 4 }
       },
       {
+        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
+        backend: "duckdb" as const,
+        shape: { rows: 4, columns: 4 }
+      },
+      {
         uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
         backend: "polars" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
+        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
+        backend: "duckdb" as const,
+        shape: { rows: 4, columns: 4 }
+      },
+      {
+        uri: vscode.Uri.file(path.join(directory, "sample.csv")),
+        backend: "duckdb" as const,
+        shape: { rows: 4, columns: 4 }
+      },
+      {
         uri: vscode.Uri.file(path.join(directory, "sample.parquet")),
         backend: "polars" as const,
+        shape: { rows: 2, columns: 3 }
+      },
+      {
+        uri: vscode.Uri.file(path.join(directory, "sample.parquet")),
+        backend: "duckdb" as const,
         shape: { rows: 2, columns: 3 }
       },
       {
@@ -1018,6 +1093,19 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       assert.match(rejected.message, /Missing: polars/);
       assert.match(rejected.detail ?? "", /Install Runtime Dependencies/);
     }
+    const rejectedDuckDB = await testing.request({
+      kind: "openSession",
+      source: csvSource(fixture),
+      backend: "duckdb",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(rejectedDuckDB.kind, "error");
+    if (rejectedDuckDB.kind === "error") {
+      assert.equal(rejectedDuckDB.code, "missing_dependencies");
+      assert.match(rejectedDuckDB.message, /Missing: duckdb>=1\.4\.5,<1\.6/);
+      assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
+    }
     assert.equal(testing.runtimeRunning(), false, "Missing dependencies must fail before runtime startup.");
     assert.equal(
       await vscode.commands.executeCommand("openWrangler.installRuntimeDependencies", false),
@@ -1056,7 +1144,7 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
     ]
   };
 
-  for (const backend of ["pandas", "polars"] as const) {
+  for (const backend of ["pandas", "polars", "duckdb"] as const) {
     const opened = await testing.request({
       kind: "openSession",
       source: csvSource(fixture),
@@ -1154,7 +1242,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
   writeFileSync(sourcePath, original);
 
   try {
-    for (const backend of ["pandas", "polars"] as const) {
+    for (const backend of ["pandas", "polars", "duckdb"] as const) {
       const opened = await testing.request({
         kind: "openSession",
         source: csvSource(vscode.Uri.file(sourcePath)),
@@ -1207,7 +1295,9 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
             code:
               backend === "pandas"
                 ? 'result = df.assign(custom=df["sales"] + 1)'
-                : 'result = df.with_columns((pl.col("sales") + 1).alias("custom"))'
+                : backend === "polars"
+                  ? 'result = df.with_columns((pl.col("sales") + 1).alias("custom"))'
+                  : 'result = df.filter("sales IS NOT NULL")'
           }
         },
         {
@@ -1235,6 +1325,10 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         assert.match(preview.code, /def clean_data\(df\):/);
         assert.equal(preview.diff.truncated, false);
         if (backend === "polars") assert.doesNotMatch(preview.code, /to_pandas|import pandas/);
+        if (backend === "duckdb") {
+          assert.match(preview.code, /\bimport duckdb\b/u);
+          assert.doesNotMatch(preview.code, DUCKDB_FOREIGN_ENGINE_CONVERSION);
+        }
         if (step.kind === "byExample") {
           assert.ok(preview.metadata.draftStep?.params.program, "By-example preview must resolve a program.");
         }
@@ -1279,6 +1373,10 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
         ["active", "total_sales"]
       );
       assert.match(active?.code ?? "", /def clean_data/u, `${backend} must retain executable generated code.`);
+      if (backend === "duckdb") {
+        assert.match(active?.code ?? "", /\bimport duckdb\b/u);
+        assert.doesNotMatch(active?.code ?? "", DUCKDB_FOREIGN_ENGINE_CONVERSION);
+      }
 
       const editedCode = `# edited ${backend} code preview\ndef clean_data(df):\n    return df\n`;
       const priorClipboard = await vscode.env.clipboard.readText();

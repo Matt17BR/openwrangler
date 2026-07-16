@@ -4,6 +4,8 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
+The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
+
 | Surface                                             | Pandas | Polars | Status | Required evidence                                 |
 | --------------------------------------------------- | -----: | -----: | ------ | ------------------------------------------------- |
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done   | Format/options/errors and packaged editors green  |
@@ -31,6 +33,27 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 | Runtime selection, setup, change, clear             |    Yes |    Yes | Done   | Resolver plus packaged missing/decline flow green |
 | Original icons, native views, themes, accessibility |    N/A |    N/A | Done   | Packaged VS Code/Cursor visual matrix green       |
 | Runtime crash/reload/session replay                 |    Yes |    Yes | Done   | Packaged injected recovery/replay green           |
+
+## DuckDB file-backed preview matrix
+
+DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither converts through Pandas, Polars, or Arrow nor installs/loads DuckDB extensions automatically. **Partial** below means the native runtime path has automated evidence but the complete installed-editor and release matrix is still pending; **Planned** means the surface is intentionally unavailable in this preview.
+
+| Surface                                      | Availability        | Status  | Recorded evidence                                       | Remaining acceptance gate                                    |
+| -------------------------------------------- | ------------------- | ------- | ------------------------------------------------------- | ------------------------------------------------------------ |
+| CSV and TSV file sessions                    | Yes                 | Partial | Lazy native reads plus packaged VS Code/Cursor imports  | Malformed/options and cross-platform matrix                  |
+| Parquet file sessions                        | Yes                 | Partial | Native typed reads, benchmark, and packaged editors     | Large mixed/nested fixture and cross-platform matrix         |
+| JSONL file sessions                          | Yes                 | Partial | Offline native read plus packaged VS Code/Cursor import | Malformed JSONL and import-state interaction                 |
+| Excel file sessions                          | No                  | Planned | Explicit diagnostic directs users to Pandas or Polars   | Deferred; no DuckDB Excel claim                              |
+| `.duckdb` database/catalog/table browsing    | No                  | Planned | Not registered as a source kind                         | Deferred source/connection/security design                   |
+| Notebook variables and inline MIME rendering | No                  | Planned | DuckDB advertises file sources only                     | Deferred kernel ownership, formatter, and recovery design    |
+| Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native tests plus packaged VS Code/Cursor query matrix  | Large mixed data and cross-platform matrix                   |
+| Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence        |
+| Complete 27-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Full DuckDB-specific semantic edge matrix                    |
+| Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                  |
+| Executable generated DuckDB code             | Yes                 | Partial | All kinds equal; packaged preview/copy/script green     | Edited-code execution acceptance                             |
+| CSV and Parquet cleaned-data export          | Yes                 | Partial | Native/atomic packaged exports preserve source bytes    | Failure injection and cross-platform destination matrix      |
+| Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix         |
+| Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate |
 
 ## Recorded acceptance evidence
 
@@ -293,6 +316,23 @@ Progressive-grid, cache, and response-integrity slice, 2026-07-16:
 
 This hardens the already-complete viewing, Quick Insights, recovery, and lifecycle rows without broadening the 1.0 engine or operation scope.
 
+Native DuckDB file-backed preview slice, 2026-07-16:
+
+- `.venv/bin/python -m pytest -q python/tests/test_duckdb_engine.py` passed all 5 engine-specific tests. These cover hardened/lazy CSV, TSV, Parquet, and JSONL reads; typed pages; filters/sorts; exact profiles and values; concurrent page/profile reads; native exports and cleanup; all 27 operations; executable generated-code equality; collisions and custom-code failures; and a file-session preview/apply/profile/export/close flow.
+- `.venv/bin/python -m pytest -q python/tests/test_duckdb_engine.py python/tests/test_engine_registry.py python/tests/test_engine_lifecycle.py python/tests/test_typed_cells.py python/tests/test_performance_backends.py` passed all 41 focused engine, registry, lifecycle, typed-cell, and benchmark integration tests.
+- `.venv/bin/python -m pytest -q python/tests` passed all 236 Python tests in 11.59 seconds after DuckDB registration. Conversion guards fail any DuckDB relation path that calls the Pandas, Polars, or Arrow conversion APIs.
+- The opt-in benchmark smoke records the selected backend, package/runtime/machine/source provenance, native and lazy frame types, driver and standalone-process resource samples, direct `SessionManager` calls, and real protocol-v2 stdio boundaries. It explicitly labels those measurements as runtime rather than VS Code, Cursor, webview, or editor first-paint timings.
+- Performance strict mode remains defined only for the native Polars path. Pandas and DuckDB reports are diagnostic comparisons, and a non-Polars `--strict` invocation is rejected rather than presented as release-gate evidence.
+- `npm run test:extension-host` passes with backend-keyed persisted state for the same CSV: Polars replays its two-times formula and DuckDB independently replays its three-times formula across fresh editor processes. A later injected standalone-runtime restart concurrently reconstructs those two sessions plus Pandas with new internal IDs and one shared process generation.
+- The packaged file matrix opens DuckDB CSV, TSV, JSONL, and Parquet sessions through the contributed custom editor. Independent DuckDB viewing acceptance runs typed paging, an advanced OR predicate, multi-column sorting, progressive summaries, exact dataset statistics, and searched distinct values while keeping the cleaning plan empty.
+- The packaged editing matrix runs representative row/order, formula, text, numeric, by-example, custom-code, and aggregation steps through preview, typed diff, native generated-code inspection, apply, custom-code crash replay, editable Code Preview copy/script export, and final cleanup. Generated code is rejected if it references Pandas, Polars, PyArrow, or relation conversion APIs.
+- DuckDB CSV and Parquet exports succeed after concurrent runtime recovery, preserve the source bytes, exclude private row identity, and leave zero sessions/processes. A dependency-isolated interpreter reports the exact tested requirement `duckdb>=1.4.5,<1.6` before runtime startup, and declining installation performs no mutation.
+- The 22 production-bundle pixel baselines and all axe scenarios pass unchanged. TypeScript/webview coverage is 74.43% statements, 71.30% branches, 81.51% functions, and 77.61% lines; Python runtime coverage is 87.53%, including 81% statement coverage in the DuckDB adapter.
+- The reproducible DuckDB 1.5.4 smoke on Python 3.14.4 retains native lazy relations and zero sessions. CSV cold stdio open/warm reopen is 43.858/29.966ms, direct cached/cache-miss p95 is 0.058/11.180ms, and stdio cache-miss p95 is 13.284ms. Parquet is 35.960/22.137ms, 0.061/10.082ms, and 12.266ms respectively. These small diagnostic fixtures are not editor-paint or release-limit claims.
+- The exact 61-entry allowlisted `openwrangler.vsix` has SHA-256 `bfb9222e8a92cb56722938e09414eaa8491e944645a90c1368723898a92716ca`. Its expanded two-process matrix passes in disposable VS Code 1.128.1 and Cursor 3.11.19 profiles, with six real-workbench captures, source-safe exports, backend-specific persistence, injected recovery, and final cleanup. `npm audit` and `pip-audit` report no known vulnerabilities.
+
+This establishes a tested native DuckDB file preview, not full DuckDB parity. The DuckDB-specific semantic edge matrix, large mixed/nested data, repeated full-size measurements, and CI across Linux/macOS/Windows remain pending. Excel, notebook variables/MIME, and `.duckdb` database browsing remain explicitly deferred.
+
 ## Explicitly deferred from 1.0
 
-Copilot operations, Spark, DuckDB, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the 1.0 matrix and must not be represented as supported.
+Copilot operations, Spark, DuckDB Excel/notebook/`.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported.
