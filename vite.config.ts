@@ -28,6 +28,10 @@ export default defineConfig({
     alias: { vscode: resolve(__dirname, "src/test/vscode.mock.ts") },
     environment: "jsdom",
     globals: true,
+    // Hosted Windows runners can take more than Vitest's 5-second default to
+    // initialize concurrent jsdom/React files. Keep every test bounded while
+    // avoiding platform-load failures unrelated to an individual assertion.
+    testTimeout: 15_000,
     include: ["src/test/**/*.test.ts", "src/test/**/*.test.tsx"],
     coverage: {
       provider: "v8",
