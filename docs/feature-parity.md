@@ -262,7 +262,7 @@ This makes original icons, native views, themes, and accessibility **Done**. Eve
 
 Final release-gate correction slice, 2026-07-15:
 
-- Focused snapshot-model and filter/summary interaction tests raised TypeScript/webview coverage to 69.70% statements, 68.15% branches, 71.90% functions, and 72.61% lines; Python remains at 80.37%. The combined suite now contains 51 TypeScript and 113 Python tests.
+- Focused snapshot-model and filter/summary interaction tests hold TypeScript/webview coverage at 69.55% statements, 67.53% branches, 71.90% functions, and 72.57% lines; Python remains at 80.33%. The canonical-only suite contains 51 TypeScript and 112 Python tests.
 - Those tests exposed and fixed saved-notebook snapshot semantics: null numeric cells no longer compare as zero, and multi-column sorts honor the requested null placement independently of ascending/descending direction.
 - Visual and axe acceptance now use the Chromium revision pinned by `playwright-core` and the lockfile. CI installs that exact browser instead of inheriting a moving system Chrome, retaining the 1% visual threshold while eliminating browser-version drift.
 - The rebuilt allowlisted VSIX passed the complete installed-package suite and real theme captures in VS Code 1.128.1 and Cursor 3.11.19 after these corrections.
