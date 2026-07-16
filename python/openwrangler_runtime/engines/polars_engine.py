@@ -69,8 +69,8 @@ class PolarsEngine(DataFrameEngine):
             if isinstance(sheet, int):
                 # The public import option is zero-based, while fastexcel's
                 # sheet_id follows spreadsheet conventions and is one-based.
-                return pl.read_excel(path, sheet_id=sheet + 1)
-            return pl.read_excel(path, sheet_name=sheet)
+                return pl.read_excel(path, sheet_id=sheet + 1, engine="calamine")
+            return pl.read_excel(path, sheet_name=sheet, engine="calamine")
         raise EngineError(f"Unsupported file extension for Polars backend: {extension}")
 
     def normalize(self, value: Any) -> Any:

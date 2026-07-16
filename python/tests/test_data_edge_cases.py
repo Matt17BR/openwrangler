@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import gzip
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 import polars as pl
@@ -9,6 +12,15 @@ import pytest
 
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
 from openwrangler_runtime.session import SessionManager
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def write_legacy_xls(path: Path) -> None:
+    encoded = (ROOT / "fixtures" / "legacy.xls.gz.base64").read_text(encoding="ascii")
+    workbook = gzip.decompress(base64.b64decode(encoded))
+    assert workbook.startswith(bytes.fromhex("D0 CF 11 E0 A1 B1 1A E1"))
+    path.write_bytes(workbook)
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
@@ -48,11 +60,15 @@ def test_delimited_jsonl_and_parquet_imports(backend: str, tmp_path) -> None:
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 @pytest.mark.parametrize("sheet", ["second", 1])
-def test_excel_sheet_name_and_zero_based_index(backend: str, sheet: str | int, tmp_path) -> None:
-    path = tmp_path / "sheets.xlsx"
-    with pd.ExcelWriter(path) as writer:
-        pd.DataFrame({"name": ["first"]}).to_excel(writer, sheet_name="first", index=False)
-        pd.DataFrame({"name": ["second"]}).to_excel(writer, sheet_name="second", index=False)
+@pytest.mark.parametrize("extension", ["xlsx", "xls"])
+def test_excel_sheet_name_and_zero_based_index(backend: str, sheet: str | int, extension: str, tmp_path: Path) -> None:
+    path = tmp_path / f"sheets.{extension}"
+    if extension == "xls":
+        write_legacy_xls(path)
+    else:
+        with pd.ExcelWriter(path) as writer:
+            pd.DataFrame({"name": ["first"]}).to_excel(writer, sheet_name="first", index=False)
+            pd.DataFrame({"name": ["second"]}).to_excel(writer, sheet_name="second", index=False)
 
     manager = SessionManager()
     opened = manager.open_session(
@@ -65,7 +81,9 @@ def test_excel_sheet_name_and_zero_based_index(backend: str, sheet: str | int, t
         backend=backend,
     )
 
-    assert opened["page"]["rows"][0]["values"][0]["display"] == "second"
+    assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == (
+        ["second", "résumé"] if extension == "xls" else ["second"]
+    )
 
 
 def test_polars_nested_parquet_preserves_native_typed_values(tmp_path, monkeypatch) -> None:
