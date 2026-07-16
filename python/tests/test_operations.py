@@ -294,7 +294,7 @@ def test_pandas_bound_structural_operations_target_duplicate_and_non_string_colu
             [1, 10, 100, "ab"],
             [2, 20, 200, "c"],
         ],
-        columns=["duplicate", "duplicate", 7, "text"],
+        columns=pd.Index(["duplicate", "duplicate", 7, "text"], dtype=object),
     )
 
     selected = assert_pandas_live_matches_generated(
