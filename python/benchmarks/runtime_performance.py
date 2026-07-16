@@ -17,7 +17,7 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from statistics import median
 from time import perf_counter, perf_counter_ns
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -143,7 +143,12 @@ def _process_memory_snapshot(pid: int) -> dict[str, Any]:
         try:
             import resource
 
-            peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+            getrusage = getattr(resource, "getrusage", None)
+            usage_self = getattr(resource, "RUSAGE_SELF", None)
+            if not callable(getrusage) or usage_self is None:
+                raise AttributeError("resource usage sampling is unavailable")
+            usage = cast(Any, getrusage)(usage_self)
+            peak = int(usage.ru_maxrss)
             # macOS reports bytes; Linux and the other supported Unix targets
             # report KiB. Linux normally takes the /proc branch above.
             peak_bytes = peak if sys.platform == "darwin" else peak * 1024
@@ -197,8 +202,11 @@ def _resource_evidence(boundary: str, samples: list[dict[str, Any]]) -> dict[str
 
 def _total_memory_bytes() -> int | None:
     try:
-        page_size = int(os.sysconf("SC_PAGE_SIZE"))
-        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        sysconf = getattr(os, "sysconf", None)
+        if not callable(sysconf):
+            return None
+        page_size = int(cast(Any, sysconf)("SC_PAGE_SIZE"))
+        pages = int(cast(Any, sysconf)("SC_PHYS_PAGES"))
         return page_size * pages
     except (AttributeError, OSError, TypeError, ValueError):
         return None
