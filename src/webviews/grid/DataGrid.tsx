@@ -62,6 +62,7 @@ export function DataGrid({
     previousViewContext.current = logicalViewContext;
     requestedOffset.current = page.offset;
     focusRequested.current = false;
+    preserveGridFocusAfterScroll.current = false;
     setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column: 0 });
     const scroller = scrollerRef.current;
     if (!scroller) return;
@@ -95,6 +96,7 @@ export function DataGrid({
       const offset = Math.floor(row / pageSize) * pageSize;
       if (!busy && offset !== requestedOffset.current && offset < page.totalRows) {
         requestedOffset.current = offset;
+        preserveGridFocusAfterScroll.current = false;
         focusRequested.current = true;
         setFocusedCell((current) => ({ row, column: current.column }));
         onPage(offset);
@@ -143,6 +145,7 @@ export function DataGrid({
   useLayoutEffect(() => {
     if (!preserveGridFocusAfterScroll.current) return;
     preserveGridFocusAfterScroll.current = false;
+    if (focusRequested.current) return;
     if (rovingRow === undefined || rovingColumn === undefined) return;
     const selector = `[data-grid-row="${rovingRow}"][data-grid-column="${rovingColumn}"]`;
     scrollerRef.current?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
@@ -164,9 +167,10 @@ export function DataGrid({
     const index = metadata.schema.findIndex((column) => column.name === goToColumn);
     if (index < 0) return;
     const animationFrame = window.requestAnimationFrame(() => {
+      preserveGridFocusAfterScroll.current = false;
+      focusRequested.current = true;
       const scroller = scrollerRef.current;
       if (scroller) scroller.scrollLeft = Math.max(0, sum(widths.slice(0, index)) - scroller.clientWidth / 3);
-      focusRequested.current = true;
       setFocusedCell((current) => ({ ...current, column: index }));
     });
     return () => window.cancelAnimationFrame(animationFrame);
@@ -186,7 +190,10 @@ export function DataGrid({
     const bounded = Math.max(0, Math.min(offset, Math.max(0, page.totalRows - 1)));
     const block = Math.floor(bounded / pageSize) * pageSize;
     requestedOffset.current = block;
-    if (restoreFocus) focusRequested.current = true;
+    if (restoreFocus) {
+      preserveGridFocusAfterScroll.current = false;
+      focusRequested.current = true;
+    }
     setFocusedCell((current) => ({ row: bounded, column: current.column }));
     if (scrollerRef.current) scrollerRef.current.scrollTop = bounded * rowHeight;
     onPage(block);
@@ -309,20 +316,23 @@ export function DataGrid({
   ): void {
     let nextRow = row;
     let nextColumn = column;
+    const measuredViewportHeight = scrollerRef.current?.clientHeight ?? viewport.height;
+    const pageRowCount = Math.max(1, Math.floor(measuredViewportHeight / rowHeight));
     if (event.key === "ArrowRight") nextColumn += 1;
     else if (event.key === "ArrowLeft") nextColumn -= 1;
     else if (event.key === "ArrowDown") nextRow += 1;
     else if (event.key === "ArrowUp") nextRow -= 1;
     else if (event.key === "Home") nextColumn = 0;
     else if (event.key === "End") nextColumn = columnCount - 1;
-    else if (event.key === "PageDown") nextRow += Math.max(1, Math.floor(viewport.height / rowHeight));
-    else if (event.key === "PageUp") nextRow -= Math.max(1, Math.floor(viewport.height / rowHeight));
+    else if (event.key === "PageDown") nextRow += pageRowCount;
+    else if (event.key === "PageUp") nextRow -= pageRowCount;
     else return;
     nextRow = Math.max(0, Math.min(nextRow, rowCount - 1));
     nextColumn = Math.max(0, Math.min(nextColumn, columnCount - 1));
     const block = Math.floor(nextRow / pageSize) * pageSize;
     if (busy && block !== page.offset) return;
     event.preventDefault();
+    preserveGridFocusAfterScroll.current = false;
     focusRequested.current = true;
     setFocusedCell({ row: nextRow, column: nextColumn });
     const scroller = scrollerRef.current;
