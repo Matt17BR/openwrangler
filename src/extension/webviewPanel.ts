@@ -5,17 +5,21 @@ import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   OperationKind,
+  SessionMetadata,
   SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
+import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import type { OpenWranglerBridge } from "./dataBridge";
-import { getExplicitSetting, getSetting } from "./configuration";
+import { getSetting } from "./configuration";
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
   private sessionId: string | undefined;
   private sessionRevision = 0;
   private snapshot: SessionOpenedResponse | undefined;
+  private snapshotViewContextId: string | undefined;
+  private latestPageViewRequestId: string | undefined;
   private opening: Promise<void> | undefined;
   private disposed = false;
   private readonly disposables: vscode.Disposable[] = [];
@@ -110,7 +114,7 @@ export class OpenWranglerPanel {
 
   async open(): Promise<void> {
     if (this.opening) return this.opening;
-    const pageSize = configuredBlockSize();
+    const pageSize = getSetting<number>("fetchBlockSize", 200);
     const isFile = this.source.kind === "file";
     const mode = getSetting<"editing" | "viewing">(
       isFile ? "fileStartMode" : "notebookStartMode",
@@ -129,7 +133,10 @@ export class OpenWranglerPanel {
 
   dispose(): void {
     this.disposed = true;
-    if (OpenWranglerPanel.activePanel === this) OpenWranglerPanel.activePanel = undefined;
+    if (OpenWranglerPanel.activePanel === this) {
+      OpenWranglerPanel.activePanel = undefined;
+      this.bridge.setActiveSession?.(undefined);
+    }
     if (this.sessionId && !this.initialResponse) {
       void this.bridge
         .request({
@@ -146,11 +153,12 @@ export class OpenWranglerPanel {
   }
 
   private async handleMessage(message: unknown): Promise<void> {
-    if (!this.isWebviewRequest(message)) {
+    const decoded = this.decodeWebviewMessage(message);
+    if (!decoded) {
       return;
     }
 
-    if (message.kind === "ready") {
+    if (decoded.kind === "ready") {
       if (this.snapshot) {
         await this.post(this.snapshot);
         return;
@@ -159,21 +167,31 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "setViewContext") {
+      this.snapshotViewContextId = decoded.viewContextId;
+      if (this.sessionId) this.bridge.setViewContext?.(this.sessionId, decoded.viewContextId);
+      return;
+    }
+
+    if (decoded.kind === "cancelViewRequests") {
+      if (this.sessionId && decoded.viewRequestIds.length) {
+        this.bridge.cancelViewRequests?.(this.sessionId, decoded.viewRequestIds);
+      }
+      return;
+    }
+
     if (!this.sessionId) {
       await this.post({
         kind: "error",
         code: "session_not_open",
         message: "Session has not been opened yet.",
-        recoverable: true
+        recoverable: true,
+        ...viewRequestIdProperty(decoded.request)
       });
       return;
     }
 
-    const request = {
-      ...message.request,
-      sessionId: this.sessionId,
-      revision: this.sessionRevision
-    } as OpenWranglerRequest;
+    const request = decoded.request;
     if (request.kind === "previewStep" && request.step.kind === "customCode" && !vscode.workspace.isTrusted) {
       await this.post({
         kind: "error",
@@ -183,12 +201,16 @@ export class OpenWranglerPanel {
       });
       return;
     }
-    await this.forward(request);
+    await this.forward(request, decoded.viewContextId);
   }
 
-  private async forward(request: OpenWranglerRequest): Promise<void> {
+  private async forward(request: OpenWranglerRequest, viewContextId?: string): Promise<void> {
+    if (request.kind === "getPage") this.latestPageViewRequestId = request.viewRequestId;
     try {
-      const response = await this.bridge.request(request);
+      const response = correlateViewError(
+        request,
+        await this.bridge.request(request, viewContextId ? { viewContextId } : undefined)
+      );
       if (this.disposed) {
         if (response.kind === "sessionOpened" && !this.initialResponse) {
           await this.bridge.request({
@@ -203,18 +225,52 @@ export class OpenWranglerPanel {
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.metadata.revision;
         this.snapshot = response;
+        this.snapshotViewContextId = undefined;
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.revision;
-        if (this.snapshot) {
-          this.snapshot = { ...this.snapshot, metadata: response.metadata, page: response.page };
+        const acceptsPage =
+          response.kind !== "page" ||
+          (request.kind === "getPage" &&
+            response.viewRequestId === request.viewRequestId &&
+            this.latestPageViewRequestId === response.viewRequestId);
+        if (this.snapshot && acceptsPage) {
+          const sameView =
+            response.kind === "page" && viewContextId !== undefined && viewContextId === this.snapshotViewContextId;
+          const metadata =
+            sameView && this.snapshot.metadata.stats
+              ? { ...response.metadata, stats: this.snapshot.metadata.stats }
+              : withoutDatasetStats(response.metadata);
+          this.snapshot = {
+            ...this.snapshot,
+            metadata,
+            page: response.page,
+            summaries: sameView ? this.snapshot.summaries : []
+          };
+          this.snapshotViewContextId = response.kind === "page" ? viewContextId : undefined;
         }
       }
-      if (response.kind === "summary" && this.snapshot) {
-        this.snapshot = { ...this.snapshot, summaries: response.summaries };
+      if (
+        response.kind === "summary" &&
+        request.kind === "getSummary" &&
+        response.viewRequestId === request.viewRequestId &&
+        this.snapshot &&
+        viewContextId !== undefined &&
+        viewContextId === this.snapshotViewContextId
+      ) {
+        const summaries = new Map(this.snapshot.summaries.map((summary) => [summary.column, summary]));
+        for (const summary of response.summaries) summaries.set(summary.column, summary);
+        this.snapshot = { ...this.snapshot, summaries: [...summaries.values()] };
       }
-      if (response.kind === "datasetStats" && this.snapshot) {
+      if (
+        response.kind === "datasetStats" &&
+        request.kind === "getDatasetStats" &&
+        response.viewRequestId === request.viewRequestId &&
+        this.snapshot &&
+        viewContextId !== undefined &&
+        viewContextId === this.snapshotViewContextId
+      ) {
         this.snapshot = {
           ...this.snapshot,
           metadata: { ...this.snapshot.metadata, stats: response.stats }
@@ -226,7 +282,8 @@ export class OpenWranglerPanel {
         kind: "error",
         code: "bridge_error",
         message: error instanceof Error ? error.message : String(error),
-        recoverable: true
+        recoverable: true,
+        ...viewRequestIdProperty(request)
       });
     }
   }
@@ -235,14 +292,44 @@ export class OpenWranglerPanel {
     await this.panel.webview.postMessage(response);
   }
 
-  private isWebviewRequest(
-    message: unknown
-  ): message is { kind: "ready" } | { kind: "runtimeRequest"; request: Omit<OpenWranglerRequest, "sessionId"> } {
-    if (typeof message !== "object" || message === null || !("kind" in message)) {
-      return false;
+  private decodeWebviewMessage(message: unknown): WebviewRequest | undefined {
+    if (!isRecord(message) || typeof message.kind !== "string") return undefined;
+    if (message.kind === "ready") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "ready" } : undefined;
     }
-    const kind = (message as { kind: unknown }).kind;
-    return kind === "ready" || kind === "runtimeRequest";
+    if (message.kind === "setViewContext") {
+      return hasExactKeys(message, ["kind", "viewContextId"]) && isNonEmptyString(message.viewContextId)
+        ? { kind: "setViewContext", viewContextId: message.viewContextId }
+        : undefined;
+    }
+    if (message.kind === "cancelViewRequests") {
+      return hasExactKeys(message, ["kind", "viewRequestIds"]) &&
+        Array.isArray(message.viewRequestIds) &&
+        message.viewRequestIds.every(isNonEmptyString)
+        ? { kind: "cancelViewRequests", viewRequestIds: [...message.viewRequestIds] }
+        : undefined;
+    }
+    if (
+      message.kind !== "runtimeRequest" ||
+      !hasExactKeys(message, ["kind", "request"], ["viewContextId"]) ||
+      !isRecord(message.request) ||
+      Object.prototype.hasOwnProperty.call(message.request, "sessionId") ||
+      Object.prototype.hasOwnProperty.call(message.request, "revision") ||
+      (message.viewContextId !== undefined && !isNonEmptyString(message.viewContextId))
+    ) {
+      return undefined;
+    }
+    const request = {
+      ...message.request,
+      sessionId: this.sessionId ?? "pending-session",
+      revision: this.sessionRevision
+    };
+    if (!isOpenWranglerRequest(request) || !WEBVIEW_RUNTIME_REQUEST_KINDS.has(request.kind)) return undefined;
+    return {
+      kind: "runtimeRequest",
+      request,
+      ...(message.viewContextId === undefined ? {} : { viewContextId: message.viewContextId })
+    };
   }
 
   private renderHtml(): string {
@@ -254,7 +341,7 @@ export class OpenWranglerPanel {
       vscode.Uri.file(path.join(this.context.extensionPath, "media", "webview.css"))
     );
     const nonce = randomNonce();
-    const fetchBlockSize = configuredBlockSize();
+    const fetchBlockSize = getSetting<number>("fetchBlockSize", 200);
     const defaultColumnWidth = getSetting<number>("defaultColumnWidth", 190);
     const insightsOnOpen = getSetting<boolean>("insightsOnOpen", true);
     const filterMode = getSetting<"basic" | "advanced">("filterMode", "basic");
@@ -263,17 +350,74 @@ export class OpenWranglerPanel {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="${styleUri}">
   <title>Open Wrangler</title>
 </head>
 <body data-fetch-block-size="${fetchBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}">
   <div id="root"></div>
-  <script nonce="${nonce}" src="${scriptUri}"></script>
+  <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
+}
+
+function correlateViewError(request: OpenWranglerRequest, response: OpenWranglerResponse): OpenWranglerResponse {
+  if ((response.kind !== "error" && response.kind !== "cancelled") || response.viewRequestId) return response;
+  return { ...response, ...viewRequestIdProperty(request) };
+}
+
+function viewRequestIdProperty(request: { kind: string; viewRequestId?: unknown }): { viewRequestId?: string } {
+  return typeof request.viewRequestId === "string" && request.viewRequestId
+    ? { viewRequestId: request.viewRequestId }
+    : {};
+}
+
+function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
+  const { stats: _stats, ...rest } = metadata;
+  return rest;
+}
+
+type WebviewRequest =
+  | { kind: "ready" }
+  | { kind: "setViewContext"; viewContextId: string }
+  | { kind: "cancelViewRequests"; viewRequestIds: string[] }
+  | {
+      kind: "runtimeRequest";
+      request: OpenWranglerRequest;
+      viewContextId?: string;
+    };
+
+const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
+  "getPage",
+  "getSummary",
+  "getDatasetStats",
+  "getColumnValues",
+  "previewStep",
+  "applyDraft",
+  "discardDraft",
+  "undoStep"
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return (
+    required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
 }
 
 export interface EditorActionMessage {
@@ -289,7 +433,3 @@ const randomNonce = (): string => {
   }
   return nonce;
 };
-
-function configuredBlockSize(): number {
-  return getExplicitSetting<number>("fetchBlockSize") ?? getSetting<number>("pageSize", 200);
-}

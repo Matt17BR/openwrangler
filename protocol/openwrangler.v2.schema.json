@@ -307,6 +307,16 @@
         "predicates": { "type": "array", "items": { "$ref": "#/definitions/PredicateFilter" } }
       }
     },
+    "SortRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "direction", "nulls"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "direction": { "type": "string", "enum": ["asc", "desc"] },
+        "nulls": { "type": "string", "enum": ["first", "last"] }
+      }
+    },
     "FilterModel": {
       "type": "object",
       "additionalProperties": false,
@@ -314,19 +324,7 @@
       "properties": {
         "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
         "filters": { "type": "array", "items": { "$ref": "#/definitions/ColumnFilter" } },
-        "sort": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["column", "direction", "nulls"],
-            "properties": {
-              "column": { "type": "string" },
-              "direction": { "type": "string", "enum": ["asc", "desc"] },
-              "nulls": { "type": "string", "enum": ["first", "last"] }
-            }
-          }
-        }
+        "sort": { "type": "array", "items": { "$ref": "#/definitions/SortRule" } }
       }
     },
     "OperationKind": {
@@ -361,14 +359,646 @@
         "customCode"
       ]
     },
+    "JsonScalar": {
+      "type": ["string", "number", "boolean", "null"]
+    },
+    "NonEmptyStringArray": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "SortRowsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules"],
+      "properties": {
+        "rules": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/SortRule" } }
+      }
+    },
+    "FilterRowsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filterModel"],
+      "properties": { "filterModel": { "$ref": "#/definitions/FilterModel" } }
+    },
+    "DropMissingRowsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "columns": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "how": { "type": "string", "enum": ["any", "all"] }
+      }
+    },
+    "DropDuplicatesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "columns": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "keep": { "type": "string", "enum": ["first", "last", "none"] }
+      }
+    },
+    "ColumnsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns"],
+      "properties": { "columns": { "$ref": "#/definitions/NonEmptyStringArray" } }
+    },
+    "RenameColumnParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "newName"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "newName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "CastColumnParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "dtype"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "dtype": { "type": "string", "enum": ["string", "integer", "float", "boolean", "date", "datetime"] }
+      }
+    },
+    "FormulaParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leftColumn", "operator", "newColumn"],
+      "properties": {
+        "leftColumn": { "type": "string", "minLength": 1 },
+        "operator": { "type": "string", "enum": ["add", "subtract", "multiply", "divide", "modulo", "power"] },
+        "newColumn": { "type": "string", "minLength": 1 },
+        "rightColumn": { "type": "string", "minLength": 1 },
+        "value": { "type": "number" }
+      },
+      "oneOf": [{ "required": ["rightColumn"] }, { "required": ["value"] }]
+    },
+    "ColumnOutputParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "newColumn"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "OneHotEncodeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns"],
+      "properties": {
+        "columns": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "prefixSeparator": { "type": "string" },
+        "dropOriginal": { "type": "boolean" }
+      }
+    },
+    "MultiLabelBinarizeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "delimiter"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "delimiter": { "type": "string", "minLength": 1 },
+        "prefix": { "type": "string" },
+        "dropOriginal": { "type": "boolean" }
+      }
+    },
+    "FindReplaceParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "find", "replacement"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "find": { "type": "string" },
+        "replacement": { "type": "string" },
+        "regex": { "type": "boolean" },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "StripTextParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "characters": { "type": ["string", "null"] },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "SplitTextParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "delimiter", "index", "newColumn"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "delimiter": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0 },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ColumnOptionalOutputParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "RoundNumberParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "decimals": { "type": "integer" },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "FormatDatetimeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "format"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "format": { "type": "string", "minLength": 1 },
+        "newColumn": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["column", "operation", "alias"],
+      "properties": {
+        "column": { "type": "string", "minLength": 1 },
+        "operation": {
+          "type": "string",
+          "enum": ["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"]
+        },
+        "alias": { "type": "string", "minLength": 1 }
+      }
+    },
+    "GroupByParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keys", "aggregations"],
+      "properties": {
+        "keys": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "aggregations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/Aggregation" }
+        }
+      }
+    },
+    "ByExampleProgram": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "column"],
+          "properties": { "kind": { "const": "column" }, "column": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": { "kind": { "const": "literal" }, "value": { "$ref": "#/definitions/JsonScalar" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input", "start"],
+          "properties": {
+            "kind": { "const": "slice" },
+            "input": { "$ref": "#/definitions/ByExampleProgram" },
+            "start": { "type": "integer" },
+            "stop": { "type": ["integer", "null"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input", "delimiter", "index"],
+          "properties": {
+            "kind": { "const": "split" },
+            "input": { "$ref": "#/definitions/ByExampleProgram" },
+            "delimiter": { "type": "string" },
+            "index": { "type": "integer" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "parts"],
+          "properties": {
+            "kind": { "const": "concat" },
+            "parts": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/ByExampleProgram" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input", "pattern", "group"],
+          "properties": {
+            "kind": { "const": "regexExtract" },
+            "input": { "$ref": "#/definitions/ByExampleProgram" },
+            "pattern": { "type": "string" },
+            "group": { "type": "integer" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input", "pattern", "replacement"],
+          "properties": {
+            "kind": { "const": "regexReplace" },
+            "input": { "$ref": "#/definitions/ByExampleProgram" },
+            "pattern": { "type": "string" },
+            "replacement": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "style", "input"],
+          "properties": {
+            "kind": { "const": "case" },
+            "style": { "type": "string", "enum": ["lower", "upper", "capitalize"] },
+            "input": { "$ref": "#/definitions/ByExampleProgram" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input", "inputFormat", "outputFormat"],
+          "properties": {
+            "kind": { "const": "datetimeFormat" },
+            "input": { "$ref": "#/definitions/ByExampleProgram" },
+            "inputFormat": { "type": "string" },
+            "outputFormat": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "left", "operator", "right"],
+          "properties": {
+            "kind": { "const": "arithmetic" },
+            "left": { "$ref": "#/definitions/ByExampleProgram" },
+            "operator": { "type": "string", "enum": ["add", "subtract", "multiply", "divide"] },
+            "right": { "$ref": "#/definitions/ByExampleProgram" }
+          }
+        }
+      ]
+    },
+    "ByExampleItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputs", "output"],
+      "properties": {
+        "inputs": { "type": "object", "additionalProperties": { "$ref": "#/definitions/JsonScalar" } },
+        "output": { "$ref": "#/definitions/JsonScalar" }
+      }
+    },
+    "ByExampleParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceColumns", "newColumn", "examples"],
+      "properties": {
+        "sourceColumns": { "$ref": "#/definitions/NonEmptyStringArray" },
+        "newColumn": { "type": "string", "minLength": 1 },
+        "examples": { "type": "array", "minItems": 2, "items": { "$ref": "#/definitions/ByExampleItem" } },
+        "program": { "$ref": "#/definitions/ByExampleProgram" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "candidateCount": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "CustomCodeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code"],
+      "properties": { "code": { "type": "string", "minLength": 1 } }
+    },
     "TransformStep": {
+      "oneOf": [
+        { "$ref": "#/definitions/SortRowsTransformStep" },
+        { "$ref": "#/definitions/FilterRowsTransformStep" },
+        { "$ref": "#/definitions/DropMissingRowsTransformStep" },
+        { "$ref": "#/definitions/DropDuplicatesTransformStep" },
+        { "$ref": "#/definitions/SelectColumnsTransformStep" },
+        { "$ref": "#/definitions/DropColumnsTransformStep" },
+        { "$ref": "#/definitions/RenameColumnTransformStep" },
+        { "$ref": "#/definitions/CloneColumnTransformStep" },
+        { "$ref": "#/definitions/CastColumnTransformStep" },
+        { "$ref": "#/definitions/FormulaTransformStep" },
+        { "$ref": "#/definitions/TextLengthTransformStep" },
+        { "$ref": "#/definitions/OneHotEncodeTransformStep" },
+        { "$ref": "#/definitions/MultiLabelBinarizeTransformStep" },
+        { "$ref": "#/definitions/FindReplaceTransformStep" },
+        { "$ref": "#/definitions/StripTextTransformStep" },
+        { "$ref": "#/definitions/SplitTextTransformStep" },
+        { "$ref": "#/definitions/CapitalizeTextTransformStep" },
+        { "$ref": "#/definitions/LowerTextTransformStep" },
+        { "$ref": "#/definitions/UpperTextTransformStep" },
+        { "$ref": "#/definitions/MinMaxScaleTransformStep" },
+        { "$ref": "#/definitions/RoundNumberTransformStep" },
+        { "$ref": "#/definitions/FloorNumberTransformStep" },
+        { "$ref": "#/definitions/CeilNumberTransformStep" },
+        { "$ref": "#/definitions/FormatDatetimeTransformStep" },
+        { "$ref": "#/definitions/GroupByTransformStep" },
+        { "$ref": "#/definitions/ByExampleTransformStep" },
+        { "$ref": "#/definitions/CustomCodeTransformStep" }
+      ]
+    },
+    "SortRowsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "sortRows" }, "params": { "$ref": "#/definitions/SortRowsParams" } }
+        }
+      ]
+    },
+    "FilterRowsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "filterRows" }, "params": { "$ref": "#/definitions/FilterRowsParams" } }
+        }
+      ]
+    },
+    "DropMissingRowsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "dropMissingRows" },
+            "params": { "$ref": "#/definitions/DropMissingRowsParams" }
+          }
+        }
+      ]
+    },
+    "DropDuplicatesTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "dropDuplicates" },
+            "params": { "$ref": "#/definitions/DropDuplicatesParams" }
+          }
+        }
+      ]
+    },
+    "SelectColumnsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "selectColumns" }, "params": { "$ref": "#/definitions/ColumnsParams" } }
+        }
+      ]
+    },
+    "DropColumnsTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "dropColumns" }, "params": { "$ref": "#/definitions/ColumnsParams" } }
+        }
+      ]
+    },
+    "RenameColumnTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "renameColumn" },
+            "params": { "$ref": "#/definitions/RenameColumnParams" }
+          }
+        }
+      ]
+    },
+    "CloneColumnTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "cloneColumn" }, "params": { "$ref": "#/definitions/RenameColumnParams" } }
+        }
+      ]
+    },
+    "CastColumnTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "castColumn" }, "params": { "$ref": "#/definitions/CastColumnParams" } }
+        }
+      ]
+    },
+    "FormulaTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "formula" }, "params": { "$ref": "#/definitions/FormulaParams" } }
+        }
+      ]
+    },
+    "TextLengthTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "textLength" }, "params": { "$ref": "#/definitions/ColumnOutputParams" } }
+        }
+      ]
+    },
+    "OneHotEncodeTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "oneHotEncode" },
+            "params": { "$ref": "#/definitions/OneHotEncodeParams" }
+          }
+        }
+      ]
+    },
+    "MultiLabelBinarizeTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "multiLabelBinarize" },
+            "params": { "$ref": "#/definitions/MultiLabelBinarizeParams" }
+          }
+        }
+      ]
+    },
+    "FindReplaceTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "findReplace" }, "params": { "$ref": "#/definitions/FindReplaceParams" } }
+        }
+      ]
+    },
+    "StripTextTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "stripText" }, "params": { "$ref": "#/definitions/StripTextParams" } }
+        }
+      ]
+    },
+    "SplitTextTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "splitText" }, "params": { "$ref": "#/definitions/SplitTextParams" } }
+        }
+      ]
+    },
+    "CapitalizeTextTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "capitalizeText" },
+            "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
+          }
+        }
+      ]
+    },
+    "LowerTextTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "lowerText" },
+            "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
+          }
+        }
+      ]
+    },
+    "UpperTextTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "upperText" },
+            "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
+          }
+        }
+      ]
+    },
+    "MinMaxScaleTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "minMaxScale" },
+            "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
+          }
+        }
+      ]
+    },
+    "RoundNumberTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "roundNumber" }, "params": { "$ref": "#/definitions/RoundNumberParams" } }
+        }
+      ]
+    },
+    "FloorNumberTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "floorNumber" },
+            "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
+          }
+        }
+      ]
+    },
+    "CeilNumberTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "ceilNumber" },
+            "params": { "$ref": "#/definitions/ColumnOptionalOutputParams" }
+          }
+        }
+      ]
+    },
+    "FormatDatetimeTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": {
+            "kind": { "const": "formatDatetime" },
+            "params": { "$ref": "#/definitions/FormatDatetimeParams" }
+          }
+        }
+      ]
+    },
+    "GroupByTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "groupBy" }, "params": { "$ref": "#/definitions/GroupByParams" } }
+        }
+      ]
+    },
+    "ByExampleTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "byExample" }, "params": { "$ref": "#/definitions/ByExampleParams" } }
+        }
+      ]
+    },
+    "CustomCodeTransformStep": {
+      "allOf": [
+        { "$ref": "#/definitions/TransformStepTemplate" },
+        {
+          "required": ["kind", "params"],
+          "properties": { "kind": { "const": "customCode" }, "params": { "$ref": "#/definitions/CustomCodeParams" } }
+        }
+      ]
+    },
+    "TransformStepTemplate": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "params"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "kind": { "$ref": "#/definitions/OperationKind" },
-        "params": { "type": "object", "additionalProperties": true }
+        "params": { "type": "object" }
       }
     },
     "CellDiff": {
@@ -445,6 +1075,7 @@
       "properties": {
         "kind": { "const": "openSession" },
         "source": { "$ref": "#/definitions/SessionSource" },
+        "requestedSessionId": { "type": "string", "minLength": 1 },
         "backend": { "$ref": "#/definitions/DataBackend" },
         "mode": { "$ref": "#/definitions/SessionMode" },
         "pageSize": { "type": "integer", "minimum": 1, "maximum": 10000 }
@@ -464,11 +1095,12 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "sessionId", "revision", "offset", "limit", "filterModel"],
+          "required": ["kind", "sessionId", "revision", "viewRequestId", "offset", "limit", "filterModel"],
           "properties": {
             "kind": { "const": "getPage" },
             "sessionId": { "type": "string" },
             "revision": { "type": "integer", "minimum": 0 },
+            "viewRequestId": { "type": "string", "minLength": 1 },
             "offset": { "type": "integer", "minimum": 0 },
             "limit": { "type": "integer", "minimum": 1, "maximum": 10000 },
             "filterModel": { "$ref": "#/definitions/FilterModel" }
@@ -479,11 +1111,12 @@
     "SummaryRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "filterModel"],
+      "required": ["kind", "sessionId", "revision", "viewRequestId", "filterModel"],
       "properties": {
         "kind": { "const": "getSummary" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
         "columns": { "type": "array", "items": { "type": "string" } }
       }
@@ -491,22 +1124,24 @@
     "DatasetStatsRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "filterModel"],
+      "required": ["kind", "sessionId", "revision", "viewRequestId", "filterModel"],
       "properties": {
         "kind": { "const": "getDatasetStats" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "filterModel": { "$ref": "#/definitions/FilterModel" }
       }
     },
     "ValuesRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "sessionId", "revision", "column", "filterModel", "limit"],
+      "required": ["kind", "sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"],
       "properties": {
         "kind": { "const": "getColumnValues" },
         "sessionId": { "type": "string" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
         "search": { "type": "string" },
@@ -636,10 +1271,11 @@
     "PageResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "revision", "page", "metadata"],
+      "required": ["kind", "revision", "viewRequestId", "page", "metadata"],
       "properties": {
         "kind": { "const": "page" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "page": { "$ref": "#/definitions/GridPage" },
         "metadata": { "$ref": "#/definitions/SessionMetadata" }
       }
@@ -647,30 +1283,33 @@
     "SummaryResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "revision", "summaries"],
+      "required": ["kind", "revision", "viewRequestId", "summaries"],
       "properties": {
         "kind": { "const": "summary" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "summaries": { "type": "array", "items": { "$ref": "#/definitions/ColumnSummary" } }
       }
     },
     "DatasetStatsResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "revision", "stats"],
+      "required": ["kind", "revision", "viewRequestId", "stats"],
       "properties": {
         "kind": { "const": "datasetStats" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "stats": { "$ref": "#/definitions/DatasetStats" }
       }
     },
     "ValuesResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "revision", "column", "values", "hasMore"],
+      "required": ["kind", "revision", "viewRequestId", "column", "values", "hasMore"],
       "properties": {
         "kind": { "const": "columnValues" },
         "revision": { "type": "integer", "minimum": 0 },
+        "viewRequestId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
         "values": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
         "hasMore": { "type": "boolean" }
@@ -730,7 +1369,8 @@
       "required": ["kind", "targetRequestId"],
       "properties": {
         "kind": { "const": "cancelled" },
-        "targetRequestId": { "type": "string" }
+        "targetRequestId": { "type": "string" },
+        "viewRequestId": { "type": "string", "minLength": 1 }
       }
     },
     "ErrorResponse": {
@@ -743,7 +1383,8 @@
         "message": { "type": "string" },
         "detail": { "type": "string" },
         "recoverable": { "type": "boolean" },
-        "sessionId": { "type": "string" }
+        "sessionId": { "type": "string" },
+        "viewRequestId": { "type": "string", "minLength": 1 }
       }
     },
     "OpenWranglerResponse": {

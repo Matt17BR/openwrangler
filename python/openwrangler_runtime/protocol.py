@@ -10,10 +10,10 @@ REQUEST_PRIORITIES = {"interactive", "background"}
 REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "initialize": (),
     "openSession": ("source", "pageSize"),
-    "getPage": ("sessionId", "revision", "offset", "limit", "filterModel"),
-    "getSummary": ("sessionId", "revision", "filterModel"),
-    "getDatasetStats": ("sessionId", "revision", "filterModel"),
-    "getColumnValues": ("sessionId", "revision", "column", "filterModel", "limit"),
+    "getPage": ("sessionId", "revision", "viewRequestId", "offset", "limit", "filterModel"),
+    "getSummary": ("sessionId", "revision", "viewRequestId", "filterModel"),
+    "getDatasetStats": ("sessionId", "revision", "viewRequestId", "filterModel"),
+    "getColumnValues": ("sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"),
     "previewStep": ("sessionId", "revision", "step", "offset", "limit"),
     "applyDraft": ("sessionId", "revision", "offset", "limit"),
     "discardDraft": ("sessionId", "revision", "offset", "limit"),
@@ -24,11 +24,20 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
 }
 REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
     "initialize": {"kind"},
-    "openSession": {"kind", "source", "backend", "mode", "pageSize"},
-    "getPage": {"kind", "sessionId", "revision", "offset", "limit", "filterModel"},
-    "getSummary": {"kind", "sessionId", "revision", "filterModel", "columns"},
-    "getDatasetStats": {"kind", "sessionId", "revision", "filterModel"},
-    "getColumnValues": {"kind", "sessionId", "revision", "column", "filterModel", "search", "limit"},
+    "openSession": {"kind", "source", "requestedSessionId", "backend", "mode", "pageSize"},
+    "getPage": {"kind", "sessionId", "revision", "viewRequestId", "offset", "limit", "filterModel"},
+    "getSummary": {"kind", "sessionId", "revision", "viewRequestId", "filterModel", "columns"},
+    "getDatasetStats": {"kind", "sessionId", "revision", "viewRequestId", "filterModel"},
+    "getColumnValues": {
+        "kind",
+        "sessionId",
+        "revision",
+        "viewRequestId",
+        "column",
+        "filterModel",
+        "search",
+        "limit",
+    },
     "previewStep": {"kind", "sessionId", "revision", "step", "replaceStepId", "offset", "limit"},
     "applyDraft": {"kind", "sessionId", "revision", "offset", "limit"},
     "discardDraft": {"kind", "sessionId", "revision", "offset", "limit"},
@@ -59,6 +68,8 @@ def decode_request(value: Any) -> dict[str, Any]:
         raise ProtocolError("sessionId must be a string.")
     if "revision" in request and not _is_non_negative_integer(request["revision"]):
         raise ProtocolError("revision must be a non-negative integer.")
+    if "viewRequestId" in request and (not isinstance(request["viewRequestId"], str) or not request["viewRequestId"]):
+        raise ProtocolError("viewRequestId must be a non-empty string.")
     for field in ("pageSize", "limit"):
         if field in request and (not _is_non_negative_integer(request[field]) or request[field] < 1):
             raise ProtocolError(f"{field} must be a positive integer.")
@@ -78,6 +89,9 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("backend must be pandas or polars.")
         if request.get("mode") not in {None, "viewing", "editing"}:
             raise ProtocolError("mode must be viewing or editing.")
+        requested_session_id = request.get("requestedSessionId")
+        if requested_session_id is not None and (not isinstance(requested_session_id, str) or not requested_session_id):
+            raise ProtocolError("requestedSessionId must be a non-empty string.")
     if kind == "previewStep":
         step = _mapping(request["step"], "step")
         try:

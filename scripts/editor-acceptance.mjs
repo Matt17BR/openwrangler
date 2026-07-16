@@ -115,6 +115,9 @@ class AcceptanceKernel {
   constructor(key) {
     this.key = key;
     this.generation = ++generation;
+    this.status = "idle";
+    this.language = "python";
+    this.onDidChangeStatus = () => ({ dispose() {} });
     this.process = undefined;
     this.pending = new Map();
     this.invalidated = false;
@@ -122,6 +125,17 @@ class AcceptanceKernel {
   }
 
   executeCode(code, token) {
+    const execution = this.executeText(code, token);
+    return (async function* () {
+      const text = await execution;
+      yield {
+        items: [{ mime: "application/x.notebook.stream.stdout", data: Buffer.from(text, "utf8") }],
+        metadata: {}
+      };
+    })();
+  }
+
+  executeText(code, token) {
     if (this.invalidated) return Promise.reject(new Error("kernel restarted"));
     if (token && token.isCancellationRequested) return Promise.reject(new Error("cancelled"));
     const process = this.ensureProcess();
@@ -198,6 +212,16 @@ function kernelFor(uri) {
   return kernel;
 }
 
+async function executeForTesting(kernel, code) {
+  let text = "";
+  for await (const output of kernel.executeCode(code)) {
+    for (const item of output.items || []) {
+      if (item.mime === "application/x.notebook.stream.stdout") text += Buffer.from(item.data).toString("utf8");
+    }
+  }
+  return text;
+}
+
 const api = {
   kernels: {
     getKernel(uri) {
@@ -210,7 +234,7 @@ const api = {
   },
   testing: {
     execute(uri, code) {
-      return kernelFor(uri).executeCode(code);
+      return executeForTesting(kernelFor(uri), code);
     },
     async restart(uri, setupCode) {
       const key = keyFor(uri);
@@ -218,7 +242,7 @@ const api = {
       if (previous) previous.invalidate();
       const replacement = new AcceptanceKernel(key);
       kernels.set(key, replacement);
-      if (setupCode) await replacement.executeCode(setupCode);
+      if (setupCode) await executeForTesting(replacement, setupCode);
       return replacement.generation;
     },
     setDenied(value) {

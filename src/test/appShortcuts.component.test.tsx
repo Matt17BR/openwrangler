@@ -75,7 +75,9 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     fireEvent.keyDown(apply, { key: "Enter", ctrlKey: true });
     expect(runtimeRequestKinds()).toContain("applyDraft");
     fireEvent.keyDown(discard, { key: "Escape" });
-    expect(runtimeRequestKinds()).toContain("discardDraft");
+    expect(runtimeRequestKinds()).not.toContain("discardDraft");
+    expect(apply).toBeDisabled();
+    expect(discard).toBeDisabled();
 
     const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
     dispatch({ kind: "planUpdated", revision: 2, metadata: appliedMetadata, page, code: "def clean_data(df):\n" });
@@ -88,13 +90,16 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     const columnSearch = screen.getByPlaceholderText("Search columns");
     fireEvent.keyDown(columnSearch, { key: "z", ctrlKey: true, altKey: true });
     expect(runtimeRequestKinds()).not.toContain("undoStep");
-    fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
-    expect(runtimeRequestKinds()).toContain("undoStep");
 
     fireEvent.keyDown(edit, { key: "e", ctrlKey: true, shiftKey: true });
     expect(await screen.findByRole("dialog", { name: "Edit cleaning step" })).toBeInTheDocument();
     fireEvent.keyDown(screen.getByPlaceholderText("Search operations"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull());
+
+    fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
+    fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
+    expect(runtimeRequestKinds().filter((kind) => kind === "undoStep")).toHaveLength(1);
+    expect(undo).toBeDisabled();
   });
 });
 

@@ -29,6 +29,9 @@ try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
     await page.waitForTimeout(500);
+    if (harness === "filter-panel.html") {
+      await page.getByRole("checkbox").first().waitFor();
+    }
     await page.addScriptTag({ path: axePath });
     const result = await page.evaluate(async () => {
       return globalThis.axe.run(document, {
@@ -48,6 +51,8 @@ try {
   }
   await verifyNotebookExpansion(browser);
   await verifyCleaningKeyboardShortcuts(browser);
+  await verifyFilterKeyboardWorkflow(browser);
+  await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
   await browser.close();
@@ -141,28 +146,24 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   await page.keyboard.press("Control+Enter");
   await waitForRuntimeRequest(page, "applyDraft");
 
+  await resetDraftHarness(page);
   const discard = page.getByRole("button", { name: "Discard" });
   await discard.focus();
   await page.keyboard.press("Escape");
   await waitForRuntimeRequest(page, "discardDraft");
 
-  await page.evaluate(() => {
-    const payload = globalThis.openWranglerSessionPayload;
-    const step = payload.metadata.draftStep;
-    const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
-    window.dispatchEvent(
-      new MessageEvent("message", {
-        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code }
-      })
-    );
-  });
+  await resetDraftHarness(page);
+  await showAppliedStep(page);
   const undo = page.getByRole("button", { name: "Undo" });
   await undo.waitFor();
   await undo.focus();
   await page.keyboard.press("Control+Alt+z");
   await waitForRuntimeRequest(page, "undoStep");
 
+  await resetDraftHarness(page);
+  await showAppliedStep(page);
   const edit = page.getByRole("button", { name: "Edit latest" });
+  await edit.waitFor();
   await edit.focus();
   await page.keyboard.press("Control+Shift+e");
   await page.getByRole("dialog", { name: "Edit cleaning step" }).waitFor();
@@ -174,6 +175,167 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   console.log("Cleaning-plan keyboard shortcuts verified.");
 }
 
+async function verifyFilterKeyboardWorkflow(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "filter-panel.html")).href, { waitUntil: "load" });
+  await page.getByRole("complementary", { name: "Insights and filters" }).waitFor();
+  await waitForRuntimeRequestCount(page, "getColumnValues", 1);
+  await page.getByRole("checkbox").first().waitFor();
+
+  const search = page.getByRole("textbox", { name: /Search values for/ });
+  await search.focus();
+  await page.keyboard.type("ber");
+  await page.keyboard.press("Enter");
+  await waitForRuntimeRequestCount(page, "getColumnValues", 2);
+
+  const predicate = page.getByRole("textbox", { name: /predicate value/ });
+  await predicate.focus();
+  await page.keyboard.type("Berlin");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
+  await waitForRuntimeRequestCount(page, "getPage", 1);
+
+  const sorts = page.locator("details").filter({ hasText: "SORTS" });
+  if (!(await sorts.evaluate((element) => element.open))) {
+    await sorts.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("details")].some(
+        (element) => element.textContent?.includes("SORTS") && element.open
+      )
+    );
+  }
+  const direction = page.getByRole("combobox", { name: "Sort direction" });
+  await direction.focus();
+  await page.keyboard.press("End");
+  if (!(await sorts.evaluate((element) => element.open))) {
+    throw new Error("Changing sort direction closed the sort disclosure.");
+  }
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
+  await waitForRuntimeRequestCount(page, "getPage", 2);
+
+  const close = page.getByRole("button", { name: "Close panel" });
+  await close.focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("complementary", { name: "Insights and filters" }).waitFor({ state: "detached" });
+  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Filter…");
+  await page.close();
+  console.log("Filter, sort, and drawer-focus keyboard workflow verified.");
+}
+
+async function verifyGridKeyboardWorkflow(browser) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+  await page.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+  const scroller = page.locator("[data-testid='data-grid-scroller']");
+  const firstCell = page.locator('[data-grid-row="0"][data-grid-column="0"]');
+  await firstCell.waitFor();
+  await firstCell.focus();
+  await waitForFocusedGridCell(page, 0, 0);
+
+  await page.keyboard.press("ArrowRight");
+  await waitForFocusedGridCell(page, 0, 1);
+  await page.keyboard.press("ArrowDown");
+  await waitForFocusedGridCell(page, 1, 1);
+  await page.keyboard.press("ArrowLeft");
+  await waitForFocusedGridCell(page, 1, 0);
+  await page.keyboard.press("ArrowUp");
+  await waitForFocusedGridCell(page, 0, 0);
+
+  await page.keyboard.press("End");
+  await waitForFocusedGridCell(page, 0, 39);
+  if ((await scroller.evaluate((element) => element.scrollLeft)) <= 0) {
+    throw new Error("End did not horizontally virtualize and focus the final grid column.");
+  }
+  await page.keyboard.press("Home");
+  await waitForFocusedGridCell(page, 0, 0);
+
+  await page.keyboard.press("PageDown");
+  await page.waitForFunction(() => {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && active.dataset.gridColumn === "0" && Number(active.dataset.gridRow) > 0;
+  });
+  const pageDownRow = await focusedGridRow(page);
+  await page.keyboard.press("PageUp");
+  await waitForFocusedGridCell(page, 0, 0);
+  if (pageDownRow <= 0 || pageDownRow >= 200) {
+    throw new Error(`PageDown focused unexpected row ${pageDownRow}.`);
+  }
+
+  await scroller.evaluate((element) => {
+    element.scrollTop = 199 * 29;
+  });
+  const finalCellInBlock = page.locator('[data-grid-row="199"][data-grid-column="0"]');
+  await finalCellInBlock.waitFor();
+  await finalCellInBlock.focus();
+  await waitForFocusedGridCell(page, 199, 0);
+  await page.keyboard.press("ArrowDown");
+  await waitForFocusedGridCell(page, 200, 0);
+  await page.waitForFunction(() =>
+    globalThis.openWranglerMessages.some(
+      (message) =>
+        message.kind === "runtimeRequest" && message.request?.kind === "getPage" && message.request.offset === 200
+    )
+  );
+
+  await scroller.evaluate((element) => {
+    element.scrollTop = 230 * 29;
+    element.scrollLeft = 3000;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForFunction(() => {
+    const roving = document.querySelectorAll('td[tabindex="0"]');
+    return roving.length === 1 && document.activeElement === roving[0];
+  });
+  const rovingCell = page.locator('td[tabindex="0"]');
+  const rovingRow = Number(await rovingCell.getAttribute("data-grid-row"));
+  const rovingColumn = Number(await rovingCell.getAttribute("data-grid-column"));
+  if (rovingRow <= 200 || rovingColumn <= 0) {
+    throw new Error(`Mouse virtualization left an unexpected roving cell at ${rovingRow}, ${rovingColumn}.`);
+  }
+  await page.keyboard.press("ArrowRight");
+  await waitForFocusedGridCell(page, rovingRow, rovingColumn + 1);
+
+  await page.close();
+  console.log("Grid arrows, paging, mouse virtualization, horizontal virtualization, and cross-block focus verified.");
+}
+
+async function resetDraftHarness(page) {
+  await page.reload({ waitUntil: "load" });
+  await page.getByRole("button", { name: "Apply step" }).waitFor();
+}
+
+async function showAppliedStep(page) {
+  await page.evaluate(() => {
+    const payload = globalThis.openWranglerSessionPayload;
+    const step = payload.metadata.draftStep;
+    const metadata = { ...payload.metadata, draftStep: undefined, steps: [step] };
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { kind: "planUpdated", revision: metadata.revision, metadata, page: payload.page, code: payload.code }
+      })
+    );
+  });
+}
+
+async function waitForFocusedGridCell(page, row, column) {
+  await page.waitForFunction(
+    ({ expectedRow, expectedColumn }) => {
+      const active = document.activeElement;
+      return (
+        active instanceof HTMLElement &&
+        active.dataset.gridRow === String(expectedRow) &&
+        active.dataset.gridColumn === String(expectedColumn)
+      );
+    },
+    { expectedRow: row, expectedColumn: column }
+  );
+}
+
+async function focusedGridRow(page) {
+  return page.evaluate(() => Number(document.activeElement?.getAttribute("data-grid-row")));
+}
+
 async function waitForRuntimeRequest(page, kind) {
   await page.waitForFunction(
     (requestKind) =>
@@ -181,6 +343,16 @@ async function waitForRuntimeRequest(page, kind) {
         (message) => message.kind === "runtimeRequest" && message.request?.kind === requestKind
       ),
     kind
+  );
+}
+
+async function waitForRuntimeRequestCount(page, kind, count) {
+  await page.waitForFunction(
+    ({ requestKind, minimum }) =>
+      globalThis.openWranglerMessages.filter(
+        (message) => message.kind === "runtimeRequest" && message.request?.kind === requestKind
+      ).length >= minimum,
+    { requestKind: kind, minimum: count }
   );
 }
 

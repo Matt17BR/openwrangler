@@ -3,12 +3,14 @@ import type { FormEvent, ReactNode } from "react";
 import type { FilterModel } from "../../shared/filterModel";
 import type { OperationKind, SessionMetadata, TransformStep } from "../../shared/protocol";
 import { operationCatalog, operationGroups, operationByKind } from "../../shared/operations";
+import { isTransformStep } from "../../shared/protocolValidation";
 
 interface OperationBuilderProps {
   metadata: SessionMetadata;
   filterModel: FilterModel;
   initialKind?: OperationKind;
   initialStep?: TransformStep;
+  busy?: boolean;
   onClose(): void;
   onPreview(step: TransformStep, replaceStepId?: string): void;
 }
@@ -21,6 +23,7 @@ export function OperationBuilder({
   filterModel,
   initialKind,
   initialStep,
+  busy = false,
   onClose,
   onPreview
 }: OperationBuilderProps) {
@@ -42,19 +45,20 @@ export function OperationBuilder({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!selectedKind) return;
+    if (busy || !selectedKind) return;
     try {
       const form = new FormData(event.currentTarget);
       const params = buildParams(selectedKind, form, filterModel);
+      const step = {
+        id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
+        kind: selectedKind,
+        params
+      };
+      if (!isTransformStep(step)) {
+        throw new Error("The operation contains invalid or incomplete parameters.");
+      }
       setFormError(undefined);
-      onPreview(
-        {
-          id: activeInitial?.id ?? `${selectedKind}-${Date.now().toString(36)}`,
-          kind: selectedKind,
-          params
-        },
-        activeInitial?.id
-      );
+      onPreview(step, activeInitial?.id);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
     }
@@ -64,22 +68,31 @@ export function OperationBuilder({
     <div
       className="operationDialogBackdrop"
       role="presentation"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+      onMouseDown={(event) => !busy && event.target === event.currentTarget && onClose()}
     >
-      <section className="operationDialog" role="dialog" aria-modal="true" aria-labelledby="operation-dialog-title">
+      <section
+        className="operationDialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="operation-dialog-title"
+        aria-busy={busy}
+      >
         <header className="operationDialogHeader">
           <div>
             <strong id="operation-dialog-title">{activeInitial ? "Edit cleaning step" : "Add cleaning step"}</strong>
-            <span>Every step is previewed before it changes the cleaning plan.</span>
+            <span role="status" aria-live="polite">
+              {busy ? "Previewing changes…" : "Every step is previewed before it changes the cleaning plan."}
+            </span>
           </div>
           <button
             type="button"
             className="iconButton codicon codicon-close"
             aria-label="Close operation picker"
+            disabled={busy}
             onClick={onClose}
           />
         </header>
-        <div className="operationDialogBody">
+        <fieldset className="operationDialogBody" disabled={busy}>
           <nav className="operationCatalog" aria-label="Operation catalog">
             <label className="operationSearch">
               <span className="codicon codicon-search" aria-hidden="true" />
@@ -163,7 +176,7 @@ export function OperationBuilder({
               </div>
             )}
           </form>
-        </div>
+        </fieldset>
       </section>
     </div>
   );

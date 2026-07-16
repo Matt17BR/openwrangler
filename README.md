@@ -34,6 +34,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
 - Typed rendering and profiling for nullable values, large integers, decimals, time zones, nested Polars lists/structs, binary, categorical, duration, NaN, and infinity values.
 - Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, and progressive Quick Insights.
+- Exact first-grid metadata with deferred per-column profiling, bounded block caching, foreground paging that stays responsive during insights work, source-version detection, and transactional runtime replay after a crash.
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
 - Activity Bar views for Operations, Summary, Filters/Sorts, and Cleaning Steps, plus a bottom-panel Code Preview surface.

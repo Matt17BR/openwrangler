@@ -6,7 +6,7 @@ from openwrangler_runtime.lineage import derive_lineage, schema_with_lineage, so
 def schema(*names: str):
     return [
         {
-            "id": f"legacy:{position}",
+            "id": f"schema:{position}",
             "name": name,
             "position": position,
             "rawType": "object",

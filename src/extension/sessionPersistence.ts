@@ -1,5 +1,5 @@
-import { operationCatalog } from "../shared/operations";
-import type { FilterModel, OperationKind, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
+import type { FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
+import { isFilterModel, isTransformStep } from "../shared/protocolValidation";
 
 export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v2";
 
@@ -31,7 +31,14 @@ export function persistedStateFromMetadata(metadata: SessionMetadata): Persisted
 }
 
 export function decodePersistedSession(value: unknown): PersistedSessionState | undefined {
-  if (!isRecord(value) || !Array.isArray(value.steps) || !isFilterModel(value.filterModel)) return undefined;
+  if (
+    !isRecord(value) ||
+    Object.keys(value).some((key) => !["steps", "filterModel", "draftStep", "draftReplacesStepId"].includes(key)) ||
+    !Array.isArray(value.steps) ||
+    !isFilterModel(value.filterModel)
+  ) {
+    return undefined;
+  }
   const steps = value.steps.map(decodeStep);
   if (steps.some((step) => step === undefined)) return undefined;
   const draftStep = value.draftStep === undefined ? undefined : decodeStep(value.draftStep);
@@ -42,22 +49,14 @@ export function decodePersistedSession(value: unknown): PersistedSessionState | 
   }
   return {
     steps: steps as TransformStep[],
-    filterModel: value.filterModel as FilterModel,
+    filterModel: value.filterModel,
     draftStep,
     draftReplacesStepId
   };
 }
 
 function decodeStep(value: unknown): TransformStep | undefined {
-  if (!isRecord(value) || typeof value.id !== "string" || !value.id || !isRecord(value.params)) return undefined;
-  if (typeof value.kind !== "string" || !operationCatalog.some((operation) => operation.kind === value.kind)) {
-    return undefined;
-  }
-  return { id: value.id, kind: value.kind as OperationKind, params: value.params };
-}
-
-function isFilterModel(value: unknown): boolean {
-  return isRecord(value) && Array.isArray(value.filters) && Array.isArray(value.sort);
+  return isTransformStep(value) ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

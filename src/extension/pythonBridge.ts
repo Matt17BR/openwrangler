@@ -12,6 +12,7 @@ import type {
   RuntimeResponseEnvelope
 } from "../shared/protocol";
 import { PROTOCOL_VERSION } from "../shared/protocol";
+import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
 import {
@@ -27,6 +28,9 @@ interface PendingRequest {
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
   cancellation?: { dispose(): void };
+  cancellationRequestId?: string;
+  cancellationRequested: boolean;
+  dispatched: boolean;
 }
 
 const execFileAsync = promisify(execFile);
@@ -37,6 +41,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private runtimeExitError: Error | undefined;
   private stderrBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly cancellationTargets = new Map<string, string>();
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private generation = 0;
   private runtimeEpoch = 0;
@@ -65,8 +70,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
     const prepared = await this.prepareRequest(request);
     if (prepared.kind === "error") return prepared;
+    if (options.cancellation?.isCancellationRequested) {
+      return { kind: "cancelled", targetRequestId: "not-started" };
+    }
     const runtimeRequest = prepared;
     const proc = await this.ensureProcess(runtimeRequest);
+    if (options.cancellation?.isCancellationRequested) {
+      return { kind: "cancelled", targetRequestId: "not-started" };
+    }
     const requestId = randomUUID();
     const envelope: RuntimeRequestEnvelope = {
       protocolVersion: PROTOCOL_VERSION,
@@ -93,21 +104,30 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       const timer = setTimeout(() => {
         const pending = this.takePending(requestId);
         if (!pending) return;
-        this.sendCancellation(requestId);
+        this.sendCancellation(requestId, false);
         pending.reject(
           new Error(`Open Wrangler runtime request ${runtimeRequest.kind} timed out after ${timeoutMs} ms.`)
         );
-        this.restart("Runtime request timed out; restarting so sessions can be replayed.");
+        if (options.restartRuntimeOnTimeout !== false) {
+          this.restart("Runtime request timed out; restarting so sessions can be replayed.");
+        }
       }, timeoutMs);
-      const cancellation = options.cancellation?.onCancellationRequested(() => {
-        const pending = this.takePending(requestId);
-        if (!pending) return;
-        this.sendCancellation(requestId);
-        pending.resolve({ kind: "cancelled", targetRequestId: requestId });
-      });
-      this.pending.set(requestId, { resolve, reject, timer, cancellation });
+      const pending: PendingRequest = {
+        resolve,
+        reject,
+        timer,
+        cancellationRequested: false,
+        dispatched: false
+      };
+      this.pending.set(requestId, pending);
+      const cancellation = options.cancellation?.onCancellationRequested(() => this.cancelRequest(requestId));
+      pending.cancellation = cancellation;
+      if (!this.pending.has(requestId)) cancellation?.dispose();
+      if (options.cancellation?.isCancellationRequested) this.cancelRequest(requestId);
+      if (!this.pending.has(requestId)) return;
 
       try {
+        pending.dispatched = true;
         proc.stdin.write(`${JSON.stringify(envelope)}\n`, (error) => {
           if (!error) return;
           const pending = this.takePending(requestId);
@@ -128,6 +148,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.processStart = undefined;
     this.rejectAll(new Error(reason));
     proc?.kill();
+  }
+
+  reportDiagnostic(message: string): void {
+    this.output.appendLine(message);
   }
 
   onIdle(): void {
@@ -284,6 +308,23 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       return;
     }
 
+    const cancellationTarget = this.cancellationTargets.get(envelope.requestId);
+    if (cancellationTarget) {
+      this.cancellationTargets.delete(envelope.requestId);
+      const target = this.pending.get(cancellationTarget);
+      if (target?.cancellationRequestId === envelope.requestId) target.cancellationRequestId = undefined;
+      if (envelope.response.kind === "cancelled" && envelope.response.targetRequestId === cancellationTarget) {
+        this.output.appendLine(
+          `Open Wrangler runtime accepted cancellation for queued request ${cancellationTarget}; waiting for that request's correlated response.`
+        );
+      } else if (envelope.response.kind !== "error" || envelope.response.code !== "cancellation_unavailable") {
+        this.output.appendLine(
+          `Open Wrangler runtime returned ${envelope.response.kind} while cancelling request ${cancellationTarget}; waiting for the authoritative result.`
+        );
+      }
+      return;
+    }
+
     const pending = this.takePending(envelope.requestId);
     pending?.resolve(envelope.response);
   }
@@ -294,6 +335,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.pending.delete(requestId);
     clearTimeout(pending.timer);
     pending.cancellation?.dispose();
+    if (pending.cancellationRequestId) this.cancellationTargets.delete(pending.cancellationRequestId);
     return pending;
   }
 
@@ -301,18 +343,57 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     for (const requestId of [...this.pending.keys()]) {
       this.takePending(requestId)?.reject(error);
     }
+    this.cancellationTargets.clear();
   }
 
-  private sendCancellation(targetRequestId: string): void {
+  private cancelRequest(targetRequestId: string): void {
+    const pending = this.pending.get(targetRequestId);
+    if (!pending || pending.cancellationRequested) return;
+    pending.cancellationRequested = true;
+    if (!pending.dispatched) {
+      this.takePending(targetRequestId)?.resolve({ kind: "cancelled", targetRequestId: "not-started" });
+      return;
+    }
+    this.sendCancellation(targetRequestId, true);
+  }
+
+  private sendCancellation(targetRequestId: string, trackResponse: boolean): void {
     const proc = this.process;
     if (!proc?.stdin.writable) return;
+    const requestId = randomUUID();
     const envelope: RuntimeRequestEnvelope = {
       protocolVersion: PROTOCOL_VERSION,
-      requestId: randomUUID(),
+      requestId,
       priority: "interactive",
       request: { kind: "cancelRequest", targetRequestId }
     };
-    proc.stdin.write(`${JSON.stringify(envelope)}\n`);
+    if (trackResponse) {
+      const pending = this.pending.get(targetRequestId);
+      if (!pending) return;
+      pending.cancellationRequestId = requestId;
+      this.cancellationTargets.set(requestId, targetRequestId);
+    }
+    try {
+      proc.stdin.write(`${JSON.stringify(envelope)}\n`, (error) => {
+        if (!error || !trackResponse) return;
+        this.clearCancellationRequest(requestId, targetRequestId);
+        this.output.appendLine(
+          `Open Wrangler could not request cancellation for ${targetRequestId}: ${error.message}. Waiting for the authoritative result.`
+        );
+      });
+    } catch (error) {
+      if (!trackResponse) return;
+      this.clearCancellationRequest(requestId, targetRequestId);
+      this.output.appendLine(
+        `Open Wrangler could not request cancellation for ${targetRequestId}: ${error instanceof Error ? error.message : String(error)}. Waiting for the authoritative result.`
+      );
+    }
+  }
+
+  private clearCancellationRequest(requestId: string, targetRequestId: string): void {
+    this.cancellationTargets.delete(requestId);
+    const pending = this.pending.get(targetRequestId);
+    if (pending?.cancellationRequestId === requestId) pending.cancellationRequestId = undefined;
   }
 
   private defaultTimeoutMs(): number {
@@ -367,16 +448,4 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         "Select a compatible Python 3.10-3.14 environment with the Open Wrangler: Change Runtime command."
     );
   }
-}
-
-function isRuntimeResponseEnvelope(value: unknown): value is RuntimeResponseEnvelope {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<RuntimeResponseEnvelope>;
-  return (
-    candidate.protocolVersion === PROTOCOL_VERSION &&
-    typeof candidate.requestId === "string" &&
-    typeof candidate.response === "object" &&
-    candidate.response !== null &&
-    typeof (candidate.response as { kind?: unknown }).kind === "string"
-  );
 }

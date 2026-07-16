@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
   OpenWranglerRequest,
   OpenWranglerResponse,
   DataExportedResponse,
   ErrorResponse,
+  FilterModel,
   OpenSessionRequest,
   PageResponse,
   SessionMetadata,
@@ -21,20 +23,42 @@ import {
   type PersistedSessionState
 } from "./sessionPersistence";
 
-interface CoordinatedSession {
+interface RuntimeSessionState {
   publicId: string;
   runtimeId: string;
-  publicRevision: number;
   runtimeRevision: number;
-  openRequest: OpenSessionRequest;
   delegate: OpenWranglerBridge;
-  tail: Promise<void>;
   metadata: SessionMetadata;
   code: string;
+}
+
+interface CoordinatedSession extends RuntimeSessionState {
+  publicRevision: number;
+  openRequest: OpenSessionRequest;
+  activeViewContextId?: string;
+  latestRequestedViewContextId?: string;
+  latestRequestedPageRequestId?: string;
+  activeForegroundOperation?: Promise<void>;
+  activeBackgroundOperation?: Promise<void>;
+  interactiveQueue: QueuedSessionOperation[];
+  backgroundQueue: QueuedSessionOperation[];
+  terminalOperation?: QueuedSessionOperation;
+  idleWaiters: Set<() => void>;
   closing: boolean;
+  recoveryRequired: boolean;
+}
+
+interface QueuedSessionOperation {
+  request: SessionBoundRequest;
+  options?: BridgeRequestOptions;
+  resolve(response: OpenWranglerResponse): void;
+  reject(error: unknown): void;
 }
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
+const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
+type DetachedRuntimeRole =
+  "recovery candidate" | "retired runtime" | "saved-plan fallback runtime" | "late-open runtime" | "terminal runtime";
 
 export interface ActiveSessionSnapshot {
   sessionId: string;
@@ -63,14 +87,20 @@ export class SessionCoordinator implements vscode.Disposable {
   private disposed = false;
   private persistenceTail: Promise<void> = Promise.resolve();
   private shutdownPromise: Promise<void> | undefined;
+  private readonly detachedCleanups = new Set<Promise<void>>();
 
-  constructor(private readonly workspaceState?: vscode.Memento) {}
+  constructor(
+    private readonly workspaceState?: vscode.Memento,
+    private readonly diagnosticSink?: (message: string) => void
+  ) {}
 
   readonly onDidChangeActiveSession = this.activeSessionEmitter.event;
 
   createBridge(delegate: OpenWranglerBridge): OpenWranglerBridge {
     return {
       request: (request, options) => this.request(delegate, request, options),
+      cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
+      setViewContext: (sessionId, viewContextId) => this.setViewContext(sessionId, viewContextId),
       setActiveSession: (sessionId) => this.setActive(sessionId)
     };
   }
@@ -144,7 +174,13 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
     if (this.disposed) {
-      return protocolError("coordinator_disposed", "The Open Wrangler session coordinator has been disposed.", false);
+      return protocolError(
+        "coordinator_disposed",
+        "The Open Wrangler session coordinator has been disposed.",
+        false,
+        undefined,
+        requestViewId(request)
+      );
     }
     if (request.kind === "openSession") {
       return this.open(delegate, request, options);
@@ -155,14 +191,21 @@ export class SessionCoordinator implements vscode.Disposable {
 
     const session = this.sessions.get(request.sessionId);
     if (!session) {
-      return protocolError("unknown_session", `Unknown Open Wrangler session: ${request.sessionId}`, true);
+      return protocolError(
+        "unknown_session",
+        `Unknown Open Wrangler session: ${request.sessionId}`,
+        true,
+        undefined,
+        requestViewId(request)
+      );
     }
     if (request.revision !== session.publicRevision) {
       return protocolError(
         "stale_request",
         `Ignored stale request revision ${request.revision}; current revision is ${session.publicRevision}.`,
         true,
-        session.publicId
+        session.publicId,
+        requestViewId(request)
       );
     }
     if (session.closing) {
@@ -170,17 +213,19 @@ export class SessionCoordinator implements vscode.Disposable {
         "session_closing",
         `Open Wrangler session ${session.publicId} is already closing.`,
         true,
-        session.publicId
+        session.publicId,
+        requestViewId(request)
       );
     }
-    if (request.kind === "closeSession") session.closing = true;
-
-    const operation = session.tail.then(() => this.executeSessionRequest(session, request, options));
-    session.tail = operation.then(
-      () => undefined,
-      () => undefined
-    );
-    return operation;
+    if (request.kind === "closeSession") {
+      session.closing = true;
+      this.cancelQueuedBackgroundOperations(session);
+    }
+    if (request.kind === "getPage") {
+      session.latestRequestedPageRequestId = request.viewRequestId;
+      session.latestRequestedViewContextId = options?.viewContextId;
+    }
+    return this.enqueueSessionRequest(session, request, options);
   }
 
   private async open(
@@ -206,7 +251,14 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
     const response = await delegate.request(request, options);
-    if (response.kind !== "sessionOpened") return response;
+    if (response.kind === "error" || response.kind === "cancelled") return response;
+    if (response.kind !== "sessionOpened") {
+      return protocolError(
+        "invalid_runtime_response",
+        `The runtime returned ${response.kind} while opening an Open Wrangler session.`,
+        true
+      );
+    }
 
     const publicId = randomUUID();
     const session: CoordinatedSession = {
@@ -216,67 +268,50 @@ export class SessionCoordinator implements vscode.Disposable {
       runtimeRevision: response.metadata.revision,
       openRequest: request,
       delegate,
-      tail: Promise.resolve(),
+      interactiveQueue: [],
+      backgroundQueue: [],
+      idleWaiters: new Set(),
       metadata: response.metadata,
       code: "",
-      closing: false
+      closing: false,
+      recoveryRequired: false
     };
-    let opened = response;
+    let opened: SessionOpenedResponse = { ...response, summaries: [] };
     const persisted = this.loadPersistedSession(request);
     if (persisted) {
       try {
         const page = await this.restoreRuntimeState(session, persisted, request.pageSize, options);
-        const summary = await delegate.request(
-          {
-            kind: "getSummary",
-            sessionId: session.runtimeId,
-            revision: session.runtimeRevision,
-            filterModel: persisted.filterModel
-          },
-          options
-        );
-        if (summary.kind !== "summary") throw new Error("Could not restore persisted summaries.");
         session.publicRevision = session.runtimeRevision;
         opened = {
           kind: "sessionOpened",
           metadata: session.metadata,
           page: page.page,
-          summaries: summary.summaries
+          summaries: []
         };
       } catch {
-        await delegate
-          .request({
-            kind: "closeSession",
-            sessionId: session.runtimeId,
-            revision: session.runtimeRevision
-          })
-          .catch(() => undefined);
+        await this.closeRuntimeState(session, "saved-plan fallback runtime");
         const clean = await delegate.request(request, options);
-        if (clean.kind !== "sessionOpened") return clean;
+        if (clean.kind === "error" || clean.kind === "cancelled") return clean;
+        if (clean.kind !== "sessionOpened") {
+          return protocolError(
+            "invalid_runtime_response",
+            `The runtime returned ${clean.kind} while reopening the immutable source.`,
+            true
+          );
+        }
         session.runtimeId = clean.metadata.sessionId;
         session.runtimeRevision = clean.metadata.revision;
         session.publicRevision = clean.metadata.revision;
         session.metadata = clean.metadata;
         session.code = "";
-        opened = clean;
+        opened = { ...clean, summaries: [] };
         void vscode.window.showWarningMessage(
           `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
         );
       }
     }
     if (this.disposed) {
-      try {
-        await delegate.request(
-          {
-            kind: "closeSession",
-            sessionId: session.runtimeId,
-            revision: session.runtimeRevision
-          },
-          options
-        );
-      } catch {
-        // Shutdown remains terminal even if the runtime disappears during the late-open cleanup.
-      }
+      await this.closeRuntimeState(session, "late-open runtime");
       return protocolError(
         "coordinator_disposed",
         "The Open Wrangler session coordinator was disposed before the dataframe finished opening.",
@@ -288,12 +323,184 @@ export class SessionCoordinator implements vscode.Disposable {
     return publicOpenedResponse(opened, publicId, session.publicRevision);
   }
 
+  private enqueueSessionRequest(
+    session: CoordinatedSession,
+    request: SessionBoundRequest,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    return new Promise((resolve, reject) => {
+      const operation: QueuedSessionOperation = { request, options, resolve, reject };
+      if (request.kind === "closeSession") {
+        // Closing is a terminal barrier: queued background work is discarded before
+        // enqueueing it, while active and already-accepted interactive work finish first.
+        session.terminalOperation = operation;
+      } else if (sessionRequestPriority(request, options) === "background") {
+        session.backgroundQueue.push(operation);
+      } else {
+        session.interactiveQueue.push(operation);
+      }
+      this.startNextSessionOperation(session);
+    });
+  }
+
+  private startNextSessionOperation(session: CoordinatedSession): void {
+    if (!session.activeForegroundOperation && session.interactiveQueue.length > 0) {
+      const next = session.interactiveQueue[0];
+      if (!session.activeBackgroundOperation || canRunAlongsideBackground(next.request)) {
+        session.interactiveQueue.shift();
+        this.startSessionOperation(session, next, "foreground");
+      }
+    }
+
+    if (
+      !session.activeForegroundOperation &&
+      !session.activeBackgroundOperation &&
+      session.interactiveQueue.length === 0 &&
+      session.backgroundQueue.length === 0
+    ) {
+      const terminal = takeTerminalOperation(session);
+      if (terminal) this.startSessionOperation(session, terminal, "foreground");
+    }
+
+    if (
+      !session.activeForegroundOperation &&
+      !session.activeBackgroundOperation &&
+      session.interactiveQueue.length === 0 &&
+      session.backgroundQueue.length > 0
+    ) {
+      const background = session.backgroundQueue.shift();
+      if (background) this.startSessionOperation(session, background, "background");
+    }
+
+    this.resolveSessionIdleWaiters(session);
+  }
+
+  private startSessionOperation(
+    session: CoordinatedSession,
+    operation: QueuedSessionOperation,
+    lane: "foreground" | "background"
+  ): void {
+    const activeOperation = this.executeSessionRequest(session, operation.request, operation.options)
+      .then(operation.resolve, operation.reject)
+      .finally(() => {
+        if (lane === "foreground" && session.activeForegroundOperation === activeOperation) {
+          session.activeForegroundOperation = undefined;
+        }
+        if (lane === "background" && session.activeBackgroundOperation === activeOperation) {
+          session.activeBackgroundOperation = undefined;
+        }
+        this.startNextSessionOperation(session);
+      });
+    if (lane === "foreground") session.activeForegroundOperation = activeOperation;
+    else session.activeBackgroundOperation = activeOperation;
+  }
+
+  private waitForSessionIdle(session: CoordinatedSession): Promise<void> {
+    if (isSessionIdle(session)) return Promise.resolve();
+    return new Promise((resolve) => session.idleWaiters.add(resolve));
+  }
+
+  private resolveSessionIdleWaiters(session: CoordinatedSession): void {
+    if (!isSessionIdle(session)) return;
+    for (const resolve of session.idleWaiters) resolve();
+    session.idleWaiters.clear();
+  }
+
+  private cancelQueuedBackgroundOperations(session: CoordinatedSession): void {
+    this.cancelOperations(session.backgroundQueue.splice(0));
+  }
+
+  private cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || viewRequestIds.length === 0) return;
+    const cancelled = new Set(viewRequestIds);
+    const discarded: QueuedSessionOperation[] = [];
+    const retainUncancelled = (queue: QueuedSessionOperation[]): QueuedSessionOperation[] =>
+      queue.filter((operation) => {
+        const viewRequestId = requestViewId(operation.request);
+        if (viewRequestId && cancelled.has(viewRequestId) && isCancellableQueuedViewRequest(operation.request)) {
+          discarded.push(operation);
+          return false;
+        }
+        return true;
+      });
+    session.interactiveQueue = retainUncancelled(session.interactiveQueue);
+    session.backgroundQueue = retainUncancelled(session.backgroundQueue);
+    this.cancelOperations(discarded);
+    this.startNextSessionOperation(session);
+  }
+
+  private setViewContext(sessionId: string, viewContextId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing) return;
+    session.activeViewContextId = viewContextId;
+    session.latestRequestedViewContextId = viewContextId;
+  }
+
+  private isCurrentPageRequest(
+    session: CoordinatedSession,
+    request: Extract<SessionBoundRequest, { kind: "getPage" }>,
+    options?: BridgeRequestOptions
+  ): boolean {
+    return (
+      request.viewRequestId === session.latestRequestedPageRequestId &&
+      (options?.viewContextId === undefined || options.viewContextId === session.latestRequestedViewContextId)
+    );
+  }
+
+  private cancelAllQueuedOperations(session: CoordinatedSession): void {
+    this.cancelOperations(session.interactiveQueue.splice(0));
+    this.cancelOperations(session.backgroundQueue.splice(0));
+    this.startNextSessionOperation(session);
+  }
+
+  private cancelOperations(operations: QueuedSessionOperation[]): void {
+    for (const operation of operations) {
+      const viewRequestId = requestViewId(operation.request);
+      operation.resolve({
+        kind: "cancelled",
+        targetRequestId: `session-queue:${operation.request.kind}`,
+        ...(viewRequestId ? { viewRequestId } : {})
+      });
+    }
+  }
+
   private async executeSessionRequest(
     session: CoordinatedSession,
     publicRequest: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
+    // Closing is a terminal barrier and intentionally rebases to the latest
+    // runtime revision. Every other queued request must still target the public
+    // revision that was current when it entered the queue.
+    if (publicRequest.kind !== "closeSession" && publicRequest.revision !== session.publicRevision) {
+      return protocolError(
+        "stale_request",
+        `Ignored stale queued request revision ${publicRequest.revision}; current revision is ${session.publicRevision}.`,
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
+    }
+    if (publicRequest.kind !== "closeSession" && session.recoveryRequired) {
+      const recovered = !this.disposed && !session.closing && (await this.replay(session, runtimeRecoveryOptions()));
+      if (!recovered) {
+        return protocolError(
+          "runtime_recovery_failed",
+          "The prior runtime mutation had an ambiguous transport result and the confirmed session could not be restored.",
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
+      }
+      session.recoveryRequired = false;
+    }
+    let requestRuntimeId = session.runtimeId;
     let requestRuntimeRevision = session.runtimeRevision;
+    const previousFilterModel = session.metadata.filterModel;
+    const isBackground = sessionRequestPriority(publicRequest, options) === "background";
+    const canRecoverUnknownSession = (): boolean => !this.disposed && !session.closing && !isBackground;
+    const canRecoverTransport = (): boolean => canRecoverUnknownSession() && isIdempotentReadRequest(publicRequest);
     const runtimeRequest = (): SessionBoundRequest =>
       ({
         ...publicRequest,
@@ -309,54 +516,175 @@ export class SessionCoordinator implements vscode.Disposable {
     try {
       response = await session.delegate.request(runtimeRequest(), options);
     } catch (error) {
-      const recovered = await this.replay(session, options);
+      if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
+      // A transport failure is ambiguous for mutations and exports: the remote
+      // runtime may have committed before delivery failed. Only pure reads may
+      // be replayed and reissued automatically.
+      const recovered = canRecoverTransport() && (await this.replay(session, options));
       if (!recovered) throw error;
+      requestRuntimeId = session.runtimeId;
       requestRuntimeRevision = session.runtimeRevision;
       response = await session.delegate.request(runtimeRequest(), options);
     }
 
     if (isUnknownRuntimeSession(response)) {
-      const recovered = await this.replay(session, options);
+      // An explicit unknown-session response proves the request did not run, so
+      // replay and reissue are safe for all interactive operations.
+      const recovered = canRecoverUnknownSession() && (await this.replay(session, options));
       if (recovered) {
+        session.recoveryRequired = false;
+        requestRuntimeId = session.runtimeId;
         requestRuntimeRevision = session.runtimeRevision;
         response = await session.delegate.request(runtimeRequest(), options);
       }
     }
 
+    if (requestRuntimeId !== session.runtimeId) {
+      return protocolError(
+        "stale_response",
+        "Ignored a response from a replaced runtime session.",
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
+    }
+
+    const mismatch = responseMismatch(publicRequest, response, requestRuntimeId);
+    if (mismatch) {
+      if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
+      return protocolError(
+        "invalid_runtime_response",
+        `Ignored an invalid ${publicRequest.kind} response: ${mismatch}`,
+        true,
+        session.publicId,
+        requestViewId(publicRequest)
+      );
+    }
+
     if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
-      if (response.revision < requestRuntimeRevision) {
-        return protocolError("stale_response", "Ignored a stale grid response.", true, session.publicId);
+      const pageRequest = response.kind === "page" && publicRequest.kind === "getPage" ? publicRequest : undefined;
+      if (response.kind === "page" && (!pageRequest || response.viewRequestId !== pageRequest.viewRequestId)) {
+        return protocolError(
+          "stale_response",
+          "Ignored a page response correlated to a different request.",
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
       }
-      session.publicRevision += response.revision - requestRuntimeRevision;
-      session.runtimeRevision = response.revision;
-      session.metadata = response.metadata;
-      if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
-      await this.persistSession(session);
-      this.setActive(session.publicId);
+      if (pageRequest && !this.isCurrentPageRequest(session, pageRequest, options)) {
+        return protocolError(
+          "stale_response",
+          "Ignored a page from a superseded logical view.",
+          true,
+          session.publicId,
+          pageRequest.viewRequestId
+        );
+      }
+      if (response.revision < requestRuntimeRevision) {
+        return protocolError(
+          "stale_response",
+          "Ignored a stale grid response.",
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
+      }
+      const filterChanged = !sameFilterModel(previousFilterModel, response.metadata.filterModel);
+      const revisionChanged = response.revision !== requestRuntimeRevision;
+      const planChanged = response.kind === "stepPreview" || response.kind === "planUpdated";
+      const stateChanged = filterChanged || revisionChanged || planChanged;
+      const viewContextChanged = Boolean(
+        pageRequest &&
+        session.activeViewContextId !== undefined &&
+        options?.viewContextId !== session.activeViewContextId
+      );
+      const commitState = (): void => {
+        if (pageRequest) {
+          session.activeViewContextId = options?.viewContextId;
+        } else if (planChanged) {
+          session.activeViewContextId = undefined;
+          session.latestRequestedViewContextId = undefined;
+          session.latestRequestedPageRequestId = undefined;
+        }
+        session.publicRevision += response.revision - requestRuntimeRevision;
+        session.runtimeRevision = response.revision;
+        if (stateChanged) session.metadata = response.metadata;
+        if (viewContextChanged) session.metadata = withoutDatasetStats(session.metadata);
+        if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
+      };
+      if (pageRequest && stateChanged) {
+        const committed = await this.persistCurrentPage(
+          session,
+          response.metadata,
+          () => this.isCurrentPageRequest(session, pageRequest, options),
+          () => {
+            commitState();
+            if (this.isLiveSession(session)) this.setActive(session.publicId);
+          }
+        );
+        if (!committed) {
+          return protocolError(
+            "stale_response",
+            "Ignored a page superseded while its viewing state was being saved.",
+            true,
+            session.publicId,
+            pageRequest.viewRequestId
+          );
+        }
+      } else {
+        commitState();
+        if (stateChanged) await this.persistSession(session);
+        if ((stateChanged || viewContextChanged) && this.isLiveSession(session)) this.setActive(session.publicId);
+      }
       return {
         ...response,
         revision: session.publicRevision,
-        metadata: publicMetadata(response.metadata, session.publicId, session.publicRevision)
+        metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision)
       };
     }
     if (response.kind === "summary" || response.kind === "columnValues") {
-      if (response.revision < requestRuntimeRevision) {
-        return protocolError("stale_response", "Ignored a stale profiling response.", true, session.publicId);
+      if (response.revision < requestRuntimeRevision || !isCurrentLogicalView(session, options)) {
+        return protocolError(
+          "stale_response",
+          "Ignored a stale or superseded profiling response.",
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
       }
       return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "dataExported") {
       if (response.revision < requestRuntimeRevision) {
-        return protocolError("stale_response", "Ignored a stale export response.", true, session.publicId);
+        return protocolError(
+          "stale_response",
+          "Ignored a stale export response.",
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
       }
       return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "datasetStats") {
-      if (response.revision < requestRuntimeRevision) {
-        return protocolError("stale_response", "Ignored stale dataset statistics.", true, session.publicId);
+      if (response.revision < requestRuntimeRevision || !isCurrentLogicalView(session, options)) {
+        return protocolError(
+          "stale_response",
+          "Ignored stale or superseded dataset statistics.",
+          true,
+          session.publicId,
+          requestViewId(publicRequest)
+        );
       }
-      session.metadata = { ...session.metadata, stats: response.stats };
-      this.setActive(session.publicId);
+      if (
+        publicRequest.kind === "getDatasetStats" &&
+        options?.viewContextId !== undefined &&
+        options.viewContextId === session.activeViewContextId
+      ) {
+        session.metadata = { ...session.metadata, stats: response.stats };
+        if (this.isLiveSession(session)) this.setActive(session.publicId);
+      }
       return { ...response, revision: session.publicRevision };
     }
     if (response.kind === "error" && response.sessionId) {
@@ -370,24 +698,38 @@ export class SessionCoordinator implements vscode.Disposable {
     request: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
-    let response: OpenWranglerResponse;
     try {
-      response = await session.delegate.request(request, options);
+      const response = await session.delegate.request(request, options);
+      if (response.kind === "sessionClosed" && response.sessionId === session.runtimeId) {
+        return { ...response, sessionId: session.publicId };
+      }
+
+      this.reportRuntimeCleanupDiagnostic(
+        session,
+        "terminal runtime",
+        `initial close was not authoritative: ${cleanupResponseDescription(response, session.runtimeId)}`
+      );
+      await this.closeRuntimeState(session, "terminal runtime");
+      if (response.kind === "error") {
+        return { ...response, sessionId: session.publicId };
+      }
+      return protocolError(
+        "invalid_close_response",
+        `The runtime returned ${response.kind} while closing the Open Wrangler session.`,
+        false,
+        session.publicId
+      );
+    } catch (error) {
+      this.reportRuntimeCleanupDiagnostic(
+        session,
+        "terminal runtime",
+        `initial close transport failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      await this.closeRuntimeState(session, "terminal runtime");
+      throw error;
     } finally {
       this.releaseSession(session);
     }
-    if (response.kind === "sessionClosed") {
-      return { ...response, sessionId: session.publicId };
-    }
-    if (response.kind === "error") {
-      return { ...response, sessionId: session.publicId };
-    }
-    return protocolError(
-      "invalid_close_response",
-      `The runtime returned ${response.kind} while closing the Open Wrangler session.`,
-      false,
-      session.publicId
-    );
   }
 
   private releaseSession(session: CoordinatedSession): void {
@@ -402,11 +744,12 @@ export class SessionCoordinator implements vscode.Disposable {
     const sessions = [...this.sessions.values()].map((session) => {
       const alreadyClosing = session.closing;
       session.closing = true;
+      this.cancelQueuedBackgroundOperations(session);
       return { session, alreadyClosing };
     });
     const closes = sessions.map(async ({ session, alreadyClosing }) => {
-      await session.tail;
-      if (alreadyClosing || this.sessions.get(session.publicId) !== session) return;
+      await this.waitForSessionIdle(session);
+      if (alreadyClosing) return;
       try {
         await this.closeSession(session, {
           kind: "closeSession",
@@ -419,13 +762,23 @@ export class SessionCoordinator implements vscode.Disposable {
     });
 
     let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
     await Promise.race([
-      Promise.allSettled([...closes, this.waitForPendingOpens()]),
+      Promise.allSettled([...closes, this.waitForPendingOpens(), this.waitForDetachedCleanups()]),
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, Math.max(0, timeoutMs));
+        timer = setTimeout(
+          () => {
+            timedOut = true;
+            resolve();
+          },
+          Math.max(0, timeoutMs)
+        );
       })
     ]);
     if (timer) clearTimeout(timer);
+    if (timedOut) {
+      for (const { session } of sessions) this.cancelAllQueuedOperations(session);
+    }
     for (const { session } of sessions) this.releaseSession(session);
     if (this.activeSessionId) this.setActive(undefined);
     this.activeSessionEmitter.dispose();
@@ -462,94 +815,223 @@ export class SessionCoordinator implements vscode.Disposable {
     await this.persistenceTail;
   }
 
-  private async restoreRuntimeState(
+  private async persistCurrentPage(
     session: CoordinatedSession,
+    metadata: SessionMetadata,
+    isCurrent: () => boolean,
+    commit: () => void
+  ): Promise<boolean> {
+    if (!this.workspaceState) {
+      if (!isCurrent()) return false;
+      commit();
+      return true;
+    }
+
+    const key = persistenceKey(session.openRequest.source);
+    const state = persistedStateFromMetadata(metadata);
+    let committed = false;
+    const task = this.persistenceTail
+      .catch(() => undefined)
+      .then(async () => {
+        if (!isCurrent()) return;
+        const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+        const hadPreviousState = Object.prototype.hasOwnProperty.call(stored, key);
+        const previousState = stored[key];
+        try {
+          await this.workspaceState?.update(SESSION_STORAGE_KEY, { ...stored, [key]: state });
+        } catch {
+          // Persistence is best-effort. A current page may still become the live
+          // session state, matching the existing coordinator behavior.
+          if (isCurrent()) {
+            commit();
+            committed = true;
+          }
+          return;
+        }
+        if (!isCurrent()) {
+          const latest = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {}) ?? {};
+          const restored = { ...latest };
+          if (hadPreviousState) restored[key] = previousState;
+          else delete restored[key];
+          try {
+            await this.workspaceState?.update(SESSION_STORAGE_KEY, restored);
+          } catch {
+            // The stale page remains rejected even if best-effort persistence rollback fails.
+          }
+          return;
+        }
+        commit();
+        committed = true;
+      });
+    const settled = task.catch(() => undefined);
+    this.persistenceTail = settled;
+    await settled;
+    return committed;
+  }
+
+  private async restoreRuntimeState(
+    session: RuntimeSessionState,
     state: PersistedSessionState,
     pageSize: number,
     options?: BridgeRequestOptions
   ): Promise<PageResponse> {
     for (const step of state.steps) {
-      const preview = await session.delegate.request(
-        {
-          kind: "previewStep",
-          sessionId: session.runtimeId,
-          revision: session.runtimeRevision,
-          step,
-          offset: 0,
-          limit: 1
-        },
-        options
-      );
-      if (preview.kind !== "stepPreview") throw new Error("Could not replay a cleaning step.");
+      const previewRequest: SessionBoundRequest = {
+        kind: "previewStep",
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision,
+        step,
+        offset: 0,
+        limit: 1
+      };
+      const preview = await session.delegate.request(previewRequest, options);
+      if (
+        preview.kind !== "stepPreview" ||
+        responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
+      ) {
+        throw new Error("Could not replay a cleaning step.");
+      }
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
       session.code = preview.code;
-      const applied = await session.delegate.request(
-        {
-          kind: "applyDraft",
-          sessionId: session.runtimeId,
-          revision: session.runtimeRevision,
-          offset: 0,
-          limit: 1
-        },
-        options
-      );
-      if (applied.kind !== "planUpdated") throw new Error("Could not apply a replayed cleaning step.");
+      const applyRequest: SessionBoundRequest = {
+        kind: "applyDraft",
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision,
+        offset: 0,
+        limit: 1
+      };
+      const applied = await session.delegate.request(applyRequest, options);
+      if (applied.kind !== "planUpdated" || responseMismatch(applyRequest, applied, session.runtimeId) !== undefined) {
+        throw new Error("Could not apply a replayed cleaning step.");
+      }
       session.runtimeRevision = applied.revision;
       session.metadata = applied.metadata;
       session.code = applied.code;
     }
 
     if (state.draftStep) {
-      const preview = await session.delegate.request(
-        {
-          kind: "previewStep",
-          sessionId: session.runtimeId,
-          revision: session.runtimeRevision,
-          step: state.draftStep,
-          replaceStepId: state.draftReplacesStepId,
-          offset: 0,
-          limit: 1
-        },
-        options
-      );
-      if (preview.kind !== "stepPreview") throw new Error("Could not restore the draft cleaning step.");
+      const previewRequest: SessionBoundRequest = {
+        kind: "previewStep",
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision,
+        step: state.draftStep,
+        replaceStepId: state.draftReplacesStepId,
+        offset: 0,
+        limit: 1
+      };
+      const preview = await session.delegate.request(previewRequest, options);
+      if (
+        preview.kind !== "stepPreview" ||
+        responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
+      ) {
+        throw new Error("Could not restore the draft cleaning step.");
+      }
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
       session.code = preview.code;
     }
 
-    const page = await session.delegate.request(
-      {
-        kind: "getPage",
-        sessionId: session.runtimeId,
-        revision: session.runtimeRevision,
-        offset: 0,
-        limit: pageSize,
-        filterModel: state.filterModel
-      },
-      options
-    );
-    if (page.kind !== "page") throw new Error("Could not restore the saved viewing query.");
+    const pageRequest: SessionBoundRequest = {
+      kind: "getPage",
+      sessionId: session.runtimeId,
+      revision: session.runtimeRevision,
+      viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}`,
+      offset: 0,
+      limit: pageSize,
+      filterModel: state.filterModel
+    };
+    const page = await session.delegate.request(pageRequest, options);
+    if (page.kind !== "page" || responseMismatch(pageRequest, page, session.runtimeId) !== undefined) {
+      throw new Error("Could not restore the saved viewing query.");
+    }
     session.runtimeRevision = page.revision;
     session.metadata = page.metadata;
     return page;
   }
 
   private async replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
+    const persisted = persistedStateFromMetadata(session.metadata);
+    const previous: RuntimeSessionState = {
+      publicId: session.publicId,
+      runtimeId: session.runtimeId,
+      runtimeRevision: session.runtimeRevision,
+      delegate: session.delegate,
+      metadata: session.metadata,
+      code: session.code
+    };
+    let candidate: RuntimeSessionState | undefined;
     try {
-      const previous = session.metadata;
       const response = await session.delegate.request(session.openRequest, options);
       if (response.kind !== "sessionOpened") return false;
-      session.runtimeId = response.metadata.sessionId;
-      session.runtimeRevision = response.metadata.revision;
-      session.metadata = response.metadata;
-      session.code = "";
-      await this.restoreRuntimeState(session, persistedStateFromMetadata(previous), 1, options);
-      this.setActive(session.publicId);
-      return true;
+      candidate = {
+        publicId: session.publicId,
+        runtimeId: response.metadata.sessionId,
+        runtimeRevision: response.metadata.revision,
+        delegate: session.delegate,
+        metadata: response.metadata,
+        code: ""
+      };
+      await this.restoreRuntimeState(candidate, persisted, 1, options);
     } catch {
+      if (candidate) await this.closeRuntimeState(candidate, "recovery candidate");
       return false;
+    }
+
+    if (!this.isLiveSession(session) || session.closing) {
+      await this.closeRuntimeState(candidate, "recovery candidate");
+      return false;
+    }
+
+    session.runtimeId = candidate.runtimeId;
+    session.runtimeRevision = candidate.runtimeRevision;
+    session.metadata = candidate.metadata;
+    session.code = candidate.code;
+    this.setActive(session.publicId);
+    this.trackDetachedCleanup(previous, "retired runtime");
+    return true;
+  }
+
+  private trackDetachedCleanup(state: RuntimeSessionState, role: DetachedRuntimeRole): void {
+    const cleanup = this.closeRuntimeState(state, role);
+    this.detachedCleanups.add(cleanup);
+    void cleanup.finally(() => this.detachedCleanups.delete(cleanup));
+  }
+
+  private async waitForDetachedCleanups(): Promise<void> {
+    while (this.detachedCleanups.size > 0) {
+      await Promise.allSettled([...this.detachedCleanups]);
+    }
+  }
+
+  private async closeRuntimeState(state: RuntimeSessionState, role: DetachedRuntimeRole): Promise<void> {
+    try {
+      const response = await state.delegate.request(
+        {
+          kind: "closeSession",
+          sessionId: state.runtimeId,
+          revision: state.runtimeRevision
+        },
+        runtimeCleanupOptions()
+      );
+      if (response.kind === "sessionClosed" && response.sessionId === state.runtimeId) return;
+      this.reportRuntimeCleanupDiagnostic(state, role, cleanupResponseDescription(response, state.runtimeId));
+    } catch (error) {
+      this.reportRuntimeCleanupDiagnostic(state, role, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private reportRuntimeCleanupDiagnostic(state: RuntimeSessionState, role: DetachedRuntimeRole, detail: string): void {
+    const message = `Open Wrangler could not confirm cleanup of ${role} session ${state.runtimeId}: ${detail}`;
+    try {
+      if (state.delegate.reportDiagnostic) state.delegate.reportDiagnostic(message);
+      else this.diagnosticSink?.(message);
+    } catch {
+      try {
+        this.diagnosticSink?.(message);
+      } catch {
+        // Diagnostics must never destabilize the live replacement session.
+      }
     }
   }
 
@@ -561,6 +1043,208 @@ export class SessionCoordinator implements vscode.Disposable {
       delegate.onIdle?.();
     }
   }
+
+  private isLiveSession(session: CoordinatedSession): boolean {
+    return !this.disposed && this.sessions.get(session.publicId) === session;
+  }
+}
+
+function sessionRequestPriority(
+  request: SessionBoundRequest,
+  options?: BridgeRequestOptions
+): NonNullable<BridgeRequestOptions["priority"]> {
+  if (options?.priority) return options.priority;
+  return request.kind === "getSummary" || request.kind === "getDatasetStats" ? "background" : "interactive";
+}
+
+function takeTerminalOperation(session: CoordinatedSession): QueuedSessionOperation | undefined {
+  const operation = session.terminalOperation;
+  session.terminalOperation = undefined;
+  return operation;
+}
+
+function isSessionIdle(session: CoordinatedSession): boolean {
+  return (
+    !session.activeForegroundOperation &&
+    !session.activeBackgroundOperation &&
+    session.interactiveQueue.length === 0 &&
+    session.backgroundQueue.length === 0 &&
+    !session.terminalOperation
+  );
+}
+
+function canRunAlongsideBackground(request: SessionBoundRequest): boolean {
+  return request.kind === "getPage" || request.kind === "getColumnValues";
+}
+
+function isIdempotentReadRequest(request: SessionBoundRequest): boolean {
+  return (
+    request.kind === "getPage" ||
+    request.kind === "getSummary" ||
+    request.kind === "getDatasetStats" ||
+    request.kind === "getColumnValues"
+  );
+}
+
+function isRuntimeStateMutation(request: SessionBoundRequest): boolean {
+  return (
+    request.kind === "previewStep" ||
+    request.kind === "applyDraft" ||
+    request.kind === "discardDraft" ||
+    request.kind === "undoStep"
+  );
+}
+
+function isCancellableQueuedViewRequest(request: SessionBoundRequest): boolean {
+  return request.kind === "getSummary" || request.kind === "getDatasetStats" || request.kind === "getColumnValues";
+}
+
+function sameFilterModel(left: FilterModel, right: FilterModel): boolean {
+  return isDeepStrictEqual(normalizeFilterModel(left), normalizeFilterModel(right));
+}
+
+function isCurrentLogicalView(session: CoordinatedSession, options?: BridgeRequestOptions): boolean {
+  return (
+    options?.viewContextId === undefined ||
+    (options.viewContextId === session.activeViewContextId &&
+      options.viewContextId === session.latestRequestedViewContextId)
+  );
+}
+
+function responseMismatch(
+  request: SessionBoundRequest,
+  response: OpenWranglerResponse,
+  runtimeSessionId: string
+): string | undefined {
+  const expectedViewRequestId = requestViewId(request);
+  if (response.kind === "error") {
+    if (response.sessionId !== undefined && response.sessionId !== runtimeSessionId) {
+      return `error named runtime session ${response.sessionId} instead of ${runtimeSessionId}`;
+    }
+    if (expectedViewRequestId !== undefined && response.viewRequestId !== expectedViewRequestId) {
+      return `error did not retain view request ${expectedViewRequestId}`;
+    }
+    return undefined;
+  }
+  if (response.kind === "cancelled") {
+    if (expectedViewRequestId !== undefined && response.viewRequestId !== expectedViewRequestId) {
+      return `cancellation did not retain view request ${expectedViewRequestId}`;
+    }
+    return undefined;
+  }
+
+  switch (request.kind) {
+    case "getPage":
+      if (response.kind !== "page") return `runtime returned ${response.kind}`;
+      if (response.viewRequestId !== request.viewRequestId) return "page correlation did not match";
+      if (response.revision !== request.revision) {
+        return `page revision ${response.revision} did not match ${request.revision}`;
+      }
+      return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+    case "getSummary":
+      if (response.kind !== "summary") return `runtime returned ${response.kind}`;
+      if (response.viewRequestId !== request.viewRequestId) return "summary correlation did not match";
+      return response.revision === request.revision
+        ? undefined
+        : `summary revision ${response.revision} did not match ${request.revision}`;
+    case "getDatasetStats":
+      if (response.kind !== "datasetStats") return `runtime returned ${response.kind}`;
+      if (response.viewRequestId !== request.viewRequestId) return "dataset-statistics correlation did not match";
+      return response.revision === request.revision
+        ? undefined
+        : `dataset-statistics revision ${response.revision} did not match ${request.revision}`;
+    case "getColumnValues":
+      if (response.kind !== "columnValues") return `runtime returned ${response.kind}`;
+      if (response.viewRequestId !== request.viewRequestId) return "column-values correlation did not match";
+      if (response.column !== request.column) return `runtime returned values for ${response.column}`;
+      return response.revision === request.revision
+        ? undefined
+        : `column-values revision ${response.revision} did not match ${request.revision}`;
+    case "previewStep":
+      if (response.kind !== "stepPreview") return `runtime returned ${response.kind}`;
+      if (response.revision !== request.revision + 1) {
+        return `preview revision ${response.revision} did not follow ${request.revision}`;
+      }
+      return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+    case "applyDraft":
+    case "discardDraft":
+    case "undoStep": {
+      if (response.kind !== "planUpdated") return `runtime returned ${response.kind}`;
+      const expectedAction =
+        request.kind === "applyDraft" ? "apply" : request.kind === "discardDraft" ? "discard" : "undo";
+      if (response.action !== expectedAction) {
+        return `runtime reported ${response.action} instead of ${expectedAction}`;
+      }
+      if (response.revision !== request.revision + 1) {
+        return `plan revision ${response.revision} did not follow ${request.revision}`;
+      }
+      return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+    }
+    case "exportData":
+      if (response.kind !== "dataExported") return `runtime returned ${response.kind}`;
+      if (response.format !== request.format) return `runtime reported ${response.format} export`;
+      if (response.path !== request.path) return "runtime reported a different export path";
+      return response.revision === request.revision
+        ? undefined
+        : `export revision ${response.revision} did not match ${request.revision}`;
+    case "closeSession":
+      if (response.kind !== "sessionClosed") return `runtime returned ${response.kind}`;
+      return response.sessionId === runtimeSessionId
+        ? undefined
+        : `runtime acknowledged session ${response.sessionId} instead of ${runtimeSessionId}`;
+  }
+}
+
+function metadataResponseMismatch(
+  metadata: SessionMetadata,
+  responseRevision: number,
+  runtimeSessionId: string
+): string | undefined {
+  if (metadata.sessionId !== runtimeSessionId) {
+    return `metadata named runtime session ${metadata.sessionId} instead of ${runtimeSessionId}`;
+  }
+  if (metadata.revision !== responseRevision) {
+    return `metadata revision ${metadata.revision} did not match response revision ${responseRevision}`;
+  }
+  return undefined;
+}
+
+function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
+  const { stats: _stats, ...withoutStats } = metadata;
+  return withoutStats;
+}
+
+function runtimeCleanupOptions(): BridgeRequestOptions {
+  return {
+    priority: "interactive",
+    timeoutMs: RUNTIME_CLEANUP_TIMEOUT_MS,
+    restartRuntimeOnTimeout: false
+  };
+}
+
+function runtimeRecoveryOptions(): BridgeRequestOptions {
+  return { priority: "interactive" };
+}
+
+function cleanupResponseDescription(response: OpenWranglerResponse, expectedSessionId: string): string {
+  if (response.kind === "sessionClosed") {
+    return `runtime acknowledged session ${response.sessionId} instead of ${expectedSessionId}`;
+  }
+  if (response.kind === "error") return `${response.code}: ${response.message}`;
+  if (response.kind === "cancelled") return `close was cancelled (${response.targetRequestId})`;
+  return `runtime returned ${response.kind}`;
+}
+
+function requestViewId(request: OpenWranglerRequest): string | undefined {
+  return "viewRequestId" in request && typeof request.viewRequestId === "string" ? request.viewRequestId : undefined;
+}
+
+function normalizeFilterModel(model: FilterModel): unknown {
+  return {
+    logic: model.logic ?? "and",
+    filters: model.filters.map((filter) => ({ ...filter, logic: filter.logic ?? "and" })),
+    sort: model.sort
+  };
 }
 
 function publicMetadata(metadata: SessionMetadata, publicId: string, publicRevision: number): SessionMetadata {
@@ -581,6 +1265,19 @@ function isUnknownRuntimeSession(response: OpenWranglerResponse): response is Er
   );
 }
 
-function protocolError(code: string, message: string, recoverable: boolean, sessionId?: string): ErrorResponse {
-  return { kind: "error", code, message, recoverable, sessionId };
+function protocolError(
+  code: string,
+  message: string,
+  recoverable: boolean,
+  sessionId?: string,
+  viewRequestId?: string
+): ErrorResponse {
+  return {
+    kind: "error",
+    code,
+    message,
+    recoverable,
+    ...(sessionId ? { sessionId } : {}),
+    ...(viewRequestId ? { viewRequestId } : {})
+  };
 }

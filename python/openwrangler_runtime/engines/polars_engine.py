@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Iterable, Mapping
 from math import isfinite
 from pathlib import Path
@@ -19,6 +18,8 @@ from .base import (
     normalize_cell,
     numeric_visualization,
 )
+
+SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 
 
 class PolarsEngine(DataFrameEngine):
@@ -126,11 +127,6 @@ class PolarsEngine(DataFrameEngine):
         if isinstance(frame, pl.LazyFrame):
             schema = frame.collect_schema()
             visible = self._visible_columns(frame)
-            if not visible:
-                return []
-            null_counts = (
-                frame.select([pl.col(name).null_count() for name in visible]).collect(engine="streaming").to_dicts()[0]
-            )
             return [
                 {
                     "id": f"c:{position}",
@@ -138,7 +134,10 @@ class PolarsEngine(DataFrameEngine):
                     "position": position,
                     "rawType": str(dtype),
                     "type": infer_semantic_type(str(dtype)),
-                    "nullable": bool(null_counts.get(name, 0) > 0),
+                    # A LazyFrame schema has no nullability metadata. Keep
+                    # discovery metadata-only and report the conservative
+                    # capability instead of profiling every column on open.
+                    "nullable": True,
                 }
                 for position, name in enumerate(visible)
                 for dtype in [schema[name]]
@@ -214,17 +213,26 @@ class PolarsEngine(DataFrameEngine):
             )
         return df
 
-    def page(self, frame: Any, offset: int, limit: int) -> dict[str, Any]:
+    def page(
+        self,
+        frame: Any,
+        offset: int,
+        limit: int,
+        *,
+        total_rows: int | None = None,
+    ) -> dict[str, Any]:
         import polars as pl
 
         if isinstance(frame, pl.LazyFrame):
-            total_rows = int(frame.select(pl.len()).collect(engine="streaming").item())
+            if total_rows is None:
+                total_rows = int(frame.select(pl.len()).collect(engine="streaming").item())
             df = frame.slice(offset, limit).collect(engine="streaming")
             sliced = df
         else:
             df = self.normalize(frame)
             sliced = df.slice(offset, limit)
-            total_rows = int(df.height)
+            if total_rows is None:
+                total_rows = int(df.height)
         columns = self._visible_columns(df)
         row_id = self._row_id_column(df)
         rows = []
@@ -239,7 +247,7 @@ class PolarsEngine(DataFrameEngine):
         return {
             "offset": offset,
             "limit": limit,
-            "totalRows": total_rows,
+            "totalRows": int(total_rows),
             "rows": rows,
         }
 
@@ -248,10 +256,10 @@ class PolarsEngine(DataFrameEngine):
 
         if isinstance(frame, pl.LazyFrame):
             selected = list(columns) if columns is not None else self._visible_columns(frame)
-            df = frame.select(selected).collect(engine="streaming")
-        else:
-            df = self.normalize(frame)
-            selected = list(columns) if columns is not None else self._visible_columns(df)
+            return self._lazy_summaries(frame, selected)
+
+        df = self.normalize(frame)
+        selected = list(columns) if columns is not None else self._visible_columns(df)
         if not selected:
             return []
         null_counts = df.select([pl.col(column).null_count().alias(column) for column in selected]).to_dicts()[0]
@@ -272,13 +280,16 @@ class PolarsEngine(DataFrameEngine):
                 "topValues": top_values,
             }
             if semantic_type in {"integer", "float", "decimal"}:
-                numeric_values = series.drop_nulls().to_list()
+                numeric_series = series.drop_nulls()
+                if semantic_type == "float":
+                    numeric_series = numeric_series.drop_nans()
+                numeric_values = numeric_series.to_list()
                 summary["numeric"] = {
-                    "min": _maybe_float(series.min()),
-                    "max": _maybe_float(series.max()),
-                    "mean": _maybe_float(series.mean()),
-                    "median": _maybe_float(series.median()),
-                    "std": _maybe_float(series.std()),
+                    "min": _maybe_float(numeric_series.min()),
+                    "max": _maybe_float(numeric_series.max()),
+                    "mean": _maybe_float(numeric_series.mean()),
+                    "median": _maybe_float(numeric_series.median()),
+                    "std": _maybe_float(numeric_series.std()),
                 }
                 summary["visualization"] = numeric_visualization(numeric_values)
             elif semantic_type == "boolean":
@@ -292,35 +303,214 @@ class PolarsEngine(DataFrameEngine):
             summaries.append(summary)
         return summaries
 
-    def _summary_counts(self, series: Any, column: str, semantic_type: str) -> tuple[list[dict[str, Any]], int]:
-        if semantic_type in {"list", "struct"}:
-            displays = [normalize_cell(value)["display"] for value in series.drop_nulls().to_list()]
-            counts = Counter(displays)
-            return (
-                [{"value": value, "count": count} for value, count in counts.most_common(10)],
-                len(counts),
+    def _lazy_summaries(self, frame: Any, selected: list[str]) -> list[dict[str, Any]]:
+        import polars as pl
+
+        if not selected:
+            return []
+
+        schema = frame.collect_schema()
+        definitions = []
+        metric_expressions = [pl.len().alias("__open_wrangler_total")]
+        top_queries = []
+        for index, column in enumerate(selected):
+            raw_type = str(schema[column])
+            semantic_type = infer_semantic_type(raw_type)
+            prefix = f"__open_wrangler_{index}_"
+            expression = pl.col(column)
+            valid_expression = expression.drop_nulls()
+            if semantic_type == "float":
+                valid_expression = valid_expression.drop_nans()
+            metric_expressions.extend(
+                [
+                    expression.null_count().alias(f"{prefix}null"),
+                    (expression.is_nan().fill_null(False).sum() if semantic_type == "float" else pl.lit(0)).alias(
+                        f"{prefix}nan"
+                    ),
+                ]
             )
+            if semantic_type in {"integer", "float", "decimal"}:
+                metric_expressions.extend(
+                    [
+                        valid_expression.min().alias(f"{prefix}min"),
+                        valid_expression.max().alias(f"{prefix}max"),
+                        valid_expression.mean().alias(f"{prefix}mean"),
+                        valid_expression.median().alias(f"{prefix}median"),
+                        valid_expression.std().alias(f"{prefix}std"),
+                    ]
+                )
+            elif semantic_type == "boolean":
+                metric_expressions.extend(
+                    [
+                        (expression == pl.lit(True)).fill_null(False).sum().alias(f"{prefix}true"),
+                        (expression == pl.lit(False)).fill_null(False).sum().alias(f"{prefix}false"),
+                    ]
+                )
+            elif semantic_type in {"datetime", "date"}:
+                metric_expressions.extend(
+                    [
+                        expression.min().alias(f"{prefix}min"),
+                        expression.max().alias(f"{prefix}max"),
+                    ]
+                )
+
+            count_name = f"__open_wrangler_count_{index}"
+            top_queries.append(
+                frame.select(
+                    [
+                        valid_expression.n_unique().alias("distinct"),
+                        valid_expression.value_counts(sort=True, name=count_name).head(10).implode().alias("top"),
+                    ]
+                )
+            )
+            definitions.append((column, raw_type, semantic_type, prefix, count_name))
+
+        metrics = frame.select(metric_expressions).collect(engine="streaming").row(0, named=True)
+        top_results = self._collect_lazy_top_results(definitions, top_queries)
+        total_count = int(metrics["__open_wrangler_total"])
+
+        numeric_sample_queries = []
+        numeric_sample_columns = []
+        numeric_sampled: dict[str, bool] = {}
+        for column, _, semantic_type, prefix, _ in definitions:
+            if semantic_type not in {"integer", "float", "decimal"}:
+                continue
+            valid_count = total_count - int(metrics[f"{prefix}null"]) - int(metrics[f"{prefix}nan"])
+            stride = max(
+                1, (valid_count + SUMMARY_VISUALIZATION_SAMPLE_LIMIT - 1) // SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+            )
+            valid_expression = pl.col(column).drop_nulls()
+            if semantic_type == "float":
+                valid_expression = valid_expression.drop_nans()
+            numeric_sample_queries.append(
+                frame.select(valid_expression.alias(column))
+                .gather_every(stride)
+                .head(SUMMARY_VISUALIZATION_SAMPLE_LIMIT)
+            )
+            numeric_sample_columns.append(column)
+            numeric_sampled[column] = valid_count > SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+        numeric_samples = {
+            column: sample
+            for column, sample in zip(
+                numeric_sample_columns,
+                pl.collect_all(numeric_sample_queries, engine="streaming") if numeric_sample_queries else [],
+                strict=True,
+            )
+        }
+
+        summaries = []
+        for index, (column, raw_type, semantic_type, prefix, _) in enumerate(definitions):
+            top_values, distinct_count = top_results[index]
+            null_count = int(metrics[f"{prefix}null"])
+            nan_count = int(metrics[f"{prefix}nan"])
+            summary: dict[str, Any] = {
+                "column": column,
+                "type": semantic_type,
+                "rawType": raw_type,
+                "totalCount": total_count,
+                "nullCount": null_count,
+                "nanCount": nan_count,
+                "distinctCount": distinct_count,
+                "topValues": top_values,
+            }
+            if semantic_type in {"integer", "float", "decimal"}:
+                summary["numeric"] = {
+                    "min": _maybe_float(metrics[f"{prefix}min"]),
+                    "max": _maybe_float(metrics[f"{prefix}max"]),
+                    "mean": _maybe_float(metrics[f"{prefix}mean"]),
+                    "median": _maybe_float(metrics[f"{prefix}median"]),
+                    "std": _maybe_float(metrics[f"{prefix}std"]),
+                }
+                numeric_sample = numeric_samples.get(column)
+                if numeric_sample is None:  # pragma: no cover - guarded by numeric_sample_queries
+                    raise EngineError(f"The numeric profile sample for {column} is missing.")
+                visualization = numeric_visualization(numeric_sample.get_column(column))
+                if numeric_sampled[column]:
+                    visualization["sampled"] = True
+                    summary["sampled"] = True
+                summary["visualization"] = visualization
+            elif semantic_type == "boolean":
+                summary["visualization"] = {
+                    "kind": "boolean",
+                    "trueCount": int(metrics[f"{prefix}true"]),
+                    "falseCount": int(metrics[f"{prefix}false"]),
+                }
+            elif semantic_type in {"datetime", "date"}:
+                summary["visualization"] = datetime_visualization(metrics[f"{prefix}min"], metrics[f"{prefix}max"])
+            else:
+                summary["visualization"] = categorical_visualization(top_values, total_count - null_count - nan_count)
+            summaries.append(summary)
+        return summaries
+
+    def _collect_lazy_top_results(
+        self,
+        definitions: list[tuple[str, str, str, str, str]],
+        queries: list[Any],
+    ) -> list[tuple[list[dict[str, Any]], int]]:
+        import polars as pl
 
         try:
-            rows = series.drop_nulls().value_counts(sort=True).head(10).iter_rows(named=True)
-            top_values = [
-                {"value": str(row[column]), "count": int(row["count"])} for row in rows if row[column] is not None
-            ]
-            return top_values, int(series.n_unique())
+            results = pl.collect_all(queries, engine="streaming")
         except Exception:
-            # Some extension dtypes do not implement hash-based aggregations.
-            # A bounded display-level fallback keeps profiling available.
-            displays = [normalize_cell(value)["display"] for value in series.drop_nulls().to_list()]
-            counts = Counter(displays)
-            return (
-                [{"value": value, "count": count} for value, count in counts.most_common(10)],
-                len(counts),
-            )
+            results = []
+            for definition, query in zip(definitions, queries, strict=True):
+                try:
+                    results.append(query.collect(engine="streaming"))
+                except Exception as error:
+                    raise EngineError(
+                        f"Polars could not compute exact summary counts for {definition[0]}: {error}"
+                    ) from error
+
+        collected = []
+        for definition, result in zip(definitions, results, strict=True):
+            column, _, semantic_type, _, count_name = definition
+            row = result.row(0, named=True)
+            top_values = [
+                {
+                    "value": (
+                        normalize_cell(item[column])["display"]
+                        if semantic_type in {"list", "struct"}
+                        else str(item[column])
+                    ),
+                    "count": int(item[count_name]),
+                }
+                for item in row["top"]
+                if item[column] is not None
+            ]
+            collected.append((top_values, int(row["distinct"])))
+        return collected
+
+    def _summary_counts(self, series: Any, column: str, semantic_type: str) -> tuple[list[dict[str, Any]], int]:
+        valid = series.drop_nulls()
+        if semantic_type == "float":
+            valid = valid.drop_nans()
+
+        try:
+            counts = valid.value_counts(sort=True)
+            rows = counts.head(10).iter_rows(named=True)
+            top_values = [
+                {
+                    "value": (
+                        normalize_cell(row[column])["display"]
+                        if semantic_type in {"list", "struct"}
+                        else str(row[column])
+                    ),
+                    "count": int(row["count"]),
+                }
+                for row in rows
+                if row[column] is not None
+            ]
+            return top_values, counts.height
+        except Exception as error:
+            raise EngineError(f"Polars could not compute exact summary counts for {column}: {error}") from error
 
     def header_stats(self, frame: Any) -> dict[str, Any]:
         import polars as pl
 
-        df = frame.collect(engine="streaming") if isinstance(frame, pl.LazyFrame) else self.normalize(frame)
+        if isinstance(frame, pl.LazyFrame):
+            return self._lazy_header_stats(frame)
+
+        df = self.normalize(frame)
         row_id = self._row_id_column(df)
         if row_id is not None:
             df = df.drop(row_id)
@@ -354,16 +544,70 @@ class PolarsEngine(DataFrameEngine):
             "missingValuesByColumn": missing_by_column,
         }
 
+    def _lazy_header_stats(self, frame: Any) -> dict[str, Any]:
+        import polars as pl
+
+        visible = self._visible_columns(frame)
+        if not visible:
+            return {"missingCells": 0, "missingRows": 0, "duplicateRows": 0, "missingValuesByColumn": []}
+
+        schema = frame.collect_schema()
+        missing_expressions = []
+        missing_row_expressions = []
+        aliases: list[tuple[str, str]] = []
+        for index, column in enumerate(visible):
+            alias = f"__open_wrangler_missing_{index}"
+            expression = pl.col(column).is_null()
+            count = pl.col(column).null_count()
+            if infer_semantic_type(str(schema[column])) == "float":
+                expression = expression | pl.col(column).is_nan().fill_null(False)
+                count = count + pl.col(column).is_nan().fill_null(False).sum()
+            missing_expressions.append(count.alias(alias))
+            missing_row_expressions.append(expression.fill_null(False))
+            aliases.append((column, alias))
+
+        metrics_query = frame.select(
+            [
+                pl.len().alias("__open_wrangler_rows"),
+                pl.any_horizontal(missing_row_expressions).sum().alias("__open_wrangler_missing_rows"),
+                *missing_expressions,
+            ]
+        )
+        unique_query = (
+            frame.select(visible).unique(maintain_order=False).select(pl.len().alias("__open_wrangler_unique_rows"))
+        )
+        metrics_frame, unique_frame = pl.collect_all([metrics_query, unique_query], engine="streaming")
+        metrics = metrics_frame.row(0, named=True)
+        total_rows = int(metrics["__open_wrangler_rows"])
+        missing_by_column = [{"column": column, "count": int(metrics[alias])} for column, alias in aliases]
+        return {
+            "missingCells": sum(item["count"] for item in missing_by_column),
+            "missingRows": int(metrics["__open_wrangler_missing_rows"]),
+            "duplicateRows": total_rows - int(unique_frame.item()),
+            "missingValuesByColumn": missing_by_column,
+        }
+
     def column_values(
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
         import polars as pl
 
         if isinstance(frame, pl.LazyFrame):
-            series_df = frame.select(pl.col(column).drop_nulls())
+            schema = frame.collect_schema()
+            if column not in schema:
+                raise EngineError(f"Unknown Polars column: {column}")
+            expression = pl.col(column).drop_nulls()
+            if infer_semantic_type(str(schema[column])) == "float":
+                expression = expression.drop_nans()
+            series_df = frame.select(expression)
         else:
             df = self.normalize(frame)
-            series_df = df.select(pl.col(column).drop_nulls())
+            if column not in df.schema:
+                raise EngineError(f"Unknown Polars column: {column}")
+            expression = pl.col(column).drop_nulls()
+            if infer_semantic_type(str(df.schema[column])) == "float":
+                expression = expression.drop_nans()
+            series_df = df.select(expression)
         if search:
             series_df = series_df.filter(pl.col(column).cast(pl.Utf8).str.contains(search, literal=True))
         if isinstance(series_df, pl.LazyFrame):
@@ -412,9 +656,9 @@ class PolarsEngine(DataFrameEngine):
         if operator == "isNotNull":
             return expr.is_not_null()
         if operator == "isNaN":
-            return expr.is_nan() if column_type == "float" else pl.lit(False)
+            return expr.is_nan().fill_null(False) if column_type == "float" else pl.lit(False)
         if operator == "isNotNaN":
-            return expr.is_not_nan() if column_type == "float" else pl.lit(True)
+            return expr.is_not_nan().fill_null(True) if column_type == "float" else pl.lit(True)
         return expr.is_not_null()
 
     def _nan_count(self, series: Any) -> int:
@@ -1051,9 +1295,9 @@ def _polars_predicate_expression(expression: str, predicate: Mapping[str, Any], 
     if operator == "isNotNull":
         return f"{expression}.is_not_null()"
     if operator == "isNaN":
-        return f"{expression}.is_nan()" if column_type == "float" else "pl.lit(False)"
+        return f"{expression}.is_nan().fill_null(False)" if column_type == "float" else "pl.lit(False)"
     if operator == "isNotNaN":
-        return f"{expression}.is_not_nan()" if column_type == "float" else "pl.lit(True)"
+        return f"{expression}.is_not_nan().fill_null(True)" if column_type == "float" else "pl.lit(True)"
     return f"{expression}.is_not_null()"
 
 

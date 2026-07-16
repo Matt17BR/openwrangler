@@ -93,7 +93,14 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def page(self, frame: Any, offset: int, limit: int) -> dict[str, Any]:
+    def page(
+        self,
+        frame: Any,
+        offset: int,
+        limit: int,
+        *,
+        total_rows: int | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod

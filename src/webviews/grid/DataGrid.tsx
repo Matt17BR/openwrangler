@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type {
   ColumnSchema,
@@ -16,11 +16,13 @@ interface DataGridProps {
   pageSize: number;
   defaultColumnWidth: number;
   insightsOnOpen: boolean;
+  busy?: boolean;
+  viewContextId?: string;
   goToColumn?: string;
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onOpenFilter(column: string): void;
-  onRequestSummary(columns: string[]): void;
+  onVisibleSummaryColumnsChange(columns: string[]): void;
 }
 
 const rowHeight = 29;
@@ -35,20 +37,43 @@ export function DataGrid({
   pageSize,
   defaultColumnWidth,
   insightsOnOpen,
+  busy = false,
+  viewContextId,
   goToColumn,
   onPage,
   onSortColumn,
   onOpenFilter,
-  onRequestSummary
+  onVisibleSummaryColumnsChange
 }: DataGridProps) {
   const summaryByColumn = useMemo(() => new Map(summaries.map((summary) => [summary.column, summary])), [summaries]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const requestedOffset = useRef(page.offset);
-  const requestedSummaries = useRef(new Set<string>());
+  const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
+  const previousViewContext = useRef(logicalViewContext);
+  const focusRequested = useRef(false);
+  const preserveGridFocusAfterScroll = useRef(false);
   const [showInsights, setShowInsights] = useState(insightsOnOpen);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [viewport, setViewport] = useState({ scrollLeft: 0, scrollTop: 0, width: 1200, height: 600 });
   const [focusedCell, setFocusedCell] = useState({ row: page.offset, column: 0 });
+
+  useLayoutEffect(() => {
+    if (previousViewContext.current === logicalViewContext) return;
+    previousViewContext.current = logicalViewContext;
+    requestedOffset.current = page.offset;
+    focusRequested.current = false;
+    setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column: 0 });
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollTop = page.offset * rowHeight;
+    scroller.scrollLeft = 0;
+    setViewport({
+      scrollLeft: 0,
+      scrollTop: page.offset * rowHeight,
+      width: scroller.clientWidth,
+      height: scroller.clientHeight
+    });
+  }, [logicalViewContext, page.offset, page.rows]);
 
   useEffect(() => {
     requestedOffset.current = page.offset;
@@ -58,6 +83,7 @@ export function DataGrid({
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const update = () => {
+      preserveGridFocusAfterScroll.current = !focusRequested.current && scroller.contains(document.activeElement);
       const next = {
         scrollLeft: scroller.scrollLeft,
         scrollTop: scroller.scrollTop,
@@ -65,10 +91,12 @@ export function DataGrid({
         height: scroller.clientHeight
       };
       setViewport(next);
-      const row = Math.max(0, Math.floor(next.scrollTop / rowHeight));
+      const row = Math.max(0, Math.min(Math.floor(next.scrollTop / rowHeight), Math.max(0, page.totalRows - 1)));
       const offset = Math.floor(row / pageSize) * pageSize;
-      if (offset !== requestedOffset.current && offset < page.totalRows) {
+      if (!busy && offset !== requestedOffset.current && offset < page.totalRows) {
         requestedOffset.current = offset;
+        focusRequested.current = true;
+        setFocusedCell((current) => ({ row, column: current.column }));
         onPage(offset);
       }
     };
@@ -79,35 +107,57 @@ export function DataGrid({
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [onPage, page.totalRows, pageSize]);
+  }, [busy, onPage, page.totalRows, pageSize]);
 
   const widths = useMemo(
     () => metadata.schema.map((column) => columnWidths[column.id] ?? defaultColumnWidth),
     [columnWidths, defaultColumnWidth, metadata.schema]
   );
   const visibleColumnRange = columnRange(widths, viewport.scrollLeft, viewport.width);
-  const visibleColumns = metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end);
+  const visibleColumns = useMemo(
+    () => metadata.schema.slice(visibleColumnRange.start, visibleColumnRange.end),
+    [metadata.schema, visibleColumnRange.end, visibleColumnRange.start]
+  );
   const leftSpacerWidth = sum(widths.slice(0, visibleColumnRange.start));
   const rightSpacerWidth = sum(widths.slice(visibleColumnRange.end));
   const renderedColumnCount = 1 + visibleColumns.length + Number(leftSpacerWidth > 0) + Number(rightSpacerWidth > 0);
-
+  const viewScope = `${metadata.sessionId}:${metadata.revision}:${JSON.stringify({
+    logic: metadata.filterModel.logic ?? "and",
+    filters: metadata.filterModel.filters,
+    sort: metadata.filterModel.sort
+  })}`;
   const globalFirstRow = Math.max(0, Math.floor(viewport.scrollTop / rowHeight));
   const localStart = Math.max(0, globalFirstRow - page.offset - overscanRows);
   const visibleRowCount = Math.ceil(viewport.height / rowHeight) + overscanRows * 2;
   const localEnd = Math.min(page.rows.length, localStart + visibleRowCount);
   const visibleRows = page.rows.slice(localStart, localEnd);
+  const rovingRow = visibleRows.some((row) => row.rowNumber === focusedCell.row)
+    ? focusedCell.row
+    : visibleRows[0]?.rowNumber;
+  const rovingColumn = visibleColumns.some((column) => column.position === focusedCell.column)
+    ? focusedCell.column
+    : visibleColumns[0]?.position;
   const topSpacerHeight = (page.offset + localStart) * rowHeight;
   const bottomSpacerHeight = Math.max(0, page.totalRows - (page.offset + localEnd)) * rowHeight;
 
+  useLayoutEffect(() => {
+    if (!preserveGridFocusAfterScroll.current) return;
+    preserveGridFocusAfterScroll.current = false;
+    if (rovingRow === undefined || rovingColumn === undefined) return;
+    const selector = `[data-grid-row="${rovingRow}"][data-grid-column="${rovingColumn}"]`;
+    scrollerRef.current?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+  }, [rovingColumn, rovingRow]);
+
   useEffect(() => {
-    const missing = visibleColumns
-      .filter((column) => !summaryByColumn.has(column.name) && !requestedSummaries.current.has(column.name))
-      .map((column) => column.name);
-    if (missing.length > 0) {
-      for (const column of missing) requestedSummaries.current.add(column);
-      onRequestSummary(missing);
-    }
-  }, [onRequestSummary, summaryByColumn, visibleColumns]);
+    onVisibleSummaryColumnsChange(showInsights ? visibleColumns.map((column) => column.name) : []);
+  }, [onVisibleSummaryColumnsChange, showInsights, viewScope, visibleColumns]);
+
+  useEffect(
+    () => () => {
+      onVisibleSummaryColumnsChange([]);
+    },
+    [onVisibleSummaryColumnsChange]
+  );
 
   useEffect(() => {
     if (!goToColumn) return;
@@ -116,20 +166,28 @@ export function DataGrid({
     const animationFrame = window.requestAnimationFrame(() => {
       const scroller = scrollerRef.current;
       if (scroller) scroller.scrollLeft = Math.max(0, sum(widths.slice(0, index)) - scroller.clientWidth / 3);
+      focusRequested.current = true;
       setFocusedCell((current) => ({ ...current, column: index }));
     });
     return () => window.cancelAnimationFrame(animationFrame);
   }, [goToColumn, metadata.schema, widths]);
 
   useEffect(() => {
+    if (!focusRequested.current) return;
     const selector = `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`;
-    scrollerRef.current?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+    const target = scrollerRef.current?.querySelector<HTMLElement>(selector);
+    if (!target) return;
+    focusRequested.current = false;
+    target.focus({ preventScroll: true });
   }, [focusedCell, page.offset, visibleColumnRange.start, localStart]);
 
-  const goToPage = (offset: number) => {
+  const goToPage = (offset: number, restoreFocus = false) => {
+    if (busy) return;
     const bounded = Math.max(0, Math.min(offset, Math.max(0, page.totalRows - 1)));
     const block = Math.floor(bounded / pageSize) * pageSize;
     requestedOffset.current = block;
+    if (restoreFocus) focusRequested.current = true;
+    setFocusedCell((current) => ({ row: bounded, column: current.column }));
     if (scrollerRef.current) scrollerRef.current.scrollTop = bounded * rowHeight;
     onPage(block);
   };
@@ -137,7 +195,7 @@ export function DataGrid({
   return (
     <div className="dataGrid">
       <div className="gridControls" aria-live="polite">
-        <button type="button" disabled={page.offset === 0} onClick={() => goToPage(page.offset - pageSize)}>
+        <button type="button" disabled={busy || page.offset === 0} onClick={() => goToPage(page.offset - pageSize)}>
           Previous block
         </button>
         <span>
@@ -147,7 +205,7 @@ export function DataGrid({
         </span>
         <button
           type="button"
-          disabled={page.offset + pageSize >= page.totalRows}
+          disabled={busy || page.offset + pageSize >= page.totalRows}
           onClick={() => goToPage(page.offset + pageSize)}
         >
           Next block
@@ -160,6 +218,7 @@ export function DataGrid({
       <div className="tableScroller" ref={scrollerRef} data-testid="data-grid-scroller">
         <table
           role="grid"
+          aria-busy={busy}
           aria-label={`Data grid for ${metadata.source.label}`}
           aria-rowcount={page.totalRows + 1}
           aria-colcount={metadata.schema.length + 1}
@@ -182,6 +241,7 @@ export function DataGrid({
                 <ColumnHeader
                   key={column.id}
                   column={column}
+                  ariaColumnIndex={column.position + 2}
                   width={widths[column.position]}
                   showInsights={showInsights}
                   summary={summaryByColumn.get(column.name)}
@@ -211,10 +271,13 @@ export function DataGrid({
                       data-grid-row={row.rowNumber}
                       data-grid-column={column.position}
                       aria-colindex={column.position + 2}
-                      tabIndex={focusedCell.row === row.rowNumber && focusedCell.column === column.position ? 0 : -1}
+                      tabIndex={rovingRow === row.rowNumber && rovingColumn === column.position ? 0 : -1}
                       className={cell?.isNull || cell?.isNaN ? "missingCell" : undefined}
                       title={cell?.display}
-                      onFocus={() => setFocusedCell({ row: row.rowNumber, column: column.position })}
+                      onFocus={() => {
+                        focusRequested.current = false;
+                        setFocusedCell({ row: row.rowNumber, column: column.position });
+                      }}
                       onKeyDown={(event) =>
                         navigateGrid(event, row.rowNumber, column.position, metadata.schema.length, page.totalRows)
                       }
@@ -255,22 +318,25 @@ export function DataGrid({
     else if (event.key === "PageDown") nextRow += Math.max(1, Math.floor(viewport.height / rowHeight));
     else if (event.key === "PageUp") nextRow -= Math.max(1, Math.floor(viewport.height / rowHeight));
     else return;
-    event.preventDefault();
     nextRow = Math.max(0, Math.min(nextRow, rowCount - 1));
     nextColumn = Math.max(0, Math.min(nextColumn, columnCount - 1));
+    const block = Math.floor(nextRow / pageSize) * pageSize;
+    if (busy && block !== page.offset) return;
+    event.preventDefault();
+    focusRequested.current = true;
     setFocusedCell({ row: nextRow, column: nextColumn });
     const scroller = scrollerRef.current;
     if (scroller) {
       scroller.scrollTop = Math.max(0, nextRow * rowHeight - scroller.clientHeight / 2);
       scroller.scrollLeft = Math.max(0, sum(widths.slice(0, nextColumn)) - scroller.clientWidth / 3);
     }
-    const block = Math.floor(nextRow / pageSize) * pageSize;
-    if (block !== page.offset) goToPage(nextRow);
+    if (block !== page.offset) goToPage(nextRow, true);
   }
 }
 
 function ColumnHeader({
   column,
+  ariaColumnIndex,
   width,
   showInsights,
   summary,
@@ -279,6 +345,7 @@ function ColumnHeader({
   onResize
 }: {
   column: ColumnSchema;
+  ariaColumnIndex: number;
   width: number;
   showInsights: boolean;
   summary: ColumnSummary | undefined;
@@ -308,7 +375,11 @@ function ColumnHeader({
   };
 
   return (
-    <th data-column={column.name} title={`${column.rawType}${column.nullable ? " nullable" : ""}`}>
+    <th
+      data-column={column.name}
+      aria-colindex={ariaColumnIndex}
+      title={`${column.rawType}${column.nullable ? " nullable" : ""}`}
+    >
       <div className="columnHeader">
         <span className={`typeIcon codicon ${typeIcon(column.type)}`} aria-hidden="true" />
         <span className="columnTitle">{column.name}</span>

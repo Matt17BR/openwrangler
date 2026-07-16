@@ -27,7 +27,7 @@ let activeBridge: PythonBridge | undefined;
 
 export function activate(context: vscode.ExtensionContext): OpenWranglerExtensionApi | undefined {
   const bridge = new PythonBridge(context);
-  const coordinator = new SessionCoordinator(context.workspaceState);
+  const coordinator = new SessionCoordinator(context.workspaceState, (message) => bridge.reportDiagnostic(message));
   activeCoordinator = coordinator;
   activeBridge = bridge;
   const coordinatedBridge = coordinator.createBridge(bridge);

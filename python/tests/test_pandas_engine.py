@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -22,7 +23,15 @@ def test_pandas_file_session_matches_protocol():
     assert opened["metadata"]["shape"] == {"rows": 4, "columns": 4}
     assert opened["metadata"]["schema"][0]["name"] == "city"
     assert "stats" not in opened["metadata"]
-    assert opened["summaries"][0]["visualization"]["kind"] == "categorical"
+    assert opened["summaries"] == []
+
+    summaries = manager.get_summary(
+        opened["metadata"]["sessionId"],
+        0,
+        {"filters": [], "sort": []},
+        ["city"],
+    )["summaries"]
+    assert summaries[0]["visualization"]["kind"] == "categorical"
 
     stats = manager.get_dataset_stats(opened["metadata"]["sessionId"], 0, {"filters": [], "sort": []})
     assert stats["stats"]["duplicateRows"] == 0
@@ -96,3 +105,42 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
         {"column": "duplicate", "count": 1},
         {"column": "7", "count": 0},
     ]
+
+
+def test_pandas_summaries_separate_nan_from_other_missing_values():
+    frame = pd.DataFrame(
+        {
+            "float": pd.Series([1.0, float("nan")], dtype="float64"),
+            "object": pd.Series([None, float("nan")], dtype="object"),
+            "nullable": pd.Series([1.0, pd.NA], dtype="Float64"),
+            "datetime": pd.Series([pd.Timestamp("2026-01-01"), pd.NaT]),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PandasEngine().summaries(frame)}
+
+    assert (summaries["float"]["nullCount"], summaries["float"]["nanCount"]) == (0, 1)
+    assert (summaries["object"]["nullCount"], summaries["object"]["nanCount"]) == (1, 1)
+    assert (summaries["nullable"]["nullCount"], summaries["nullable"]["nanCount"]) == (1, 0)
+    assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
+
+
+def test_pandas_custom_code_cannot_mutate_nested_source_objects():
+    source = pd.DataFrame({"nested": [[1], [2]], "value": [1, 2]})
+    engine = PandasEngine()
+    frame = engine.ensure_row_ids(source, "nested-source")
+    step = {
+        "id": "custom",
+        "kind": "customCode",
+        "params": {"code": "df.iloc[0, 0].append(99)\nresult = df"},
+    }
+
+    transformed = engine.apply_transform(frame, step)
+    namespace: dict[str, Any] = {}
+    exec(engine.compile_plan([step]), namespace, namespace)
+    generated = namespace["clean_data"](frame)
+
+    assert source["nested"].tolist() == [[1], [2]]
+    assert frame["nested"].tolist() == [[1], [2]]
+    assert transformed["nested"].tolist() == [[1, 99], [2]]
+    assert generated["nested"].tolist() == [[1, 99], [2]]

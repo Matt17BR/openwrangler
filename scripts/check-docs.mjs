@@ -26,6 +26,18 @@ if (!changelog.includes(`## [${packageJson.version}]`)) {
   throw new Error(`CHANGELOG.md does not contain an entry for ${packageJson.version}`);
 }
 
+const runtimeVersionSource = readFileSync(resolve(root, "python/openwrangler_runtime/version.py"), "utf8");
+const runtimeVersion = runtimeVersionSource.match(/^__version__ = "([^"]+)"$/m)?.[1];
+const expectedRuntimeVersion = packageJson.version
+  .replace(/-alpha\.(\d+)$/, "a$1")
+  .replace(/-beta\.(\d+)$/, "b$1")
+  .replace(/-rc\.(\d+)$/, "rc$1");
+if (runtimeVersion !== expectedRuntimeVersion) {
+  throw new Error(
+    `Python runtime version ${runtimeVersion ?? "is missing"}; expected ${expectedRuntimeVersion} from package.json`
+  );
+}
+
 const agentGuide = readFileSync(resolve(root, "AGENTS.md"), "utf8");
 for (const file of required.filter((file) => file.startsWith("docs/"))) {
   if (!agentGuide.includes(file)) {

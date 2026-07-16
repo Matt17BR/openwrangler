@@ -1,0 +1,361 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as vscode from "vscode";
+import type { OpenWranglerBridge } from "../extension/dataBridge";
+import { OpenWranglerPanel } from "../extension/webviewPanel";
+import type {
+  ColumnSummary,
+  GridPage,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
+  SessionMetadata,
+  SessionOpenedResponse
+} from "../shared/protocol";
+
+const metadata: SessionMetadata = {
+  protocolVersion: 2,
+  sessionId: "session",
+  revision: 0,
+  backend: "polars",
+  mode: "editing",
+  source: { kind: "file", label: "sample.csv", path: "sample.csv" },
+  capabilities: {
+    editable: true,
+    lazy: true,
+    cancel: false,
+    exportCsv: true,
+    exportParquet: true,
+    notebookInsert: false
+  },
+  shape: { rows: 2, columns: 1 },
+  filteredShape: { rows: 2, columns: 1 },
+  filterModel: { filters: [], sort: [] },
+  steps: [],
+  schema: [{ id: "c:0", name: "city", position: 0, rawType: "String", type: "string", nullable: false }]
+};
+
+const page: GridPage = {
+  offset: 0,
+  limit: 200,
+  totalRows: 2,
+  rows: [
+    {
+      id: "r:0",
+      rowNumber: 0,
+      values: [{ kind: "string", raw: "Berlin", display: "Berlin", isNull: false, isNaN: false }]
+    }
+  ]
+};
+
+const summary: ColumnSummary = {
+  column: "city",
+  type: "string",
+  rawType: "String",
+  totalCount: 2,
+  nullCount: 0,
+  nanCount: 0,
+  distinctCount: 2,
+  topValues: [{ value: "Berlin", count: 1 }]
+};
+
+const initialResponse: SessionOpenedResponse = { kind: "sessionOpened", metadata, page, summaries: [] };
+
+describe("OpenWranglerPanel retained view state", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("loads the production webview as an ES module under a restrictive nonce CSP", () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => initialResponse) });
+    const script = harness.html.match(/<script type="module" nonce="([A-Za-z0-9]+)"[^>]*>/u);
+    expect(script).not.toBeNull();
+    const nonce = script?.[1];
+    expect(harness.html).toContain(`script-src mock-webview 'nonce-${nonce}';`);
+    expect(harness.html).not.toContain("script-src 'unsafe-inline'");
+    expect(harness.html).toContain("media/webview.js");
+  });
+
+  it("rejects a stale profile from an older opaque view even when metadata and filters match", async () => {
+    let resolveStaleSummary: ((response: OpenWranglerResponse) => void) | undefined;
+    let resolveStaleStats: ((response: OpenWranglerResponse) => void) | undefined;
+    const bridge: OpenWranglerBridge = {
+      request: vi.fn((request: OpenWranglerRequest) => {
+        if (request.kind === "getSummary") {
+          return new Promise<OpenWranglerResponse>((resolve) => {
+            resolveStaleSummary = resolve;
+          });
+        }
+        if (request.kind === "getDatasetStats") {
+          return new Promise<OpenWranglerResponse>((resolve) => {
+            resolveStaleStats = resolve;
+          });
+        }
+        if (request.kind === "getPage") {
+          return Promise.resolve<OpenWranglerResponse>({
+            kind: "page",
+            revision: metadata.revision,
+            viewRequestId: request.viewRequestId,
+            metadata,
+            page
+          });
+        }
+        throw new Error(`Unexpected request ${request.kind}`);
+      }),
+      setViewContext: vi.fn()
+    };
+    const harness = createPanelHarness(bridge);
+
+    await harness.send({ kind: "setViewContext", viewContextId: "view-a" });
+    const stale = harness.send({
+      kind: "runtimeRequest",
+      viewContextId: "view-a",
+      request: {
+        kind: "getSummary",
+        viewRequestId: "summary-a",
+        filterModel: metadata.filterModel,
+        columns: ["city"]
+      }
+    });
+    const staleStats = harness.send({
+      kind: "runtimeRequest",
+      viewContextId: "view-a",
+      request: {
+        kind: "getDatasetStats",
+        viewRequestId: "stats-a",
+        filterModel: metadata.filterModel
+      }
+    });
+
+    await harness.send(pageMessage("page-b", "view-b"));
+    await harness.send({ kind: "setViewContext", viewContextId: "view-b" });
+    await harness.send(pageMessage("page-a-again", "view-a-again"));
+    await harness.send({ kind: "setViewContext", viewContextId: "view-a-again" });
+    resolveStaleSummary?.({
+      kind: "summary",
+      revision: metadata.revision,
+      viewRequestId: "summary-a",
+      summaries: [summary]
+    });
+    resolveStaleStats?.({
+      kind: "datasetStats",
+      revision: metadata.revision,
+      viewRequestId: "stats-a",
+      stats: { missingCells: 1, missingRows: 1, duplicateRows: 0, missingValuesByColumn: [] }
+    });
+    await Promise.all([stale, staleStats]);
+
+    await harness.send({ kind: "ready" });
+    const retained = harness.posted.at(-1) as SessionOpenedResponse;
+    expect(retained.kind).toBe("sessionOpened");
+    expect(retained.summaries).toEqual([]);
+    expect(retained.metadata.stats).toBeUndefined();
+    expect(bridge.setViewContext).toHaveBeenLastCalledWith("session", "view-a-again");
+  });
+
+  it("retains profiles only while subsequent pages stay in the same opaque view", async () => {
+    const bridge: OpenWranglerBridge = {
+      request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "getSummary") {
+          return {
+            kind: "summary",
+            revision: metadata.revision,
+            viewRequestId: request.viewRequestId,
+            summaries: [summary]
+          };
+        }
+        if (request.kind === "getDatasetStats") {
+          return {
+            kind: "datasetStats",
+            revision: metadata.revision,
+            viewRequestId: request.viewRequestId,
+            stats: { missingCells: 0, missingRows: 0, duplicateRows: 0, missingValuesByColumn: [] }
+          };
+        }
+        if (request.kind === "getPage") {
+          return {
+            kind: "page",
+            revision: metadata.revision,
+            viewRequestId: request.viewRequestId,
+            metadata,
+            page: { ...page, offset: 200 }
+          };
+        }
+        throw new Error(`Unexpected request ${request.kind}`);
+      })
+    };
+    const harness = createPanelHarness(bridge);
+    await harness.send({ kind: "setViewContext", viewContextId: "current-view" });
+    await harness.send({
+      kind: "runtimeRequest",
+      viewContextId: "current-view",
+      request: {
+        kind: "getSummary",
+        viewRequestId: "current-summary",
+        filterModel: metadata.filterModel,
+        columns: ["city"]
+      }
+    });
+    await harness.send({
+      kind: "runtimeRequest",
+      viewContextId: "current-view",
+      request: {
+        kind: "getDatasetStats",
+        viewRequestId: "current-stats",
+        filterModel: metadata.filterModel
+      }
+    });
+    await harness.send(pageMessage("same-view-next-page", "current-view"));
+    await harness.send({ kind: "ready" });
+
+    const retained = harness.posted.at(-1) as SessionOpenedResponse;
+    expect(retained.summaries).toEqual([summary]);
+    expect(retained.metadata.stats?.missingCells).toBe(0);
+    expect(retained.page.offset).toBe(200);
+  });
+
+  it("forwards only validated queued-view cancellation messages", async () => {
+    const bridge: OpenWranglerBridge = {
+      request: vi.fn(async () => initialResponse),
+      cancelViewRequests: vi.fn()
+    };
+    const harness = createPanelHarness(bridge);
+
+    await harness.send({ kind: "cancelViewRequests", viewRequestIds: ["summary-a", "stats-a"] });
+    await harness.send({ kind: "cancelViewRequests", viewRequestIds: ["", 3] });
+
+    expect(bridge.cancelViewRequests).toHaveBeenCalledTimes(1);
+    expect(bridge.cancelViewRequests).toHaveBeenCalledWith("session", ["summary-a", "stats-a"]);
+  });
+
+  it("rejects malformed or host-owned runtime messages before forwarding", async () => {
+    const bridge: OpenWranglerBridge = {
+      request: vi.fn(async () => initialResponse)
+    };
+    const harness = createPanelHarness(bridge);
+
+    await harness.send({
+      kind: "runtimeRequest",
+      request: {
+        kind: "previewStep",
+        step: { id: "bad", kind: "renameColumn", params: { columns: ["city"] } },
+        offset: 0,
+        limit: 200
+      }
+    });
+    await harness.send({
+      kind: "runtimeRequest",
+      request: { kind: "exportData", path: "", format: "csv" }
+    });
+    await harness.send({
+      kind: "runtimeRequest",
+      request: { kind: "closeSession", force: true }
+    });
+    await harness.send({ kind: "ready", unexpected: true });
+
+    expect(bridge.request).not.toHaveBeenCalled();
+    expect(harness.posted).toEqual([]);
+  });
+
+  it("clears the active UI selection synchronously while runtime cleanup remains asynchronous", async () => {
+    let resolveClose: ((response: OpenWranglerResponse) => void) | undefined;
+    const bridge: OpenWranglerBridge = {
+      request: vi.fn((request: OpenWranglerRequest) => {
+        if (request.kind === "openSession") return Promise.resolve(initialResponse);
+        if (request.kind === "closeSession") {
+          return new Promise<OpenWranglerResponse>((resolve) => {
+            resolveClose = resolve;
+          });
+        }
+        throw new Error(`Unexpected request ${request.kind}`);
+      }),
+      setActiveSession: vi.fn()
+    };
+    const harness = createPanelHarness(bridge, { initialResponse: undefined });
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(initialResponse));
+
+    harness.dispose();
+
+    expect(bridge.setActiveSession).toHaveBeenCalledWith(undefined);
+    expect(bridge.request).toHaveBeenCalledWith({
+      kind: "closeSession",
+      sessionId: "session",
+      revision: 0
+    });
+    resolveClose?.({ kind: "sessionClosed", sessionId: "session" });
+  });
+});
+
+function pageMessage(viewRequestId: string, viewContextId: string) {
+  return {
+    kind: "runtimeRequest",
+    viewContextId,
+    request: {
+      kind: "getPage",
+      viewRequestId,
+      offset: 0,
+      limit: 200,
+      filterModel: metadata.filterModel
+    }
+  };
+}
+
+function createPanelHarness(
+  bridge: OpenWranglerBridge,
+  options?: { initialResponse?: SessionOpenedResponse }
+): {
+  posted: unknown[];
+  readonly html: string;
+  send(message: unknown): Promise<void>;
+  dispose(): void;
+} {
+  let listener: ((message: unknown) => Promise<void>) | undefined;
+  let disposeListener: (() => void) | undefined;
+  const posted: unknown[] = [];
+  const webview = {
+    options: {},
+    html: "",
+    cspSource: "mock-webview",
+    asWebviewUri: (uri: vscode.Uri) => uri,
+    onDidReceiveMessage: (next: (message: unknown) => Promise<void>) => {
+      listener = next;
+      return { dispose: () => undefined };
+    },
+    postMessage: async (message: unknown) => {
+      posted.push(message);
+      return true;
+    }
+  };
+  const panel = {
+    webview,
+    viewColumn: 1,
+    reveal: () => undefined,
+    onDidDispose: (listener: () => void) => {
+      disposeListener = listener;
+      return { dispose: () => undefined };
+    },
+    onDidChangeViewState: () => ({ dispose: () => undefined })
+  };
+  const context = { extensionPath: "/extension" };
+  const configuredInitialResponse =
+    options && Object.prototype.hasOwnProperty.call(options, "initialResponse")
+      ? options.initialResponse
+      : initialResponse;
+  new OpenWranglerPanel(
+    panel as unknown as vscode.WebviewPanel,
+    context as unknown as vscode.ExtensionContext,
+    bridge,
+    metadata.source,
+    metadata.backend,
+    configuredInitialResponse
+  );
+  return {
+    posted,
+    get html() {
+      return webview.html;
+    },
+    async send(message: unknown) {
+      if (!listener) throw new Error("Panel message listener was not registered.");
+      await listener(message);
+    },
+    dispose() {
+      disposeListener?.();
+    }
+  };
+}

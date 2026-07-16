@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  OPEN_WRANGLER_MIME,
   OPEN_WRANGLER_MIME_V2,
   normalizeNotebookOutputPayload,
   notebookPayloadAsOpened
@@ -43,7 +42,7 @@ const metadata = {
 
 describe("notebook output", () => {
   it("uses the canonical MIME v2 payload", () => {
-    expect(OPEN_WRANGLER_MIME).toBe(OPEN_WRANGLER_MIME_V2);
+    expect(OPEN_WRANGLER_MIME_V2).toBe("application/vnd.openwrangler.viewer.v2+json");
     const normalized = normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page, summaries: [] });
     expect(normalized?.mimeVersion).toBe(2);
     expect(notebookPayloadAsOpened(normalized!).kind).toBe("sessionOpened");
@@ -53,5 +52,16 @@ describe("notebook output", () => {
     expect(normalizeNotebookOutputPayload({ mimeVersion: 3, metadata, page, summaries: [] })).toBeUndefined();
     expect(normalizeNotebookOutputPayload({ metadata, page, summaries: [] })).toBeUndefined();
     expect(normalizeNotebookOutputPayload({ mimeVersion: 2, metadata, page: {}, summaries: [] })).toBeUndefined();
+    expect(
+      normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata: {
+          ...metadata,
+          steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["value"] } }]
+        },
+        page,
+        summaries: []
+      })
+    ).toBeUndefined();
   });
 });
