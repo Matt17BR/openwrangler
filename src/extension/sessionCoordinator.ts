@@ -11,16 +11,19 @@ import type {
   PageResponse,
   SessionMetadata,
   SessionOpenedResponse,
-  SessionBoundRequest
+  SessionBoundRequest,
+  StepInspectionResponse
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
+import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import {
   decodePersistedSession,
-  persistedStateFromMetadata,
+  persistedSessionState,
   persistenceKey,
   SESSION_STORAGE_KEY,
-  type PersistedSessionState
+  type DecodedPersistedSessionState,
+  type PersistedCleaningState
 } from "./sessionPersistence";
 
 interface RuntimeSessionState {
@@ -30,6 +33,7 @@ interface RuntimeSessionState {
   delegate: OpenWranglerBridge;
   metadata: SessionMetadata;
   code: string;
+  viewState: PersistedViewingState;
 }
 
 interface CoordinatedSession extends RuntimeSessionState {
@@ -46,6 +50,8 @@ interface CoordinatedSession extends RuntimeSessionState {
   idleWaiters: Set<() => void>;
   closing: boolean;
   recoveryRequired: boolean;
+  stepInspection?: StepInspectionResponse;
+  latestStepInspectionKey?: string;
 }
 
 interface QueuedSessionOperation {
@@ -58,12 +64,19 @@ interface QueuedSessionOperation {
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 type DetachedRuntimeRole =
-  "recovery candidate" | "retired runtime" | "saved-plan fallback runtime" | "late-open runtime" | "terminal runtime";
+  | "recovery candidate"
+  | "retired runtime"
+  | "saved-plan fallback runtime"
+  | "failed saved-state runtime"
+  | "late-open runtime"
+  | "terminal runtime";
 
 export interface ActiveSessionSnapshot {
   sessionId: string;
   metadata: SessionMetadata;
   code: string;
+  viewState: PersistedViewingState;
+  stepInspection?: StepInspectionResponse;
 }
 
 export interface SessionCoordinatorDiagnostics {
@@ -101,33 +114,69 @@ export class SessionCoordinator implements vscode.Disposable {
       request: (request, options) => this.request(delegate, request, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
       setViewContext: (sessionId, viewContextId) => this.setViewContext(sessionId, viewContextId),
+      getViewState: (sessionId) => this.gridViewState(sessionId),
+      updateViewState: (sessionId, state) => this.updateGridViewState(sessionId, state),
+      clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
       setActiveSession: (sessionId) => this.setActive(sessionId)
     };
   }
 
   setActive(sessionId: string | undefined): void {
+    if (sessionId !== this.activeSessionId) {
+      const previous = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
+      if (previous) this.invalidateStepInspection(previous);
+      const next = sessionId ? this.sessions.get(sessionId) : undefined;
+      if (next) this.invalidateStepInspection(next);
+    }
     this.activeSessionId = sessionId;
     const session = sessionId ? this.sessions.get(sessionId) : undefined;
-    this.activeSessionEmitter.fire(
-      session
-        ? {
-            sessionId: session.publicId,
-            metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
-            code: session.code
-          }
-        : undefined
-    );
+    this.activeSessionEmitter.fire(session ? activeSnapshot(session) : undefined);
   }
 
   activeSession(): ActiveSessionSnapshot | undefined {
     const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
-    return session
-      ? {
-          sessionId: session.publicId,
-          metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
-          code: session.code
-        }
-      : undefined;
+    return session ? activeSnapshot(session) : undefined;
+  }
+
+  clearActiveStepInspection(): void {
+    if (this.activeSessionId) this.clearStepInspection(this.activeSessionId);
+  }
+
+  private gridViewState(sessionId: string): GridViewState | undefined {
+    const session = this.sessions.get(sessionId);
+    return session ? gridState(session.viewState) : undefined;
+  }
+
+  private async updateGridViewState(sessionId: string, state: GridViewState): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing) return;
+    const next = reconcileViewingState({ ...state, filterModel: session.metadata.filterModel }, session.metadata);
+    if (isDeepStrictEqual(next, session.viewState)) return;
+    const selectedColumnChanged = next.selectedColumnId !== session.viewState.selectedColumnId;
+    session.viewState = next;
+    await this.persistSession(session);
+    if (selectedColumnChanged && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+      this.setActive(session.publicId);
+    }
+  }
+
+  private clearStepInspection(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const changed = Boolean(session.stepInspection || session.latestStepInspectionKey);
+    this.invalidateStepInspection(session);
+    if (changed && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+      this.activeSessionEmitter.fire(activeSnapshot(session));
+    }
+  }
+
+  private invalidateStepInspection(session: CoordinatedSession): void {
+    session.stepInspection = undefined;
+    session.latestStepInspectionKey = undefined;
+  }
+
+  private clearPublishedStepInspection(session: CoordinatedSession): void {
+    session.stepInspection = undefined;
   }
 
   diagnostics(): SessionCoordinatorDiagnostics {
@@ -221,6 +270,16 @@ export class SessionCoordinator implements vscode.Disposable {
       session.closing = true;
       this.cancelQueuedBackgroundOperations(session);
     }
+    if (request.kind === "inspectStep") {
+      const inspectionChanged = Boolean(session.stepInspection && session.stepInspection.stepId !== request.stepId);
+      if (inspectionChanged) session.stepInspection = undefined;
+      session.latestStepInspectionKey = stepInspectionKey(request);
+      if (inspectionChanged && this.activeSessionId === session.publicId) {
+        this.activeSessionEmitter.fire(activeSnapshot(session));
+      }
+    } else if (isRuntimeStateMutation(request)) {
+      this.clearStepInspection(session.publicId);
+    }
     if (request.kind === "getPage") {
       session.latestRequestedPageRequestId = request.viewRequestId;
       session.latestRequestedViewContextId = options?.viewContextId;
@@ -273,21 +332,17 @@ export class SessionCoordinator implements vscode.Disposable {
       idleWaiters: new Set(),
       metadata: response.metadata,
       code: "",
+      viewState: initialViewingState(response.metadata),
       closing: false,
       recoveryRequired: false
     };
     let opened: SessionOpenedResponse = { ...response, summaries: [] };
     const persisted = this.loadPersistedSession(request, response.metadata.backend);
     if (persisted) {
+      let cleaningRestored = false;
       try {
-        const page = await this.restoreRuntimeState(session, persisted, request.pageSize, options);
-        session.publicRevision = session.runtimeRevision;
-        opened = {
-          kind: "sessionOpened",
-          metadata: session.metadata,
-          page: page.page,
-          summaries: []
-        };
+        await this.restoreCleaningState(session, persisted.cleaning, options);
+        cleaningRestored = true;
       } catch {
         await this.closeRuntimeState(session, "saved-plan fallback runtime");
         const clean = await delegate.request(session.openRequest, options);
@@ -304,10 +359,31 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicRevision = clean.metadata.revision;
         session.metadata = clean.metadata;
         session.code = "";
+        session.viewState = initialViewingState(clean.metadata);
         opened = { ...clean, summaries: [] };
         void vscode.window.showWarningMessage(
           `Open Wrangler could not replay the saved cleaning plan for ${request.source.label}. Original data was opened instead.`
         );
+      }
+      if (cleaningRestored) {
+        let page: PageResponse;
+        try {
+          page = await this.restoreViewingState(session, persisted.view, request.pageSize, options);
+        } catch {
+          await this.closeRuntimeState(session, "failed saved-state runtime");
+          return protocolError(
+            "saved_view_restore_failed",
+            `Open Wrangler could not restore a confirmed view for ${request.source.label}.`,
+            true
+          );
+        }
+        session.publicRevision = session.runtimeRevision;
+        opened = {
+          kind: "sessionOpened",
+          metadata: session.metadata,
+          page: page.page,
+          summaries: []
+        };
       }
     }
     if (this.disposed) {
@@ -561,6 +637,32 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
 
+    if (publicRequest.kind === "inspectStep" && response.kind === "stepInspection") {
+      const expectedIndex = session.metadata.steps.findIndex((step) => step.id === publicRequest.stepId);
+      if (expectedIndex < 0 || response.stepIndex !== expectedIndex) {
+        return protocolError(
+          "invalid_runtime_response",
+          `Ignored an invalid inspectStep response: runtime reported step index ${response.stepIndex} instead of ${expectedIndex}.`,
+          true,
+          session.publicId
+        );
+      }
+      if (session.latestStepInspectionKey !== stepInspectionKey(publicRequest)) {
+        return protocolError(
+          "stale_response",
+          "Ignored an applied-step inspection superseded by a newer selection.",
+          true,
+          session.publicId
+        );
+      }
+      const inspection = { ...response, revision: session.publicRevision };
+      session.stepInspection = inspection;
+      if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
+        this.activeSessionEmitter.fire(activeSnapshot(session));
+      }
+      return inspection;
+    }
+
     if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
       const pageRequest = response.kind === "page" && publicRequest.kind === "getPage" ? publicRequest : undefined;
       if (response.kind === "page" && (!pageRequest || response.viewRequestId !== pageRequest.viewRequestId)) {
@@ -594,6 +696,21 @@ export class SessionCoordinator implements vscode.Disposable {
       const revisionChanged = response.revision !== requestRuntimeRevision;
       const planChanged = response.kind === "stepPreview" || response.kind === "planUpdated";
       const stateChanged = filterChanged || revisionChanged || planChanged;
+      const nextViewState = reconcileViewingState(
+        {
+          ...gridState(session.viewState),
+          filterModel: response.metadata.filterModel,
+          ...(filterChanged && response.kind === "page"
+            ? {
+                viewport: {
+                  firstVisibleRow: response.page.offset,
+                  scrollLeft: session.viewState.viewport.scrollLeft
+                }
+              }
+            : {})
+        },
+        response.metadata
+      );
       const viewContextChanged = Boolean(
         pageRequest &&
         session.activeViewContextId !== undefined &&
@@ -609,7 +726,10 @@ export class SessionCoordinator implements vscode.Disposable {
         }
         session.publicRevision += response.revision - requestRuntimeRevision;
         session.runtimeRevision = response.revision;
-        if (stateChanged) session.metadata = response.metadata;
+        if (stateChanged) {
+          session.metadata = response.metadata;
+          session.viewState = nextViewState;
+        }
         if (viewContextChanged) session.metadata = withoutDatasetStats(session.metadata);
         if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
       };
@@ -617,6 +737,7 @@ export class SessionCoordinator implements vscode.Disposable {
         const committed = await this.persistCurrentPage(
           session,
           response.metadata,
+          nextViewState,
           () => this.isCurrentPageRequest(session, pageRequest, options),
           () => {
             commitState();
@@ -798,7 +919,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private loadPersistedSession(
     request: OpenSessionRequest,
     backend: SessionMetadata["backend"]
-  ): PersistedSessionState | undefined {
+  ): DecodedPersistedSessionState | undefined {
     const key = persistenceKey(request.source, backend);
     const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
     const state = decodePersistedSession(stored?.[key]);
@@ -808,7 +929,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private async persistSession(session: CoordinatedSession): Promise<void> {
     if (!this.workspaceState) return;
     const key = persistenceKey(session.openRequest.source, session.metadata.backend);
-    const state = persistedStateFromMetadata(session.metadata);
+    const state = persistedSessionState(session.metadata, gridState(session.viewState));
     const task = this.persistenceTail
       .catch(() => undefined)
       .then(async () => {
@@ -822,6 +943,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private async persistCurrentPage(
     session: CoordinatedSession,
     metadata: SessionMetadata,
+    viewState: PersistedViewingState,
     isCurrent: () => boolean,
     commit: () => void
   ): Promise<boolean> {
@@ -832,7 +954,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     const key = persistenceKey(session.openRequest.source, metadata.backend);
-    const state = persistedStateFromMetadata(metadata);
+    const state = persistedSessionState(metadata, gridState(viewState));
     let committed = false;
     const task = this.persistenceTail
       .catch(() => undefined)
@@ -875,11 +997,20 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private async restoreRuntimeState(
     session: RuntimeSessionState,
-    state: PersistedSessionState,
+    state: DecodedPersistedSessionState,
     pageSize: number,
     options?: BridgeRequestOptions
   ): Promise<PageResponse> {
-    for (const step of state.steps) {
+    await this.restoreCleaningState(session, state.cleaning, options);
+    return this.restoreViewingState(session, state.view, pageSize, options);
+  }
+
+  private async restoreCleaningState(
+    session: RuntimeSessionState,
+    cleaning: PersistedCleaningState,
+    options?: BridgeRequestOptions
+  ): Promise<void> {
+    for (const step of cleaning.steps) {
       const previewRequest: SessionBoundRequest = {
         kind: "previewStep",
         sessionId: session.runtimeId,
@@ -914,13 +1045,13 @@ export class SessionCoordinator implements vscode.Disposable {
       session.code = applied.code;
     }
 
-    if (state.draftStep) {
+    if (cleaning.draftStep) {
       const previewRequest: SessionBoundRequest = {
         kind: "previewStep",
         sessionId: session.runtimeId,
         revision: session.runtimeRevision,
-        step: state.draftStep,
-        replaceStepId: state.draftReplacesStepId,
+        step: cleaning.draftStep,
+        replaceStepId: cleaning.draftReplacesStepId,
         offset: 0,
         limit: 1
       };
@@ -935,34 +1066,69 @@ export class SessionCoordinator implements vscode.Disposable {
       session.metadata = preview.metadata;
       session.code = preview.code;
     }
+  }
 
-    const pageRequest: SessionBoundRequest = {
-      kind: "getPage",
-      sessionId: session.runtimeId,
-      revision: session.runtimeRevision,
-      viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}`,
-      offset: 0,
-      limit: pageSize,
-      filterModel: state.filterModel
+  private async restoreViewingState(
+    session: RuntimeSessionState,
+    savedView: PersistedViewingState | undefined,
+    pageSize: number,
+    options?: BridgeRequestOptions
+  ): Promise<PageResponse> {
+    if (!savedView)
+      return this.restoreOneViewingState(session, emptyConfirmedViewingState(), pageSize, "empty", options);
+    try {
+      return await this.restoreOneViewingState(session, savedView, pageSize, "saved", options);
+    } catch {
+      return this.restoreOneViewingState(session, emptyConfirmedViewingState(), pageSize, "empty", options);
+    }
+  }
+
+  private async restoreOneViewingState(
+    session: RuntimeSessionState,
+    view: PersistedViewingState,
+    pageSize: number,
+    label: "saved" | "empty",
+    options?: BridgeRequestOptions
+  ): Promise<PageResponse> {
+    const restoredPageSize = Math.max(1, pageSize);
+    const desiredOffset = Math.floor(view.viewport.firstVisibleRow / restoredPageSize) * restoredPageSize;
+    const requestPage = async (offset: number, suffix: string = label): Promise<PageResponse> => {
+      const pageRequest: SessionBoundRequest = {
+        kind: "getPage",
+        sessionId: session.runtimeId,
+        revision: session.runtimeRevision,
+        viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}:${suffix}`,
+        offset,
+        limit: restoredPageSize,
+        filterModel: view.filterModel
+      };
+      const response = await session.delegate.request(pageRequest, options);
+      if (response.kind !== "page" || responseMismatch(pageRequest, response, session.runtimeId) !== undefined) {
+        throw new Error("Could not restore the saved viewing query.");
+      }
+      return response;
     };
-    const page = await session.delegate.request(pageRequest, options);
-    if (page.kind !== "page" || responseMismatch(pageRequest, page, session.runtimeId) !== undefined) {
-      throw new Error("Could not restore the saved viewing query.");
+    let page = await requestPage(desiredOffset);
+    if (page.page.totalRows > 0 && desiredOffset >= page.page.totalRows) {
+      const finalOffset = Math.floor((page.page.totalRows - 1) / restoredPageSize) * restoredPageSize;
+      page = await requestPage(finalOffset, `${label}-bounded`);
     }
     session.runtimeRevision = page.revision;
     session.metadata = page.metadata;
+    session.viewState = reconcileViewingState({ ...view, filterModel: page.metadata.filterModel }, page.metadata);
     return page;
   }
 
   private async replay(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
-    const persisted = persistedStateFromMetadata(session.metadata);
+    const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
     const previous: RuntimeSessionState = {
       publicId: session.publicId,
       runtimeId: session.runtimeId,
       runtimeRevision: session.runtimeRevision,
       delegate: session.delegate,
       metadata: session.metadata,
-      code: session.code
+      code: session.code,
+      viewState: session.viewState
     };
     let candidate: RuntimeSessionState | undefined;
     try {
@@ -974,7 +1140,8 @@ export class SessionCoordinator implements vscode.Disposable {
         runtimeRevision: response.metadata.revision,
         delegate: session.delegate,
         metadata: response.metadata,
-        code: ""
+        code: "",
+        viewState: initialViewingState(response.metadata)
       };
       await this.restoreRuntimeState(candidate, persisted, 1, options);
     } catch {
@@ -991,6 +1158,8 @@ export class SessionCoordinator implements vscode.Disposable {
     session.runtimeRevision = candidate.runtimeRevision;
     session.metadata = candidate.metadata;
     session.code = candidate.code;
+    session.viewState = candidate.viewState;
+    this.clearPublishedStepInspection(session);
     this.setActive(session.publicId);
     this.trackDetachedCleanup(previous, "retired runtime");
     return true;
@@ -1086,7 +1255,8 @@ function isIdempotentReadRequest(request: SessionBoundRequest): boolean {
     request.kind === "getPage" ||
     request.kind === "getSummary" ||
     request.kind === "getDatasetStats" ||
-    request.kind === "getColumnValues"
+    request.kind === "getColumnValues" ||
+    request.kind === "inspectStep"
   );
 }
 
@@ -1170,6 +1340,21 @@ function responseMismatch(
         return `preview revision ${response.revision} did not follow ${request.revision}`;
       }
       return metadataResponseMismatch(response.metadata, response.revision, runtimeSessionId);
+    case "inspectStep":
+      if (response.kind !== "stepInspection") return `runtime returned ${response.kind}`;
+      if (response.stepId !== request.stepId) {
+        return `runtime inspected step ${response.stepId} instead of ${request.stepId}`;
+      }
+      if (response.revision !== request.revision) {
+        return `inspection revision ${response.revision} did not match ${request.revision}`;
+      }
+      if (response.inputPage.offset !== request.offset || response.outputPage.offset !== request.offset) {
+        return `inspection page offset did not match ${request.offset}`;
+      }
+      if (response.inputPage.limit !== request.limit || response.outputPage.limit !== request.limit) {
+        return `inspection page limit did not match ${request.limit}`;
+      }
+      return undefined;
     case "applyDraft":
     case "discardDraft":
     case "undoStep": {
@@ -1243,6 +1428,40 @@ function requestViewId(request: OpenWranglerRequest): string | undefined {
   return "viewRequestId" in request && typeof request.viewRequestId === "string" ? request.viewRequestId : undefined;
 }
 
+function initialViewingState(metadata: SessionMetadata): PersistedViewingState {
+  return { ...emptyGridViewState(), filterModel: metadata.filterModel };
+}
+
+function emptyConfirmedViewingState(): PersistedViewingState {
+  return { ...emptyGridViewState(), filterModel: { filters: [], sort: [] } };
+}
+
+function gridState(state: PersistedViewingState): GridViewState {
+  return {
+    columnWidths: { ...state.columnWidths },
+    ...(state.selectedColumnId === undefined ? {} : { selectedColumnId: state.selectedColumnId }),
+    viewport: { ...state.viewport }
+  };
+}
+
+function reconcileViewingState(state: PersistedViewingState, metadata: SessionMetadata): PersistedViewingState {
+  const columnIds = new Set(metadata.schema.map((column) => column.id));
+  const columnWidths = Object.fromEntries(
+    Object.entries(state.columnWidths).filter(([columnId]) => columnIds.has(columnId))
+  );
+  const finalRow = Math.max(0, metadata.filteredShape.rows - 1);
+  const selectedColumnId = state.selectedColumnId;
+  return {
+    columnWidths,
+    ...(selectedColumnId !== undefined && columnIds.has(selectedColumnId) ? { selectedColumnId } : {}),
+    viewport: {
+      firstVisibleRow: Math.min(state.viewport.firstVisibleRow, finalRow),
+      scrollLeft: state.viewport.scrollLeft
+    },
+    filterModel: metadata.filterModel
+  };
+}
+
 function normalizeFilterModel(model: FilterModel): unknown {
   return {
     logic: model.logic ?? "and",
@@ -1253,6 +1472,21 @@ function normalizeFilterModel(model: FilterModel): unknown {
 
 function publicMetadata(metadata: SessionMetadata, publicId: string, publicRevision: number): SessionMetadata {
   return { ...metadata, sessionId: publicId, revision: publicRevision };
+}
+
+function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
+  const stepInspection = session.stepInspection;
+  return {
+    sessionId: session.publicId,
+    metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision),
+    code: stepInspection?.code ?? session.code,
+    viewState: session.viewState,
+    ...(stepInspection ? { stepInspection } : {})
+  };
+}
+
+function stepInspectionKey(request: Extract<SessionBoundRequest, { kind: "inspectStep" }>): string {
+  return `${request.revision}:${request.stepId}:${request.offset}:${request.limit}`;
 }
 
 function publicOpenedResponse(

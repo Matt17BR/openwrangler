@@ -104,6 +104,40 @@ describe("DataGrid", () => {
     expect(screen.queryByText("Profiling…")).toBeNull();
   });
 
+  it("restores stable column widths, selection, and both viewport axes", async () => {
+    const onViewStateChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 95 }
+        }}
+        viewStateRestoreVersion={1}
+        onViewStateChange={onViewStateChange}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const scroller = screen.getByTestId("data-grid-scroller");
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(95);
+    expect(document.querySelectorAll("col")[2]).toHaveStyle({ width: "280px" });
+    expect(screen.getByRole("columnheader", { name: /sales/u })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("cell", { name: "" })).toHaveAttribute("aria-selected", "true");
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+    expect(onViewStateChange).not.toHaveBeenCalled();
+  });
+
   it("carries the scroll-requested row into the next block's roving focus", async () => {
     const onPage = vi.fn();
     const scrollMetadata = {
@@ -292,7 +326,7 @@ describe("DataGrid", () => {
     });
   });
 
-  it("resets both virtual axes and roving focus when a new logical view succeeds", async () => {
+  it("resets the row position while retaining the horizontal column context for a new logical view", async () => {
     const laterPage: GridPage = {
       ...page,
       offset: 4,
@@ -320,7 +354,7 @@ describe("DataGrid", () => {
 
     await waitFor(() => {
       expect(scroller.scrollTop).toBe(0);
-      expect(scroller.scrollLeft).toBe(0);
+      expect(scroller.scrollLeft).toBe(200);
       const rovingCells = document.querySelectorAll<HTMLTableCellElement>('td[tabindex="0"]');
       expect(rovingCells).toHaveLength(1);
       expect(rovingCells[0]).toHaveAttribute("data-grid-row", "0");
@@ -388,6 +422,26 @@ describe("DataGrid", () => {
   });
 
   it("resizes columns from the keyboard and labels an empty grid", () => {
+    let currentViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
+    const onViewStateChange = vi.fn((next) => {
+      currentViewState = next;
+      rerender(
+        <DataGrid
+          metadata={metadata}
+          page={page}
+          summaries={[]}
+          pageSize={2}
+          defaultColumnWidth={190}
+          insightsOnOpen={false}
+          viewState={currentViewState}
+          onViewStateChange={onViewStateChange}
+          onPage={() => undefined}
+          onSortColumn={() => undefined}
+          onOpenFilter={() => undefined}
+          onVisibleSummaryColumnsChange={() => undefined}
+        />
+      );
+    });
     const { rerender } = render(
       <DataGrid
         metadata={metadata}
@@ -396,6 +450,8 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={false}
+        viewState={currentViewState}
+        onViewStateChange={onViewStateChange}
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
@@ -415,6 +471,8 @@ describe("DataGrid", () => {
         pageSize={2}
         defaultColumnWidth={190}
         insightsOnOpen={false}
+        viewState={currentViewState}
+        onViewStateChange={onViewStateChange}
         onPage={vi.fn()}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}

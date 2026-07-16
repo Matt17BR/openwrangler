@@ -34,9 +34,9 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
   getChildren(): ViewNode[] {
     if (this.kind === "operations") return operationNodes(this.snapshot?.metadata);
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
-    if (this.kind === "summary") return summaryNodes(this.snapshot.metadata);
-    if (this.kind === "filters") return filterNodes(this.snapshot.metadata.filterModel);
-    return cleaningStepNodes(this.snapshot.metadata);
+    if (this.kind === "summary") return summaryNodes(this.snapshot);
+    if (this.kind === "filters") return filterNodes(this.snapshot.viewState.filterModel);
+    return cleaningStepNodes(this.snapshot);
   }
 
   dispose(): void {
@@ -46,11 +46,12 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
 }
 
 class ViewNode extends vscode.TreeItem {
-  constructor(label: string, description: string, icon: string, command?: vscode.Command) {
+  constructor(label: string, description: string, icon: string, command?: vscode.Command, contextValue?: string) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
     this.iconPath = new vscode.ThemeIcon(icon);
     this.command = command;
+    this.contextValue = contextValue;
     this.tooltip = `${label}: ${description}`;
     this.accessibilityInformation = { label: `${label}, ${description}` };
   }
@@ -63,6 +64,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private hadDraft = false;
   private sessionId: string | undefined;
   private generatedCode = "";
+  private inspectionStepId: string | undefined;
   private displayedCode = "# Open a dataframe to preview generated code.";
 
   constructor(
@@ -71,13 +73,20 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   ) {
     this.snapshot = coordinator.activeSession();
     this.generatedCode = this.snapshot?.code ?? "";
+    this.inspectionStepId = this.snapshot?.stepInspection?.stepId;
     this.displayedCode = this.generatedCode || placeholderCode(this.snapshot);
     this.subscription = coordinator.onDidChangeActiveSession((snapshot) => {
       const nextGenerated = snapshot?.code ?? "";
-      if (snapshot?.sessionId !== this.snapshot?.sessionId || nextGenerated !== this.generatedCode) {
+      const nextInspectionStepId = snapshot?.stepInspection?.stepId;
+      if (
+        snapshot?.sessionId !== this.snapshot?.sessionId ||
+        nextGenerated !== this.generatedCode ||
+        nextInspectionStepId !== this.inspectionStepId
+      ) {
         this.generatedCode = nextGenerated;
         this.displayedCode = nextGenerated || placeholderCode(snapshot);
       }
+      this.inspectionStepId = nextInspectionStepId;
       this.snapshot = snapshot;
       this.render();
       const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
@@ -179,6 +188,28 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.editLatestStep", () =>
       OpenWranglerPanel.sendEditorAction({ action: "editLatest" })
     ),
+    vscode.commands.registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
+      const snapshot = coordinator.activeSession();
+      if (!snapshot) {
+        await vscode.window.showInformationMessage(
+          "Open a dataframe in Open Wrangler before selecting a cleaning step."
+        );
+        return;
+      }
+      if (
+        stepId !== undefined &&
+        (typeof stepId !== "string" || !snapshot.metadata.steps.some((step) => step.id === stepId))
+      ) {
+        await vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
+        return;
+      }
+      if (stepId === undefined) coordinator.clearActiveStepInspection();
+      if (!OpenWranglerPanel.sendEditorAction({ action: "selectStep", ...(stepId ? { stepId } : {}) })) {
+        await vscode.window.showInformationMessage(
+          "Open the active dataframe editor before selecting a cleaning step."
+        );
+      }
+    }),
     vscode.commands.registerCommand("openWrangler.undoStep", () =>
       OpenWranglerPanel.sendEditorAction({ action: "undoStep" })
     ),
@@ -393,31 +424,49 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
   );
 }
 
-function cleaningStepNodes(metadata: SessionMetadata): ViewNode[] {
-  const nodes = metadata.steps.map((step, index) => {
-    const operation = operationByKind(step.kind);
-    const isLatest = index === metadata.steps.length - 1;
-    return new ViewNode(
-      `${index + 1}. ${operation.title}`,
-      isLatest ? "Latest applied step" : "Applied",
-      operation.icon,
-      isLatest
-        ? {
-            command: "openWrangler.editLatestStep",
-            title: "Edit latest step"
-          }
-        : undefined
-    );
-  });
+function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
+  const { metadata, stepInspection } = snapshot;
+  const nodes: ViewNode[] = [
+    new ViewNode(
+      "Original data",
+      stepInspection ? "Show the confirmed dataframe view" : "Selected · confirmed dataframe view",
+      "database",
+      { command: "openWrangler.selectStep", title: "Show original data", arguments: [] }
+    )
+  ];
+  nodes.push(
+    ...metadata.steps.map((step, index) => {
+      const operation = operationByKind(step.kind);
+      const isLatest = index === metadata.steps.length - 1;
+      const selected = stepInspection?.stepId === step.id;
+      return new ViewNode(
+        `${index + 1}. ${operation.title}`,
+        selected
+          ? `Selected · ${isLatest ? "latest applied step" : "applied"}`
+          : isLatest
+            ? "Latest applied step"
+            : "Applied",
+        operation.icon,
+        {
+          command: "openWrangler.selectStep",
+          title: `Inspect ${operation.title}`,
+          arguments: [step.id]
+        },
+        isLatest ? "openWrangler.latestCleaningStep" : "openWrangler.cleaningStep"
+      );
+    })
+  );
   if (metadata.draftStep) {
     const draft = operationByKind(metadata.draftStep.kind);
     nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing — apply or discard", draft.icon));
   }
-  return nodes.length ? nodes : [new ViewNode("Original data", "No cleaning steps applied", "database")];
+  return nodes;
 }
 
-function summaryNodes(metadata: SessionMetadata): ViewNode[] {
+function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
+  const { metadata, viewState } = snapshot;
   const stats = metadata.stats;
+  const selectedColumn = metadata.schema.find((column) => column.id === viewState.selectedColumnId);
   return [
     new ViewNode(metadata.source.label, `${metadata.backend} · ${metadata.mode}`, "table"),
     new ViewNode(
@@ -426,6 +475,7 @@ function summaryNodes(metadata: SessionMetadata): ViewNode[] {
       "symbol-array"
     ),
     new ViewNode("Columns", metadata.schema.length.toLocaleString(), "list-tree"),
+    new ViewNode("Selected column", selectedColumn?.name ?? "None", "symbol-field"),
     new ViewNode("Missing cells", stats ? stats.missingCells.toLocaleString() : "Profiling…", "question"),
     new ViewNode("Duplicate rows", stats ? stats.duplicateRows.toLocaleString() : "Profiling…", "copy")
   ];

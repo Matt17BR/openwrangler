@@ -33,7 +33,7 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 - Native Polars, DuckDB, and Pandas runtime backends for files; live notebook sessions remain Pandas/Polars and run in the active Jupyter kernel.
 - Direct launch for CSV, TSV, Parquet, JSONL, XLSX, and XLS files.
 - Typed rendering and profiling for nullable values, large integers, decimals, time zones, nested Polars lists/structs, binary, categorical, duration, NaN, and infinity values.
-- Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, and progressive Quick Insights.
+- Two-axis virtualized dataframe grid with resizable sticky columns, stable row/column IDs, keyboard navigation, column search, progressive Quick Insights, and source/backend-scoped restoration of widths, selection, filters, sorts, and visible position.
 - Exact first-grid metadata with deferred per-column profiling, bounded block caching, foreground paging that stays responsive during insights work, source-version detection, and transactional runtime replay after a crash.
 - Dataset summary panel with shape, row/column counts, missing-value breakdowns, and duplicate-row counts.
 - Multi-column sorting plus basic and advanced AND/OR viewing filters that remain separate from future cleaning steps.
@@ -56,12 +56,12 @@ The workbench screenshots come from the real packaged VSIX installed into isolat
 2. Right-click a `.csv`, `.tsv`, `.parquet`, `.jsonl`, `.xlsx`, or `.xls` file.
 3. Choose **Open Wrangler: Open Current File**.
 4. Use the column headers or **Insights & filters** drawer to search values, compose predicates, and sort. The Activity Bar mirrors active-session state.
-5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, an optional draft, and viewing query are restored when the same source is reopened in the workspace.
+5. Choose **Add step** or an operation in the Activity Bar, configure it, inspect the draft grid/diff/code, then explicitly apply or discard it. Use `Ctrl/Cmd+Enter` to apply, `Escape` to discard, `Ctrl/Cmd+Shift+E` to edit the latest step, or `Ctrl/Cmd+Alt+Z` to undo. The plan, optional draft, viewing query, column widths/selection, and visible position are restored for the same source and backend in the workspace.
 6. Run **Open Wrangler: Copy Generated Code**, **Export Python Script**, or **Export Cleaned Data**. Apply or discard any active draft first; exports always use committed steps.
 
 CSV/TSV commands prompt for delimiter, encoding, quote character, and header behavior; Excel commands prompt for a sheet. Custom-editor opens use deterministic defaults. File types, start modes, insights, filters, widths, and block sizes are configurable under `openWrangler.*` settings.
 
-File-backed sessions use `auto` by default. Candidate order is Polars, then DuckDB, then Pandas; unavailable or format-incompatible candidates are skipped. Set `openWrangler.defaultBackend` to `polars`, `duckdb`, or `pandas` to pin one engine.
+File-backed sessions use `auto` by default. Candidate order is Polars, then DuckDB, then Pandas; unavailable or format-incompatible candidates are skipped. The `utf8-lossy` import option is a replacement-decoding policy rather than a Python codec name, so automatic selection routes directly to Pandas and reads invalid UTF-8 bytes as `�`. Set `openWrangler.defaultBackend` to `polars`, `duckdb`, or `pandas` to pin one engine.
 
 ### Open a notebook variable
 
@@ -98,7 +98,7 @@ Polars dataframes stay Polars in the runtime. The Polars backend uses native ope
 - summaries with Polars null counts, distinct counts, value counts, and numeric aggregates
 - the complete transformation catalog and generated Polars code
 
-The test suite asserts that Polars file sessions do not call `to_pandas()`, including nested Parquet profiling and every transformation family. Polars Excel support uses `fastexcel`; setup diagnostics request it only when that format/backend combination is selected.
+The test suite asserts that Polars file sessions do not call `to_pandas()`, including nested Parquet profiling and every transformation family. Polars reads both modern `.xlsx` and legacy BIFF `.xls` workbooks through `fastexcel>=0.9`. Pandas uses `openpyxl>=3.1.5` for `.xlsx` and `xlrd>=2.0.1` for `.xls`; setup diagnostics request only the parser required by the selected backend and format.
 
 ## DuckDB Support
 
@@ -144,7 +144,8 @@ npm run test:webview-acceptance
 npm run benchmark:runtime
 npm run reference:check
 npm run build
-npm run package
+npm run package -- --out openwrangler.vsix
+npm run verify:vsix -- openwrangler.vsix
 npm run test:packaged-editors -- openwrangler.vsix
 ```
 
@@ -153,7 +154,7 @@ The generated [interface reference](docs/reference.md) lists every public comman
 Run the extension from Cursor or VS Code with `Launch Extension`, or package it with:
 
 ```bash
-npm run package
+npm run package -- --out openwrangler.vsix
 ```
 
 ## Current Scope
@@ -167,4 +168,4 @@ Open Wrangler currently prioritizes the release-grade viewing and editing core:
 - native session-aware VS Code views and an original Activity Bar/gallery identity
 - draft-first cleaning operations, data diffs, replayable history, and native code generation
 
-Every in-scope row in the checked-in Data Wrangler 1.24.2 clean-room behavior matrix is backed by automated or recorded acceptance evidence. This build remains on the preview channel while cross-platform release evidence is completed; intentionally deferred scope is listed in `docs/feature-parity.md`.
+The checked-in Data Wrangler 1.24.2 clean-room behavior matrix is the release gate. Several rows still require the installed-editor, Restricted Mode, released-Jupyter, stable-column-identity, projected-transport, performance, or cross-platform evidence named there, so this build remains an explicitly incomplete preview. Intentionally deferred scope is listed separately in `docs/feature-parity.md`.

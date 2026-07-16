@@ -105,6 +105,7 @@
     "onCommand:openWrangler.applyStep",
     "onCommand:openWrangler.discardStep",
     "onCommand:openWrangler.editLatestStep",
+    "onCommand:openWrangler.selectStep",
     "onCommand:openWrangler.undoStep",
     "onCommand:openWrangler.copyCode",
     "onCommand:openWrangler.exportCode",
@@ -174,6 +175,11 @@
         "command": "openWrangler.editLatestStep",
         "title": "Open Wrangler: Edit Latest Step",
         "icon": "$(edit)"
+      },
+      {
+        "command": "openWrangler.selectStep",
+        "title": "Open Wrangler: Inspect Applied Step",
+        "icon": "$(diff)"
       },
       {
         "command": "openWrangler.undoStep",
@@ -353,7 +359,7 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Explore, clean, and export Pandas or Polars dataframes without modifying the source.",
+        "description": "Explore, clean, and export tabular data with Pandas, Polars, or DuckDB file sessions and Pandas or Polars notebook sessions without modifying the source.",
         "steps": [
           {
             "id": "openData",
@@ -428,6 +434,13 @@
           "command": "openWrangler.reportIssue",
           "when": "viewContainer == openWrangler",
           "group": "navigation@91"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "openWrangler.editLatestStep",
+          "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep",
+          "group": "inline@10"
         }
       ]
     },

@@ -1,4 +1,5 @@
 import type { OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
+import type { GridViewState } from "../shared/viewState";
 
 export interface CancellationTokenLike {
   readonly isCancellationRequested: boolean;
@@ -21,6 +22,12 @@ export interface OpenWranglerBridge {
   cancelViewRequests?(sessionId: string, viewRequestIds: readonly string[]): void;
   /** Confirms the opaque logical view currently shown by a webview. */
   setViewContext?(sessionId: string, viewContextId: string): void;
+  /** Returns the host-owned grid presentation for a live session. */
+  getViewState?(sessionId: string): GridViewState | undefined;
+  /** Persists a validated non-destructive grid presentation update. */
+  updateViewState?(sessionId: string, state: GridViewState): Promise<void>;
+  /** Clears the bounded, host-only applied-step inspection without changing the dataframe view. */
+  clearStepInspection?(sessionId: string): void;
   setActiveSession?(sessionId: string | undefined): void;
   /** Writes a non-fatal coordinator/runtime diagnostic to the owning bridge's diagnostic surface. */
   reportDiagnostic?(message: string): void;

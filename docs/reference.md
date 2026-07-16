@@ -18,6 +18,7 @@
 | `openWrangler.applyStep`                  | Open Wrangler: Apply Draft Step                          |
 | `openWrangler.discardStep`                | Open Wrangler: Discard Draft Step                        |
 | `openWrangler.editLatestStep`             | Open Wrangler: Edit Latest Step                          |
+| `openWrangler.selectStep`                 | Open Wrangler: Inspect Applied Step                      |
 | `openWrangler.undoStep`                   | Open Wrangler: Undo Latest Step                          |
 | `openWrangler.copyCode`                   | Open Wrangler: Copy Generated Code                       |
 | `openWrangler.exportCode`                 | Open Wrangler: Export Python Script                      |
@@ -90,33 +91,35 @@
 
 Canonical schema: `protocol/openwrangler.v2.schema.json`. Protocol version: `2`.
 
-| Direction | Schema type             | Message kind      |
-| --------- | ----------------------- | ----------------- |
-| Request   | `InitializeRequest`     | `initialize`      |
-| Request   | `OpenSessionRequest`    | `openSession`     |
-| Request   | `PageRequest`           | `getPage`         |
-| Request   | `SummaryRequest`        | `getSummary`      |
-| Request   | `DatasetStatsRequest`   | `getDatasetStats` |
-| Request   | `ValuesRequest`         | `getColumnValues` |
-| Request   | `PreviewStepRequest`    | `previewStep`     |
-| Request   | `ApplyDraftRequest`     | `applyDraft`      |
-| Request   | `DiscardDraftRequest`   | `discardDraft`    |
-| Request   | `UndoStepRequest`       | `undoStep`        |
-| Request   | `ExportDataRequest`     | `exportData`      |
-| Request   | `CloseSessionRequest`   | `closeSession`    |
-| Request   | `CancelRequest`         | `cancelRequest`   |
-| Response  | `InitializedResponse`   | `initialized`     |
-| Response  | `SessionOpenedResponse` | `sessionOpened`   |
-| Response  | `PageResponse`          | `page`            |
-| Response  | `SummaryResponse`       | `summary`         |
-| Response  | `DatasetStatsResponse`  | `datasetStats`    |
-| Response  | `ValuesResponse`        | `columnValues`    |
-| Response  | `StepPreviewResponse`   | `stepPreview`     |
-| Response  | `PlanUpdatedResponse`   | `planUpdated`     |
-| Response  | `DataExportedResponse`  | `dataExported`    |
-| Response  | `SessionClosedResponse` | `sessionClosed`   |
-| Response  | `CancelledResponse`     | `cancelled`       |
-| Response  | `ErrorResponse`         | `error`           |
+| Direction | Schema type              | Message kind      |
+| --------- | ------------------------ | ----------------- |
+| Request   | `InitializeRequest`      | `initialize`      |
+| Request   | `OpenSessionRequest`     | `openSession`     |
+| Request   | `PageRequest`            | `getPage`         |
+| Request   | `SummaryRequest`         | `getSummary`      |
+| Request   | `DatasetStatsRequest`    | `getDatasetStats` |
+| Request   | `ValuesRequest`          | `getColumnValues` |
+| Request   | `PreviewStepRequest`     | `previewStep`     |
+| Request   | `InspectStepRequest`     | `inspectStep`     |
+| Request   | `ApplyDraftRequest`      | `applyDraft`      |
+| Request   | `DiscardDraftRequest`    | `discardDraft`    |
+| Request   | `UndoStepRequest`        | `undoStep`        |
+| Request   | `ExportDataRequest`      | `exportData`      |
+| Request   | `CloseSessionRequest`    | `closeSession`    |
+| Request   | `CancelRequest`          | `cancelRequest`   |
+| Response  | `InitializedResponse`    | `initialized`     |
+| Response  | `SessionOpenedResponse`  | `sessionOpened`   |
+| Response  | `PageResponse`           | `page`            |
+| Response  | `SummaryResponse`        | `summary`         |
+| Response  | `DatasetStatsResponse`   | `datasetStats`    |
+| Response  | `ValuesResponse`         | `columnValues`    |
+| Response  | `StepPreviewResponse`    | `stepPreview`     |
+| Response  | `StepInspectionResponse` | `stepInspection`  |
+| Response  | `PlanUpdatedResponse`    | `planUpdated`     |
+| Response  | `DataExportedResponse`   | `dataExported`    |
+| Response  | `SessionClosedResponse`  | `sessionClosed`   |
+| Response  | `CancelledResponse`      | `cancelled`       |
+| Response  | `ErrorResponse`          | `error`           |
 
 ## Notebook MIME types
 

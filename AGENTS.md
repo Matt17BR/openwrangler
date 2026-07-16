@@ -42,6 +42,8 @@ This repository builds the open-source Open Wrangler extension and its bundled P
 24. Live-kernel opens carry a host-generated `requestedSessionId`. A failed, cancelled, timed-out, malformed, or mis-correlated open must issue a fresh bounded close for that known candidate ID so lost kernel output cannot orphan an unaddressable runtime session.
 25. DuckDB file sessions own a hardened connection with extension auto-install and autoload disabled. Lazy relations stay native, terminal reads use independently owned short-lived connections, shutdown interruption is not advertised as request cancellation, and every connection is closed deterministically.
 26. Persisted cleaning state is keyed by both source identity and confirmed backend. Recovery replays with that backend pinned; an automatic fallback must never reinterpret a saved plan through another engine.
+27. Persisted cleaning and viewing sections recover independently. A missing, malformed, or stale view falls back to an empty view on the cleaned runtime without dropping valid steps or a draft; only cleaning replay failure may reopen the immutable original. Debounced presentation state must flush before a webview can disappear.
+28. Applied-step inspection is bounded, read-only, and ephemeral. It may replay only the selected prefix, never mutate revisions or caches, and must clear across panel switches, recreated webviews, recovery, mutation, disposal, Original Data, and Escape while restoring the exact confirmed view. Diff truncation accounts for rows on either side of the returned block.
 
 ## Required checks
 
@@ -55,13 +57,13 @@ npm run test:webview-acceptance
 npm run test:coverage
 npm run license:check
 npm run benchmark:runtime # required for performance/runtime changes and release candidates
-npm run test:packaged-editors -- openwrangler.vsix # after packaging
 npx playwright-core install chromium # before local visual capture/verification
 npm run clean
 npm run build
 npm run capture:screenshots # for visible changes
 npm run package -- --out openwrangler.vsix
 npm run verify:vsix -- openwrangler.vsix
+npm run test:packaged-editors -- openwrangler.vsix
 ```
 
 For editor-facing changes, also complete the relevant scenarios in `docs/testing.md` in both VS Code and Cursor using isolated profiles.

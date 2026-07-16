@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionMetadata } from "../shared/protocol";
 import {
   decodePersistedSession,
-  persistedStateFromMetadata,
+  persistedSessionState,
   persistenceKey,
   SESSION_STORAGE_KEY
 } from "../extension/sessionPersistence";
@@ -35,7 +35,7 @@ const metadata: SessionMetadata = {
 
 describe("session persistence", () => {
   it("uses the canonical Open Wrangler storage key", () => {
-    expect(SESSION_STORAGE_KEY).toBe("openWrangler.persistedSessions.v3");
+    expect(SESSION_STORAGE_KEY).toBe("openWrangler.persistedSessions.v4");
   });
 
   it("uses source, backend, and import options as a stable storage key", () => {
@@ -53,39 +53,92 @@ describe("session persistence", () => {
   });
 
   it("round-trips only replayable plan and viewing state", () => {
-    const persisted = persistedStateFromMetadata(metadata);
+    const persisted = persistedSessionState(metadata, {
+      columnWidths: { "c:value": 240 },
+      selectedColumnId: "c:value",
+      viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
+    });
     expect(decodePersistedSession(persisted)).toEqual(persisted);
     expect(persisted).not.toHaveProperty("sessionId");
     expect(persisted).not.toHaveProperty("stats");
+    expect(Object.keys(persisted).sort()).toEqual(["backend", "cleaning", "view"]);
     expect(persisted.backend).toBe("polars");
+    expect(persisted.cleaning.steps).toEqual(metadata.steps);
+    expect(persisted.view).toMatchObject({
+      filterModel: metadata.filterModel,
+      columnWidths: { "c:value": 240 },
+      selectedColumnId: "c:value",
+      viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
+    });
+  });
+
+  it("decodes valid cleaning independently when the saved view is missing or malformed", () => {
+    const cleaning = {
+      steps: metadata.steps,
+      draftStep: metadata.draftStep
+    };
+    const expected = { backend: "polars", cleaning };
+
+    expect(decodePersistedSession({ backend: "polars", cleaning })).toEqual(expected);
+    expect(decodePersistedSession({ backend: "polars", cleaning, view: {} })).toEqual(expected);
+    expect(
+      decodePersistedSession({
+        backend: "polars",
+        cleaning,
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: { "c:value": 79 },
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      })
+    ).toEqual(expected);
   });
 
   it("rejects malformed and unknown saved operations", () => {
-    expect(decodePersistedSession({ backend: "polars", steps: [], filterModel: { filters: [] } })).toBeUndefined();
     expect(
       decodePersistedSession({
         backend: "polars",
-        steps: [{ id: "bad", kind: "notAnOperation", params: {} }],
-        filterModel: { filters: [], sort: [] }
+        cleaning: { steps: [{ id: "bad", kind: "notAnOperation", params: {} }] },
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
       })
     ).toBeUndefined();
     expect(
       decodePersistedSession({
         backend: "polars",
-        steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["old"] } }],
-        filterModel: { filters: [], sort: [] }
+        cleaning: { steps: [{ id: "bad", kind: "renameColumn", params: { columns: ["old"] } }] },
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
       })
     ).toBeUndefined();
     expect(
       decodePersistedSession({
         backend: "polars",
-        steps: [],
-        filterModel: { filters: [], sort: [] },
+        cleaning: { steps: [] },
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        },
         unexpected: true
       })
     ).toBeUndefined();
     expect(
-      decodePersistedSession({ backend: "spark", steps: [], filterModel: { filters: [], sort: [] } })
+      decodePersistedSession({
+        backend: "spark",
+        cleaning: { steps: [] },
+        view: {
+          filterModel: { filters: [], sort: [] },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      })
     ).toBeUndefined();
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
-import { persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
+import { persistedSessionState, persistenceKey, SESSION_STORAGE_KEY } from "../extension/sessionPersistence";
 import type { FilterModel } from "../shared/filterModel";
 import type {
   OpenWranglerRequest,
@@ -11,6 +11,7 @@ import type {
   SessionOpenedResponse,
   TransformStep
 } from "../shared/protocol";
+import type { GridViewState } from "../shared/viewState";
 
 const openRequest = {
   kind: "openSession",
@@ -20,14 +21,290 @@ const openRequest = {
   pageSize: 100
 } as const;
 
+const inspectionStep: TransformStep = {
+  id: "round-sales",
+  kind: "roundNumber",
+  params: { column: "sales", decimals: 0 }
+};
+
 describe("SessionCoordinator", () => {
+  it("publishes one bounded applied-step inspection and restores full-plan code when cleared", async () => {
+    const runtimeOpened = openedResponse();
+    runtimeOpened.metadata = { ...runtimeOpened.metadata, steps: [inspectionStep] };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "inspectStep") return stepInspectionResponse(request, 0, "# selected prefix");
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    const response = await bridge.request({
+      kind: "inspectStep",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      stepId: inspectionStep.id,
+      offset: 0,
+      limit: 25
+    });
+
+    expect(response).toMatchObject({ kind: "stepInspection", stepId: inspectionStep.id, revision: 0 });
+    expect(coordinator.activeSession()).toMatchObject({
+      code: "# selected prefix",
+      stepInspection: { stepId: inspectionStep.id, outputPage: { limit: 25 } }
+    });
+    expect(coordinator.activeSession()?.metadata).toEqual(opened.metadata);
+
+    coordinator.clearActiveStepInspection();
+    expect(coordinator.activeSession()?.stepInspection).toBeUndefined();
+    expect(coordinator.activeSession()?.code).toBe("");
+  });
+
+  it("recovers and retries an applied-step inspection without changing the source or viewing state", async () => {
+    const filterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+    };
+    const schema: SessionMetadata["schema"] = [
+      { id: "c:sales", name: "sales", position: 0, rawType: "Int64", type: "integer", nullable: false }
+    ];
+    const runtimeOpened = openedResponse("runtime-1");
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      revision: 2,
+      shape: { rows: 500, columns: 1 },
+      filteredShape: { rows: 500, columns: 1 },
+      schema,
+      filterModel,
+      steps: [inspectionStep]
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, totalRows: 500 };
+    const recoveryOpened = openedResponse("runtime-2");
+    recoveryOpened.metadata = {
+      ...recoveryOpened.metadata,
+      shape: { rows: 500, columns: 1 },
+      filteredShape: { rows: 500, columns: 1 },
+      schema
+    };
+    recoveryOpened.page = { ...recoveryOpened.page, totalRows: 500 };
+
+    const executionOrder: string[] = [];
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        return openCount === 1 ? runtimeOpened : recoveryOpened;
+      }
+      if (request.kind === "inspectStep") {
+        executionOrder.push(`inspect-${request.sessionId}-${request.revision}`);
+        if (request.sessionId === "runtime-1") throw new Error("inspection transport failed");
+        return stepInspectionResponse(request, 0, "# recovered prefix");
+      }
+      if (request.kind === "previewStep") {
+        executionOrder.push(`preview-${request.sessionId}-${request.revision}`);
+        return {
+          ...stepPreviewResponse(1, inspectionStep, "runtime-2"),
+          metadata: { ...recoveryOpened.metadata, revision: 1, draftStep: inspectionStep }
+        };
+      }
+      if (request.kind === "applyDraft") {
+        executionOrder.push(`apply-${request.sessionId}-${request.revision}`);
+        return {
+          ...planUpdatedResponse(2, [inspectionStep], "runtime-2"),
+          metadata: { ...recoveryOpened.metadata, revision: 2, steps: [inspectionStep] }
+        };
+      }
+      if (request.kind === "getPage") {
+        executionOrder.push(`restore-${request.sessionId}-${request.revision}-${request.offset}-${request.limit}`);
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata: {
+            ...recoveryOpened.metadata,
+            revision: request.revision,
+            steps: [inspectionStep],
+            filterModel: request.filterModel
+          },
+          page: { offset: request.offset, limit: request.limit, totalRows: 500, rows: [] }
+        };
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}-${request.revision}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    await bridge.updateViewState?.(opened.metadata.sessionId, {
+      columnWidths: { "c:sales": 260 },
+      selectedColumnId: "c:sales",
+      viewport: { firstVisibleRow: 240, scrollLeft: 180 }
+    });
+    const sourceBefore = coordinator.activeSession()?.metadata.source;
+    const viewBefore = coordinator.activeSession()?.viewState;
+
+    const response = await bridge.request({
+      kind: "inspectStep",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      stepId: inspectionStep.id,
+      offset: 25,
+      limit: 25
+    });
+
+    expect(response).toMatchObject({
+      kind: "stepInspection",
+      stepId: inspectionStep.id,
+      revision: opened.metadata.revision,
+      code: "# recovered prefix"
+    });
+    expect(coordinator.activeSession()?.metadata.source).toEqual(sourceBefore);
+    expect(coordinator.activeSession()?.viewState).toEqual(viewBefore);
+    expect(
+      delegateRequest.mock.calls.map(([request]) => request).filter((request) => request.kind === "openSession")
+    ).toEqual([openRequest, openRequest]);
+    expect(executionOrder).toEqual([
+      "open-1",
+      "inspect-runtime-1-2",
+      "open-2",
+      "preview-runtime-2-0",
+      "apply-runtime-2-1",
+      "restore-runtime-2-2-240-1",
+      "close-runtime-1-2",
+      "inspect-runtime-2-2"
+    ]);
+  });
+
+  it("rejects mis-correlated inspection responses without publishing them", async () => {
+    const invalidResponses = [
+      (request: Extract<OpenWranglerRequest, { kind: "inspectStep" }>) => ({
+        ...stepInspectionResponse(request),
+        stepId: "different-step"
+      }),
+      (request: Extract<OpenWranglerRequest, { kind: "inspectStep" }>) => ({
+        ...stepInspectionResponse(request),
+        revision: request.revision + 1
+      }),
+      (request: Extract<OpenWranglerRequest, { kind: "inspectStep" }>) => ({
+        ...stepInspectionResponse(request),
+        outputPage: { ...stepInspectionResponse(request).outputPage, offset: request.offset + 1 }
+      }),
+      (request: Extract<OpenWranglerRequest, { kind: "inspectStep" }>) => ({
+        ...stepInspectionResponse(request),
+        stepIndex: 1
+      })
+    ];
+
+    for (const invalid of invalidResponses) {
+      const runtimeOpened = openedResponse();
+      runtimeOpened.metadata = { ...runtimeOpened.metadata, steps: [inspectionStep] };
+      const coordinator = new SessionCoordinator();
+      const bridge = coordinator.createBridge({
+        request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+          if (request.kind === "openSession") return runtimeOpened;
+          if (request.kind === "inspectStep") return invalid(request);
+          throw new Error(`Unexpected delegate request: ${request.kind}`);
+        })
+      });
+      const opened = await bridge.request(openRequest);
+      if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+      const response = await bridge.request({
+        kind: "inspectStep",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        stepId: inspectionStep.id,
+        offset: 0,
+        limit: 25
+      });
+
+      expect(response).toMatchObject({ kind: "error", code: "invalid_runtime_response" });
+      expect(coordinator.activeSession()?.stepInspection).toBeUndefined();
+    }
+  });
+
+  it("ignores a superseded inspection and clears selection before a mutation is dispatched", async () => {
+    const secondStep: TransformStep = { id: "drop-city", kind: "dropColumns", params: { columns: ["city"] } };
+    const previewStep: TransformStep = { id: "upper-city", kind: "upperText", params: { column: "city" } };
+    const firstInspection = deferred<OpenWranglerResponse>();
+    const pendingPreview = deferred<OpenWranglerResponse>();
+    const runtimeOpened = openedResponse();
+    runtimeOpened.metadata = { ...runtimeOpened.metadata, steps: [inspectionStep, secondStep] };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "inspectStep" && request.stepId === inspectionStep.id) return firstInspection.promise;
+      if (request.kind === "inspectStep") return stepInspectionResponse(request, 1, "# second prefix");
+      if (request.kind === "previewStep") return pendingPreview.promise;
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    const first = bridge.request({
+      kind: "inspectStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      stepId: inspectionStep.id,
+      offset: 0,
+      limit: 25
+    });
+    await vi.waitFor(() => expect(delegateRequest).toHaveBeenCalledTimes(2));
+    const second = bridge.request({
+      kind: "inspectStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      stepId: secondStep.id,
+      offset: 0,
+      limit: 25
+    });
+    firstInspection.resolve(
+      stepInspectionResponse({
+        kind: "inspectStep",
+        sessionId: "runtime-session",
+        revision: 0,
+        stepId: inspectionStep.id,
+        offset: 0,
+        limit: 25
+      })
+    );
+    await expect(first).resolves.toMatchObject({ kind: "error", code: "stale_response" });
+    await expect(second).resolves.toMatchObject({ kind: "stepInspection", stepId: secondStep.id });
+    expect(coordinator.activeSession()?.code).toBe("# second prefix");
+
+    const preview = bridge.request({
+      kind: "previewStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      step: previewStep,
+      offset: 0,
+      limit: 25
+    });
+    expect(coordinator.activeSession()?.stepInspection).toBeUndefined();
+    pendingPreview.resolve({
+      ...stepPreviewResponse(1, previewStep),
+      metadata: { ...runtimeOpened.metadata, revision: 1, draftStep: previewStep }
+    });
+    await expect(preview).resolves.toMatchObject({ kind: "stepPreview", revision: 1 });
+  });
   it("restores persisted viewing state without synchronously profiling columns", async () => {
     const filterModel: FilterModel = {
       filters: [],
       sort: [{ column: "sales", direction: "desc", nulls: "last" }]
     };
     const stored = {
-      [persistenceKey(openRequest.source, "polars")]: { backend: "polars", steps: [], filterModel }
+      [persistenceKey(openRequest.source, "polars")]: savedSession(filterModel, {
+        columnWidths: { "c:sales": 260 },
+        selectedColumnId: "c:sales",
+        viewport: { firstVisibleRow: 240, scrollLeft: 180 }
+      })
     };
     const workspaceState = {
       get: vi.fn((key: string) => (key === SESSION_STORAGE_KEY ? stored : undefined)),
@@ -35,6 +312,16 @@ describe("SessionCoordinator", () => {
       keys: vi.fn(() => [SESSION_STORAGE_KEY])
     } as unknown as Memento;
     const runtimeOpened = openedResponse();
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      shape: { rows: 500, columns: 2 },
+      filteredShape: { rows: 500, columns: 2 },
+      schema: [
+        { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
+        { id: "c:sales", name: "sales", position: 1, rawType: "Int64", type: "integer", nullable: false }
+      ]
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, totalRows: 500 };
     runtimeOpened.summaries = [
       {
         column: "sales",
@@ -55,7 +342,7 @@ describe("SessionCoordinator", () => {
           revision: 0,
           viewRequestId: request.viewRequestId,
           metadata: { ...runtimeOpened.metadata, filterModel },
-          page: runtimeOpened.page
+          page: { ...runtimeOpened.page, offset: request.offset }
         };
       }
       throw new Error(`Unexpected delegate request: ${request.kind}`);
@@ -70,6 +357,302 @@ describe("SessionCoordinator", () => {
     expect(restored.metadata.filterModel).toEqual(filterModel);
     expect(restored.summaries).toEqual([]);
     expect(delegateRequest.mock.calls.map(([request]) => request.kind)).toEqual(["openSession", "getPage"]);
+    expect(delegateRequest.mock.calls[1]?.[0]).toMatchObject({ kind: "getPage", offset: 200, limit: 100 });
+    expect(coordinator.activeSession()?.viewState).toMatchObject({
+      selectedColumnId: "c:sales",
+      columnWidths: { "c:sales": 260 },
+      viewport: { firstVisibleRow: 240, scrollLeft: 180 }
+    });
+  });
+
+  it("discards a stale saved view while preserving replayed cleaning steps and draft", async () => {
+    const appliedStep: TransformStep = {
+      id: "persisted-drop",
+      kind: "dropColumns",
+      params: { columns: ["unused"] }
+    };
+    const draftStep: TransformStep = {
+      id: "persisted-round",
+      kind: "roundNumber",
+      params: { column: "sales", decimals: 1 }
+    };
+    const staleFilterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "removed", direction: "asc", nulls: "last" }]
+    };
+    const key = persistenceKey(openRequest.source, "polars");
+    const stored = {
+      [key]: persistedSessionState(
+        {
+          ...openedResponse().metadata,
+          steps: [appliedStep],
+          draftStep,
+          filterModel: staleFilterModel
+        },
+        {
+          columnWidths: { "c:removed": 260 },
+          selectedColumnId: "c:removed",
+          viewport: { firstVisibleRow: 40, scrollLeft: 120 }
+        }
+      )
+    };
+    const workspaceState = {
+      get: vi.fn((storageKey: string) => (storageKey === SESSION_STORAGE_KEY ? stored : undefined)),
+      update: vi.fn(async () => undefined),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const runtimeOpened = openedResponse("stale-view-runtime");
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      shape: { rows: 5, columns: 1 },
+      filteredShape: { rows: 5, columns: 1 },
+      schema: [{ id: "c:sales", name: "sales", position: 0, rawType: "Int64", type: "integer", nullable: false }]
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, totalRows: 5 };
+    const executionOrder: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        executionOrder.push("open");
+        return runtimeOpened;
+      }
+      if (request.kind === "previewStep") {
+        executionOrder.push(`preview-${request.step.id}`);
+        if (request.step.id === appliedStep.id) {
+          return stepPreviewResponse(1, appliedStep, "stale-view-runtime");
+        }
+        return {
+          ...stepPreviewResponse(3, draftStep, "stale-view-runtime", "# restored draft"),
+          metadata: {
+            ...runtimeOpened.metadata,
+            revision: 3,
+            steps: [appliedStep],
+            draftStep
+          }
+        };
+      }
+      if (request.kind === "applyDraft") {
+        executionOrder.push("apply");
+        return planUpdatedResponse(2, [appliedStep], "stale-view-runtime");
+      }
+      if (request.kind === "getPage") {
+        const isSavedView = request.filterModel.sort.length > 0;
+        executionOrder.push(isSavedView ? "page-saved" : "page-empty");
+        if (isSavedView) {
+          return {
+            kind: "error",
+            code: "engine_error",
+            message: "The saved view references a removed column.",
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata: {
+            ...runtimeOpened.metadata,
+            revision: request.revision,
+            steps: [appliedStep],
+            draftStep,
+            filterModel: request.filterModel
+          },
+          page: { offset: request.offset, limit: request.limit, totalRows: 5, rows: [] }
+        };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const restored = await bridge.request(openRequest);
+
+    expect(restored).toMatchObject({
+      kind: "sessionOpened",
+      metadata: {
+        revision: 3,
+        steps: [appliedStep],
+        draftStep,
+        filterModel: { filters: [], sort: [] }
+      },
+      page: { offset: 0, totalRows: 5 }
+    });
+    expect(coordinator.activeSession()?.viewState).toEqual({
+      columnWidths: {},
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 },
+      filterModel: { filters: [], sort: [] }
+    });
+    expect(executionOrder).toEqual([
+      "open",
+      `preview-${appliedStep.id}`,
+      "apply",
+      `preview-${draftStep.id}`,
+      "page-saved",
+      "page-empty"
+    ]);
+    expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
+  });
+
+  it("reopens original data with an empty plan only when saved cleaning replay fails", async () => {
+    const savedStep: TransformStep = {
+      id: "invalid-for-source",
+      kind: "dropColumns",
+      params: { columns: ["missing"] }
+    };
+    const key = persistenceKey(openRequest.source, "polars");
+    const stored = {
+      [key]: persistedSessionState(
+        { ...openedResponse().metadata, steps: [savedStep] },
+        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      )
+    };
+    const workspaceState = {
+      get: vi.fn((storageKey: string) => (storageKey === SESSION_STORAGE_KEY ? stored : undefined)),
+      update: vi.fn(async () => undefined),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    let openCount = 0;
+    const executionOrder: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        executionOrder.push(`open-${openCount}`);
+        return openedResponse(`cleaning-runtime-${openCount}`);
+      }
+      if (request.kind === "previewStep") {
+        executionOrder.push("preview-failed");
+        return {
+          kind: "error",
+          code: "engine_error",
+          message: "The saved step no longer applies to this source.",
+          recoverable: true,
+          sessionId: request.sessionId
+        };
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push(`close-${request.sessionId}`);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const restored = await bridge.request(openRequest);
+
+    expect(restored).toMatchObject({
+      kind: "sessionOpened",
+      metadata: { revision: 0, steps: [], filterModel: { filters: [], sort: [] } }
+    });
+    expect(executionOrder).toEqual(["open-1", "preview-failed", "close-cleaning-runtime-1", "open-2"]);
+    expect(
+      delegateRequest.mock.calls.map(([request]) => request).filter((request) => request.kind === "openSession")
+    ).toEqual([openRequest, openRequest]);
+  });
+
+  it("persists grid presentation separately and notifies native views only when column selection changes", async () => {
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const opened = openedResponse();
+    opened.metadata = {
+      ...opened.metadata,
+      shape: { rows: 500, columns: 2 },
+      filteredShape: { rows: 500, columns: 2 },
+      schema: [
+        { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
+        { id: "c:sales", name: "sales", position: 1, rawType: "Int64", type: "integer", nullable: false }
+      ]
+    };
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: vi.fn(async () => opened) });
+    const response = await bridge.request(openRequest);
+    if (response.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    const activeChanges = vi.fn();
+    coordinator.onDidChangeActiveSession(activeChanges);
+
+    await bridge.updateViewState?.(response.metadata.sessionId, {
+      columnWidths: { "c:sales": 260, removed: 300 },
+      selectedColumnId: "c:sales",
+      viewport: { firstVisibleRow: 240, scrollLeft: 180 }
+    });
+
+    expect(activeChanges).toHaveBeenCalledOnce();
+    expect(coordinator.activeSession()?.viewState).toMatchObject({
+      filterModel: response.metadata.filterModel,
+      columnWidths: { "c:sales": 260 },
+      selectedColumnId: "c:sales",
+      viewport: { firstVisibleRow: 240, scrollLeft: 180 }
+    });
+    expect(stored[persistenceKey(openRequest.source, "polars")]).toMatchObject({
+      cleaning: { steps: [] },
+      view: {
+        filterModel: response.metadata.filterModel,
+        columnWidths: { "c:sales": 260 },
+        selectedColumnId: "c:sales",
+        viewport: { firstVisibleRow: 240, scrollLeft: 180 }
+      }
+    });
+
+    await bridge.updateViewState?.(response.metadata.sessionId, {
+      columnWidths: { "c:sales": 260 },
+      selectedColumnId: "c:sales",
+      viewport: { firstVisibleRow: 260, scrollLeft: 220 }
+    });
+    expect(activeChanges).toHaveBeenCalledOnce();
+    expect(workspaceState.update).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a restored visible row to the final block when the saved result has shrunk", async () => {
+    const filterModel: FilterModel = { filters: [], sort: [] };
+    const stored = {
+      [persistenceKey(openRequest.source, "polars")]: savedSession(filterModel, {
+        columnWidths: {},
+        viewport: { firstVisibleRow: 450, scrollLeft: 30 }
+      })
+    };
+    const workspaceState = {
+      get: vi.fn((key: string) => (key === SESSION_STORAGE_KEY ? stored : undefined)),
+      update: vi.fn(async () => undefined),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const runtimeOpened = openedResponse();
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      shape: { rows: 120, columns: 0 },
+      filteredShape: { rows: 120, columns: 0 }
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, totalRows: 120 };
+    const offsets: number[] = [];
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({
+      request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return runtimeOpened;
+        if (request.kind === "getPage") {
+          offsets.push(request.offset);
+          return {
+            kind: "page",
+            revision: request.revision,
+            viewRequestId: request.viewRequestId,
+            metadata: runtimeOpened.metadata,
+            page: { ...runtimeOpened.page, offset: request.offset }
+          };
+        }
+        throw new Error(`Unexpected delegate request: ${request.kind}`);
+      })
+    });
+
+    const restored = await bridge.request(openRequest);
+
+    expect(restored).toMatchObject({ kind: "sessionOpened", page: { offset: 100, totalRows: 120 } });
+    expect(offsets).toEqual([400, 100]);
+    expect(coordinator.activeSession()?.viewState.viewport).toEqual({ firstVisibleRow: 119, scrollLeft: 30 });
   });
 
   it("lets an interactive page overtake active and queued background profiling", async () => {
@@ -1414,7 +1997,7 @@ describe("SessionCoordinator", () => {
       sort: []
     };
     const key = persistenceKey(openRequest.source, "polars");
-    const savedA = { backend: "polars", steps: [], filterModel: filterA };
+    const savedA = savedSession(filterA);
     let stored: Record<string, unknown> = { [key]: savedA };
     const firstUpdate = deferred<void>();
     let updateCount = 0;
@@ -1624,7 +2207,7 @@ describe("SessionCoordinator", () => {
     expect(update).toHaveBeenCalledOnce();
     expect(activeChanges).toHaveBeenCalledOnce();
     expect(stored[persistenceKey(openRequest.source, "polars")]).toMatchObject({
-      filterModel: { ...changedFilter, logic: "and" }
+      view: { filterModel: { ...changedFilter, logic: "and" } }
     });
   });
 
@@ -1854,6 +2437,13 @@ function openedResponse(
   };
 }
 
+function savedSession(
+  filterModel: FilterModel,
+  gridViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+) {
+  return persistedSessionState({ ...openedResponse().metadata, filterModel }, gridViewState);
+}
+
 function pageResponse(
   request: Extract<OpenWranglerRequest, { kind: "getPage" }>,
   sessionId = "runtime-session",
@@ -1899,6 +2489,39 @@ function stepPreviewResponse(
     revision,
     metadata: { ...opened.metadata, revision, draftStep: step },
     page: opened.page,
+    diff: {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    },
+    code
+  };
+}
+
+function stepInspectionResponse(
+  request: Extract<OpenWranglerRequest, { kind: "inspectStep" }>,
+  stepIndex = 0,
+  code = "# inspection"
+): Extract<OpenWranglerResponse, { kind: "stepInspection" }> {
+  const inspectionPage = {
+    offset: request.offset,
+    limit: request.limit,
+    totalRows: 0,
+    rows: []
+  };
+  return {
+    kind: "stepInspection",
+    revision: request.revision,
+    stepId: request.stepId,
+    stepIndex,
+    inputPage: inspectionPage,
+    outputPage: inspectionPage,
+    inputSchema: [],
+    outputSchema: [],
     diff: {
       addedRows: 0,
       removedRows: 0,

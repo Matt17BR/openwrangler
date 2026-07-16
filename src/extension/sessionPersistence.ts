@@ -1,14 +1,25 @@
-import type { DataBackend, FilterModel, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
+import type { DataBackend, SessionMetadata, SessionSource, TransformStep } from "../shared/protocol";
 import { isFilterModel, isTransformStep } from "../shared/protocolValidation";
+import { decodeGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
 
-export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v3";
+export const SESSION_STORAGE_KEY = "openWrangler.persistedSessions.v4";
+
+export interface PersistedCleaningState {
+  steps: TransformStep[];
+  draftStep?: TransformStep;
+  draftReplacesStepId?: string;
+}
 
 export interface PersistedSessionState {
   backend: DataBackend;
-  steps: TransformStep[];
-  filterModel: FilterModel;
-  draftStep?: TransformStep;
-  draftReplacesStepId?: string;
+  cleaning: PersistedCleaningState;
+  view: PersistedViewingState;
+}
+
+export interface DecodedPersistedSessionState {
+  backend: DataBackend;
+  cleaning: PersistedCleaningState;
+  view?: PersistedViewingState;
 }
 
 export function persistenceKey(source: SessionSource, backend: DataBackend): string {
@@ -23,43 +34,66 @@ export function persistenceKey(source: SessionSource, backend: DataBackend): str
   });
 }
 
-export function persistedStateFromMetadata(metadata: SessionMetadata): PersistedSessionState {
+export function persistedSessionState(metadata: SessionMetadata, gridViewState: GridViewState): PersistedSessionState {
   return {
     backend: metadata.backend,
-    steps: metadata.steps,
-    filterModel: metadata.filterModel,
-    draftStep: metadata.draftStep,
-    draftReplacesStepId: metadata.draftReplacesStepId
+    cleaning: {
+      steps: metadata.steps,
+      draftStep: metadata.draftStep,
+      draftReplacesStepId: metadata.draftReplacesStepId
+    },
+    view: {
+      ...gridViewState,
+      filterModel: metadata.filterModel
+    }
   };
 }
 
-export function decodePersistedSession(value: unknown): PersistedSessionState | undefined {
+export function decodePersistedSession(value: unknown): DecodedPersistedSessionState | undefined {
   if (
     !isRecord(value) ||
-    Object.keys(value).some(
-      (key) => !["backend", "steps", "filterModel", "draftStep", "draftReplacesStepId"].includes(key)
-    ) ||
+    !hasExactKeys(value, ["backend", "cleaning"], ["view"]) ||
     !isDataBackend(value.backend) ||
-    !Array.isArray(value.steps) ||
+    !isRecord(value.cleaning) ||
+    !hasExactKeys(value.cleaning, ["steps"], ["draftStep", "draftReplacesStepId"]) ||
+    !Array.isArray(value.cleaning.steps)
+  ) {
+    return undefined;
+  }
+  const steps = value.cleaning.steps.map(decodeStep);
+  if (steps.some((step) => step === undefined)) return undefined;
+  const draftStep = value.cleaning.draftStep === undefined ? undefined : decodeStep(value.cleaning.draftStep);
+  if (value.cleaning.draftStep !== undefined && !draftStep) return undefined;
+  const draftReplacesStepId = value.cleaning.draftReplacesStepId;
+  if (draftReplacesStepId !== undefined && (typeof draftReplacesStepId !== "string" || !draftReplacesStepId)) {
+    return undefined;
+  }
+  const view = decodePersistedView(value.view);
+  return {
+    backend: value.backend,
+    cleaning: {
+      steps: steps as TransformStep[],
+      draftStep,
+      draftReplacesStepId
+    },
+    ...(view ? { view } : {})
+  };
+}
+
+function decodePersistedView(value: unknown): PersistedViewingState | undefined {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["filterModel", "columnWidths", "viewport"], ["selectedColumnId"]) ||
     !isFilterModel(value.filterModel)
   ) {
     return undefined;
   }
-  const steps = value.steps.map(decodeStep);
-  if (steps.some((step) => step === undefined)) return undefined;
-  const draftStep = value.draftStep === undefined ? undefined : decodeStep(value.draftStep);
-  if (value.draftStep !== undefined && !draftStep) return undefined;
-  const draftReplacesStepId = value.draftReplacesStepId;
-  if (draftReplacesStepId !== undefined && (typeof draftReplacesStepId !== "string" || !draftReplacesStepId)) {
-    return undefined;
-  }
-  return {
-    backend: value.backend,
-    steps: steps as TransformStep[],
-    filterModel: value.filterModel,
-    draftStep,
-    draftReplacesStepId
-  };
+  const gridViewState = decodeGridViewState({
+    columnWidths: value.columnWidths,
+    ...(value.selectedColumnId === undefined ? {} : { selectedColumnId: value.selectedColumnId }),
+    viewport: value.viewport
+  });
+  return gridViewState ? { ...gridViewState, filterModel: value.filterModel } : undefined;
 }
 
 function isDataBackend(value: unknown): value is DataBackend {
@@ -72,4 +106,16 @@ function decodeStep(value: unknown): TransformStep | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return (
+    required.every((key) => Object.prototype.hasOwnProperty.call(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
 }
