@@ -14,6 +14,7 @@ export type OpenWranglerRequest =
   | DatasetStatsRequest
   | ValuesRequest
   | PreviewStepRequest
+  | InspectStepRequest
   | ApplyDraftRequest
   | DiscardDraftRequest
   | UndoStepRequest
@@ -315,6 +316,7 @@ export type OpenWranglerResponse =
   | DatasetStatsResponse
   | ValuesResponse
   | StepPreviewResponse
+  | StepInspectionResponse
   | PlanUpdatedResponse
   | DataExportedResponse
   | SessionClosedResponse
@@ -588,6 +590,14 @@ export interface ByExampleItem {
 export interface CustomCodeParams {
   code: string;
 }
+export interface InspectStepRequest {
+  kind: "inspectStep";
+  sessionId: string;
+  revision: number;
+  stepId: string;
+  offset: number;
+  limit: number;
+}
 export interface ApplyDraftRequest {
   kind: "applyDraft";
   sessionId: string;
@@ -787,6 +797,18 @@ export interface CellDiff {
   column: string;
   before: CellValue | null;
   after: CellValue | null;
+}
+export interface StepInspectionResponse {
+  kind: "stepInspection";
+  revision: number;
+  stepId: string;
+  stepIndex: number;
+  inputPage: GridPage;
+  outputPage: GridPage;
+  inputSchema: ColumnSchema[];
+  outputSchema: ColumnSchema[];
+  diff: DataDiff;
+  code: string;
 }
 export interface PlanUpdatedResponse {
   kind: "planUpdated";

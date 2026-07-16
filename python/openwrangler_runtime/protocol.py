@@ -15,6 +15,7 @@ REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "getDatasetStats": ("sessionId", "revision", "viewRequestId", "filterModel"),
     "getColumnValues": ("sessionId", "revision", "viewRequestId", "column", "filterModel", "limit"),
     "previewStep": ("sessionId", "revision", "step", "offset", "limit"),
+    "inspectStep": ("sessionId", "revision", "stepId", "offset", "limit"),
     "applyDraft": ("sessionId", "revision", "offset", "limit"),
     "discardDraft": ("sessionId", "revision", "offset", "limit"),
     "undoStep": ("sessionId", "revision", "offset", "limit"),
@@ -39,6 +40,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "limit",
     },
     "previewStep": {"kind", "sessionId", "revision", "step", "replaceStepId", "offset", "limit"},
+    "inspectStep": {"kind", "sessionId", "revision", "stepId", "offset", "limit"},
     "applyDraft": {"kind", "sessionId", "revision", "offset", "limit"},
     "discardDraft": {"kind", "sessionId", "revision", "offset", "limit"},
     "undoStep": {"kind", "sessionId", "revision", "offset", "limit"},
@@ -70,9 +72,13 @@ def decode_request(value: Any) -> dict[str, Any]:
         raise ProtocolError("revision must be a non-negative integer.")
     if "viewRequestId" in request and (not isinstance(request["viewRequestId"], str) or not request["viewRequestId"]):
         raise ProtocolError("viewRequestId must be a non-empty string.")
+    if "stepId" in request and (not isinstance(request["stepId"], str) or not request["stepId"]):
+        raise ProtocolError("stepId must be a non-empty string.")
     for field in ("pageSize", "limit"):
         if field in request and (not _is_non_negative_integer(request[field]) or request[field] < 1):
             raise ProtocolError(f"{field} must be a positive integer.")
+    if kind == "inspectStep" and request["limit"] > 10_000:
+        raise ProtocolError("inspectStep limit must not exceed 10000.")
     if "offset" in request and not _is_non_negative_integer(request["offset"]):
         raise ProtocolError("offset must be a non-negative integer.")
     if "filterModel" in request:

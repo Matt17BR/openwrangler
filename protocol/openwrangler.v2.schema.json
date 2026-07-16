@@ -1162,6 +1162,19 @@
         "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
       }
     },
+    "InspectStepRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "revision", "stepId", "offset", "limit"],
+      "properties": {
+        "kind": { "const": "inspectStep" },
+        "sessionId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "stepId": { "type": "string", "minLength": 1 },
+        "offset": { "type": "integer", "minimum": 0 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 10000 }
+      }
+    },
     "ApplyDraftRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -1238,6 +1251,7 @@
         { "$ref": "#/definitions/DatasetStatsRequest" },
         { "$ref": "#/definitions/ValuesRequest" },
         { "$ref": "#/definitions/PreviewStepRequest" },
+        { "$ref": "#/definitions/InspectStepRequest" },
         { "$ref": "#/definitions/ApplyDraftRequest" },
         { "$ref": "#/definitions/DiscardDraftRequest" },
         { "$ref": "#/definitions/UndoStepRequest" },
@@ -1329,6 +1343,34 @@
         "warnings": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "StepInspectionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "revision",
+        "stepId",
+        "stepIndex",
+        "inputPage",
+        "outputPage",
+        "inputSchema",
+        "outputSchema",
+        "diff",
+        "code"
+      ],
+      "properties": {
+        "kind": { "const": "stepInspection" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "stepId": { "type": "string", "minLength": 1 },
+        "stepIndex": { "type": "integer", "minimum": 0 },
+        "inputPage": { "$ref": "#/definitions/GridPage" },
+        "outputPage": { "$ref": "#/definitions/GridPage" },
+        "inputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
+        "outputSchema": { "type": "array", "items": { "$ref": "#/definitions/ColumnSchema" } },
+        "diff": { "$ref": "#/definitions/DataDiff" },
+        "code": { "type": "string" }
+      }
+    },
     "PlanUpdatedResponse": {
       "type": "object",
       "additionalProperties": false,
@@ -1396,6 +1438,7 @@
         { "$ref": "#/definitions/DatasetStatsResponse" },
         { "$ref": "#/definitions/ValuesResponse" },
         { "$ref": "#/definitions/StepPreviewResponse" },
+        { "$ref": "#/definitions/StepInspectionResponse" },
         { "$ref": "#/definitions/PlanUpdatedResponse" },
         { "$ref": "#/definitions/DataExportedResponse" },
         { "$ref": "#/definitions/SessionClosedResponse" },

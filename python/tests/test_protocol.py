@@ -118,6 +118,40 @@ def test_protocol_v2_validates_transformation_steps() -> None:
     assert request["step"]["kind"] == "renameColumn"
 
 
+def test_protocol_v2_validates_applied_step_inspection() -> None:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "inspect-1",
+        "priority": "interactive",
+        "request": {
+            "kind": "inspectStep",
+            "sessionId": "session-1",
+            "revision": 2,
+            "stepId": "round-value",
+            "offset": 20,
+            "limit": 10,
+        },
+    }
+
+    assert decode_envelope(envelope)[2] == envelope["request"]
+    envelope["request"]["limit"] = 10_000
+    assert decode_envelope(envelope)[2]["limit"] == 10_000
+
+    envelope["request"]["limit"] = 10_001
+    with pytest.raises(ProtocolError, match="inspectStep limit must not exceed 10000"):
+        decode_envelope(envelope)
+
+    envelope["request"]["limit"] = 10
+    envelope["request"]["stepId"] = ""
+    with pytest.raises(ProtocolError, match="stepId must be a non-empty string"):
+        decode_envelope(envelope)
+
+    envelope["request"]["stepId"] = "round-value"
+    envelope["request"]["unexpected"] = True
+    with pytest.raises(ProtocolError, match="unknown fields"):
+        decode_envelope(envelope)
+
+
 def test_protocol_v2_rejects_malformed_transformation_steps() -> None:
     with pytest.raises(ProtocolError, match="missing required"):
         decode_envelope(

@@ -107,6 +107,27 @@ def test_dispatch_echoes_view_request_id() -> None:
     assert response["viewRequestId"] == "view-page"
 
 
+def test_dispatch_routes_applied_step_inspection_without_view_correlation() -> None:
+    class InspectionManager:
+        def inspect_step(self, *args: Any) -> dict[str, Any]:
+            assert args == ("session", 4, "round-value", 20, 10)
+            return {"kind": "stepInspection", "revision": 4, "stepId": "round-value"}
+
+    response = server.dispatch(
+        InspectionManager(),  # type: ignore[arg-type]
+        {
+            "kind": "inspectStep",
+            "sessionId": "session",
+            "revision": 4,
+            "stepId": "round-value",
+            "offset": 20,
+            "limit": 10,
+        },
+    )
+
+    assert response == {"kind": "stepInspection", "revision": 4, "stepId": "round-value"}
+
+
 def test_cancel_pending_future_only_cancels_work_that_has_not_started() -> None:
     pending_lock = threading.Lock()
     queued: Future[dict[str, Any]] = Future()

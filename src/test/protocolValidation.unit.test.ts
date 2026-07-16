@@ -141,6 +141,26 @@ const responses: OpenWranglerResponse[] = [
     code: "df.with_columns(...)\n",
     warnings: []
   },
+  {
+    kind: "stepInspection",
+    revision: 3,
+    stepId: "step-1",
+    stepIndex: 0,
+    inputPage: page,
+    outputPage: page,
+    inputSchema: metadata.schema,
+    outputSchema: metadata.schema,
+    diff: {
+      addedRows: 0,
+      removedRows: 0,
+      addedColumns: [],
+      removedColumns: [],
+      changedCells: 0,
+      cells: [],
+      truncated: false
+    },
+    code: "def clean_data(df):\n    return df\n"
+  },
   { kind: "planUpdated", action: "apply", revision: 4, metadata, page, code: "df\n" },
   { kind: "dataExported", revision: 3, path: "/tmp/export.parquet", format: "parquet", shape: { rows: 1, columns: 1 } },
   { kind: "sessionClosed", sessionId: "session-1" },
@@ -287,6 +307,28 @@ describe("protocol-v2 response validation", () => {
     expect(
       isOpenWranglerResponse({ kind: "planUpdated", action: "preview", revision: 1, metadata, page, code: "" })
     ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        kind: "stepInspection",
+        revision: 3,
+        stepId: "step-1",
+        stepIndex: 0,
+        inputPage: page,
+        outputPage: page,
+        inputSchema: metadata.schema,
+        outputSchema: [{ ...metadata.schema[0], position: -1 }],
+        diff: {
+          addedRows: 0,
+          removedRows: 0,
+          addedColumns: [],
+          removedColumns: [],
+          changedCells: 0,
+          cells: [],
+          truncated: false
+        },
+        code: "def clean_data(df):\n    return df\n"
+      })
+    ).toBe(false);
     expect(isOpenWranglerResponse({ kind: "error", code: "bad", message: "bad", recoverable: "yes" })).toBe(false);
   });
 
@@ -352,6 +394,14 @@ const requests: OpenWranglerRequest[] = [
     offset: 0,
     limit: 200
   },
+  {
+    kind: "inspectStep",
+    sessionId: "session-1",
+    revision: 3,
+    stepId: "step-1",
+    offset: 0,
+    limit: 200
+  },
   { kind: "applyDraft", sessionId: "session-1", revision: 3, offset: 0, limit: 200 },
   { kind: "discardDraft", sessionId: "session-1", revision: 3, offset: 0, limit: 200 },
   { kind: "undoStep", sessionId: "session-1", revision: 3, offset: 0, limit: 200 },
@@ -406,6 +456,8 @@ describe("protocol-v2 request validation", () => {
       offset: 0,
       limit: 200
     },
+    { kind: "inspectStep", sessionId: "session-1", revision: 3, stepId: "", offset: 0, limit: 200 },
+    { kind: "inspectStep", sessionId: "session-1", revision: 3, stepId: "step-1", offset: -1, limit: 200 },
     {
       kind: "previewStep",
       sessionId: "session-1",
