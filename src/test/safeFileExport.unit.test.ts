@@ -60,13 +60,14 @@ describe("safe Python-script file export", () => {
     const destination = path.join(directory, "clean.py");
     await writeFile(source, SOURCE_CONTENTS);
     await writeFile(destination, "old destination");
+    const canonicalDestination = await realpath(destination);
     const base = actualFileSystem();
     let replaceCalls = 0;
     const fileSystem = actualFileSystem({
       replace: async (temporary, target) => {
         replaceCalls += 1;
-        expect(target).toBe(destination);
-        expect(path.dirname(temporary)).toBe(path.dirname(destination));
+        expect(target).toBe(canonicalDestination);
+        expect(path.dirname(temporary)).toBe(path.dirname(canonicalDestination));
         expect(await readFile(destination, "utf8")).toBe("old destination");
         expect(await readFile(temporary, "utf8")).toBe(DESTINATION_CONTENTS);
         await base.replace(temporary, target);

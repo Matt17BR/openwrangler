@@ -221,7 +221,7 @@ describe("native operation commands", () => {
             kind: "file",
             label: "source.csv",
             path: source,
-            uri: `file://${source}`
+            uri: "file://malformed-source-metadata"
           }
         })
       );

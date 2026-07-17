@@ -597,8 +597,15 @@ function sourceUris(snapshot: ActiveSessionSnapshot): vscode.Uri[] {
     }
   }
   if (source.path) candidates.push(vscode.Uri.file(source.path));
-  return candidates.filter(
-    (candidate, index) => candidates.findIndex((other) => other.toString() === candidate.toString()) === index
+  const concreteCandidates = candidates.filter((candidate) => Boolean(candidate.fsPath));
+  return concreteCandidates.filter(
+    (candidate, index) =>
+      concreteCandidates.findIndex(
+        (other) =>
+          other.scheme === candidate.scheme &&
+          other.authority === candidate.authority &&
+          other.fsPath === candidate.fsPath
+      ) === index
   );
 }
 
