@@ -592,6 +592,24 @@ test("evidence collection enforces canonical profile, result, and retention cont
       /acceptance result for seed must be inside/u
     );
     assert.throws(
+      () =>
+        retainEditorAcceptanceEvidence({
+          ...options,
+          resultPaths: { verify: resultPath },
+          progressPaths: { verify: outsideResult }
+        }),
+      /acceptance progress for verify must be inside/u
+    );
+    assert.throws(
+      () =>
+        retainEditorAcceptanceEvidence({
+          ...options,
+          resultPaths: { verify: resultPath },
+          progressPaths: { seed: resultPath }
+        }),
+      /progress path for seed must match a result phase/u
+    );
+    assert.throws(
       () => retainEditorAcceptanceEvidence({ ...options, attempt: "../../escape" }),
       /attempt must be a positive safe integer/u
     );
@@ -741,7 +759,7 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
   const evidenceRoot = join(directory, "retained-evidence");
   const resultPath = join(profile, "results", "verify-result.json");
   const splitResultPath = join(profile, "token=", "split-path-secret-that-must-not-survive", "split-result.json");
-  const progressPath = `${resultPath}.progress`;
+  const progressPath = `${resultPath}.test-run.progress`;
   const logRoot = join(profile, "user-data", "logs");
   const originalHostHome = join(directory, "original-host-home");
   const alternateHostHome = join(directory, "alternate-host-home");
@@ -808,7 +826,15 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
   await writeFile(resultPath, `${sensitiveText}\n`);
   await mkdir(join(splitResultPath, ".."), { recursive: true });
   await writeFile(splitResultPath, Buffer.from("password\u001b[31m=ANSI-SECRET\0", "utf8"));
-  await writeFile(progressPath, `verify:notebook:${profile} token=progress-secret\n`);
+  await writeFile(
+    progressPath,
+    `${JSON.stringify({
+      protocol: 1,
+      runId: "11111111-1111-4111-8111-111111111111",
+      phase: "verify",
+      checkpoint: `verify:notebook:${profile} token=progress-secret`
+    })}\n`
+  );
   await writeFile(join(logRoot, mainLogSession, "main.log"), oversizedLog);
   await writeFile(
     join(logRoot, "private", "sharedprocess.log"),
@@ -861,7 +887,8 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
       error,
       hostHomes: [originalHostHome, alternateHostHome],
       resultPath,
-      resultPaths: { verify: resultPath, split: splitResultPath }
+      resultPaths: { verify: resultPath, split: splitResultPath },
+      progressPaths: { verify: progressPath }
     });
     assert.equal(relative(evidenceRoot, retainedTarget).startsWith(".."), false);
 
@@ -916,6 +943,13 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
     assert.match(allEvidence, /OPEN_WRANGLER_TOKEN=<redacted>/u);
     assert.match(allEvidence, /<redacted>/u);
     assert.match(allEvidence, /https:\/\/<redacted>@example\.test\/private/u);
+
+    const retainedProgress = await readFile(join(retainedTarget, "phases", "verify", "progress.json"), "utf8");
+    assert.match(retainedProgress, /"protocol":1/u);
+    assert.match(retainedProgress, /"runId":"11111111-1111-4111-8111-111111111111"/u);
+    assert.match(retainedProgress, /"phase":"verify"/u);
+    assert.equal(retainedProgress.includes("<profile>"), true);
+    assert.equal(retainedProgress.includes("progress-secret"), false);
 
     const retainedLogNames = await readdir(join(retainedTarget, "logs"));
     const retainedMainName = retainedLogNames.find((name) => name.endsWith("-main.log"));
@@ -988,6 +1022,7 @@ test("failure evidence retains only sanitized allowlisted text and survives prof
       failure.copiedFiles.some((path) => path.endsWith("-open-wrangler-output.log")),
       true
     );
+    assert.equal(failure.copiedFiles.includes("phases/verify/progress.json"), true);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1301,6 +1336,48 @@ test("profile traversal stays bound to its contained directory across a symlink 
   }
 });
 
+test("Darwin path enumeration rejects a contained directory swapped immediately after open", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-darwin-directory-swap-"));
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const originalOpendirSync = fs.opendirSync;
+  let swapped = false;
+  try {
+    const fixture = await createEvidenceFixture(directory);
+    const source = join(fixture.logRoot, "darwin-race-session");
+    const backup = `${source}.original`;
+    const outside = join(directory, "outside-darwin-directory");
+    const outsideNameSecret = "DARWIN-OUTSIDE-NAME-MUST-NOT-SURVIVE.log";
+    const outsideContentSecret = "DARWIN-OUTSIDE-CONTENT-MUST-NOT-SURVIVE";
+    await mkdir(source);
+    await mkdir(outside);
+    await writeFile(join(source, "main.log"), "contained Darwin log\n");
+    await writeFile(join(outside, outsideNameSecret), `${outsideContentSecret}\n`);
+
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
+    fs.opendirSync = (...args) => {
+      const opened = originalOpendirSync(...args);
+      if (!swapped && resolve(String(args[0])) === resolve(source)) {
+        fs.renameSync(source, backup);
+        fs.symlinkSync(outside, source, "dir");
+        swapped = true;
+      }
+      return opened;
+    };
+    syncBuiltinESMExports();
+
+    const target = retainEditorAcceptanceEvidence(fixture.options);
+    assert.equal(swapped, true);
+    const evidence = await readEvidenceTree(target);
+    assert.equal(evidence.includes(outsideNameSecret), false);
+    assert.equal(evidence.includes(outsideContentSecret), false);
+  } finally {
+    fs.opendirSync = originalOpendirSync;
+    syncBuiltinESMExports();
+    Object.defineProperty(process, "platform", platformDescriptor);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("hard-linked evidence sources fail closed before their contents are read", async (context) => {
   if (process.platform === "win32") {
     context.skip("Hard-link behavior is covered on POSIX acceptance hosts.");
@@ -1534,8 +1611,8 @@ test("rejected sources consume the hard candidate budget", async () => {
     const target = retainEditorAcceptanceEvidence(fixture.options);
     const failure = JSON.parse(await readFile(join(target, "failure.json"), "utf8"));
     const candidateBudgetSkips = failure.skippedFiles.filter((entry) => entry.reason === "source-candidate-budget");
-    assert.equal(candidateBudgetSkips.length, 10);
-    assert.equal(failure.skippedFiles.filter((entry) => entry.reason === "not-utf8").length, 62);
+    assert.equal(candidateBudgetSkips.length, 9);
+    assert.equal(failure.skippedFiles.filter((entry) => entry.reason === "not-utf8").length, 63);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

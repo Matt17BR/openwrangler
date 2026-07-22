@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,8 +7,10 @@ import {
   collectEditorAcceptancePrivateDiagnosticPaths,
   createEditorAcceptanceEnvironment,
   createEditorAcceptanceFailure,
+  createAcceptanceProgressEnvelope,
   downloadEditorWithRetry,
   editorDisplayLaunchArgs,
+  editorAcceptanceProgressPath,
   editorProcessTreeMayBeLive,
   resolveDownloadedEditorCliPath,
   runBoundedEditorCommand,
@@ -30,6 +33,9 @@ import {
   sealEditorAcceptanceEvidence
 } from "./editor-acceptance-artifact.mjs";
 import {
+  assertEditorAcceptancePrivateRootReceipt,
+  createEditorAcceptancePrivateRootReceipt,
+  editorAcceptancePrivateRootIdentityLost,
   packagedEditorFailureLeaves,
   removeEditorAcceptancePrivateRoot,
   runPackagedEditorOrchestration,
@@ -45,12 +51,18 @@ const orchestrationEditor = {
 };
 let hostHomes = [];
 let evidenceStagingReceipt;
+let evidencePrivateRootReceipt;
 let evidenceRoot;
 let temporaryRoot;
+let temporaryRootReceipt;
+let temporaryRootCleaned = false;
 let orchestrationProfile;
+let orchestrationProfileReceipt;
 let orchestrationResultPath;
 let orchestrationResultPaths;
 let orchestrationProgressPath;
+let orchestrationProgressPaths;
+let orchestrationRunId;
 let orchestrationStartedAt = Date.now();
 const MAX_FAILURE_SUMMARY_BYTES = 8 * 1024;
 const OVERSIZED_DIAGNOSTIC_MARKER = "<diagnostic-omitted-size-budget>";
@@ -60,21 +72,27 @@ const evidenceReceipts = [];
 let orchestrationEvidenceAttempt = 0;
 let orchestrationTreeMayBeLive = false;
 let evidenceCollectionSafe = true;
+let privatePathsVerified = true;
 let editorDisplay;
 
 try {
   hostHomes = collectEditorAcceptancePrivateDiagnosticPaths([resolve(root, process.argv[2] ?? "openwrangler.vsix")]);
   evidenceStagingReceipt = createEditorAcceptanceEvidenceStagingRoot(resolve(root, "tmp", "editor-acceptance-staging"));
   evidenceRoot = evidenceStagingReceipt.root;
+  evidencePrivateRootReceipt = capturePrivateRootReceipt(evidenceRoot, dirname(evidenceRoot));
   const temporaryParent = resolve(root, "tmp", "ow");
   mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
   temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
+  temporaryRootReceipt = capturePrivateRootReceipt(temporaryRoot, temporaryParent);
   configureEditorAcceptanceTempRoot(temporaryRoot);
   orchestrationProfile = resolve(temporaryRoot, "orchestration");
   mkdirSync(orchestrationProfile, { recursive: true, mode: 0o700 });
+  orchestrationProfileReceipt = capturePrivateRootReceipt(orchestrationProfile, temporaryRoot);
   orchestrationResultPath = resolve(orchestrationProfile, "setup-result.json");
   orchestrationResultPaths = { setup: orchestrationResultPath };
-  orchestrationProgressPath = `${orchestrationResultPath}.progress`;
+  orchestrationRunId = randomUUID();
+  orchestrationProgressPath = editorAcceptanceProgressPath(orchestrationResultPath, orchestrationRunId, "setup");
+  orchestrationProgressPaths = { setup: orchestrationProgressPath };
   orchestrationStartedAt = Date.now();
   await runPackagedEditorOrchestration(
     {
@@ -82,14 +100,14 @@ try {
       run: async () => {
         let runError;
         try {
-          writeAcceptanceProgress(orchestrationProgressPath, "setup:validate-package");
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:validate-package");
           validateEditorAcceptancePrivatePathOverrides();
           const vsix = resolve(root, process.argv[2] ?? "openwrangler.vsix");
           if (!existsSync(vsix)) throw new Error("The packaged extension was not found.");
           const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
           const expectedExtension = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
 
-          writeAcceptanceProgress(orchestrationProgressPath, "setup:resolve-editors");
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-editors");
           const requested = process.env.OPEN_WRANGLER_PACKAGED_EDITORS?.split(",")
             .map((value) => value.trim())
             .filter(Boolean);
@@ -125,7 +143,7 @@ try {
             !candidates.some((editor) => editor.key === "vscode") &&
             (!requested?.length || requested.includes("vscode"))
           ) {
-            writeAcceptanceProgress(orchestrationProgressPath, "setup:download-vscode");
+            writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:download-vscode");
             const executable = await downloadEditorWithRetry(process.env.VSCODE_TEST_VERSION ?? "stable");
             const downloadedCli = resolveDownloadedEditorCliPath(executable);
             if (!existsSync(downloadedCli)) {
@@ -147,7 +165,7 @@ try {
             );
           }
 
-          writeAcceptanceProgress(orchestrationProgressPath, "setup:resolve-python");
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-python");
           const hostedPython = process.env.pythonLocation
             ? process.platform === "win32"
               ? resolve(process.env.pythonLocation, "python.exe")
@@ -167,13 +185,24 @@ try {
                   : "python3";
           process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
 
-          writeAcceptanceProgress(orchestrationProgressPath, "setup:start-isolated-display");
+          writeCorrelatedProgress(
+            orchestrationProgressPath,
+            orchestrationRunId,
+            "setup",
+            "setup:start-isolated-display"
+          );
           editorDisplay = await startIsolatedEditorDisplay();
-          writeAcceptanceProgress(orchestrationProgressPath, "setup:display-ready");
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:display-ready");
 
           for (const editor of candidates) {
-            writeAcceptanceProgress(orchestrationProgressPath, `setup:editor-${editor.key}`);
+            writeCorrelatedProgress(
+              orchestrationProgressPath,
+              orchestrationRunId,
+              "setup",
+              `setup:editor-${editor.key}`
+            );
             const profile = mkdtempSync(join(temporaryRoot, `pkg-${editor.key}-`));
+            const profileReceipt = capturePrivateRootReceipt(profile, temporaryRoot);
             const userData = resolve(profile, "user-data");
             const extensions = resolve(profile, "extensions");
             const workspace = resolve(profile, "Open Wrangler Demo");
@@ -182,6 +211,17 @@ try {
               seed: resolve(profile, "seed-result.json"),
               verify: resolve(profile, "verify-result.json")
             };
+            const runIds = {
+              setup: randomUUID(),
+              seed: randomUUID(),
+              verify: randomUUID()
+            };
+            const progressPaths = Object.fromEntries(
+              Object.entries(resultPaths).map(([phase, resultPath]) => [
+                phase,
+                editorAcceptanceProgressPath(resultPath, runIds[phase], phase)
+              ])
+            );
             let activePhase = "setup";
             let identifiedEditor = { ...editor, version: "unknown" };
             const editorStartedAt = Date.now();
@@ -202,7 +242,7 @@ try {
                 ];
                 const editorEnvironment = createEditorAcceptanceEnvironment();
                 const commandExecutable = process.platform === "win32" ? editor.executable : editor.cli;
-                writeAcceptanceProgress(`${resultPaths.setup}.progress`, "setup:editor-version");
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:editor-version");
                 identifiedEditor = {
                   ...editor,
                   version: await readEditorVersion(
@@ -214,7 +254,7 @@ try {
                     editorEnvironment
                   )
                 };
-                writeAcceptanceProgress(`${resultPaths.setup}.progress`, "setup:install-extension");
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-extension");
                 await runBoundedEditorCommand(
                   {
                     executable: commandExecutable,
@@ -233,7 +273,7 @@ try {
                   },
                   { timeoutMs: 60_000 }
                 );
-                writeAcceptanceProgress(`${resultPaths.setup}.progress`, "setup:verify-installation");
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
                 const { stdout: installed } = await runBoundedEditorCommand(
                   {
                     executable: commandExecutable,
@@ -256,7 +296,7 @@ try {
                     `${editor.name} did not report the installed Open Wrangler package. Output: ${installed}`
                   );
                 }
-                writeAcceptanceProgress(`${resultPaths.setup}.progress`, "setup:complete");
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:complete");
 
                 const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
                 for (const phase of ["seed", "verify"]) {
@@ -270,7 +310,9 @@ try {
                     testModule,
                     python: process.env.OPEN_WRANGLER_TEST_PYTHON,
                     phase,
-                    resultPath: resultPaths[phase]
+                    resultPath: resultPaths[phase],
+                    runId: runIds[phase],
+                    progressPath: progressPaths[phase]
                   });
                 }
                 console.log(`${identifiedEditor.name} packaged acceptance passed.`);
@@ -279,9 +321,13 @@ try {
                 profileTreeMayBeLive ||= editorProcessTreeMayBeLive(error);
                 orchestrationTreeMayBeLive ||= profileTreeMayBeLive;
                 if (stage === "cleanup") markFailureTree(error, cleanupFailures);
-                if (profileTreeMayBeLive) {
+                if (profileTreeMayBeLive || !privatePathsVerified) {
                   for (const failure of packagedEditorFailureLeaves(error)) retainedFailures.add(failure);
-                  console.error("Packaged-editor diagnostics were withheld because process ownership is unverified.");
+                  console.error(
+                    profileTreeMayBeLive
+                      ? "Packaged-editor diagnostics were withheld because process ownership is unverified."
+                      : "Packaged-editor diagnostics were withheld because private-path identity is unverified."
+                  );
                   return;
                 }
                 const retentionErrors = [];
@@ -299,12 +345,16 @@ try {
                     phase: evidencePhase,
                     startedAt: editorStartedAt,
                     resultPath: resultPaths[activePhase],
+                    progressPath: progressPaths[activePhase],
+                    runId: runIds[activePhase],
                     preferPrimary: stage !== "cleanup",
                     cleanupOfPhase,
                     readProgress: true
                   });
                   try {
                     retainVerifiedEditorEvidence({
+                      temporaryRootReceipt,
+                      profileReceipt,
                       evidenceRoot,
                       temporaryRoot,
                       profile,
@@ -314,11 +364,14 @@ try {
                       attempt: (evidenceAttempt += 1),
                       resultPath: resultPaths[activePhase],
                       resultPaths,
+                      progressPath: progressPaths[activePhase],
+                      progressPaths,
                       hostHomes
                     });
                     retainedFailures.add(failure);
                     console.error("Sanitized packaged-editor diagnostics were retained for sealed upload.");
                   } catch (retentionError) {
+                    latchPrivateRootIdentityLoss(retentionError);
                     evidenceCollectionSafe = false;
                     retentionErrors.push(retentionError);
                   }
@@ -331,14 +384,21 @@ try {
                   );
                 }
               },
-              cleanup: () =>
-                removeEditorAcceptancePrivateRoot(profile, {
-                  processTreeVerifiedStopped: !profileTreeMayBeLive
-                }),
+              cleanup: () => {
+                try {
+                  removeEditorAcceptancePrivateRoot(profileReceipt, {
+                    processTreeVerifiedStopped: !profileTreeMayBeLive,
+                    privatePathsVerified
+                  });
+                } catch (error) {
+                  latchPrivateRootIdentityLoss(error);
+                  throw error;
+                }
+              },
               failureMessage: `${identifiedEditor.name} packaged acceptance failed during evidence retention or cleanup.`
             });
           }
-          writeAcceptanceProgress(orchestrationProgressPath, "setup:complete");
+          writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:complete");
         } catch (error) {
           runError = error;
         }
@@ -365,9 +425,13 @@ try {
         orchestrationTreeMayBeLive ||= editorProcessTreeMayBeLive(error);
         const unretained = unretainedFailures(error, retainedFailures);
         if (unretained.length === 0) return;
-        if (orchestrationTreeMayBeLive) {
+        if (orchestrationTreeMayBeLive || !privatePathsVerified) {
           for (const failure of unretained) retainedFailures.add(failure);
-          console.error("Packaged-editor diagnostics were withheld because process ownership is unverified.");
+          console.error(
+            orchestrationTreeMayBeLive
+              ? "Packaged-editor diagnostics were withheld because process ownership is unverified."
+              : "Packaged-editor diagnostics were withheld because private-path identity is unverified."
+          );
           return;
         }
         for (const unretainedFailure of unretained) {
@@ -379,12 +443,16 @@ try {
             phase: evidencePhase,
             startedAt: orchestrationStartedAt,
             resultPath: orchestrationResultPath,
+            progressPath: orchestrationProgressPath,
+            runId: orchestrationRunId,
             preferPrimary: false,
             cleanupOfPhase: isCleanup ? "setup" : undefined,
             readProgress: true
           });
           try {
             retainVerifiedEditorEvidence({
+              temporaryRootReceipt,
+              profileReceipt: orchestrationProfileReceipt,
               evidenceRoot,
               temporaryRoot,
               profile: orchestrationProfile,
@@ -394,42 +462,53 @@ try {
               attempt: (orchestrationEvidenceAttempt += 1),
               resultPath: orchestrationResultPath,
               resultPaths: orchestrationResultPaths,
+              progressPath: orchestrationProgressPath,
+              progressPaths: orchestrationProgressPaths,
               hostHomes
             });
             retainedFailures.add(unretainedFailure);
             console.error("Sanitized packaged-editor diagnostics were retained for sealed upload.");
           } catch (retentionError) {
+            latchPrivateRootIdentityLoss(retentionError);
             evidenceCollectionSafe = false;
             throw retentionError;
           }
         }
       },
-      cleanup: () =>
-        removeEditorAcceptancePrivateRoot(temporaryRoot, {
-          processTreeVerifiedStopped: !orchestrationTreeMayBeLive
-        }),
+      cleanup: () => {
+        try {
+          removeEditorAcceptancePrivateRoot(temporaryRootReceipt, {
+            processTreeVerifiedStopped: !orchestrationTreeMayBeLive,
+            privatePathsVerified
+          });
+          temporaryRootCleaned = true;
+        } catch (error) {
+          latchPrivateRootIdentityLoss(error);
+          throw error;
+        }
+      },
       failureMessage: "Packaged editor orchestration failed during evidence retention or cleanup."
     },
     {
       clearEvidence: () => assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt, { requireEmpty: true })
     }
   );
-  assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt, { requireEmpty: true });
-  rmSync(evidenceRoot, { recursive: true, force: true });
+  removeEvidenceStagingRoot({ requireEmpty: true });
 } catch {
-  const publishedEvidencePath = publishSealedEditorEvidence();
-  const evidenceReady = publishedEvidencePath !== undefined;
-  if (!orchestrationTreeMayBeLive && temporaryRoot) {
+  if (!orchestrationTreeMayBeLive && privatePathsVerified && temporaryRootReceipt && !temporaryRootCleaned) {
     try {
-      removeEditorAcceptancePrivateRoot(temporaryRoot);
-    } catch {
+      removeEditorAcceptancePrivateRoot(temporaryRootReceipt);
+      temporaryRootCleaned = true;
+    } catch (error) {
+      latchPrivateRootIdentityLoss(error);
       // The public diagnostic remains fixed and content-free on preflight cleanup faults.
     }
   }
+  const publishedEvidencePath = publishSealedEditorEvidence();
+  const evidenceReady = publishedEvidencePath !== undefined;
   if (!orchestrationTreeMayBeLive && !evidenceReady && evidenceStagingReceipt) {
     try {
-      assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt);
-      rmSync(evidenceRoot, { recursive: true, force: true });
+      removeEvidenceStagingRoot();
     } catch {
       // Never touch a staging root whose prelaunch identity is no longer proven.
     }
@@ -446,11 +525,15 @@ try {
   process.exitCode = 1;
 }
 
-function retainVerifiedEditorEvidence(options) {
+function retainVerifiedEditorEvidence({ temporaryRootReceipt, profileReceipt, ...options }) {
+  assertEditorAcceptancePrivateRootReceipt(temporaryRootReceipt);
+  assertEditorAcceptancePrivateRootReceipt(profileReceipt);
   assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt, {
     requireEmpty: evidenceReceipts.length === 0
   });
   const target = retainEditorAcceptanceEvidence(options);
+  assertEditorAcceptancePrivateRootReceipt(temporaryRootReceipt);
+  assertEditorAcceptancePrivateRootReceipt(profileReceipt);
   assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt);
   const receipt = captureEditorAcceptanceEvidenceReceipt({ evidenceRoot, target });
   evidenceReceipts.push(receipt);
@@ -458,7 +541,23 @@ function retainVerifiedEditorEvidence(options) {
 }
 
 function publishSealedEditorEvidence() {
-  if (orchestrationTreeMayBeLive || !evidenceCollectionSafe || evidenceReceipts.length === 0) return undefined;
+  if (
+    orchestrationTreeMayBeLive ||
+    !privatePathsVerified ||
+    !temporaryRootReceipt ||
+    !evidenceCollectionSafe ||
+    evidenceReceipts.length === 0
+  ) {
+    return undefined;
+  }
+  if (!temporaryRootCleaned) {
+    try {
+      assertEditorAcceptancePrivateRootReceipt(temporaryRootReceipt);
+    } catch (error) {
+      latchPrivateRootIdentityLoss(error);
+      return undefined;
+    }
+  }
   let artifactParentReceipt;
   let artifactReceipt;
   try {
@@ -470,7 +569,7 @@ function publishSealedEditorEvidence() {
       receipts: evidenceReceipts
     });
     const artifactPath = assertSealedEditorAcceptanceArtifact(artifactReceipt);
-    rmSync(evidenceRoot, { recursive: true, force: true });
+    removeEvidenceStagingRoot();
     if (process.env.GITHUB_OUTPUT) {
       assertSealedEditorAcceptanceArtifact(artifactReceipt);
       appendFileSync(
@@ -497,13 +596,38 @@ function publishSealedEditorEvidence() {
       }
     }
     try {
-      assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt);
-      rmSync(evidenceRoot, { recursive: true, force: true });
+      removeEvidenceStagingRoot();
     } catch {
       // Never touch an evidence root whose prelaunch identity is no longer proven.
     }
     return undefined;
   }
+}
+
+function capturePrivateRootReceipt(path, containedBy) {
+  try {
+    return createEditorAcceptancePrivateRootReceipt(path, { containedBy });
+  } catch (error) {
+    latchPrivateRootIdentityLoss(error);
+    throw error;
+  }
+}
+
+function removeEvidenceStagingRoot({ requireEmpty = false } = {}) {
+  if (!evidencePrivateRootReceipt) return;
+  assertEditorAcceptanceEvidenceStagingRoot(evidenceStagingReceipt, { requireEmpty });
+  removeEditorAcceptancePrivateRoot(evidencePrivateRootReceipt, {
+    processTreeVerifiedStopped: !orchestrationTreeMayBeLive,
+    privatePathsVerified
+  });
+  evidencePrivateRootReceipt = undefined;
+}
+
+function latchPrivateRootIdentityLoss(error) {
+  if (!editorAcceptancePrivateRootIdentityLost(error)) return false;
+  privatePathsVerified = false;
+  evidenceCollectionSafe = false;
+  return true;
 }
 
 function editorEvidenceArtifactBase() {
@@ -541,6 +665,8 @@ function acceptanceDiagnostic({
   phase,
   startedAt,
   resultPath,
+  progressPath,
+  runId,
   preferPrimary = true,
   cleanupOfPhase,
   readProgress = true
@@ -555,7 +681,9 @@ function acceptanceDiagnostic({
       phase,
       elapsedMs: Math.max(0, Date.now() - startedAt),
       resultPath,
-      progressPath: `${resultPath}.progress`,
+      progressPath,
+      runId,
+      cleanupOfPhase,
       readProgress,
       ...(readProgress ? {} : { treeVerifiedStopped: false })
     },
@@ -564,6 +692,10 @@ function acceptanceDiagnostic({
   diagnostic.details.nestedErrors = failureSummaries(error);
   if (cleanupOfPhase) diagnostic.details.cleanupOfPhase = cleanupOfPhase;
   return diagnostic;
+}
+
+function writeCorrelatedProgress(progressPath, runId, phase, checkpoint) {
+  writeAcceptanceProgress(progressPath, createAcceptanceProgressEnvelope(runId, phase, checkpoint));
 }
 
 function primaryAcceptanceError(error, seen = new Set()) {

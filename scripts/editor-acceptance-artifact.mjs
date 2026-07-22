@@ -83,34 +83,48 @@ export function createEditorAcceptanceEvidenceStagingRoot(parent) {
   return Object.freeze({
     root,
     canonicalRoot,
-    snapshot: Object.freeze({ dev: metadata.dev, ino: metadata.ino, mode: metadata.mode })
+    snapshot: Object.freeze(directoryIdentitySnapshot(metadata))
   });
 }
 
 export function assertEditorAcceptanceEvidenceStagingRoot(receipt, { requireEmpty = false } = {}) {
-  if (!receipt || typeof receipt !== "object" || typeof receipt.root !== "string") {
-    throw new Error("The editor evidence staging receipt is invalid.");
-  }
-  const metadata = safeEvidenceMetadata(receipt.root);
-  if (
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink() ||
-    metadata.dev !== receipt.snapshot?.dev ||
-    metadata.ino !== receipt.snapshot?.ino ||
-    metadata.mode !== receipt.snapshot?.mode ||
-    realpathSync(receipt.root) !== receipt.canonicalRoot
-  ) {
-    throw new Error("The editor evidence staging root no longer matches its prelaunch identity.");
-  }
+  assertStagingRootIdentity(receipt);
   if (requireEmpty) {
-    const directory = opendirSync(receipt.root);
+    let descriptor;
+    let directory;
     try {
+      if (process.platform === "linux") {
+        descriptor = openSync(
+          receipt.root,
+          constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0)
+        );
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (
+          !opened.isDirectory() ||
+          opened.isSymbolicLink() ||
+          !sameDirectoryIdentity(directoryIdentitySnapshot(opened), receipt.snapshot)
+        ) {
+          throw stagingRootIdentityError();
+        }
+        directory = opendirSync(`/proc/self/fd/${descriptor}`);
+      } else {
+        // Node has no portable fdopendir API. Bind the pathname immediately
+        // after opening it and again after enumeration; names are not trusted
+        // unless both checks retain the prelaunch receipt.
+        directory = opendirSync(receipt.root);
+        assertStagingRootIdentity(receipt);
+      }
       if (directory.readSync() !== null) {
         throw new Error("The prelaunch editor evidence staging root was modified by the editor process.");
       }
     } finally {
-      directory.closeSync();
+      try {
+        directory?.closeSync();
+      } finally {
+        if (descriptor !== undefined) closeSync(descriptor);
+      }
     }
+    assertStagingRootIdentity(receipt);
   }
   return receipt.root;
 }
@@ -565,7 +579,7 @@ function artifactParentReceipt(path, canonicalPath, metadata) {
   return Object.freeze({
     path: resolve(path),
     canonicalPath,
-    snapshot: Object.freeze({ dev: metadata.dev, ino: metadata.ino, mode: metadata.mode })
+    snapshot: Object.freeze(directoryIdentitySnapshot(metadata))
   });
 }
 
@@ -595,13 +609,62 @@ function assertArtifactParentReceipt(receipt) {
   if (
     !metadata.isDirectory() ||
     metadata.isSymbolicLink() ||
-    metadata.dev !== receipt.snapshot.dev ||
-    metadata.ino !== receipt.snapshot.ino ||
-    metadata.mode !== receipt.snapshot.mode ||
+    !sameDirectoryIdentity(directoryIdentitySnapshot(metadata), receipt.snapshot) ||
     canonicalPath !== receipt.canonicalPath
   ) {
     throw new Error("The sealed evidence artifact parent no longer matches its pinned identity.");
   }
+}
+
+function assertStagingRootIdentity(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.root !== "string" ||
+    typeof receipt.canonicalRoot !== "string" ||
+    !receipt.snapshot ||
+    typeof receipt.snapshot !== "object"
+  ) {
+    throw new Error("The editor evidence staging receipt is invalid.");
+  }
+  let metadata;
+  let canonicalRoot;
+  try {
+    metadata = lstatSync(receipt.root, { bigint: true });
+    canonicalRoot = realpathSync(receipt.root);
+  } catch {
+    throw stagingRootIdentityError();
+  }
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    !sameDirectoryIdentity(directoryIdentitySnapshot(metadata), receipt.snapshot) ||
+    canonicalRoot !== receipt.canonicalRoot
+  ) {
+    throw stagingRootIdentityError();
+  }
+}
+
+function stagingRootIdentityError() {
+  return new Error("The editor evidence staging root no longer matches its prelaunch identity.");
+}
+
+function directoryIdentitySnapshot(metadata) {
+  return {
+    dev: metadata.dev,
+    ino: metadata.ino,
+    mode: metadata.mode,
+    birthtimeNs: metadata.birthtimeNs
+  };
+}
+
+function sameDirectoryIdentity(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.birthtimeNs === right.birthtimeNs
+  );
 }
 
 function safeEvidenceMetadata(path) {

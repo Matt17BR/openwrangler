@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { retainEditorAcceptanceEvidence } from "./editor-acceptance-evidence.mjs";
 import {
+  assertEditorAcceptancePrivateRootReceipt,
+  createEditorAcceptancePrivateRootReceipt,
   packagedEditorFailureLeaves,
   removeEditorAcceptancePrivateRoot,
   runPackagedEditorOrchestration,
@@ -119,9 +121,9 @@ test("an unverified editor tree prevents every access to its private root", () =
   let removeCalled = false;
   assert.throws(
     () =>
-      removeEditorAcceptancePrivateRoot("/must-not-be-touched", {
+      removeEditorAcceptancePrivateRoot(Object.freeze({ path: "/must-not-be-touched" }), {
         processTreeVerifiedStopped: false,
-        remove() {
+        moveToQuarantine() {
           removeCalled = true;
         }
       }),
@@ -134,6 +136,134 @@ test("an unverified editor tree prevents every access to its private root", () =
     }
   );
   assert.equal(removeCalled, false);
+});
+
+test("a lost private-path identity prevents every access to its former root", () => {
+  let removeCalled = false;
+  assert.throws(
+    () =>
+      removeEditorAcceptancePrivateRoot(Object.freeze({ path: "/must-not-be-touched" }), {
+        privatePathsVerified: false,
+        moveToQuarantine() {
+          removeCalled = true;
+        }
+      }),
+    (error) => {
+      assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+      assert.equal(error.details.privateRootIdentity, "lost");
+      assert.doesNotMatch(error.message, /must-not-be-touched/u);
+      return true;
+    }
+  );
+  assert.equal(removeCalled, false);
+});
+
+test("private-root receipts reject a rebound directory without removing its contents", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-rebind-"));
+  const parent = join(directory, "private-parent");
+  const privateRoot = join(parent, "captured-root");
+  const displaced = join(parent, "displaced-root");
+  const replacement = join(directory, "replacement-root");
+  const replacementMarker = join(privateRoot, "user-owned.txt");
+  try {
+    await mkdir(privateRoot, { recursive: true });
+    await mkdir(replacement);
+    await writeFile(join(replacement, "user-owned.txt"), "preserve me\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: parent });
+
+    await rename(privateRoot, displaced);
+    await rename(replacement, privateRoot);
+
+    assert.throws(
+      () => assertEditorAcceptancePrivateRootReceipt(receipt),
+      (error) => error.code === "EDITOR_PRIVATE_ROOT_IDENTITY_LOST"
+    );
+    assert.throws(
+      () => removeEditorAcceptancePrivateRoot(receipt),
+      (error) => error.code === "EDITOR_PRIVATE_ROOT_IDENTITY_LOST"
+    );
+    assert.equal(await readFile(replacementMarker, "utf8"), "preserve me\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("private-root cleanup removes only the directory bound to its receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-cleanup-"));
+  const privateRoot = join(directory, "captured-root");
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+    assert.equal(assertEditorAcceptancePrivateRootReceipt(receipt), privateRoot);
+    removeEditorAcceptancePrivateRoot(receipt);
+    await assert.rejects(stat(privateRoot), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("private-root cleanup never deletes a directory rebound during quarantine", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-quarantine-rebind-"));
+  const privateRoot = join(directory, "captured-root");
+  const displaced = join(directory, "displaced-root");
+  const replacement = join(directory, "replacement-root");
+  const cleanupId = "11111111-1111-4111-8111-111111111111";
+  const quarantine = join(directory, `.openwrangler-remove-${cleanupId}`);
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    await mkdir(replacement);
+    await writeFile(join(replacement, "user-owned.txt"), "preserve me\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          cleanupId: () => cleanupId,
+          moveToQuarantine(source, target) {
+            renameSync(source, displaced);
+            renameSync(replacement, source);
+            renameSync(source, target);
+          }
+        }),
+      (error) => error.code === "EDITOR_PRIVATE_ROOT_IDENTITY_LOST"
+    );
+    assert.equal(await readFile(join(displaced, "owned.txt"), "utf8"), "owned\n");
+    assert.equal(await readFile(join(quarantine, "user-owned.txt"), "utf8"), "preserve me\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("private-root cleanup revalidates its random quarantine immediately before deletion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-final-rebind-"));
+  const privateRoot = join(directory, "captured-root");
+  const displaced = join(directory, "displaced-root");
+  const cleanupId = "22222222-2222-4222-8222-222222222222";
+  const quarantine = join(directory, `.openwrangler-remove-${cleanupId}`);
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          cleanupId: () => cleanupId,
+          beforeRemove(target) {
+            renameSync(target, displaced);
+            mkdirSync(target);
+            writeFileSync(join(target, "user-owned.txt"), "preserve me\n");
+          }
+        }),
+      (error) => error.code === "EDITOR_PRIVATE_ROOT_IDENTITY_LOST"
+    );
+    assert.equal(await readFile(join(displaced, "owned.txt"), "utf8"), "owned\n");
+    assert.equal(await readFile(join(quarantine, "user-owned.txt"), "utf8"), "preserve me\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("combined phase and cleanup failures persist as distinct bounded evidence attempts", async () => {

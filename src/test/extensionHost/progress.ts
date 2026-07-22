@@ -13,14 +13,26 @@ import {
 import { isAbsolute } from "node:path";
 
 export const ACCEPTANCE_PROGRESS_MAX_BYTES = 1024;
+export const ACCEPTANCE_PROGRESS_PROTOCOL = 1;
+
+export interface AcceptanceProgressEnvelope {
+  protocol: typeof ACCEPTANCE_PROGRESS_PROTOCOL;
+  runId: string;
+  phase: string;
+  checkpoint: string;
+}
 
 interface AcceptanceProgressWriteOptions {
   randomId?: () => string;
 }
 
+export function acceptanceProgressSignalPath(progressPath: string, runId: string, phase: string): string {
+  return `${progressPath}.${runId.replaceAll("-", "")}.${phase}.heartbeat`;
+}
+
 export function writeAcceptanceProgressCheckpoint(
   progressPath: string,
-  checkpoint: string,
+  envelope: AcceptanceProgressEnvelope,
   { randomId = randomUUID }: AcceptanceProgressWriteOptions = {}
 ): void {
   if (
@@ -32,23 +44,31 @@ export function writeAcceptanceProgressCheckpoint(
   ) {
     throw new Error("An editor acceptance progress path must be a bounded absolute filesystem path.");
   }
-  if (
-    typeof checkpoint !== "string" ||
-    checkpoint.length === 0 ||
-    checkpoint.includes("\n") ||
-    checkpoint.includes("\r") ||
-    Buffer.byteLength(checkpoint, "utf8") + 1 > ACCEPTANCE_PROGRESS_MAX_BYTES
-  ) {
+  if (!isAcceptanceProgressEnvelope(envelope)) {
     throw new Error(
-      "An editor acceptance checkpoint must be a non-empty, single-line UTF-8 string whose file is at most 1024 bytes including its newline."
+      "An editor acceptance checkpoint must be an exact protocol/runId/phase/checkpoint envelope with bounded single-line strings."
     );
+  }
+  const serialized = `${JSON.stringify(envelope)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > ACCEPTANCE_PROGRESS_MAX_BYTES) {
+    throw new Error("An editor acceptance checkpoint envelope must be at most 1024 UTF-8 bytes including its newline.");
   }
 
   const suffix = randomId();
   if (!/^[0-9A-Za-z-]{1,64}$/u.test(suffix)) {
     throw new Error("An editor acceptance checkpoint temporary suffix must be a bounded safe identifier.");
   }
-  const temporaryPath = `${progressPath}.${process.pid}.${suffix}.tmp`;
+  publishAcceptanceProgressFile(progressPath, serialized, suffix, "checkpoint");
+  publishAcceptanceProgressFile(
+    acceptanceProgressSignalPath(progressPath, envelope.runId, envelope.phase),
+    "",
+    suffix,
+    "heartbeat"
+  );
+}
+
+function publishAcceptanceProgressFile(targetPath: string, content: string, suffix: string, description: string): void {
+  const temporaryPath = `${targetPath}.${process.pid}.${suffix}.tmp`;
   let descriptor: number | undefined;
   let ownedIdentity: BigIntStats | undefined;
   let renamed = false;
@@ -61,9 +81,9 @@ export function writeAcceptanceProgressCheckpoint(
     );
     ownedIdentity = fstatSync(descriptor, { bigint: true });
     if (!ownedIdentity.isFile() || ownedIdentity.nlink !== 1n) {
-      throw new Error("The acceptance checkpoint temporary must be one exclusively owned regular file.");
+      throw new Error(`The acceptance ${description} temporary must be one exclusively owned regular file.`);
     }
-    writeFileSync(descriptor, `${checkpoint}\n`, { encoding: "utf8" });
+    writeFileSync(descriptor, content, { encoding: "utf8" });
     const completed = fstatSync(descriptor, { bigint: true });
     if (
       !completed.isFile() ||
@@ -71,7 +91,7 @@ export function writeAcceptanceProgressCheckpoint(
       completed.dev !== ownedIdentity.dev ||
       completed.ino !== ownedIdentity.ino
     ) {
-      throw new Error("The acceptance checkpoint temporary changed while it was written.");
+      throw new Error(`The acceptance ${description} temporary changed while it was written.`);
     }
     closeSync(descriptor);
     descriptor = undefined;
@@ -83,9 +103,9 @@ export function writeAcceptanceProgressCheckpoint(
       pathIdentity.dev !== completed.dev ||
       pathIdentity.ino !== completed.ino
     ) {
-      throw new Error("The acceptance checkpoint temporary path changed before publication.");
+      throw new Error(`The acceptance ${description} temporary path changed before publication.`);
     }
-    renameSync(temporaryPath, progressPath);
+    renameSync(temporaryPath, targetPath);
     renamed = true;
   } catch (error) {
     operationError = error;
@@ -120,12 +140,29 @@ export function writeAcceptanceProgressCheckpoint(
   if (operationError && cleanupErrors.length > 0) {
     throw new AggregateError(
       [operationError, ...cleanupErrors],
-      "Acceptance checkpoint publication and temporary cleanup both failed."
+      `Acceptance ${description} publication and temporary cleanup both failed.`
     );
   }
   if (operationError) throw operationError;
   if (cleanupErrors.length === 1) throw cleanupErrors[0];
   if (cleanupErrors.length > 1) {
-    throw new AggregateError(cleanupErrors, "Acceptance checkpoint temporary cleanup failed.");
+    throw new AggregateError(cleanupErrors, `Acceptance ${description} temporary cleanup failed.`);
   }
+}
+
+function isAcceptanceProgressEnvelope(value: unknown): value is AcceptanceProgressEnvelope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (keys.length !== 4 || keys.join(",") !== "checkpoint,phase,protocol,runId") return false;
+  return (
+    record.protocol === ACCEPTANCE_PROGRESS_PROTOCOL &&
+    typeof record.runId === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(record.runId) &&
+    typeof record.phase === "string" &&
+    /^[a-z][a-z0-9-]{0,63}$/u.test(record.phase) &&
+    typeof record.checkpoint === "string" &&
+    record.checkpoint.length > 0 &&
+    !/[\0\r\n]/u.test(record.checkpoint)
+  );
 }

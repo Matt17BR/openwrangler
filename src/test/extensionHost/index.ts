@@ -29,7 +29,7 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
-import { writeAcceptanceProgressCheckpoint } from "./progress";
+import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -371,7 +371,17 @@ export async function run(): Promise<void> {
 function recordAcceptanceProgress(checkpoint: string): void {
   const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
   if (!progressPath) return;
-  writeAcceptanceProgressCheckpoint(progressPath, checkpoint);
+  const runId = process.env.OPEN_WRANGLER_TEST_RUN_ID;
+  const phase = process.env.OPEN_WRANGLER_TEST_PHASE;
+  if (!runId || !phase) {
+    throw new Error("Editor acceptance progress requires the launched run ID and phase.");
+  }
+  writeAcceptanceProgressCheckpoint(progressPath, {
+    protocol: ACCEPTANCE_PROGRESS_PROTOCOL,
+    runId,
+    phase,
+    checkpoint
+  });
 }
 
 async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -2990,7 +3000,11 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       pageSize: 20,
       mode: "editing"
     });
-    assert.equal(opened.kind, "sessionOpened");
+    assert.equal(
+      opened.kind,
+      "sessionOpened",
+      `Expected ${target.backend} sessionOpened, received ${JSON.stringify(opened)}`
+    );
     if (opened.kind !== "sessionOpened") continue;
 
     recordAcceptanceProgress(`seed:${target.backend}:preview`);

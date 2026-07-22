@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -18,13 +18,17 @@ import {
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { resolveCliPathFromVSCodeExecutablePath } from "@vscode/test-electron";
 import { redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
+import {
+  createEditorAcceptancePrivateRootReceipt,
+  removeEditorAcceptancePrivateRoot
+} from "./packaged-editor-orchestration.mjs";
 
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
@@ -35,6 +39,7 @@ export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
 export const EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const EDITOR_ACCEPTANCE_RESULT_MAX_BYTES = 1024 * 1024;
 export const EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES = 1024;
+export const EDITOR_ACCEPTANCE_PROGRESS_PROTOCOL = 1;
 export const EDITOR_COMMAND_OUTPUT_MAX_BYTES = 1024 * 1024;
 export const EDITOR_HARNESS_ERROR_MAX_CHARACTERS = 16_000;
 export const EDITOR_HARNESS_RESULT_MAX_BYTES = 128 * 1024;
@@ -54,13 +59,19 @@ const EDITOR_PROCESS_TREE_UNVERIFIED_CODE = "EDITOR_PROCESS_TREE_UNVERIFIED";
 const ACCEPTANCE_FILE_REPLACED_DURING_READ_CODE = "ACCEPTANCE_FILE_REPLACED_DURING_READ";
 const WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES = 256 * 1024;
 const WINDOWS_JOB_ATTESTATION_PREFIX = "OPEN_WRANGLER_WINDOWS_JOB_EMPTY:";
+const WINDOWS_JOB_BUILD_TIMEOUT_MS = 300_000;
+const WINDOWS_JOB_BUILD_OUTPUT_MAX_BYTES = 16 * 1024;
+const WINDOWS_JOB_EXECUTABLE_MAX_BYTES = 4 * 1024 * 1024;
 const XVFB_DISPLAY_OUTPUT_MAX_BYTES = 64;
 const XVFB_DIAGNOSTIC_MAX_BYTES = 16 * 1024;
 const EDITOR_OUTPUT_CLOSE_TIMEOUT_MS = 5_000;
+const EDITOR_DEBUG_PORT_RELEASE_GRACE_MS = 100;
 const OVERSIZED_EDITOR_DIAGNOSTIC =
   "Diagnostic text was suppressed because its complete value exceeded the fixed safety limit.";
 const INCOMPLETE_EDITOR_OUTPUT_DIAGNOSTIC =
   "Editor output was suppressed because complete stream closure could not be verified.";
+const ACCEPTANCE_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const ACCEPTANCE_PHASE = /^[a-z][a-z0-9-]{0,63}$/u;
 const PRIVATE_DIAGNOSTIC_PATH_ENV_KEYS = [
   "OPEN_WRANGLER_XVFB_EXECUTABLE",
   "OPEN_WRANGLER_VSCODE_EXECUTABLE",
@@ -112,7 +123,13 @@ export function collectEditorAcceptancePrivateDiagnosticPaths(additionalPaths = 
   if (busPath) {
     add(busPath);
     try {
-      add(decodeURIComponent(busPath));
+      const decodedBusPath = decodeURIComponent(busPath);
+      // A Unix D-Bus address can be present while the coordinator itself runs
+      // on Windows (for example, in a cross-platform diagnostic test). Keep the
+      // literal transport path as well as the host-normalized path so neither
+      // spelling can escape redaction.
+      paths.add(decodedBusPath);
+      add(decodedBusPath);
     } catch {
       // Malformed encoded transports remain covered by whole-address redaction.
     }
@@ -413,7 +430,20 @@ export async function startIsolatedEditorDisplay({
   const executable = environment[XVFB_EXECUTABLE_ENV] || "Xvfb";
   const child = spawnProcess(
     executable,
-    ["-displayfd", "3", "-screen", "0", "1920x1080x24", "-dpi", "96", "-nolisten", "tcp", "-noreset"],
+    [
+      "-displayfd",
+      "3",
+      "-screen",
+      "0",
+      "1920x1080x24",
+      "-dpi",
+      "96",
+      "-nolisten",
+      "tcp",
+      "-noreset",
+      "-extension",
+      "GLX"
+    ],
     {
       env: createEditorAcceptanceEnvironmentForPlatform(environment, {}, platform),
       stdio: ["ignore", "ignore", "pipe", "pipe"]
@@ -887,14 +917,281 @@ function parseEditorDownloadResult(stdout, version) {
 }
 
 export function resolveDownloadedEditorCliPath(executablePath, platform = process.platform) {
-  return platform === "win32" ? executablePath : resolveCliPathFromVSCodeExecutablePath(executablePath, platform);
+  if (platform === "win32") return executablePath;
+  if (platform === "darwin") {
+    return posix.resolve(posix.dirname(executablePath), "../Resources/app/bin/code");
+  }
+  return resolveCliPathFromVSCodeExecutablePath(executablePath, platform);
+}
+
+const windowsJobSupervisorBuilds = new Map();
+const unsafeWindowsJobSupervisorRoots = new Set();
+let windowsJobSupervisorFallbackRoot;
+let windowsJobSupervisorFallbackReceipt;
+let removeWindowsJobSupervisorFallbackRoot = false;
+
+export async function prepareWindowsEditorProcessSupervisor(
+  environment = process.env,
+  { platform = process.platform, spawnProcess = spawn, buildTimeoutMs = WINDOWS_JOB_BUILD_TIMEOUT_MS } = {}
+) {
+  if (platform !== "win32") return undefined;
+  if (!Number.isSafeInteger(buildTimeoutMs) || buildTimeoutMs <= 0 || buildTimeoutMs > WINDOWS_JOB_BUILD_TIMEOUT_MS) {
+    throw new Error(
+      `The Windows editor Job Object supervisor build timeout must be a positive safe integer no larger than ${WINDOWS_JOB_BUILD_TIMEOUT_MS}.`
+    );
+  }
+  // Editor subprocess environments intentionally omit this host-only routing
+  // value. Setup commands still belong to the process-owned acceptance root,
+  // so recover it from the coordinator environment before using a fallback.
+  const configuredRoot = environment[TEMP_ROOT_ENV] ?? process.env[TEMP_ROOT_ENV];
+  let buildRoot;
+  if (typeof configuredRoot === "string" && configuredRoot.length > 0) {
+    if (!isAbsolute(configuredRoot)) {
+      throw new Error("The Windows editor Job Object supervisor requires an absolute private temporary root.");
+    }
+    buildRoot = resolve(configuredRoot);
+  } else {
+    if (!windowsJobSupervisorFallbackRoot) {
+      const parent = resolve(tmpdir(), "ow");
+      mkdirSync(parent, { recursive: true, mode: 0o700 });
+      windowsJobSupervisorFallbackRoot = mkdtempSync(join(parent, "job-"));
+      windowsJobSupervisorFallbackReceipt = createEditorAcceptancePrivateRootReceipt(windowsJobSupervisorFallbackRoot, {
+        containedBy: parent
+      });
+      if (!removeWindowsJobSupervisorFallbackRoot) {
+        removeWindowsJobSupervisorFallbackRoot = true;
+        process.once("exit", () => {
+          if (unsafeWindowsJobSupervisorRoots.has(windowsJobSupervisorFallbackRoot)) return;
+          try {
+            removeEditorAcceptancePrivateRoot(windowsJobSupervisorFallbackReceipt);
+          } catch {
+            // Process exit cannot safely surface cleanup diagnostics. Normal
+            // packaged runs always place the helper under their owned root.
+          }
+        });
+      }
+    }
+    buildRoot = windowsJobSupervisorFallbackRoot;
+  }
+
+  if (unsafeWindowsJobSupervisorRoots.has(buildRoot)) {
+    throw unverifiedEditorProcessTreeError(
+      "The Windows editor Job Object supervisor root was previously involved in an unverified process tree and cannot be reused."
+    );
+  }
+
+  let build = windowsJobSupervisorBuilds.get(buildRoot);
+  if (!build) {
+    build = compileWindowsEditorProcessSupervisor(buildRoot, environment, spawnProcess, buildTimeoutMs);
+    windowsJobSupervisorBuilds.set(buildRoot, build);
+    build.catch(() => windowsJobSupervisorBuilds.delete(buildRoot));
+  }
+  return build;
+}
+
+async function compileWindowsEditorProcessSupervisor(buildRoot, environment, spawnProcess, buildTimeoutMs) {
+  mkdirSync(buildRoot, { recursive: true, mode: 0o700 });
+  const outputDirectory = mkdtempSync(join(buildRoot, "job-supervisor-"));
+  const executable = join(outputDirectory, "openwrangler-windows-job-supervisor.exe");
+  const systemRoot =
+    environment.SYSTEMROOT ??
+    environment.SystemRoot ??
+    environment.WINDIR ??
+    process.env.SYSTEMROOT ??
+    process.env.SystemRoot ??
+    process.env.WINDIR ??
+    "C:\\Windows";
+  const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const compilerEnvironment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(buildRoot, compilerEnvironment);
+  const child = spawnProcess(
+    powerShell,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      WINDOWS_JOB_SUPERVISOR_PATH,
+      "-CompileTo",
+      executable
+    ],
+    {
+      detached: false,
+      env: compilerEnvironment,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  const output = createBoundedCommandOutput(WINDOWS_JOB_BUILD_OUTPUT_MAX_BYTES);
+  child.stdout?.on("data", (chunk) => output.append("stdout", chunk));
+  child.stderr?.on("data", (chunk) => output.append("stderr", chunk));
+  let state;
+  try {
+    state = await promiseWithDeadline(
+      childClose(child),
+      buildTimeoutMs,
+      `Windows editor Job Object supervisor compilation exceeded ${buildTimeoutMs} ms.`
+    );
+  } catch (error) {
+    unsafeWindowsJobSupervisorRoots.add(buildRoot);
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The fixed failure below still prevents an unowned editor launch.
+    }
+    throw unverifiedEditorProcessTreeError(
+      "The Windows editor Job Object supervisor could not be prepared within its bounded bootstrap.",
+      error
+    );
+  } finally {
+    destroyCapturedCommandStdio(child);
+  }
+  if (state.error || state.code !== 0 || output.exceeded()) {
+    throw new Error("The Windows editor Job Object supervisor could not be compiled in its private root.");
+  }
+  const snapshot = lstatSync(executable, { bigint: true });
+  if (
+    !snapshot.isFile() ||
+    snapshot.nlink !== 1n ||
+    snapshot.size <= 0n ||
+    snapshot.size > BigInt(WINDOWS_JOB_EXECUTABLE_MAX_BYTES)
+  ) {
+    throw new Error("The compiled Windows editor Job Object supervisor is not a private regular file.");
+  }
+  const rootSnapshot = lstatSync(buildRoot, { bigint: true });
+  const parentSnapshot = lstatSync(outputDirectory, { bigint: true });
+  if (
+    !rootSnapshot.isDirectory() ||
+    rootSnapshot.isSymbolicLink() ||
+    !parentSnapshot.isDirectory() ||
+    parentSnapshot.isSymbolicLink() ||
+    relative(buildRoot, outputDirectory).startsWith("..")
+  ) {
+    throw new Error("The compiled Windows editor Job Object supervisor escaped its private root.");
+  }
+  return Object.freeze({
+    executable,
+    canonicalExecutable: realpathSync(executable),
+    buildRoot,
+    canonicalBuildRoot: realpathSync(buildRoot),
+    outputDirectory,
+    rootSnapshot,
+    parentSnapshot,
+    executableSnapshot: snapshot,
+    executableSha256: windowsJobSupervisorDigest(executable, snapshot)
+  });
+}
+
+function assertWindowsEditorProcessSupervisorReceipt(receipt) {
+  if (!receipt || typeof receipt !== "object") {
+    throw new Error("The Windows editor Job Object supervisor has no immutable preparation receipt.");
+  }
+  const currentRoot = lstatSync(receipt.buildRoot, { bigint: true });
+  const currentParent = lstatSync(receipt.outputDirectory, { bigint: true });
+  const currentExecutable = lstatSync(receipt.executable, { bigint: true });
+  if (
+    !sameDirectoryPathIdentity(currentRoot, receipt.rootSnapshot) ||
+    !sameImmutablePathSnapshot(currentParent, receipt.parentSnapshot) ||
+    !sameImmutablePathSnapshot(currentExecutable, receipt.executableSnapshot) ||
+    !currentRoot.isDirectory() ||
+    currentRoot.isSymbolicLink() ||
+    !currentParent.isDirectory() ||
+    currentParent.isSymbolicLink() ||
+    !currentExecutable.isFile() ||
+    currentExecutable.isSymbolicLink() ||
+    currentExecutable.nlink !== 1n ||
+    realpathSync(receipt.buildRoot) !== receipt.canonicalBuildRoot ||
+    realpathSync(receipt.executable) !== receipt.canonicalExecutable ||
+    relative(receipt.buildRoot, receipt.outputDirectory).startsWith("..") ||
+    windowsJobSupervisorDigest(receipt.executable, receipt.executableSnapshot) !== receipt.executableSha256
+  ) {
+    throw new Error("The prepared Windows editor Job Object supervisor changed before launch.");
+  }
+  return receipt.executable;
+}
+
+function windowsJobSupervisorDigest(path, expectedSnapshot) {
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  let descriptor;
+  try {
+    descriptor = openSync(path, flags);
+  } catch (error) {
+    if (error && typeof error === "object" && (error.code === "ELOOP" || error.code === "EMLINK")) {
+      throw new Error("The compiled Windows editor Job Object supervisor may not be a symbolic link.", {
+        cause: error
+      });
+    }
+    throw error;
+  }
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    const pathSnapshot = lstatSync(path, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      opened.size <= 0n ||
+      opened.size > BigInt(WINDOWS_JOB_EXECUTABLE_MAX_BYTES) ||
+      pathSnapshot.isSymbolicLink() ||
+      !sameImmutablePathSnapshot(opened, pathSnapshot) ||
+      !sameImmutablePathSnapshot(opened, expectedSnapshot)
+    ) {
+      throw new Error("The compiled Windows editor Job Object supervisor changed before it could be read.");
+    }
+
+    const content = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < content.length) {
+      const count = readSync(descriptor, content, offset, content.length - offset, offset);
+      if (count === 0) {
+        throw new Error("The compiled Windows editor Job Object supervisor ended before its attested size.");
+      }
+      offset += count;
+    }
+
+    const completed = fstatSync(descriptor, { bigint: true });
+    const finalPathSnapshot = lstatSync(path, { bigint: true });
+    if (
+      !sameImmutablePathSnapshot(completed, opened) ||
+      finalPathSnapshot.isSymbolicLink() ||
+      !sameImmutablePathSnapshot(finalPathSnapshot, opened)
+    ) {
+      throw new Error("The compiled Windows editor Job Object supervisor changed while it was read.");
+    }
+    return createHash("sha256").update(content).digest("hex");
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function sameDirectoryPathIdentity(current, expected) {
+  return (
+    current.dev === expected.dev &&
+    current.ino === expected.ino &&
+    current.mode === expected.mode &&
+    current.birthtimeNs === expected.birthtimeNs
+  );
+}
+
+function sameImmutablePathSnapshot(current, expected) {
+  return (
+    current.dev === expected.dev &&
+    current.ino === expected.ino &&
+    current.mode === expected.mode &&
+    current.nlink === expected.nlink &&
+    current.size === expected.size &&
+    current.mtimeNs === expected.mtimeNs &&
+    current.ctimeNs === expected.ctimeNs &&
+    current.birthtimeNs === expected.birthtimeNs
+  );
 }
 
 export function spawnOwnedEditorProcess(
   executable,
   args,
   options,
-  { platform = process.platform, spawnProcess = spawn, supervisorPath = WINDOWS_JOB_SUPERVISOR_PATH } = {}
+  { platform = process.platform, spawnProcess = spawn, supervisorPath, supervisorReceipt } = {}
 ) {
   if (platform !== "win32") return spawnProcess(executable, args, options);
 
@@ -920,18 +1217,32 @@ export function spawnOwnedEditorProcess(
     throw new Error(`Windows editor job launch metadata exceeds ${WINDOWS_JOB_LAUNCH_FRAME_MAX_BYTES} bytes.`);
   }
 
-  const systemRoot = environment.SYSTEMROOT ?? environment.SystemRoot ?? environment.WINDIR ?? "C:\\Windows";
-  const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const child = spawnProcess(
-    powerShell,
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", supervisorPath],
-    {
-      ...options,
-      detached: false,
-      windowsHide: true,
-      stdio: windowsSupervisorStdio(options.stdio)
-    }
-  );
+  let supervisor;
+  let supervisorArgs;
+  if (supervisorReceipt) {
+    supervisor = assertWindowsEditorProcessSupervisorReceipt(supervisorReceipt);
+    supervisorArgs = [];
+  } else if (supervisorPath) {
+    const systemRoot = environment.SYSTEMROOT ?? environment.SystemRoot ?? environment.WINDIR ?? "C:\\Windows";
+    supervisor = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    supervisorArgs = [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      supervisorPath
+    ];
+  } else {
+    throw new Error("The Windows editor Job Object supervisor was not prepared before launch.");
+  }
+  const child = spawnProcess(supervisor, supervisorArgs, {
+    ...options,
+    detached: false,
+    windowsHide: true,
+    stdio: windowsSupervisorStdio(options.stdio)
+  });
   if (!child.stdin || typeof child.stdin.write !== "function") {
     throw abandonUnverifiedWindowsSupervisor(
       child,
@@ -1110,7 +1421,8 @@ export async function runBoundedEditorCommand(
     killGraceMs = EDITOR_COMMAND_KILL_GRACE_MS,
     windowsTreeKill,
     windowsTreeKillTimeoutMs = WINDOWS_TREE_KILL_TIMEOUT_MS,
-    signalSource = process
+    signalSource = process,
+    now = () => performance.now()
   } = {}
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -1126,7 +1438,37 @@ export async function runBoundedEditorCommand(
     );
   }
 
-  const startedAt = performance.now();
+  const startedAt = now();
+  let supervisorReceipt;
+  try {
+    supervisorReceipt =
+      platform === "win32" && !spawnProcess
+        ? await prepareWindowsEditorProcessSupervisor(environment, {
+            platform,
+            buildTimeoutMs: Math.min(timeoutMs, WINDOWS_JOB_BUILD_TIMEOUT_MS)
+          })
+        : undefined;
+  } catch (error) {
+    throw editorCommandError(
+      label,
+      "could not prepare its owned Windows Job Object supervisor",
+      startedAt,
+      "",
+      "",
+      error
+    );
+  }
+  const preparationElapsedMs = Math.max(0, now() - startedAt);
+  const remainingTimeoutMs = Math.max(0, timeoutMs - preparationElapsedMs);
+  if (remainingTimeoutMs <= 0) {
+    throw editorCommandError(
+      label,
+      `timed out after ${timeoutMs} ms during owned-process preparation`,
+      startedAt,
+      "",
+      ""
+    );
+  }
   let child;
   try {
     const launchProcess = spawnProcess ?? spawnOwnedEditorProcess;
@@ -1139,11 +1481,16 @@ export async function runBoundedEditorCommand(
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"]
       },
-      { platform }
+      { platform, supervisorReceipt }
     );
   } catch (error) {
+    if (supervisorReceipt && editorProcessTreeMayBeLive(error)) {
+      unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
+    }
     throw editorCommandError(label, "could not start", startedAt, "", "", error);
   }
+
+  const remainingObservationTimeoutMs = Math.max(0, timeoutMs - Math.max(0, now() - startedAt));
 
   const output = createBoundedCommandOutput(maxOutputBytes);
   let resolveOverflow;
@@ -1191,14 +1538,17 @@ export async function runBoundedEditorCommand(
   let timeout;
   let observation;
   try {
-    observation = await Promise.race([
-      close.then((state) => ({ kind: "exit", state })),
-      overflow,
-      interruption,
-      new Promise((resolveTimeout) => {
-        timeout = setTimeout(() => resolveTimeout({ kind: "timeout" }), timeoutMs);
-      })
-    ]);
+    observation =
+      remainingObservationTimeoutMs <= 0
+        ? { kind: "timeout" }
+        : await Promise.race([
+            close.then((state) => ({ kind: "exit", state })),
+            overflow,
+            interruption,
+            new Promise((resolveTimeout) => {
+              timeout = setTimeout(() => resolveTimeout({ kind: "timeout" }), remainingObservationTimeoutMs);
+            })
+          ]);
   } finally {
     clearTimeout(timeout);
   }
@@ -1273,6 +1623,9 @@ export async function runBoundedEditorCommand(
 
   const resourceFailures = [terminationError, stdioError].filter(Boolean);
   if (resourceFailures.length > 0) {
+    if (supervisorReceipt && resourceFailures.some((error) => editorProcessTreeMayBeLive(error))) {
+      unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
+    }
     const failure = new AggregateError(
       [commandFailure, ...resourceFailures].filter(Boolean),
       `${label} failed or did not release all owned process resources.`
@@ -1368,20 +1721,34 @@ export function writeEditorAcceptanceHarness(directory) {
   writeFileSync(
     resolve(directory, "extension.js"),
     `const fs = require("node:fs");
-const crypto = require("node:crypto");
-const vscode = require("vscode");
+	const crypto = require("node:crypto");
+	const vscode = require("vscode");
 
-function recordProgress(checkpoint) {
-  const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
-  if (!progressPath) return;
-  const temporaryProgressPath = progressPath + "." + process.pid + "." + crypto.randomUUID() + ".tmp";
-  try {
-    fs.writeFileSync(temporaryProgressPath, checkpoint + "\\n", { encoding: "utf8", flag: "wx" });
-    fs.renameSync(temporaryProgressPath, progressPath);
-  } finally {
-    try { fs.rmSync(temporaryProgressPath, { force: true }); } catch {}
-  }
-}
+	function publishProgressFile(targetPath, contents) {
+	  const temporaryPath = targetPath + "." + process.pid + "." + crypto.randomUUID() + ".tmp";
+	  try {
+	    fs.writeFileSync(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
+	    const temporary = fs.lstatSync(temporaryPath, { bigint: true });
+	    if (!temporary.isFile() || temporary.isSymbolicLink() || temporary.nlink !== 1n) {
+	      throw new Error("The editor acceptance progress temporary is not exclusively owned.");
+	    }
+	    fs.renameSync(temporaryPath, targetPath);
+	  } finally {
+	    try { fs.rmSync(temporaryPath, { force: true }); } catch {}
+	  }
+	}
+
+	function recordProgress(runId, phase, checkpoint) {
+	  const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
+	  if (!progressPath) return;
+	  const serialized = JSON.stringify({ protocol: ${EDITOR_ACCEPTANCE_PROGRESS_PROTOCOL}, runId, phase, checkpoint }) + "\\n";
+	  if (Buffer.byteLength(serialized, "utf8") > ${EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES}) {
+	    throw new Error("The editor acceptance progress envelope exceeded its fixed byte limit.");
+	  }
+	  publishProgressFile(progressPath, serialized);
+	  const signalPath = progressPath + "." + runId.replaceAll("-", "") + "." + phase + ".heartbeat";
+	  publishProgressFile(signalPath, "");
+	}
 
 const EDITOR_HARNESS_ERROR_MAX_CHARACTERS = ${EDITOR_HARNESS_ERROR_MAX_CHARACTERS};
 const EDITOR_HARNESS_RESULT_MAX_BYTES = ${EDITOR_HARNESS_RESULT_MAX_BYTES};
@@ -1393,7 +1760,7 @@ exports.activate = async function (context) {
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE || "unknown";
   const runId = process.env.OPEN_WRANGLER_TEST_RUN_ID || "missing-run-id";
   const envelope = { protocol: 1, runId, phase };
-  recordProgress(phase + ":harness-start");
+  recordProgress(runId, phase, phase + ":harness-start");
   context.subscriptions.push(vscode.window.registerCustomEditorProvider("openwrangler-tests.csvEditor", {
     openCustomDocument(uri) {
       return { uri, dispose() {} };
@@ -1640,8 +2007,47 @@ exports.deactivate = function () {
   );
 }
 
+export function createAcceptanceProgressEnvelope(runId, phase, checkpoint) {
+  const envelope = {
+    protocol: EDITOR_ACCEPTANCE_PROGRESS_PROTOCOL,
+    runId,
+    phase,
+    checkpoint
+  };
+  validateAcceptanceProgressEnvelope(envelope);
+  return envelope;
+}
+
+export function editorAcceptanceProgressPath(resultPath, runId, phase) {
+  createAcceptanceProgressEnvelope(runId, phase, "path-reservation");
+  if (typeof resultPath !== "string" || resultPath.length === 0 || /[\0\r\n]/u.test(resultPath)) {
+    throw new Error("An editor acceptance result path must be a non-empty single-line filesystem path.");
+  }
+  return `${resultPath}.${runId}.${phase}.progress`;
+}
+
+export function editorAcceptanceProgressSignalPath(progressPath, runId, phase) {
+  createAcceptanceProgressEnvelope(runId, phase, "signal-path-reservation");
+  if (typeof progressPath !== "string" || progressPath.length === 0 || /[\0\r\n]/u.test(progressPath)) {
+    throw new Error("An editor acceptance progress path must be a non-empty single-line filesystem path.");
+  }
+  return `${progressPath}.${runId.replaceAll("-", "")}.${phase}.heartbeat`;
+}
+
 export async function runEditorAcceptancePhase(
-  { editor, workspace, userData, extensions, developmentPaths, testModule, python, phase, resultPath },
+  {
+    editor,
+    workspace,
+    userData,
+    extensions,
+    developmentPaths,
+    testModule,
+    python,
+    phase,
+    resultPath,
+    runId = randomUUID(),
+    progressPath = editorAcceptanceProgressPath(resultPath, runId, phase)
+  },
   {
     spawnProcess,
     environment = process.env,
@@ -1653,23 +2059,175 @@ export async function runEditorAcceptancePhase(
     outputCloseTimeoutMs = EDITOR_OUTPUT_CLOSE_TIMEOUT_MS,
     platform = process.platform,
     windowsTreeKill,
-    windowsTreeKillTimeoutMs = WINDOWS_TREE_KILL_TIMEOUT_MS
+    windowsTreeKillTimeoutMs = WINDOWS_TREE_KILL_TIMEOUT_MS,
+    reserveDebugPort = reserveEditorDebugPort
   } = {}
 ) {
+  const expectedProgressPath = editorAcceptanceProgressPath(resultPath, runId, phase);
+  if (progressPath !== expectedProgressPath) {
+    throw new Error("An editor acceptance progress path must be the unique path derived for its run and phase.");
+  }
+  const startedAt = now();
   rmSync(resultPath, { force: true });
-  const progressPath = `${resultPath}.progress`;
   rmSync(progressPath, { force: true });
-  const runId = randomUUID();
+  const progressCorrelation = { runId, phase };
   const displayMode = platform === "linux" ? editorDisplayMode(environment) : undefined;
-  const cdpPort =
-    phase === "verify" || environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS ? await reservePort() : undefined;
+  const progressReader = platform === "win32" ? acceptanceProgressFileSnapshot : acceptanceProgressCheckpoint;
+  const progressReadOptions = { expectedRunId: runId, expectedPhase: phase };
+  writeAcceptanceProgress(
+    progressPath,
+    createAcceptanceProgressEnvelope(progressCorrelation.runId, progressCorrelation.phase, `${phase}:runner-spawn`)
+  );
+  const initialProgressCheckpoint = progressReader(progressPath, progressReadOptions);
+  const initialProgressAt = now();
+  const deadlineState = () => {
+    const currentTime = now();
+    const phaseElapsedMs = Math.max(0, currentTime - startedAt);
+    const inactivityElapsedMs = Math.max(0, currentTime - initialProgressAt);
+    if (phaseElapsedMs >= phaseTimeoutMs) {
+      return { expired: true, kind: "phase", phaseElapsedMs, inactivityElapsedMs, remainingMs: 0 };
+    }
+    if (inactivityElapsedMs >= inactivityTimeoutMs) {
+      return { expired: true, kind: "inactivity", phaseElapsedMs, inactivityElapsedMs, remainingMs: 0 };
+    }
+    const remainingPhaseMs = phaseTimeoutMs - phaseElapsedMs;
+    const remainingInactivityMs = inactivityTimeoutMs - inactivityElapsedMs;
+    return {
+      expired: false,
+      kind: remainingPhaseMs <= remainingInactivityMs ? "phase" : "inactivity",
+      phaseElapsedMs,
+      inactivityElapsedMs,
+      remainingMs: Math.min(remainingPhaseMs, remainingInactivityMs)
+    };
+  };
+  const deadlineDescription = (kind) =>
+    kind === "inactivity" ? `${inactivityTimeoutMs} ms without a new checkpoint` : `${phaseTimeoutMs} ms phase limit`;
+  let supervisorReceipt;
+  const supervisorDeadline = deadlineState();
+  if (supervisorDeadline.expired) {
+    throw createEditorAcceptanceFailure(
+      "outer-timeout",
+      `${editor.name} ${phase} acceptance timed out after ${deadlineDescription(supervisorDeadline.kind)} during owned-process preparation.`,
+      {
+        editor,
+        phase,
+        elapsedMs: supervisorDeadline.phaseElapsedMs,
+        resultPath,
+        progressPath,
+        platform,
+        displayMode,
+        runId,
+        timeoutKind: supervisorDeadline.kind
+      }
+    );
+  }
+  try {
+    supervisorReceipt =
+      platform === "win32" && !spawnProcess
+        ? await prepareWindowsEditorProcessSupervisor(environment, {
+            platform,
+            buildTimeoutMs: Math.max(
+              1,
+              Math.min(Math.ceil(supervisorDeadline.remainingMs), WINDOWS_JOB_BUILD_TIMEOUT_MS)
+            )
+          })
+        : undefined;
+  } catch (error) {
+    const deadline = deadlineState();
+    const timedOut = deadline.expired;
+    throw createEditorAcceptanceFailure(
+      timedOut ? "outer-timeout" : "spawn-failure",
+      timedOut
+        ? `${editor.name} ${phase} acceptance timed out after ${deadlineDescription(deadline.kind)} during owned-process preparation.`
+        : `${editor.name} ${phase} acceptance could not prepare its owned Windows Job Object supervisor: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        editor,
+        phase,
+        elapsedMs: deadline.phaseElapsedMs,
+        resultPath,
+        progressPath,
+        platform,
+        displayMode,
+        runId,
+        ...(timedOut ? { timeoutKind: deadline.kind } : {}),
+        exitState: { error },
+        ...(editorProcessTreeMayBeLive(error) ? { treeVerifiedStopped: false, readProgress: false } : {})
+      },
+      error
+    );
+  }
+  let cdpPort;
+  if (phase === "verify" || environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+    const portDeadline = deadlineState();
+    if (portDeadline.expired) {
+      throw createEditorAcceptanceFailure(
+        "outer-timeout",
+        `${editor.name} ${phase} acceptance timed out after ${deadlineDescription(portDeadline.kind)} during debugging-port reservation.`,
+        {
+          editor,
+          phase,
+          elapsedMs: portDeadline.phaseElapsedMs,
+          resultPath,
+          progressPath,
+          platform,
+          displayMode,
+          runId,
+          timeoutKind: portDeadline.kind
+        }
+      );
+    }
+    try {
+      cdpPort = await reserveDebugPort(Math.max(1, Math.floor(portDeadline.remainingMs)));
+    } catch (error) {
+      const completedDeadline = deadlineState();
+      const timedOut =
+        completedDeadline.expired ||
+        (error && typeof error === "object" && error.code === "EDITOR_ACCEPTANCE_DEADLINE");
+      const timeoutKind = completedDeadline.expired ? completedDeadline.kind : portDeadline.kind;
+      throw createEditorAcceptanceFailure(
+        timedOut ? "outer-timeout" : "spawn-failure",
+        timedOut
+          ? `${editor.name} ${phase} acceptance timed out after ${deadlineDescription(timeoutKind)} during debugging-port reservation.`
+          : `${editor.name} ${phase} acceptance could not reserve its private debugging port: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          editor,
+          phase,
+          elapsedMs: completedDeadline.phaseElapsedMs,
+          resultPath,
+          progressPath,
+          platform,
+          displayMode,
+          runId,
+          ...(timedOut ? { timeoutKind } : {}),
+          exitState: { error }
+        },
+        error
+      );
+    }
+  }
   const sandboxArgs = [
     ...(platform === "linux" ? ["--no-sandbox"] : []),
     ...editorDisplayLaunchArgs(platform, environment)
   ];
   const sharedDataArgs = editor.sharedDataDir ? ["--shared-data-dir", resolve(userData, "shared-data")] : [];
-  const startedAt = now();
-  writeAcceptanceProgress(progressPath, `${phase}:runner-spawn`);
+  const beforeSpawnDeadline = deadlineState();
+  if (beforeSpawnDeadline.expired) {
+    throw createEditorAcceptanceFailure(
+      "outer-timeout",
+      `${editor.name} ${phase} acceptance timed out after ${deadlineDescription(beforeSpawnDeadline.kind)} during owned-process preparation.`,
+      {
+        editor,
+        phase,
+        elapsedMs: beforeSpawnDeadline.phaseElapsedMs,
+        resultPath,
+        progressPath,
+        platform,
+        displayMode,
+        runId,
+        timeoutKind: beforeSpawnDeadline.kind
+      }
+    );
+  }
   let child;
   try {
     const launchProcess = spawnProcess ?? spawnOwnedEditorProcess;
@@ -1713,21 +2271,32 @@ export async function runEditorAcceptancePhase(
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"]
       },
-      { platform }
+      { platform, supervisorReceipt }
     );
   } catch (error) {
+    const completedDeadline = deadlineState();
+    const timedOut = completedDeadline.expired;
+    const treeMayBeLive = editorProcessTreeMayBeLive(error);
+    if (supervisorReceipt && treeMayBeLive) {
+      unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
+    }
     throw createEditorAcceptanceFailure(
-      "spawn-failure",
-      `${editor.name} ${phase} acceptance could not start: ${error instanceof Error ? error.message : String(error)}`,
+      timedOut ? "outer-timeout" : "spawn-failure",
+      timedOut
+        ? `${editor.name} ${phase} acceptance timed out after ${deadlineDescription(completedDeadline.kind)} during owned-process launch.`
+        : `${editor.name} ${phase} acceptance could not start: ${error instanceof Error ? error.message : String(error)}`,
       {
         editor,
         phase,
-        elapsedMs: Math.max(0, now() - startedAt),
+        elapsedMs: completedDeadline.phaseElapsedMs,
         resultPath,
         progressPath,
         platform,
         displayMode,
-        exitState: { error }
+        runId,
+        ...(timedOut ? { timeoutKind: completedDeadline.kind } : {}),
+        exitState: { error },
+        ...(treeMayBeLive ? { treeVerifiedStopped: false, readProgress: false } : {})
       },
       error
     );
@@ -1765,6 +2334,8 @@ export async function runEditorAcceptancePhase(
   const onSigterm = () => recordInterruption("SIGTERM");
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigterm);
+  const observationStartedAfterMs = Math.max(0, now() - startedAt);
+  const remainingPhaseTimeoutMs = Math.max(0, phaseTimeoutMs - observationStartedAfterMs);
   let outcome;
   let failure;
   let resultContext;
@@ -1777,18 +2348,23 @@ export async function runEditorAcceptancePhase(
       isInterrupted: () => interruptedSignal,
       now,
       wait,
-      phaseTimeoutMs,
+      phaseTimeoutMs: remainingPhaseTimeoutMs,
       inactivityTimeoutMs,
-      progressReader: platform === "win32" ? acceptanceProgressFileSnapshot : acceptanceProgressCheckpoint
+      runId,
+      phase,
+      progressReader,
+      initialProgressCheckpoint,
+      progressStartedAt: initialProgressAt
     });
     const context = {
       editor,
       phase,
-      elapsedMs: observation.elapsedMs,
+      elapsedMs: observationStartedAfterMs + observation.elapsedMs,
       resultPath,
       progressPath,
       platform,
       displayMode,
+      runId,
       exitState: observation.exitState,
       resultSnapshot: observation.resultSnapshot
     };
@@ -1831,6 +2407,7 @@ export async function runEditorAcceptancePhase(
         progressPath,
         platform,
         displayMode,
+        runId,
         exitState
       },
       cause: error
@@ -1881,6 +2458,9 @@ export async function runEditorAcceptancePhase(
   const retainedEditorOutput =
     shutdownError || outputCloseError ? INCOMPLETE_EDITOR_OUTPUT_DIAGNOSTIC : sanitizeEditorPhaseOutput(editorOutput);
   const processResourcesUnverified = editorProcessTreeMayBeLive(cleanupError);
+  if (supervisorReceipt && processResourcesUnverified) {
+    unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
+  }
 
   if (resultContext && !failure) {
     if (shutdownError || outputCloseError) {
@@ -1945,6 +2525,7 @@ export async function runEditorAcceptancePhase(
         progressPath,
         platform,
         displayMode,
+        runId,
         exitState,
         ...(retainedEditorOutput ? { editorOutput: retainedEditorOutput } : {})
       })
@@ -1986,52 +2567,97 @@ export async function waitForEditorAcceptanceObservation({
   phaseTimeoutMs = EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS,
   inactivityTimeoutMs = EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS,
   pollIntervalMs = EDITOR_ACCEPTANCE_POLL_INTERVAL_MS,
-  progressReader = acceptanceProgressCheckpoint
+  runId,
+  phase,
+  progressReader = acceptanceProgressCheckpoint,
+  initialProgressCheckpoint,
+  progressStartedAt
 }) {
+  const progressReadOptions = {
+    ...(runId === undefined ? {} : { expectedRunId: runId }),
+    ...(phase === undefined ? {} : { expectedPhase: phase })
+  };
   const startedAt = now();
-  let resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
-  if (resultSnapshot) return { kind: "result", elapsedMs: 0, resultSnapshot };
-  let checkpoint = progressReader(progressPath);
-  let lastProgressAt = startedAt;
-  while (true) {
+  let checkpoint = initialProgressCheckpoint;
+  let checkpointInitialized = initialProgressCheckpoint !== undefined;
+  let lastProgressAt = progressStartedAt ?? startedAt;
+  const refreshCheckpoint = () => {
+    const nextCheckpoint = progressReader(progressPath, progressReadOptions);
+    if (!checkpointInitialized) {
+      checkpoint = nextCheckpoint;
+      checkpointInitialized = true;
+    } else if (nextCheckpoint !== undefined && nextCheckpoint !== checkpoint) {
+      checkpoint = nextCheckpoint;
+      lastProgressAt = now();
+    }
+  };
+  const authoritativeDeadline = () => {
+    let currentTime = now();
+    let elapsedMs = Math.max(0, currentTime - startedAt);
+    if (elapsedMs >= phaseTimeoutMs) return { kind: "timeout", timeout: "phase", elapsedMs };
+    if (Math.max(0, currentTime - lastProgressAt) < inactivityTimeoutMs) return undefined;
+    try {
+      refreshCheckpoint();
+    } catch {
+      currentTime = now();
+      elapsedMs = Math.max(0, currentTime - startedAt);
+      if (elapsedMs >= phaseTimeoutMs) return { kind: "timeout", timeout: "phase", elapsedMs };
+      return { kind: "timeout", timeout: "inactivity", elapsedMs };
+    }
+    currentTime = now();
+    elapsedMs = Math.max(0, currentTime - startedAt);
+    if (elapsedMs >= phaseTimeoutMs) return { kind: "timeout", timeout: "phase", elapsedMs };
+    if (Math.max(0, currentTime - lastProgressAt) >= inactivityTimeoutMs) {
+      return { kind: "timeout", timeout: "inactivity", elapsedMs };
+    }
+    return undefined;
+  };
+  const observeResult = (initialObservation = false) => {
+    let deadline = authoritativeDeadline();
+    if (deadline) return deadline;
+    const resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
+    deadline = authoritativeDeadline();
+    if (deadline) return deadline;
     const elapsedMs = Math.max(0, now() - startedAt);
-    resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
-    if (resultSnapshot) return { kind: "result", elapsedMs, resultSnapshot };
+    return resultSnapshot
+      ? { kind: "result", elapsedMs: initialObservation ? 0 : elapsedMs, resultSnapshot }
+      : { kind: "pending", elapsedMs };
+  };
+  let resultObservation = observeResult(true);
+  if (resultObservation.kind !== "pending") return resultObservation;
+  try {
+    refreshCheckpoint();
+  } catch (error) {
+    resultObservation = observeResult();
+    if (resultObservation.kind !== "pending") return resultObservation;
+    throw error;
+  }
+  while (true) {
+    resultObservation = observeResult();
+    if (resultObservation.kind !== "pending") return resultObservation;
+    const elapsedMs = resultObservation.elapsedMs;
     const signal = isInterrupted();
     if (signal) return { kind: "interrupted", signal, elapsedMs };
     if (!isRunning()) {
       const observedExit = await exit;
-      resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
-      if (resultSnapshot) {
-        return { kind: "result", elapsedMs: Math.max(0, now() - startedAt), resultSnapshot };
-      }
-      return { kind: "exit", exitState: observedExit, elapsedMs };
+      resultObservation = observeResult();
+      if (resultObservation.kind !== "pending") return resultObservation;
+      return { kind: "exit", exitState: observedExit, elapsedMs: resultObservation.elapsedMs };
     }
 
-    let nextCheckpoint;
     try {
-      nextCheckpoint = progressReader(progressPath);
+      refreshCheckpoint();
     } catch (error) {
-      resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
-      if (resultSnapshot) {
-        return { kind: "result", elapsedMs: Math.max(0, now() - startedAt), resultSnapshot };
-      }
+      resultObservation = observeResult();
+      if (resultObservation.kind !== "pending") return resultObservation;
       throw error;
-    }
-    if (nextCheckpoint !== checkpoint) {
-      checkpoint = nextCheckpoint;
-      lastProgressAt = now();
     }
     const currentTime = now();
     const currentElapsedMs = Math.max(0, currentTime - startedAt);
     if (currentElapsedMs >= phaseTimeoutMs) {
-      resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
-      if (resultSnapshot) return { kind: "result", elapsedMs: currentElapsedMs, resultSnapshot };
       return { kind: "timeout", timeout: "phase", elapsedMs: currentElapsedMs };
     }
     if (Math.max(0, currentTime - lastProgressAt) >= inactivityTimeoutMs) {
-      resultSnapshot = acceptanceFileSnapshotIfExists(resultPath);
-      if (resultSnapshot) return { kind: "result", elapsedMs: currentElapsedMs, resultSnapshot };
       return { kind: "timeout", timeout: "inactivity", elapsedMs: currentElapsedMs };
     }
     await wait(pollIntervalMs);
@@ -2219,7 +2845,11 @@ export function createEditorAcceptanceFailure(kind, summary, context, cause) {
   let progress = null;
   if (readProgress) {
     try {
-      progress = acceptanceProgressCheckpoint(context.progressPath) ?? null;
+      progress =
+        acceptanceProgressCheckpoint(context.progressPath, {
+          expectedRunId: context.runId,
+          expectedPhase: context.phase === "cleanup" ? context.cleanupOfPhase : context.phase
+        }) ?? null;
     } catch {
       // The user-facing detail below reports malformed or unsafe checkpoint files.
     }
@@ -2236,6 +2866,8 @@ export function createEditorAcceptanceFailure(kind, summary, context, cause) {
     signal: exitState && !exitState.error ? (exitState.signal ?? null) : null,
     timeoutKind: context.timeoutKind ?? null,
     resultPath: context.resultPath,
+    progressPath: context.progressPath,
+    runId: context.runId ?? null,
     progress,
     ...(remediation ? { remediation } : {}),
     ...(context.treeVerifiedStopped === false ? { treeVerifiedStopped: false } : {}),
@@ -2249,7 +2881,10 @@ export function createEditorAcceptanceFailure(kind, summary, context, cause) {
     `Exit: ${exitDetail}.`,
     `Result: ${context.resultPath}.`,
     readProgress
-      ? acceptanceProgressDetail(context.progressPath)
+      ? acceptanceProgressDetail(context.progressPath, {
+          expectedRunId: context.runId,
+          expectedPhase: context.phase === "cleanup" ? context.cleanupOfPhase : context.phase
+        })
       : "Acceptance checkpoint content was not opened because editor-tree shutdown is unverified.",
     remediation ? `Remediation: ${remediation}` : "",
     typeof context.editorOutput === "string" ? `Sanitized editor output:\n${context.editorOutput}` : ""
@@ -2284,6 +2919,7 @@ function createEditorAcceptanceCleanupFailure(error, context) {
     {
       ...context,
       phase: "cleanup",
+      cleanupOfPhase: context.phase,
       readProgress: !treeMayBeLive,
       ...(treeMayBeLive ? { treeVerifiedStopped: false } : {})
     },
@@ -2293,19 +2929,48 @@ function createEditorAcceptanceCleanupFailure(error, context) {
   return cleanupFailure;
 }
 
-export function writeAcceptanceProgress(progressPath, checkpoint) {
-  if (
-    typeof checkpoint !== "string" ||
-    checkpoint.length === 0 ||
-    checkpoint.includes("\n") ||
-    checkpoint.includes("\r") ||
-    Buffer.byteLength(checkpoint, "utf8") + 1 > EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES
-  ) {
-    throw new Error(
-      "An editor acceptance checkpoint must be a non-empty, single-line UTF-8 string whose file is at most 1024 bytes including its newline."
-    );
+function validateAcceptanceProgressEnvelope(envelope) {
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    throw new Error("An editor acceptance checkpoint must be an object envelope.");
   }
-  const temporaryPath = `${progressPath}.${process.pid}.${randomUUID()}.tmp`;
+  const keys = Object.keys(envelope).sort();
+  if (keys.length !== 4 || keys.join(",") !== "checkpoint,phase,protocol,runId") {
+    throw new Error("An editor acceptance checkpoint must contain exactly protocol, runId, phase, and checkpoint.");
+  }
+  if (envelope.protocol !== EDITOR_ACCEPTANCE_PROGRESS_PROTOCOL) {
+    throw new Error(`An editor acceptance checkpoint must use protocol ${EDITOR_ACCEPTANCE_PROGRESS_PROTOCOL}.`);
+  }
+  if (typeof envelope.runId !== "string" || !ACCEPTANCE_RUN_ID.test(envelope.runId)) {
+    throw new Error("An editor acceptance checkpoint run ID must be a canonical UUID.");
+  }
+  if (typeof envelope.phase !== "string" || !ACCEPTANCE_PHASE.test(envelope.phase)) {
+    throw new Error("An editor acceptance checkpoint phase must be a bounded safe identifier.");
+  }
+  if (
+    typeof envelope.checkpoint !== "string" ||
+    envelope.checkpoint.length === 0 ||
+    /[\0\r\n]/u.test(envelope.checkpoint)
+  ) {
+    throw new Error("An editor acceptance checkpoint must be a non-empty single-line string.");
+  }
+}
+
+export function writeAcceptanceProgress(progressPath, envelope) {
+  validateAcceptanceProgressEnvelope(envelope);
+  const serialized = `${JSON.stringify(envelope)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES) {
+    throw new Error("An editor acceptance checkpoint envelope must be at most 1024 UTF-8 bytes including its newline.");
+  }
+  publishAcceptanceProgressFile(progressPath, serialized, "checkpoint");
+  publishAcceptanceProgressFile(
+    editorAcceptanceProgressSignalPath(progressPath, envelope.runId, envelope.phase),
+    "",
+    "heartbeat"
+  );
+}
+
+function publishAcceptanceProgressFile(targetPath, content, description) {
+  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
   let descriptor;
   let ownedIdentity;
   let renamed = false;
@@ -2318,9 +2983,9 @@ export function writeAcceptanceProgress(progressPath, checkpoint) {
     );
     ownedIdentity = fstatSync(descriptor, { bigint: true });
     if (!ownedIdentity.isFile() || ownedIdentity.nlink !== 1n) {
-      throw new Error("The acceptance checkpoint temporary must be one exclusively owned regular file.");
+      throw new Error(`The acceptance ${description} temporary must be one exclusively owned regular file.`);
     }
-    writeFileSync(descriptor, `${checkpoint}\n`, { encoding: "utf8" });
+    writeFileSync(descriptor, content, { encoding: "utf8" });
     const completed = fstatSync(descriptor, { bigint: true });
     if (
       !completed.isFile() ||
@@ -2328,7 +2993,7 @@ export function writeAcceptanceProgress(progressPath, checkpoint) {
       completed.dev !== ownedIdentity.dev ||
       completed.ino !== ownedIdentity.ino
     ) {
-      throw new Error("The acceptance checkpoint temporary changed while it was written.");
+      throw new Error(`The acceptance ${description} temporary changed while it was written.`);
     }
     closeSync(descriptor);
     descriptor = undefined;
@@ -2340,9 +3005,9 @@ export function writeAcceptanceProgress(progressPath, checkpoint) {
       pathIdentity.dev !== completed.dev ||
       pathIdentity.ino !== completed.ino
     ) {
-      throw new Error("The acceptance checkpoint temporary path changed before publication.");
+      throw new Error(`The acceptance ${description} temporary path changed before publication.`);
     }
-    renameSync(temporaryPath, progressPath);
+    renameSync(temporaryPath, targetPath);
     renamed = true;
   } catch (error) {
     operationError = error;
@@ -2374,17 +3039,17 @@ export function writeAcceptanceProgress(progressPath, checkpoint) {
   if (operationError && cleanupErrors.length > 0) {
     throw new AggregateError(
       [operationError, ...cleanupErrors],
-      "Acceptance checkpoint publication and temporary cleanup both failed."
+      `Acceptance ${description} publication and temporary cleanup both failed.`
     );
   }
   if (operationError) throw operationError;
   if (cleanupErrors.length === 1) throw cleanupErrors[0];
   if (cleanupErrors.length > 1) {
-    throw new AggregateError(cleanupErrors, "Acceptance checkpoint temporary cleanup failed.");
+    throw new AggregateError(cleanupErrors, `Acceptance ${description} temporary cleanup failed.`);
   }
 }
 
-export function acceptanceProgressCheckpoint(progressPath, readOptions = {}) {
+export function acceptanceProgressCheckpoint(progressPath, { expectedRunId, expectedPhase, ...readOptions } = {}) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const text = readBoundedAcceptanceText(
@@ -2396,11 +3061,19 @@ export function acceptanceProgressCheckpoint(progressPath, readOptions = {}) {
           allowAtomicPathReplacement: true
         }
       );
-      const checkpoint = text.endsWith("\n") ? text.slice(0, -1) : text;
-      if (checkpoint.includes("\n") || checkpoint.includes("\r")) {
-        throw new Error("The acceptance checkpoint must contain exactly one line.");
+      if (!text.endsWith("\n") || text.slice(0, -1).includes("\n") || text.includes("\r")) {
+        throw new Error("The acceptance checkpoint envelope must contain exactly one newline-terminated line.");
       }
-      return checkpoint || undefined;
+      let envelope;
+      try {
+        envelope = JSON.parse(text.slice(0, -1));
+      } catch {
+        throw new Error("The acceptance checkpoint envelope must be valid JSON.");
+      }
+      validateAcceptanceProgressEnvelope(envelope);
+      if (expectedRunId !== undefined && envelope.runId !== expectedRunId) return undefined;
+      if (expectedPhase !== undefined && envelope.phase !== expectedPhase) return undefined;
+      return envelope.checkpoint;
     } catch (error) {
       if (error && typeof error === "object" && error.code === "ENOENT") return undefined;
       if (error && typeof error === "object" && error.code === ACCEPTANCE_FILE_REPLACED_DURING_READ_CODE) {
@@ -2413,31 +3086,40 @@ export function acceptanceProgressCheckpoint(progressPath, readOptions = {}) {
   return undefined;
 }
 
-function acceptanceProgressFileSnapshot(progressPath) {
+function acceptanceProgressFileSnapshot(progressPath, { expectedRunId, expectedPhase } = {}) {
+  if (expectedRunId === undefined || expectedPhase === undefined) {
+    throw new Error("Windows editor acceptance heartbeat polling requires the exact launched run and phase.");
+  }
+  const signalPath = editorAcceptanceProgressSignalPath(progressPath, expectedRunId, expectedPhase);
   let metadata;
   try {
-    metadata = lstatSync(progressPath, { bigint: true });
+    metadata = lstatSync(signalPath, { bigint: true });
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") return undefined;
     throw error;
   }
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n) {
-    throw new Error("The acceptance checkpoint must be one non-linked regular file.");
+    throw new Error("The acceptance heartbeat must be one non-linked regular file.");
   }
-  if (metadata.size > BigInt(EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES)) {
-    throw new Error(`The acceptance checkpoint exceeds its ${EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES}-byte limit.`);
+  if (metadata.size !== 0n) {
+    throw new Error("The acceptance heartbeat must be an empty metadata-only file.");
   }
   // Windows libuv exposes neither O_NOFOLLOW nor nonblocking file opens. While
-  // the editor Job Object is live, observe only bounded lstat metadata; content
-  // is read later, after the complete owned process tree has stopped.
-  return [metadata.dev, metadata.ino, metadata.size, metadata.mtimeNs, metadata.ctimeNs].join(":");
+  // the editor Job Object is live, observe only the exact run/phase-scoped
+  // heartbeat's lstat metadata. Envelope content remains unopened until the
+  // complete owned process tree has stopped.
+  return [metadata.dev, metadata.ino, metadata.size, metadata.mtimeNs, metadata.ctimeNs, metadata.birthtimeNs].join(
+    ":"
+  );
 }
 
-export function acceptanceProgressDetail(progressPath) {
+export function acceptanceProgressDetail(progressPath, correlation = {}) {
   try {
     if (!acceptancePathExists(progressPath)) return "No acceptance checkpoint was recorded.";
-    const checkpoint = acceptanceProgressCheckpoint(progressPath);
-    return checkpoint ? `Last acceptance checkpoint: ${checkpoint}.` : "The acceptance checkpoint file was empty.";
+    const checkpoint = acceptanceProgressCheckpoint(progressPath, correlation);
+    return checkpoint
+      ? `Last acceptance checkpoint: ${checkpoint}.`
+      : "No acceptance checkpoint matched the launched run and phase.";
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
       return "No acceptance checkpoint was recorded.";
@@ -2478,28 +3160,23 @@ export function readBoundedAcceptanceText(
   } = {}
 ) {
   const maximumSize = BigInt(maximumBytes);
-  const pathMetadata = lstatSync(path, { bigint: true });
-  if (expectedPathSnapshot && !sameAcceptanceFileSnapshot(pathMetadata, expectedPathSnapshot)) {
-    throw new Error(`The ${description} path changed after it was first observed.`);
-  }
-  if (!pathMetadata.isFile() || pathMetadata.isSymbolicLink()) {
-    throw new Error(`The ${description} must be a regular file and may not be a symbolic link.`);
-  }
-  if (pathMetadata.nlink !== 1n) {
-    throw new Error(`The ${description} must not be hard-linked.`);
-  }
-  if (pathMetadata.size > maximumSize) {
-    throw new Error(`The ${description} exceeds its ${maximumBytes}-byte limit.`);
-  }
-  afterInitialPathSnapshot?.();
-
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-  const descriptor = openSync(path, flags);
+  let descriptor;
+  try {
+    descriptor = openSync(path, flags);
+  } catch (error) {
+    if (error && typeof error === "object" && (error.code === "ELOOP" || error.code === "EMLINK")) {
+      throw new Error(`The ${description} must be a regular file and may not be a symbolic link.`, {
+        cause: error
+      });
+    }
+    throw error;
+  }
   try {
     afterDescriptorOpen?.();
     const openedMetadata = fstatSync(descriptor, { bigint: true });
     if (!openedMetadata.isFile()) {
-      throw new Error(`The ${description} must remain a regular file while it is read.`);
+      throw new Error(`The ${description} must be a regular file while it is read.`);
     }
     if (openedMetadata.size > maximumSize) {
       throw new Error(`The ${description} exceeds its ${maximumBytes}-byte limit.`);
@@ -2514,6 +3191,23 @@ export function readBoundedAcceptanceText(
     if (openedMetadata.nlink !== 1n) {
       throw new Error(`The ${description} must not be hard-linked.`);
     }
+    if (expectedPathSnapshot && !sameAcceptanceFileSnapshot(openedMetadata, expectedPathSnapshot)) {
+      throw new Error(`The ${description} path changed after it was first observed.`);
+    }
+
+    const pathMetadata = lstatSync(path, { bigint: true });
+    if (expectedPathSnapshot && !sameAcceptanceFileSnapshot(pathMetadata, expectedPathSnapshot)) {
+      throw new Error(`The ${description} path changed after it was first observed.`);
+    }
+    if (!pathMetadata.isFile() || pathMetadata.isSymbolicLink()) {
+      throw new Error(`The ${description} must be a regular file and may not be a symbolic link.`);
+    }
+    if (pathMetadata.nlink !== 1n) {
+      throw new Error(`The ${description} must not be hard-linked.`);
+    }
+    if (pathMetadata.size > maximumSize) {
+      throw new Error(`The ${description} exceeds its ${maximumBytes}-byte limit.`);
+    }
     if (!sameAcceptanceFileSnapshot(openedMetadata, pathMetadata)) {
       if (
         allowAtomicPathReplacement &&
@@ -2524,7 +3218,37 @@ export function readBoundedAcceptanceText(
       }
       throw new Error(`The ${description} changed before it could be read safely.`);
     }
-    const buffer = Buffer.alloc(Number(openedMetadata.size));
+    afterInitialPathSnapshot?.();
+
+    const readyMetadata = fstatSync(descriptor, { bigint: true });
+    if (!sameAcceptanceFileSnapshot(readyMetadata, openedMetadata)) {
+      if (allowAtomicPathReplacement && sameAcceptanceDescriptorAfterUnlink(readyMetadata, openedMetadata)) {
+        throw acceptanceFileReplacedDuringRead(description);
+      }
+      throw new Error(`The ${description} changed before it could be read safely.`);
+    }
+    const readyPathMetadata = lstatSync(path, { bigint: true });
+    if (
+      !readyPathMetadata.isFile() ||
+      readyPathMetadata.isSymbolicLink() ||
+      readyPathMetadata.nlink !== 1n ||
+      !sameAcceptanceFileSnapshot(readyPathMetadata, readyMetadata)
+    ) {
+      const descriptorAfterPathChange = fstatSync(descriptor, { bigint: true });
+      if (
+        allowAtomicPathReplacement &&
+        readyPathMetadata.isFile() &&
+        !readyPathMetadata.isSymbolicLink() &&
+        readyPathMetadata.nlink === 1n &&
+        readyPathMetadata.size <= maximumSize &&
+        sameAcceptanceDescriptorAfterUnlink(descriptorAfterPathChange, readyMetadata)
+      ) {
+        throw acceptanceFileReplacedDuringRead(description);
+      }
+      throw new Error(`The ${description} changed before it could be read safely.`);
+    }
+
+    const buffer = Buffer.alloc(Number(readyMetadata.size));
     let offset = 0;
     while (offset < buffer.length) {
       const count = readSync(descriptor, buffer, offset, buffer.length - offset, offset);
@@ -2532,8 +3256,8 @@ export function readBoundedAcceptanceText(
       offset += count;
     }
     const completedMetadata = fstatSync(descriptor, { bigint: true });
-    if (!sameAcceptanceFileSnapshot(completedMetadata, openedMetadata)) {
-      if (allowAtomicPathReplacement && sameAcceptanceDescriptorAfterUnlink(completedMetadata, openedMetadata)) {
+    if (!sameAcceptanceFileSnapshot(completedMetadata, readyMetadata)) {
+      if (allowAtomicPathReplacement && sameAcceptanceDescriptorAfterUnlink(completedMetadata, readyMetadata)) {
         throw acceptanceFileReplacedDuringRead(description);
       }
       throw new Error(`The ${description} changed while it was being read.`);
@@ -2820,18 +3544,89 @@ async function waitForChildExit(exit, timeoutMs) {
   }
 }
 
-async function reservePort() {
-  return new Promise((resolvePort, rejectPort) => {
-    const server = createServer();
-    server.once("error", rejectPort);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : undefined;
-      server.close((error) => {
-        if (error) rejectPort(error);
-        else if (!port) rejectPort(new Error("Could not reserve an editor debugging port."));
-        else resolvePort(port);
+export async function reserveEditorDebugPort(
+  timeoutMs,
+  { createServerFactory = createServer, schedule = setTimeout, cancelSchedule = clearTimeout } = {}
+) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("An editor debugging-port reservation timeout must be a positive safe integer.");
+  }
+  const server = createServerFactory();
+  const controller = new AbortController();
+  server.unref?.();
+  return await new Promise((resolvePort, rejectPort) => {
+    let settled = false;
+    let closeRequested = false;
+    let pendingError;
+    let reservationTimer;
+    let hardDeadlineTimer;
+    const finish = (error, port) => {
+      if (settled) return;
+      settled = true;
+      cancelSchedule(reservationTimer);
+      cancelSchedule(hardDeadlineTimer);
+      if (error) rejectPort(error);
+      else resolvePort(port);
+    };
+    const closeServer = (error) => {
+      pendingError ??= error;
+      controller.abort();
+      if (closeRequested) return;
+      if (!server.listening) {
+        finish(pendingError);
+        return;
+      }
+      closeRequested = true;
+      try {
+        server.close((closeError) => finish(pendingError ?? closeError));
+      } catch (closeError) {
+        finish(pendingError ?? closeError);
+      }
+    };
+    const deadlineError = () => {
+      const error = new Error(`Editor debugging-port reservation exceeded ${timeoutMs} ms.`);
+      error.code = "EDITOR_ACCEPTANCE_DEADLINE";
+      return error;
+    };
+    const releaseGraceMs = Math.min(EDITOR_DEBUG_PORT_RELEASE_GRACE_MS, Math.max(1, Math.floor(timeoutMs / 4)));
+    reservationTimer = schedule(() => closeServer(deadlineError()), Math.max(1, timeoutMs - releaseGraceMs));
+    hardDeadlineTimer = schedule(() => {
+      controller.abort();
+      try {
+        if (!closeRequested && server.listening) {
+          closeRequested = true;
+          server.close();
+        }
+      } catch {
+        // The server was never listening or is already closing; it is unref'ed above.
+      }
+      finish(deadlineError());
+    }, timeoutMs);
+    server.once("error", (error) => closeServer(pendingError ?? error));
+    try {
+      server.listen({ port: 0, host: "127.0.0.1", exclusive: true, signal: controller.signal }, () => {
+        let port;
+        try {
+          const address = server.address();
+          port = typeof address === "object" && address ? address.port : undefined;
+        } catch (error) {
+          closeServer(error);
+          return;
+        }
+        try {
+          closeRequested = true;
+          server.close((error) => {
+            const finalError = pendingError ?? error;
+            if (finalError) finish(finalError);
+            else if (!port) finish(new Error("Could not reserve an editor debugging port."));
+            else finish(undefined, port);
+          });
+        } catch (error) {
+          finish(error);
+        }
       });
-    });
+    } catch (error) {
+      closeServer(error);
+    }
   });
 }

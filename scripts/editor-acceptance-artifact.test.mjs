@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import {
   closeSync,
   constants,
   fstatSync,
   linkSync,
+  mkdirSync,
   openSync,
   readdirSync,
   readFileSync as readFileDescriptorSync,
@@ -14,6 +16,7 @@ import {
   unlinkSync
 } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import test from "node:test";
@@ -48,6 +51,44 @@ test("prelaunch staging receipts reject planted entries and root replacement", a
       /no longer matches its prelaunch identity/u
     );
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("prelaunch staging emptiness remains bound across a directory swap during enumeration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-staging-enumeration-swap-"));
+  const originalOpendirSync = fs.opendirSync;
+  let swapped = false;
+  try {
+    const receipt = createEditorAcceptanceEvidenceStagingRoot(join(directory, "staging-parent"));
+    const displaced = join(directory, "displaced-staging-root");
+    fs.opendirSync = (candidate, options) => {
+      const handle = originalOpendirSync(candidate, options);
+      if (swapped) return handle;
+      return {
+        readSync() {
+          if (!swapped) {
+            swapped = true;
+            renameSync(receipt.root, displaced);
+            mkdirSync(receipt.root, { mode: 0o700 });
+          }
+          return handle.readSync();
+        },
+        closeSync() {
+          handle.closeSync();
+        }
+      };
+    };
+    syncBuiltinESMExports();
+
+    assert.throws(
+      () => assertEditorAcceptanceEvidenceStagingRoot(receipt, { requireEmpty: true }),
+      /no longer matches its prelaunch identity/u
+    );
+    assert.equal(swapped, true);
+  } finally {
+    fs.opendirSync = originalOpendirSync;
+    syncBuiltinESMExports();
     await rm(directory, { recursive: true, force: true });
   }
 });

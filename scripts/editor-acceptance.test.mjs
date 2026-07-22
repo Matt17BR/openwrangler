@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { linkSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -12,6 +12,7 @@ import {
   acceptanceProgressDetail,
   collectEditorAcceptancePrivateDiagnosticPaths,
   configureEditorAcceptanceTempRoot,
+  createAcceptanceProgressEnvelope,
   createEditorAcceptanceEnvironment,
   createEditorAcceptanceEnvironmentForPlatform,
   createEditorAcceptanceFailure,
@@ -27,10 +28,14 @@ import {
   EDITOR_HARNESS_RESULT_MAX_BYTES,
   EditorAcceptanceFailure,
   editorDisplayLaunchArgs,
+  editorAcceptanceProgressPath,
+  editorAcceptanceProgressSignalPath,
   editorProcessTreeMayBeLive,
   editorProcessGroupRunning,
+  prepareWindowsEditorProcessSupervisor,
   readBoundedAcceptanceText,
   readXvfbDisplayNumber,
+  reserveEditorDebugPort,
   resolveDownloadedEditorCliPath,
   runBoundedEditorCommand,
   serializeEditorAcceptanceHarnessOutcome,
@@ -43,6 +48,10 @@ import {
   writeEditorAcceptanceHarness,
   writeAcceptanceProgress
 } from "./editor-acceptance.mjs";
+
+const PROGRESS_RUN_ID = "8be8c321-d21d-4de8-a890-13d18844a3c7";
+const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
+  createAcceptanceProgressEnvelope(runId, phase, checkpoint);
 
 test("private diagnostic paths include hosted Python and external editor helpers", () => {
   const previousPythonLocation = process.env.pythonLocation;
@@ -577,6 +586,138 @@ test("downloaded macOS editors use the official CLI resolver instead of the GUI 
   assert.equal(resolveDownloadedEditorCliPath("C:\\VSCode\\Code.exe", "win32"), "C:\\VSCode\\Code.exe");
 });
 
+test("the Windows supervisor is compiled once per private root and pinned before launch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-receipt-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  let compilerLaunches = 0;
+  const spawnCompiler = (_executable, args) => {
+    compilerLaunches += 1;
+    const child = fakeCommandChild(17279);
+    const outputIndex = args.indexOf("-CompileTo") + 1;
+    assert.ok(outputIndex > 0);
+    setImmediate(() => {
+      writeFileSync(args[outputIndex], "compiled-supervisor", { encoding: "utf8" });
+      child.exitCode = 0;
+      child.stdout.end();
+      child.stderr.end();
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  try {
+    const first = await prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      spawnProcess: spawnCompiler
+    });
+    const second = await prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      spawnProcess: () => assert.fail("a private root must compile its supervisor only once")
+    });
+    assert.equal(second, first);
+    assert.equal(compilerLaunches, 1);
+
+    renameSync(first.executable, `${first.executable}.original`);
+    writeFileSync(first.executable, "replacement", { encoding: "utf8" });
+    assert.throws(
+      () =>
+        spawnOwnedEditorProcess(
+          process.execPath,
+          ["--version"],
+          { env: environment, stdio: ["ignore", "pipe", "pipe"] },
+          {
+            platform: "win32",
+            supervisorReceipt: first,
+            spawnProcess: () => assert.fail("a replaced supervisor must fail before spawn")
+          }
+        ),
+      /changed before launch/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sanitized Windows setup commands compile their supervisor in the coordinator-owned root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-coordinator-root-"));
+  const rootKey = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
+  const previousRoot = process.env[rootKey];
+  process.env[rootKey] = directory;
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  assert.equal(rootKey in environment, false);
+  let compilerLaunches = 0;
+  try {
+    const receipt = await prepareWindowsEditorProcessSupervisor(environment, {
+      platform: "win32",
+      spawnProcess(_executable, args) {
+        compilerLaunches += 1;
+        const child = fakeCommandChild(17285);
+        const outputIndex = args.indexOf("-CompileTo") + 1;
+        setImmediate(() => {
+          writeFileSync(args[outputIndex], "compiled-supervisor", { encoding: "utf8" });
+          child.exitCode = 0;
+          child.stdout.end();
+          child.stderr.end();
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        });
+        return child;
+      }
+    });
+    assert.equal(receipt.buildRoot, resolve(directory));
+    assert.equal(compilerLaunches, 1);
+  } finally {
+    if (previousRoot === undefined) delete process.env[rootKey];
+    else process.env[rootKey] = previousRoot;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a Windows supervisor root is permanently rejected after unverified compilation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-supervisor-unsafe-root-"));
+  const environment = createEditorAcceptanceEnvironmentForPlatform(process.env, {}, "win32");
+  configureEditorAcceptanceTempRoot(directory, environment);
+  let compilerLaunches = 0;
+  let killed = false;
+  try {
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        buildTimeoutMs: 5,
+        spawnProcess() {
+          compilerLaunches += 1;
+          const child = fakeCommandChild(17286);
+          child.kill = () => {
+            killed = true;
+            child.signalCode = "SIGKILL";
+            child.stdout.end();
+            child.stderr.end();
+            child.emit("exit", null, "SIGKILL");
+            child.emit("close", null, "SIGKILL");
+            return true;
+          };
+          return child;
+        }
+      }),
+      (error) => editorProcessTreeMayBeLive(error)
+    );
+    await assert.rejects(
+      prepareWindowsEditorProcessSupervisor(environment, {
+        platform: "win32",
+        spawnProcess: () => assert.fail("an unsafe compilation root must never launch another compiler")
+      }),
+      /previously involved in an unverified process tree/u
+    );
+    assert.equal(killed, true);
+    assert.equal(compilerLaunches, 1);
+  } finally {
+    // The fake child above synchronously proved its own close to this test. The
+    // production runner correctly retains roots whenever that proof is absent.
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Windows editor commands use a strict Job Object supervisor and control lease", async () => {
   const child = fakeCommandChild(1728);
   child.stdin = new PassThrough();
@@ -769,8 +910,8 @@ test("a Windows supervisor missing a protocol pipe is abandoned as an unverified
 });
 
 test(
-  "the real Windows supervisor compiles, contains descendants, terminates, and rejects malformed frames",
-  { skip: process.platform !== "win32", timeout: 60_000 },
+  "the real Windows supervisor compiles once, contains descendants, terminates, and rejects malformed frames",
+  { skip: process.platform !== "win32", timeout: 90_000 },
   async () => {
     const privateParent = join(tmpdir(), "ow");
     await mkdir(privateParent, { recursive: true, mode: 0o700 });
@@ -779,6 +920,7 @@ test(
     configureEditorAcceptanceTempRoot(privateRoot, environment);
     let removePrivateRoot = true;
     try {
+      const supervisorReceipt = await prepareWindowsEditorProcessSupervisor(environment, { platform: "win32" });
       const natural = await runBoundedEditorCommand(
         {
           executable: process.execPath,
@@ -810,7 +952,10 @@ test(
         await runBoundedEditorCommand(
           {
             executable: process.execPath,
-            args: ["-e", "setInterval(() => {}, 1000)"],
+            args: [
+              "-e",
+              "const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }).unref(); setInterval(() => {}, 1000);"
+            ],
             environment,
             label: "real Windows supervisor termination smoke"
           },
@@ -833,9 +978,6 @@ test(
       assert.equal("message" in timeoutRejection && typeof timeoutRejection.message === "string", true);
       assert.match(timeoutRejection.message, /timed out after 2000 ms/u);
 
-      const systemRoot = environment.SYSTEMROOT ?? environment.SystemRoot ?? environment.WINDIR ?? "C:\\Windows";
-      const powerShell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      const supervisor = resolve("scripts/windows-job-supervisor.ps1");
       const malformedProbe = await runBoundedEditorCommand(
         {
           executable: process.execPath,
@@ -843,7 +985,7 @@ test(
             "-e",
             [
               "const { spawn } = require('node:child_process');",
-              "const child = spawn(process.argv[1], ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', process.argv[2]], { env: process.env, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });",
+              "const child = spawn(process.argv[1], [], { env: process.env, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });",
               "let stderr = ''; let finished = false;",
               "const finish = (code, message) => { if (finished) return; finished = true; clearTimeout(timer); if (message) process.stderr.write(message); process.exitCode = code; };",
               "const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(3, 'inner supervisor timeout'); }, 15000);",
@@ -853,8 +995,7 @@ test(
               "child.once('close', (code, signal) => { const normalized = stderr.replace(/\\r\\n/gu, '\\n'); if (code === 125 && signal === null && normalized === 'OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:protocol\\n') { process.stdout.write('malformed-frame-rejected'); finish(0); } else finish(6, 'inner supervisor protocol mismatch'); });",
               "child.stdin.end('{}\\n', 'utf8');"
             ].join(" "),
-            powerShell,
-            supervisor
+            supervisorReceipt.executable
           ],
           environment,
           label: "real Windows supervisor malformed-frame smoke"
@@ -862,6 +1003,23 @@ test(
         { platform: "win32", timeoutMs: 30_000 }
       );
       assert.deepEqual(malformedProbe, { stdout: "malformed-frame-rejected", stderr: "" });
+
+      renameSync(supervisorReceipt.executable, `${supervisorReceipt.executable}.original`);
+      writeFileSync(supervisorReceipt.executable, "replacement", { encoding: "utf8" });
+      assert.throws(
+        () =>
+          spawnOwnedEditorProcess(
+            process.execPath,
+            ["--version"],
+            { env: environment, stdio: ["ignore", "pipe", "pipe"] },
+            {
+              platform: "win32",
+              supervisorReceipt,
+              spawnProcess: () => assert.fail("a replaced supervisor must fail before spawn")
+            }
+          ),
+        /changed before launch/u
+      );
     } catch (error) {
       if (editorProcessTreeMayBeLive(error)) removePrivateRoot = false;
       throw error;
@@ -1314,6 +1472,415 @@ test("bounded setup commands stop on process interruption and remove signal list
   assert.equal(signalSource.listenerCount("SIGTERM"), 0);
 });
 
+test("bounded editor commands include receipt validation and spawn in their timeout", async () => {
+  const child = fakeCommandChild(17331);
+  let clock = 0;
+  const treeKillCalls = [];
+  await assert.rejects(
+    runBoundedEditorCommand(
+      { executable: "editor.exe", environment: {}, label: "spawn-budget command" },
+      {
+        platform: "win32",
+        timeoutMs: 100,
+        now: () => clock,
+        spawnProcess() {
+          clock = 101;
+          return child;
+        },
+        async windowsTreeKill(pid, force) {
+          treeKillCalls.push([pid, force]);
+          child.exitCode = 143;
+          child.stdout.end();
+          child.stderr.end();
+          child.emit("exit", 143, null);
+          child.emit("close", 143, null);
+        }
+      }
+    ),
+    /timed out after 100 ms/u
+  );
+  assert.deepEqual(treeKillCalls, [[17331, false]]);
+});
+
+test("debugging-port reservation is bounded, releases its server, and retains phase context", async () => {
+  const createStalledServer = () => {
+    const server = new EventEmitter();
+    server.listening = false;
+    server.closeCalls = 0;
+    server.abortObserved = false;
+    server.unref = () => server;
+    server.listen = (options) => {
+      server.listening = true;
+      options.signal.addEventListener(
+        "abort",
+        () => {
+          server.abortObserved = true;
+        },
+        { once: true }
+      );
+      return server;
+    };
+    server.close = (callback) => {
+      server.closeCalls += 1;
+      server.listening = false;
+      queueMicrotask(() => {
+        server.emit("close");
+        callback?.();
+      });
+      return server;
+    };
+    return server;
+  };
+
+  const directServer = createStalledServer();
+  await assert.rejects(
+    reserveEditorDebugPort(40, { createServerFactory: () => directServer }),
+    (error) => error?.code === "EDITOR_ACCEPTANCE_DEADLINE"
+  );
+  assert.equal(directServer.abortObserved, true);
+  assert.equal(directServer.closeCalls, 1);
+
+  const closeRaceError = new Error("injected error while the port server was closing");
+  const closeRaceServer = new EventEmitter();
+  closeRaceServer.listening = false;
+  closeRaceServer.unref = () => closeRaceServer;
+  closeRaceServer.address = () => ({ address: "127.0.0.1", family: "IPv4", port: 41733 });
+  closeRaceServer.listen = (_options, callback) => {
+    closeRaceServer.listening = true;
+    queueMicrotask(callback);
+    return closeRaceServer;
+  };
+  closeRaceServer.close = (callback) => {
+    queueMicrotask(() => {
+      closeRaceServer.emit("error", closeRaceError);
+      closeRaceServer.listening = false;
+      closeRaceServer.emit("close");
+      callback?.();
+    });
+    return closeRaceServer;
+  };
+  await assert.rejects(reserveEditorDebugPort(1_000, { createServerFactory: () => closeRaceServer }), closeRaceError);
+
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-port-reservation-"));
+  const resultPath = join(directory, "result.json");
+  const phaseServer = createStalledServer();
+  let spawnCalls = 0;
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: join(directory, "user-data"),
+          extensions: join(directory, "extensions"),
+          developmentPaths: [directory],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "verify",
+          resultPath,
+          runId: PROGRESS_RUN_ID
+        },
+        {
+          platform: "darwin",
+          phaseTimeoutMs: 60,
+          reserveDebugPort: (timeoutMs) =>
+            reserveEditorDebugPort(timeoutMs, { createServerFactory: () => phaseServer }),
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }
+      ),
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "outer-timeout" &&
+        error.details.timeoutKind === "phase" &&
+        error.details.runId === PROGRESS_RUN_ID &&
+        error.details.phase === "verify"
+    );
+    assert.equal(spawnCalls, 0);
+    assert.equal(phaseServer.abortObserved, true);
+    assert.equal(phaseServer.closeCalls, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phase inactivity includes work before observation starts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-pre-observation-inactivity-"));
+  const resultPath = join(directory, "result.json");
+  const child = fakeStoppableCommandChild(17341);
+  let clock = 0;
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: join(directory, "user-data"),
+          extensions: join(directory, "extensions"),
+          developmentPaths: [directory],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "seed",
+          resultPath,
+          runId: PROGRESS_RUN_ID
+        },
+        {
+          platform: "darwin",
+          phaseTimeoutMs: 1_000,
+          inactivityTimeoutMs: 100,
+          gracefulExitMs: 0,
+          now: () => clock,
+          wait: async (milliseconds) => {
+            clock += milliseconds;
+          },
+          spawnProcess() {
+            clock = 150;
+            return child;
+          }
+        }
+      ),
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "outer-timeout" &&
+        error.details.timeoutKind === "inactivity" &&
+        error.details.elapsedMs === 150
+    );
+    assert.equal(clock, 150, "observation must not grant a fresh inactivity interval after synchronous spawn work");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phases reject results first observed after the hard deadline", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-post-deadline-result-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: join(directory, "user-data"),
+    extensions: join(directory, "extensions"),
+    developmentPaths: [directory],
+    testModule: join(directory, "tests.js"),
+    python: "python3",
+    phase: "seed",
+    resultPath,
+    runId: PROGRESS_RUN_ID
+  };
+  const runAt = async (spawnCompletedAt, pid) => {
+    let clock = 0;
+    const child = fakeStoppableCommandChild(pid);
+    const running = runEditorAcceptancePhase(input, {
+      platform: "darwin",
+      phaseTimeoutMs: 1_000,
+      inactivityTimeoutMs: 2_000,
+      gracefulExitMs: 0,
+      now: () => clock,
+      wait: async (milliseconds) => {
+        clock += milliseconds;
+      },
+      spawnProcess(_executable, _arguments, options) {
+        clock = spawnCompletedAt;
+        writeFileSync(resultPath, acceptanceResult(options.env, { ok: true }), "utf8");
+        return child;
+      }
+    });
+    return { running, clock: () => clock };
+  };
+
+  try {
+    const beforeDeadline = await runAt(999, 17342);
+    await beforeDeadline.running;
+    assert.equal(beforeDeadline.clock(), 999, "a result observed before the hard deadline must remain valid");
+
+    const afterDeadline = await runAt(1_001, 17343);
+    await assert.rejects(
+      afterDeadline.running,
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "outer-timeout" &&
+        error.details.timeoutKind === "phase" &&
+        error.details.elapsedMs === 1_001
+    );
+    assert.equal(afterDeadline.clock(), 1_001);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phases reject results first observed after inactivity unless a new checkpoint resets it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-post-inactivity-result-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: join(directory, "user-data"),
+    extensions: join(directory, "extensions"),
+    developmentPaths: [directory],
+    testModule: join(directory, "tests.js"),
+    python: "python3",
+    phase: "seed",
+    resultPath,
+    runId: PROGRESS_RUN_ID
+  };
+  const runAt = async (spawnCompletedAt, pid, checkpoint) => {
+    let clock = 0;
+    const child = fakeStoppableCommandChild(pid);
+    const running = runEditorAcceptancePhase(input, {
+      platform: "darwin",
+      phaseTimeoutMs: 1_000,
+      inactivityTimeoutMs: 100,
+      gracefulExitMs: 0,
+      now: () => clock,
+      wait: async (milliseconds) => {
+        clock += milliseconds;
+      },
+      spawnProcess(_executable, _arguments, options) {
+        clock = spawnCompletedAt;
+        if (checkpoint) {
+          writeAcceptanceProgress(options.env.OPEN_WRANGLER_TEST_PROGRESS, progressEnvelope("seed", checkpoint));
+        }
+        writeFileSync(resultPath, acceptanceResult(options.env, { ok: true }), "utf8");
+        return child;
+      }
+    });
+    return { running, clock: () => clock };
+  };
+
+  try {
+    const beforeInactivity = await runAt(99, 17344);
+    await beforeInactivity.running;
+    assert.equal(beforeInactivity.clock(), 99, "a completed result inside the inactivity budget must remain valid");
+
+    const afterInactivity = await runAt(101, 17345);
+    await assert.rejects(
+      afterInactivity.running,
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "outer-timeout" &&
+        error.details.timeoutKind === "inactivity" &&
+        error.details.elapsedMs === 101
+    );
+    assert.equal(afterInactivity.clock(), 101);
+
+    const afterNewCheckpoint = await runAt(101, 17346, "seed:harness-start");
+    await afterNewCheckpoint.running;
+    assert.equal(
+      afterNewCheckpoint.clock(),
+      101,
+      "a genuinely changed checkpoint observed after preparation must reset inactivity"
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("expired phase deadlines override non-deadline debugging-port errors", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-late-port-error-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: join(directory, "user-data"),
+    extensions: join(directory, "extensions"),
+    developmentPaths: [directory],
+    testModule: join(directory, "tests.js"),
+    python: "python3",
+    phase: "verify",
+    resultPath,
+    runId: PROGRESS_RUN_ID
+  };
+  const cases = [
+    { expectedKind: "phase", phaseTimeoutMs: 100, inactivityTimeoutMs: 1_000 },
+    { expectedKind: "inactivity", phaseTimeoutMs: 1_000, inactivityTimeoutMs: 100 }
+  ];
+
+  try {
+    for (const { expectedKind, phaseTimeoutMs, inactivityTimeoutMs } of cases) {
+      let clock = 0;
+      let spawnCalls = 0;
+      const latePortError = new Error(`late ${expectedKind} port failure`);
+      await assert.rejects(
+        runEditorAcceptancePhase(input, {
+          platform: "darwin",
+          phaseTimeoutMs,
+          inactivityTimeoutMs,
+          now: () => clock,
+          reserveDebugPort() {
+            clock = 101;
+            throw latePortError;
+          },
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }),
+        (error) =>
+          error instanceof EditorAcceptanceFailure &&
+          error.kind === "outer-timeout" &&
+          error.details.timeoutKind === expectedKind &&
+          error.details.elapsedMs === 101 &&
+          error.cause === latePortError
+      );
+      assert.equal(spawnCalls, 0);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("expired phase deadlines override synchronous spawn errors and retain unverified-tree context", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-late-spawn-error-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: join(directory, "user-data"),
+    extensions: join(directory, "extensions"),
+    developmentPaths: [directory],
+    testModule: join(directory, "tests.js"),
+    python: "python3",
+    phase: "seed",
+    resultPath,
+    runId: PROGRESS_RUN_ID
+  };
+  const cases = [
+    { expectedKind: "phase", phaseTimeoutMs: 100, inactivityTimeoutMs: 1_000 },
+    { expectedKind: "inactivity", phaseTimeoutMs: 1_000, inactivityTimeoutMs: 100 }
+  ];
+
+  try {
+    for (const { expectedKind, phaseTimeoutMs, inactivityTimeoutMs } of cases) {
+      let clock = 0;
+      const lateSpawnError = new Error(`late ${expectedKind} spawn failure`);
+      lateSpawnError.details = { treeVerifiedStopped: false };
+      await assert.rejects(
+        runEditorAcceptancePhase(input, {
+          platform: "darwin",
+          phaseTimeoutMs,
+          inactivityTimeoutMs,
+          now: () => clock,
+          spawnProcess() {
+            clock = 101;
+            throw lateSpawnError;
+          }
+        }),
+        (error) =>
+          error instanceof EditorAcceptanceFailure &&
+          error.kind === "outer-timeout" &&
+          error.details.timeoutKind === expectedKind &&
+          error.details.elapsedMs === 101 &&
+          error.details.treeVerifiedStopped === false &&
+          error.details.progress === null &&
+          error.cause === lateSpawnError
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("editor phases pass only runner-owned test values through the environment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-environment-"));
   const resultPath = join(directory, "result.json");
@@ -1386,7 +1953,11 @@ test("editor phases pass only runner-owned test values through the environment",
       OPEN_WRANGLER_TEST_PYTHON: expectedPython,
       OPEN_WRANGLER_TEST_MODULE: expectedModule,
       OPEN_WRANGLER_TEST_RESULT: resultPath,
-      OPEN_WRANGLER_TEST_PROGRESS: `${resultPath}.progress`,
+      OPEN_WRANGLER_TEST_PROGRESS: editorAcceptanceProgressPath(
+        resultPath,
+        launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID,
+        "seed"
+      ),
       OPEN_WRANGLER_TEST_RUN_ID: launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID,
       OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots")
     });
@@ -1403,10 +1974,19 @@ test("editor phases retain a bounded slow-editor allowance and report their last
   const progressPath = join(directory, "result.progress");
   try {
     assert.equal(acceptanceProgressDetail(progressPath), "No acceptance checkpoint was recorded.");
-    writeAcceptanceProgress(progressPath, "verify:notebook-flows");
+    writeAcceptanceProgress(progressPath, progressEnvelope("verify", "verify:notebook-flows"));
     assert.equal(acceptanceProgressDetail(progressPath), "Last acceptance checkpoint: verify:notebook-flows.");
-    assert.equal(await readFile(progressPath, "utf8"), "verify:notebook-flows\n");
-    assert.deepEqual(await readdir(directory), ["result.progress"]);
+    assert.deepEqual(
+      JSON.parse(await readFile(progressPath, "utf8")),
+      progressEnvelope("verify", "verify:notebook-flows")
+    );
+    assert.deepEqual(
+      (await readdir(directory)).sort(),
+      [
+        "result.progress",
+        editorAcceptanceProgressSignalPath(progressPath, PROGRESS_RUN_ID, "verify").slice(directory.length + 1)
+      ].sort()
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1420,20 +2000,35 @@ test("acceptance checkpoint writes are bounded and ignore a predictable symlink 
   try {
     await writeFile(victimPath, "untouched\n");
     await symlink(victimPath, predictableTemporary);
-    writeAcceptanceProgress(progressPath, "verify:step");
+    writeAcceptanceProgress(progressPath, progressEnvelope("verify", "verify:step"));
     assert.equal(await readFile(victimPath, "utf8"), "untouched\n");
-    assert.equal(await readFile(progressPath, "utf8"), "verify:step\n");
-    assert.deepEqual((await readdir(directory)).sort(), [
-      "result.progress",
-      `result.progress.${process.pid}.tmp`,
-      "victim.txt"
-    ]);
+    assert.deepEqual(JSON.parse(await readFile(progressPath, "utf8")), progressEnvelope("verify", "verify:step"));
+    assert.deepEqual(
+      (await readdir(directory)).sort(),
+      [
+        "result.progress",
+        editorAcceptanceProgressSignalPath(progressPath, PROGRESS_RUN_ID, "verify").slice(directory.length + 1),
+        `result.progress.${process.pid}.tmp`,
+        "victim.txt"
+      ].sort()
+    );
 
     assert.throws(
-      () => writeAcceptanceProgress(progressPath, "verify:first\nverify:second"),
-      /single-line UTF-8 string/u
+      () => writeAcceptanceProgress(progressPath, progressEnvelope("verify", "verify:first\nverify:second")),
+      /non-empty single-line string/u
     );
-    assert.throws(() => writeAcceptanceProgress(progressPath, "x".repeat(1_024)), /at most 1024 bytes/u);
+    assert.throws(
+      () => writeAcceptanceProgress(progressPath, progressEnvelope("verify", "x".repeat(1_024))),
+      /at most 1024 UTF-8 bytes/u
+    );
+    assert.throws(
+      () =>
+        writeAcceptanceProgress(progressPath, {
+          ...progressEnvelope("verify", "verify:extra"),
+          extra: true
+        }),
+      /exactly protocol, runId, phase, and checkpoint/u
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1513,7 +2108,7 @@ test("phase observation distinguishes inactivity, hard timeout, early exit, and 
       now: () => clock,
       wait: async (milliseconds) => {
         clock += milliseconds;
-        writeAcceptanceProgress(progressPath, `verify:step-${marker++}`);
+        writeAcceptanceProgress(progressPath, progressEnvelope("verify", `verify:step-${marker++}`));
       },
       phaseTimeoutMs: 400,
       inactivityTimeoutMs: 250,
@@ -1548,6 +2143,103 @@ test("phase observation distinguishes inactivity, hard timeout, early exit, and 
     assert.equal(resultWinsExitRace.elapsedMs, 0);
     assert.equal(resultWinsExitRace.resultSnapshot.isFile(), true);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("mis-correlated checkpoints never refresh phase inactivity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-progress-correlation-"));
+  const resultPath = join(directory, "result.json");
+  const progressPath = editorAcceptanceProgressPath(resultPath, PROGRESS_RUN_ID, "verify");
+  const otherRunId = "de305d54-75b4-431b-adb2-eb6b9e546014";
+  try {
+    let clock = 0;
+    let writes = 0;
+    const observation = await waitForEditorAcceptanceObservation({
+      resultPath,
+      progressPath,
+      runId: PROGRESS_RUN_ID,
+      phase: "verify",
+      exit: new Promise(() => undefined),
+      isRunning: () => true,
+      now: () => clock,
+      wait: async (milliseconds) => {
+        clock += milliseconds;
+        const envelope =
+          writes++ % 2 === 0
+            ? progressEnvelope("verify", `verify:wrong-run-${writes}`, otherRunId)
+            : progressEnvelope("seed", `seed:wrong-phase-${writes}`);
+        writeAcceptanceProgress(progressPath, envelope);
+      },
+      phaseTimeoutMs: 1_000,
+      inactivityTimeoutMs: 300,
+      pollIntervalMs: 100
+    });
+    assert.deepEqual(observation, { kind: "timeout", timeout: "inactivity", elapsedMs: 300 });
+    assert.equal(
+      acceptanceProgressDetail(progressPath, { expectedRunId: PROGRESS_RUN_ID, expectedPhase: "verify" }),
+      "No acceptance checkpoint matched the launched run and phase."
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-windows-progress-correlation-"));
+  const resultPath = join(directory, "result.json");
+  const progressPath = editorAcceptanceProgressPath(resultPath, PROGRESS_RUN_ID, "seed");
+  const otherRunId = "de305d54-75b4-431b-adb2-eb6b9e546014";
+  const child = fakeCommandChild(27401);
+  let writes = 0;
+  let writer;
+  try {
+    const running = runEditorAcceptancePhase(
+      {
+        editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+        workspace: directory,
+        userData: join(directory, "user-data"),
+        extensions: join(directory, "extensions"),
+        developmentPaths: [directory],
+        testModule: join(directory, "tests.js"),
+        python: "python3",
+        phase: "seed",
+        resultPath,
+        runId: PROGRESS_RUN_ID,
+        progressPath
+      },
+      {
+        platform: "win32",
+        spawnProcess: () => child,
+        phaseTimeoutMs: 350,
+        inactivityTimeoutMs: 60,
+        gracefulExitMs: 0,
+        windowsTreeKill() {
+          child.exitCode = 143;
+          child.stdout.end();
+          child.stderr.end();
+          child.emit("exit", 143, null);
+          child.emit("close", 143, null);
+        }
+      }
+    );
+    writer = setInterval(() => {
+      const envelope =
+        writes++ % 2 === 0
+          ? progressEnvelope("seed", `seed:wrong-run-${writes}`, otherRunId)
+          : progressEnvelope("verify", `verify:wrong-phase-${writes}`);
+      writeAcceptanceProgress(progressPath, envelope);
+    }, 10);
+
+    await assert.rejects(
+      running,
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "outer-timeout" &&
+        error.details.timeoutKind === "inactivity"
+    );
+  } finally {
+    clearInterval(writer);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1596,7 +2288,7 @@ test("acceptance failures publish complete structured diagnostics", async () => 
   const resultPath = join(directory, "result.json");
   const progressPath = `${resultPath}.progress`;
   try {
-    writeAcceptanceProgress(progressPath, "verify:notebook:pandas-duplicates");
+    writeAcceptanceProgress(progressPath, progressEnvelope("verify", "verify:notebook:pandas-duplicates"));
     const failure = createEditorAcceptanceFailure("outer-timeout", "Cursor verify acceptance timed out.", {
       editor: { name: "Cursor", key: "cursor", version: "3.11.19" },
       phase: "verify",
@@ -1619,6 +2311,8 @@ test("acceptance failures publish complete structured diagnostics", async () => 
       signal: "SIGTERM",
       timeoutKind: "inactivity",
       resultPath,
+      progressPath,
+      runId: null,
       progress: "verify:notebook:pandas-duplicates"
     });
     assert.match(failure.message, /Editor: Cursor 3\.11\.19 \(cursor\)\./u);
@@ -1627,7 +2321,7 @@ test("acceptance failures publish complete structured diagnostics", async () => 
     assert.ok(failure.message.includes(`Result: ${resultPath}.`));
     assert.match(failure.message, /Last acceptance checkpoint: verify:notebook:pandas-duplicates\./u);
 
-    writeAcceptanceProgress(progressPath, "seed:runner-spawn");
+    writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:runner-spawn"));
     const earlyCursorContext = {
       editor: { name: "Cursor", key: "cursor", version: "3.12.29" },
       phase: "seed",
@@ -1646,7 +2340,7 @@ test("acceptance failures publish complete structured diagnostics", async () => 
     assert.match(earlyCursorFailure.message, /OPEN_WRANGLER_EDITOR_DISPLAY=xvfb/u);
     assert.match(earlyCursorFailure.details.remediation, /isolated and invisible/u);
     assert.doesNotMatch(earlyCursorFailure.details.remediation, /OPEN_WRANGLER_EDITOR_DISPLAY=current/u);
-    assert.doesNotMatch(earlyCursorFailure.details.remediation, new RegExp(directory, "u"));
+    assert.equal(earlyCursorFailure.details.remediation.includes(directory), false);
 
     const noRemediation = (overrides) =>
       createEditorAcceptanceFailure("premature-exit", "Editor exited before writing a result.", {
@@ -1659,7 +2353,7 @@ test("acceptance failures publish complete structured diagnostics", async () => 
     assert.equal(noRemediation({ exitState: { code: null, signal: "SIGTERM" } }), undefined);
     assert.equal(noRemediation({ readProgress: false }), undefined);
     assert.equal(noRemediation({ treeVerifiedStopped: false }), undefined);
-    writeAcceptanceProgress(progressPath, "seed:harness-start");
+    writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:harness-start"));
     assert.equal(noRemediation({}), undefined);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -2286,7 +2980,7 @@ test("a result replacement during editor shutdown is rejected even when its enve
   }
 });
 
-test("bounded phase reads reject same-inode same-size mutation between path snapshot and open", async () => {
+test("bounded phase reads reject metadata-visible same-inode mutation between path snapshot and open", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-result-mutation-"));
   const resultPath = join(directory, "result.json");
   const initial = '{"ok":false}';
@@ -2300,6 +2994,12 @@ test("bounded phase reads reject same-inode same-size mutation between path snap
         readBoundedAcceptanceText(resultPath, EDITOR_ACCEPTANCE_RESULT_MAX_BYTES, "acceptance result", {
           afterInitialPathSnapshot() {
             writeFileSync(resultPath, replacement);
+            if (process.platform === "win32") {
+              const changed = new Date(Date.now() + 2_000);
+              // NTFS timestamp updates can be coalesced for an immediate
+              // same-size overwrite; force the mutation to remain observable.
+              utimesSync(resultPath, changed, changed);
+            }
             assert.equal(statSync(resultPath).ino, initialInode);
           }
         }),
@@ -2360,46 +3060,46 @@ test("progress reads retry verified atomic publication races without accepting i
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-progress-publication-race-"));
   const progressPath = join(directory, "result.json.progress");
   try {
-    writeAcceptanceProgress(progressPath, "seed:one");
+    writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:one"));
     let replacedAfterSnapshot = false;
     assert.equal(
       acceptanceProgressCheckpoint(progressPath, {
         afterInitialPathSnapshot() {
           if (replacedAfterSnapshot) return;
           replacedAfterSnapshot = true;
-          writeAcceptanceProgress(progressPath, "seed:next");
+          writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:next"));
         }
       }),
       "seed:next"
     );
 
-    writeAcceptanceProgress(progressPath, "seed:one");
+    writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:one"));
     let replacedAfterOpen = false;
     assert.equal(
       acceptanceProgressCheckpoint(progressPath, {
         afterDescriptorOpen() {
           if (replacedAfterOpen) return;
           replacedAfterOpen = true;
-          writeAcceptanceProgress(progressPath, "seed:next");
+          writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:next"));
         }
       }),
       "seed:next"
     );
 
-    writeAcceptanceProgress(progressPath, "seed:one");
+    writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:one"));
     let replacedBeforeFinalPathCheck = false;
     assert.equal(
       acceptanceProgressCheckpoint(progressPath, {
         beforeFinalPathSnapshot() {
           if (replacedBeforeFinalPathCheck) return;
           replacedBeforeFinalPathCheck = true;
-          writeAcceptanceProgress(progressPath, "seed:next");
+          writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:next"));
         }
       }),
       "seed:next"
     );
 
-    writeAcceptanceProgress(progressPath, "seed:one");
+    writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:one"));
     assert.throws(
       () =>
         acceptanceProgressCheckpoint(progressPath, {
@@ -2469,7 +3169,13 @@ test("a live timed-out editor phase terminates its child and removes signal hook
         },
         phaseTimeoutMs: 150,
         inactivityTimeoutMs: 1_000,
-        gracefulExitMs: 0
+        gracefulExitMs: 0,
+        windowsTreeKill:
+          process.platform === "win32"
+            ? async () => {
+                child.kill();
+              }
+            : undefined
       }),
       (error) =>
         error instanceof EditorAcceptanceFailure &&
@@ -2545,7 +3251,7 @@ test("the generated harness records startup before loading the acceptance module
   try {
     writeEditorAcceptanceHarness(directory);
     const source = await readFile(join(directory, "extension.js"), "utf8");
-    const harnessMarker = source.indexOf('recordProgress(phase + ":harness-start")');
+    const harnessMarker = source.indexOf('recordProgress(runId, phase, phase + ":harness-start")');
     const moduleLoad = source.indexOf("require(process.env.OPEN_WRANGLER_TEST_MODULE).run()");
     assert.notEqual(harnessMarker, -1);
     assert.notEqual(moduleLoad, -1);
@@ -2850,6 +3556,7 @@ test("Xvfb timeout diagnostics discard stderr that has not reached EOF", async (
 test("the private Xvfb helper receives the same strict environment allowlist", async () => {
   const child = fakeDisplayChild();
   let launchedEnvironment;
+  let launchedArguments;
   const isolation = await startIsolatedEditorDisplay({
     platform: "linux",
     environment: {
@@ -2869,7 +3576,8 @@ test("the private Xvfb helper receives the same strict environment allowlist", a
       SSH_AUTH_SOCK: "/private/ssh-agent.sock",
       HTTPS_PROXY: "https://user:password@example.invalid"
     },
-    spawnProcess(_executable, _arguments, options) {
+    spawnProcess(_executable, arguments_, options) {
+      launchedArguments = arguments_;
       launchedEnvironment = options.env;
       return child;
     },
@@ -2880,6 +3588,20 @@ test("the private Xvfb helper receives the same strict environment allowlist", a
     async stopProcess() {}
   });
   try {
+    assert.deepEqual(launchedArguments, [
+      "-displayfd",
+      "3",
+      "-screen",
+      "0",
+      "1920x1080x24",
+      "-dpi",
+      "96",
+      "-nolisten",
+      "tcp",
+      "-noreset",
+      "-extension",
+      "GLX"
+    ]);
     assert.deepEqual(launchedEnvironment, {
       PATH: "/safe/bin",
       HOME: "/private/home",
@@ -3051,6 +3773,22 @@ function fakeCommandChild(pid) {
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.kill = () => true;
+  return child;
+}
+
+function fakeStoppableCommandChild(pid) {
+  const child = fakeCommandChild(pid);
+  child.kill = (signal) => {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    child.signalCode = signal;
+    child.stdout.end();
+    child.stderr.end();
+    queueMicrotask(() => {
+      child.emit("exit", null, signal);
+      child.emit("close", null, signal);
+    });
+    return true;
+  };
   return child;
 }
 

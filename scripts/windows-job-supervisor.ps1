@@ -1,5 +1,9 @@
 #requires -Version 5.1
 
+param(
+    [string]$CompileTo
+)
+
 <#
 .SYNOPSIS
   Runs one editor acceptance process tree inside a private Windows Job Object.
@@ -1018,6 +1022,16 @@ namespace OpenWrangler.Acceptance
         private const int PollMilliseconds = 25;
         private const int TerminationDeadlineMilliseconds = 10000;
 
+        public static int Main()
+        {
+            if (Environment.OSVersion.Platform != PlatformID.Win32NT)
+            {
+                WriteFixedFailure("platform");
+                return SupervisorFailureExitCode;
+            }
+            return Run(Console.OpenStandardInput());
+        }
+
         public static int Run(Stream standardInput)
         {
             try
@@ -1186,6 +1200,20 @@ namespace OpenWrangler.Acceptance
     }
 }
 '@
+
+if ($CompileTo) {
+    try {
+        if (-not [IO.Path]::IsPathRooted($CompileTo)) {
+            throw [ArgumentException]::new("The supervisor output path must be absolute.")
+        }
+        Add-Type -TypeDefinition $nativeSource -Language CSharp -OutputAssembly $CompileTo -OutputType ConsoleApplication -ErrorAction Stop
+        [Environment]::Exit(0)
+    }
+    catch {
+        [Console]::Error.WriteLine("OPEN_WRANGLER_WINDOWS_SUPERVISOR_ERROR:bootstrap")
+        [Environment]::Exit(125)
+    }
+}
 
 try {
     Add-Type -TypeDefinition $nativeSource -Language CSharp -ErrorAction Stop

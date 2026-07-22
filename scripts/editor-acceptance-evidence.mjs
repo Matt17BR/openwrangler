@@ -51,9 +51,9 @@ const SINGLE_QUOTED_SECRET_FIELD =
 const SECRET_ASSIGNMENT =
   /(\b[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
 const SECRET_WHITESPACE_ASSIGNMENT =
-  /(\b[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*(?:[^\S\r\n]+|\\[bfnrtv])+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
+  /(\b[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*(?:[^\S\r\n]|\\[bfnrtv])+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
 const SECRET_MULTILINE_ASSIGNMENT =
-  /(^[^\S\r\n]*(?!-)[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*(?:[^\S\r\n]*(?:\r?\n|\r))+[^\S\r\n]*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/gimu;
+  /(^[^\S\r\n]*(?!-)[a-z0-9_.-]*(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token)[a-z0-9_.-]*(?:[^\S\r\n]{0,256}(?:\r?\n|\r)){1,8}[^\S\r\n]{0,256})(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/gimu;
 const PAT_SECRET_FIELD =
   /("(?:pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)"\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,}\r\n]*)/giu;
 const SINGLE_QUOTED_PAT_SECRET_FIELD =
@@ -61,9 +61,9 @@ const SINGLE_QUOTED_PAT_SECRET_FIELD =
 const PAT_SECRET_ASSIGNMENT =
   /(\b(?:pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
 const PAT_SECRET_WHITESPACE_ASSIGNMENT =
-  /(\b(?:pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)(?:\s+|\\[bfnrtv])+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
+  /(\b(?:pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)(?:[^\S\r\n]|\\[bfnrtv])+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}\]]+)/giu;
 const CLI_SECRET_OPTION =
-  /((?:^|[\s,;])--?(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token|pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)(?:\s+|\\[bfnrtv]|=)+)(?:(?:"(?:[^"\\]|\\.)*")|(?:'(?:[^'\\]|\\.)*')|[^\s,;]+)/gimu;
+  /((?:^|[\s,;])--?(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token|pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)(?:[^\S\r\n]|\\[bfnrtv]|=)+)(?:(?:"(?:[^"\\]|\\.)*")|(?:'(?:[^'\\]|\\.)*')|[^\s,;]+)/gimu;
 const TOKEN_VALUE =
   /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|npm_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,}|(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}|ya29\.[A-Za-z0-9_-]{10,}|sq0(?:atp|csp)-[A-Za-z0-9_-]{10,}|(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|A3T)[A-Z0-9]{16})\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/gu;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
@@ -117,6 +117,7 @@ export function retainEditorAcceptanceEvidence({
   hostHomes = [],
   resultPath,
   resultPaths = { [phase]: resultPath },
+  progressPaths = {},
   evidenceMode = "full",
   evidenceReason
 }) {
@@ -153,6 +154,12 @@ export function retainEditorAcceptanceEvidence({
       throw new Error(`Editor acceptance result path for ${resultPhase} must be provided.`);
     }
     requireContainedPath(isolatedProfile, resolve(phaseResultPath), `acceptance result for ${resultPhase}`);
+  }
+  for (const [progressPhase, phaseProgressPath] of Object.entries(progressPaths)) {
+    if (!(progressPhase in resultPaths) || typeof phaseProgressPath !== "string") {
+      throw new Error(`Editor acceptance progress path for ${progressPhase} must match a result phase.`);
+    }
+    requireContainedPath(isolatedProfile, resolve(phaseProgressPath), `acceptance progress for ${progressPhase}`);
   }
 
   const lexicalReplacements = createFailureReplacements({
@@ -202,6 +209,13 @@ export function retainEditorAcceptanceEvidence({
       canonicalIsolatedProfile,
       canonicalizePath(phaseResultPath),
       `acceptance result for ${resultPhase}`
+    );
+  }
+  for (const [progressPhase, phaseProgressPath] of Object.entries(progressPaths)) {
+    requireContainedPath(
+      canonicalIsolatedProfile,
+      canonicalizePath(phaseProgressPath),
+      `acceptance progress for ${progressPhase}`
     );
   }
 
@@ -265,7 +279,8 @@ export function retainEditorAcceptanceEvidence({
   for (const [resultPhase, phaseResultPath] of Object.entries(resultPaths)) {
     const phaseDirectory = resolve(target, "phases", safeSegment(redactFailureText(resultPhase, replacements, 128)));
     copyText(phaseResultPath, resolve(phaseDirectory, "result.json"));
-    copyText(`${phaseResultPath}.progress`, resolve(phaseDirectory, "progress.txt"));
+    const phaseProgressPath = progressPaths[resultPhase];
+    if (phaseProgressPath) copyText(phaseProgressPath, resolve(phaseDirectory, "progress.json"));
   }
 
   const logRoot = resolve(isolatedProfile, "user-data", "logs");
@@ -1333,16 +1348,6 @@ function readEvidenceUtf8Source(descriptor, size, byteLimit) {
 }
 
 function readEvidenceUtf8Tail(path, canonicalProfile, byteLimit, sourceBudget) {
-  let initial;
-  try {
-    initial = lstatSync(path, { bigint: true });
-  } catch (error) {
-    throw new EvidenceFileError(error?.code === "ENOENT" ? "missing" : "unreadable");
-  }
-  if (!initial.isFile() || initial.isSymbolicLink()) throw new EvidenceFileError("not-regular");
-  if (initial.nlink > 1n) throw new EvidenceFileError("multiple-links");
-  assertCanonicalEvidenceContainment(path, canonicalProfile);
-
   let descriptor;
   try {
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -1356,8 +1361,8 @@ function readEvidenceUtf8Tail(path, canonicalProfile, byteLimit, sourceBudget) {
     if (!opened.isFile() || opened.nlink > 1n) {
       throw new EvidenceFileError(opened.nlink > 1n ? "multiple-links" : "not-regular");
     }
-    if (!sameFileIdentity(initial, opened)) throw new EvidenceFileError("path-race");
-    if (!sameImmutableFileSnapshot(initial, opened)) throw new EvidenceFileError("file-changed");
+    // The descriptor is the authority. Only after it is open do we compare the
+    // path and canonical containment against that exact file identity.
     assertOpenEvidencePath(path, canonicalProfile, descriptor, opened);
     if (opened.size < 0n || opened.size > BigInt(MAX_EVIDENCE_SOURCE_BYTES)) {
       throw new EvidenceFileError("source-too-large");
@@ -1468,7 +1473,7 @@ function readBoundedDirectoryChildren(path, canonicalProfile, expected, limit) {
   let descriptor;
   let directory;
   try {
-    if (process.platform === "win32") {
+    if (process.platform !== "linux") {
       directory = opendirSync(path, { bufferSize: Math.min(32, limit) });
       const current = containedProfileEntry(path, canonicalProfile);
       if (!current || !sameImmutableFileSnapshot(current.snapshot, expected)) {
@@ -1486,7 +1491,7 @@ function readBoundedDirectoryChildren(path, canonicalProfile, expected, limit) {
         descriptor = undefined;
         return [];
       }
-      const descriptorPath = directoryDescriptorPath(descriptor, path);
+      const descriptorPath = directoryDescriptorPath(descriptor);
       directory = opendirSync(descriptorPath, { bufferSize: Math.min(32, limit) });
     }
   } catch {
@@ -1541,10 +1546,8 @@ function containedProfileEntry(path, canonicalProfile) {
   return { snapshot: current };
 }
 
-function directoryDescriptorPath(descriptor, fallbackPath) {
-  if (process.platform === "linux") return `/proc/self/fd/${descriptor}`;
-  if (process.platform === "darwin") return `/dev/fd/${descriptor}`;
-  return fallbackPath;
+function directoryDescriptorPath(descriptor) {
+  return `/proc/self/fd/${descriptor}`;
 }
 
 function safeMetadataSize(size) {

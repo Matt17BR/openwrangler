@@ -18,11 +18,15 @@ import {
   writeEditorSettings,
   writeFakeJupyterExtension
 } from "./editor-acceptance.mjs";
-import { removeEditorAcceptancePrivateRoot } from "./packaged-editor-orchestration.mjs";
+import {
+  createEditorAcceptancePrivateRootReceipt,
+  removeEditorAcceptancePrivateRoot
+} from "./packaged-editor-orchestration.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const privateDiagnosticPaths = collectEditorAcceptancePrivateDiagnosticPaths();
 let temporaryRoot;
+let temporaryRootReceipt;
 let profile;
 let fakeJupyter;
 let editorDisplay;
@@ -51,6 +55,9 @@ try {
   const temporaryParent = resolve(root, "tmp", "ow");
   mkdirSync(temporaryParent, { recursive: true, mode: 0o700 });
   temporaryRoot = mkdtempSync(join(temporaryParent, "x-"));
+  temporaryRootReceipt = createEditorAcceptancePrivateRootReceipt(temporaryRoot, {
+    containedBy: temporaryParent
+  });
   configureEditorAcceptanceTempRoot(temporaryRoot);
   profile = mkdtempSync(join(temporaryRoot, "host-"));
   fakeJupyter = resolve(profile, "fake-jupyter");
@@ -122,8 +129,8 @@ try {
   processTreeMayBeLive ||= editorProcessTreeMayBeLive(error);
 }
 try {
-  if (temporaryRoot) {
-    removeEditorAcceptancePrivateRoot(temporaryRoot, {
+  if (temporaryRootReceipt) {
+    removeEditorAcceptancePrivateRoot(temporaryRootReceipt, {
       processTreeVerifiedStopped: !processTreeMayBeLive
     });
   }
