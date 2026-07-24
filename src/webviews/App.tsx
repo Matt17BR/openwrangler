@@ -85,6 +85,7 @@ export function App() {
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
   const importOptionsPendingRef = useRef(false);
+  const importOptionsUiBusyRef = useRef(true);
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
@@ -539,22 +540,25 @@ export function App() {
     requestStatsForConfirmedView();
   }, [requestStatsForConfirmedView, restartOwnedSummaryProfiling]);
 
+  useEffect(() => {
+    importOptionsUiBusyRef.current = loading || mutationPending || projectionLoading;
+  }, [loading, mutationPending, projectionLoading]);
+
   const requestImportOptionsChange = useCallback(() => {
-    if (loading || mutationPending || projectionLoading || importOptionsPendingRef.current) return;
+    if (
+      importOptionsUiBusyRef.current ||
+      foregroundRequest.current ||
+      pendingStepInspectionRef.current?.reason === "projection" ||
+      importOptionsPendingRef.current
+    ) {
+      return;
+    }
     flushGridViewState();
     cancelBackgroundRequests();
     clearDrawerSummaryScheduling();
     storeImportOptionsPending(true);
     vscode.postMessage({ kind: "changeImportOptions" });
-  }, [
-    cancelBackgroundRequests,
-    clearDrawerSummaryScheduling,
-    flushGridViewState,
-    loading,
-    mutationPending,
-    projectionLoading,
-    storeImportOptionsPending
-  ]);
+  }, [cancelBackgroundRequests, clearDrawerSummaryScheduling, flushGridViewState, storeImportOptionsPending]);
 
   const updateImportOptionsPending = useCallback(
     (pending: boolean) => {

@@ -85,6 +85,32 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
   });
 
+  it("keeps one renderer handshake while opening and accepting progressive profiles", async () => {
+    render(<App />);
+    expect(messagesOfKind("ready")).toHaveLength(1);
+
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
+    expect(messagesOfKind("ready")).toHaveLength(1);
+
+    for (const request of requestsOfKind("getSummary")) {
+      const column = request.columns?.[0];
+      if (!column) throw new Error("Expected a column-scoped summary request.");
+      dispatch({
+        kind: "summary",
+        revision: metadata.revision,
+        viewRequestId: viewId(request),
+        summaries: [
+          column === "city" ? citySummary : { ...citySummary, column, type: "float", rawType: "Float64", topValues: [] }
+        ]
+      });
+    }
+
+    expect(await screen.findAllByText("Distinct 100%")).toHaveLength(2);
+    expect(screen.queryByText("Profiling…")).not.toBeInTheDocument();
+    expect(messagesOfKind("ready")).toHaveLength(1);
+  });
+
   it("restores host-owned grid presentation and publishes bounded changes independently from runtime requests", async () => {
     render(<App />);
     const restoredPage = {
@@ -975,6 +1001,12 @@ function runtimeRequests(): RuntimeRequest[] {
 
 function requestsOfKind(kind: string): RuntimeRequest[] {
   return runtimeRequests().filter((request) => request.kind === kind);
+}
+
+function messagesOfKind(kind: string): unknown[] {
+  return postMessage.mock.calls
+    .map(([message]) => message)
+    .filter((message) => typeof message === "object" && message !== null && "kind" in message && message.kind === kind);
 }
 
 function onlyRequest(kind: string): RuntimeRequest {
