@@ -1,0 +1,8 @@
+name: Open Wrangler CodeQL configuration
+
+# These two suites intentionally create adversarial check/use races to prove
+# the production guards fail closed. Exclude only those fixtures from static
+# race findings; production scripts remain fully analyzed.
+paths-ignore:
+  - scripts/editor-acceptance.test.mjs
+  - scripts/editor-acceptance-artifact.test.mjs

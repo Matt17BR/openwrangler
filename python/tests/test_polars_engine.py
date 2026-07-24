@@ -6,11 +6,44 @@ from typing import Any, cast
 import polars as pl
 import pytest
 
+import openwrangler_runtime.engines.base as engine_base
+import openwrangler_runtime.engines.polars_engine as polars_engine
 from openwrangler_runtime.engines.base import typed_selection_value
 from openwrangler_runtime.engines.polars_engine import SUMMARY_VISUALIZATION_SAMPLE_LIMIT, PolarsEngine
 from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    ("source", "pyarrow_available", "expected_imports"),
+    (
+        ({"kind": "file", "path": "sample.XLSX"}, True, ["polars", "pyarrow"]),
+        ({"kind": "file", "path": "legacy.xls"}, True, ["polars", "pyarrow"]),
+        ({"kind": "file", "path": "sample.xlsx"}, False, ["polars"]),
+        ({"kind": "file", "path": "sample.csv"}, True, ["polars"]),
+        ({"kind": "notebookVariable", "variableName": "frame"}, True, ["polars"]),
+    ),
+)
+def test_polars_preparation_preloads_only_an_installed_excel_pyarrow_bridge(
+    source: dict[str, Any],
+    pyarrow_available: bool,
+    expected_imports: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    imported: list[str] = []
+
+    def find_optional_module(name: str) -> object | None:
+        assert name == "pyarrow"
+        return object() if pyarrow_available else None
+
+    monkeypatch.setattr(engine_base, "import_module", imported.append)
+    monkeypatch.setattr(polars_engine, "find_spec", find_optional_module)
+    monkeypatch.setattr(polars_engine, "import_module", imported.append)
+
+    PolarsEngine().prepare(source)
+
+    assert imported == expected_imports
 
 
 def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeypatch):

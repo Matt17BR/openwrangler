@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from importlib import import_module
+from importlib.util import find_spec
 from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
@@ -41,6 +43,7 @@ _POLARS_INTEGER_LIMB_COUNT = 5
 
 class PolarsEngine(DataFrameEngine):
     name = "polars"
+    runtime_modules = ("polars",)
     capabilities = EngineCapabilities(
         source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
         supports_editing=True,
@@ -49,6 +52,19 @@ class PolarsEngine(DataFrameEngine):
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
     )
+
+    def prepare(self, source: Mapping[str, Any] | None = None) -> None:
+        super().prepare(source)
+        if source is None or source.get("kind") != "file":
+            return
+        path = source.get("path")
+        if not isinstance(path, str) or Path(path).suffix.lower() not in {".xlsx", ".xls"}:
+            return
+        # Supported fastexcel releases either import PyArrow directly or use it
+        # for eager Calamine output when installed. Initialize that optional
+        # native bridge on the owner thread before Excel enters an executor.
+        if find_spec("pyarrow") is not None:
+            import_module("pyarrow")
 
     def detect(self, value: Any) -> bool:
         try:

@@ -3,11 +3,11 @@ import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { chromium, type Locator, type Page } from "playwright-core";
-import { getSetting } from "../../extension/configuration";
+import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
 import type {
@@ -30,6 +30,12 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
+import {
+  ignoreRetiredRendererProbeFailure,
+  isRetiredRendererTarget,
+  withAcceptanceOperationDeadline
+} from "./playwrightLifecycle";
+import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -75,6 +81,77 @@ interface FakeJupyterApi {
 const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
+const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_000;
+const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
+const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
+const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+
+function resolveAcceptanceTemporaryDirectory(directory: string): string {
+  const isolatedTempRoot = path.resolve(tmpdir());
+  const candidate = path.resolve(directory);
+  const relative = path.relative(isolatedTempRoot, candidate);
+  assert.ok(
+    relative.length > 0 &&
+      !path.isAbsolute(relative) &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !relative.includes(path.sep),
+    "Acceptance fixture directories must be direct children of the isolated editor temp root."
+  );
+  const metadata = lstatSync(candidate);
+  assert.ok(
+    metadata.isDirectory() && !metadata.isSymbolicLink(),
+    "An acceptance fixture root must remain a real directory."
+  );
+  return candidate;
+}
+
+function cleanupAcceptanceTemporaryDirectory(directory: string): void {
+  const ownedDirectory = resolveAcceptanceTemporaryDirectory(directory);
+  if (process.platform === "win32") {
+    const isolatedTempRoot = path.resolve(tmpdir());
+    assert.equal(
+      process.env.OPEN_WRANGLER_EXTENSION_TESTS,
+      "1",
+      "Windows fixture cleanup may be deferred only inside the editor acceptance harness."
+    );
+    assert.equal(
+      path.basename(path.dirname(isolatedTempRoot)).toLowerCase(),
+      "ow",
+      "Deferred Windows acceptance fixtures require the runner-owned temp parent."
+    );
+    assert.match(
+      path.basename(isolatedTempRoot),
+      /^x-[A-Za-z0-9]+$/u,
+      "Deferred Windows acceptance fixtures require the runner-owned random temp root."
+    );
+    assert.match(
+      path.basename(ownedDirectory),
+      /^openwrangler-[A-Za-z0-9-]+$/u,
+      "Deferred Windows acceptance fixtures must use an Open Wrangler-owned random directory name."
+    );
+    // VS Code's Windows file service may retain a fixture-directory handle until
+    // the workbench exits even after its custom editor and runtime are closed.
+    // The outer acceptance runner owns this temp root and removes it only after
+    // the Job Object is proven empty, which is the first safe deletion boundary.
+    return;
+  }
+  rmSync(ownedDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+function exerciseAcceptanceTemporaryDirectoryCleanupContract(): void {
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-cleanup-contract-"));
+  assert.throws(
+    () => cleanupAcceptanceTemporaryDirectory(path.join(directory, "nested")),
+    /direct children of the isolated editor temp root/u
+  );
+  cleanupAcceptanceTemporaryDirectory(directory);
+  assert.equal(
+    existsSync(directory),
+    process.platform === "win32",
+    "Windows retains fixture roots until job-empty cleanup; other platforms remove them immediately."
+  );
+}
 
 function columnReference(metadata: SessionMetadata, name: string): ColumnReference {
   const column = metadata.schema.find((candidate) => candidate.name === name);
@@ -103,6 +180,7 @@ function gridColumnDisplays(page: GridPage, columnId: string): string[] {
 }
 
 export async function run(): Promise<void> {
+  recordAcceptanceProgress("preflight:start");
   recordAcceptanceProgress("activation:start");
   const extension = vscode.extensions.getExtension<ExtensionApi>("matt17br.openwrangler");
   assert.ok(extension, "The Open Wrangler extension must be discoverable.");
@@ -110,7 +188,9 @@ export async function run(): Promise<void> {
   const testing = extensionApi?.testing;
   assert.ok(testing, "The isolated acceptance harness must enable the test-only extension API.");
   assert.equal(extension.isActive, true, "The extension must activate successfully.");
+  exerciseAcceptanceTemporaryDirectoryCleanupContract();
   recordAcceptanceProgress("activation:complete");
+  recordAcceptanceProgress("preflight:package");
   assert.equal(extension.packageJSON.name, "openwrangler");
   assert.equal(extension.packageJSON.displayName, "Open Wrangler");
   assert.match(extension.packageJSON.description, /open-source dataframe wrangler/i);
@@ -125,6 +205,7 @@ export async function run(): Promise<void> {
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   }
 
+  recordAcceptanceProgress("preflight:commands");
   const commands = await vscode.commands.getCommands(true);
   for (const command of [
     "openWrangler.openPath",
@@ -163,6 +244,7 @@ export async function run(): Promise<void> {
     keybindings?: Array<{ command?: string; key?: string; mac?: string; when?: string }>;
     menus?: Record<string, Array<{ command?: string; when?: string; group?: string }>>;
   };
+  recordAcceptanceProgress("preflight:contributions");
   assert.ok(
     contributions.viewsContainers?.activitybar?.some(
       (container) => container.id === "openWrangler" && container.icon === "media/activity-icon.svg"
@@ -175,6 +257,7 @@ export async function run(): Promise<void> {
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.fetchColumnBlockSize"]);
   assert.ok(contributions.configuration?.properties?.["openWrangler.filterMode"]);
+  assert.ok(contributions.configuration?.properties?.["openWrangler.sessionOpenTimeoutMs"]);
   const enabledFileTypes = contributions.configuration?.properties?.["openWrangler.enabledFileTypes"] as
     { items?: { enum?: string[] }; default?: string[] } | undefined;
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
@@ -287,6 +370,7 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
+  recordAcceptanceProgress("preflight:complete");
   if (phase === "seed") {
     recordAcceptanceProgress("seed:start");
     await seedPersistedPlan(testing, fixture);
@@ -366,13 +450,17 @@ export async function run(): Promise<void> {
 function recordAcceptanceProgress(checkpoint: string): void {
   const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
   if (!progressPath) return;
-  const temporaryPath = `${progressPath}.${process.pid}.tmp`;
-  try {
-    writeFileSync(temporaryPath, `${checkpoint}\n`, { encoding: "utf8", flag: "w" });
-    renameSync(temporaryPath, progressPath);
-  } catch {
-    rmSync(temporaryPath, { force: true });
+  const runId = process.env.OPEN_WRANGLER_TEST_RUN_ID;
+  const phase = process.env.OPEN_WRANGLER_TEST_PHASE;
+  if (!runId || !phase) {
+    throw new Error("Editor acceptance progress requires the launched run ID and phase.");
   }
+  writeAcceptanceProgressCheckpoint(progressPath, {
+    protocol: ACCEPTANCE_PROGRESS_PROTOCOL,
+    runId,
+    phase,
+    checkpoint
+  });
 }
 
 async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -384,7 +472,7 @@ async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.
         active.metadata.steps.some((step) => step.id === "packaged-score")
       );
     },
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the packaged custom editor to restore its applied cleaning step"
   );
   await waitForSettledViewState(testing, "the confirmed packaged-editor view before step selection");
@@ -472,6 +560,7 @@ async function exercisePackagedFileLaunchSurfaces(
   fixture: vscode.Uri,
   outputDirectory?: string
 ): Promise<void> {
+  recordAcceptanceProgress("verify:file-launch:setup");
   const sourceBytes = readFileSync(fixture.fsPath);
   const page = await connectToEditorWorkbench();
   const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
@@ -516,6 +605,7 @@ async function exercisePackagedFileLaunchSurfaces(
     await vscode.commands.executeCommand("notifications.hideList");
   }
 
+  recordAcceptanceProgress("verify:file-launch:title-action:source");
   await vscode.commands.executeCommand("vscode.open", fixture, {
     preview: false,
     viewColumn: vscode.ViewColumn.One
@@ -550,6 +640,7 @@ async function exercisePackagedFileLaunchSurfaces(
     );
   }
   if (outputDirectory) {
+    recordAcceptanceProgress("verify:file-launch:title-action:screenshot");
     mkdirSync(outputDirectory, { recursive: true });
     await titleAction.first().hover();
     await page
@@ -561,10 +652,11 @@ async function exercisePackagedFileLaunchSurfaces(
     await page.keyboard.press("Escape");
   }
 
+  recordAcceptanceProgress("verify:file-launch:title-action:open");
   await titleAction.first().click();
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-title action to open the selected source"
   );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
@@ -575,6 +667,7 @@ async function exercisePackagedFileLaunchSurfaces(
     "the editor-title launch session to dispose"
   );
 
+  recordAcceptanceProgress("verify:file-launch:tab-context:menu");
   const sourceTab = page
     .locator(".part.editor .tabs-container .tab")
     .filter({ hasText: path.basename(fixture.fsPath) })
@@ -596,33 +689,27 @@ async function exercisePackagedFileLaunchSurfaces(
     10_000,
     "the source tab to become active before opening its context menu"
   );
-  const tabMenuAction = page
-    .locator('.context-view.monaco-menu-container:visible [role="menuitem"]')
-    .filter({
-      has: page.locator('.action-label[aria-label="Open in Open Wrangler"]')
-    })
-    .last();
-  await activeSourceTab.click({ button: "right" });
-  try {
-    await tabMenuAction.waitFor({ state: "visible", timeout: 3_000 });
-  } catch {
-    await page.keyboard.press("Escape");
-    await activeSourceTab.click({ button: "right" });
-    await tabMenuAction.waitFor({ state: "visible", timeout: 10_000 });
-  }
-  await page.waitForTimeout(350);
+  const { menu: tabContextMenu, action: tabMenuAction } = await openEditorTabContextMenu(
+    page,
+    activeSourceTab,
+    "Open in Open Wrangler"
+  );
+  assert.ok(tabMenuAction, "The source-tab context menu must expose Open in Open Wrangler.");
   assert.equal(
     (await tabMenuAction.innerText()).trim(),
     "Open in Open Wrangler",
     "The editor-tab context action must use the compact product label."
   );
   if (outputDirectory) {
+    recordAcceptanceProgress("verify:file-launch:tab-context:screenshot");
+    await tabContextMenu.waitFor({ state: "visible", timeout: 1_000 });
     await captureWorkbenchScreenshot(page, path.resolve(outputDirectory, `${editor}-tab-context-menu.png`));
   }
+  recordAcceptanceProgress("verify:file-launch:tab-context:open");
   await tabMenuAction.click();
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-tab context action to open the selected source"
   );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-tab action must not modify its source.");
@@ -633,6 +720,21 @@ async function exercisePackagedFileLaunchSurfaces(
     "the editor-tab launch session to dispose"
   );
 
+  // A custom-editor tab becomes active in the extension host before Electron
+  // has necessarily rebound editor/title actions to that tab's resource. Drop
+  // the prior source tab so a still-rendering action can never retain its URI,
+  // then require the third-party webview itself before clicking the action.
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => vscode.window.tabGroups.all.every((group) => group.tabs.length === 0),
+    10_000,
+    "all prior file-launch tabs to close before third-party editor routing"
+  );
+  await page.bringToFront();
+  await activeEditorGroup.locator(".tabs-container .tab.active").last().waitFor({ state: "hidden", timeout: 10_000 });
+  await titleAction.first().waitFor({ state: "hidden", timeout: 10_000 });
+
+  recordAcceptanceProgress("verify:file-launch:third-party-editor:source");
   const customEditorFixture = vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.csv"));
   const customEditorSourceBytes = readFileSync(customEditorFixture.fsPath);
   await vscode.commands.executeCommand(
@@ -654,14 +756,24 @@ async function exercisePackagedFileLaunchSurfaces(
     "the third-party CSV custom editor before file-launch interaction"
   );
   await page.bringToFront();
-  await titleAction.first().waitFor({ state: "visible", timeout: 10_000 });
-  await titleAction.first().click();
-  await acceptDefaultDelimitedImport(page);
+  const customEditorTitleAction = await waitForThirdPartyCustomEditorWorkbench(
+    page,
+    activeEditorGroup,
+    customEditorFixture
+  );
+  recordAcceptanceProgress("verify:file-launch:third-party-editor:open");
+  await customEditorTitleAction.click();
+  recordAcceptanceProgress("verify:file-launch:third-party-editor:import");
+  const importCheckpoint = "verify:file-launch:third-party-editor:import";
+  await acceptDefaultDelimitedImport(page, testing, customEditorFixture, importCheckpoint);
+  recordAcceptanceProgress(`${importCheckpoint}:options-complete`);
+  recordAcceptanceProgress(`${importCheckpoint}:session-open`);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === customEditorFixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the third-party custom-editor title action to open the selected CSV source"
   );
+  recordAcceptanceProgress(`${importCheckpoint}:opened`);
   assert.deepEqual(testing.activeSession()?.metadata.source.importOptions, {
     delimiter: ",",
     encoding: "utf-8",
@@ -673,17 +785,24 @@ async function exercisePackagedFileLaunchSurfaces(
     customEditorSourceBytes,
     "The third-party custom-editor title action must not modify its source."
   );
-  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  recordAcceptanceProgress(`${importCheckpoint}:close`);
+  await withAcceptanceOperationDeadline(
+    vscode.commands.executeCommand("workbench.action.closeActiveEditor"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the third-party CSV session editor to close"
+  );
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
     "the third-party custom-editor launch session to dispose"
   );
+  recordAcceptanceProgress(`${importCheckpoint}:closed`);
 
+  recordAcceptanceProgress("verify:file-launch:duplicate-action-guards");
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the custom editor before duplicate-action verification"
   );
   await page.bringToFront();
@@ -693,10 +812,9 @@ async function exercisePackagedFileLaunchSurfaces(
     .locator(".tabs-container .tab.active")
     .filter({ hasText: path.basename(fixture.fsPath) })
     .last();
-  await openWranglerTab.click({ button: "right" });
-  await page.waitForTimeout(350);
+  const { menu: openWranglerContextMenu } = await openEditorTabContextMenu(page, openWranglerTab);
   assert.equal(
-    await tabMenuAction.count(),
+    await openWranglerContextMenu.getByRole("menuitem", { name: "Open in Open Wrangler", exact: true }).count(),
     0,
     "The Open Wrangler custom-editor tab must not offer a duplicate open action."
   );
@@ -708,26 +826,370 @@ async function exercisePackagedFileLaunchSurfaces(
     "the launch-surface custom editor to dispose"
   );
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  recordAcceptanceProgress("verify:file-launch:complete");
 }
 
-async function acceptDefaultDelimitedImport(page: Page): Promise<void> {
-  for (const { title, option } of [
-    { title: "Delimiter", option: "Comma" },
-    { title: "Text encoding", option: "utf-8" },
-    { title: "Header row", option: "First row contains column names" }
-  ]) {
-    const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
-    await quickInput.waitFor({ state: "visible", timeout: 10_000 });
-    const defaultOption = quickInput.locator(".monaco-list-row").filter({ hasText: option }).first();
-    await defaultOption.waitFor({ state: "visible", timeout: 10_000 });
-    await defaultOption.click();
+interface ContextMenuDiagnostic {
+  attempt: number;
+  menus: Array<{
+    text: string;
+    items: Array<{ role: string | null; text: string; ariaLabel: string | null; labelAriaLabel: string | null }>;
+  }>;
+}
+
+async function openEditorTabContextMenu(
+  page: Page,
+  tab: Locator,
+  requiredActionName?: string
+): Promise<{ menu: Locator; action?: Locator }> {
+  const diagnostics: ContextMenuDiagnostic[] = [];
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await page.keyboard.press("Escape");
+    const visibleMenus = page.locator(".context-view.monaco-menu-container:visible");
+    await visibleMenus.waitFor({ state: "hidden", timeout: 1_000 }).catch(() => {});
+    await tab.click({ button: "right" });
+
+    const menu = visibleMenus.last();
+    const action = requiredActionName
+      ? menu.getByRole("menuitem", { name: requiredActionName, exact: true }).last()
+      : undefined;
+    try {
+      await menu.waitFor({ state: "visible", timeout: 3_000 });
+      if (action) await action.waitFor({ state: "visible", timeout: 3_000 });
+      // VS Code intentionally attaches a menu item's mouse-up handler after a
+      // 100 ms guard so the click that opened the menu cannot also invoke it.
+      await page.waitForTimeout(200);
+      return { menu, action };
+    } catch (error) {
+      lastError = error;
+      diagnostics.push({ attempt, menus: await inspectVisibleContextMenus(page) });
+    }
   }
-  const quoteInput = page.locator(".quick-input-widget:visible").filter({ hasText: "Quote character" }).last();
-  await quoteInput.waitFor({ state: "visible", timeout: 10_000 });
+
+  throw new Error(
+    `The editor-tab context menu did not expose ${requiredActionName ? JSON.stringify(requiredActionName) : "a visible HTML menu"} after two right-click attempts. Visible menu diagnostics: ${JSON.stringify(diagnostics)}`,
+    { cause: lastError }
+  );
+}
+
+async function inspectVisibleContextMenus(page: Page): Promise<ContextMenuDiagnostic["menus"]> {
+  return page.locator(".context-view.monaco-menu-container:visible").evaluateAll((menus) =>
+    menus.map((menu) => ({
+      text: (menu.textContent ?? "").replace(/\s+/gu, " ").trim(),
+      items: Array.from(menu.querySelectorAll('[role^="menuitem"]')).map((item) => {
+        const element = item as typeof menu;
+        return {
+          role: element.getAttribute("role"),
+          text: (element.textContent ?? "").replace(/\s+/gu, " ").trim(),
+          ariaLabel: element.getAttribute("aria-label"),
+          labelAriaLabel: element.querySelector(".action-label")?.getAttribute("aria-label") ?? null
+        };
+      })
+    }))
+  );
+}
+
+interface CustomEditorFrameDiagnostic {
+  page: string;
+  frame: string;
+  markerCount: number;
+  visibleMarkerCount: number;
+}
+
+async function waitForThirdPartyCustomEditorWorkbench(
+  page: Page,
+  activeEditorGroup: Locator,
+  fixture: vscode.Uri
+): Promise<Locator> {
+  const activeTab = activeEditorGroup
+    .locator(".tabs-container .tab.active")
+    .filter({ hasText: path.basename(fixture.fsPath) })
+    .last();
+  const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible');
+  const deadline = Date.now() + 10_000;
+  do {
+    const frames = await inspectThirdPartyCustomEditorFrames(page);
+    if (
+      (await activeTab.isVisible().catch(() => false)) &&
+      frames.some((frame) => frame.visibleMarkerCount === 1) &&
+      (await titleAction.count()) === 1
+    ) {
+      return titleAction.first();
+    }
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  const activeTabs = await page
+    .locator(".part.editor .tabs-container .tab.active:visible")
+    .allInnerTexts()
+    .catch(() => []);
+  const visibleEditorLabels = await activeEditorGroup
+    .locator("[aria-label]:visible")
+    .evaluateAll((elements) => elements.slice(0, 64).map((element) => element.getAttribute("aria-label")))
+    .catch(() => []);
+  throw new Error(
+    `The third-party CSV editor did not become renderer-active before its title action was used. ` +
+      `Expected URI: ${JSON.stringify(fixture.toString())}. Active workbench tabs: ${JSON.stringify(activeTabs)}. ` +
+      `Visible editor labels: ${JSON.stringify(visibleEditorLabels)}. Webview frames: ${JSON.stringify(await inspectThirdPartyCustomEditorFrames(page))}.`
+  );
+}
+
+async function inspectThirdPartyCustomEditorFrames(page: Page): Promise<CustomEditorFrameDiagnostic[]> {
+  const browser = page.context().browser();
+  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [page];
+  const diagnostics = await Promise.all(
+    pages.slice(0, 16).flatMap((candidate) =>
+      candidate
+        .frames()
+        .slice(0, 32)
+        .map(async (frame) => {
+          const markers = frame.locator('[aria-label="Acceptance CSV Editor"]');
+          const markerCount = await markers.count().catch(() => 0);
+          let visibleMarkerCount = 0;
+          for (let index = 0; index < markerCount; index += 1) {
+            if (
+              await markers
+                .nth(index)
+                .isVisible()
+                .catch(() => false)
+            )
+              visibleMarkerCount += 1;
+          }
+          return {
+            page: candidate.url(),
+            frame: frame.url(),
+            markerCount,
+            visibleMarkerCount
+          };
+        })
+    )
+  );
+  return diagnostics.filter((diagnostic) => diagnostic.markerCount > 0);
+}
+
+async function acceptDefaultDelimitedImport(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  checkpointPrefix: string
+): Promise<void> {
+  for (const { key, title, option } of [
+    { key: "delimiter", title: "Delimiter", option: "Comma" },
+    { key: "encoding", title: "Text encoding", option: "utf-8" },
+    { key: "header", title: "Header row", option: "First row contains column names" }
+  ]) {
+    const checkpoint = `${checkpointPrefix}:${key}`;
+    recordAcceptanceProgress(`${checkpoint}:wait`);
+    const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
+    recordAcceptanceProgress(`${checkpoint}:visible`);
+    const defaultOption = quickInput.getByRole("option", { name: option, exact: true }).first();
+    await withAcceptanceOperationDeadline(
+      defaultOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} default option to become visible`
+    );
+    assert.match(
+      (await withAcceptanceOperationDeadline(
+        defaultOption.getAttribute("class", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} default option class`
+      )) ?? "",
+      /(?:^|\s)focused(?:\s|$)/u,
+      `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
+    );
+    assert.equal(
+      await withAcceptanceOperationDeadline(
+        quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} keyboard focus`
+      ),
+      true,
+      `${title} must own keyboard focus before accepting its default option.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:accept`);
+    await withAcceptanceOperationDeadline(
+      page.keyboard.press("Enter"),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} default option keyboard acceptance`
+    );
+    try {
+      await withAcceptanceOperationDeadline(
+        quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} prompt to advance`
+      );
+    } catch (error) {
+      const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+      throw new Error(
+        `${title} did not advance after accepting focused default ${JSON.stringify(option)} with Enter. Visible options: ${JSON.stringify(visibleOptions)}`,
+        { cause: error }
+      );
+    }
+    recordAcceptanceProgress(`${checkpoint}:accepted`);
+  }
+  const quoteCheckpoint = `${checkpointPrefix}:quote`;
+  recordAcceptanceProgress(`${quoteCheckpoint}:wait`);
+  const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character");
+  recordAcceptanceProgress(`${quoteCheckpoint}:visible`);
   const field = quoteInput.locator(".quick-input-box input").first();
-  await field.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await field.inputValue(), '"');
-  await field.press("Enter");
+  await withAcceptanceOperationDeadline(
+    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "Quote character field to become visible"
+  );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "Quote character default value"
+    ),
+    '"'
+  );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      field.evaluate((element) => element === element.ownerDocument.activeElement),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "Quote character keyboard focus"
+    ),
+    true,
+    "Quote character must own keyboard focus before accepting its default value."
+  );
+  recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "Quote character keyboard acceptance"
+  );
+  try {
+    await withAcceptanceOperationDeadline(
+      quoteInput.waitFor({ state: "hidden", timeout: 3_000 }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "Quote character prompt to advance"
+    );
+  } catch (error) {
+    throw new Error("Quote character did not advance after accepting its focused default value with Enter.", {
+      cause: error
+    });
+  }
+  recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
+}
+
+async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unknown> {
+  try {
+    return await withAcceptanceOperationDeadline(
+      quickInput.getByRole("option").evaluateAll((options) =>
+        options.map((candidate) => ({
+          label: candidate.getAttribute("aria-label"),
+          className: candidate.getAttribute("class")
+        }))
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import-option diagnostics"
+    );
+  } catch {
+    return "unavailable within the diagnostics deadline";
+  }
+}
+
+async function waitForImportQuickInput(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  title: string
+): Promise<Locator> {
+  const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
+  const deadline = Date.now() + 10_000;
+  do {
+    if (
+      await withAcceptanceOperationDeadline(
+        quickInput.isVisible(),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} prompt visibility`
+      )
+    ) {
+      return quickInput;
+    }
+    const active = testing.activeSession();
+    if (active) {
+      throw new Error(
+        `The editor-title action created a dataframe session before the ${JSON.stringify(title)} import prompt appeared. ` +
+          `Expected source: ${JSON.stringify(expectedSource.fsPath)}. Actual source: ${JSON.stringify(active.metadata.source.path)}.`
+      );
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+
+  const compactText = (value: string): string => value.replace(/\s+/gu, " ").trim().slice(0, 1_000);
+  const diagnostics = await boundedImportPromptDiagnostics(page);
+  const hostInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+  const activeSession = testing.activeSession();
+  throw new Error(
+    `The ${JSON.stringify(title)} import prompt did not appear after the real editor-title action. ` +
+      `Expected source: ${JSON.stringify(expectedSource.toString())}. ` +
+      `Active host input: ${JSON.stringify(describeTabInput(hostInput))}. ` +
+      `Active dataframe source: ${JSON.stringify(activeSession?.metadata.source.uri)}. ` +
+      `Visible quick inputs: ${JSON.stringify(diagnostics.quickInputs.map(compactText))}. ` +
+      `Notifications: ${JSON.stringify(diagnostics.notifications.map(compactText))}. ` +
+      `Dialogs: ${JSON.stringify(diagnostics.dialogs.map(compactText))}. ` +
+      `Active workbench tabs: ${JSON.stringify(diagnostics.activeTabs.map(compactText))}. ` +
+      `Webview frames: ${JSON.stringify(diagnostics.frames)}.`
+  );
+}
+
+interface ImportPromptDiagnostics {
+  quickInputs: string[];
+  notifications: string[];
+  dialogs: string[];
+  activeTabs: string[];
+  frames: CustomEditorFrameDiagnostic[] | string;
+}
+
+async function boundedImportPromptDiagnostics(page: Page): Promise<ImportPromptDiagnostics> {
+  const unavailable: ImportPromptDiagnostics = {
+    quickInputs: [],
+    notifications: [],
+    dialogs: [],
+    activeTabs: [],
+    frames: "unavailable within the diagnostics deadline"
+  };
+  try {
+    return await withAcceptanceOperationDeadline(
+      Promise.all([
+        page.locator(".quick-input-widget:visible").allInnerTexts(),
+        page
+          .locator(
+            ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+          )
+          .allInnerTexts(),
+        page.locator(".monaco-dialog-box:visible").allInnerTexts(),
+        page.locator(".part.editor .tabs-container .tab.active:visible").allInnerTexts(),
+        inspectThirdPartyCustomEditorFrames(page)
+      ]).then(([quickInputs, notifications, dialogs, activeTabs, frames]) => ({
+        quickInputs: quickInputs.slice(0, 8),
+        notifications: notifications.slice(0, 8),
+        dialogs: dialogs.slice(0, 8),
+        activeTabs: activeTabs.slice(0, 8),
+        frames
+      })),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import-prompt diagnostics"
+    );
+  } catch {
+    return unavailable;
+  }
+}
+
+function describeTabInput(input: unknown): unknown {
+  if (input instanceof vscode.TabInputText) return { kind: "text", uri: input.uri.toString() };
+  if (input instanceof vscode.TabInputTextDiff) {
+    return { kind: "textDiff", original: input.original.toString(), modified: input.modified.toString() };
+  }
+  if (input instanceof vscode.TabInputCustom) {
+    return { kind: "custom", viewType: input.viewType, uri: input.uri.toString() };
+  }
+  return input === undefined ? undefined : { kind: typeof input };
 }
 
 let editorWorkbenchPage: Promise<Page> | undefined;
@@ -834,11 +1296,12 @@ async function capturePackagedEditorScreenshots(
   outputDirectory: string
 ): Promise<void> {
   if (process.platform !== "linux") return;
+  recordAcceptanceProgress("verify:screenshots:open");
   mkdirSync(outputDirectory, { recursive: true });
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    30_000,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the custom editor before screenshot capture"
   );
   await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
@@ -864,6 +1327,7 @@ async function capturePackagedEditorScreenshots(
   const lightTheme = contributedTheme("vs", "Default Light Modern");
   const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
   try {
+    recordAcceptanceProgress("verify:screenshots:prepare");
     await workbench.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update(
       "title",
@@ -878,14 +1342,18 @@ async function capturePackagedEditorScreenshots(
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
     await prepareWorkbenchForEvidence();
     await new Promise((resolve) => setTimeout(resolve, 800));
+    recordAcceptanceProgress("verify:screenshots:dark");
     await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, `${editor}-dark.png`);
+    recordAcceptanceProgress("verify:screenshots:light");
     await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, `${editor}-light.png`);
+    recordAcceptanceProgress("verify:screenshots:high-contrast");
     await captureTheme(
       highContrastTheme,
       vscode.ColorThemeKind.HighContrast,
       4,
       `${editor}-high-contrast-zoom-200.png`
     );
+    recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
     await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
     await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
@@ -912,6 +1380,7 @@ async function capturePackagedEditorScreenshots(
       "the screenshot session and runtime to close"
     );
   }
+  recordAcceptanceProgress("verify:screenshots:complete");
 
   async function captureTheme(
     theme: string,
@@ -1009,6 +1478,7 @@ async function capturePackagedEditorScreenshots(
 }
 
 async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
+  recordAcceptanceProgress("verify:notebook:fixture");
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-notebook-"));
   const notebookPath = path.join(directory, "notebook-acceptance.ipynb");
   const configuration = vscode.workspace.getConfiguration("openWrangler");
@@ -1087,12 +1557,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   );
 
   try {
+    recordAcceptanceProgress("verify:notebook:document-open");
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     const notebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
     await vscode.window.showNotebookDocument(notebook);
     const outputMimes = notebook.cellAt(0).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(outputMimes.includes(OPEN_WRANGLER_MIME_V2), "MIME v2 output must be registered in a real notebook.");
 
+    recordAcceptanceProgress("verify:notebook:direct-insertion");
     const inserted = await insertGeneratedNotebookCell(notebook, 1, "def clean_data(df):\n    return df\n", {
       source: "df",
       backend: "polars"
@@ -1108,6 +1580,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     assert.equal(typeof notebook.cellAt(1).metadata.openWrangler.insertionId, "string");
 
+    recordAcceptanceProgress("verify:notebook:jupyter-activate");
     const jupyterExtension = vscode.extensions.getExtension<FakeJupyterApi>("ms-toolsai.jupyter");
     assert.ok(jupyterExtension, "The stable Jupyter API acceptance extension must be available.");
     const jupyter = await jupyterExtension.activate();
@@ -1125,21 +1598,24 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})",
       "renderer_frame = pl.DataFrame({'value': [101]})"
     ].join("\n");
+    recordAcceptanceProgress("verify:notebook:kernel-setup");
     await jupyter.testing.execute(notebook.uri, setupCode);
 
+    recordAcceptanceProgress("verify:notebook:pandas-basic:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "pandas_frame",
       notebookUri: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "pandas_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged Pandas notebook variable session"
     );
     let active = testing.activeSession();
     assert.equal(active?.metadata.backend, "pandas");
     assert.equal(active?.metadata.capabilities.notebookInsert, true);
     if (!active) throw new Error("Pandas notebook session did not become active.");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:page");
     const pandasPage = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -1153,6 +1629,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(pandasPage.kind, "page");
     if (pandasPage.kind !== "page") throw new Error("Pandas notebook page did not resolve.");
     assert.equal(pandasPage.page.rows[1]?.values[0]?.display, "2");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:preview");
     const preview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -1173,6 +1650,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     });
     assert.equal(preview.kind, "stepPreview");
     if (preview.kind !== "stepPreview") throw new Error("Pandas notebook step did not preview.");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:apply");
     const applied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -1186,6 +1664,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     const editedNotebookCode = "# edited notebook export\ndef clean_data(df):\n    return df\n";
     testing.setCodeForExport(editedNotebookCode);
     const insertionIndex = notebook.cellCount;
+    recordAcceptanceProgress("verify:notebook:pandas-basic:insert");
     await vscode.commands.executeCommand("openWrangler.insertNotebookCode");
     await waitFor(
       () => notebook.cellCount === insertionIndex + 1,
@@ -1201,16 +1680,18 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       insertionId: pandasInsertionMetadata.insertionId
     });
     assert.equal(typeof pandasInsertionMetadata.insertionId, "string");
+    recordAcceptanceProgress("verify:notebook:pandas-basic:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the Pandas notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Pandas notebook session to close");
 
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "duplicate_frame",
       notebookUri: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "duplicate_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged duplicate-column Pandas notebook variable session"
     );
     active = testing.activeSession();
@@ -1266,6 +1747,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     ];
 
     for (const [index, step] of valueSteps.entries()) {
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:value:${step.kind}:preview`);
       const valuePreview = await testing.request({
         kind: "previewStep",
         ...GRID_COLUMN_WINDOW,
@@ -1323,6 +1805,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         ]);
       }
 
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:value:${step.kind}:apply`);
       const valueApplied = await testing.request({
         kind: "applyDraft",
         ...GRID_COLUMN_WINDOW,
@@ -1400,6 +1883,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     ];
 
     for (const [index, step] of duplicateSteps.entries()) {
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:rows:${step.kind}:preview`);
       const duplicatePreview = await testing.request({
         kind: "previewStep",
         ...GRID_COLUMN_WINDOW,
@@ -1430,6 +1914,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         expectedThirdColumnAfterStep[index],
         `${step.kind} must target the selected duplicate or integer-labelled column before apply.`
       );
+      recordAcceptanceProgress(`verify:notebook:pandas-duplicates:rows:${step.kind}:apply`);
       const duplicateApplied = await testing.request({
         kind: "applyDraft",
         ...GRID_COLUMN_WINDOW,
@@ -1461,6 +1946,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Cleaning steps must not mutate the originating notebook dataframe before kernel recovery."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:replay");
     const duplicateGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const duplicateReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(duplicateReplacementGeneration > duplicateGeneration);
@@ -1517,6 +2003,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /"position"\s*:/u,
       "Kernel replay must retain position-free public references."
     );
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the duplicate-column Pandas notebook session");
     await waitFor(
       () => testing.diagnostics().sessionCount === 0,
@@ -1534,13 +2021,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Cleaning steps must not mutate the originating notebook dataframe."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-structural:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "structural_frame",
       notebookUri: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "structural_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged structural duplicate-column Pandas notebook variable session"
     );
     active = testing.activeSession();
@@ -1668,6 +2156,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     let structuralCombined: ColumnReference | undefined;
     let structuralLength: ColumnReference | undefined;
     for (const [index, step] of structuralSteps.entries()) {
+      recordAcceptanceProgress(`verify:notebook:pandas-structural:${step.kind}:preview`);
       const structuralPreview = await testing.request({
         kind: "previewStep",
         ...GRID_COLUMN_WINDOW,
@@ -1757,6 +2246,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
         assert.equal(renamed.position, 1, "Rename Column must bind after select and drop shifted the input twice.");
       }
 
+      recordAcceptanceProgress(`verify:notebook:pandas-structural:${step.kind}:apply`);
       const structuralApplied = await testing.request({
         kind: "applyDraft",
         ...GRID_COLUMN_WINDOW,
@@ -1835,6 +2325,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Structural operations must not mutate the originating duplicate-column dataframe."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-structural:replay");
     const structuralGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const structuralReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(structuralReplacementGeneration > structuralGeneration);
@@ -1892,6 +2383,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /\bTrue\b/u,
       "Structural replay must leave the recreated notebook dataframe immutable."
     );
+    recordAcceptanceProgress("verify:notebook:pandas-structural:close");
     await disposePackagedSessionPanel(
       testing,
       structuralSessionId,
@@ -1904,13 +2396,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
     assert.deepEqual(testing.diagnostics().sessions, [], "Structural acceptance must retain no session.");
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "identity_frame",
       notebookUri: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "identity_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged group-by/by-example duplicate-column Pandas notebook session"
     );
     active = testing.activeSession();
@@ -1927,6 +2420,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
     assert.equal(identityIntegerLabel.name, "7");
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:by-example-preview");
     const identityExamplePreview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -1982,6 +2476,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Private by-example positions must not leak into public draft metadata."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:by-example-apply");
     const identityExampleApplied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -1995,6 +2490,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       throw new Error("Stable-reference by-example apply did not resolve.");
     }
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:group-preview");
     const identityGroupPreview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -2047,6 +2543,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Private group-by positions must not leak into public draft metadata."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:group-apply");
     const identityGroupApplied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -2075,6 +2572,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Group-by/by-example steps must not mutate the notebook source before recovery."
     );
 
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:replay");
     const identityGeneration = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const identityReplacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(identityReplacementGeneration > identityGeneration);
@@ -2113,6 +2611,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       /"position"\s*:/u,
       "Kernel replay must retain position-free public group-by/by-example references."
     );
+    recordAcceptanceProgress("verify:notebook:pandas-by-example-group:close");
     await disposePackagedSessionPanel(
       testing,
       identitySessionId,
@@ -2138,18 +2637,20 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       "Recovered group-by/by-example steps must leave the notebook source immutable."
     );
 
+    recordAcceptanceProgress("verify:notebook:polars:open");
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
       variableName: "polars_frame",
       notebookUri: notebook.uri
     });
     await waitFor(
       () => testing.activeSession()?.metadata.source.variableName === "polars_frame",
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the packaged Polars notebook variable session"
     );
     active = testing.activeSession();
     assert.equal(active?.metadata.backend, "polars");
     if (!active) throw new Error("Polars notebook session did not become active.");
+    recordAcceptanceProgress("verify:notebook:polars:replay");
     const generation = jupyter.testing.stats(notebook.uri)?.generation ?? 0;
     const replacementGeneration = await jupyter.testing.restart(notebook.uri, setupCode);
     assert.ok(replacementGeneration > generation);
@@ -2166,6 +2667,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(recovered.kind, "page", "The Polars notebook session must replay after kernel replacement.");
     if (recovered.kind !== "page") throw new Error("Polars notebook recovery did not return a page.");
     assert.equal(recovered.page.rows[0]?.values[0]?.display, "3");
+    recordAcceptanceProgress("verify:notebook:polars:close");
     await disposePackagedSessionPanel(testing, active.sessionId, "the Polars notebook session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Polars notebook session to close");
 
@@ -2176,6 +2678,7 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       await exercisePackagedSameGroupRendererSwitch(jupyter, notebook, currentPayload, directory);
     }
 
+    recordAcceptanceProgress("verify:notebook:permission-denial");
     const denialCalls = jupyter.testing.denialCalls();
     jupyter.testing.setDenied(true);
     await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
@@ -2207,9 +2710,10 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
       recordAcceptanceProgress("verify:notebook-renderer-snapshot");
       await exercisePackagedSavedSnapshot(testing, jupyter, directory);
     }
+    recordAcceptanceProgress("verify:notebook:complete");
   } finally {
     await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
-    rmSync(directory, { recursive: true, force: true });
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -2314,7 +2818,7 @@ async function exercisePackagedSavedSnapshot(
         const source = testing.activeSession()?.metadata.source;
         return source?.kind === "notebookOutput" && source.label === label;
       },
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the saved MIME-v2 renderer output to become a coordinator-owned session"
     );
 
@@ -2362,6 +2866,7 @@ async function exercisePackagedSavedSnapshot(
       ],
       sort: [{ column: "score", direction: "desc", nulls: "last" }]
     };
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:page");
     const projected = await testing.request({
       kind: "getPage",
       sessionId: active.sessionId,
@@ -2387,6 +2892,7 @@ async function exercisePackagedSavedSnapshot(
     assert.equal(projected.page.totalRows, 2);
     assert.deepEqual(projected.metadata.filteredShape, { rows: 2, columns: 3 });
 
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:summary");
     const summary = await testing.request({
       kind: "getSummary",
       sessionId: active.sessionId,
@@ -2421,6 +2927,7 @@ async function exercisePackagedSavedSnapshot(
       }
     ]);
 
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:statistics");
     const statistics = await testing.request({
       kind: "getDatasetStats",
       sessionId: active.sessionId,
@@ -2441,6 +2948,7 @@ async function exercisePackagedSavedSnapshot(
       ]
     });
 
+    recordAcceptanceProgress("verify:notebook-renderer-snapshot:values");
     const values = await testing.request({
       kind: "getColumnValues",
       sessionId: active.sessionId,
@@ -2529,7 +3037,9 @@ async function exercisePackagedSameGroupRendererSwitch(
 
   let switchedNotebook: vscode.NotebookDocument | undefined;
   try {
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:connect");
     const workbench = await connectToEditorWorkbench();
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:open");
     switchedNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(notebookPath));
     const switchedEditor = await vscode.window.showNotebookDocument(switchedNotebook, {
       viewColumn: vscode.ViewColumn.One,
@@ -2537,6 +3047,7 @@ async function exercisePackagedSameGroupRendererSwitch(
       preview: false
     });
     switchedEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:button");
     await waitForNotebookRendererButton(workbench, label);
     assert.equal(
       jupyter.testing.stats(switchedNotebook.uri),
@@ -2546,13 +3057,17 @@ async function exercisePackagedSameGroupRendererSwitch(
 
     const switchedTab = notebookTab(switchedNotebook.uri);
     assert.ok(switchedTab, "The same-group renderer fixture tab must be open.");
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:close");
     assert.equal(await vscode.window.tabGroups.close(switchedTab, true), true);
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:restore");
     await vscode.window.showNotebookDocument(originNotebook, {
       viewColumn: vscode.ViewColumn.One,
       preserveFocus: false,
       preview: false
     });
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:restored-button");
     await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:complete");
   } finally {
     const switchedTab = switchedNotebook ? notebookTab(switchedNotebook.uri) : undefined;
     if (switchedTab) await vscode.window.tabGroups.close(switchedTab, true).then(undefined, () => undefined);
@@ -2713,7 +3228,7 @@ async function exercisePackagedRendererProvenance(
           source.uri === originNotebook.uri.toString()
         );
       },
-      30_000,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "notebook A's renderer event to open notebook A while notebook B was active"
     );
 
@@ -2862,22 +3377,36 @@ async function waitForNotebookRendererButton(
   const deadline = Date.now() + 30_000;
   do {
     const browser = workbench.context().browser();
+    if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
+    if (browser !== null && !browser.isConnected()) {
+      throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
+    }
     const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
     for (const page of pages) {
+      if (page !== workbench && page.isClosed()) continue;
       for (const frame of page.frames()) {
-        const preview = frame.locator("section.openwrangler-notebook").filter({
-          hasText: `Open Wrangler preview: ${label}`
-        });
-        const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
-        if ((await button.count()) > 0) {
-          await button.scrollIntoViewIfNeeded().catch(() => undefined);
-          if (await button.isVisible()) return button;
+        if (isRetiredRendererTarget(workbench, page, frame)) continue;
+        try {
+          const preview = frame.locator("section.openwrangler-notebook").filter({
+            hasText: `Open Wrangler preview: ${label}`
+          });
+          const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
+          if ((await button.count()) > 0) {
+            await button.scrollIntoViewIfNeeded();
+            if (await button.isVisible()) return button;
+          }
+        } catch (error) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, page, frame, error);
         }
       }
     }
-    await workbench.waitForTimeout(50);
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
   const browser = workbench.context().browser();
+  if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
+  if (browser !== null && !browser.isConnected()) {
+    throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
+  }
   const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
   const diagnostics = await Promise.all(
     pages.flatMap((page) =>
@@ -2924,6 +3453,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       scrollLeft: 75
     }
   ]) {
+    recordAcceptanceProgress(`seed:${target.backend}:open`);
     const opened = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
@@ -2932,9 +3462,14 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       pageSize: 20,
       mode: "editing"
     });
-    assert.equal(opened.kind, "sessionOpened");
+    assert.equal(
+      opened.kind,
+      "sessionOpened",
+      `Expected ${target.backend} sessionOpened, received ${JSON.stringify(opened)}`
+    );
     if (opened.kind !== "sessionOpened") continue;
 
+    recordAcceptanceProgress(`seed:${target.backend}:preview`);
     const preview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -2956,6 +3491,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     assert.equal(preview.kind, "stepPreview");
     if (preview.kind !== "stepPreview") continue;
 
+    recordAcceptanceProgress(`seed:${target.backend}:apply`);
     const applied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
@@ -2967,6 +3503,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     assert.equal(applied.kind, "planUpdated");
     if (applied.kind !== "planUpdated") continue;
 
+    recordAcceptanceProgress(`seed:${target.backend}:page`);
     const page = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -2987,12 +3524,14 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     );
     const salesColumnId = page.metadata.schema.find((column) => column.name === "sales")?.id;
     assert.ok(salesColumnId);
+    recordAcceptanceProgress(`seed:${target.backend}:view-state`);
     await testing.updateViewState(opened.metadata.sessionId, {
       columnWidths: { [salesColumnId]: target.width },
       selectedColumnId: salesColumnId,
       viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
     });
 
+    recordAcceptanceProgress(`seed:${target.backend}:close`);
     const closed = await testing.request({
       kind: "closeSession",
       sessionId: opened.metadata.sessionId,
@@ -3005,6 +3544,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       `the seeded ${target.backend} session and standalone runtime to close`
     );
 
+    recordAcceptanceProgress(`seed:${target.backend}:readback-open`);
     const readback = await testing.request({
       kind: "openSession",
       ...GRID_COLUMN_WINDOW,
@@ -3026,6 +3566,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       selectedColumnId: salesColumnId,
       viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
     });
+    recordAcceptanceProgress(`seed:${target.backend}:readback-close`);
     const readbackClosed = await testing.request({
       kind: "closeSession",
       sessionId: readback.metadata.sessionId,
@@ -3037,6 +3578,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       10_000,
       `the ${target.backend} persistence readback session to close`
     );
+    recordAcceptanceProgress(`seed:${target.backend}:complete`);
   }
   await new Promise((resolve) => setTimeout(resolve, 1_000));
 }
@@ -3047,6 +3589,7 @@ async function verifyPersistedReplayAndRecovery(
   fixture: vscode.Uri
 ): Promise<void> {
   const sourceText = readFileSync(fixture.fsPath, "utf8");
+  recordAcceptanceProgress("verify:replay-recovery:polars-open");
   const restored = await testing.request({
     kind: "openSession",
     ...GRID_COLUMN_WINDOW,
@@ -3057,6 +3600,7 @@ async function verifyPersistedReplayAndRecovery(
   });
   assert.equal(restored.kind, "sessionOpened");
   if (restored.kind !== "sessionOpened") return;
+  recordAcceptanceProgress("verify:replay-recovery:polars-opened");
   assert.deepEqual(
     restored.metadata.steps.map((step) => step.id),
     ["packaged-score"]
@@ -3076,6 +3620,7 @@ async function verifyPersistedReplayAndRecovery(
 
   const secondFixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv");
   const secondSourceText = readFileSync(secondFixture.fsPath, "utf8");
+  recordAcceptanceProgress("verify:replay-recovery:pandas-open");
   const second = await testing.request({
     kind: "openSession",
     ...GRID_COLUMN_WINDOW,
@@ -3086,7 +3631,9 @@ async function verifyPersistedReplayAndRecovery(
   });
   assert.equal(second.kind, "sessionOpened");
   if (second.kind !== "sessionOpened") return;
+  recordAcceptanceProgress("verify:replay-recovery:pandas-opened");
   assert.notEqual(second.metadata.sessionId, restored.metadata.sessionId);
+  recordAcceptanceProgress("verify:replay-recovery:duckdb-open");
   const third = await testing.request({
     kind: "openSession",
     ...GRID_COLUMN_WINDOW,
@@ -3097,6 +3644,7 @@ async function verifyPersistedReplayAndRecovery(
   });
   assert.equal(third.kind, "sessionOpened");
   if (third.kind !== "sessionOpened") return;
+  recordAcceptanceProgress("verify:replay-recovery:duckdb-opened");
   assert.deepEqual(
     third.metadata.steps.map((step) => step.id),
     ["packaged-duckdb-score"]
@@ -3125,7 +3673,9 @@ async function verifyPersistedReplayAndRecovery(
 
   const beforeRestart = testing.diagnostics();
   const generation = testing.runtimeGeneration();
+  recordAcceptanceProgress("verify:replay-recovery:restart");
   testing.restartRuntime("Injected packaged-editor recovery test.");
+  recordAcceptanceProgress("verify:replay-recovery:concurrent-replay");
   const [restoredPage, secondPage, thirdPage] = await Promise.all([
     testing.request({
       kind: "getPage",
@@ -3158,6 +3708,7 @@ async function verifyPersistedReplayAndRecovery(
       filterModel: third.metadata.filterModel
     })
   ]);
+  recordAcceptanceProgress("verify:replay-recovery:replayed");
   assert.equal(restoredPage.kind, "page", `Polars recovery returned ${JSON.stringify(restoredPage)}.`);
   assert.equal(secondPage.kind, "page", `Pandas recovery returned ${JSON.stringify(secondPage)}.`);
   assert.equal(thirdPage.kind, "page", `DuckDB recovery returned ${JSON.stringify(thirdPage)}.`);
@@ -3219,7 +3770,7 @@ async function verifyPersistedReplayAndRecovery(
       "Pandas export must not modify the source fixture."
     );
   } finally {
-    rmSync(exportDirectory, { recursive: true, force: true });
+    cleanupAcceptanceTemporaryDirectory(exportDirectory);
   }
 
   const firstClosed = await testing.request({
@@ -3281,6 +3832,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     );
     const parquetLaunchUri = vscode.Uri.file(path.join(directory, "sample.parquet"));
     const parquetSource = readFileSync(parquetLaunchUri.fsPath);
+    recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:open");
     await config.update("defaultBackend", "polars", vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand("openWrangler.openFile", parquetLaunchUri);
     await waitFor(
@@ -3293,9 +3845,16 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           active.metadata.shape.columns === 3
         );
       },
-      30_000,
-      "the editor-menu file URI to open through the canonical launch command"
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the editor-menu file URI to open through the canonical launch command",
+      () =>
+        packagedFileOpenDiagnostics(testing, {
+          sourceLabel: path.basename(parquetLaunchUri.fsPath),
+          backend: "polars",
+          shape: { rows: 2, columns: 3 }
+        })
     );
+    recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:opened");
     assert.deepEqual(
       readFileSync(parquetLaunchUri.fsPath),
       parquetSource,
@@ -3307,6 +3866,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       10_000,
       "the editor-menu file session to dispose"
     );
+    recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:closed");
 
     const fixtures = [
       {
@@ -3352,6 +3912,9 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     ];
 
     for (const fixture of fixtures) {
+      const extension = path.extname(fixture.uri.fsPath).slice(1).toLowerCase();
+      const checkpoint = `verify:file-inputs:${fixture.backend}:${extension}`;
+      recordAcceptanceProgress(`${checkpoint}:open`);
       await config.update("defaultBackend", fixture.backend, vscode.ConfigurationTarget.Global);
       await vscode.commands.executeCommand(
         "vscode.openWith",
@@ -3369,33 +3932,61 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
             active.metadata.shape.columns === fixture.shape.columns
           );
         },
-        30_000,
-        `${path.basename(fixture.uri.fsPath)} to open through the packaged custom editor`
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        `${path.basename(fixture.uri.fsPath)} to open through the packaged custom editor`,
+        () =>
+          packagedFileOpenDiagnostics(testing, {
+            sourceLabel: path.basename(fixture.uri.fsPath),
+            backend: fixture.backend,
+            shape: fixture.shape
+          })
       );
+      recordAcceptanceProgress(`${checkpoint}:opened`);
       await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
       await waitFor(
         () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
         10_000,
         `${path.basename(fixture.uri.fsPath)} to dispose its session and runtime`
       );
+      recordAcceptanceProgress(`${checkpoint}:closed`);
     }
   } finally {
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
-    rmSync(directory, { recursive: true, force: true });
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+function packagedFileOpenDiagnostics(
+  testing: TestApi,
+  expected: {
+    sourceLabel: string;
+    backend: "polars" | "duckdb" | "pandas";
+    shape: { rows: number; columns: number };
+  }
+): string {
+  const active = testing.activeSession();
+  const diagnostics = testing.diagnostics();
+  return JSON.stringify({
+    expected,
+    configuredOpenTimeoutMs: getSetting("sessionOpenTimeoutMs", DEFAULT_SESSION_OPEN_TIMEOUT_MS),
+    runtimeRunning: testing.runtimeRunning(),
+    runtimeGeneration: testing.runtimeGeneration(),
+    sessionCount: diagnostics.sessionCount,
+    sessions: diagnostics.sessions.map(({ sourceLabel }) => sourceLabel),
+    active: active
+      ? {
+          sourceLabel: active.metadata.source.label,
+          backend: active.metadata.backend,
+          shape: active.metadata.shape
+        }
+      : undefined
+  });
 }
 
 async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscode.Uri, python: string): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-runtime-selection-"));
-  const isolatedPython = path.join(directory, "python-without-site-packages");
   const invocationLog = path.join(directory, "python-invocations.log");
-  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
-  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
-  writeFileSync(
-    isolatedPython,
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`
-  );
-  chmodSync(isolatedPython, 0o755);
+  const isolatedPython = createDependencyIsolatedPython(directory, python, invocationLog);
   const config = vscode.workspace.getConfiguration("openWrangler");
   const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
 
@@ -3555,9 +4146,54 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     try {
       await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
     } finally {
-      rmSync(directory, { recursive: true, force: true });
+      cleanupAcceptanceTemporaryDirectory(directory);
     }
   }
+}
+
+function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
+  if (process.platform === "win32") {
+    const environment = path.join(directory, "environment");
+    execFileSync(python, ["-m", "venv", "--without-pip", environment], {
+      stdio: "pipe",
+      timeout: 30_000,
+      windowsHide: true
+    });
+    const sitePackages = path.join(environment, "Lib", "site-packages");
+    const siteCustomize = path.join(sitePackages, "sitecustomize.py");
+    writeFileSync(
+      siteCustomize,
+      [
+        "import sys",
+        'sys.path[:] = [entry for entry in sys.path if entry != ""]',
+        "import os",
+        "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
+        "sys.path[:] = [",
+        "    entry",
+        "    for entry in sys.path",
+        "    if os.path.normcase(os.path.abspath(entry)) != cwd",
+        "]",
+        `with open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8") as stream:`,
+        '    stream.write("invoked\\n")',
+        ""
+      ].join("\n"),
+      { encoding: "utf8", flag: "wx" }
+    );
+    const executable = path.join(environment, "Scripts", "python.exe");
+    assert.ok(existsSync(executable), "The Windows dependency-isolated Python environment is missing python.exe.");
+    return executable;
+  }
+
+  const executable = path.join(directory, "python-without-site-packages");
+  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
+  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
+  writeFileSync(
+    executable,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`,
+    { encoding: "utf8", flag: "wx" }
+  );
+  chmodSync(executable, 0o755);
+  return executable;
 }
 
 async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -3762,7 +4398,7 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
     );
     assert.equal(readFileSync(sourcePath, "utf8"), source, "Wide projection must not mutate the source.");
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -3970,7 +4606,7 @@ async function exercisePackagedOperationGroups(testing: TestApi, sourceFixture: 
       "Operation previews and applies must not alter the source."
     );
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
@@ -4037,10 +4673,18 @@ function tsvSource(uri: vscode.Uri): SessionSource {
   };
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs: number, expectation: string): Promise<void> {
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number,
+  expectation: string,
+  diagnostics?: () => string
+): Promise<void> {
   const started = Date.now();
   while (!predicate()) {
-    if (Date.now() - started > timeoutMs) throw new Error(`Timed out waiting for ${expectation}.`);
+    if (Date.now() - started > timeoutMs) {
+      const detail = diagnostics ? ` Last state: ${diagnostics()}.` : "";
+      throw new Error(`Timed out waiting for ${expectation}.${detail}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }

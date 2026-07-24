@@ -4,11 +4,144 @@ import json
 import subprocess
 import sys
 import threading
+from codecs import getincrementaldecoder
 from concurrent.futures import Future
-from io import StringIO
+from contextlib import suppress
+from importlib.util import find_spec
+from io import StringIO, TextIOWrapper
+from pathlib import Path
+from queue import Empty, Full, Queue
 from typing import Any
 
+import pytest
+
 import openwrangler_runtime.server as server
+
+
+class _ServerOutputPumps:
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        stdout = process.stdout
+        stderr = process.stderr
+        assert stdout is not None
+        assert stderr is not None
+        self._responses: Queue[str | BaseException | None] = Queue(maxsize=16)
+        self._stderr_lock = threading.Lock()
+        self._stderr_tail = ""
+        self._stdout_error: BaseException | None = None
+        self._stderr_error: BaseException | None = None
+
+        def publish_stdout(value: str | BaseException | None) -> None:
+            while True:
+                try:
+                    self._responses.put_nowait(value)
+                    return
+                except Full:
+                    with suppress(Empty):
+                        self._responses.get_nowait()
+
+        def read_stdout() -> None:
+            try:
+                for line in stdout:
+                    publish_stdout(line)
+            except BaseException as error:  # pragma: no cover - defensive stream failure
+                self._stdout_error = error
+                publish_stdout(error)
+            finally:
+                publish_stdout(None)
+
+        def drain_stderr() -> None:
+            try:
+                assert isinstance(stderr, TextIOWrapper)
+                decoder = getincrementaldecoder(stderr.encoding or "utf-8")(errors="replace")
+                while chunk := stderr.buffer.read1(4_096):
+                    with self._stderr_lock:
+                        self._stderr_tail = f"{self._stderr_tail}{decoder.decode(chunk)}"[-16_384:]
+                final_text = decoder.decode(b"", final=True)
+                if final_text:
+                    with self._stderr_lock:
+                        self._stderr_tail = f"{self._stderr_tail}{final_text}"[-16_384:]
+            except BaseException as error:  # pragma: no cover - defensive stream failure
+                self._stderr_error = error
+                with self._stderr_lock:
+                    self._stderr_tail = f"{self._stderr_tail}\nStderr pump failed: {error}"[-16_384:]
+
+        self._stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+        self._stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+        self._stdout_thread.start()
+        self._stderr_thread.start()
+
+    def stderr_tail(self) -> str:
+        with self._stderr_lock:
+            return self._stderr_tail
+
+    def read_response(self, timeout: float = 60.0) -> dict[str, Any]:
+        try:
+            value = self._responses.get(timeout=timeout)
+        except Empty as error:
+            raise TimeoutError(
+                f"Runtime server did not answer within {timeout:g} seconds.\n{self.stderr_tail()}"
+            ) from error
+        if isinstance(value, BaseException):
+            raise value
+        if value is None:
+            raise AssertionError(f"Runtime server closed stdout before responding.\n{self.stderr_tail()}")
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as error:
+            raise AssertionError(f"Runtime server returned malformed JSON.\n{self.stderr_tail()}") from error
+
+    def join(self, timeout: float = 5.0) -> None:
+        self._stdout_thread.join(timeout)
+        self._stderr_thread.join(timeout)
+        if self._stdout_thread.is_alive() or self._stderr_thread.is_alive():
+            raise AssertionError("Runtime server output pumps did not stop after process termination.")
+        if self._stdout_error is not None:
+            raise AssertionError("Runtime server stdout pump failed.") from self._stdout_error
+        if self._stderr_error is not None:
+            raise AssertionError("Runtime server stderr pump failed.") from self._stderr_error
+
+
+def _send_server_envelope(
+    process: subprocess.Popen[str],
+    output: _ServerOutputPumps,
+    envelope: dict[str, Any],
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    assert process.stdin is not None
+    process.stdin.write(f"{json.dumps(envelope)}\n")
+    process.stdin.flush()
+    return output.read_response(timeout)
+
+
+def _send_server_request(
+    process: subprocess.Popen[str],
+    output: _ServerOutputPumps,
+    request_id: str,
+    request: dict[str, Any],
+    *,
+    timeout: float,
+) -> dict[str, Any]:
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": request_id,
+        "priority": "interactive",
+        "request": request,
+    }
+    response = _send_server_envelope(process, output, envelope, timeout=timeout)
+    assert response["protocolVersion"] == 2
+    assert response["requestId"] == request_id
+    return response["response"]
+
+
+def _join_and_close_server_output(process: subprocess.Popen[str], output: _ServerOutputPumps) -> None:
+    try:
+        output.join()
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
 
 def test_stdio_server_frames_protocol_v2_responses() -> None:
@@ -49,26 +182,263 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert process.stdin is not None
-    assert process.stdout is not None
-    assert process.stderr is not None
+    output = _ServerOutputPumps(process)
     responses: dict[str, Any] = {}
-    for request in requests:
-        process.stdin.write(f"{json.dumps(request)}\n")
-        process.stdin.flush()
-        response_line = process.stdout.readline()
-        assert response_line
-        response = json.loads(response_line)
-        responses[response["requestId"]] = response
-    process.stdin.close()
-    return_code = process.wait(timeout=10)
-    assert return_code == 0, process.stderr.read()
+    return_code: int | None = None
+    try:
+        for request in requests:
+            response = _send_server_envelope(process, output, request, timeout=30.0)
+            responses[response["requestId"]] = response
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+
+    assert return_code == 0, output.stderr_tail()
 
     assert responses["initialize"]["protocolVersion"] == 2
     assert responses["initialize"]["response"]["kind"] == "initialized"
     assert responses["invalid"]["response"]["code"] == "invalid_request"
     assert responses["missing-session"]["response"]["kind"] == "error"
     assert responses["missing-session"]["response"]["viewRequestId"] == "view-missing"
+
+
+def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) -> None:
+    if find_spec("polars") is None or find_spec("pandas") is None:
+        pytest.skip("The mixed-engine server regression requires both Polars and Pandas.")
+    csv_path = tmp_path / "first.csv"
+    tsv_path = tmp_path / "second.tsv"
+    csv_path.write_text("city,value\nBerlin,12\nParis,7\n", encoding="utf-8")
+    tsv_path.write_text("city\tvalue\nRome\t4\nMadrid\t9\n", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    try:
+        for backend, source_path, session_id in (
+            ("polars", csv_path, "mixed-engine-polars"),
+            ("pandas", tsv_path, "mixed-engine-pandas"),
+        ):
+            response = _send_server_request(
+                process,
+                output,
+                f"open-{backend}",
+                {
+                    "kind": "openSession",
+                    "source": {"kind": "file", "label": source_path.name, "path": str(source_path)},
+                    "requestedSessionId": session_id,
+                    "backend": backend,
+                    "mode": "editing",
+                    "pageSize": 20,
+                    "columnOffset": 0,
+                    "columnLimit": 16,
+                },
+                timeout=60.0,
+            )
+            assert response["kind"] == "sessionOpened", response
+            assert response["metadata"]["sessionId"] == session_id
+            assert response["metadata"]["backend"] == backend
+
+        for backend, session_id in (
+            ("polars", "mixed-engine-polars"),
+            ("pandas", "mixed-engine-pandas"),
+        ):
+            response = _send_server_request(
+                process,
+                output,
+                f"close-{backend}",
+                {"kind": "closeSession", "sessionId": session_id, "revision": 0},
+                timeout=30.0,
+            )
+            assert response == {"kind": "sessionClosed", "sessionId": session_id}
+
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+
+    assert return_code == 0, output.stderr_tail()
+
+
+def test_stdio_server_opens_polars_excel_in_a_fresh_process(tmp_path: Path) -> None:
+    required_modules = ("polars", "fastexcel", "openpyxl")
+    if any(find_spec(module_name) is None for module_name in required_modules):
+        pytest.skip("The Polars Excel server regression requires Polars, fastexcel, and openpyxl.")
+    from openpyxl import Workbook
+
+    workbook_path = tmp_path / "native-reader.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    assert worksheet is not None
+    worksheet.title = "Sales"
+    worksheet.append(["city", "sales"])
+    worksheet.append(["Berlin", 12])
+    worksheet.append(["Paris", 7])
+    workbook.save(workbook_path)
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "openwrangler_runtime.server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = _ServerOutputPumps(process)
+    return_code: int | None = None
+    try:
+        response = _send_server_request(
+            process,
+            output,
+            "open-polars-excel",
+            {
+                "kind": "openSession",
+                "source": {"kind": "file", "label": workbook_path.name, "path": str(workbook_path)},
+                "requestedSessionId": "polars-excel",
+                "backend": "polars",
+                "mode": "editing",
+                "pageSize": 20,
+                "columnOffset": 0,
+                "columnLimit": 16,
+            },
+            timeout=60.0,
+        )
+        assert response["kind"] == "sessionOpened", response
+        assert response["metadata"]["sessionId"] == "polars-excel"
+        assert response["metadata"]["backend"] == "polars"
+        assert response["metadata"]["shape"] == {"rows": 2, "columns": 2}
+
+        response = _send_server_request(
+            process,
+            output,
+            "close-polars-excel",
+            {"kind": "closeSession", "sessionId": "polars-excel", "revision": 0},
+            timeout=30.0,
+        )
+        assert response == {"kind": "sessionClosed", "sessionId": "polars-excel"}
+
+        assert process.stdin is not None
+        process.stdin.close()
+        return_code = process.wait(timeout=10)
+    finally:
+        if process.stdin is not None and not process.stdin.closed:
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+        _join_and_close_server_output(process, output)
+
+    assert return_code == 0, output.stderr_tail()
+
+
+def test_stdio_server_prepares_backend_on_reader_thread_before_dispatch(monkeypatch) -> None:
+    reader_thread = threading.current_thread()
+    dispatched = threading.Event()
+
+    class TrackingManager:
+        def __init__(self) -> None:
+            self.prepare_thread: threading.Thread | None = None
+            self.dispatch_thread: threading.Thread | None = None
+
+        def prepare_backend(self, source: dict[str, Any], backend: str | None) -> None:
+            assert source["path"] == "sample.csv"
+            assert backend == "pandas"
+            self.prepare_thread = threading.current_thread()
+
+        def open_session(self, *_args: Any) -> dict[str, Any]:
+            self.dispatch_thread = threading.current_thread()
+            dispatched.set()
+            return {"kind": "sessionOpened"}
+
+        def close_all(self) -> None:
+            return None
+
+    manager = TrackingManager()
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "main-thread-prepare",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.csv", "path": "sample.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+
+    def input_lines():
+        yield f"{json.dumps(envelope)}\n"
+        assert dispatched.wait(5)
+
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", lambda: manager)
+    monkeypatch.setattr(server.sys, "stdin", input_lines())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    server.main()
+
+    response = json.loads(output.getvalue())
+    assert response["requestId"] == "main-thread-prepare"
+    assert response["response"]["kind"] == "sessionOpened"
+    assert manager.prepare_thread is reader_thread
+    assert manager.dispatch_thread is not None
+    assert manager.dispatch_thread is not reader_thread
+
+
+def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
+    class FailingManager:
+        def prepare_backend(self, _source: dict[str, Any], _backend: str | None) -> None:
+            raise server.EngineError("native import failed")
+
+        def close_all(self) -> None:
+            return None
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "prepare-failed",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": {"kind": "file", "label": "sample.csv", "path": "sample.csv"},
+            "backend": "pandas",
+            "pageSize": 20,
+            "columnOffset": 0,
+            "columnLimit": 16,
+        },
+    }
+    output = StringIO()
+    monkeypatch.setattr(server, "SessionManager", FailingManager)
+    monkeypatch.setattr(server.sys, "stdin", StringIO(f"{json.dumps(envelope)}\n"))
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    server.main()
+
+    response = json.loads(output.getvalue())
+    assert response["requestId"] == "prepare-failed"
+    assert response["response"]["kind"] == "error"
+    assert response["response"]["code"] == "engine_error"
+    assert response["response"]["message"] == "native import failed"
 
 
 def test_stdio_server_closes_all_sessions_when_input_ends(monkeypatch) -> None:
