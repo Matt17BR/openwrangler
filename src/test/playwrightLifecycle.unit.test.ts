@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { ignoreRetiredRendererProbeFailure, isRetiredRendererTarget } from "./extensionHost/playwrightLifecycle";
+import { describe, expect, it, vi } from "vitest";
+import {
+  ignoreRetiredRendererProbeFailure,
+  isRetiredRendererTarget,
+  withAcceptanceOperationDeadline
+} from "./extensionHost/playwrightLifecycle";
 
 interface FakeFrame {
   isDetached(): boolean;
@@ -23,7 +27,37 @@ function page(mainFrame: FakeFrame, closed = false): FakePage {
 
 const connectedBrowser = { isConnected: () => true };
 
-describe("notebook renderer Playwright lifecycle", () => {
+describe("extension-host Playwright lifecycle", () => {
+  it("clears its deadline after an operation settles", async () => {
+    vi.useFakeTimers();
+    try {
+      await expect(withAcceptanceOperationDeadline(Promise.resolve("ready"), 10_000, "the workbench")).resolves.toBe(
+        "ready"
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a stalled operation at its local deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const outcome = withAcceptanceOperationDeadline(new Promise<never>(() => undefined), 10_000, "the prompt");
+      const assertion = expect(outcome).rejects.toThrow("Timed out waiting for the prompt after 10000 ms.");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves an operation's own failure", async () => {
+    const error = new Error("locator failed");
+    await expect(withAcceptanceOperationDeadline(Promise.reject(error), 10_000, "the prompt")).rejects.toBe(error);
+  });
+
   it("retires a closed auxiliary page without treating the workbench as closed", () => {
     const workbench = page(frame());
     const auxiliary = page(frame(true), true);

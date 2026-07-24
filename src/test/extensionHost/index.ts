@@ -30,7 +30,11 @@ import type {
   TransformStep
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
-import { ignoreRetiredRendererProbeFailure, isRetiredRendererTarget } from "./playwrightLifecycle";
+import {
+  ignoreRetiredRendererProbeFailure,
+  isRetiredRendererTarget,
+  withAcceptanceOperationDeadline
+} from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 interface TestApi {
@@ -78,6 +82,9 @@ const DUCKDB_FOREIGN_ENGINE_CONVERSION =
   /\b(?:pandas|polars|pyarrow)\b|(?:to|from)_(?:pandas|polars|arrow)\b|fetch_(?:df|pandas|arrow)\b|\.(?:arrow|df|pl)\s*\(/iu;
 const GRID_COLUMN_WINDOW = { columnOffset: 0, columnLimit: 16 } as const;
 const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_000;
+const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
+const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
+const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -757,12 +764,16 @@ async function exercisePackagedFileLaunchSurfaces(
   recordAcceptanceProgress("verify:file-launch:third-party-editor:open");
   await customEditorTitleAction.click();
   recordAcceptanceProgress("verify:file-launch:third-party-editor:import");
-  await acceptDefaultDelimitedImport(page, testing, customEditorFixture);
+  const importCheckpoint = "verify:file-launch:third-party-editor:import";
+  await acceptDefaultDelimitedImport(page, testing, customEditorFixture, importCheckpoint);
+  recordAcceptanceProgress(`${importCheckpoint}:options-complete`);
+  recordAcceptanceProgress(`${importCheckpoint}:session-open`);
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === customEditorFixture.fsPath,
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the third-party custom-editor title action to open the selected CSV source"
   );
+  recordAcceptanceProgress(`${importCheckpoint}:opened`);
   assert.deepEqual(testing.activeSession()?.metadata.source.importOptions, {
     delimiter: ",",
     encoding: "utf-8",
@@ -774,12 +785,18 @@ async function exercisePackagedFileLaunchSurfaces(
     customEditorSourceBytes,
     "The third-party custom-editor title action must not modify its source."
   );
-  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  recordAcceptanceProgress(`${importCheckpoint}:close`);
+  await withAcceptanceOperationDeadline(
+    vscode.commands.executeCommand("workbench.action.closeActiveEditor"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the third-party CSV session editor to close"
+  );
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
     "the third-party custom-editor launch session to dispose"
   );
+  recordAcceptanceProgress(`${importCheckpoint}:closed`);
 
   recordAcceptanceProgress("verify:file-launch:duplicate-action-guards");
   await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
@@ -952,57 +969,127 @@ async function inspectThirdPartyCustomEditorFrames(page: Page): Promise<CustomEd
   return diagnostics.filter((diagnostic) => diagnostic.markerCount > 0);
 }
 
-async function acceptDefaultDelimitedImport(page: Page, testing: TestApi, expectedSource: vscode.Uri): Promise<void> {
-  for (const { title, option } of [
-    { title: "Delimiter", option: "Comma" },
-    { title: "Text encoding", option: "utf-8" },
-    { title: "Header row", option: "First row contains column names" }
+async function acceptDefaultDelimitedImport(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  checkpointPrefix: string
+): Promise<void> {
+  for (const { key, title, option } of [
+    { key: "delimiter", title: "Delimiter", option: "Comma" },
+    { key: "encoding", title: "Text encoding", option: "utf-8" },
+    { key: "header", title: "Header row", option: "First row contains column names" }
   ]) {
+    const checkpoint = `${checkpointPrefix}:${key}`;
+    recordAcceptanceProgress(`${checkpoint}:wait`);
     const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
+    recordAcceptanceProgress(`${checkpoint}:visible`);
     const defaultOption = quickInput.getByRole("option", { name: option, exact: true }).first();
-    await defaultOption.waitFor({ state: "visible", timeout: 10_000 });
+    await withAcceptanceOperationDeadline(
+      defaultOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} default option to become visible`
+    );
     assert.match(
-      (await defaultOption.getAttribute("class")) ?? "",
+      (await withAcceptanceOperationDeadline(
+        defaultOption.getAttribute("class", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} default option class`
+      )) ?? "",
       /(?:^|\s)focused(?:\s|$)/u,
       `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
     );
     assert.equal(
-      await quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
+      await withAcceptanceOperationDeadline(
+        quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} keyboard focus`
+      ),
       true,
       `${title} must own keyboard focus before accepting its default option.`
     );
-    await page.keyboard.press("Enter");
+    recordAcceptanceProgress(`${checkpoint}:accept`);
+    await withAcceptanceOperationDeadline(
+      page.keyboard.press("Enter"),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} default option keyboard acceptance`
+    );
     try {
-      await quickInput.waitFor({ state: "hidden", timeout: 3_000 });
-    } catch (error) {
-      const visibleOptions = await quickInput.getByRole("option").evaluateAll((options) =>
-        options.map((candidate) => ({
-          label: candidate.getAttribute("aria-label"),
-          className: candidate.getAttribute("class")
-        }))
+      await withAcceptanceOperationDeadline(
+        quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} prompt to advance`
       );
+    } catch (error) {
+      const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
       throw new Error(
         `${title} did not advance after accepting focused default ${JSON.stringify(option)} with Enter. Visible options: ${JSON.stringify(visibleOptions)}`,
         { cause: error }
       );
     }
+    recordAcceptanceProgress(`${checkpoint}:accepted`);
   }
+  const quoteCheckpoint = `${checkpointPrefix}:quote`;
+  recordAcceptanceProgress(`${quoteCheckpoint}:wait`);
   const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character");
+  recordAcceptanceProgress(`${quoteCheckpoint}:visible`);
   const field = quoteInput.locator(".quick-input-box input").first();
-  await field.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await field.inputValue(), '"');
+  await withAcceptanceOperationDeadline(
+    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "Quote character field to become visible"
+  );
   assert.equal(
-    await field.evaluate((element) => element === element.ownerDocument.activeElement),
+    await withAcceptanceOperationDeadline(
+      field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "Quote character default value"
+    ),
+    '"'
+  );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      field.evaluate((element) => element === element.ownerDocument.activeElement),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "Quote character keyboard focus"
+    ),
     true,
     "Quote character must own keyboard focus before accepting its default value."
   );
-  await page.keyboard.press("Enter");
+  recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "Quote character keyboard acceptance"
+  );
   try {
-    await quoteInput.waitFor({ state: "hidden", timeout: 3_000 });
+    await withAcceptanceOperationDeadline(
+      quoteInput.waitFor({ state: "hidden", timeout: 3_000 }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "Quote character prompt to advance"
+    );
   } catch (error) {
     throw new Error("Quote character did not advance after accepting its focused default value with Enter.", {
       cause: error
     });
+  }
+  recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
+}
+
+async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unknown> {
+  try {
+    return await withAcceptanceOperationDeadline(
+      quickInput.getByRole("option").evaluateAll((options) =>
+        options.map((candidate) => ({
+          label: candidate.getAttribute("aria-label"),
+          className: candidate.getAttribute("class")
+        }))
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import-option diagnostics"
+    );
+  } catch {
+    return "unavailable within the diagnostics deadline";
   }
 }
 
@@ -1015,7 +1102,15 @@ async function waitForImportQuickInput(
   const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
   const deadline = Date.now() + 10_000;
   do {
-    if (await quickInput.isVisible().catch(() => false)) return quickInput;
+    if (
+      await withAcceptanceOperationDeadline(
+        quickInput.isVisible(),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} prompt visibility`
+      )
+    ) {
+      return quickInput;
+    }
     const active = testing.activeSession();
     if (active) {
       throw new Error(
@@ -1023,44 +1118,11 @@ async function waitForImportQuickInput(
           `Expected source: ${JSON.stringify(expectedSource.fsPath)}. Actual source: ${JSON.stringify(active.metadata.source.path)}.`
       );
     }
-    await page.waitForTimeout(50);
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
 
   const compactText = (value: string): string => value.replace(/\s+/gu, " ").trim().slice(0, 1_000);
-  const quickInputs = (
-    await page
-      .locator(".quick-input-widget:visible")
-      .allInnerTexts()
-      .catch(() => [])
-  )
-    .slice(0, 8)
-    .map(compactText);
-  const notifications = (
-    await page
-      .locator(
-        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-      )
-      .allInnerTexts()
-      .catch(() => [])
-  )
-    .slice(0, 8)
-    .map(compactText);
-  const dialogs = (
-    await page
-      .locator(".monaco-dialog-box:visible")
-      .allInnerTexts()
-      .catch(() => [])
-  )
-    .slice(0, 8)
-    .map(compactText);
-  const activeTabs = (
-    await page
-      .locator(".part.editor .tabs-container .tab.active:visible")
-      .allInnerTexts()
-      .catch(() => [])
-  )
-    .slice(0, 8)
-    .map(compactText);
+  const diagnostics = await boundedImportPromptDiagnostics(page);
   const hostInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   const activeSession = testing.activeSession();
   throw new Error(
@@ -1068,10 +1130,55 @@ async function waitForImportQuickInput(
       `Expected source: ${JSON.stringify(expectedSource.toString())}. ` +
       `Active host input: ${JSON.stringify(describeTabInput(hostInput))}. ` +
       `Active dataframe source: ${JSON.stringify(activeSession?.metadata.source.uri)}. ` +
-      `Visible quick inputs: ${JSON.stringify(quickInputs)}. Notifications: ${JSON.stringify(notifications)}. ` +
-      `Dialogs: ${JSON.stringify(dialogs)}. Active workbench tabs: ${JSON.stringify(activeTabs)}. ` +
-      `Webview frames: ${JSON.stringify(await inspectThirdPartyCustomEditorFrames(page))}.`
+      `Visible quick inputs: ${JSON.stringify(diagnostics.quickInputs.map(compactText))}. ` +
+      `Notifications: ${JSON.stringify(diagnostics.notifications.map(compactText))}. ` +
+      `Dialogs: ${JSON.stringify(diagnostics.dialogs.map(compactText))}. ` +
+      `Active workbench tabs: ${JSON.stringify(diagnostics.activeTabs.map(compactText))}. ` +
+      `Webview frames: ${JSON.stringify(diagnostics.frames)}.`
   );
+}
+
+interface ImportPromptDiagnostics {
+  quickInputs: string[];
+  notifications: string[];
+  dialogs: string[];
+  activeTabs: string[];
+  frames: CustomEditorFrameDiagnostic[] | string;
+}
+
+async function boundedImportPromptDiagnostics(page: Page): Promise<ImportPromptDiagnostics> {
+  const unavailable: ImportPromptDiagnostics = {
+    quickInputs: [],
+    notifications: [],
+    dialogs: [],
+    activeTabs: [],
+    frames: "unavailable within the diagnostics deadline"
+  };
+  try {
+    return await withAcceptanceOperationDeadline(
+      Promise.all([
+        page.locator(".quick-input-widget:visible").allInnerTexts(),
+        page
+          .locator(
+            ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+          )
+          .allInnerTexts(),
+        page.locator(".monaco-dialog-box:visible").allInnerTexts(),
+        page.locator(".part.editor .tabs-container .tab.active:visible").allInnerTexts(),
+        inspectThirdPartyCustomEditorFrames(page)
+      ]).then(([quickInputs, notifications, dialogs, activeTabs, frames]) => ({
+        quickInputs: quickInputs.slice(0, 8),
+        notifications: notifications.slice(0, 8),
+        dialogs: dialogs.slice(0, 8),
+        activeTabs: activeTabs.slice(0, 8),
+        frames
+      })),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import-prompt diagnostics"
+    );
+  } catch {
+    return unavailable;
+  }
 }
 
 function describeTabInput(input: unknown): unknown {
