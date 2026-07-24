@@ -34,6 +34,8 @@ const windowsReservedBasename = /^(?:aux|com[1-9¹²³]|con|lpt[1-9¹²³]|nul|p
 const windowsInvalidCharacters = new Set('<>:"|?*');
 const vsixManifestNamespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 
+class VsixManifestStructureError extends Error {}
+
 function portableVsixEntryIdentity(entry) {
   if (
     typeof entry !== "string" ||
@@ -131,6 +133,12 @@ function parsePreReleaseProperties(vsixManifest) {
   const properties = [];
   const elementPath = [];
   const parser = new SaxesParser({ xmlns: true });
+  let rootIsCanonical = false;
+  let metadataElements = 0;
+  let canonicalMetadataElements = 0;
+  let propertiesElements = 0;
+  let canonicalPropertiesElements = 0;
+  let hasWrongNamespaceProperty = false;
 
   parser.on("doctype", () => {
     throw new Error("DOCTYPE declarations are not permitted in a VSIX manifest.");
@@ -138,12 +146,29 @@ function parsePreReleaseProperties(vsixManifest) {
   parser.on("opentag", (tag) => {
     elementPath.push({ name: tag.name, uri: tag.uri });
     const expectedNames = ["PackageManifest", "Metadata", "Properties", "Property"];
-    if (
-      elementPath.length !== 4 ||
-      !elementPath.every(
-        (element, index) => element.name === expectedNames[index] && element.uri === vsixManifestNamespace
-      )
-    ) {
+    const hasCanonicalPrefix = (length) =>
+      elementPath.length >= length &&
+      elementPath
+        .slice(0, length)
+        .every((element, index) => element.name === expectedNames[index] && element.uri === vsixManifestNamespace);
+
+    if (elementPath.length === 1) {
+      rootIsCanonical = hasCanonicalPrefix(1);
+    } else if (elementPath.length === 2 && elementPath[0]?.name === "PackageManifest" && tag.name === "Metadata") {
+      metadataElements += 1;
+      if (hasCanonicalPrefix(2)) {
+        canonicalMetadataElements += 1;
+      }
+    } else if (elementPath.length === 3 && hasCanonicalPrefix(2) && tag.name === "Properties") {
+      propertiesElements += 1;
+      if (hasCanonicalPrefix(3)) {
+        canonicalPropertiesElements += 1;
+      }
+    } else if (elementPath.length === 4 && hasCanonicalPrefix(3) && tag.name === "Property") {
+      hasWrongNamespaceProperty ||= tag.uri !== vsixManifestNamespace;
+    }
+
+    if (elementPath.length !== 4 || !hasCanonicalPrefix(4)) {
       return;
     }
 
@@ -175,6 +200,17 @@ function parsePreReleaseProperties(vsixManifest) {
   });
   parser.write(vsixManifest).close();
 
+  if (
+    !rootIsCanonical ||
+    metadataElements !== 1 ||
+    canonicalMetadataElements !== 1 ||
+    propertiesElements !== 1 ||
+    canonicalPropertiesElements !== 1 ||
+    hasWrongNamespaceProperty
+  ) {
+    throw new VsixManifestStructureError();
+  }
+
   return properties;
 }
 
@@ -197,8 +233,12 @@ export function inspectVsixPreReleaseMetadata(packageJson, vsixManifest) {
   let properties;
   try {
     properties = parsePreReleaseProperties(vsixManifest);
-  } catch {
-    problems.push("VSIX manifest must contain well-formed XML without a DOCTYPE declaration.");
+  } catch (error) {
+    problems.push(
+      error instanceof VsixManifestStructureError
+        ? "VSIX manifest must contain one canonical PackageManifest > Metadata > Properties chain."
+        : "VSIX manifest must contain well-formed XML without a DOCTYPE declaration."
+    );
     return problems;
   }
 

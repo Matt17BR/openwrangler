@@ -134,7 +134,7 @@ describe("VSIX prerelease metadata validation", () => {
     `<PackageManifest xmlns="${namespace}"><Metadata><Properties>${contents}</Properties></Metadata></PackageManifest>`;
 
   it("requires the canonical prerelease property for preview packages", () => {
-    expect(inspectVsixPreReleaseMetadata('{"preview":true}', `<PackageManifest xmlns="${namespace}" />`)).toEqual([
+    expect(inspectVsixPreReleaseMetadata('{"preview":true}', manifest(""))).toEqual([
       "Preview packages must contain exactly one Microsoft.VisualStudio.Code.PreRelease property."
     ]);
     expect(
@@ -185,22 +185,42 @@ describe("VSIX prerelease metadata validation", () => {
     }
   });
 
-  it("does not accept property text, wrong parents, namespaced attributes, or noncanonical element names", () => {
+  it("rejects ambiguous or wrong-namespace manifest container chains", () => {
+    const invalidStructures = [
+      `<PackageManifest xmlns="${namespace}"><Properties>${previewProperty}</Properties></PackageManifest>`,
+      `<PackageManifest xmlns="${namespace}"><Metadata><Properties /></Metadata><Metadata><Properties>${previewProperty}</Properties></Metadata></PackageManifest>`,
+      `<PackageManifest xmlns="${namespace}"><Metadata><Properties /><Properties>${previewProperty}</Properties></Metadata></PackageManifest>`,
+      '<PackageManifest xmlns="urn:lookalike"><Metadata><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" /></Properties></Metadata></PackageManifest>',
+      `<PackageManifest xmlns="${namespace}"><Metadata xmlns="urn:lookalike"><Properties>${previewProperty}</Properties></Metadata></PackageManifest>`,
+      `<PackageManifest xmlns="${namespace}"><Metadata><Properties xmlns="urn:lookalike">${previewProperty}</Properties></Metadata></PackageManifest>`,
+      `<PackageManifest xmlns="${namespace}"><Metadata><Properties><Property xmlns="urn:lookalike" Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" /></Properties></Metadata></PackageManifest>`
+    ];
+
+    for (const invalidStructure of invalidStructures) {
+      expect(inspectVsixPreReleaseMetadata('{"preview":true}', invalidStructure)).toEqual([
+        "VSIX manifest must contain one canonical PackageManifest > Metadata > Properties chain."
+      ]);
+    }
+    expect(inspectVsixPreReleaseMetadata('{"preview":false}', invalidStructures[6] ?? "")).toEqual([
+      "VSIX manifest must contain one canonical PackageManifest > Metadata > Properties chain."
+    ]);
+  });
+
+  it("does not accept property text, namespaced attributes, or noncanonical element names", () => {
     const lookalikeManifests = [
       manifest(`<![CDATA[${previewProperty}]]>`),
-      `<PackageManifest xmlns="${namespace}"><Properties>${previewProperty}</Properties></PackageManifest>`,
       manifest('<property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />'),
       `<PackageManifest xmlns="${namespace}" xmlns:x="urn:test"><Metadata><Properties><Property x:Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" /></Properties></Metadata></PackageManifest>`,
       `<PackageManifest xmlns="${namespace}" xmlns:x="urn:test"><Metadata><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" x:Value="true" /></Properties></Metadata></PackageManifest>`,
-      '<PackageManifest xmlns="urn:lookalike"><Metadata><Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" /></Properties></Metadata></PackageManifest>'
+      `<PackageManifest xmlns="${namespace}" xmlns:x="${namespace}"><Metadata><Properties><x:Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" /></Properties></Metadata></PackageManifest>`
     ];
 
-    for (const lookalikeManifest of [...lookalikeManifests.slice(0, 4), lookalikeManifests[5] ?? ""]) {
+    for (const lookalikeManifest of [...lookalikeManifests.slice(0, 3), lookalikeManifests[4] ?? ""]) {
       expect(inspectVsixPreReleaseMetadata('{"preview":true}', lookalikeManifest)).toEqual([
         "Preview packages must contain exactly one Microsoft.VisualStudio.Code.PreRelease property."
       ]);
     }
-    expect(inspectVsixPreReleaseMetadata('{"preview":true}', lookalikeManifests[4] ?? "")).toEqual([
+    expect(inspectVsixPreReleaseMetadata('{"preview":true}', lookalikeManifests[3] ?? "")).toEqual([
       'Microsoft.VisualStudio.Code.PreRelease must have Value="true".'
     ]);
   });
@@ -209,14 +229,14 @@ describe("VSIX prerelease metadata validation", () => {
     expect(inspectVsixPreReleaseMetadata('{"preview":false}', manifest(previewProperty))).toEqual([
       "Stable packages must not contain Microsoft.VisualStudio.Code.PreRelease."
     ]);
-    expect(inspectVsixPreReleaseMetadata("{}", `<PackageManifest xmlns="${namespace}" />`)).toEqual([]);
+    expect(inspectVsixPreReleaseMetadata("{}", manifest(""))).toEqual([]);
   });
 
   it("rejects malformed packaged preview metadata", () => {
     expect(inspectVsixPreReleaseMetadata("{", "<PackageManifest />")).toEqual([
       "Packaged package.json must contain valid JSON."
     ]);
-    expect(inspectVsixPreReleaseMetadata('{"preview":"yes"}', "<PackageManifest />")).toEqual([
+    expect(inspectVsixPreReleaseMetadata('{"preview":"yes"}', manifest(""))).toEqual([
       "Packaged package.json preview must be a boolean when present."
     ]);
     expect(inspectVsixPreReleaseMetadata("null", "<PackageManifest />")).toEqual([
