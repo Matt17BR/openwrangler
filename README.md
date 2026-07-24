@@ -50,7 +50,7 @@ Prebuilt releases are not published yet. To try the current preview from a clone
 npm install
 python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
-npm run package -- --out openwrangler.vsix
+npm run package -- --pre-release --out openwrangler.vsix
 ```
 
 On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equivalent commands.

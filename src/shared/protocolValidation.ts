@@ -1542,7 +1542,9 @@ function isNonEmptyTrimmedString(value: unknown): value is string {
 }
 
 function isSingleCharacter(value: unknown): boolean {
-  return typeof value === "string" && [...value].length === 1;
+  if (typeof value !== "string" || [...value].length !== 1) return false;
+  const codePoint = value.codePointAt(0);
+  return codePoint !== undefined && (codePoint < 0xd800 || codePoint > 0xdfff);
 }
 
 function isNullableString(value: unknown): boolean {

@@ -6,6 +6,7 @@ import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/co
 import { OpenWranglerPanel } from "../extension/webviewPanel";
 import type {
   ColumnSummary,
+  DataBackend,
   GridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -428,6 +429,67 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(bridge.updateViewState).toHaveBeenCalledWith("session", state);
   });
 
+  it("rejects a late renderer view-state write while import reconfiguration owns the session", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "sample.csv",
+      path: "/workspace/sample.csv",
+      uri: "file:///workspace/sample.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const initial = responseForSource(source, 2);
+    const replacement = deferred<OpenWranglerResponse>();
+    const authoritativeState = {
+      columnWidths: { "c:0": 245 },
+      selectedColumnId: "c:0",
+      viewport: { firstVisibleRow: 1, scrollLeft: 18 }
+    };
+    const updateViewState = vi.fn(async () => undefined);
+    const reconfigureFileSession = vi.fn(async () => replacement.promise);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => initial),
+        reconfigureFileSession,
+        getViewState: vi.fn(() => authoritativeState),
+        updateViewState
+      },
+      { source, openResponse: initial }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+
+    const changing = harness.receive({ kind: "changeImportOptions" });
+    await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
+    await harness.receive({
+      kind: "updateViewState",
+      state: {
+        columnWidths: { "c:0": 310 },
+        selectedColumnId: "c:0",
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    });
+
+    expect(updateViewState).not.toHaveBeenCalled();
+    expect(harness.posted.at(-1)).toEqual({ kind: "viewState", state: authoritativeState });
+
+    replacement.resolve(
+      responseForSource(
+        {
+          ...source,
+          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+        },
+        3
+      )
+    );
+    await changing;
+  });
+
   it("forwards only validated applied-step inspection and host-clear messages with correlation", async () => {
     const inspectionPage = {
       ...page,
@@ -691,7 +753,12 @@ describe("OpenWranglerPanel retained view state", () => {
       setActiveSession: vi.fn()
     };
     const workspaceState = createWorkspaceMemento();
-    const harness = createPanelHarness(bridge, { source, openResponse: initial, workspaceState });
+    const harness = createPanelHarness(bridge, {
+      source,
+      openResponse: initial,
+      workspaceState,
+      backendPreference: "auto"
+    });
     await harness.open();
     harness.posted.length = 0;
     configureDelimitedPrompts(nextOptions);
@@ -721,8 +788,8 @@ describe("OpenWranglerPanel retained view state", () => {
       { kind: "importOptionsState", busy: false }
     ]);
     expect(workspaceState.update).toHaveBeenLastCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 1,
-      entries: [{ uri: source.uri, backend: "pandas", importOptions: nextOptions }]
+      version: 2,
+      entries: [{ uri: source.uri, backend: "pandas", backendPreference: "auto", importOptions: nextOptions }]
     });
 
     harness.posted.length = 0;
@@ -765,8 +832,15 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
 
     expect(workspaceState.update).toHaveBeenCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 1,
-      entries: [{ uri: source.uri, backend: "polars", importOptions: source.importOptions }]
+      version: 2,
+      entries: [
+        {
+          uri: source.uri,
+          backend: "polars",
+          backendPreference: "polars",
+          importOptions: source.importOptions
+        }
+      ]
     });
   });
 
@@ -809,14 +883,20 @@ describe("OpenWranglerPanel retained view state", () => {
     const workspaceState = createWorkspaceMemento();
     const harness = createPanelHarness(
       { request: vi.fn(async (): Promise<OpenWranglerResponse> => opened) },
-      { source, delegateOpen: true, workspaceState }
+      {
+        source,
+        delegateOpen: true,
+        workspaceState,
+        backend: "duckdb",
+        backendPreference: "auto"
+      }
     );
 
     await harness.open();
 
     expect(workspaceState.update).toHaveBeenCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 1,
-      entries: [{ uri: source.uri, backend: "duckdb" }]
+      version: 2,
+      entries: [{ uri: source.uri, backend: "duckdb", backendPreference: "auto" }]
     });
   });
 
@@ -854,8 +934,15 @@ describe("OpenWranglerPanel retained view state", () => {
     await changing;
 
     expect(workspaceState.update).toHaveBeenLastCalledWith(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 1,
-      entries: [{ uri: source.uri, backend: "polars", importOptions: nextOptions }]
+      version: 2,
+      entries: [
+        {
+          uri: source.uri,
+          backend: "polars",
+          backendPreference: "polars",
+          importOptions: nextOptions
+        }
+      ]
     });
   });
 
@@ -1095,7 +1182,8 @@ describe("OpenWranglerPanel retained view state", () => {
       cancellation: expect.objectContaining({
         isCancellationRequested: false,
         onCancellationRequested: expect.any(Function)
-      })
+      }),
+      backendPreference: "polars"
     });
     expect(harness.posted).toContainEqual(
       responseForSource(
@@ -1107,6 +1195,73 @@ describe("OpenWranglerPanel retained view state", () => {
       )
     );
   });
+
+  it.each([
+    { preference: "auto" as const, expectedRetryBackend: undefined },
+    { preference: "pandas" as const, expectedRetryBackend: "pandas" as const }
+  ])(
+    "uses the logical $preference backend preference when retrying a changed import after initial failure",
+    async ({ preference, expectedRetryBackend }) => {
+      const source: SessionSource = {
+        kind: "file",
+        label: "sample.csv",
+        path: "/workspace/sample.csv",
+        uri: "file:///workspace/sample.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const initialFailure: OpenWranglerResponse = {
+        kind: "error",
+        code: "invalid_import_options",
+        message: "The initial delimiter was wrong.",
+        recoverable: true
+      };
+      let openCalls = 0;
+      const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (candidate.kind === "openSession") {
+          openCalls += 1;
+          if (openCalls === 1) return initialFailure;
+          const opened = responseForSource(candidate.source, 0);
+          return { ...opened, metadata: { ...opened.metadata, backend: "pandas" } };
+        }
+        if (candidate.kind === "closeSession") {
+          return { kind: "sessionClosed", sessionId: candidate.sessionId };
+        }
+        throw new Error(`Unexpected request ${candidate.kind}`);
+      });
+      const harness = createPanelHarness(
+        { request },
+        {
+          source,
+          delegateOpen: true,
+          backend: "pandas",
+          backendPreference: preference
+        }
+      );
+      await harness.open();
+      configureDelimitedPrompts({
+        delimiter: ";",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true
+      });
+
+      await harness.receive({ kind: "changeImportOptions" });
+
+      const opens = request.mock.calls
+        .map(([candidate]) => candidate)
+        .filter(
+          (candidate): candidate is Extract<OpenWranglerRequest, { kind: "openSession" }> =>
+            candidate.kind === "openSession"
+        );
+      expect(opens).toHaveLength(2);
+      expect(opens[0]).toMatchObject({ backend: "pandas" });
+      if (expectedRetryBackend === undefined) {
+        expect(opens[1]).not.toHaveProperty("backend");
+      } else {
+        expect(opens[1]).toMatchObject({ backend: expectedRetryBackend });
+      }
+    }
+  );
 
   it("serializes overlapping changes, cancels the superseded candidate, and publishes only the latest success", async () => {
     const source: SessionSource = {
@@ -1210,7 +1365,7 @@ describe("OpenWranglerPanel retained view state", () => {
         request: vi.fn(async () => initial),
         reconfigureFileSession
       },
-      { source, openResponse: initial, workspaceState }
+      { source, openResponse: initial, workspaceState, backendPreference: "auto" }
     );
     await harness.open();
     const persistedFirstReplacement = deferred<void>();
@@ -1690,7 +1845,8 @@ describe("OpenWranglerPanel retained view state", () => {
         cancellation: expect.objectContaining({
           isCancellationRequested: false,
           onCancellationRequested: expect.any(Function)
-        })
+        }),
+        backendPreference: "polars"
       }
     );
 
@@ -1950,6 +2106,8 @@ function createPanelHarness(
     source?: SessionSource;
     active?: boolean;
     workspaceState?: Pick<vscode.Memento, "get" | "update">;
+    backend?: DataBackend;
+    backendPreference?: DataBackend | "auto";
   }
 ): {
   posted: unknown[];
@@ -2008,6 +2166,8 @@ function createPanelHarness(
         }
       };
   const source = options?.source ?? metadata.source;
+  const backend = options?.backend ?? metadata.backend;
+  const backendPreference = options?.backendPreference ?? backend;
   let instance: OpenWranglerPanel;
   if (options?.createViaFactory) {
     const descriptor = Object.getOwnPropertyDescriptor(window, "createWebviewPanel");
@@ -2020,7 +2180,8 @@ function createPanelHarness(
         context as unknown as vscode.ExtensionContext,
         panelBridge,
         source,
-        metadata.backend
+        backend,
+        backendPreference
       );
     } finally {
       if (descriptor) Object.defineProperty(window, "createWebviewPanel", descriptor);
@@ -2032,8 +2193,9 @@ function createPanelHarness(
       context as unknown as vscode.ExtensionContext,
       panelBridge,
       source,
-      metadata.backend,
-      false
+      backend,
+      false,
+      backendPreference
     );
   }
   const harness = {

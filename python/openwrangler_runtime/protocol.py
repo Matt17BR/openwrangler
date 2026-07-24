@@ -257,7 +257,9 @@ def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str,
         raise ProtocolError(f"source.importOptions contains unknown fields: {', '.join(sorted(unexpected))}")
 
     for field in ("delimiter", "quoteChar"):
-        if field in options and (not isinstance(options[field], str) or len(options[field]) != 1):
+        if field in options and (
+            not isinstance(options[field], str) or len(options[field]) != 1 or 0xD800 <= ord(options[field]) <= 0xDFFF
+        ):
             raise ProtocolError(f"source.importOptions.{field} must contain exactly one Unicode code point.")
     if "encoding" in options and not _is_non_empty_trimmed_string(options["encoding"]):
         raise ProtocolError("source.importOptions.encoding must be a non-empty string.")

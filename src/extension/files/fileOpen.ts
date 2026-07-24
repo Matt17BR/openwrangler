@@ -29,7 +29,16 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
     }
     const confirmed = confirmedFileConfiguration(this.context.workspaceState, document.uri);
     const source = fileSource(document.uri, confirmed?.importOptions ?? defaultImportOptions(document.uri));
-    new OpenWranglerPanel(webviewPanel, this.context, this.bridge, source, confirmed?.backend ?? getDefaultBackend());
+    const configuredBackend = getConfiguredBackend();
+    new OpenWranglerPanel(
+      webviewPanel,
+      this.context,
+      this.bridge,
+      source,
+      confirmed?.backend ?? backendPin(configuredBackend),
+      true,
+      confirmed?.backendPreference ?? configuredBackend
+    );
   }
 }
 
@@ -62,11 +71,13 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       if (!(await validateFileTarget(target))) return;
 
       try {
+        const configuredBackend = getConfiguredBackend();
         OpenWranglerPanel.create(
           context,
           bridge,
           fileSource(target, await promptImportOptions(target)),
-          getDefaultBackend()
+          backendPin(configuredBackend),
+          configuredBackend
         );
       } catch (error) {
         if (!(error instanceof ImportCancelledError)) throw error;
@@ -94,11 +105,13 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       if (!(await validateFileTarget(selected))) return;
 
       try {
+        const configuredBackend = getConfiguredBackend();
         OpenWranglerPanel.create(
           context,
           bridge,
           fileSource(selected, await promptImportOptions(selected)),
-          getDefaultBackend()
+          backendPin(configuredBackend),
+          configuredBackend
         );
       } catch (error) {
         if (!(error instanceof ImportCancelledError)) throw error;
@@ -115,10 +128,10 @@ const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOption
   importOptions
 });
 
-const getDefaultBackend = (): DataBackend | undefined => {
-  const configured = getSetting<DataBackend | "auto">("defaultBackend", "auto");
-  return configured === "auto" ? undefined : configured;
-};
+const getConfiguredBackend = (): DataBackend | "auto" => getSetting<DataBackend | "auto">("defaultBackend", "auto");
+
+const backendPin = (configured: DataBackend | "auto"): DataBackend | undefined =>
+  configured === "auto" ? undefined : configured;
 
 const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as const;
 const supportedFileTypes = new Set<string>(allFileTypes);

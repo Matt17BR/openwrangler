@@ -7,20 +7,22 @@ type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 interface ConfirmedFileConfigurationEntry {
   readonly uri: string;
   readonly backend: DataBackend;
+  readonly backendPreference: DataBackend | "auto";
   readonly importOptions?: ImportOptions;
 }
 
 interface ConfirmedFileConfigurationsRegistry {
-  readonly version: 1;
+  readonly version: 2;
   readonly entries: ConfirmedFileConfigurationEntry[];
 }
 
 export interface ConfirmedFileConfiguration {
   readonly backend: DataBackend;
+  readonly backendPreference: DataBackend | "auto";
   readonly importOptions?: ImportOptions;
 }
 
-export const CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY = "openWrangler.confirmedFileConfigurations.v1";
+export const CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY = "openWrangler.confirmedFileConfigurations.v2";
 export const MAX_CONFIRMED_FILE_CONFIGURATIONS = 128;
 
 const writeTails = new WeakMap<object, Promise<void>>();
@@ -42,6 +44,7 @@ export function confirmedFileConfiguration(
     if (entry?.uri === canonicalUri) {
       return {
         backend: entry.backend,
+        backendPreference: entry.backendPreference,
         ...(entry.importOptions ? { importOptions: cloneImportOptions(entry.importOptions) } : {})
       };
     }
@@ -59,7 +62,8 @@ export function rememberConfirmedFileConfiguration(
   workspaceState: Pick<vscode.Memento, "get" | "update"> | undefined,
   uri: vscode.Uri,
   importOptions: SessionSource["importOptions"],
-  backend: DataBackend
+  backend: DataBackend,
+  backendPreference: DataBackend | "auto"
 ): Promise<void> {
   if (!workspaceState) return Promise.resolve();
   const owner = workspaceState as object;
@@ -69,13 +73,13 @@ export function rememberConfirmedFileConfiguration(
     .then(async () => {
       const canonicalUri = uri.toString();
       const entries = decodeRegistry(workspaceState.get<unknown>(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY));
-      const confirmed = decodeFileConfiguration(uri, backend, importOptions);
+      const confirmed = decodeFileConfiguration(uri, backend, backendPreference, importOptions);
       if (!confirmed) return;
       const retained = entries.filter((entry) => entry.uri !== canonicalUri);
       retained.push({ uri: canonicalUri, ...confirmed });
       const bounded = retained.slice(-MAX_CONFIRMED_FILE_CONFIGURATIONS);
       if (sameRegistry(entries, bounded)) return;
-      const registry: ConfirmedFileConfigurationsRegistry = { version: 1, entries: bounded };
+      const registry: ConfirmedFileConfigurationsRegistry = { version: 2, entries: bounded };
       await workspaceState.update(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, registry);
     });
   writeTails.set(owner, next);
@@ -94,7 +98,7 @@ function decodeRegistry(value: unknown): ConfirmedFileConfigurationEntry[] {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ["version", "entries"]) ||
-    value.version !== 1 ||
+    value.version !== 2 ||
     !Array.isArray(value.entries)
   ) {
     return [];
@@ -104,16 +108,22 @@ function decodeRegistry(value: unknown): ConfirmedFileConfigurationEntry[] {
   for (const candidate of candidates) {
     if (
       !isRecord(candidate) ||
-      !hasExactKeys(candidate, ["uri", "backend"], ["importOptions"]) ||
+      !hasExactKeys(candidate, ["uri", "backend", "backendPreference"], ["importOptions"]) ||
       typeof candidate.uri !== "string" ||
       candidate.uri.length === 0 ||
-      !isDataBackend(candidate.backend)
+      !isDataBackend(candidate.backend) ||
+      !isBackendPreference(candidate.backendPreference)
     ) {
       continue;
     }
     const uri = parseCanonicalUri(candidate.uri);
     if (!uri) continue;
-    const configuration = decodeFileConfiguration(uri, candidate.backend, candidate.importOptions);
+    const configuration = decodeFileConfiguration(
+      uri,
+      candidate.backend,
+      candidate.backendPreference,
+      candidate.importOptions
+    );
     if (
       !configuration ||
       requiresImportOptions(uri) !== Object.prototype.hasOwnProperty.call(candidate, "importOptions")
@@ -178,16 +188,23 @@ function decodeFormatImportOptions(uri: vscode.Uri, value: unknown): ImportOptio
 function decodeFileConfiguration(
   uri: vscode.Uri,
   backend: unknown,
+  backendPreference: unknown,
   importOptions: unknown
 ): Omit<ConfirmedFileConfigurationEntry, "uri"> | undefined {
-  if (!isDataBackend(backend)) return undefined;
+  if (
+    !isDataBackend(backend) ||
+    !isBackendPreference(backendPreference) ||
+    (backendPreference !== "auto" && backendPreference !== backend)
+  ) {
+    return undefined;
+  }
   const extension = fileExtension(uri);
   if (extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls") {
     const decoded = decodeFormatImportOptions(uri, importOptions);
-    return decoded ? { backend, importOptions: decoded } : undefined;
+    return decoded ? { backend, backendPreference, importOptions: decoded } : undefined;
   }
   if ((extension === ".parquet" || extension === ".jsonl") && importOptions === undefined) {
-    return { backend };
+    return { backend, backendPreference };
   }
   return undefined;
 }
@@ -216,8 +233,16 @@ function isDataBackend(value: unknown): value is DataBackend {
   return value === "polars" || value === "pandas" || value === "duckdb";
 }
 
+function isBackendPreference(value: unknown): value is DataBackend | "auto" {
+  return value === "auto" || isDataBackend(value);
+}
+
 function isSingleCharacter(value: unknown): value is string {
-  return typeof value === "string" && Array.from(value).length === 1;
+  if (typeof value !== "string") return false;
+  const codePoints = Array.from(value);
+  if (codePoints.length !== 1) return false;
+  const codePoint = codePoints[0]?.codePointAt(0);
+  return codePoint !== undefined && (codePoint < 0xd800 || codePoint > 0xdfff);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

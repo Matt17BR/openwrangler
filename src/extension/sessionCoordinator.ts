@@ -341,6 +341,17 @@ export class SessionCoordinator implements vscode.Disposable {
     options?: BridgeRequestOptions,
     notebookDocument?: vscode.NotebookDocument
   ): Promise<OpenWranglerResponse> {
+    if (
+      options?.backendPreference !== undefined &&
+      options.backendPreference !== "auto" &&
+      request.backend !== options.backendPreference
+    ) {
+      return protocolError(
+        "invalid_backend_preference",
+        `The host backend preference ${options.backendPreference} does not match the pinned open-session backend.`,
+        false
+      );
+    }
     const invalidNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
     if (invalidNotebookOrigin) {
       return protocolError("invalid_notebook_origin", invalidNotebookOrigin, true);
@@ -376,13 +387,15 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     const publicId = randomUUID();
+    const backendPreference =
+      options?.backendPreference === "auto" ? undefined : (options?.backendPreference ?? request.backend);
     const session: CoordinatedSession = {
       publicId,
       runtimeId: response.metadata.sessionId,
       publicRevision: response.metadata.revision,
       runtimeRevision: response.metadata.revision,
       openRequest: { ...request, backend: response.metadata.backend },
-      ...(request.backend ? { backendPreference: request.backend } : {}),
+      ...(backendPreference ? { backendPreference } : {}),
       ...(notebookDocument ? { notebookDocument } : {}),
       delegate,
       interactiveQueue: [],

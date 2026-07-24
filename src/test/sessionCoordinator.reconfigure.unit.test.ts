@@ -554,6 +554,84 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     });
   });
 
+  it("keeps an automatic preference after reopening a confirmed backend", async () => {
+    const candidateRequests: OpenSessionRequest[] = [];
+    let candidateId = "";
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession" && delegateRequest.mock.calls.length === 1) {
+        expect(request.backend).toBe("pandas");
+        return openedFor(request, metadataFor({ runtimeId: "runtime-old", source: initialSource, backend: "pandas" }));
+      }
+      if (request.kind === "openSession") {
+        candidateRequests.push(request);
+        candidateId = request.requestedSessionId ?? "";
+        return openedFor(
+          request,
+          metadataFor({ runtimeId: candidateId, source: replacementSource, backend: "polars" })
+        );
+      }
+      if (request.kind === "getPage" && request.sessionId === candidateId) {
+        return pageFor(
+          request,
+          metadataFor({
+            runtimeId: candidateId,
+            source: replacementSource,
+            backend: "polars",
+            revision: request.revision,
+            filterModel: request.filterModel
+          })
+        );
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const openedResponse = await bridge.request(
+      { ...openRequest(initialSource), backend: "pandas" },
+      { backendPreference: "auto" }
+    );
+    if (openedResponse.kind !== "sessionOpened") throw new Error("Expected a confirmed Pandas session.");
+
+    const response = await bridge.reconfigureFileSession!(
+      openedResponse.metadata.sessionId,
+      openedResponse.metadata.revision,
+      replacementSource
+    );
+
+    expect(candidateRequests).toEqual([
+      expect.objectContaining({
+        kind: "openSession",
+        source: replacementSource,
+        requestedSessionId: candidateId
+      })
+    ]);
+    expect(candidateRequests[0]).not.toHaveProperty("backend");
+    expect(response).toMatchObject({
+      kind: "sessionOpened",
+      metadata: {
+        sessionId: openedResponse.metadata.sessionId,
+        backend: "polars",
+        source: replacementSource
+      }
+    });
+  });
+
+  it("rejects inconsistent explicit host backend provenance before opening a runtime", async () => {
+    const delegateRequest = vi.fn();
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    await expect(
+      bridge.request({ ...openRequest(initialSource), backend: "pandas" }, { backendPreference: "polars" })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_backend_preference",
+      recoverable: false
+    });
+    expect(delegateRequest).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       label: "a candidate backend mismatch",

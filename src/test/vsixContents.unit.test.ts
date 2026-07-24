@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { inspectReadmeSourceSrcsets, inspectVsixEntries, requiredVsixEntries } from "../../scripts/vsix-contents.mjs";
+import {
+  inspectReadmeSourceSrcsets,
+  inspectVsixEntries,
+  inspectVsixPreReleaseMetadata,
+  requiredVsixEntries
+} from "../../scripts/vsix-contents.mjs";
 
 describe("VSIX production entry allowlist", () => {
   it("requires and narrowly permits the generated protocol-validation module", () => {
@@ -11,7 +16,7 @@ describe("VSIX production entry allowlist", () => {
       "extension/media/codePreview.js"
     ]);
 
-    expect(result).toEqual({ forbidden: [], missing: [] });
+    expect(result).toEqual({ forbidden: [], missing: [], duplicates: [] });
   });
 
   it("still rejects arbitrary media chunks and user scratch files", () => {
@@ -23,6 +28,15 @@ describe("VSIX production entry allowlist", () => {
 
     expect(result.forbidden).toEqual(["extension/media/unexpected.js", "extension/scratch.txt"]);
     expect(result.missing).toEqual([]);
+    expect(result.duplicates).toEqual([]);
+  });
+
+  it("rejects duplicate archive paths even when every path is otherwise allowed", () => {
+    const result = inspectVsixEntries([...requiredVsixEntries, "extension/package.json"]);
+
+    expect(result.forbidden).toEqual([]);
+    expect(result.missing).toEqual([]);
+    expect(result.duplicates).toEqual(["extension/package.json"]);
   });
 
   it("requires the compiled webview host and bundled Codicon font", () => {
@@ -33,6 +47,62 @@ describe("VSIX production entry allowlist", () => {
     expect(inspectVsixEntries(entries).missing).toEqual([
       "extension/dist/extension/webviewPanel.js",
       "extension/media/codicon.ttf"
+    ]);
+  });
+});
+
+describe("VSIX prerelease metadata validation", () => {
+  const previewProperty = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />';
+
+  it("requires the canonical prerelease property for preview packages", () => {
+    expect(inspectVsixPreReleaseMetadata('{"preview":true}', "<PackageManifest />")).toEqual([
+      "Preview packages must contain exactly one Microsoft.VisualStudio.Code.PreRelease property."
+    ]);
+    expect(
+      inspectVsixPreReleaseMetadata(
+        '{"preview":true}',
+        `<PackageManifest><Metadata><Properties>${previewProperty}</Properties></Metadata></PackageManifest>`
+      )
+    ).toEqual([]);
+  });
+
+  it("rejects malformed or duplicated prerelease properties", () => {
+    expect(
+      inspectVsixPreReleaseMetadata(
+        '{"preview":true}',
+        '<Properties><Property Value="false" Id="Microsoft.VisualStudio.Code.PreRelease" /></Properties>'
+      )
+    ).toEqual(['Microsoft.VisualStudio.Code.PreRelease must have Value="true".']);
+    expect(
+      inspectVsixPreReleaseMetadata(
+        '{"preview":true}',
+        '<Properties><Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="TRUE" /></Properties>'
+      )
+    ).toEqual(['Microsoft.VisualStudio.Code.PreRelease must have Value="true".']);
+    expect(
+      inspectVsixPreReleaseMetadata('{"preview":true}', `<Properties>${previewProperty}${previewProperty}</Properties>`)
+    ).toEqual(["Preview packages must contain exactly one Microsoft.VisualStudio.Code.PreRelease property."]);
+  });
+
+  it("forbids prerelease metadata for stable packages", () => {
+    expect(
+      inspectVsixPreReleaseMetadata(
+        '{"preview":false}',
+        `<PackageManifest><Properties>${previewProperty}</Properties></PackageManifest>`
+      )
+    ).toEqual(["Stable packages must not contain Microsoft.VisualStudio.Code.PreRelease."]);
+    expect(inspectVsixPreReleaseMetadata("{}", "<PackageManifest />")).toEqual([]);
+  });
+
+  it("rejects malformed packaged preview metadata", () => {
+    expect(inspectVsixPreReleaseMetadata("{", "<PackageManifest />")).toEqual([
+      "Packaged package.json must contain valid JSON."
+    ]);
+    expect(inspectVsixPreReleaseMetadata('{"preview":"yes"}', "<PackageManifest />")).toEqual([
+      "Packaged package.json preview must be a boolean when present."
+    ]);
+    expect(inspectVsixPreReleaseMetadata("null", "<PackageManifest />")).toEqual([
+      "Packaged package.json must contain a JSON object."
     ]);
   });
 });

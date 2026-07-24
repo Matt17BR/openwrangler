@@ -185,8 +185,12 @@ export function App() {
     const wasPending = importOptionsPendingRef.current;
     importOptionsPendingRef.current = pending;
     setImportOptionsPending(pending);
-    if (pending) setLoading(true);
-    else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
+    if (pending) {
+      setOperationOpen(false);
+      setEditingStep(undefined);
+      setOperationKind(undefined);
+      setLoading(true);
+    } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
   }, []);
 
   const flushGridViewState = useCallback(() => {
@@ -644,6 +648,10 @@ export function App() {
   );
 
   const beginMutation = useCallback((): boolean => {
+    if (importOptionsPendingRef.current) {
+      setForegroundError("Wait for the current import-options change to finish.");
+      return false;
+    }
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before changing the cleaning plan.");
@@ -789,6 +797,10 @@ export function App() {
         return;
       }
       if (response.kind === "editorAction") {
+        if (importOptionsPendingRef.current) {
+          setForegroundError("Wait for the current import-options change to finish.");
+          return;
+        }
         if (response.action === "openOperation") {
           if (latestPageRequest.current?.reason === "projection") {
             setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
@@ -879,7 +891,7 @@ export function App() {
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
           setMutationPending(false);
-          setLoading(false);
+          setLoading(importOptionsPendingRef.current);
           setProjectionLoading(false);
           if (previous) restoreConfirmedViewState(previous);
         } else if (importOptionsPendingRef.current) {
@@ -908,7 +920,7 @@ export function App() {
             foregroundRequest.current = undefined;
             mutationSnapshot.current = undefined;
             setMutationPending(false);
-            setLoading(false);
+            setLoading(importOptionsPendingRef.current);
             setProjectionLoading(false);
             if (previous) restoreConfirmedViewState(previous);
             setForegroundError("The cleaning operation was cancelled.");
@@ -949,6 +961,9 @@ export function App() {
 
       if (response.kind === "sessionOpened") {
         storeImportOptionsPending(false);
+        setOperationOpen(false);
+        setEditingStep(undefined);
+        setOperationKind(undefined);
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -1404,6 +1419,10 @@ export function App() {
   };
 
   const openNewOperation = (kind?: OperationKind) => {
+    if (importOptionsPendingRef.current) {
+      setForegroundError("Wait for the current import-options change to finish.");
+      return;
+    }
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
@@ -1419,6 +1438,10 @@ export function App() {
   };
 
   const editLatestStep = () => {
+    if (importOptionsPendingRef.current) {
+      setForegroundError("Wait for the current import-options change to finish.");
+      return;
+    }
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before editing a cleaning step.");
@@ -1497,6 +1520,7 @@ export function App() {
 
   const changeImportOptions = () => {
     if (loading || mutationPending || projectionLoading || importOptionsPending) return;
+    flushGridViewState();
     storeImportOptionsPending(true);
     vscode.postMessage({ kind: "changeImportOptions" });
   };
@@ -1586,7 +1610,7 @@ export function App() {
                 <button
                   type="button"
                   data-operation-focus-fallback
-                  disabled={loading || projectionLoading || !canStartOperation(metadata)}
+                  disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}
                   aria-describedby={projectionStatusId}
                   title={
                     projectionActionTitle ??
@@ -1653,7 +1677,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondaryButton"
-                    disabled={loading || projectionLoading}
+                    disabled={loading || projectionLoading || importOptionsPending}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Escape"
                     title={projectionActionTitle ?? "Discard draft (Escape)"}
@@ -1664,7 +1688,7 @@ export function App() {
                   <button
                     type="button"
                     data-operation-focus-fallback
-                    disabled={loading || projectionLoading}
+                    disabled={loading || projectionLoading || importOptionsPending}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Enter Meta+Enter"
                     title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
@@ -1678,7 +1702,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondaryButton"
-                    disabled={loading || projectionLoading || metadata.steps.length === 0}
+                    disabled={loading || projectionLoading || importOptionsPending || metadata.steps.length === 0}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
                     title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
@@ -1689,7 +1713,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondaryButton"
-                    disabled={loading || projectionLoading || metadata.steps.length === 0}
+                    disabled={loading || projectionLoading || importOptionsPending || metadata.steps.length === 0}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
                     title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
@@ -1920,7 +1944,7 @@ export function App() {
           filterModel={filterModel}
           initialKind={operationKind}
           initialStep={editingStep}
-          busy={mutationPending || projectionLoading}
+          busy={mutationPending || projectionLoading || importOptionsPending}
           onClose={() => {
             if (foregroundRequest.current !== "mutation") setOperationOpen(false);
           }}

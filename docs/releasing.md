@@ -14,7 +14,7 @@ npm run check
 npm test
 npm run test:extension-host
 npm run test:webview-acceptance
-npm run package -- --out openwrangler.vsix
+npm run package -- --pre-release --out openwrangler.vsix
 npm run verify:vsix -- openwrangler.vsix
 npm run test:coverage
 npm run license:check
@@ -22,6 +22,8 @@ npm run benchmark:runtime
 npm run test:packaged-editors -- openwrangler.vsix
 sha256sum openwrangler.vsix
 ```
+
+The package command above is the preview gate and must match `package.json.preview: true`. A stable release sets `preview` to `false` and omits `--pre-release`; `npm run verify:vsix` rejects either channel when its VSIX manifest and packaged `package.json` disagree.
 
 The VSIX may contain production extension bundles, webview assets, the Python runtime source, package metadata, README, changelog, license, and third-party notices. It must not contain source TypeScript, tests, fixtures, scripts, benchmark sources, profiles, source maps, caches, virtual environments, `.env` files, credentials, or untracked scratch files. Allowlist verification also reads packaged `webview.css`, the compiled webview host, and the packaged README: the Codicon font URL must be bundle-relative so the checked-in font resolves beside the stylesheet, the CSP must allow `webview.cspSource` through `font-src`, and every HTML `<source srcset>` candidate must be an absolute HTTPS URL because `vsce` does not rewrite it like a normal Markdown image. After allowlist verification, `npm run test:packaged-editors -- openwrangler.vsix` must install and exercise the artifact from isolated profiles; development-host success is not a substitute. The packaged gate uses three editor processes per product: an untrusted Restricted Mode phase, then trusted seed and verify phases that prove backend-pinned persisted-plan replay, concurrent Pandas/Polars/DuckDB crash recovery for supported file sessions, export source safety, and final process cleanup. Notebook acceptance remains Pandas/Polars-only until DuckDB kernel ownership is implemented and separately gated.
 

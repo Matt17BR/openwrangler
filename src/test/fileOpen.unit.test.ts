@@ -231,7 +231,24 @@ describe("file launch command", () => {
         uri: menuUri.toString(),
         importOptions: undefined
       },
-      undefined
+      undefined,
+      "auto"
+    );
+  });
+
+  it("forwards an explicit configured backend as both the runtime pin and logical preference", async () => {
+    const { context, bridge } = register();
+    const menuUri = vscode.Uri.file("/workspace/menu.parquet");
+    fileMocks.defaultBackend = "duckdb";
+
+    await command("openWrangler.openFile")(menuUri);
+
+    expect(fileMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      bridge,
+      expect.objectContaining({ uri: menuUri.toString() }),
+      "duckdb",
+      "duckdb"
     );
   });
 
@@ -385,7 +402,8 @@ describe("file launch command", () => {
       context,
       bridge,
       expect.objectContaining({ path: "/workspace/data.csv" }),
-      undefined
+      undefined,
+      "auto"
     );
   });
 
@@ -417,7 +435,9 @@ describe("file launch command", () => {
       context,
       bridge,
       expect.objectContaining({ path: "/workspace/data.csv" }),
-      undefined
+      undefined,
+      true,
+      "auto"
     );
   });
 
@@ -431,8 +451,8 @@ describe("file launch command", () => {
       hasHeader: false
     };
     fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 1,
-      entries: [{ uri: uri.toString(), backend: "pandas", importOptions }]
+      version: 2,
+      entries: [{ uri: uri.toString(), backend: "pandas", backendPreference: "auto", importOptions }]
     });
     fileMocks.defaultBackend = "polars";
     const { context, bridge } = register();
@@ -448,7 +468,9 @@ describe("file launch command", () => {
         uri: uri.toString(),
         importOptions
       }),
-      "pandas"
+      "pandas",
+      true,
+      "auto"
     );
     expect(fileMocks.customEditorProviderOptions).toMatchObject({
       supportsMultipleEditorsPerDocument: false
@@ -456,12 +478,12 @@ describe("file launch command", () => {
     expect(fileMocks.defaultImportOptions).not.toHaveBeenCalled();
   });
 
-  it("pins a confirmed Parquet backend without adding import options", async () => {
+  it("keeps an explicit confirmed Parquet preference pinned without adding import options", async () => {
     const uri = vscode.Uri.file("/workspace/data.parquet");
     const panel = { dispose: vi.fn() };
     fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
-      version: 1,
-      entries: [{ uri: uri.toString(), backend: "duckdb" }]
+      version: 2,
+      entries: [{ uri: uri.toString(), backend: "duckdb", backendPreference: "duckdb" }]
     });
     fileMocks.defaultBackend = "polars";
     const { context, bridge } = register();
@@ -477,6 +499,8 @@ describe("file launch command", () => {
         uri: uri.toString(),
         importOptions: undefined
       }),
+      "duckdb",
+      true,
       "duckdb"
     );
   });

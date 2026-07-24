@@ -29,10 +29,55 @@ export const requiredVsixEntries = [
 ];
 
 export function inspectVsixEntries(entries) {
+  const seen = new Set();
+  const duplicates = [];
+
+  for (const entry of entries) {
+    if (seen.has(entry) && !duplicates.includes(entry)) {
+      duplicates.push(entry);
+    }
+    seen.add(entry);
+  }
+
   return {
     forbidden: entries.filter((entry) => !allowedVsixEntryPatterns.some((pattern) => pattern.test(entry))),
-    missing: requiredVsixEntries.filter((entry) => !entries.includes(entry))
+    missing: requiredVsixEntries.filter((entry) => !entries.includes(entry)),
+    duplicates
   };
+}
+
+export function inspectVsixPreReleaseMetadata(packageJson, vsixManifest) {
+  let manifest;
+  try {
+    manifest = JSON.parse(packageJson);
+  } catch {
+    return ["Packaged package.json must contain valid JSON."];
+  }
+  if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
+    return ["Packaged package.json must contain a JSON object."];
+  }
+
+  const problems = [];
+  if (manifest.preview !== undefined && typeof manifest.preview !== "boolean") {
+    problems.push("Packaged package.json preview must be a boolean when present.");
+  }
+
+  const xmlWithoutComments = vsixManifest.replace(/<!--[\s\S]*?-->/gu, "");
+  const properties = [...xmlWithoutComments.matchAll(/<Property\b[^>]*>/giu)]
+    .map((match) => match[0])
+    .filter((property) => /\bId\s*=\s*(["'])Microsoft\.VisualStudio\.Code\.PreRelease\1/u.test(property));
+
+  if (manifest.preview === true) {
+    if (properties.length !== 1) {
+      problems.push("Preview packages must contain exactly one Microsoft.VisualStudio.Code.PreRelease property.");
+    } else if (!/\bValue\s*=\s*(["'])true\1/u.test(properties[0])) {
+      problems.push('Microsoft.VisualStudio.Code.PreRelease must have Value="true".');
+    }
+  } else if (properties.length > 0) {
+    problems.push("Stable packages must not contain Microsoft.VisualStudio.Code.PreRelease.");
+  }
+
+  return problems;
 }
 
 function isAbsoluteHttpsUrl(value) {

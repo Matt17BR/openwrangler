@@ -1,5 +1,6 @@
 import type {
   ColumnSchema,
+  DataBackend,
   DataDiff,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -22,6 +23,11 @@ export interface BridgeRequestOptions {
   startRuntimeIfNeeded?: boolean;
   /** Opaque identifier for the logical view that owns a profiling request. */
   viewContextId?: string;
+  /**
+   * Host-only file backend selection provenance. A confirmed backend may be
+   * pinned for recovery while the user's logical selection remains automatic.
+   */
+  backendPreference?: DataBackend | "auto";
 }
 
 export interface SessionPresentation {

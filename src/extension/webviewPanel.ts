@@ -44,7 +44,8 @@ export class OpenWranglerPanel {
     private readonly bridge: OpenWranglerBridge,
     private source: SessionSource,
     private readonly backend?: DataBackend,
-    openImmediately = true
+    openImmediately = true,
+    private readonly backendPreference: DataBackend | "auto" = backend ?? "auto"
   ) {
     this.panel.webview.options = {
       enableScripts: true,
@@ -99,7 +100,8 @@ export class OpenWranglerPanel {
     context: vscode.ExtensionContext,
     bridge: OpenWranglerBridge,
     source: SessionSource,
-    backend?: DataBackend
+    backend?: DataBackend,
+    backendPreference: DataBackend | "auto" = backend ?? "auto"
   ): OpenWranglerPanel {
     const panel = vscode.window.createWebviewPanel(
       "openWrangler.session",
@@ -117,7 +119,15 @@ export class OpenWranglerPanel {
     // previous webview tab is closing; the retained snapshot is posted again
     // when the renderer eventually becomes ready. Saved output stays lazy so
     // an unopened snapshot panel does not retain an unnecessary host session.
-    return new OpenWranglerPanel(panel, context, bridge, source, backend, source.kind !== "notebookOutput");
+    return new OpenWranglerPanel(
+      panel,
+      context,
+      bridge,
+      source,
+      backend,
+      source.kind !== "notebookOutput",
+      backendPreference
+    );
   }
 
   async open(): Promise<void> {
@@ -146,7 +156,7 @@ export class OpenWranglerPanel {
         mode
       },
       undefined,
-      { cancellation: cancellation.token },
+      { cancellation: cancellation.token, backendPreference: this.backendPreference },
       generation
     );
     this.opening = opening;
@@ -225,7 +235,11 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "updateViewState") {
-      if (this.sessionId) await this.bridge.updateViewState?.(this.sessionId, decoded.state);
+      if (this.changingImportOptions) {
+        await this.postViewState();
+      } else if (this.sessionId) {
+        await this.bridge.updateViewState?.(this.sessionId, decoded.state);
+      }
       return;
     }
 
@@ -351,7 +365,7 @@ export class OpenWranglerPanel {
         await this.forward(
           this.fileOpenRequest(nextSource),
           undefined,
-          { cancellation: cancellation.token },
+          { cancellation: cancellation.token, backendPreference: this.backendPreference },
           generation
         );
         if (!this.sessionId) this.source = previousSource;
@@ -419,7 +433,7 @@ export class OpenWranglerPanel {
     return {
       kind: "openSession",
       source,
-      backend: this.backend,
+      ...(this.backendPreference === "auto" ? {} : { backend: this.backendPreference }),
       pageSize,
       columnOffset: 0,
       columnLimit: fetchColumnBlockSize(),
@@ -655,7 +669,13 @@ export class OpenWranglerPanel {
     const uri = fileSourceUri(source);
     if (!uri) return;
     try {
-      await rememberConfirmedFileConfiguration(this.context.workspaceState, uri, source.importOptions, backend);
+      await rememberConfirmedFileConfiguration(
+        this.context.workspaceState,
+        uri,
+        source.importOptions,
+        backend,
+        this.backendPreference
+      );
     } catch (error) {
       this.bridge.reportDiagnostic?.(
         `Open Wrangler could not remember confirmed import options for ${source.label}: ${

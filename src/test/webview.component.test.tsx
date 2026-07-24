@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GridPage, SessionMetadata } from "../shared/protocol";
+import type { GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
@@ -772,6 +772,64 @@ describe("App file import options", () => {
     expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
   });
 
+  it("flushes pending grid presentation state before requesting new import options", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("button", { name: "Import options" }));
+
+    const presentationAndImport = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "updateViewState" || message?.kind === "changeImportOptions");
+    expect(presentationAndImport).toHaveLength(2);
+    expect(presentationAndImport[0]).toMatchObject({
+      kind: "updateViewState",
+      state: { columnWidths: { "c:0": 200 } }
+    });
+    expect(presentationAndImport[1]).toEqual({ kind: "changeImportOptions" });
+  });
+
+  it("closes operation UI and blocks host mutation actions while import reconfiguration is pending", async () => {
+    const step: TransformStep = {
+      id: "upper-city",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, steps: [step], revision: 1 },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation" });
+    expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit latest" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    webviewPostMessage.mockClear();
+
+    for (const action of ["openOperation", "editLatest", "applyDraft", "discardDraft", "undoStep"] as const) {
+      dispatchAppMessage({ kind: "editorAction", action });
+    }
+
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull();
+    expect(
+      webviewPostMessage.mock.calls.some(
+        ([message]) => message?.kind === "runtimeRequest" && isMutationRequestKind(message.request?.kind)
+      )
+    ).toBe(false);
+    expect(screen.getByRole("alert")).toHaveTextContent("Wait for the current import-options change to finish.");
+  });
+
   it("restores an accepted mutation without ending the host-owned import transaction", async () => {
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -911,4 +969,8 @@ function outboundImportOptionMessages(): unknown[] {
   return webviewPostMessage.mock.calls
     .map(([message]) => message)
     .filter((message) => message?.kind === "changeImportOptions");
+}
+
+function isMutationRequestKind(value: unknown): boolean {
+  return value === "previewStep" || value === "applyDraft" || value === "discardDraft" || value === "undoStep";
 }
