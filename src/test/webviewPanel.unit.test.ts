@@ -193,6 +193,33 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenLastCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
   });
 
+  it("routes the native import command through the active renderer before starting host reconfiguration", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => opened);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+
+    await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
+
+    expect(harness.posted).toEqual([{ kind: "requestImportOptionsChange" }]);
+    expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
+  });
+
   it("does not let an initially hidden panel replace the active command target", async () => {
     const executeCommand = vi.spyOn(commands, "executeCommand");
     const active = createPanelHarness(
@@ -477,6 +504,52 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(updateViewState).not.toHaveBeenCalled();
     expect(harness.posted.at(-1)).toEqual({ kind: "viewState", state: authoritativeState });
+
+    replacement.resolve(
+      responseForSource(
+        {
+          ...source,
+          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+        },
+        3
+      )
+    );
+    await changing;
+  });
+
+  it("re-publishes the import lock after restoring a recreated renderer", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "sample.csv",
+      path: "/workspace/sample.csv",
+      uri: "file:///workspace/sample.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const initial = responseForSource(source, 2);
+    const replacement = deferred<OpenWranglerResponse>();
+    const reconfigureFileSession = vi.fn(async () => replacement.promise);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => initial),
+        reconfigureFileSession
+      },
+      { source, openResponse: initial }
+    );
+    await harness.open();
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+
+    const changing = harness.receive({ kind: "changeImportOptions" });
+    await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+
+    expect(harness.posted).toContainEqual(initial);
+    expect(harness.posted.at(-1)).toEqual({ kind: "importOptionsState", busy: true });
 
     replacement.resolve(
       responseForSource(
@@ -1585,7 +1658,7 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
   });
 
-  it("drains an accepted foreground request before showing import prompts", async () => {
+  it("shows import prompts before draining an accepted foreground request, then reconfigures from its result", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "sample.csv",
@@ -1620,7 +1693,8 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     const changing = harness.receive({ kind: "changeImportOptions" });
     await vi.waitFor(() => expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true }));
-    expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalled();
+    expect(reconfigureFileSession).not.toHaveBeenCalled();
 
     mutationResponse.resolve({
       kind: "error",

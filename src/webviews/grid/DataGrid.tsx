@@ -31,6 +31,7 @@ interface DataGridProps {
   beforePage?: GridPage;
   beforeSchema?: ColumnSchema[];
   viewControlsDisabled?: boolean;
+  viewControlsDisabledReason?: string;
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onOpenFilter(column: string): void;
@@ -77,6 +78,7 @@ export function DataGrid({
   beforePage,
   beforeSchema,
   viewControlsDisabled = false,
+  viewControlsDisabledReason = "View controls are unavailable while inspecting an applied step.",
   onPage,
   onSortColumn,
   onOpenFilter,
@@ -437,6 +439,7 @@ export function DataGrid({
                   showInsights={showInsights}
                   summary={summaryByColumn.get(column.name)}
                   viewControlsDisabled={viewControlsDisabled}
+                  viewControlsDisabledReason={viewControlsDisabledReason}
                   onOpenFilter={(name) => {
                     reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                     onOpenFilter(name);
@@ -752,6 +755,7 @@ function ColumnHeader({
   showInsights,
   summary,
   viewControlsDisabled,
+  viewControlsDisabledReason,
   onOpenFilter,
   onSortColumn,
   onResize
@@ -764,6 +768,7 @@ function ColumnHeader({
   showInsights: boolean;
   summary: ColumnSummary | undefined;
   viewControlsDisabled: boolean;
+  viewControlsDisabledReason: string;
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onResize(width: number): void;
@@ -771,6 +776,7 @@ function ColumnHeader({
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (viewControlsDisabled) return;
     event.preventDefault();
     const start = event.clientX;
     const move = (moveEvent: PointerEvent) => onResize(Math.max(80, Math.min(640, width + moveEvent.clientX - start)));
@@ -783,6 +789,7 @@ function ColumnHeader({
   };
 
   const resizeWithKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (viewControlsDisabled) return;
     if (event.key === "ArrowLeft") onResize(Math.max(80, width - 10));
     else if (event.key === "ArrowRight") onResize(Math.min(640, width + 10));
     else if (event.key === "Home") onResize(80);
@@ -809,14 +816,14 @@ function ColumnHeader({
           <div className="columnMenuContent">
             {viewControlsDisabled && (
               <span id={disabledDescriptionId} className="columnMenuNotice">
-                View controls are unavailable while inspecting an applied step.
+                {viewControlsDisabledReason}
               </span>
             )}
             <button
               type="button"
               disabled={viewControlsDisabled}
               aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
-              title={viewControlsDisabled ? "Unavailable while inspecting an applied step" : undefined}
+              title={viewControlsDisabled ? viewControlsDisabledReason : undefined}
               onClick={() => onOpenFilter(column.name)}
             >
               Filter…
@@ -827,7 +834,7 @@ function ColumnHeader({
               aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
               title={
                 viewControlsDisabled
-                  ? "Unavailable while inspecting an applied step"
+                  ? viewControlsDisabledReason
                   : comparisonUnavailable
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
@@ -842,7 +849,7 @@ function ColumnHeader({
               aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
               title={
                 viewControlsDisabled
-                  ? "Unavailable while inspecting an applied step"
+                  ? viewControlsDisabledReason
                   : comparisonUnavailable
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
@@ -857,6 +864,9 @@ function ColumnHeader({
           type="button"
           className="columnResizeHandle codicon codicon-gripper"
           aria-label={`Resize ${column.name} column`}
+          disabled={viewControlsDisabled}
+          aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
+          title={viewControlsDisabled ? viewControlsDisabledReason : undefined}
           onPointerDown={beginResize}
           onKeyDown={resizeWithKeyboard}
         />

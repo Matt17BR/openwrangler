@@ -350,6 +350,7 @@ export function App() {
     return Boolean(
       confirmed &&
       confirmed.viewContextId === viewContextId &&
+      !importOptionsPendingRef.current &&
       !stepInspectionTargetRef.current &&
       foregroundRequest.current !== "mutation" &&
       (!pendingPage || pendingPage.viewContextId === confirmed.viewContextId)
@@ -538,6 +539,45 @@ export function App() {
     requestStatsForConfirmedView();
   }, [requestStatsForConfirmedView, restartOwnedSummaryProfiling]);
 
+  const requestImportOptionsChange = useCallback(() => {
+    if (loading || mutationPending || projectionLoading || importOptionsPendingRef.current) return;
+    flushGridViewState();
+    cancelBackgroundRequests();
+    clearDrawerSummaryScheduling();
+    storeImportOptionsPending(true);
+    vscode.postMessage({ kind: "changeImportOptions" });
+  }, [
+    cancelBackgroundRequests,
+    clearDrawerSummaryScheduling,
+    flushGridViewState,
+    loading,
+    mutationPending,
+    projectionLoading,
+    storeImportOptionsPending
+  ]);
+
+  const updateImportOptionsPending = useCallback(
+    (pending: boolean) => {
+      const wasPending = importOptionsPendingRef.current;
+      if (pending) {
+        cancelBackgroundRequests();
+        clearDrawerSummaryScheduling();
+      }
+      storeImportOptionsPending(pending);
+      if (!pending && wasPending && metadataRef.current) {
+        enqueueDrawerSummaryColumns();
+        restartProfilingForConfirmedView();
+      }
+    },
+    [
+      cancelBackgroundRequests,
+      clearDrawerSummaryScheduling,
+      enqueueDrawerSummaryColumns,
+      restartProfilingForConfirmedView,
+      storeImportOptionsPending
+    ]
+  );
+
   const captureConfirmedViewState = useCallback((): ConfirmedViewState | undefined => {
     const currentMetadata = metadataRef.current;
     const currentPage = pageRef.current;
@@ -707,6 +747,7 @@ export function App() {
       event: MessageEvent<
         | OpenWranglerResponse
         | EditorActionMessage
+        | RequestImportOptionsChangeMessage
         | ImportOptionsStateMessage
         | SessionPresentationMessage
         | ViewStateMessage
@@ -716,8 +757,12 @@ export function App() {
     ) => {
       if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "requestImportOptionsChange") {
+        requestImportOptionsChange();
+        return;
+      }
       if (response.kind === "importOptionsState") {
-        storeImportOptionsPending(response.busy);
+        updateImportOptionsPending(response.busy);
         return;
       }
       if (response.kind === "sessionPresentation") {
@@ -860,7 +905,7 @@ export function App() {
             ) {
               foregroundRequest.current = undefined;
               if (pendingPage.reason === "projection") setProjectionLoading(false);
-              else setLoading(false);
+              else setLoading(importOptionsPendingRef.current);
             }
             restoreViewAfterPageFailure(pendingPage);
             storeFailedPageRequest(pendingPage);
@@ -942,7 +987,7 @@ export function App() {
           ) {
             foregroundRequest.current = undefined;
             if (pendingPage.reason === "projection") setProjectionLoading(false);
-            else setLoading(false);
+            else setLoading(importOptionsPendingRef.current);
           }
           restoreViewAfterPageFailure(pendingPage);
           storeFailedPageRequest(pendingPage);
@@ -1005,7 +1050,7 @@ export function App() {
         ) {
           foregroundRequest.current = undefined;
           if (pendingPage.reason === "projection") setProjectionLoading(false);
-          else setLoading(false);
+          else setLoading(importOptionsPendingRef.current);
         }
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
@@ -1044,7 +1089,7 @@ export function App() {
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
-        setLoading(false);
+        setLoading(importOptionsPendingRef.current);
         setProjectionLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
@@ -1158,6 +1203,7 @@ export function App() {
     pruneSummaryOwners,
     releaseBackgroundRequest,
     rememberOperationReturnFocus,
+    requestImportOptionsChange,
     requestStatsForConfirmedView,
     requestStepInspection,
     restartProfilingForConfirmedView,
@@ -1176,7 +1222,8 @@ export function App() {
     storePendingStepInspection,
     storeStepInspection,
     storeStepInspectionTarget,
-    storeSummaries
+    storeSummaries,
+    updateImportOptionsPending
   ]);
 
   const schemaByName = useMemo(
@@ -1219,7 +1266,11 @@ export function App() {
     model = filterModelRef.current,
     options: PageRequestOptions = {}
   ): string | undefined => {
-    if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
+    if (
+      importOptionsPendingRef.current ||
+      foregroundRequest.current === "mutation" ||
+      stepInspectionTargetRef.current
+    ) {
       return undefined;
     }
     const currentMetadata = metadataRef.current;
@@ -1280,7 +1331,7 @@ export function App() {
   };
 
   const requestValues = (column: string, search?: string) => {
-    if (stepInspectionTargetRef.current) return;
+    if (importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
     const confirmed = confirmedView.current;
     if (!currentMetadata?.schema.some((candidate) => candidate.name === column)) return;
@@ -1315,6 +1366,7 @@ export function App() {
   };
 
   const handleVisibleColumnRange = (range: VisibleColumnRange): void => {
+    if (importOptionsPendingRef.current) return;
     if (stepInspectionTargetRef.current) {
       const currentInspection = stepInspectionRef.current;
       const currentMetadata = metadataRef.current;
@@ -1353,7 +1405,11 @@ export function App() {
   };
 
   const applyFilters = (model: FilterModel) => {
-    if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
+    if (
+      importOptionsPendingRef.current ||
+      foregroundRequest.current === "mutation" ||
+      stepInspectionTargetRef.current
+    ) {
       return;
     }
     const pendingPage = latestPageRequest.current;
@@ -1518,13 +1574,6 @@ export function App() {
     });
   };
 
-  const changeImportOptions = () => {
-    if (loading || mutationPending || projectionLoading || importOptionsPending) return;
-    flushGridViewState();
-    storeImportOptionsPending(true);
-    vscode.postMessage({ kind: "changeImportOptions" });
-  };
-
   const closeSidePanel = () => {
     sidePanelOpenRef.current = false;
     setSidePanelOpen(false);
@@ -1560,7 +1609,7 @@ export function App() {
               disabled={importOptionsDisabled}
               aria-busy={importOptionsPending || undefined}
               title="Change file import options"
-              onClick={changeImportOptions}
+              onClick={requestImportOptionsChange}
             >
               <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
             </button>
@@ -1601,7 +1650,7 @@ export function App() {
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
                   title="Change file import options"
-                  onClick={changeImportOptions}
+                  onClick={requestImportOptionsChange}
                 >
                   <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
                 </button>
@@ -1626,7 +1675,7 @@ export function App() {
                 type="button"
                 className="toolbarButton"
                 aria-expanded={sidePanelOpen}
-                disabled={inspectionMode}
+                disabled={inspectionMode || importOptionsPending}
                 title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
                 onClick={(event) => {
                   if (sidePanelOpenRef.current) {
@@ -1839,7 +1888,10 @@ export function App() {
                 diff={stepInspection?.diff ?? (metadata?.draftStep ? diff : undefined)}
                 beforePage={stepInspection?.inputPage ?? draftBefore?.page}
                 beforeSchema={stepInspection?.inputSchema ?? draftBefore?.schema}
-                viewControlsDisabled={inspectionMode}
+                viewControlsDisabled={inspectionMode || importOptionsPending}
+                viewControlsDisabledReason={
+                  importOptionsPending ? "View controls are unavailable while import options are changing." : undefined
+                }
                 onSortColumn={(column, direction) =>
                   inspectionMode
                     ? undefined
@@ -1862,7 +1914,7 @@ export function App() {
                 }}
                 onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
                 onVisibleColumnRangeChange={handleVisibleColumnRange}
-                onViewStateChange={inspectionMode ? () => undefined : publishGridViewState}
+                onViewStateChange={inspectionMode || importOptionsPending ? () => undefined : publishGridViewState}
               />
             ) : (
               <div className="emptyState">
@@ -1889,7 +1941,7 @@ export function App() {
                 values={columnValues}
                 activeColumn={filterColumn}
                 defaultAdvanced={webviewConfig.filterMode === "advanced"}
-                disabled={mutationPending}
+                disabled={mutationPending || importOptionsPending}
                 onApply={applyFilters}
                 onRequestValues={requestValues}
               />
@@ -1960,6 +2012,10 @@ interface EditorActionMessage {
   action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
+}
+
+interface RequestImportOptionsChangeMessage {
+  kind: "requestImportOptionsChange";
 }
 
 interface ImportOptionsStateMessage {

@@ -92,8 +92,7 @@ export class OpenWranglerPanel {
   static async changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
     if (!active?.panel.active || !canChangeImportOptions(active.source)) return false;
-    await active.enqueueImportOptionsChange();
-    return true;
+    return active.panel.webview.postMessage({ kind: "requestImportOptionsChange" });
   }
 
   static create(
@@ -211,13 +210,16 @@ export class OpenWranglerPanel {
         await this.postSessionPresentation();
         await this.postViewState();
         this.unpublishedAuthoritativeSnapshot = false;
+        await this.postImportOptionsBusyState();
         return;
       }
       if (this.openResponse) {
         await this.post(this.openResponse);
+        await this.postImportOptionsBusyState();
         return;
       }
       await this.open();
+      await this.postImportOptionsBusyState();
       return;
     }
 
@@ -315,15 +317,6 @@ export class OpenWranglerPanel {
       if (announceBusy) {
         await this.panel.webview.postMessage({ kind: "importOptionsState", busy: true });
       }
-      if (this.sessionId) {
-        await this.drainForwardedRequests();
-        if (this.disposed || generation !== this.openAttemptGeneration) return;
-        if (cancellation.token.isCancellationRequested) {
-          await this.postUnpublishedAuthoritativeSnapshot();
-          await this.post(reconfigurationCancelledResponse());
-          return;
-        }
-      }
       const uri = fileSourceUri(this.source);
       if (!uri) {
         await this.postUnpublishedAuthoritativeSnapshot();
@@ -353,6 +346,15 @@ export class OpenWranglerPanel {
         await this.postUnpublishedAuthoritativeSnapshot();
         await this.post(reconfigurationCancelledResponse());
         return;
+      }
+      if (this.sessionId) {
+        await this.drainForwardedRequests();
+        if (this.disposed || generation !== this.openAttemptGeneration) return;
+        if (cancellation.token.isCancellationRequested) {
+          await this.postUnpublishedAuthoritativeSnapshot();
+          await this.post(reconfigurationCancelledResponse());
+          return;
+        }
       }
 
       const nextSource: SessionSource = {
@@ -647,6 +649,12 @@ export class OpenWranglerPanel {
     if (!this.sessionId) return;
     const state = this.bridge.getViewState?.(this.sessionId);
     if (state) await this.panel.webview.postMessage({ kind: "viewState", state });
+  }
+
+  private async postImportOptionsBusyState(): Promise<void> {
+    if (this.changingImportOptions) {
+      await this.panel.webview.postMessage({ kind: "importOptionsState", busy: true });
+    }
   }
 
   private async postSessionPresentation(): Promise<void> {

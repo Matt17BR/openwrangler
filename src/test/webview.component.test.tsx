@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
@@ -790,6 +790,102 @@ describe("App file import options", () => {
       state: { columnWidths: { "c:0": 200 } }
     });
     expect(presentationAndImport[1]).toEqual({ kind: "changeImportOptions" });
+  });
+
+  it("routes a native import request through the renderer flush, cancellation, and busy barrier", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    await waitFor(() =>
+      expect(
+        webviewPostMessage.mock.calls.some(
+          ([message]) => message?.kind === "runtimeRequest" && message.request?.kind === "getSummary"
+        )
+      ).toBe(true)
+    );
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "requestImportOptionsChange" });
+
+    const orderedMessages = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter(
+        (message) =>
+          message?.kind === "updateViewState" ||
+          message?.kind === "cancelViewRequests" ||
+          message?.kind === "changeImportOptions"
+      );
+    expect(orderedMessages).toHaveLength(3);
+    expect(orderedMessages[0]).toMatchObject({
+      kind: "updateViewState",
+      state: { columnWidths: { "c:0": 200 } }
+    });
+    expect(orderedMessages[1]).toMatchObject({
+      kind: "cancelViewRequests",
+      viewRequestIds: expect.arrayContaining([expect.any(String)])
+    });
+    expect(orderedMessages[2]).toEqual({ kind: "changeImportOptions" });
+    expect(screen.getByRole("button", { name: "Import options" })).toBeDisabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("keeps grid and filter view controls locked for the complete import transaction", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    expect(cityHeader).not.toBeNull();
+    const cityControls = within(cityHeader!);
+    fireEvent.click(cityControls.getByLabelText("Column actions for city"));
+
+    expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Sort ascending" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeEnabled();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+
+    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeDisabled();
+    expect(cityControls.getByRole("button", { name: "Filter…" })).toBeDisabled();
+    expect(cityControls.getByRole("button", { name: "Sort ascending" })).toBeDisabled();
+    expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeDisabled();
+    expect(cityControls.getByText("View controls are unavailable while import options are changing.")).toBeVisible();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+  });
+
+  it("keeps the grid loading when a drained cleaning completion lands during import reconfiguration", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({
+      kind: "planUpdated",
+      revision: 1,
+      metadata: { ...metadata, revision: 1 },
+      page,
+      code: "frame"
+    });
+
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Import options" })).toHaveAttribute("aria-busy", "true");
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("button", { name: "Import options" })).not.toHaveAttribute("aria-busy");
   });
 
   it("closes operation UI and blocks host mutation actions while import reconfiguration is pending", async () => {
