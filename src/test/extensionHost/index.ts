@@ -990,7 +990,19 @@ async function acceptDefaultDelimitedImport(page: Page, testing: TestApi, expect
   const field = quoteInput.locator(".quick-input-box input").first();
   await field.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await field.inputValue(), '"');
-  await field.press("Enter");
+  assert.equal(
+    await field.evaluate((element) => element === element.ownerDocument.activeElement),
+    true,
+    "Quote character must own keyboard focus before accepting its default value."
+  );
+  await page.keyboard.press("Enter");
+  try {
+    await quoteInput.waitFor({ state: "hidden", timeout: 3_000 });
+  } catch (error) {
+    throw new Error("Quote character did not advance after accepting its focused default value with Enter.", {
+      cause: error
+    });
+  }
 }
 
 async function waitForImportQuickInput(
