@@ -4430,6 +4430,18 @@ async function waitForOpenWranglerWebviewButton(page: Page, name: string): Promi
   );
 }
 
+async function waitForOpenWranglerWebviewButtonEnabled(page: Page, name: string): Promise<Locator> {
+  const button = await waitForOpenWranglerWebviewButton(page, name);
+  const started = Date.now();
+  while (!(await button.isEnabled().catch(() => false))) {
+    if (Date.now() - started > WORKBENCH_OPERATION_TIMEOUT_MS) {
+      throw new Error(`Timed out waiting for the Open Wrangler ${JSON.stringify(name)} button to become enabled.`);
+    }
+    await page.waitForTimeout(50);
+  }
+  return button;
+}
+
 async function exerciseLiveImportReconfiguration(
   testing: TestApi,
   directory: string,
@@ -4506,6 +4518,10 @@ async function exerciseLiveImportReconfiguration(
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the live CSV session to atomically adopt its semicolon import options"
   );
+  // The test API can observe replacement metadata while the coordinator is
+  // still persisting it. The renderer leaves busy mode only after the
+  // reconfiguration barrier has released, which is the user-visible commit.
+  await waitForOpenWranglerWebviewButtonEnabled(page, "Import options");
 
   const changed = testing.activeSession();
   assert.ok(changed, "The reconfigured CSV must remain active.");
