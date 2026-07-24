@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 import pytest
@@ -31,10 +31,12 @@ class TrackedEngine(PandasEngine):
         self.prepare_error = prepare_error
         self.close_error = close_error
         self.prepared = False
+        self.prepared_source: Mapping[str, Any] | None = None
         self.closed = False
 
-    def prepare(self) -> None:
+    def prepare(self, source: Mapping[str, Any] | None = None) -> None:
         self.prepared = True
+        self.prepared_source = source
         if self.prepare_error is not None:
             raise self.prepare_error
 
@@ -108,10 +110,12 @@ def test_create_preserves_throwing_factory_diagnostic() -> None:
 def test_prepare_owns_and_closes_a_transient_adapter() -> None:
     engine = TrackedEngine("prepared", True)
     registry = EngineRegistry((("prepared", factory(engine)),))
+    source = {"kind": "file", "path": "sample.csv"}
 
-    registry.prepare("prepared")
+    registry.prepare("prepared", source)
 
     assert engine.prepared
+    assert engine.prepared_source == source
     assert engine.closed
 
 
@@ -162,6 +166,7 @@ def test_file_backend_preparation_uses_the_automatic_polars_default() -> None:
     manager.prepare_backend({"kind": "file"}, None)
 
     assert polars.prepared
+    assert polars.prepared_source == {"kind": "file"}
     assert polars.closed
     assert not pandas.prepared
     assert not pandas.closed
@@ -176,6 +181,7 @@ def test_explicit_backend_preparation_overrides_the_file_default() -> None:
     assert not polars.prepared
     assert not polars.closed
     assert pandas.prepared
+    assert pandas.prepared_source == {"kind": "file"}
     assert pandas.closed
 
 
