@@ -564,6 +564,7 @@ export class SessionCoordinator implements vscode.Disposable {
     session.reconfiguring = true;
     this.cancelQueuedBackgroundOperations(session);
     this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    let replacementPublished = false;
     try {
       await this.waitForSessionIdle(session);
       if (!this.isLiveSession(session) || session.closing) {
@@ -585,11 +586,21 @@ export class SessionCoordinator implements vscode.Disposable {
         );
       }
       if (options?.cancellation?.isCancellationRequested) return reconfigurationCancelled(session.publicId);
-      return await this.serializeSessionEstablishment(delegate, () =>
+      const response = await this.serializeSessionEstablishment(delegate, () =>
         this.reconfigureFileSessionExclusive(session, source, options)
       );
+      replacementPublished = response.kind === "sessionOpened";
+      return response;
     } finally {
       session.reconfiguring = false;
+      if (
+        replacementPublished &&
+        this.isLiveSession(session) &&
+        !session.closing &&
+        this.activeSessionId === session.publicId
+      ) {
+        this.activeSessionEmitter.fire(activeSnapshot(session));
+      }
       const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
       if (remaining > 0) this.pendingOpens.set(delegate, remaining);
       else this.pendingOpens.delete(delegate);
@@ -803,7 +814,6 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     const publicRevision = session.publicRevision + 1;
-    const wasActive = this.activeSessionId === session.publicId;
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
     session.publicRevision = publicRevision;
@@ -819,7 +829,6 @@ export class SessionCoordinator implements vscode.Disposable {
     this.invalidateStepInspection(session);
     candidateCleanupAttempted = true;
     candidate = undefined;
-    if (wasActive) this.activeSessionEmitter.fire(activeSnapshot(session));
     this.trackDetachedCleanup(previous, "retired runtime");
     await this.persistSession(session);
     return publicOpenedResponse(

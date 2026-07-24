@@ -60,6 +60,45 @@ const savedFilter: FilterModel = {
 };
 
 describe("SessionCoordinator file-session reconfiguration", () => {
+  it("releases the reconfiguration barrier before publishing the replacement snapshot", async () => {
+    const delegate = simpleReconfiguringDelegate("runtime-old");
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegate.request });
+    const opened = await open(bridge, initialSource);
+    let publicationUpdate: Promise<void> | undefined;
+    const subscription = coordinator.onDidChangeActiveSession((snapshot) => {
+      if (
+        publicationUpdate ||
+        snapshot?.sessionId !== opened.metadata.sessionId ||
+        snapshot.metadata.source.importOptions?.delimiter !== replacementSource.importOptions?.delimiter
+      ) {
+        return;
+      }
+      publicationUpdate =
+        bridge.updateViewState?.(snapshot.sessionId, {
+          selectedColumnId: "c:value",
+          columnWidths: { "c:value": 247 },
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }) ?? Promise.resolve();
+    });
+
+    const response = await bridge.reconfigureFileSession!(
+      opened.metadata.sessionId,
+      opened.metadata.revision,
+      replacementSource
+    );
+    subscription.dispose();
+
+    expect(response.kind).toBe("sessionOpened");
+    expect(publicationUpdate).toBeDefined();
+    await publicationUpdate;
+    expect(coordinator.activeSession()?.viewState).toMatchObject({
+      selectedColumnId: "c:value",
+      columnWidths: { "c:value": 247 },
+      viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+    });
+  });
+
   it("atomically keeps the public identity while replaying cleaning and viewing state on a new backend", async () => {
     const requests: Array<{ request: OpenWranglerRequest; options?: BridgeRequestOptions }> = [];
     const initialMetadata = metadataFor({
