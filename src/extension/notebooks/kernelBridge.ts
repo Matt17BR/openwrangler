@@ -51,7 +51,7 @@ export class KernelBridge implements OpenWranglerBridge {
     if (request.kind === "closeSession") {
       const kernel = this.sessionKernels.get(request.sessionId);
       if (kernel) return this.closeMappedSession(request, kernel, options);
-      if (this.retiredSessionIds.has(request.sessionId)) {
+      if (this.retiredSessionIds.has(request.sessionId) || options.startRuntimeIfNeeded === false) {
         return {
           kind: "error",
           code: "unknown_session",

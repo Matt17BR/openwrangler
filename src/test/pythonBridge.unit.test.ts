@@ -114,6 +114,28 @@ describe("PythonBridge cancellation", () => {
     expect(harness.writes()).toEqual([]);
   });
 
+  it("does not start a stopped runtime for candidate cleanup", async () => {
+    const harness = createHarness();
+    (harness.bridge as unknown as { process?: ChildProcessWithoutNullStreams }).process = undefined;
+
+    await expect(
+      harness.bridge.request(
+        {
+          kind: "closeSession",
+          sessionId: "candidate-session",
+          revision: 0
+        },
+        { startRuntimeIfNeeded: false }
+      )
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session"
+    });
+
+    expect(harness.ensureProcess).not.toHaveBeenCalled();
+    expect(harness.writes()).toEqual([]);
+  });
+
   it("handles synchronous cancellation subscription without dispatching or leaking the listener", async () => {
     const dispose = vi.fn();
     const token: CancellationTokenLike = {
@@ -847,6 +869,84 @@ describe("PythonBridge environment resource selection", () => {
     vi.mocked(pythonEnvironment.probeDependencies).mockReset();
   });
 
+  it("tries DuckDB then Pandas for an automatic multibyte-delimiter import without probing Polars", async () => {
+    const source = { ...remoteFileSource(), importOptions: { delimiter: "§" } };
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies)
+      .mockResolvedValueOnce({ missing: ["duckdb>=1.4.5,<1.6"], available: [] })
+      .mockResolvedValueOnce({ missing: [], available: ["pandas"] });
+
+    await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "pandas"
+    });
+
+    expect(
+      vi
+        .mocked(pythonEnvironment.probeDependencies)
+        .mock.calls.map(([, dependencies]) => dependencies.map((dependency) => dependency.importModule))
+    ).toEqual([["duckdb"], ["pandas"]]);
+  });
+
+  it("probes only Pandas for an automatic multibyte-quote import", async () => {
+    const source = { ...remoteFileSource(), importOptions: { quoteChar: "“" } };
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["pandas"] });
+
+    await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "pandas"
+    });
+
+    expect(
+      vi
+        .mocked(pythonEnvironment.probeDependencies)
+        .mock.calls.map(([, dependencies]) => dependencies.map((dependency) => dependency.importModule))
+    ).toEqual([["pandas"]]);
+  });
+
+  it.each([
+    {
+      backend: "polars" as const,
+      importOptions: { delimiter: "§" },
+      option: "delimiter",
+      alternative: "DuckDB or Pandas"
+    },
+    {
+      backend: "polars" as const,
+      importOptions: { quoteChar: "“" },
+      option: "quote character",
+      alternative: "Pandas"
+    },
+    {
+      backend: "duckdb" as const,
+      importOptions: { quoteChar: "“" },
+      option: "quote character",
+      alternative: "Pandas"
+    }
+  ])(
+    "rejects an explicit $backend backend with a multibyte $option before probing or process startup",
+    async ({ backend, importOptions, option, alternative }) => {
+      const source = { ...remoteFileSource(), importOptions };
+      const { bridge, internals } = createEnvironmentHarness();
+      const ensureProcess = vi.spyOn(internals, "ensureProcess");
+
+      await expect(bridge.request({ ...openSessionRequest(source), backend })).resolves.toMatchObject({
+        kind: "error",
+        code: "unsupported_import_options",
+        message: expect.stringContaining(option),
+        detail: expect.stringContaining(alternative),
+        recoverable: true
+      });
+
+      expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+      expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+      expect(ensureProcess).not.toHaveBeenCalled();
+    }
+  );
+
   it("passes the exact remote source URI to dependency preparation without rebuilding it as file://", async () => {
     const source = remoteFileSource();
     const { context, internals } = createEnvironmentHarness();
@@ -1093,6 +1193,7 @@ interface EnvironmentBridgeInternals {
   lastMissingDependencies: TestMissingDependencies | undefined;
   selectionEpoch: number;
   clearRuntimeSelection(): void;
+  ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
   prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
   startProcess(request: OpenWranglerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams>;
 }
@@ -1127,6 +1228,7 @@ interface TestProgressWindow {
 }
 
 function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
+  bridge: PythonBridge;
   context: vscode.ExtensionContext;
   internals: EnvironmentBridgeInternals;
 } {
@@ -1148,7 +1250,7 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     cancellationTargets: new Map<string, string>(),
     output: { appendLine: vi.fn() }
   });
-  return { context, internals: bridge as unknown as EnvironmentBridgeInternals };
+  return { bridge, context, internals: bridge as unknown as EnvironmentBridgeInternals };
 }
 
 function createDependencyHarness(execute: () => Promise<unknown> = async () => undefined): {
@@ -1200,11 +1302,22 @@ function remoteFileSource(): SessionSource {
   };
 }
 
-function openSessionRequest(source: SessionSource): OpenWranglerRequest {
+function openSessionRequest(source: SessionSource): Extract<OpenWranglerRequest, { kind: "openSession" }> {
   return {
     kind: "openSession",
     source,
     backend: "polars",
+    mode: "editing",
+    pageSize: 100,
+    columnOffset: 0,
+    columnLimit: 16
+  };
+}
+
+function automaticOpenSessionRequest(source: SessionSource): Extract<OpenWranglerRequest, { kind: "openSession" }> {
+  return {
+    kind: "openSession",
+    source,
     mode: "editing",
     pageSize: 100,
     columnOffset: 0,

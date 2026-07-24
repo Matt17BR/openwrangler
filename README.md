@@ -7,14 +7,15 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 > Open Wrangler is an active preview. The core viewing and editing workflows work today, but the [1.0 parity matrix](docs/feature-parity.md) still has release gates to close.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/editor-acceptance/vscode-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/editor-acceptance/vscode-light.png">
-  <img alt="Open Wrangler running in VS Code" src="docs/images/editor-acceptance/vscode-dark.png">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-light.png">
+  <img alt="Open Wrangler running in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
 </picture>
 
 ## What it does
 
 - Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor tab, editor title bar, or Command Palette.
+- Changes CSV, TSV, and Excel import options without losing the current cleaning plan or view.
 - Pages through wide and large datasets with row and column virtualization, typed values, keyboard navigation, column search, and progressive insights.
 - Keeps filters and sorts separate from cleaning steps, so exploration never silently changes exported results.
 - Previews every transformation as a data diff with editable, backend-native Python before you apply it.

@@ -34,3 +34,56 @@ export function inspectVsixEntries(entries) {
     missing: requiredVsixEntries.filter((entry) => !entries.includes(entry))
   };
 }
+
+function isAbsoluteHttpsUrl(value) {
+  if (!/^https:\/\//u.test(value)) {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function inspectReadmeSourceSrcsets(readme) {
+  const problems = [];
+  const sourceTags = [...readme.matchAll(/<source(?=\s|\/?>)[^>]*>/giu)].map((match) => match[0]);
+
+  for (const [sourceIndex, sourceTag] of sourceTags.entries()) {
+    const label = `README source ${sourceIndex + 1}`;
+    const srcsetNames = [...sourceTag.matchAll(/\ssrcset(?=\s|=|\/?>)/giu)];
+    if (srcsetNames.length === 0) {
+      problems.push(`${label} is missing srcset.`);
+      continue;
+    }
+    if (srcsetNames.length !== 1) {
+      problems.push(`${label} must contain exactly one srcset attribute.`);
+      continue;
+    }
+
+    const quotedSrcsets = [...sourceTag.matchAll(/\ssrcset\s*=\s*(["'])(.*?)\1(?=\s|\/?>)/gisu)];
+    if (quotedSrcsets.length !== 1) {
+      problems.push(`${label} srcset must be quoted.`);
+      continue;
+    }
+
+    const srcset = quotedSrcsets[0]?.[2]?.trim() ?? "";
+    const candidates = srcset.split(",").map((candidate) => candidate.trim());
+    if (candidates.length === 0 || candidates.some((candidate) => candidate.length === 0)) {
+      problems.push(`${label} srcset must contain only non-empty candidates.`);
+      continue;
+    }
+
+    for (const [candidateIndex, candidate] of candidates.entries()) {
+      const [candidateUrl] = candidate.split(/\s+/u);
+      if (!candidateUrl || !isAbsoluteHttpsUrl(candidateUrl)) {
+        problems.push(`${label} srcset candidate ${candidateIndex + 1} must use an absolute HTTPS URL.`);
+      }
+    }
+  }
+
+  return problems;
+}

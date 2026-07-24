@@ -24,6 +24,7 @@ import {
   resolvePythonEnvironment,
   type PythonEnvironment
 } from "./pythonEnvironment";
+import { backendImportCapabilityFailure } from "./pythonEnvironmentModel";
 import { stopChildProcessGracefully } from "./processShutdown";
 
 interface PendingRequest {
@@ -103,6 +104,19 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     if (options.cancellation?.isCancellationRequested) {
       return { kind: "cancelled", targetRequestId: "not-started" };
+    }
+    if (
+      request.kind === "closeSession" &&
+      options.startRuntimeIfNeeded === false &&
+      !this.process &&
+      !this.processStart
+    ) {
+      return {
+        kind: "error",
+        code: "unknown_session",
+        message: `Open Wrangler runtime session ${request.sessionId} is not available.`,
+        recoverable: true
+      };
     }
 
     const selectionEpoch =
@@ -621,6 +635,19 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
     if (request.kind !== "openSession" || request.source.kind !== "file") return request;
+    if (request.backend) {
+      const capabilityFailure = backendImportCapabilityFailure(request.backend, request.source);
+      if (capabilityFailure) {
+        this.lastMissingDependencies = undefined;
+        return {
+          kind: "error",
+          code: "unsupported_import_options",
+          message: capabilityFailure.message,
+          detail: capabilityFailure.detail,
+          recoverable: true
+        };
+      }
+    }
     const selectionEpoch = this.selectionEpoch;
     const environment = await this.environment(sourceResource(request.source));
     if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();

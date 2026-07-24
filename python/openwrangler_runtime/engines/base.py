@@ -31,9 +31,14 @@ ColumnType = Literal[
 EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
 PageColumnProjection = Sequence[tuple[int, str]]
+ExcelSheetSelector = tuple[Literal["sheetName"], str] | tuple[Literal["sheetIndex"], int]
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
 _INTERNAL_ROW_ID_PREFIX_CASEFOLD = INTERNAL_ROW_ID_PREFIX.casefold()
+_IMPORT_OPTION_TRIM_CHARACTERS = (
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
+    "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 DEFAULT_STRIP_CHARACTERS = (
     " \t\n\r\v\f"
     "\x1c\x1d\x1e\x1f"
@@ -433,6 +438,31 @@ def is_internal_row_id_label(value: Any) -> bool:
 
 class EngineError(RuntimeError):
     """Raised when a backend cannot satisfy an Open Wrangler request."""
+
+
+def resolve_excel_sheet_selector(options: Mapping[str, Any]) -> ExcelSheetSelector:
+    """Validate and resolve the one public Excel sheet selector."""
+
+    if "sheet" in options:
+        raise EngineError("Excel import option 'sheet' is unsupported; use sheetName or sheetIndex.")
+    if "sheetName" in options and "sheetIndex" in options:
+        raise EngineError("Excel import options must contain only one of sheetName or sheetIndex.")
+    if "sheetName" in options:
+        sheet_name = options["sheetName"]
+        if not isinstance(sheet_name, str) or not sheet_name.strip(_IMPORT_OPTION_TRIM_CHARACTERS):
+            raise EngineError("Excel import option sheetName must be a non-empty string.")
+        return ("sheetName", sheet_name)
+    if "sheetIndex" in options:
+        sheet_index = options["sheetIndex"]
+        if (
+            not isinstance(sheet_index, int)
+            or isinstance(sheet_index, bool)
+            or sheet_index < 0
+            or sheet_index > 9_007_199_254_740_991
+        ):
+            raise EngineError("Excel import option sheetIndex must be a non-negative safe integer.")
+        return ("sheetIndex", sheet_index)
+    return ("sheetIndex", 0)
 
 
 @dataclass(frozen=True, slots=True)

@@ -40,6 +40,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
+  const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [goToColumn, setGoToColumn] = useState("");
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
@@ -83,6 +84,7 @@ export function App() {
   const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
+  const importOptionsPendingRef = useRef(false);
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
@@ -177,6 +179,14 @@ export function App() {
   const storeGridViewState = useCallback((next: GridViewState) => {
     gridViewStateRef.current = next;
     setGridViewState(next);
+  }, []);
+
+  const storeImportOptionsPending = useCallback((pending: boolean) => {
+    const wasPending = importOptionsPendingRef.current;
+    importOptionsPendingRef.current = pending;
+    setImportOptionsPending(pending);
+    if (pending) setLoading(true);
+    else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
   }, []);
 
   const flushGridViewState = useCallback(() => {
@@ -689,6 +699,8 @@ export function App() {
       event: MessageEvent<
         | OpenWranglerResponse
         | EditorActionMessage
+        | ImportOptionsStateMessage
+        | SessionPresentationMessage
         | ViewStateMessage
         | StepInspectionResultMessage
         | StepInspectionClearedMessage
@@ -696,6 +708,25 @@ export function App() {
     ) => {
       if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "importOptionsState") {
+        storeImportOptionsPending(response.busy);
+        return;
+      }
+      if (response.kind === "sessionPresentation") {
+        const current = metadataRef.current;
+        if (
+          !current ||
+          response.presentation.sessionId !== current.sessionId ||
+          response.presentation.revision !== current.revision
+        ) {
+          return;
+        }
+        setGeneratedCode(response.presentation.code);
+        setDiff(response.presentation.draft?.diff);
+        setDraftBefore(response.presentation.draft ? { schema: response.presentation.draft.beforeSchema } : undefined);
+        setDraftWarnings(response.presentation.draft?.warnings ?? []);
+        return;
+      }
       if (response.kind === "stepInspectionCleared") {
         if (stepInspectionTargetRef.current || pendingStepInspectionRef.current || stepInspectionRef.current) {
           clearStepInspection(false, response.resumeProfiling);
@@ -851,6 +882,9 @@ export function App() {
           setLoading(false);
           setProjectionLoading(false);
           if (previous) restoreConfirmedViewState(previous);
+        } else if (importOptionsPendingRef.current) {
+          setForegroundError(response.message);
+          return;
         } else if (!metadataRef.current) {
           setLoading(false);
           setProjectionLoading(false);
@@ -861,6 +895,13 @@ export function App() {
 
       if (response.kind === "cancelled") {
         if (!response.viewRequestId) {
+          if (
+            importOptionsPendingRef.current &&
+            (response.targetRequestId === "change-import-options" ||
+              response.targetRequestId.startsWith("reconfigure-import:"))
+          ) {
+            return;
+          }
           const shouldRestoreMutation = foregroundRequest.current === "mutation";
           if (shouldRestoreMutation) {
             const previous = mutationSnapshot.current;
@@ -871,6 +912,8 @@ export function App() {
             setProjectionLoading(false);
             if (previous) restoreConfirmedViewState(previous);
             setForegroundError("The cleaning operation was cancelled.");
+          } else if (importOptionsPendingRef.current) {
+            return;
           } else if (!metadataRef.current) {
             setLoading(false);
             setProjectionLoading(false);
@@ -905,6 +948,7 @@ export function App() {
       }
 
       if (response.kind === "sessionOpened") {
+        storeImportOptionsPending(false);
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -920,6 +964,8 @@ export function App() {
         setStepInspectionError(undefined);
         setDraftBefore(undefined);
         setDiff(undefined);
+        setGeneratedCode("");
+        setDraftWarnings([]);
         resetViewProfiling();
         summaryOwnersByColumn.current.clear();
         confirmView(response.metadata, nextViewRequestId());
@@ -1109,6 +1155,7 @@ export function App() {
     storeFailedPageRequest,
     storeFilterModel,
     storeGridViewState,
+    storeImportOptionsPending,
     storeMetadata,
     storePage,
     storePendingStepInspection,
@@ -1448,6 +1495,12 @@ export function App() {
     });
   };
 
+  const changeImportOptions = () => {
+    if (loading || mutationPending || projectionLoading || importOptionsPending) return;
+    storeImportOptionsPending(true);
+    vscode.postMessage({ kind: "changeImportOptions" });
+  };
+
   const closeSidePanel = () => {
     sidePanelOpenRef.current = false;
     setSidePanelOpen(false);
@@ -1468,12 +1521,32 @@ export function App() {
   const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
+  const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
 
   if (foregroundError && !metadata) {
     return (
       <main className="app app-error">
         <h1>Open Wrangler</h1>
         <p role="alert">{foregroundError}</p>
+        {webviewConfig.canChangeImportOptions && (
+          <>
+            <button
+              type="button"
+              className="toolbarButton"
+              disabled={importOptionsDisabled}
+              aria-busy={importOptionsPending || undefined}
+              title="Change file import options"
+              onClick={changeImportOptions}
+            >
+              <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
+            </button>
+            {importOptionsPending && (
+              <span className="importOptionsStatus" role="status" aria-live="polite">
+                Updating import options…
+              </span>
+            )}
+          </>
+        )}
       </main>
     );
   }
@@ -1497,6 +1570,18 @@ export function App() {
           </div>
           {metadata && (
             <div className="toolbarActions">
+              {metadata.source.kind === "file" && webviewConfig.canChangeImportOptions && (
+                <button
+                  type="button"
+                  className="toolbarButton"
+                  disabled={importOptionsDisabled}
+                  aria-busy={importOptionsPending || undefined}
+                  title="Change file import options"
+                  onClick={changeImportOptions}
+                >
+                  <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
+                </button>
+              )}
               {metadata.mode === "editing" && (
                 <button
                   type="button"
@@ -1853,6 +1938,25 @@ interface EditorActionMessage {
   stepId?: string;
 }
 
+interface ImportOptionsStateMessage {
+  kind: "importOptionsState";
+  busy: boolean;
+}
+
+interface SessionPresentationMessage {
+  kind: "sessionPresentation";
+  presentation: {
+    sessionId: string;
+    revision: number;
+    code: string;
+    draft?: {
+      diff: DataDiff;
+      warnings: string[];
+      beforeSchema: ColumnSchema[];
+    };
+  };
+}
+
 interface ViewStateMessage {
   kind: "viewState";
   state: unknown;
@@ -2047,6 +2151,7 @@ function readWebviewConfig(): {
   defaultColumnWidth: number;
   insightsOnOpen: boolean;
   filterMode: "basic" | "advanced";
+  canChangeImportOptions: boolean;
 } {
   const fetchBlockSize = Number(document.body.dataset.fetchBlockSize ?? 200);
   const fetchColumnBlockSize = Number(document.body.dataset.fetchColumnBlockSize ?? 16);
@@ -2058,6 +2163,7 @@ function readWebviewConfig(): {
       : 16,
     defaultColumnWidth: Number.isFinite(defaultColumnWidth) ? Math.max(80, Math.min(640, defaultColumnWidth)) : 190,
     insightsOnOpen: document.body.dataset.insightsOnOpen !== "false",
-    filterMode: document.body.dataset.filterMode === "advanced" ? "advanced" : "basic"
+    filterMode: document.body.dataset.filterMode === "advanced" ? "advanced" : "basic",
+    canChangeImportOptions: document.body.dataset.canChangeImportOptions === "true"
   };
 }

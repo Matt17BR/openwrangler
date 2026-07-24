@@ -1891,6 +1891,11 @@ export function writeEditorAcceptanceHarness(directory) {
       engines: { vscode: "^1.105.0" },
       main: "./extension.js",
       activationEvents: ["*"],
+      capabilities: {
+        untrustedWorkspaces: {
+          supported: true
+        }
+      },
       contributes: {
         customEditors: [
           {
@@ -2230,6 +2235,7 @@ export async function runEditorAcceptancePhase(
     python,
     phase,
     resultPath,
+    workspaceTrust = "trusted",
     runId = randomUUID(),
     progressPath = editorAcceptanceProgressPath(resultPath, runId, phase)
   },
@@ -2248,6 +2254,9 @@ export async function runEditorAcceptancePhase(
     reserveDebugPort = reserveEditorDebugPort
   } = {}
 ) {
+  if (workspaceTrust !== "trusted" && workspaceTrust !== "restricted") {
+    throw new Error('An editor acceptance phase workspace-trust mode must be "trusted" or "restricted".');
+  }
   const expectedProgressPath = editorAcceptanceProgressPath(resultPath, runId, phase);
   if (progressPath !== expectedProgressPath) {
     throw new Error("An editor acceptance progress path must be the unique path derived for its run and phase.");
@@ -2425,7 +2434,7 @@ export async function runEditorAcceptancePhase(
         "--extensions-dir",
         extensions,
         ...sharedDataArgs,
-        "--disable-workspace-trust",
+        ...(workspaceTrust === "trusted" ? ["--disable-workspace-trust"] : []),
         "--skip-welcome",
         "--skip-release-notes",
         ...(editor.key === "cursor" ? ["--skip-onboarding"] : []),

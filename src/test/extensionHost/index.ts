@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
 import { chromium, type Locator, type Page } from "playwright-core";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
@@ -210,6 +211,7 @@ export async function run(): Promise<void> {
   for (const command of [
     "openWrangler.openPath",
     "openWrangler.openFile",
+    "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
     "openWrangler.checkJupyterIntegration",
@@ -263,7 +265,8 @@ export async function run(): Promise<void> {
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
   assert.ok(enabledFileTypes?.default?.includes("xls"));
   assert.deepEqual(contributions.configurationDefaults?.["cursor.general.pinnedTitleActions"], [
-    "openWrangler.openFile"
+    "openWrangler.openFile",
+    "openWrangler.changeImportOptions"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
@@ -271,6 +274,15 @@ export async function run(): Promise<void> {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
       icon: "$(open-preview)"
+    }
+  );
+  assert.deepEqual(
+    contributions.commands?.find((command) => command.command === "openWrangler.changeImportOptions"),
+    {
+      command: "openWrangler.changeImportOptions",
+      title: "Open Wrangler: Change Import Options",
+      shortTitle: "Change Import Options",
+      icon: "$(settings-gear)"
     }
   );
   const fileResourcePredicate =
@@ -295,6 +307,16 @@ export async function run(): Promise<void> {
     "Supported source editors must expose the Open Wrangler title action."
   );
   assert.ok(
+    contributions.menus?.["editor/title"]?.some(
+      (item) =>
+        item.command === "openWrangler.changeImportOptions" &&
+        item.when ===
+          "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)" &&
+        item.group === "navigation@2"
+    ),
+    "Configurable Open Wrangler file editors must expose the Change Import Options title action."
+  );
+  assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
       (item) =>
         item.command === "openWrangler.openFile" &&
@@ -303,6 +325,16 @@ export async function run(): Promise<void> {
         item.group === "navigation@50"
     ),
     "Supported source tabs must expose Open in Open Wrangler in their context menu."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.changeImportOptions" &&
+        item.when ===
+          "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)" &&
+        item.group === "navigation@51"
+    ),
+    "Configurable Open Wrangler tabs must expose Change Import Options in their context menu."
   );
   assert.ok(
     contributions.menus?.commandPalette?.some(
@@ -359,6 +391,12 @@ export async function run(): Promise<void> {
   assert.ok(
     (extension.packageJSON.activationEvents as string[] | undefined)?.includes("onRenderer:openWrangler.renderer"),
     "The extension host must activate before optional renderer messages are delivered."
+  );
+  assert.ok(
+    (extension.packageJSON.activationEvents as string[] | undefined)?.includes(
+      "onCommand:openWrangler.changeImportOptions"
+    ),
+    "The Change Import Options command must activate the extension host."
   );
   assert.ok(
     extension.packageJSON.contributes.walkthroughs?.some(
@@ -984,7 +1022,7 @@ async function acceptDefaultDelimitedImport(
     recordAcceptanceProgress(`${checkpoint}:wait`);
     const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
     recordAcceptanceProgress(`${checkpoint}:visible`);
-    const defaultOption = quickInput.getByRole("option", { name: option, exact: true }).first();
+    const defaultOption = quickInput.getByRole("option", { name: option }).first();
     await withAcceptanceOperationDeadline(
       defaultOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
       WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -1097,7 +1135,8 @@ async function waitForImportQuickInput(
   page: Page,
   testing: TestApi,
   expectedSource: vscode.Uri,
-  title: string
+  title: string,
+  existingSessionId?: string
 ): Promise<Locator> {
   const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
   const deadline = Date.now() + 10_000;
@@ -1112,7 +1151,7 @@ async function waitForImportQuickInput(
       return quickInput;
     }
     const active = testing.activeSession();
-    if (active) {
+    if (active && active.sessionId !== existingSessionId) {
       throw new Error(
         `The editor-title action created a dataframe session before the ${JSON.stringify(title)} import prompt appeared. ` +
           `Expected source: ${JSON.stringify(expectedSource.fsPath)}. Actual source: ${JSON.stringify(active.metadata.source.path)}.`
@@ -3807,6 +3846,30 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       path.join(directory, "sample.csv"),
       readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.csv").fsPath)
     );
+    const sampleTsv = readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv").fsPath);
+    writeFileSync(path.join(directory, "sample-pandas.tsv"), sampleTsv);
+    writeFileSync(path.join(directory, "sample-duckdb.tsv"), sampleTsv);
+    const sampleJsonl = readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl").fsPath);
+    writeFileSync(path.join(directory, "sample-polars.jsonl"), sampleJsonl);
+    writeFileSync(path.join(directory, "sample-duckdb.jsonl"), sampleJsonl);
+    writeFileSync(path.join(directory, "configured.csv"), "name;value\nalpha;1\nbeta;2\n", "utf8");
+    writeFileSync(path.join(directory, "configured.tsv"), "name|value\nalpha|1\nbeta|2\n", "utf8");
+    writeFileSync(
+      path.join(directory, "damaged.csv"),
+      Buffer.concat([Buffer.from("name,value\nbroken-", "utf8"), Buffer.from([0xff]), Buffer.from(",1\n", "utf8")])
+    );
+    writeFileSync(path.join(directory, "damaged.jsonl"), '{"name":"broken"\n', "utf8");
+    writeFileSync(path.join(directory, "damaged.parquet"), "PAR1broken", "utf8");
+    writeFileSync(path.join(directory, "damaged.xls"), "not-an-excel-workbook", "utf8");
+    writeFileSync(
+      path.join(directory, "legacy.xls"),
+      gunzipSync(
+        Buffer.from(
+          readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "legacy.xls.gz.base64").fsPath, "utf8").trim(),
+          "base64"
+        )
+      )
+    );
     execFileSync(
       python,
       [
@@ -3820,7 +3883,11 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           "pl.DataFrame({'name': ['alpha', 'beta'], 'value': [1, 2], 'active': [True, False]}).write_parquet(root / 'sample.parquet')",
           "workbook = Workbook()",
           "sheet = workbook.active",
-          "sheet.title = 'Sales'",
+          "sheet.title = 'Overview'",
+          "sheet.append(['name', 'value', 'active'])",
+          "sheet.append(['ignored-alpha', 11, True])",
+          "sheet.append(['ignored-beta', 12, False])",
+          "sheet = workbook.create_sheet('Sales')",
           "sheet.append(['name', 'value', 'active'])",
           "sheet.append(['alpha', 1, True])",
           "sheet.append(['beta', 2, False])",
@@ -3830,6 +3897,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       ],
       { encoding: "utf8" }
     );
+    writeFileSync(path.join(directory, "sample-duckdb.parquet"), readFileSync(path.join(directory, "sample.parquet")));
     const parquetLaunchUri = vscode.Uri.file(path.join(directory, "sample.parquet"));
     const parquetSource = readFileSync(parquetLaunchUri.fsPath);
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:open");
@@ -3868,24 +3936,35 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     );
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:closed");
 
+    recordAcceptanceProgress("verify:file-inputs:configured");
+    await exerciseConfiguredFileImportOptions(testing, directory);
+    recordAcceptanceProgress("verify:file-inputs:corrupt");
+    await exerciseCorruptFileFailures(testing, directory, config);
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      recordAcceptanceProgress("verify:file-inputs:configured:public-excel");
+      await exercisePublicLegacyExcelImportOptions(testing, directory, config);
+      recordAcceptanceProgress("verify:file-inputs:reconfigure");
+      await exerciseLiveImportReconfiguration(testing, directory, config);
+    }
+
     const fixtures = [
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
+        uri: vscode.Uri.file(path.join(directory, "sample-pandas.tsv")),
         backend: "pandas" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
+        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.tsv")),
         backend: "duckdb" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
+        uri: vscode.Uri.file(path.join(directory, "sample-polars.jsonl")),
         backend: "polars" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
+        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.jsonl")),
         backend: "duckdb" as const,
         shape: { rows: 4, columns: 4 }
       },
@@ -3900,7 +3979,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         shape: { rows: 2, columns: 3 }
       },
       {
-        uri: vscode.Uri.file(path.join(directory, "sample.parquet")),
+        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.parquet")),
         backend: "duckdb" as const,
         shape: { rows: 2, columns: 3 }
       },
@@ -3954,6 +4033,791 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
     cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+async function exerciseConfiguredFileImportOptions(testing: TestApi, directory: string): Promise<void> {
+  const csvPath = path.join(directory, "configured.csv");
+  const tsvPath = path.join(directory, "configured.tsv");
+  const excelPath = path.join(directory, "sample.xlsx");
+  const legacyExcelPath = path.join(directory, "legacy.xls");
+  const csvBytes = readFileSync(csvPath);
+  const tsvBytes = readFileSync(tsvPath);
+  const excelBytes = readFileSync(excelPath);
+  const legacyExcelBytes = readFileSync(legacyExcelPath);
+
+  const rejected = await testing.request({
+    kind: "openSession",
+    ...GRID_COLUMN_WINDOW,
+    source: {
+      kind: "file",
+      label: "configured.csv",
+      path: csvPath,
+      importOptions: { delimiter: "", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    },
+    backend: "polars",
+    pageSize: 20,
+    mode: "viewing"
+  });
+  assert.equal(rejected.kind, "error", "Malformed import options must fail before a session is retained.");
+  if (rejected.kind === "error") {
+    assert.equal(rejected.code, "invalid_request");
+    assert.match(rejected.message, /delimiter must contain exactly one Unicode code point/u);
+  }
+  assert.equal(testing.diagnostics().sessionCount, 0, "An invalid import attempt must not retain a session.");
+  await waitFor(
+    () => !testing.runtimeRunning(),
+    10_000,
+    "the invalid import attempt to release its standalone runtime"
+  );
+
+  const cases: Array<{
+    label: string;
+    source: SessionSource;
+    backend: "polars" | "pandas";
+    expectedColumns: string[];
+    expectedFirstColumn: string[];
+  }> = [
+    {
+      label: "non-default CSV delimiter",
+      source: {
+        kind: "file",
+        label: "configured.csv",
+        path: csvPath,
+        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "non-default TSV delimiter",
+      source: {
+        kind: "file",
+        label: "configured.tsv",
+        path: tsvPath,
+        importOptions: { delimiter: "|", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "Excel sheet name",
+      source: {
+        kind: "file",
+        label: "sample.xlsx",
+        path: excelPath,
+        importOptions: { sheetName: "Sales" }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "zero-based Excel sheet index",
+      source: {
+        kind: "file",
+        label: "sample.xlsx",
+        path: excelPath,
+        importOptions: { sheetIndex: 1 }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "BIFF Excel sheet name in Polars",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetName: "second" }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    },
+    {
+      label: "BIFF Excel sheet index in Polars",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetIndex: 1 }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    },
+    {
+      label: "BIFF Excel sheet name in Pandas",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetName: "second" }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    },
+    {
+      label: "BIFF Excel sheet index in Pandas",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetIndex: 1 }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    }
+  ];
+  const openedSessions: Array<{ sessionId: string; revision: number }> = [];
+  try {
+    for (const candidate of cases) {
+      recordAcceptanceProgress(
+        `verify:file-inputs:configured:${candidate.backend}:${candidate.label.replaceAll(" ", "-")}:open`
+      );
+      const opened = await testing.request({
+        kind: "openSession",
+        ...GRID_COLUMN_WINDOW,
+        source: candidate.source,
+        backend: candidate.backend,
+        pageSize: 20,
+        mode: "viewing"
+      });
+      assert.equal(opened.kind, "sessionOpened", `${candidate.label} must open through ${candidate.backend}.`);
+      if (opened.kind !== "sessionOpened") continue;
+      openedSessions.push({
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      });
+      assert.equal(opened.metadata.backend, candidate.backend);
+      assert.deepEqual(opened.metadata.source, candidate.source);
+      assert.deepEqual(
+        opened.metadata.schema.map((column) => column.name),
+        candidate.expectedColumns
+      );
+      const firstColumn = opened.metadata.schema[0];
+      assert.ok(firstColumn, `${candidate.label} must expose its first selected column.`);
+      assert.deepEqual(gridColumnDisplays(opened.page, firstColumn.id), candidate.expectedFirstColumn);
+      recordAcceptanceProgress(
+        `verify:file-inputs:configured:${candidate.backend}:${candidate.label.replaceAll(" ", "-")}:opened`
+      );
+    }
+  } finally {
+    for (const session of openedSessions.reverse()) {
+      const closed = await testing.request({
+        kind: "closeSession",
+        sessionId: session.sessionId,
+        revision: session.revision
+      });
+      assert.equal(closed.kind, "sessionClosed");
+    }
+  }
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the configured import sessions to close without retaining a runtime"
+  );
+  assert.deepEqual(readFileSync(csvPath), csvBytes, "Configured CSV import must not modify its source.");
+  assert.deepEqual(readFileSync(tsvPath), tsvBytes, "Configured TSV import must not modify its source.");
+  assert.deepEqual(readFileSync(excelPath), excelBytes, "Excel sheet selection must not modify its workbook.");
+  assert.deepEqual(
+    readFileSync(legacyExcelPath),
+    legacyExcelBytes,
+    "BIFF Excel sheet selection must not modify its workbook."
+  );
+}
+
+async function exercisePublicLegacyExcelImportOptions(
+  testing: TestApi,
+  directory: string,
+  config: vscode.WorkspaceConfiguration
+): Promise<void> {
+  const page = await connectToEditorWorkbench();
+  const source = vscode.Uri.file(path.join(directory, "legacy.xls"));
+  const sourceBytes = readFileSync(source.fsPath);
+
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the public BIFF import scenarios to start without a retained session or runtime"
+  );
+
+  for (const scenario of [
+    {
+      backend: "polars" as const,
+      mode: "Sheet name",
+      inputTitle: "Excel sheet name",
+      value: "second",
+      importOptions: { sheetName: "second" }
+    },
+    {
+      backend: "pandas" as const,
+      mode: "Sheet index",
+      inputTitle: "Excel sheet index",
+      value: "1",
+      importOptions: { sheetIndex: 1 }
+    }
+  ] as const) {
+    const checkpoint = `verify:file-inputs:configured:public-excel:${scenario.backend}:${scenario.mode
+      .toLowerCase()
+      .replaceAll(" ", "-")}`;
+    await config.update("defaultBackend", scenario.backend, vscode.ConfigurationTarget.Global);
+    recordAcceptanceProgress(`${checkpoint}:open`);
+    const opening = vscode.commands.executeCommand("openWrangler.openFile", source);
+    await acceptExcelImportOptions(page, testing, source, scenario.mode, scenario.inputTitle, scenario.value);
+    await opening;
+
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.path === source.fsPath &&
+          active.metadata.backend === scenario.backend &&
+          active.metadata.shape.rows === 2 &&
+          active.metadata.shape.columns === 3
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `legacy.xls to open through the public ${scenario.backend} ${scenario.mode.toLowerCase()} workflow`,
+      () =>
+        packagedFileOpenDiagnostics(testing, {
+          sourceLabel: path.basename(source.fsPath),
+          backend: scenario.backend,
+          shape: { rows: 2, columns: 3 }
+        })
+    );
+
+    const active = testing.activeSession();
+    assert.ok(active, `The public ${scenario.backend} BIFF workflow must publish an active session.`);
+    assert.deepEqual(
+      active.metadata.source.importOptions,
+      scenario.importOptions,
+      `The public ${scenario.backend} BIFF workflow must preserve its explicit sheet selection.`
+    );
+    assert.deepEqual(
+      active.metadata.schema.map((column) => column.name),
+      ["name", "value", "active"],
+      `The public ${scenario.backend} BIFF workflow must expose the selected sheet schema.`
+    );
+    const firstColumn = active.metadata.schema[0];
+    assert.ok(firstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
+    const grid = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: `public-biff-${scenario.backend}-${scenario.mode.toLowerCase().replaceAll(" ", "-")}`,
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 20,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(grid.kind, "page", `The public ${scenario.backend} BIFF workflow must return a live grid page.`);
+    if (grid.kind !== "page") {
+      throw new Error(`The public ${scenario.backend} BIFF workflow did not return a page.`);
+    }
+    assert.deepEqual(
+      gridColumnDisplays(grid.page, firstColumn.id),
+      ["second", "résumé"],
+      `The public ${scenario.backend} BIFF workflow must read the selected worksheet.`
+    );
+    assert.deepEqual(
+      readFileSync(source.fsPath),
+      sourceBytes,
+      `The public ${scenario.backend} BIFF workflow must not modify its source.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:opened`);
+
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `the public ${scenario.backend} BIFF session and runtime to close`
+    );
+    assert.equal(
+      testing.activeSession(),
+      undefined,
+      `Closing the public ${scenario.backend} BIFF panel must deactivate it.`
+    );
+    assert.deepEqual(
+      readFileSync(source.fsPath),
+      sourceBytes,
+      `Closing the public ${scenario.backend} BIFF workflow must leave its source byte-identical.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:closed`);
+  }
+}
+
+async function exerciseCorruptFileFailures(
+  testing: TestApi,
+  directory: string,
+  config: vscode.WorkspaceConfiguration
+): Promise<void> {
+  await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
+  for (const name of ["damaged.csv", "damaged.jsonl", "damaged.parquet", "damaged.xls"]) {
+    const uri = vscode.Uri.file(path.join(directory, name));
+    const sourceBytes = readFileSync(uri.fsPath);
+    const generationBeforeOpen = testing.runtimeGeneration();
+    recordAcceptanceProgress(`verify:file-inputs:corrupt:${path.extname(name).slice(1)}:open`);
+    await vscode.commands.executeCommand("vscode.openWith", uri, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () =>
+        testing.runtimeGeneration() > generationBeforeOpen &&
+        testing.diagnostics().sessionCount === 0 &&
+        !testing.runtimeRunning(),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `${name} to fail without retaining a session or runtime`
+    );
+    assert.equal(testing.activeSession(), undefined, `${name} must not publish an active session.`);
+    assert.deepEqual(readFileSync(uri.fsPath), sourceBytes, `${name} must remain byte-identical after a failed open.`);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `${name} failure panel to close without retained runtime state`
+    );
+    recordAcceptanceProgress(`verify:file-inputs:corrupt:${path.extname(name).slice(1)}:closed`);
+  }
+}
+
+function stableImportReconfigurationSnapshot(active: ReturnType<TestApi["activeSession"]>): unknown {
+  if (!active) return undefined;
+  const { stats: _progressiveStats, ...metadata } = active.metadata;
+  return {
+    sessionId: active.sessionId,
+    metadata,
+    code: active.code,
+    viewState: active.viewState,
+    stepInspection: active.stepInspection
+  };
+}
+
+function stableImportDiagnostics(diagnostics: ReturnType<TestApi["diagnostics"]>): ReturnType<TestApi["diagnostics"]> {
+  return structuredClone(diagnostics);
+}
+
+async function waitForOpenWranglerWebviewButton(page: Page, name: string): Promise<Locator> {
+  const deadline = Date.now() + 10_000;
+  do {
+    const browser = page.context().browser();
+    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [page];
+    for (const candidate of pages.slice(0, 16)) {
+      for (const frame of candidate.frames().slice(0, 32)) {
+        const button = frame.getByRole("button", { name, exact: true }).first();
+        if ((await button.count().catch(() => 0)) > 0 && (await button.isVisible().catch(() => false))) {
+          return button;
+        }
+      }
+    }
+    await page.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `The Open Wrangler webview did not expose a visible ${JSON.stringify(name)} button. Frames: ${JSON.stringify(
+      page
+        .context()
+        .browser()
+        ?.contexts()
+        .flatMap((context) => context.pages())
+        .flatMap((candidate) => candidate.frames().map((frame) => frame.url()))
+        .slice(0, 64) ?? [page.url()]
+    )}`
+  );
+}
+
+async function exerciseLiveImportReconfiguration(
+  testing: TestApi,
+  directory: string,
+  config: vscode.WorkspaceConfiguration
+): Promise<void> {
+  const page = await connectToEditorWorkbench();
+  const configured = vscode.Uri.file(path.join(directory, "configured.csv"));
+  const configuredBytes = readFileSync(configured.fsPath);
+  await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  const opening = vscode.commands.executeCommand("openWrangler.openFile", configured);
+  await acceptDelimitedImportOptions(page, testing, configured, undefined, {
+    delimiter: "Comma",
+    encoding: "utf-8",
+    header: "First row contains column names",
+    quoteChar: '"'
+  });
+  await opening;
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.path === configured.fsPath &&
+        active.metadata.shape.rows === 2 &&
+        active.metadata.shape.columns === 1
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the semicolon CSV to open under its initial comma defaults"
+  );
+
+  const before = testing.activeSession();
+  assert.ok(before, "The configurable CSV must publish an active session.");
+  const stableSessionId = before.sessionId;
+  const stableSourceIdentity = fileSourceIdentity(before.metadata.source);
+  const initialDiagnostics = testing.diagnostics();
+  const initialRuntimeId = initialDiagnostics.sessions.find(
+    (session) => session.publicId === stableSessionId
+  )?.runtimeId;
+  assert.ok(initialRuntimeId, "The active configurable CSV must own a runtime session.");
+
+  const changeTitleAction = page
+    .locator(
+      '.part.editor .editor-group-container.active .editor-actions [aria-label*="Change Import Options"]:visible'
+    )
+    .first();
+  await withAcceptanceOperationDeadline(
+    changeTitleAction.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the generic Open Wrangler Change Import Options title action"
+  );
+  await withAcceptanceOperationDeadline(
+    changeTitleAction.click(),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the generic Open Wrangler Change Import Options title action click"
+  );
+  await acceptDelimitedImportOptions(page, testing, configured, stableSessionId, {
+    delimiter: "Semicolon",
+    encoding: "utf-8",
+    header: "First row contains column names",
+    quoteChar: '"'
+  });
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === stableSessionId &&
+        active.metadata.source.path === configured.fsPath &&
+        active.metadata.shape.rows === 2 &&
+        active.metadata.shape.columns === 2 &&
+        active.metadata.source.importOptions?.delimiter === ";"
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the live CSV session to atomically adopt its semicolon import options"
+  );
+
+  const changed = testing.activeSession();
+  assert.ok(changed, "The reconfigured CSV must remain active.");
+  assert.equal(changed.sessionId, stableSessionId, "Import reconfiguration must retain the public session ID.");
+  assert.deepEqual(
+    fileSourceIdentity(changed.metadata.source),
+    stableSourceIdentity,
+    "Import reconfiguration must retain the exact source identity."
+  );
+  assert.deepEqual(changed.metadata.source.importOptions, {
+    delimiter: ";",
+    encoding: "utf-8",
+    quoteChar: '"',
+    hasHeader: true
+  });
+  assert.deepEqual(
+    readFileSync(configured.fsPath),
+    configuredBytes,
+    "Live reconfiguration must not modify its source."
+  );
+  const changedRuntimeId = testing
+    .diagnostics()
+    .sessions.find((session) => session.publicId === stableSessionId)?.runtimeId;
+  assert.ok(changedRuntimeId, "The reconfigured public session must retain one private runtime.");
+  assert.notEqual(
+    changedRuntimeId,
+    initialRuntimeId,
+    "A successful import reconfiguration must replace, not mutate, its private runtime."
+  );
+  const retainedColumn = changed.metadata.schema.find((column) => column.name === "value");
+  assert.ok(retainedColumn, "The reconfigured CSV must expose its value column for reload-state acceptance.");
+  const retainedViewState = {
+    selectedColumnId: retainedColumn.id,
+    columnWidths: { [retainedColumn.id]: 247 },
+    viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+  };
+  await testing.updateViewState(stableSessionId, retainedViewState);
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
+        active.viewState.columnWidths[retainedColumn.id] === 247 &&
+        active.viewState.viewport.firstVisibleRow === 1 &&
+        active.viewState.viewport.scrollLeft === 23
+      );
+    },
+    5_000,
+    "the reconfigured CSV view state to persist under its confirmed source and backend"
+  );
+
+  const confirmedBeforeCancellation = stableImportReconfigurationSnapshot(testing.activeSession());
+  const diagnosticsBeforeCancellation = stableImportDiagnostics(testing.diagnostics());
+  const activeTab = page
+    .locator(".part.editor .editor-group-container.active .tabs-container .tab.active")
+    .filter({ hasText: path.basename(configured.fsPath) })
+    .last();
+  const { action: tabImportAction } = await openEditorTabContextMenu(
+    page,
+    activeTab,
+    "Open Wrangler: Change Import Options"
+  );
+  assert.ok(tabImportAction, "The generic Open Wrangler tab must expose Change Import Options.");
+  await tabImportAction.click();
+  const delimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Escape"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the live import-options cancellation"
+  );
+  await withAcceptanceOperationDeadline(
+    delimiterPrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the cancelled live import-options prompt to close"
+  );
+  assert.deepEqual(
+    stableImportReconfigurationSnapshot(testing.activeSession()),
+    confirmedBeforeCancellation,
+    "Cancelling import reconfiguration must preserve the exact confirmed active snapshot."
+  );
+  assert.deepEqual(
+    stableImportDiagnostics(testing.diagnostics()),
+    diagnosticsBeforeCancellation,
+    "Cancelling import reconfiguration must not create, replace, or retain a runtime session."
+  );
+
+  const gridImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
+  await gridImportAction.click();
+  const gridDelimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Escape"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the live-grid import-options cancellation"
+  );
+  await withAcceptanceOperationDeadline(
+    gridDelimiterPrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the live-grid import-options prompt to close"
+  );
+  assert.deepEqual(
+    stableImportReconfigurationSnapshot(testing.activeSession()),
+    confirmedBeforeCancellation,
+    "The live-grid Import options action must preserve the confirmed session when cancelled."
+  );
+  assert.deepEqual(
+    stableImportDiagnostics(testing.diagnostics()),
+    diagnosticsBeforeCancellation,
+    "The live-grid Import options action must not create a candidate when its prompt is cancelled."
+  );
+
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the reconfigured CSV panel to close cleanly"
+  );
+  const conflictingDefaultBackend = changed.metadata.backend === "pandas" ? "polars" : "pandas";
+  await config.update("defaultBackend", conflictingDefaultBackend, vscode.ConfigurationTarget.Global);
+  try {
+    await vscode.commands.executeCommand("vscode.openWith", configured, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.path === configured.fsPath &&
+          active.metadata.backend === changed.metadata.backend &&
+          active.metadata.source.importOptions?.delimiter === ";" &&
+          active.metadata.shape.rows === 2 &&
+          active.metadata.shape.columns === 2 &&
+          active.viewState.selectedColumnId === retainedColumn.id &&
+          active.viewState.columnWidths[retainedColumn.id] === 247 &&
+          active.viewState.viewport.firstVisibleRow === 1 &&
+          active.viewState.viewport.scrollLeft === 23
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the custom editor to reload the last confirmed import options, backend, and view"
+    );
+    assert.deepEqual(
+      readFileSync(configured.fsPath),
+      configuredBytes,
+      "Reloading the confirmed file configuration must not modify its source."
+    );
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      "the reloaded configurable CSV custom editor to close cleanly"
+    );
+    await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
+  }
+
+  const damaged = vscode.Uri.file(path.join(directory, "damaged.csv"));
+  const damagedBytes = readFileSync(damaged.fsPath);
+  const generationBeforeFailure = testing.runtimeGeneration();
+  await vscode.commands.executeCommand("vscode.openWith", damaged, "openWrangler.viewer", vscode.ViewColumn.One);
+  await waitFor(
+    () =>
+      testing.runtimeGeneration() > generationBeforeFailure &&
+      testing.diagnostics().sessionCount === 0 &&
+      !testing.runtimeRunning(),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the strict UTF-8 open to fail without retaining a corrupt file session"
+  );
+  assert.equal(testing.activeSession(), undefined, "The corrupt initial open must not publish an active session.");
+
+  const errorImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
+  await errorImportAction.click();
+  await acceptDelimitedImportOptions(page, testing, damaged, undefined, {
+    delimiter: "Comma",
+    encoding: "utf8-lossy",
+    header: "First row contains column names",
+    quoteChar: '"'
+  });
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.path === damaged.fsPath &&
+        active.metadata.backend === "pandas" &&
+        active.metadata.shape.rows === 1 &&
+        active.metadata.shape.columns === 2
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the failed file panel to retry successfully with lossy UTF-8"
+  );
+  const recovered = testing.activeSession();
+  assert.ok(recovered, "The lossy UTF-8 retry must publish an active session.");
+  assert.deepEqual(recovered.metadata.source.importOptions, {
+    delimiter: ",",
+    encoding: "utf8-lossy",
+    quoteChar: '"',
+    hasHeader: true
+  });
+  assert.deepEqual(readFileSync(damaged.fsPath), damagedBytes, "Retrying a corrupt source must not modify it.");
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the recovered corrupt-file panel to close cleanly"
+  );
+}
+
+function fileSourceIdentity(source: SessionSource): Pick<SessionSource, "kind" | "label" | "path" | "uri"> {
+  return {
+    kind: source.kind,
+    label: source.label,
+    path: source.path,
+    uri: source.uri
+  };
+}
+
+async function acceptDelimitedImportOptions(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  existingSessionId: string | undefined,
+  selection: {
+    delimiter: string;
+    encoding: string;
+    header: string;
+    quoteChar: string;
+  }
+): Promise<void> {
+  for (const { title, option } of [
+    { title: "Delimiter", option: selection.delimiter },
+    { title: "Text encoding", option: selection.encoding },
+    { title: "Header row", option: selection.header }
+  ]) {
+    const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title, existingSessionId);
+    const selected = quickInput.getByRole("option", { name: option }).first();
+    await withAcceptanceOperationDeadline(
+      selected.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} option ${JSON.stringify(option)} to become visible`
+    );
+    await withAcceptanceOperationDeadline(
+      selected.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} option ${JSON.stringify(option)} acceptance`
+    );
+    await withAcceptanceOperationDeadline(
+      quickInput.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} prompt to advance`
+    );
+  }
+
+  const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character", existingSessionId);
+  const field = quoteInput.locator(".quick-input-box input").first();
+  await withAcceptanceOperationDeadline(
+    field.fill(selection.quoteChar, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the configured quote character"
+  );
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the configured quote character acceptance"
+  );
+  await withAcceptanceOperationDeadline(
+    quoteInput.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the quote-character prompt to close"
+  );
+}
+
+async function acceptExcelImportOptions(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  mode: "Sheet name" | "Sheet index",
+  inputTitle: "Excel sheet name" | "Excel sheet index",
+  value: string
+): Promise<void> {
+  const modePrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet");
+  const modeOption = modePrompt.getByRole("option", { name: mode }).first();
+  await withAcceptanceOperationDeadline(
+    modeOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${mode} option to become visible`
+  );
+  await withAcceptanceOperationDeadline(
+    modeOption.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${mode} option acceptance`
+  );
+
+  const valuePrompt = await waitForImportQuickInput(page, testing, expectedSource, inputTitle);
+  const field = valuePrompt.locator(".quick-input-box input").first();
+  await withAcceptanceOperationDeadline(
+    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} field to become visible`
+  );
+  await withAcceptanceOperationDeadline(
+    field.fill(value, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} value`
+  );
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} acceptance`
+  );
+  await withAcceptanceOperationDeadline(
+    valuePrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} prompt to close`
+  );
 }
 
 function packagedFileOpenDiagnostics(
@@ -4051,7 +4915,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
         kind: "file",
         label: "legacy.xls",
         path: path.join(directory, "legacy.xls"),
-        importOptions: { sheet: 0 }
+        importOptions: { sheetIndex: 0 }
       },
       backend: "pandas",
       pageSize: 20,

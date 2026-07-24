@@ -691,7 +691,11 @@ describe("SessionCoordinator", () => {
     expect(delegateRequest).toHaveBeenNthCalledWith(
       2,
       { kind: "closeSession", sessionId: "misprojected-runtime", revision: 0 },
-      expect.objectContaining({ timeoutMs: 2_000, restartRuntimeOnTimeout: false })
+      expect.objectContaining({
+        timeoutMs: 2_000,
+        restartRuntimeOnTimeout: false,
+        startRuntimeIfNeeded: false
+      })
     );
     expect(coordinator.diagnostics().sessionCount).toBe(0);
   });
@@ -1243,6 +1247,17 @@ describe("SessionCoordinator", () => {
       columnWidths: {},
       viewport: { firstVisibleRow: 0, scrollLeft: 0 },
       filterModel: { filters: [], sort: [] }
+    });
+    if (restored.kind !== "sessionOpened") throw new Error("Expected the persisted draft to restore.");
+    expect(bridge.getSessionPresentation?.(restored.metadata.sessionId)).toMatchObject({
+      sessionId: restored.metadata.sessionId,
+      revision: restored.metadata.revision,
+      code: "# restored draft",
+      draft: {
+        diff: { changedCells: 0, truncated: false },
+        warnings: [],
+        beforeSchema: runtimeOpened.metadata.schema
+      }
     });
     expect(executionOrder).toEqual([
       "open",
@@ -2486,7 +2501,8 @@ describe("SessionCoordinator", () => {
     expect(cleanupOptions).toEqual({
       priority: "interactive",
       timeoutMs: 2_000,
-      restartRuntimeOnTimeout: false
+      restartRuntimeOnTimeout: false,
+      startRuntimeIfNeeded: false
     });
     expect(cleanupOptions).not.toBe(cancelledRequestOptions);
     expect(reportDiagnostic).toHaveBeenCalledWith(
@@ -2569,7 +2585,8 @@ describe("SessionCoordinator", () => {
     expect(cleanupOptions).toEqual({
       priority: "interactive",
       timeoutMs: 2_000,
-      restartRuntimeOnTimeout: false
+      restartRuntimeOnTimeout: false,
+      startRuntimeIfNeeded: false
     });
     expect(reportDiagnostic).toHaveBeenCalledWith(
       expect.stringMatching(/retired runtime session runtime-live.*engine_error: retired close failed/)
@@ -3518,8 +3535,69 @@ describe("SessionCoordinator", () => {
     ).resolves.toEqual({ kind: "sessionClosed", sessionId: opened.metadata.sessionId });
     expect(delegateRequest).toHaveBeenLastCalledWith(
       { kind: "closeSession", sessionId: "runtime-session", revision: opened.metadata.revision },
-      undefined
+      {
+        priority: "interactive",
+        timeoutMs: 2_000,
+        restartRuntimeOnTimeout: false,
+        startRuntimeIfNeeded: false
+      }
     );
+    expect(coordinator.diagnostics().sessions).toEqual([]);
+  });
+
+  it("never starts an absent runtime while terminally closing a live public session", async () => {
+    let runtimeRunning = true;
+    let runtimeStarts = 0;
+    const closeOptions: Array<BridgeRequestOptions | undefined> = [];
+    const delegateRequest = vi.fn(
+      async (request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") return openedResponse();
+        if (request.kind === "closeSession") {
+          closeOptions.push(options);
+          if (!runtimeRunning && options?.startRuntimeIfNeeded !== false) {
+            runtimeStarts += 1;
+            runtimeRunning = true;
+          }
+          return {
+            kind: "error",
+            code: "unknown_session",
+            message: "The standalone runtime has already exited.",
+            recoverable: true,
+            sessionId: request.sessionId
+          };
+        }
+        throw new Error(`Unexpected delegate request: ${request.kind}`);
+      }
+    );
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    expect(opened.kind).toBe("sessionOpened");
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    runtimeRunning = false;
+
+    const closed = await bridge.request({
+      kind: "closeSession",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+
+    expect(closed).toMatchObject({ kind: "error", code: "unknown_session", sessionId: opened.metadata.sessionId });
+    expect(runtimeStarts).toBe(0);
+    expect(closeOptions).toEqual([
+      {
+        priority: "interactive",
+        timeoutMs: 2_000,
+        restartRuntimeOnTimeout: false,
+        startRuntimeIfNeeded: false
+      },
+      {
+        priority: "interactive",
+        timeoutMs: 2_000,
+        restartRuntimeOnTimeout: false,
+        startRuntimeIfNeeded: false
+      }
+    ]);
     expect(coordinator.diagnostics().sessions).toEqual([]);
   });
 

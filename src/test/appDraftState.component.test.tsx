@@ -136,6 +136,66 @@ describe("App draft state boundaries", () => {
     });
   });
 
+  it("replaces generated code, warnings, and diff after a backend-changing session replacement", async () => {
+    const draft: TransformStep = {
+      id: "cast-c",
+      kind: "castColumn",
+      params: { column: { id: "c:c", name: "c" }, dtype: "string" }
+    };
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, backend: "polars", revision: 3, draftStep: draft },
+      page,
+      summaries: []
+    });
+    dispatch({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: { ...metadata, backend: "polars", revision: 3, draftStep: draft },
+      page,
+      diff: emptyDiff(),
+      code: "# stale polars code",
+      warnings: ["stale warning"]
+    });
+    expect(await screen.findByText("# stale polars code")).toBeInTheDocument();
+
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, backend: "pandas", revision: 4, draftStep: draft },
+      page,
+      summaries: []
+    });
+    dispatch({
+      kind: "sessionPresentation",
+      presentation: {
+        sessionId: "session",
+        revision: 4,
+        code: "# restored pandas code",
+        draft: {
+          diff: { ...emptyDiff(), changedCells: 1 },
+          warnings: ["candidate backend warning"],
+          beforeSchema: committedSchema
+        }
+      }
+    });
+
+    expect(await screen.findByText("# restored pandas code")).toBeInTheDocument();
+    expect(screen.queryByText("# stale polars code")).toBeNull();
+    expect(screen.getByText("candidate backend warning")).toBeInTheDocument();
+    expect(screen.queryByText("stale warning")).toBeNull();
+    expect(screen.getByText("1 changed cells")).toBeInTheDocument();
+    expect(document.querySelector(".draftCode summary")).toHaveTextContent(/Generated\s+Pandas\s*code/u);
+    await waitFor(() => expect(latestGridProps().beforeSchema).toEqual(committedSchema));
+
+    dispatch({
+      kind: "sessionPresentation",
+      presentation: { sessionId: "session", revision: 3, code: "# stale late code" }
+    });
+    expect(screen.queryByText("# stale late code")).toBeNull();
+    expect(screen.getByText("# restored pandas code")).toBeInTheDocument();
+  });
+
   it("opens the generic operation picker for a host action without an operation kind", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });

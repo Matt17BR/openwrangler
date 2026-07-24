@@ -204,15 +204,18 @@ try {
             const profile = mkdtempSync(join(temporaryRoot, `pkg-${editor.key}-`));
             const profileReceipt = capturePrivateRootReceipt(profile, temporaryRoot);
             const userData = resolve(profile, "user-data");
+            const restrictedUserData = resolve(profile, "restricted-user-data");
             const extensions = resolve(profile, "extensions");
             const workspace = resolve(profile, "Open Wrangler Demo");
             const resultPaths = {
               setup: resolve(profile, "setup-result.json"),
+              restricted: resolve(profile, "restricted-result.json"),
               seed: resolve(profile, "seed-result.json"),
               verify: resolve(profile, "verify-result.json")
             };
             const runIds = {
               setup: randomUUID(),
+              restricted: randomUUID(),
               seed: randomUUID(),
               verify: randomUUID()
             };
@@ -237,6 +240,15 @@ try {
                   "window.dialogStyle": "custom",
                   "window.menuStyle": "custom",
                   "files.simpleDialog.enable": true
+                });
+                writeEditorSettings(restrictedUserData, {
+                  "window.dialogStyle": "custom",
+                  "window.menuStyle": "custom",
+                  "files.simpleDialog.enable": true,
+                  "security.workspace.trust.enabled": true,
+                  "security.workspace.trust.startupPrompt": "never",
+                  "security.workspace.trust.banner": "never",
+                  "security.workspace.trust.emptyWindow": false
                 });
                 const fakeJupyter = resolve(profile, "fake-jupyter");
                 writeFakeJupyterExtension(fakeJupyter);
@@ -293,6 +305,22 @@ try {
                   );
                 }
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:complete");
+
+                activePhase = "restricted";
+                await runEditorAcceptancePhase({
+                  editor: identifiedEditor,
+                  workspace,
+                  userData: restrictedUserData,
+                  extensions,
+                  developmentPaths: [profile],
+                  testModule: resolve(root, "dist-test", "test", "extensionHost", "restricted.js"),
+                  python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                  phase: "restricted",
+                  workspaceTrust: "restricted",
+                  resultPath: resultPaths.restricted,
+                  runId: runIds.restricted,
+                  progressPath: progressPaths.restricted
+                });
 
                 const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
                 for (const phase of ["seed", "verify"]) {

@@ -198,19 +198,24 @@ def test_polars_column_values_and_parquet(tmp_path):
 
 
 def test_polars_excel_reader_pins_the_probed_calamine_engine(monkeypatch):
-    calls: list[tuple[str, int, str]] = []
+    calls: list[tuple[str, dict[str, object]]] = []
 
-    def read_excel(path: str, *, sheet_id: int, engine: str) -> pl.DataFrame:
-        calls.append((path, sheet_id, engine))
+    def read_excel(path: str, **options: object) -> pl.DataFrame:
+        calls.append((path, options))
         return pl.DataFrame({"value": [1]})
 
     monkeypatch.setattr(pl, "read_excel", read_excel)
     runtime = PolarsEngine()
 
-    runtime.read_file("modern.xlsx", {"sheet": 1})
-    runtime.read_file("legacy.xls", {"sheet": 1})
+    runtime.read_file("default.xlsx")
+    runtime.read_file("modern.xlsx", {"sheetIndex": 1})
+    runtime.read_file("legacy.xls", {"sheetName": " résumé "})
 
-    assert calls == [("modern.xlsx", 2, "calamine"), ("legacy.xls", 2, "calamine")]
+    assert calls == [
+        ("default.xlsx", {"sheet_id": 1, "engine": "calamine"}),
+        ("modern.xlsx", {"sheet_id": 2, "engine": "calamine"}),
+        ("legacy.xls", {"sheet_name": " résumé ", "engine": "calamine"}),
+    ]
 
 
 def test_lazy_polars_schema_discovery_does_not_collect_column_profiles(monkeypatch):

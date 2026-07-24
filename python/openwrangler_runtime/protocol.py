@@ -9,6 +9,11 @@ PROTOCOL_VERSION = 2
 MAX_PAGE_LIMIT = 10_000
 MAX_COLUMN_LIMIT = 256
 REQUEST_PRIORITIES = {"interactive", "background"}
+SOURCE_ALLOWED_FIELDS = {"kind", "label", "path", "uri", "variableName", "importOptions"}
+_ECMASCRIPT_TRIM_CHARACTERS = (
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
+    "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
 REQUEST_FIELDS: dict[str, tuple[str, ...]] = {
     "initialize": (),
     "openSession": ("source", "pageSize", "columnOffset", "columnLimit"),
@@ -146,10 +151,21 @@ def decode_request(value: Any) -> dict[str, Any]:
             raise ProtocolError("filterModel must contain filters and sort arrays.")
     if kind == "openSession":
         source = _mapping(request["source"], "source")
+        unexpected_source_fields = set(source) - SOURCE_ALLOWED_FIELDS
+        if unexpected_source_fields:
+            raise ProtocolError(f"source contains unknown fields: {', '.join(sorted(unexpected_source_fields))}")
         if source.get("kind") not in {"file", "notebookVariable", "notebookOutput"}:
             raise ProtocolError("source.kind is not supported.")
         if not isinstance(source.get("label"), str) or not source["label"]:
             raise ProtocolError("source.label must be a non-empty string.")
+        for field in ("path", "uri", "variableName"):
+            if field in source and not isinstance(source[field], str):
+                raise ProtocolError(f"source.{field} must be a string.")
+        decoded_source = dict(source)
+        if "importOptions" in source:
+            decoded_source["importOptions"] = _validate_import_options(source["importOptions"], source)
+        request = dict(request)
+        request["source"] = decoded_source
         if request.get("backend") not in {None, "pandas", "polars", "duckdb"}:
             raise ProtocolError("backend must be pandas, polars, or duckdb.")
         if request.get("mode") not in {None, "viewing", "editing"}:
@@ -231,3 +247,79 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
 
 def _is_non_negative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _validate_import_options(value: Any, source: Mapping[str, Any]) -> dict[str, Any]:
+    options = _mapping(value, "source.importOptions")
+    allowed = {"delimiter", "encoding", "quoteChar", "hasHeader", "sheetName", "sheetIndex"}
+    unexpected = set(options) - allowed
+    if unexpected:
+        raise ProtocolError(f"source.importOptions contains unknown fields: {', '.join(sorted(unexpected))}")
+
+    for field in ("delimiter", "quoteChar"):
+        if field in options and (not isinstance(options[field], str) or len(options[field]) != 1):
+            raise ProtocolError(f"source.importOptions.{field} must contain exactly one Unicode code point.")
+    if "encoding" in options and not _is_non_empty_trimmed_string(options["encoding"]):
+        raise ProtocolError("source.importOptions.encoding must be a non-empty string.")
+    if "hasHeader" in options and not isinstance(options["hasHeader"], bool):
+        raise ProtocolError("source.importOptions.hasHeader must be a boolean.")
+    if "sheetName" in options and not _is_non_empty_trimmed_string(options["sheetName"]):
+        raise ProtocolError("source.importOptions.sheetName must be a non-empty string.")
+    if "sheetIndex" in options and not _is_safe_non_negative_integer(options["sheetIndex"]):
+        raise ProtocolError("source.importOptions.sheetIndex must be a non-negative safe integer.")
+    if "sheetName" in options and "sheetIndex" in options:
+        raise ProtocolError("source.importOptions must contain only one of sheetName or sheetIndex.")
+    excel_fields = {"sheetName", "sheetIndex"} & options.keys()
+    delimited_fields = {"delimiter", "encoding", "quoteChar", "hasHeader"} & options.keys()
+    if excel_fields and delimited_fields:
+        raise ProtocolError("source.importOptions must not mix Excel selectors with delimited-file options.")
+    if not options:
+        return {}
+    if source.get("kind") != "file":
+        raise ProtocolError("source.importOptions may contain values only for file sources.")
+    extension = _source_extension(source)
+    if extension in {"xlsx", "xls"} and delimited_fields:
+        raise ProtocolError("source.importOptions contains delimited-file values for an Excel source.")
+    if extension in {"csv", "tsv"} and excel_fields:
+        raise ProtocolError("source.importOptions contains Excel values for a delimited-file source.")
+    if extension not in {"xlsx", "xls", "csv", "tsv"}:
+        raise ProtocolError("source.importOptions is not supported for this file format.")
+    normalized = dict(options)
+    if "sheetIndex" in normalized:
+        normalized["sheetIndex"] = int(normalized["sheetIndex"])
+    return normalized
+
+
+def _is_non_empty_trimmed_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip(_ECMASCRIPT_TRIM_CHARACTERS))
+
+
+def _is_safe_non_negative_integer(value: Any) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return 0 <= value <= 9_007_199_254_740_991
+    if isinstance(value, float):
+        return value.is_integer() and 0 <= value <= 9_007_199_254_740_991
+    return False
+
+
+def _source_extension(source: Mapping[str, Any]) -> str:
+    path = source.get("path")
+    uri = source.get("uri")
+    label = source.get("label")
+    if isinstance(path, str) and path:
+        location = path
+        is_uri = False
+    elif isinstance(uri, str) and uri:
+        location = uri
+        is_uri = True
+    elif isinstance(label, str) and label:
+        location = label
+        is_uri = False
+    else:
+        return ""
+    pathname = (location.split("?", 1)[0].split("#", 1)[0] if is_uri else location).replace("\\", "/")
+    filename = pathname.rsplit("/", 1)[-1]
+    separator = filename.rfind(".")
+    return filename[separator + 1 :].lower() if separator > 0 else ""

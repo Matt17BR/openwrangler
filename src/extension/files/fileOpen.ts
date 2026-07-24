@@ -4,6 +4,7 @@ import type { DataBackend, SessionSource } from "../../shared/protocol";
 import type { OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
+import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
 import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "./importOptions";
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
@@ -26,21 +27,30 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
       webviewPanel.dispose();
       return;
     }
-    const source = fileSource(document.uri, defaultImportOptions(document.uri));
-    const defaultBackend = getDefaultBackend();
-    new OpenWranglerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
+    const confirmed = confirmedFileConfiguration(this.context.workspaceState, document.uri);
+    const source = fileSource(document.uri, confirmed?.importOptions ?? defaultImportOptions(document.uri));
+    new OpenWranglerPanel(webviewPanel, this.context, this.bridge, source, confirmed?.backend ?? getDefaultBackend());
   }
 }
 
 export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
   const provider = new OpenWranglerCustomEditorProvider(context, bridge);
   const providerOptions = {
-    supportsMultipleEditorsPerDocument: true,
+    supportsMultipleEditorsPerDocument: false,
     webviewOptions: {
       retainContextWhenHidden: true
     }
   };
   context.subscriptions.push(vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, providerOptions));
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("openWrangler.changeImportOptions", async () => {
+      if (await OpenWranglerPanel.changeActiveImportOptions()) return;
+      await vscode.window.showInformationMessage(
+        "Open a CSV, TSV, XLSX, or XLS session in Open Wrangler before changing import options."
+      );
+    })
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.openFile", async (resource?: unknown) => {

@@ -90,6 +90,10 @@ export const extensions = {
   getExtension: (_id: string): undefined => undefined
 };
 
+export const commands = {
+  executeCommand: async (): Promise<undefined> => undefined
+};
+
 export const Uri = {
   file(path: string): { scheme: string; authority: string; path: string; fsPath: string; toString(): string } {
     return {

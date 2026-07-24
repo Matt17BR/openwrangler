@@ -1,8 +1,19 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
+
+const webviewPostMessage = vi.hoisted(() => vi.fn());
+vi.mock("../webviews/vscodeApi", () => ({
+  vscode: {
+    postMessage: webviewPostMessage,
+    getState: () => undefined,
+    setState: () => undefined
+  }
+}));
+
+let App: (typeof import("../webviews/App"))["App"];
 
 const metadata: SessionMetadata = {
   protocolVersion: 2,
@@ -639,3 +650,265 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
   });
 });
+
+describe("App file import options", () => {
+  beforeAll(async () => {
+    document.body.dataset.canChangeImportOptions = "true";
+    ({ App } = await import("../webviews/App"));
+  });
+
+  beforeEach(() => {
+    webviewPostMessage.mockClear();
+  });
+
+  it("shows the action for file sessions but not notebook sessions", async () => {
+    const { unmount } = render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    expect(await screen.findByRole("button", { name: "Import options" })).toBeEnabled();
+
+    unmount();
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        source: {
+          kind: "notebookVariable",
+          label: "frame",
+          variableName: "frame",
+          uri: "file:///tmp/example.ipynb"
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    await screen.findByText("frame");
+    expect(screen.queryByRole("button", { name: "Import options" })).toBeNull();
+  });
+
+  it("uses the initial error action to retry import configuration and clears host-driven busy state", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "error",
+      code: "invalid_import_options",
+      message: "Choose a valid delimiter.",
+      recoverable: true
+    });
+
+    const action = await screen.findByRole("button", { name: "Import options" });
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a valid delimiter.");
+    webviewPostMessage.mockClear();
+    fireEvent.click(action);
+
+    expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }]);
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Updating import options");
+
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a valid delimiter.");
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+  });
+
+  it("keeps confirmed data on reconfiguration failure and accepts a later successful replacement", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+
+    webviewPostMessage.mockClear();
+    const action = screen.getByRole("button", { name: "Import options" });
+    fireEvent.click(action);
+    expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }]);
+    expect(action).toBeDisabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+
+    dispatchAppMessage({
+      kind: "error",
+      code: "invalid_import_options",
+      message: "The selected encoding could not read this file.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected encoding could not read this file.");
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+
+    fireEvent.click(action);
+    expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }, { kind: "changeImportOptions" }]);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        revision: 1,
+        source: {
+          ...metadata.source,
+          importOptions: {
+            delimiter: ";",
+            encoding: "utf-8",
+            quoteChar: '"',
+            hasHeader: true
+          }
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+    expect(screen.queryByText("The selected encoding could not read this file.")).toBeNull();
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+  });
+
+  it("restores an accepted mutation without ending the host-owned import transaction", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    const action = screen.getByRole("button", { name: "Import options" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({
+      kind: "error",
+      code: "no_draft",
+      message: "There is no draft.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("There is no draft.");
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+  });
+
+  it("does not attribute an import cancellation to an older cleaning mutation", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    const action = screen.getByRole("button", { name: "Import options" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    expect(action).toBeDisabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("The cleaning operation was cancelled.")).toBeNull();
+
+    dispatchAppMessage({
+      kind: "error",
+      code: "no_draft",
+      message: "There is no draft.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+
+    expect(action).toBeEnabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("alert")).toHaveTextContent("There is no draft.");
+  });
+
+  it("disables the file action during a cleaning mutation and a column projection", async () => {
+    const wideSchema = Array.from({ length: 40 }, (_, position) => ({
+      id: `c:${position}`,
+      name: `column-${position}`,
+      position,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    }));
+    const wideMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 1, columns: wideSchema.length },
+      filteredShape: { rows: 1, columns: wideSchema.length },
+      schema: wideSchema
+    };
+    const widePage: GridPage = {
+      offset: 0,
+      limit: 200,
+      totalRows: 1,
+      columnIds: wideSchema.slice(0, 16).map((column) => column.id),
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: wideSchema.slice(0, 16).map((column) => ({
+            kind: "string" as const,
+            raw: column.name,
+            display: column.name,
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: wideMetadata, page: widePage, summaries: [] });
+    await screen.findByRole("cell", { name: "column-0" });
+    const action = screen.getByRole("button", { name: "Import options" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    expect(action).toBeDisabled();
+    dispatchAppMessage({
+      kind: "error",
+      code: "no_draft",
+      message: "There is no draft.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+    expect(action).toBeEnabled();
+
+    webviewPostMessage.mockClear();
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
+    scroller.scrollLeft = 20 * 190;
+    fireEvent.scroll(scroller);
+    await waitFor(() =>
+      expect(
+        webviewPostMessage.mock.calls.some(
+          ([message]) =>
+            message?.kind === "runtimeRequest" &&
+            message.request?.kind === "getPage" &&
+            message.request?.columnOffset === 16
+        )
+      ).toBe(true)
+    );
+    expect(action).toBeDisabled();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeDisabled();
+  });
+});
+
+function dispatchAppMessage(data: unknown): void {
+  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+}
+
+function outboundImportOptionMessages(): unknown[] {
+  return webviewPostMessage.mock.calls
+    .map(([message]) => message)
+    .filter((message) => message?.kind === "changeImportOptions");
+}

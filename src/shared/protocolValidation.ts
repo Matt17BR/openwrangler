@@ -556,19 +556,60 @@ function isSessionSource(value: unknown): boolean {
     optional(candidate, "path", isString) &&
     optional(candidate, "uri", isString) &&
     optional(candidate, "variableName", isString) &&
-    optional(candidate, "importOptions", isImportOptions)
+    optional(candidate, "importOptions", isImportOptions) &&
+    hasCompatibleImportOptions(candidate)
   );
 }
 
+function hasCompatibleImportOptions(source: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(source, "importOptions")) return true;
+  const options = source.importOptions;
+  if (!isRecord(options)) return false;
+  const keys = Object.keys(options);
+  if (keys.length === 0) return true;
+  if (source.kind !== "file") return false;
+  const extension = sourceExtension(source);
+  const excelFields = new Set(["sheetName", "sheetIndex"]);
+  const delimitedFields = new Set(["delimiter", "encoding", "quoteChar", "hasHeader"]);
+  if (extension === "xlsx" || extension === "xls") return keys.every((key) => excelFields.has(key));
+  if (extension === "csv" || extension === "tsv") return keys.every((key) => delimitedFields.has(key));
+  return false;
+}
+
+function sourceExtension(source: Record<string, unknown>): string | undefined {
+  const path = isNonEmptyString(source.path) ? source.path : undefined;
+  const uri = path === undefined && isNonEmptyString(source.uri) ? source.uri : undefined;
+  const label = path === undefined && uri === undefined && isNonEmptyString(source.label) ? source.label : undefined;
+  const location = path ?? uri ?? label;
+  if (location === undefined) return undefined;
+  const pathname = (uri === undefined ? location : (uri.split(/[?#]/u, 1)[0] ?? "")).replaceAll("\\", "/");
+  const fileName = pathname?.slice((pathname.lastIndexOf("/") ?? -1) + 1);
+  const separator = fileName?.lastIndexOf(".") ?? -1;
+  return separator > 0 && fileName ? fileName.slice(separator + 1).toLowerCase() : undefined;
+}
+
 function isImportOptions(value: unknown): boolean {
-  const candidate = exactRecord(value, [], ["delimiter", "encoding", "quoteChar", "hasHeader", "sheet"]);
+  const candidate = exactRecord(
+    value,
+    [],
+    ["delimiter", "encoding", "quoteChar", "hasHeader", "sheetName", "sheetIndex"]
+  );
+  if (candidate === undefined) return false;
+  const hasSheetName = Object.prototype.hasOwnProperty.call(candidate, "sheetName");
+  const hasSheetIndex = Object.prototype.hasOwnProperty.call(candidate, "sheetIndex");
+  const hasExcelSelector = hasSheetName || hasSheetIndex;
+  const hasDelimitedOption = ["delimiter", "encoding", "quoteChar", "hasHeader"].some((key) =>
+    Object.prototype.hasOwnProperty.call(candidate, key)
+  );
   return (
-    candidate !== undefined &&
     optional(candidate, "delimiter", isSingleCharacter) &&
-    optional(candidate, "encoding", isString) &&
+    optional(candidate, "encoding", isNonEmptyTrimmedString) &&
     optional(candidate, "quoteChar", isSingleCharacter) &&
     optional(candidate, "hasHeader", isBoolean) &&
-    optional(candidate, "sheet", (sheet) => isString(sheet) || isNonNegativeInteger(sheet))
+    optional(candidate, "sheetName", isNonEmptyTrimmedString) &&
+    optional(candidate, "sheetIndex", isNonNegativeSafeInteger) &&
+    !(hasSheetName && hasSheetIndex) &&
+    !(hasExcelSelector && hasDelimitedOption)
   );
 }
 
@@ -1522,6 +1563,10 @@ function isInteger(value: unknown): value is number {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function isPositiveInteger(value: unknown): value is number {

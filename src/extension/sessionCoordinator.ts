@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import type {
   ColumnSchema,
+  DataBackend,
   DataDiff,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -19,8 +20,9 @@ import type {
   StepInspectionResponse
 } from "../shared/protocol";
 import { isSessionBoundRequest } from "../shared/protocol";
+import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
-import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge, SessionPresentation } from "./dataBridge";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
 import {
   decodePersistedSession,
@@ -38,12 +40,14 @@ interface RuntimeSessionState {
   delegate: OpenWranglerBridge;
   metadata: SessionMetadata;
   code: string;
+  draftPresentation?: SessionPresentation["draft"];
   viewState: PersistedViewingState;
 }
 
 interface CoordinatedSession extends RuntimeSessionState {
   publicRevision: number;
   openRequest: OpenSessionRequest;
+  backendPreference?: DataBackend;
   notebookDocument?: vscode.NotebookDocument;
   activeViewContextId?: string;
   latestRequestedViewContextId?: string;
@@ -55,6 +59,7 @@ interface CoordinatedSession extends RuntimeSessionState {
   terminalOperation?: QueuedSessionOperation;
   idleWaiters: Set<() => void>;
   closing: boolean;
+  reconfiguring: boolean;
   recoveryRequired: boolean;
   stepInspection?: StepInspectionResponse;
   latestStepInspectionKey?: string;
@@ -69,7 +74,13 @@ interface QueuedSessionOperation {
 
 const SHUTDOWN_TIMEOUT_MS = 2_000;
 const RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
+
+class RuntimeStateRestoreError extends Error {}
+class ReconfigurationCancelledError extends Error {}
+class ReconfigurationSupersededError extends Error {}
+
 type DetachedRuntimeRole =
+  | "import candidate"
   | "recovery candidate"
   | "retired runtime"
   | "saved-plan fallback runtime"
@@ -108,6 +119,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private persistenceTail: Promise<void> = Promise.resolve();
   private shutdownPromise: Promise<void> | undefined;
   private readonly detachedCleanups = new Set<Promise<void>>();
+  private readonly detachedCleanupCounts = new Map<OpenWranglerBridge, number>();
   private readonly sessionEstablishmentTails = new WeakMap<OpenWranglerBridge, Promise<void>>();
 
   constructor(
@@ -120,9 +132,12 @@ export class SessionCoordinator implements vscode.Disposable {
   createBridge(delegate: OpenWranglerBridge, notebookDocument?: vscode.NotebookDocument): OpenWranglerBridge {
     return {
       request: (request, options) => this.request(delegate, request, options, notebookDocument),
+      reconfigureFileSession: (sessionId, revision, source, options) =>
+        this.reconfigureFileSession(delegate, sessionId, revision, source, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
       setViewContext: (sessionId, viewContextId) => this.setViewContext(sessionId, viewContextId),
       getViewState: (sessionId) => this.gridViewState(sessionId),
+      getSessionPresentation: (sessionId) => this.sessionPresentation(sessionId),
       updateViewState: (sessionId, state) => this.updateGridViewState(sessionId, state),
       clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
       setActiveSession: (sessionId) => this.setActive(sessionId)
@@ -159,9 +174,20 @@ export class SessionCoordinator implements vscode.Disposable {
     return session ? gridState(session.viewState) : undefined;
   }
 
+  private sessionPresentation(sessionId: string): SessionPresentation | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing) return undefined;
+    return {
+      sessionId: session.publicId,
+      revision: session.publicRevision,
+      code: session.code,
+      ...(session.draftPresentation ? { draft: session.draftPresentation } : {})
+    };
+  }
+
   private async updateGridViewState(sessionId: string, state: GridViewState): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session || session.closing) return;
+    if (!session || session.closing || session.reconfiguring) return;
     const next = reconcileViewingState({ ...state, filterModel: session.metadata.filterModel }, session.metadata);
     if (isDeepStrictEqual(next, session.viewState)) return;
     const selectedColumnChanged = next.selectedColumnId !== session.viewState.selectedColumnId;
@@ -174,7 +200,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private clearStepInspection(sessionId: string): void {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session || session.reconfiguring) return;
     const changed = Boolean(session.stepInspection || session.latestStepInspectionKey);
     this.invalidateStepInspection(session);
     if (changed && this.isLiveSession(session) && this.activeSessionId === session.publicId) {
@@ -279,6 +305,15 @@ export class SessionCoordinator implements vscode.Disposable {
         requestViewId(request)
       );
     }
+    if (request.kind !== "closeSession" && session.reconfiguring) {
+      return protocolError(
+        "session_reconfiguring",
+        `Open Wrangler session ${session.publicId} is changing its import options.`,
+        true,
+        session.publicId,
+        requestViewId(request)
+      );
+    }
     if (request.kind === "closeSession") {
       session.closing = true;
       this.cancelQueuedBackgroundOperations(session);
@@ -347,6 +382,7 @@ export class SessionCoordinator implements vscode.Disposable {
       publicRevision: response.metadata.revision,
       runtimeRevision: response.metadata.revision,
       openRequest: { ...request, backend: response.metadata.backend },
+      ...(request.backend ? { backendPreference: request.backend } : {}),
       ...(notebookDocument ? { notebookDocument } : {}),
       delegate,
       interactiveQueue: [],
@@ -356,6 +392,7 @@ export class SessionCoordinator implements vscode.Disposable {
       code: "",
       viewState: initialViewingState(response.metadata),
       closing: false,
+      reconfiguring: false,
       recoveryRequired: false
     };
     const staleNotebookOrigin = notebookDocument ? notebookOriginMismatch(request, notebookDocument) : undefined;
@@ -401,6 +438,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicRevision = clean.metadata.revision;
         session.metadata = clean.metadata;
         session.code = "";
+        session.draftPresentation = undefined;
         session.viewState = initialViewingState(clean.metadata);
         const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
         if (cleanMismatch) {
@@ -460,6 +498,341 @@ export class SessionCoordinator implements vscode.Disposable {
     this.sessions.set(publicId, session);
     this.setActive(publicId);
     return publicOpenedResponse(opened, publicId, session.publicRevision, session.openRequest.source);
+  }
+
+  private async reconfigureFileSession(
+    delegate: OpenWranglerBridge,
+    sessionId: string,
+    revision: number,
+    source: SessionSource,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    if (this.disposed) {
+      return protocolError(
+        "coordinator_disposed",
+        "The Open Wrangler session coordinator has been disposed.",
+        false,
+        sessionId
+      );
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session || session.delegate !== delegate) {
+      return protocolError("unknown_session", `Unknown Open Wrangler session: ${sessionId}`, true);
+    }
+    if (revision !== session.publicRevision) {
+      return protocolError(
+        "stale_request",
+        `Ignored stale import-options revision ${revision}; current revision is ${session.publicRevision}.`,
+        true,
+        session.publicId
+      );
+    }
+    if (session.closing) {
+      return protocolError(
+        "session_closing",
+        `Open Wrangler session ${session.publicId} is already closing.`,
+        true,
+        session.publicId
+      );
+    }
+    if (session.reconfiguring) {
+      return protocolError(
+        "session_reconfiguring",
+        `Open Wrangler session ${session.publicId} is already changing its import options.`,
+        true,
+        session.publicId
+      );
+    }
+    if (!sameFileSourceIdentity(session.openRequest.source, source)) {
+      return protocolError(
+        "invalid_import_source",
+        "Import options can be changed only for the same open file.",
+        true,
+        session.publicId
+      );
+    }
+    if (isDeepStrictEqual(session.openRequest.source.importOptions, source.importOptions)) {
+      return protocolError(
+        "import_options_unchanged",
+        "The selected import options are already active.",
+        true,
+        session.publicId
+      );
+    }
+    if (options?.cancellation?.isCancellationRequested) return reconfigurationCancelled(session.publicId);
+
+    session.reconfiguring = true;
+    this.cancelQueuedBackgroundOperations(session);
+    this.pendingOpens.set(delegate, (this.pendingOpens.get(delegate) ?? 0) + 1);
+    try {
+      await this.waitForSessionIdle(session);
+      if (!this.isLiveSession(session) || session.closing) {
+        return protocolError(
+          this.disposed ? "coordinator_disposed" : "session_closing",
+          this.disposed
+            ? "The Open Wrangler session coordinator was disposed while import options were changing."
+            : `Open Wrangler session ${session.publicId} closed while its import options were changing.`,
+          false,
+          session.publicId
+        );
+      }
+      if (revision !== session.publicRevision) {
+        return protocolError(
+          "stale_request",
+          `Import options were not changed because the session advanced to revision ${session.publicRevision}.`,
+          true,
+          session.publicId
+        );
+      }
+      if (options?.cancellation?.isCancellationRequested) return reconfigurationCancelled(session.publicId);
+      return await this.serializeSessionEstablishment(delegate, () =>
+        this.reconfigureFileSessionExclusive(session, source, options)
+      );
+    } finally {
+      session.reconfiguring = false;
+      const remaining = (this.pendingOpens.get(delegate) ?? 1) - 1;
+      if (remaining > 0) this.pendingOpens.set(delegate, remaining);
+      else this.pendingOpens.delete(delegate);
+      this.resolvePendingOpenWaitersIfIdle();
+      this.releaseDelegateIfIdle(delegate);
+    }
+  }
+
+  private async reconfigureFileSessionExclusive(
+    session: CoordinatedSession,
+    source: SessionSource,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse> {
+    if (!this.isLiveSession(session) || session.closing) {
+      return protocolError(
+        this.disposed ? "coordinator_disposed" : "session_closing",
+        "The file session closed before its new import options could be opened.",
+        false,
+        session.publicId
+      );
+    }
+
+    const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
+    const previous: RuntimeSessionState = {
+      publicId: session.publicId,
+      runtimeId: session.runtimeId,
+      runtimeRevision: session.runtimeRevision,
+      delegate: session.delegate,
+      metadata: session.metadata,
+      code: session.code,
+      viewState: session.viewState
+    };
+    const candidateSessionId = randomUUID();
+    const candidateRequest = replacementOpenRequest(session, source, candidateSessionId);
+    if (!isOpenWranglerRequest(candidateRequest)) {
+      return protocolError(
+        "invalid_import_options",
+        "The selected import options are not valid for an Open Wrangler file session.",
+        true,
+        session.publicId
+      );
+    }
+
+    let candidate: RuntimeSessionState | undefined;
+    let candidateCleanupAttempted = false;
+    const cleanupCandidate = async (): Promise<void> => {
+      if (candidateCleanupAttempted) return;
+      candidateCleanupAttempted = true;
+      await this.closeRuntimeState(
+        candidate ?? {
+          publicId: session.publicId,
+          runtimeId: candidateSessionId,
+          runtimeRevision: 0,
+          delegate: session.delegate,
+          metadata: session.metadata,
+          code: "",
+          viewState: session.viewState
+        },
+        "import candidate",
+        runtimeCleanupOptions(),
+        true
+      );
+    };
+    const recoverConfirmedRuntime = async (): Promise<void> => {
+      const recovered =
+        this.isLiveSession(session) &&
+        !session.closing &&
+        (await this.replayExclusive(session, runtimeRecoveryOptions(), false));
+      session.recoveryRequired = !recovered;
+    };
+
+    let response: OpenWranglerResponse;
+    try {
+      response = await session.delegate.request(candidateRequest, options);
+    } catch (error) {
+      await cleanupCandidate();
+      await recoverConfirmedRuntime();
+      return protocolError(
+        "import_reconfiguration_transport_failed",
+        `Open Wrangler could not confirm the new import session: ${error instanceof Error ? error.message : String(error)}`,
+        true,
+        session.publicId
+      );
+    }
+
+    if (response.kind === "error") {
+      await cleanupCandidate();
+      if (response.sessionId && response.sessionId !== candidateSessionId) {
+        return protocolError(
+          "invalid_runtime_response",
+          `Ignored a replacement error correlated to runtime session ${response.sessionId} instead of ${candidateSessionId}.`,
+          true,
+          session.publicId
+        );
+      }
+      return response.sessionId ? { ...response, sessionId: session.publicId } : response;
+    }
+    if (response.kind === "cancelled") {
+      await cleanupCandidate();
+      return response;
+    }
+    if (response.kind !== "sessionOpened") {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        `The runtime returned ${response.kind} while changing import options.`,
+        true,
+        session.publicId
+      );
+    }
+
+    candidate = {
+      publicId: session.publicId,
+      runtimeId: candidateSessionId,
+      runtimeRevision: response.metadata.revision,
+      delegate: session.delegate,
+      metadata: response.metadata,
+      code: "",
+      viewState: initialViewingState(response.metadata)
+    };
+    const openedMismatch = sessionOpenedResponseMismatch(candidateRequest, response, true);
+    if (openedMismatch) {
+      await cleanupCandidate();
+      return protocolError(
+        "invalid_runtime_response",
+        `Ignored an invalid replacement openSession response: ${openedMismatch}`,
+        true,
+        session.publicId
+      );
+    }
+    if (options?.cancellation?.isCancellationRequested) {
+      await cleanupCandidate();
+      return reconfigurationCancelled(session.publicId);
+    }
+    if (!this.isLiveSession(session) || session.closing) {
+      await cleanupCandidate();
+      return protocolError(
+        this.disposed ? "coordinator_disposed" : "session_closing",
+        "The file session closed before its replacement runtime could replay any state.",
+        false,
+        session.publicId
+      );
+    }
+
+    let page: PageResponse;
+    const assertCandidateCurrent = (): void => {
+      if (options?.cancellation?.isCancellationRequested) throw new ReconfigurationCancelledError();
+      if (!this.isLiveSession(session) || session.closing) throw new ReconfigurationSupersededError();
+    };
+    try {
+      await this.restoreCleaningState(
+        candidate,
+        persisted.cleaning,
+        candidateRequest.columnOffset,
+        candidateRequest.columnLimit,
+        options,
+        assertCandidateCurrent
+      );
+      assertCandidateCurrent();
+      page = await this.restoreOneViewingState(
+        candidate,
+        persisted.view,
+        candidateRequest.pageSize,
+        candidateRequest.columnOffset,
+        candidateRequest.columnLimit,
+        "saved",
+        options,
+        assertCandidateCurrent
+      );
+      assertCandidateCurrent();
+    } catch (error) {
+      await cleanupCandidate();
+      if (
+        !(error instanceof RuntimeStateRestoreError) &&
+        !(error instanceof ReconfigurationCancelledError) &&
+        !(error instanceof ReconfigurationSupersededError)
+      ) {
+        await recoverConfirmedRuntime();
+      }
+      if (error instanceof ReconfigurationSupersededError) {
+        return protocolError(
+          this.disposed ? "coordinator_disposed" : "session_closing",
+          "The file session closed while its replacement runtime was restoring state.",
+          false,
+          session.publicId
+        );
+      }
+      if (error instanceof ReconfigurationCancelledError || options?.cancellation?.isCancellationRequested) {
+        return reconfigurationCancelled(session.publicId);
+      }
+      return protocolError(
+        "import_state_replay_failed",
+        error instanceof RuntimeStateRestoreError
+          ? `${error.message} The active session was left unchanged.`
+          : `Open Wrangler could not confirm the replacement runtime: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        true,
+        session.publicId
+      );
+    }
+
+    if (!this.isLiveSession(session) || session.closing) {
+      await cleanupCandidate();
+      return protocolError(
+        this.disposed ? "coordinator_disposed" : "session_closing",
+        "The file session closed before its new import options could be committed.",
+        false,
+        session.publicId
+      );
+    }
+
+    const publicRevision = session.publicRevision + 1;
+    const wasActive = this.activeSessionId === session.publicId;
+    session.runtimeId = candidate.runtimeId;
+    session.runtimeRevision = candidate.runtimeRevision;
+    session.publicRevision = publicRevision;
+    session.openRequest = confirmedReplacementOpenRequest(candidateRequest, candidate.metadata.backend);
+    session.metadata = candidate.metadata;
+    session.code = candidate.code;
+    session.draftPresentation = candidate.draftPresentation;
+    session.viewState = candidate.viewState;
+    session.recoveryRequired = false;
+    session.activeViewContextId = undefined;
+    session.latestRequestedViewContextId = undefined;
+    session.latestRequestedPageRequestId = undefined;
+    this.invalidateStepInspection(session);
+    candidateCleanupAttempted = true;
+    candidate = undefined;
+    if (wasActive) this.activeSessionEmitter.fire(activeSnapshot(session));
+    this.trackDetachedCleanup(previous, "retired runtime");
+    await this.persistSession(session);
+    return publicOpenedResponse(
+      {
+        kind: "sessionOpened",
+        metadata: session.metadata,
+        page: page.page,
+        summaries: []
+      },
+      session.publicId,
+      publicRevision,
+      source
+    );
   }
 
   private enqueueSessionRequest(
@@ -571,7 +944,7 @@ export class SessionCoordinator implements vscode.Disposable {
 
   private setViewContext(sessionId: string, viewContextId: string): void {
     const session = this.sessions.get(sessionId);
-    if (!session || session.closing) return;
+    if (!session || session.closing || session.reconfiguring) return;
     session.activeViewContextId = viewContextId;
     session.latestRequestedViewContextId = viewContextId;
   }
@@ -688,7 +1061,12 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
 
-    const mismatch = responseMismatch(publicRequest, response, requestRuntimeId, session.metadata.schema);
+    const validationRequest = {
+      ...publicRequest,
+      sessionId: requestRuntimeId,
+      revision: requestRuntimeRevision
+    } as SessionBoundRequest;
+    const mismatch = responseMismatch(validationRequest, response, requestRuntimeId, session.metadata.schema);
     if (mismatch) {
       if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
       return protocolError(
@@ -779,6 +1157,17 @@ export class SessionCoordinator implements vscode.Disposable {
         session.activeViewContextId !== undefined &&
         options?.viewContextId !== session.activeViewContextId
       );
+      const draftPresentation: SessionPresentation["draft"] | undefined =
+        response.kind === "stepPreview"
+          ? {
+              diff: response.diff,
+              warnings: [...(response.warnings ?? [])],
+              beforeSchema:
+                response.metadata.draftReplacesStepId === undefined
+                  ? session.metadata.schema
+                  : (response.metadata.latestStepInputSchema ?? session.metadata.schema)
+            }
+          : undefined;
       const commitState = (): void => {
         if (pageRequest) {
           session.activeViewContextId = options?.viewContextId;
@@ -794,7 +1183,10 @@ export class SessionCoordinator implements vscode.Disposable {
           session.viewState = nextViewState;
         }
         if (viewContextChanged) session.metadata = withoutDatasetStats(session.metadata);
-        if (response.kind === "stepPreview" || response.kind === "planUpdated") session.code = response.code;
+        if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+          session.code = response.code;
+          session.draftPresentation = draftPresentation;
+        }
       };
       if (pageRequest && stateChanged) {
         const committed = await this.persistCurrentPage(
@@ -882,8 +1274,9 @@ export class SessionCoordinator implements vscode.Disposable {
     request: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
+    const cleanupOptions = terminalRuntimeCleanupOptions(options);
     try {
-      const response = await session.delegate.request(request, options);
+      const response = await session.delegate.request(request, cleanupOptions);
       if (response.kind === "sessionClosed" && response.sessionId === session.runtimeId) {
         return { ...response, sessionId: session.publicId };
       }
@@ -1076,9 +1469,12 @@ export class SessionCoordinator implements vscode.Disposable {
     cleaning: PersistedCleaningState,
     columnOffset: number,
     columnLimit: number,
-    options?: BridgeRequestOptions
+    options?: BridgeRequestOptions,
+    assertCurrent?: () => void
   ): Promise<void> {
+    session.draftPresentation = undefined;
     for (const step of cleaning.steps) {
+      assertCurrent?.();
       const previewRequest: SessionBoundRequest = {
         kind: "previewStep",
         sessionId: session.runtimeId,
@@ -1090,11 +1486,12 @@ export class SessionCoordinator implements vscode.Disposable {
         columnLimit
       };
       const preview = await session.delegate.request(previewRequest, options);
+      assertCurrent?.();
       if (
         preview.kind !== "stepPreview" ||
         responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
       ) {
-        throw new Error("Could not replay a cleaning step.");
+        throw new RuntimeStateRestoreError("Open Wrangler could not replay a cleaning step.");
       }
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
@@ -1109,8 +1506,9 @@ export class SessionCoordinator implements vscode.Disposable {
         columnLimit
       };
       const applied = await session.delegate.request(applyRequest, options);
+      assertCurrent?.();
       if (applied.kind !== "planUpdated" || responseMismatch(applyRequest, applied, session.runtimeId) !== undefined) {
-        throw new Error("Could not apply a replayed cleaning step.");
+        throw new RuntimeStateRestoreError("Open Wrangler could not apply a replayed cleaning step.");
       }
       session.runtimeRevision = applied.revision;
       session.metadata = applied.metadata;
@@ -1118,6 +1516,8 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     if (cleaning.draftStep) {
+      assertCurrent?.();
+      const committedSchema = session.metadata.schema;
       const previewRequest: SessionBoundRequest = {
         kind: "previewStep",
         sessionId: session.runtimeId,
@@ -1130,15 +1530,24 @@ export class SessionCoordinator implements vscode.Disposable {
         columnLimit
       };
       const preview = await session.delegate.request(previewRequest, options);
+      assertCurrent?.();
       if (
         preview.kind !== "stepPreview" ||
         responseMismatch(previewRequest, preview, session.runtimeId) !== undefined
       ) {
-        throw new Error("Could not restore the draft cleaning step.");
+        throw new RuntimeStateRestoreError("Open Wrangler could not restore the draft cleaning step.");
       }
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
       session.code = preview.code;
+      session.draftPresentation = {
+        diff: preview.diff,
+        warnings: [...(preview.warnings ?? [])],
+        beforeSchema:
+          preview.metadata.draftReplacesStepId === undefined
+            ? committedSchema
+            : (preview.metadata.latestStepInputSchema ?? committedSchema)
+      };
     }
   }
 
@@ -1190,7 +1599,8 @@ export class SessionCoordinator implements vscode.Disposable {
     columnOffset: number,
     columnLimit: number,
     label: "saved" | "empty",
-    options?: BridgeRequestOptions
+    options?: BridgeRequestOptions,
+    assertCurrent?: () => void
   ): Promise<PageResponse> {
     const restoredPageSize = Math.max(1, pageSize);
     const desiredOffset = Math.floor(view.viewport.firstVisibleRow / restoredPageSize) * restoredPageSize;
@@ -1206,17 +1616,20 @@ export class SessionCoordinator implements vscode.Disposable {
         columnLimit,
         filterModel: view.filterModel
       };
+      assertCurrent?.();
       const response = await session.delegate.request(pageRequest, options);
+      assertCurrent?.();
       if (
         response.kind !== "page" ||
         responseMismatch(pageRequest, response, session.runtimeId, session.metadata.schema) !== undefined
       ) {
-        throw new Error("Could not restore the saved viewing query.");
+        throw new RuntimeStateRestoreError("Open Wrangler could not restore the confirmed view.");
       }
       return response;
     };
     let page = await requestPage(desiredOffset);
     if (page.page.totalRows > 0 && desiredOffset >= page.page.totalRows) {
+      assertCurrent?.();
       const finalOffset = Math.floor((page.page.totalRows - 1) / restoredPageSize) * restoredPageSize;
       page = await requestPage(finalOffset, `${label}-bounded`);
     }
@@ -1244,7 +1657,11 @@ export class SessionCoordinator implements vscode.Disposable {
     return result;
   }
 
-  private async replayExclusive(session: CoordinatedSession, options?: BridgeRequestOptions): Promise<boolean> {
+  private async replayExclusive(
+    session: CoordinatedSession,
+    options?: BridgeRequestOptions,
+    publishActive = true
+  ): Promise<boolean> {
     if (!this.isLiveSession(session) || session.closing) return false;
     if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) return false;
     const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
@@ -1273,7 +1690,7 @@ export class SessionCoordinator implements vscode.Disposable {
       if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) {
         throw new Error("The originating notebook became ambiguous while recovery was opening its runtime session.");
       }
-      const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response);
+      const openedMismatch = sessionOpenedResponseMismatch(session.openRequest, response, true);
       if (openedMismatch) throw new Error(openedMismatch);
       await this.restoreRuntimeState(
         candidate,
@@ -1300,9 +1717,11 @@ export class SessionCoordinator implements vscode.Disposable {
     session.runtimeRevision = candidate.runtimeRevision;
     session.metadata = candidate.metadata;
     session.code = candidate.code;
+    session.draftPresentation = candidate.draftPresentation;
     session.viewState = candidate.viewState;
     this.clearPublishedStepInspection(session);
-    this.setActive(session.publicId);
+    if (publishActive && this.activeSessionId === session.publicId)
+      this.activeSessionEmitter.fire(activeSnapshot(session));
     this.trackDetachedCleanup(previous, "retired runtime");
     return true;
   }
@@ -1310,7 +1729,15 @@ export class SessionCoordinator implements vscode.Disposable {
   private trackDetachedCleanup(state: RuntimeSessionState, role: DetachedRuntimeRole): void {
     const cleanup = this.closeRuntimeState(state, role);
     this.detachedCleanups.add(cleanup);
-    void cleanup.finally(() => this.detachedCleanups.delete(cleanup));
+    this.detachedCleanupCounts.set(state.delegate, (this.detachedCleanupCounts.get(state.delegate) ?? 0) + 1);
+    const complete = (): void => {
+      this.detachedCleanups.delete(cleanup);
+      const remaining = (this.detachedCleanupCounts.get(state.delegate) ?? 1) - 1;
+      if (remaining > 0) this.detachedCleanupCounts.set(state.delegate, remaining);
+      else this.detachedCleanupCounts.delete(state.delegate);
+      this.releaseDelegateIfIdle(state.delegate);
+    };
+    void cleanup.then(complete, complete);
   }
 
   private async waitForDetachedCleanups(): Promise<void> {
@@ -1319,7 +1746,12 @@ export class SessionCoordinator implements vscode.Disposable {
     }
   }
 
-  private async closeRuntimeState(state: RuntimeSessionState, role: DetachedRuntimeRole): Promise<void> {
+  private async closeRuntimeState(
+    state: RuntimeSessionState,
+    role: DetachedRuntimeRole,
+    options: BridgeRequestOptions = runtimeCleanupOptions(),
+    unknownSessionIsClean = false
+  ): Promise<void> {
     try {
       const response = await state.delegate.request(
         {
@@ -1327,9 +1759,10 @@ export class SessionCoordinator implements vscode.Disposable {
           sessionId: state.runtimeId,
           revision: state.runtimeRevision
         },
-        runtimeCleanupOptions()
+        options
       );
       if (response.kind === "sessionClosed" && response.sessionId === state.runtimeId) return;
+      if (unknownSessionIsClean && isConfirmedAbsentSession(response)) return;
       this.reportRuntimeCleanupDiagnostic(state, role, cleanupResponseDescription(response, state.runtimeId));
     } catch (error) {
       this.reportRuntimeCleanupDiagnostic(state, role, error instanceof Error ? error.message : String(error));
@@ -1353,6 +1786,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private releaseDelegateIfIdle(delegate: OpenWranglerBridge): void {
     if (
       !this.pendingOpens.has(delegate) &&
+      !this.detachedCleanupCounts.has(delegate) &&
       ![...this.sessions.values()].some((session) => session.delegate === delegate)
     ) {
       delegate.onIdle?.();
@@ -1376,6 +1810,45 @@ function isPersistentSource(source: SessionSource): boolean {
   // Saved notebook outputs are bounded value snapshots, not reopenable source
   // data. Their rows and viewing state stay in memory only for the owning panel.
   return source.kind !== "notebookOutput";
+}
+
+function sameFileSourceIdentity(current: SessionSource, replacement: SessionSource): boolean {
+  if (current.kind !== "file" || replacement.kind !== "file") return false;
+  const { importOptions: _currentImportOptions, ...currentIdentity } = current;
+  const { importOptions: _replacementImportOptions, ...replacementIdentity } = replacement;
+  return isDeepStrictEqual(currentIdentity, replacementIdentity);
+}
+
+function replacementOpenRequest(
+  session: CoordinatedSession,
+  source: SessionSource,
+  requestedSessionId: string
+): OpenSessionRequest {
+  const {
+    source: _previousSource,
+    backend: _confirmedBackend,
+    requestedSessionId: _previousRequestedSessionId,
+    ...stableRequest
+  } = session.openRequest;
+  return {
+    ...stableRequest,
+    kind: "openSession",
+    source,
+    requestedSessionId,
+    ...(session.backendPreference ? { backend: session.backendPreference } : {})
+  };
+}
+
+function confirmedReplacementOpenRequest(request: OpenSessionRequest, backend: DataBackend): OpenSessionRequest {
+  const { requestedSessionId: _requestedSessionId, ...stableRequest } = request;
+  return { ...stableRequest, backend };
+}
+
+function reconfigurationCancelled(sessionId: string): OpenWranglerResponse {
+  return {
+    kind: "cancelled",
+    targetRequestId: `reconfigure-import:${sessionId}`
+  };
 }
 
 function takeTerminalOperation(session: CoordinatedSession): QueuedSessionOperation | undefined {
@@ -1546,8 +2019,24 @@ function responseMismatch(
 
 function sessionOpenedResponseMismatch(
   request: OpenSessionRequest,
-  response: SessionOpenedResponse
+  response: SessionOpenedResponse,
+  strictIdentity = false
 ): string | undefined {
+  if (strictIdentity && request.requestedSessionId && response.metadata.sessionId !== request.requestedSessionId) {
+    return `metadata named runtime session ${response.metadata.sessionId} instead of requested session ${request.requestedSessionId}`;
+  }
+  if (strictIdentity && request.backend && response.metadata.backend !== request.backend) {
+    return `metadata reported backend ${response.metadata.backend} instead of requested backend ${request.backend}`;
+  }
+  if (strictIdentity && request.mode && response.metadata.mode !== request.mode) {
+    return `metadata reported mode ${response.metadata.mode} instead of requested mode ${request.mode}`;
+  }
+  if (strictIdentity && !isDeepStrictEqual(response.metadata.source, request.source)) {
+    return "metadata reported a different immutable source";
+  }
+  if (response.metadata.revision < 0 || !Number.isSafeInteger(response.metadata.revision)) {
+    return `metadata reported invalid revision ${response.metadata.revision}`;
+  }
   if (response.page.offset !== 0) return `page offset ${response.page.offset} did not match 0`;
   if (response.page.limit !== request.pageSize) {
     return `page limit ${response.page.limit} did not match ${request.pageSize}`;
@@ -1615,12 +2104,31 @@ function runtimeCleanupOptions(): BridgeRequestOptions {
   return {
     priority: "interactive",
     timeoutMs: RUNTIME_CLEANUP_TIMEOUT_MS,
-    restartRuntimeOnTimeout: false
+    restartRuntimeOnTimeout: false,
+    startRuntimeIfNeeded: false
+  };
+}
+
+function terminalRuntimeCleanupOptions(options?: BridgeRequestOptions): BridgeRequestOptions {
+  return {
+    ...options,
+    priority: "interactive",
+    timeoutMs: options?.timeoutMs ?? RUNTIME_CLEANUP_TIMEOUT_MS,
+    restartRuntimeOnTimeout: false,
+    startRuntimeIfNeeded: false
   };
 }
 
 function runtimeRecoveryOptions(): BridgeRequestOptions {
   return { priority: "interactive" };
+}
+
+function isConfirmedAbsentSession(response: OpenWranglerResponse): boolean {
+  return (
+    response.kind === "error" &&
+    (response.code === "unknown_session" ||
+      (response.code === "engine_error" && response.message.startsWith("Unknown session:")))
+  );
 }
 
 function cleanupResponseDescription(response: OpenWranglerResponse, expectedSessionId: string): string {

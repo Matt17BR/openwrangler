@@ -1,4 +1,10 @@
-import type { OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
+import type {
+  ColumnSchema,
+  DataDiff,
+  OpenWranglerRequest,
+  OpenWranglerResponse,
+  SessionSource
+} from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
 
 export interface CancellationTokenLike {
@@ -12,18 +18,44 @@ export interface BridgeRequestOptions {
   timeoutMs?: number;
   /** Restarts the shared standalone runtime after a timeout unless explicitly disabled. */
   restartRuntimeOnTimeout?: boolean;
+  /** For bounded cleanup, return an unknown-session response instead of starting or reacquiring a runtime. */
+  startRuntimeIfNeeded?: boolean;
   /** Opaque identifier for the logical view that owns a profiling request. */
   viewContextId?: string;
 }
 
+export interface SessionPresentation {
+  sessionId: string;
+  revision: number;
+  code: string;
+  draft?: {
+    diff: DataDiff;
+    warnings: string[];
+    beforeSchema: ColumnSchema[];
+  };
+}
+
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
+  /**
+   * Atomically replaces the private runtime behind an existing file session
+   * after opening the same source with different import options. This is a
+   * host-only lifecycle operation and is intentionally absent from protocol v2.
+   */
+  reconfigureFileSession?(
+    sessionId: string,
+    revision: number,
+    source: SessionSource,
+    options?: BridgeRequestOptions
+  ): Promise<OpenWranglerResponse>;
   /** Drops queued profiling/value work for views the webview no longer needs. Active work is left alone. */
   cancelViewRequests?(sessionId: string, viewRequestIds: readonly string[]): void;
   /** Confirms the opaque logical view currently shown by a webview. */
   setViewContext?(sessionId: string, viewContextId: string): void;
   /** Returns the host-owned grid presentation for a live session. */
   getViewState?(sessionId: string): GridViewState | undefined;
+  /** Returns generated code and any confirmed draft presentation for panel recreation or runtime replacement. */
+  getSessionPresentation?(sessionId: string): SessionPresentation | undefined;
   /** Persists a validated non-destructive grid presentation update. */
   updateViewState?(sessionId: string, state: GridViewState): Promise<void>;
   /** Clears the bounded, host-only applied-step inspection without changing the dataframe view. */

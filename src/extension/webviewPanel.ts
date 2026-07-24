@@ -11,8 +11,12 @@ import type {
 } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { decodeGridViewState, type GridViewState } from "../shared/viewState";
-import type { OpenWranglerBridge } from "./dataBridge";
+import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { getSetting } from "./configuration";
+import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigurations";
+import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
+
+const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
@@ -24,6 +28,12 @@ export class OpenWranglerPanel {
   private latestPageViewRequestId: string | undefined;
   private opening: Promise<void> | undefined;
   private openResponse: OpenWranglerResponse | undefined;
+  private importChangeTail: Promise<void> = Promise.resolve();
+  private importChangeCancellation: vscode.CancellationTokenSource | undefined;
+  private readonly forwardedRequests = new Set<Promise<void>>();
+  private changingImportOptions = false;
+  private unpublishedAuthoritativeSnapshot = false;
+  private openAttemptGeneration = 0;
   private closing: Promise<OpenWranglerResponse> | undefined;
   private disposed = false;
   private readonly disposables: vscode.Disposable[] = [];
@@ -32,7 +42,7 @@ export class OpenWranglerPanel {
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
     private readonly bridge: OpenWranglerBridge,
-    private readonly source: SessionSource,
+    private source: SessionSource,
     private readonly backend?: DataBackend,
     openImmediately = true
   ) {
@@ -48,11 +58,12 @@ export class OpenWranglerPanel {
     this.panel.webview.html = this.renderHtml();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     OpenWranglerPanel.panels.add(this);
-    this.activate();
+    if (this.panel.active) this.activate();
     if (openImmediately) void this.open();
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
+        else this.deactivate();
       },
       undefined,
       this.disposables
@@ -61,7 +72,7 @@ export class OpenWranglerPanel {
 
   static sendEditorAction(message: EditorActionMessage): boolean {
     const active = OpenWranglerPanel.activePanel;
-    if (!active) return false;
+    if (!active?.panel.active) return false;
     if (message.action === "openOperation" || message.action === "editLatest" || message.action === "selectStep") {
       active.panel.reveal(active.panel.viewColumn, false);
     }
@@ -75,6 +86,13 @@ export class OpenWranglerPanel {
     target.dispose();
     target.panel.dispose();
     return target.closing;
+  }
+
+  static async changeActiveImportOptions(): Promise<boolean> {
+    const active = OpenWranglerPanel.activePanel;
+    if (!active?.panel.active || !canChangeImportOptions(active.source)) return false;
+    await active.enqueueImportOptionsChange();
+    return true;
   }
 
   static create(
@@ -104,7 +122,7 @@ export class OpenWranglerPanel {
 
   async open(): Promise<void> {
     if (this.opening) return this.opening;
-    if (this.disposed) return;
+    if (this.disposed || this.sessionId) return;
     const pageSize = getSetting<number>("fetchBlockSize", 200);
     const columnLimit = fetchColumnBlockSize();
     const isFile = this.source.kind === "file";
@@ -112,32 +130,55 @@ export class OpenWranglerPanel {
       isFile ? "fileStartMode" : "notebookStartMode",
       isFile ? "editing" : "viewing"
     );
-    this.opening = this.forward({
-      kind: "openSession",
-      source: this.source,
-      backend: this.backend,
-      pageSize,
-      columnOffset: 0,
-      columnLimit,
-      mode
-    });
-    await this.opening;
+    const generation = ++this.openAttemptGeneration;
+    const cancellation = new vscode.CancellationTokenSource();
+    this.importChangeCancellation?.cancel();
+    this.importChangeCancellation?.dispose();
+    this.importChangeCancellation = cancellation;
+    const opening = this.forward(
+      {
+        kind: "openSession",
+        source: this.source,
+        backend: this.backend,
+        pageSize,
+        columnOffset: 0,
+        columnLimit,
+        mode
+      },
+      undefined,
+      { cancellation: cancellation.token },
+      generation
+    );
+    this.opening = opening;
+    try {
+      await opening;
+    } finally {
+      if (this.opening === opening) this.opening = undefined;
+      if (this.importChangeCancellation === cancellation) {
+        this.importChangeCancellation = undefined;
+        cancellation.dispose();
+      }
+    }
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.openAttemptGeneration += 1;
+    this.importChangeCancellation?.cancel();
+    this.importChangeCancellation?.dispose();
+    this.importChangeCancellation = undefined;
     OpenWranglerPanel.panels.delete(this);
-    if (OpenWranglerPanel.activePanel === this) {
-      OpenWranglerPanel.activePanel = undefined;
-      this.bridge.setActiveSession?.(undefined);
-    }
+    this.deactivate();
     if (this.sessionId) {
-      this.closing = this.bridge.request({
-        kind: "closeSession",
-        sessionId: this.sessionId,
-        revision: this.sessionRevision
-      });
+      this.closing = this.bridge.request(
+        {
+          kind: "closeSession",
+          sessionId: this.sessionId,
+          revision: this.sessionRevision
+        },
+        panelRuntimeCleanupOptions()
+      );
       void this.closing.catch(() => undefined);
       this.sessionId = undefined;
     }
@@ -157,7 +198,9 @@ export class OpenWranglerPanel {
       await this.postStepInspectionCleared(false);
       if (this.snapshot) {
         await this.post(this.snapshot);
+        await this.postSessionPresentation();
         await this.postViewState();
+        this.unpublishedAuthoritativeSnapshot = false;
         return;
       }
       if (this.openResponse) {
@@ -191,6 +234,22 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "changeImportOptions") {
+      await this.enqueueImportOptionsChange();
+      return;
+    }
+
+    if (this.changingImportOptions) {
+      await this.post({
+        kind: "error",
+        code: "session_reconfiguring",
+        message: "Wait for the current import-options change to finish.",
+        recoverable: true,
+        ...viewRequestIdProperty(decoded.request)
+      });
+      return;
+    }
+
     if (!this.sessionId) {
       await this.post({
         kind: "error",
@@ -215,20 +274,226 @@ export class OpenWranglerPanel {
     await this.forward(request, decoded.viewContextId);
   }
 
-  private async forward(request: OpenWranglerRequest, viewContextId?: string): Promise<void> {
+  private enqueueImportOptionsChange(): Promise<void> {
+    const generation = ++this.openAttemptGeneration;
+    this.importChangeCancellation?.cancel();
+    const task = this.importChangeTail.catch(() => undefined).then(() => this.changeImportOptions(generation));
+    this.importChangeTail = task.catch(() => undefined);
+    return task;
+  }
+
+  private async changeImportOptions(generation: number): Promise<void> {
+    if (this.disposed || generation !== this.openAttemptGeneration || !canChangeImportOptions(this.source)) {
+      return;
+    }
+    if (this.opening) {
+      this.importChangeCancellation?.cancel();
+      await this.opening.catch(() => undefined);
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+    }
+
+    const cancellation = new vscode.CancellationTokenSource();
+    this.importChangeCancellation?.dispose();
+    this.importChangeCancellation = cancellation;
+    const announceBusy = !this.changingImportOptions;
+    this.changingImportOptions = true;
+    try {
+      if (announceBusy) {
+        await this.panel.webview.postMessage({ kind: "importOptionsState", busy: true });
+      }
+      if (this.sessionId) {
+        await this.drainForwardedRequests();
+        if (this.disposed || generation !== this.openAttemptGeneration) return;
+        if (cancellation.token.isCancellationRequested) {
+          await this.postUnpublishedAuthoritativeSnapshot();
+          await this.post(reconfigurationCancelledResponse());
+          return;
+        }
+      }
+      const uri = fileSourceUri(this.source);
+      if (!uri) {
+        await this.postUnpublishedAuthoritativeSnapshot();
+        await this.post({
+          kind: "error",
+          code: "invalid_import_source",
+          message: "Open Wrangler cannot resolve the file behind this session.",
+          recoverable: true
+        });
+        return;
+      }
+
+      let importOptions: NonNullable<SessionSource["importOptions"]> | undefined;
+      try {
+        importOptions = await promptImportOptions(uri, this.source.importOptions, cancellation.token);
+      } catch (error) {
+        if (error instanceof ImportCancelledError) {
+          if (this.disposed || generation !== this.openAttemptGeneration) return;
+          await this.postUnpublishedAuthoritativeSnapshot();
+          await this.post(reconfigurationCancelledResponse());
+          return;
+        }
+        throw error;
+      }
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      if (cancellation.token.isCancellationRequested) {
+        await this.postUnpublishedAuthoritativeSnapshot();
+        await this.post(reconfigurationCancelledResponse());
+        return;
+      }
+
+      const nextSource: SessionSource = {
+        ...this.source,
+        ...(importOptions === undefined ? { importOptions: undefined } : { importOptions })
+      };
+      if (!this.sessionId) {
+        const previousSource = this.source;
+        this.source = nextSource;
+        await this.forward(
+          this.fileOpenRequest(nextSource),
+          undefined,
+          { cancellation: cancellation.token },
+          generation
+        );
+        if (!this.sessionId) this.source = previousSource;
+        return;
+      }
+
+      if (!this.bridge.reconfigureFileSession) {
+        await this.postUnpublishedAuthoritativeSnapshot();
+        await this.post({
+          kind: "error",
+          code: "import_reconfiguration_unavailable",
+          message: "This Open Wrangler session does not support changing import options.",
+          recoverable: true
+        });
+        return;
+      }
+      const response = await this.bridge.reconfigureFileSession(this.sessionId, this.sessionRevision, nextSource, {
+        cancellation: cancellation.token
+      });
+      if (response.kind === "sessionOpened") {
+        this.source = response.metadata.source;
+        this.openResponse = response;
+        this.sessionId = response.metadata.sessionId;
+        this.sessionRevision = response.metadata.revision;
+        this.snapshot = response;
+        this.snapshotViewContextId = undefined;
+        this.latestPageViewRequestId = undefined;
+        this.unpublishedAuthoritativeSnapshot = true;
+        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
+      }
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      if (response.kind === "sessionOpened") {
+        if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
+      }
+      if (response.kind !== "sessionOpened") await this.postUnpublishedAuthoritativeSnapshot();
+      await this.post(response);
+      if (response.kind === "sessionOpened") {
+        this.unpublishedAuthoritativeSnapshot = false;
+        await this.postSessionPresentation();
+        await this.postViewState();
+      }
+    } catch (error) {
+      if (this.disposed || generation !== this.openAttemptGeneration) return;
+      await this.postUnpublishedAuthoritativeSnapshot();
+      await this.post({
+        kind: "error",
+        code: "bridge_error",
+        message: error instanceof Error ? error.message : String(error),
+        recoverable: true
+      });
+    } finally {
+      if (this.importChangeCancellation === cancellation) {
+        this.importChangeCancellation = undefined;
+        cancellation.dispose();
+      }
+      if (!this.disposed && generation === this.openAttemptGeneration) {
+        this.changingImportOptions = false;
+        await this.panel.webview.postMessage({ kind: "importOptionsState", busy: false });
+      }
+    }
+  }
+
+  private fileOpenRequest(source: SessionSource): Extract<OpenWranglerRequest, { kind: "openSession" }> {
+    const pageSize = getSetting<number>("fetchBlockSize", 200);
+    return {
+      kind: "openSession",
+      source,
+      backend: this.backend,
+      pageSize,
+      columnOffset: 0,
+      columnLimit: fetchColumnBlockSize(),
+      mode: getSetting<"editing" | "viewing">("fileStartMode", "editing")
+    };
+  }
+
+  private forward(
+    request: OpenWranglerRequest,
+    viewContextId?: string,
+    requestOptions?: BridgeRequestOptions,
+    openAttemptGeneration?: number
+  ): Promise<void> {
+    const task = this.forwardRequest(request, viewContextId, requestOptions, openAttemptGeneration);
+    this.forwardedRequests.add(task);
+    void task.then(
+      () => this.forwardedRequests.delete(task),
+      () => this.forwardedRequests.delete(task)
+    );
+    return task;
+  }
+
+  private async drainForwardedRequests(): Promise<void> {
+    while (this.forwardedRequests.size > 0) {
+      await Promise.allSettled([...this.forwardedRequests]);
+    }
+  }
+
+  private async forwardRequest(
+    request: OpenWranglerRequest,
+    viewContextId?: string,
+    requestOptions?: BridgeRequestOptions,
+    openAttemptGeneration?: number
+  ): Promise<void> {
     if (request.kind === "getPage") this.latestPageViewRequestId = request.viewRequestId;
     try {
-      const response = correlateViewError(
-        request,
-        await this.bridge.request(request, viewContextId ? { viewContextId } : undefined)
-      );
+      const bridgeOptions: BridgeRequestOptions | undefined =
+        viewContextId || requestOptions
+          ? {
+              ...requestOptions,
+              ...(viewContextId ? { viewContextId } : {})
+            }
+          : undefined;
+      const response = correlateViewError(request, await this.bridge.request(request, bridgeOptions));
+      if (request.kind === "openSession" && response.kind === "sessionOpened") {
+        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
+      }
+      if (
+        request.kind === "openSession" &&
+        openAttemptGeneration !== undefined &&
+        openAttemptGeneration !== this.openAttemptGeneration
+      ) {
+        if (response.kind === "sessionOpened") {
+          await this.bridge.request(
+            {
+              kind: "closeSession",
+              sessionId: response.metadata.sessionId,
+              revision: response.metadata.revision
+            },
+            panelRuntimeCleanupOptions()
+          );
+        }
+        return;
+      }
       if (this.disposed) {
         if (response.kind === "sessionOpened") {
-          await this.bridge.request({
-            kind: "closeSession",
-            sessionId: response.metadata.sessionId,
-            revision: response.metadata.revision
-          });
+          await this.bridge.request(
+            {
+              kind: "closeSession",
+              sessionId: response.metadata.sessionId,
+              revision: response.metadata.revision
+            },
+            panelRuntimeCleanupOptions()
+          );
         }
         return;
       }
@@ -290,10 +555,19 @@ export class OpenWranglerPanel {
         };
       }
       await this.postRuntimeResponse(request, response);
+      if (response.kind === "sessionOpened") await this.postSessionPresentation();
       if (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         await this.postViewState();
       }
     } catch (error) {
+      if (this.disposed) return;
+      if (
+        request.kind === "openSession" &&
+        openAttemptGeneration !== undefined &&
+        openAttemptGeneration !== this.openAttemptGeneration
+      ) {
+        return;
+      }
       const response: OpenWranglerResponse = {
         kind: "error",
         code: "bridge_error",
@@ -307,6 +581,7 @@ export class OpenWranglerPanel {
   }
 
   private async post(response: OpenWranglerResponse): Promise<void> {
+    if (this.disposed) return;
     await this.panel.webview.postMessage(response);
   }
 
@@ -318,7 +593,19 @@ export class OpenWranglerPanel {
       if (previous) void previous.postStepInspectionCleared(false);
       void this.postStepInspectionCleared(true);
     }
+    void vscode.commands.executeCommand(
+      "setContext",
+      "openWrangler.canChangeImportOptions",
+      canChangeImportOptions(this.source)
+    );
     this.bridge.setActiveSession?.(this.sessionId);
+  }
+
+  private deactivate(): void {
+    if (OpenWranglerPanel.activePanel !== this) return;
+    OpenWranglerPanel.activePanel = undefined;
+    this.bridge.setActiveSession?.(undefined);
+    void vscode.commands.executeCommand("setContext", "openWrangler.canChangeImportOptions", false);
   }
 
   private async postStepInspectionCleared(resumeProfiling: boolean): Promise<void> {
@@ -348,6 +635,36 @@ export class OpenWranglerPanel {
     if (state) await this.panel.webview.postMessage({ kind: "viewState", state });
   }
 
+  private async postSessionPresentation(): Promise<void> {
+    if (!this.sessionId) return;
+    const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
+    if (presentation && presentation.sessionId === this.sessionId && presentation.revision === this.sessionRevision) {
+      await this.panel.webview.postMessage({ kind: "sessionPresentation", presentation });
+    }
+  }
+
+  private async postUnpublishedAuthoritativeSnapshot(): Promise<void> {
+    if (!this.unpublishedAuthoritativeSnapshot || !this.snapshot) return;
+    this.unpublishedAuthoritativeSnapshot = false;
+    await this.post(this.snapshot);
+    await this.postSessionPresentation();
+    await this.postViewState();
+  }
+
+  private async rememberConfirmedFileImportOptions(source: SessionSource, backend: DataBackend): Promise<void> {
+    const uri = fileSourceUri(source);
+    if (!uri) return;
+    try {
+      await rememberConfirmedFileConfiguration(this.context.workspaceState, uri, source.importOptions, backend);
+    } catch (error) {
+      this.bridge.reportDiagnostic?.(
+        `Open Wrangler could not remember confirmed import options for ${source.label}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
   private decodeWebviewMessage(message: unknown): WebviewRequest | undefined {
     if (!isRecord(message) || typeof message.kind !== "string") return undefined;
     if (message.kind === "ready") {
@@ -372,6 +689,9 @@ export class OpenWranglerPanel {
     }
     if (message.kind === "clearStepInspection") {
       return hasExactKeys(message, ["kind"]) ? { kind: "clearStepInspection" } : undefined;
+    }
+    if (message.kind === "changeImportOptions") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "changeImportOptions" } : undefined;
     }
     if (
       message.kind !== "runtimeRequest" ||
@@ -420,7 +740,7 @@ export class OpenWranglerPanel {
   <link rel="stylesheet" href="${styleUri}">
   <title>Open Wrangler</title>
 </head>
-<body data-fetch-block-size="${fetchBlockSize}" data-fetch-column-block-size="${columnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}">
+<body data-fetch-block-size="${fetchBlockSize}" data-fetch-column-block-size="${columnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="${insightsOnOpen}" data-filter-mode="${filterMode}" data-can-change-import-options="${canChangeImportOptions(this.source)}">
   <div id="root"></div>
   <script type="module" nonce="${nonce}" src="${scriptUri}"></script>
 </body>
@@ -431,6 +751,15 @@ export class OpenWranglerPanel {
 function fetchColumnBlockSize(): number {
   const configured = getSetting<number>("fetchColumnBlockSize", 16);
   return Number.isInteger(configured) ? Math.min(256, Math.max(1, configured)) : 16;
+}
+
+function panelRuntimeCleanupOptions(): BridgeRequestOptions {
+  return {
+    priority: "interactive",
+    timeoutMs: PANEL_RUNTIME_CLEANUP_TIMEOUT_MS,
+    restartRuntimeOnTimeout: false,
+    startRuntimeIfNeeded: false
+  };
 }
 
 function correlateViewError(request: OpenWranglerRequest, response: OpenWranglerResponse): OpenWranglerResponse {
@@ -455,6 +784,7 @@ type WebviewRequest =
   | { kind: "cancelViewRequests"; viewRequestIds: string[] }
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
+  | { kind: "changeImportOptions" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;
@@ -479,6 +809,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function canChangeImportOptions(source: SessionSource): boolean {
+  if (source.kind !== "file") return false;
+  const extension = path.extname(source.path ?? source.uri ?? "").toLowerCase();
+  return extension === ".csv" || extension === ".tsv" || extension === ".xlsx" || extension === ".xls";
+}
+
+function fileSourceUri(source: SessionSource): vscode.Uri | undefined {
+  if (source.kind !== "file") return undefined;
+  if (source.uri) return vscode.Uri.parse(source.uri);
+  return source.path ? vscode.Uri.file(source.path) : undefined;
+}
+
+function reconfigurationCancelledResponse(): OpenWranglerResponse {
+  return { kind: "cancelled", targetRequestId: "change-import-options" };
 }
 
 function hasExactKeys(

@@ -8,7 +8,7 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 
 | Surface                                             | Pandas | Polars | Status  | Required evidence                                      |
 | --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Partial | Add packaged `.xls` and malformed-input UI evidence    |
+| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
 | Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Test against the released Jupyter extension            |
 | Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
@@ -26,7 +26,7 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 | Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply          |
 | Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply              |
 | Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply             |
-| Custom engine-native code                           |    Yes |    Yes | Partial | Add installed Restricted Mode acceptance               |
+| Custom engine-native code                           |    Yes |    Yes | Done    | Trusted custom code plus installed Restricted Mode     |
 | String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation            |
 | Copy/script/notebook code export                    |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green    |
 | CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green         |
@@ -35,7 +35,7 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 | Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green                |
 | Column-projected grid-block transport               |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green   |
 | Duplicate/non-string Pandas column operations       |    Yes |    N/A | Done    | All ID-backed families packaged and replayed           |
-| Restricted Mode and trust-gated execution           |    N/A |    N/A | Partial | Separate trusted/untrusted installed-editor runs       |
+| Restricted Mode and trust-gated execution           |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green |
 | Installed-editor first-usable-grid performance      |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings          |
 | Cross-platform VS Code/Cursor package acceptance    |    N/A |    N/A | Partial | Add Cursor on macOS/Windows and remote-host gates      |
 
@@ -500,6 +500,17 @@ Windows Excel and native-editor closure, 2026-07-24:
 - The allowlisted 67-entry `Matt17BR.openwrangler@0.3.0` VSIX is 523,569 bytes with SHA-256 `a54a6d61b9b4fa087e0b8e52b61fa3a1725ea56d9f2210d9477ffd48873a1ff3`. Those exact bytes passed the full local packaged flow in VS Code 1.129.1 using zero-window headless Ozone and Cursor 3.12.29 on a private Xvfb display. Both used disposable profiles, left no retained runtime or editor-acceptance root, and could not appear on or focus the user's desktop. The same product state passes all 24 production visual/axe harnesses and local zero-window extension-host acceptance.
 
 This closes the Windows runtime and native packaged-editor blockers for this slice. It does not advance rows still gated by released Jupyter, Restricted Mode, remote hosts, first-paint editor measurements, or Cursor acceptance on macOS/Windows, and it does not make a 1.0 parity claim.
+
+Import-option reconfiguration and Restricted Mode, 2026-07-24:
+
+- The canonical import descriptor now has one exact, alias-free shape. Excel selectors use either a nonblank `sheetName` or a safe non-negative zero-based `sheetIndex`; selector-free custom-editor defaults resolve to index 0, and the two selectors or delimited fields cannot be mixed. Delimiter and quote values are one Unicode code point, so multibyte UTF-8 characters remain representable. Pandas and Polars open real `.xlsx` and BIFF `.xls` fixtures by name and zero-based index, with Polars translating only at its private reader boundary.
+- Automatic backend selection excludes Polars for a multibyte delimiter and excludes Polars/DuckDB for a multibyte quote. An explicitly pinned incompatible backend returns `unsupported_import_options` before environment resolution, dependency probes, or Python startup.
+- **Change Import Options** is contributed to the configurable editor toolbar/tab menu and Command Palette and is also exposed inside the live grid and initial-load error. The coordinator keeps one public session ID, blocks concurrent work, opens a private candidate, replays the confirmed plan, optional draft, and view, then publishes once. Cancellation, malformed output, replay failure, transport failure, and close races preserve the prior public snapshot; candidate and retired cleanup cannot restart the shared runtime or release its delegate early.
+- The complete local gate passed: 175 cross-platform runner tests plus the expected Linux-only Windows-supervisor skip, 839 TypeScript tests plus one intentional skip, 980 Python tests, strict type/lint/docs/license checks, both coverage thresholds, all 24 production visual/axe harnesses, zero-window extension-host acceptance, and the strict runtime benchmark.
+- The allowlisted 67-entry `Matt17BR.openwrangler@0.3.0` VSIX is 532,895 bytes with SHA-256 `a0ba2b5d0b103a6ba85444753698cc5c157fa6a7c8f3ee27dee7c3281af5e1af`. Those exact bytes passed packaged VS Code 1.129.1 on zero-window headless Ozone and Cursor 3.12.29 on a private Xvfb display. Both editor runs used fresh profiles, exercised non-default delimited options, real BIFF `.xls` name/index selection in Pandas and Polars, live-grid/title/tab/error retry actions, cancellation, corrupt CSV/JSONL/Parquet/XLS sources, byte-identical inputs, zero retained sessions, and stopped runtimes.
+- Each packaged editor also ran a separate fresh Restricted Mode profile with Workspace Trust enabled. The harness proved `workspace.isTrusted === false`, the installed package remained inactive, its command could not activate it, and no custom editor, coordinator API, dataframe session, or Python runtime appeared. The trusted packaged phases retain the existing custom-code interaction evidence.
+
+This makes the file-entry, custom-code trust, and Restricted Mode rows **Done**. It does not advance released-Jupyter, first-usable-grid timing, complete release-platform UI, remote-host, or Cursor-on-macOS/Windows gates and does not make a 1.0 parity claim.
 
 ## Explicitly deferred from 1.0
 

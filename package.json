@@ -96,6 +96,7 @@
   },
   "activationEvents": [
     "onCommand:openWrangler.openFile",
+    "onCommand:openWrangler.changeImportOptions",
     "onCommand:openWrangler.openPath",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
@@ -129,7 +130,8 @@
   "contributes": {
     "configurationDefaults": {
       "cursor.general.pinnedTitleActions": [
-        "openWrangler.openFile"
+        "openWrangler.openFile",
+        "openWrangler.changeImportOptions"
       ]
     },
     "commands": [
@@ -141,6 +143,12 @@
       {
         "command": "openWrangler.openPath",
         "title": "Open Wrangler: Open File Path"
+      },
+      {
+        "command": "openWrangler.changeImportOptions",
+        "title": "Open Wrangler: Change Import Options",
+        "shortTitle": "Change Import Options",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "openWrangler.launchDataViewer",
@@ -406,6 +414,11 @@
           "command": "openWrangler.openFile",
           "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
           "group": "navigation@1"
+        },
+        {
+          "command": "openWrangler.changeImportOptions",
+          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+          "group": "navigation@2"
         }
       ],
       "editor/title/context": [
@@ -413,6 +426,11 @@
           "command": "openWrangler.openFile",
           "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
           "group": "navigation@50"
+        },
+        {
+          "command": "openWrangler.changeImportOptions",
+          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+          "group": "navigation@51"
         }
       ],
       "commandPalette": [

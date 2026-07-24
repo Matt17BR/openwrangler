@@ -2295,6 +2295,11 @@ test("editor phases pass only runner-owned test values through the environment",
     ]) {
       assert.equal(launchedArguments.includes(argument), true);
     }
+    assert.equal(
+      launchedArguments.includes("--disable-workspace-trust"),
+      true,
+      "Trusted seed/verify phases must retain the existing workspace-trust-disabled profile behavior."
+    );
     assert.equal(launchedArguments.includes("--no-sandbox"), false);
     delete launchedEnvironment.OPEN_WRANGLER_EDITOR_CDP_PORT;
     assert.deepEqual(launchedEnvironment, {
@@ -2316,6 +2321,58 @@ test("editor phases pass only runner-owned test values through the environment",
       OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots")
     });
     assert.match(launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID, /^[0-9a-f-]{36}$/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restricted editor phases keep Workspace Trust enabled and reject unknown trust modes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-restricted-phase-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: join(directory, "restricted-user-data"),
+    extensions: join(directory, "extensions"),
+    developmentPaths: [directory],
+    testModule: join(directory, "restricted.js"),
+    python: "python3",
+    phase: "restricted",
+    workspaceTrust: "restricted",
+    resultPath,
+    runId: PROGRESS_RUN_ID
+  };
+  let launchedArguments;
+  try {
+    await runEditorAcceptancePhase(input, {
+      platform: "darwin",
+      spawnProcess(_executable, arguments_, options) {
+        launchedArguments = arguments_;
+        return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
+      }
+    });
+    assert.equal(launchedArguments[0], directory);
+    assert.equal(
+      launchedArguments.includes("--disable-workspace-trust"),
+      false,
+      "The restricted profile must exercise the editor's real Restricted Mode."
+    );
+
+    let spawnCalls = 0;
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        { ...input, workspaceTrust: "unknown", resultPath: join(directory, "invalid-result.json") },
+        {
+          platform: "darwin",
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }
+      ),
+      /workspace-trust mode must be "trusted" or "restricted"/u
+    );
+    assert.equal(spawnCalls, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -3701,7 +3758,13 @@ test("the generated harness records startup before loading the acceptance module
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-harness-progress-"));
   try {
     writeEditorAcceptanceHarness(directory);
+    const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
     const source = await readFile(join(directory, "extension.js"), "utf8");
+    assert.equal(
+      manifest.capabilities?.untrustedWorkspaces?.supported,
+      true,
+      "The test harness must remain active while the installed package is blocked in Restricted Mode."
+    );
     const harnessMarker = source.indexOf('recordProgress(runId, phase, phase + ":harness-start")');
     const moduleLoad = source.indexOf("require(process.env.OPEN_WRANGLER_TEST_MODULE).run()");
     assert.notEqual(harnessMarker, -1);

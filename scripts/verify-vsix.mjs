@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { inspectVsixEntries } from "./vsix-contents.mjs";
+import { inspectReadmeSourceSrcsets, inspectVsixEntries } from "./vsix-contents.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const requested = process.argv[2];
@@ -20,8 +20,10 @@ const webviewCss = execFileSync("unzip", ["-p", vsix, "extension/media/webview.c
 const webviewPanel = execFileSync("unzip", ["-p", vsix, "extension/dist/extension/webviewPanel.js"], {
   encoding: "utf8"
 });
+const packagedReadme = execFileSync("unzip", ["-p", vsix, "extension/readme.md"], { encoding: "utf8" });
 const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
 const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
+const readmeSourceProblems = inspectReadmeSourceSrcsets(packagedReadme);
 
 if (forbidden.length > 0 || missing.length > 0) {
   throw new Error(
@@ -39,6 +41,9 @@ if (!bundleRelativeCodicon.test(webviewCss)) {
 }
 if (!webviewFontPolicy.test(webviewPanel)) {
   throw new Error(`Invalid ${basename(vsix)}. The main webview CSP must allow its bundled font origin.`);
+}
+if (readmeSourceProblems.length > 0) {
+  throw new Error(`Invalid ${basename(vsix)}. ${readmeSourceProblems.join(" ")}`);
 }
 
 console.log(`Verified ${basename(vsix)} (${entries.length} archive entries).`);

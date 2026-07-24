@@ -10,10 +10,12 @@ const fileMocks = vi.hoisted(() => ({
   executeCommand: vi.fn(async () => undefined),
   createPanel: vi.fn(),
   panelConstructor: vi.fn(),
+  changeActiveImportOptions: vi.fn(async () => false),
   promptImportOptions: vi.fn<(uri: unknown) => Promise<unknown>>(async () => undefined),
   defaultImportOptions: vi.fn(() => undefined),
   stat: vi.fn(async () => ({ type: 1 })),
   showWarningMessage: vi.fn(async () => undefined),
+  showInformationMessage: vi.fn(async () => undefined),
   showErrorMessage: vi.fn(async () => undefined),
   showOpenDialog: vi.fn<() => Promise<unknown>>(async () => undefined),
   customEditorProvider: undefined as
@@ -21,9 +23,12 @@ const fileMocks = vi.hoisted(() => ({
         resolveCustomEditor(document: { uri: unknown }, panel: { dispose(): void }): Promise<void>;
       }
     | undefined,
+  customEditorProviderOptions: undefined as unknown,
   activeTabInput: undefined as unknown,
   activeTextUri: undefined as unknown,
   enabledFileTypes: ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"],
+  defaultBackend: "auto",
+  workspaceValues: new Map<string, unknown>(),
   ImportCancelledError: class ImportCancelledError extends Error {}
 }));
 
@@ -49,6 +54,12 @@ vi.mock("vscode", () => {
 
     static from(components: { scheme: string; path?: string; authority?: string }): Uri {
       return new Uri(components.scheme, components.path ?? "", components.authority);
+    }
+
+    static parse(value: string): Uri {
+      const match = /^([A-Za-z][A-Za-z0-9+.-]*):(?:\/\/([^/?#]*))?([^?#]*)/u.exec(value);
+      if (!match) throw new Error(`Invalid URI: ${value}`);
+      return new Uri(match[1] ?? "", match[3] ?? "", match[2] ?? "");
     }
 
     toString(): string {
@@ -100,11 +111,17 @@ vi.mock("vscode", () => {
           }
         }
       },
-      registerCustomEditorProvider: (_id: string, provider: typeof fileMocks.customEditorProvider) => {
+      registerCustomEditorProvider: (
+        _id: string,
+        provider: typeof fileMocks.customEditorProvider,
+        options: unknown
+      ) => {
         fileMocks.customEditorProvider = provider;
+        fileMocks.customEditorProviderOptions = options;
         return disposable();
       },
       showWarningMessage: fileMocks.showWarningMessage,
+      showInformationMessage: fileMocks.showInformationMessage,
       showErrorMessage: fileMocks.showErrorMessage,
       showOpenDialog: fileMocks.showOpenDialog
     },
@@ -118,6 +135,10 @@ vi.mock("../extension/webviewPanel", () => ({
   OpenWranglerPanel: class OpenWranglerPanel {
     static create(...args: unknown[]): unknown {
       return fileMocks.createPanel(...args);
+    }
+
+    static changeActiveImportOptions(): Promise<boolean> {
+      return fileMocks.changeActiveImportOptions();
     }
 
     constructor(...args: unknown[]) {
@@ -134,10 +155,15 @@ vi.mock("../extension/files/importOptions", () => ({
 
 vi.mock("../extension/configuration", () => ({
   getSetting: <T>(key: string, fallback: T): T =>
-    (key === "enabledFileTypes" ? fileMocks.enabledFileTypes : fallback) as T
+    (key === "enabledFileTypes"
+      ? fileMocks.enabledFileTypes
+      : key === "defaultBackend"
+        ? fileMocks.defaultBackend
+        : fallback) as T
 }));
 
 import { registerFileCommands } from "../extension/files/fileOpen";
+import { CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY } from "../extension/files/confirmedFileConfigurations";
 
 describe("file launch command", () => {
   beforeEach(() => {
@@ -145,19 +171,46 @@ describe("file launch command", () => {
     fileMocks.executeCommand.mockClear();
     fileMocks.createPanel.mockClear();
     fileMocks.panelConstructor.mockClear();
+    fileMocks.changeActiveImportOptions.mockReset();
+    fileMocks.changeActiveImportOptions.mockResolvedValue(false);
     fileMocks.promptImportOptions.mockReset();
     fileMocks.promptImportOptions.mockResolvedValue(undefined);
     fileMocks.defaultImportOptions.mockClear();
     fileMocks.stat.mockReset();
     fileMocks.stat.mockResolvedValue({ type: vscode.FileType.File });
     fileMocks.showWarningMessage.mockClear();
+    fileMocks.showInformationMessage.mockClear();
     fileMocks.showErrorMessage.mockClear();
     fileMocks.showOpenDialog.mockReset();
     fileMocks.showOpenDialog.mockResolvedValue(undefined);
     fileMocks.customEditorProvider = undefined;
+    fileMocks.customEditorProviderOptions = undefined;
     fileMocks.activeTabInput = undefined;
     fileMocks.activeTextUri = undefined;
     fileMocks.enabledFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"];
+    fileMocks.defaultBackend = "auto";
+    fileMocks.workspaceValues.clear();
+  });
+
+  it("delegates the change-import-options command to the active configurable panel", async () => {
+    fileMocks.changeActiveImportOptions.mockResolvedValueOnce(true);
+    register();
+
+    await command("openWrangler.changeImportOptions")();
+
+    expect(fileMocks.changeActiveImportOptions).toHaveBeenCalledOnce();
+    expect(fileMocks.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it("explains when no configurable file panel is active", async () => {
+    register();
+
+    await command("openWrangler.changeImportOptions")();
+
+    expect(fileMocks.changeActiveImportOptions).toHaveBeenCalledOnce();
+    expect(fileMocks.showInformationMessage).toHaveBeenCalledWith(
+      "Open a CSV, TSV, XLSX, or XLS session in Open Wrangler before changing import options."
+    );
   });
 
   it("prefers the URI supplied by an editor or Explorer menu", async () => {
@@ -368,6 +421,66 @@ describe("file launch command", () => {
     );
   });
 
+  it("pins a previously auto-resolved Pandas session after the configured default changes", async () => {
+    const uri = vscode.Uri.file("/workspace/data.csv");
+    const panel = { dispose: vi.fn() };
+    const importOptions = {
+      delimiter: ";",
+      encoding: "windows-1252",
+      quoteChar: "'",
+      hasHeader: false
+    };
+    fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+      version: 1,
+      entries: [{ uri: uri.toString(), backend: "pandas", importOptions }]
+    });
+    fileMocks.defaultBackend = "polars";
+    const { context, bridge } = register();
+
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel);
+
+    expect(fileMocks.panelConstructor).toHaveBeenCalledWith(
+      panel,
+      context,
+      bridge,
+      expect.objectContaining({
+        path: "/workspace/data.csv",
+        uri: uri.toString(),
+        importOptions
+      }),
+      "pandas"
+    );
+    expect(fileMocks.customEditorProviderOptions).toMatchObject({
+      supportsMultipleEditorsPerDocument: false
+    });
+    expect(fileMocks.defaultImportOptions).not.toHaveBeenCalled();
+  });
+
+  it("pins a confirmed Parquet backend without adding import options", async () => {
+    const uri = vscode.Uri.file("/workspace/data.parquet");
+    const panel = { dispose: vi.fn() };
+    fileMocks.workspaceValues.set(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY, {
+      version: 1,
+      entries: [{ uri: uri.toString(), backend: "duckdb" }]
+    });
+    fileMocks.defaultBackend = "polars";
+    const { context, bridge } = register();
+
+    await fileMocks.customEditorProvider?.resolveCustomEditor({ uri }, panel);
+
+    expect(fileMocks.panelConstructor).toHaveBeenCalledWith(
+      panel,
+      context,
+      bridge,
+      expect.objectContaining({
+        path: "/workspace/data.parquet",
+        uri: uri.toString(),
+        importOptions: undefined
+      }),
+      "duckdb"
+    );
+  });
+
   it("keeps explicit custom-editor selection available for a picker-disabled format", async () => {
     const uri = vscode.Uri.file("/workspace/data.parquet");
     const panel = { dispose: vi.fn() };
@@ -386,7 +499,14 @@ describe("file launch command", () => {
 function register(): { context: ExtensionContext; bridge: OpenWranglerBridge } {
   const context = {
     extensionPath: "/tmp/openwrangler",
-    subscriptions: []
+    subscriptions: [],
+    workspaceState: {
+      get: <T>(key: string, fallback?: T): T | undefined =>
+        (fileMocks.workspaceValues.has(key) ? fileMocks.workspaceValues.get(key) : fallback) as T | undefined,
+      update: async (key: string, value: unknown): Promise<void> => {
+        fileMocks.workspaceValues.set(key, value);
+      }
+    }
   } as unknown as ExtensionContext;
   const bridge = {} as OpenWranglerBridge;
   registerFileCommands(context, bridge);
