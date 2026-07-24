@@ -23,7 +23,7 @@ if (forbidden.length > 0 || missing.length > 0 || duplicates.length > 0) {
       `Invalid ${basename(vsix)}.`,
       forbidden.length ? `Forbidden: ${forbidden.join(", ")}` : "",
       missing.length ? `Missing: ${missing.join(", ")}` : "",
-      duplicates.length ? `Duplicate archive paths: ${duplicates.join(", ")}` : ""
+      duplicates.length ? `Colliding archive paths: ${duplicates.join(", ")}` : ""
     ]
       .filter(Boolean)
       .join(" ")

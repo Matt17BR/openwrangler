@@ -75,7 +75,7 @@ npx playwright-core install chromium # before local visual capture/verification
 npm run clean
 npm run build
 npm run capture:screenshots # for visible changes
-npm run package -- --out openwrangler.vsix
+npm run package -- --pre-release --out openwrangler.vsix
 npm run verify:vsix -- openwrangler.vsix
 npm run test:packaged-editors -- openwrangler.vsix
 ```

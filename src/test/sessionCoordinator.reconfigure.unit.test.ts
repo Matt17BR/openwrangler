@@ -633,6 +633,113 @@ describe("SessionCoordinator file-session reconfiguration", () => {
   });
 
   it.each([
+    { label: "explicit", options: { backendPreference: "pandas" as const } },
+    { label: "confirmed automatic", options: { backendPreference: "auto" as const } }
+  ])(
+    "rejects a runtime backend mismatch for a $label pinned open without publishing or persisting it",
+    async ({ options }) => {
+      const get = vi.fn((_key: string, fallback?: unknown) => fallback);
+      const update = vi.fn(async () => undefined);
+      const workspaceState = {
+        get,
+        update,
+        keys: vi.fn(() => [SESSION_STORAGE_KEY])
+      } as unknown as Memento;
+      const closeCalls: Array<{ request: CloseRequest; options?: BridgeRequestOptions }> = [];
+      const delegateRequest = vi.fn(
+        async (request: OpenWranglerRequest, requestOptions?: BridgeRequestOptions): Promise<OpenWranglerResponse> => {
+          if (request.kind === "openSession") {
+            return openedFor(
+              request,
+              metadataFor({
+                runtimeId: "runtime-mismatched",
+                source: initialSource,
+                backend: "polars"
+              })
+            );
+          }
+          if (request.kind === "closeSession") {
+            closeCalls.push({ request, options: requestOptions });
+            return { kind: "sessionClosed", sessionId: request.sessionId };
+          }
+          throw new Error(`Unexpected request: ${request.kind}`);
+        }
+      );
+      const coordinator = new SessionCoordinator(workspaceState);
+      const activeChanges = vi.fn();
+      coordinator.onDidChangeActiveSession(activeChanges);
+      const bridge = coordinator.createBridge({ request: delegateRequest });
+
+      const response = await bridge.request({ ...openRequest(initialSource), backend: "pandas" }, options);
+
+      expect(response).toMatchObject({
+        kind: "error",
+        code: "invalid_runtime_response",
+        message: expect.stringContaining("backend polars instead of requested backend pandas"),
+        recoverable: true
+      });
+      expect(closeCalls).toEqual([
+        {
+          request: { kind: "closeSession", sessionId: "runtime-mismatched", revision: 0 },
+          options: {
+            priority: "interactive",
+            timeoutMs: 2_000,
+            restartRuntimeOnTimeout: false,
+            startRuntimeIfNeeded: false
+          }
+        }
+      ]);
+      expect(coordinator.activeSession()).toBeUndefined();
+      expect(coordinator.diagnostics()).toMatchObject({ sessionCount: 0 });
+      expect(activeChanges).not.toHaveBeenCalled();
+      expect(get).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    }
+  );
+
+  it("allows an unpinned automatic open to accept the runtime-selected backend", async () => {
+    const closeCalls: CloseRequest[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        expect(request).not.toHaveProperty("backend");
+        return openedFor(
+          request,
+          metadataFor({
+            runtimeId: "runtime-auto-duckdb",
+            source: initialSource,
+            backend: "duckdb"
+          })
+        );
+      }
+      if (request.kind === "closeSession") {
+        closeCalls.push(request);
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const response = await bridge.request(openRequest(initialSource), { backendPreference: "auto" });
+
+    expect(response).toMatchObject({
+      kind: "sessionOpened",
+      metadata: { backend: "duckdb", source: initialSource }
+    });
+    expect(coordinator.activeSession()).toMatchObject({ metadata: { backend: "duckdb", source: initialSource } });
+    expect(closeCalls).toEqual([]);
+    if (response.kind !== "sessionOpened") throw new Error("Expected the automatic session to open.");
+
+    await bridge.request({
+      kind: "closeSession",
+      sessionId: response.metadata.sessionId,
+      revision: response.metadata.revision
+    });
+    expect(closeCalls).toHaveLength(1);
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+  });
+
+  it.each([
     {
       label: "a candidate backend mismatch",
       candidateResponse: (request: OpenSessionRequest): OpenWranglerResponse =>

@@ -1,3 +1,5 @@
+import { SaxesParser } from "saxes";
+
 export const allowedVsixEntryPatterns = [
   /^\[Content_Types\]\.xml$/u,
   /^extension\.vsixmanifest$/u,
@@ -28,22 +30,152 @@ export const requiredVsixEntries = [
   "extension/python/openwrangler_runtime/version.py"
 ];
 
-export function inspectVsixEntries(entries) {
-  const seen = new Set();
-  const duplicates = [];
+const windowsReservedBasename = /^(?:aux|com[1-9¹²³]|con|lpt[1-9¹²³]|nul|prn)$/iu;
+const windowsInvalidCharacters = new Set('<>:"|?*');
+const vsixManifestNamespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 
-  for (const entry of entries) {
-    if (seen.has(entry) && !duplicates.includes(entry)) {
+function portableVsixEntryIdentity(entry) {
+  if (
+    typeof entry !== "string" ||
+    entry.length === 0 ||
+    entry.startsWith("/") ||
+    entry.includes("\\") ||
+    entry !== entry.normalize("NFC")
+  ) {
+    return undefined;
+  }
+
+  const path = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+  if (path.length === 0) {
+    return undefined;
+  }
+
+  const segments = path.split("/");
+  for (const segment of segments) {
+    if (
+      segment.length === 0 ||
+      segment === "." ||
+      segment === ".." ||
+      segment.trim() !== segment ||
+      segment.endsWith(".") ||
+      Buffer.byteLength(segment, "utf8") > 255
+    ) {
+      return undefined;
+    }
+
+    for (const character of segment) {
+      const codePoint = character.codePointAt(0);
+      if (
+        codePoint === undefined ||
+        codePoint <= 0x1f ||
+        codePoint === 0x7f ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+        windowsInvalidCharacters.has(character)
+      ) {
+        return undefined;
+      }
+    }
+
+    const basename = segment.split(".", 1)[0];
+    if (basename !== undefined && windowsReservedBasename.test(basename)) {
+      return undefined;
+    }
+  }
+
+  return path.toUpperCase().toLowerCase().normalize("NFC");
+}
+
+export function inspectVsixEntries(entries) {
+  const seen = new Map();
+  const duplicates = [];
+  const inspectedEntries = entries.map((entry) => ({
+    entry,
+    identity: portableVsixEntryIdentity(entry),
+    isDirectory: typeof entry === "string" && entry.endsWith("/")
+  }));
+
+  for (const { entry, identity, isDirectory } of inspectedEntries) {
+    if (identity === undefined) {
+      continue;
+    }
+
+    const segments = identity.split("/");
+    const hasFileAncestor = segments
+      .slice(0, -1)
+      .some((_, index) => seen.get(segments.slice(0, index + 1).join("/")) === false);
+    const shadowsExistingDescendant =
+      !isDirectory && [...seen.keys()].some((seenIdentity) => seenIdentity.startsWith(`${identity}/`));
+    if ((seen.has(identity) || hasFileAncestor || shadowsExistingDescendant) && !duplicates.includes(entry)) {
       duplicates.push(entry);
     }
-    seen.add(entry);
+    seen.set(identity, isDirectory);
   }
 
   return {
-    forbidden: entries.filter((entry) => !allowedVsixEntryPatterns.some((pattern) => pattern.test(entry))),
+    forbidden: inspectedEntries
+      .filter(
+        ({ entry, identity }) =>
+          identity === undefined || !allowedVsixEntryPatterns.some((pattern) => pattern.test(entry))
+      )
+      .map(({ entry }) => entry),
     missing: requiredVsixEntries.filter((entry) => !entries.includes(entry)),
     duplicates
   };
+}
+
+function parsePreReleaseProperties(vsixManifest) {
+  if (typeof vsixManifest !== "string") {
+    throw new TypeError("VSIX manifest must be a string.");
+  }
+
+  const properties = [];
+  const elementPath = [];
+  const parser = new SaxesParser({ xmlns: true });
+
+  parser.on("doctype", () => {
+    throw new Error("DOCTYPE declarations are not permitted in a VSIX manifest.");
+  });
+  parser.on("opentag", (tag) => {
+    elementPath.push({ name: tag.name, uri: tag.uri });
+    const expectedNames = ["PackageManifest", "Metadata", "Properties", "Property"];
+    if (
+      elementPath.length !== 4 ||
+      !elementPath.every(
+        (element, index) => element.name === expectedNames[index] && element.uri === vsixManifestNamespace
+      )
+    ) {
+      return;
+    }
+
+    const attributes = Object.values(tag.attributes);
+    const id = attributes.find(
+      (attribute) =>
+        typeof attribute === "object" &&
+        attribute.name === "Id" &&
+        attribute.prefix === "" &&
+        attribute.local === "Id" &&
+        attribute.uri === ""
+    );
+    if (id?.value !== "Microsoft.VisualStudio.Code.PreRelease") {
+      return;
+    }
+
+    const value = attributes.find(
+      (attribute) =>
+        typeof attribute === "object" &&
+        attribute.name === "Value" &&
+        attribute.prefix === "" &&
+        attribute.local === "Value" &&
+        attribute.uri === ""
+    );
+    properties.push(value?.value);
+  });
+  parser.on("closetag", () => {
+    elementPath.pop();
+  });
+  parser.write(vsixManifest).close();
+
+  return properties;
 }
 
 export function inspectVsixPreReleaseMetadata(packageJson, vsixManifest) {
@@ -62,15 +194,18 @@ export function inspectVsixPreReleaseMetadata(packageJson, vsixManifest) {
     problems.push("Packaged package.json preview must be a boolean when present.");
   }
 
-  const xmlWithoutComments = vsixManifest.replace(/<!--[\s\S]*?-->/gu, "");
-  const properties = [...xmlWithoutComments.matchAll(/<Property\b[^>]*>/giu)]
-    .map((match) => match[0])
-    .filter((property) => /\bId\s*=\s*(["'])Microsoft\.VisualStudio\.Code\.PreRelease\1/u.test(property));
+  let properties;
+  try {
+    properties = parsePreReleaseProperties(vsixManifest);
+  } catch {
+    problems.push("VSIX manifest must contain well-formed XML without a DOCTYPE declaration.");
+    return problems;
+  }
 
   if (manifest.preview === true) {
     if (properties.length !== 1) {
       problems.push("Preview packages must contain exactly one Microsoft.VisualStudio.Code.PreRelease property.");
-    } else if (!/\bValue\s*=\s*(["'])true\1/u.test(properties[0])) {
+    } else if (properties[0] !== "true") {
       problems.push('Microsoft.VisualStudio.Code.PreRelease must have Value="true".');
     }
   } else if (properties.length > 0) {

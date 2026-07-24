@@ -2047,7 +2047,7 @@ function sessionOpenedResponseMismatch(
   if (strictIdentity && request.requestedSessionId && response.metadata.sessionId !== request.requestedSessionId) {
     return `metadata named runtime session ${response.metadata.sessionId} instead of requested session ${request.requestedSessionId}`;
   }
-  if (strictIdentity && request.backend && response.metadata.backend !== request.backend) {
+  if (request.backend && response.metadata.backend !== request.backend) {
     return `metadata reported backend ${response.metadata.backend} instead of requested backend ${request.backend}`;
   }
   if (strictIdentity && request.mode && response.metadata.mode !== request.mode) {
