@@ -417,7 +417,7 @@ export async function run(): Promise<void> {
   if (phase === "python-environment") {
     assert.ok(testPython, "Real Python-extension acceptance requires the runner-selected dependency environment.");
     recordAcceptanceProgress("python-environment:start");
-    await exerciseRealPythonEnvironmentSelection(testing, workspace, fixture, testPython);
+    await exerciseRealPythonEnvironmentSelection(testing, workspace, fixture, testPython, extension.extensionPath);
     recordAcceptanceProgress("python-environment:complete");
     console.log("Open Wrangler real Python-environment selection acceptance passed.");
     return;
@@ -5451,7 +5451,8 @@ async function exerciseRealPythonEnvironmentSelection(
   testing: TestApi,
   workspace: vscode.Uri,
   fixture: vscode.Uri,
-  python: string
+  python: string,
+  openWranglerExtensionPath: string
 ): Promise<void> {
   const pythonExtension = vscode.extensions.getExtension<PythonExtension>("ms-python.python");
   assert.ok(pythonExtension, "The opt-in acceptance phase must install the released Python extension.");
@@ -5488,7 +5489,16 @@ async function exerciseRealPythonEnvironmentSelection(
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-real-python-environments-"));
   const environmentA = createInstrumentedPythonEnvironment(path.join(directory, "environment-a"), python, "a");
   const environmentB = createInstrumentedPythonEnvironment(path.join(directory, "environment-b"), python, "b");
+  const runtimeRoot = path.join(openWranglerExtensionPath, "python");
+  assert.equal(
+    existsSync(path.join(runtimeRoot, "openwrangler_runtime", "server.py")),
+    true,
+    "The packaged Open Wrangler runtime must exist before instrumented environment acceptance."
+  );
+  verifyInstrumentedPythonEnvironmentMarker(environmentA, runtimeRoot);
+  verifyInstrumentedPythonEnvironmentMarker(environmentB, runtimeRoot);
   const originalSource = readFileSync(fixture.fsPath);
+  const expectedFirstRowScore = "21.0";
   let sessionId: string | undefined;
   let revision = 0;
 
@@ -5543,7 +5553,7 @@ async function exerciseRealPythonEnvironmentSelection(
     assert.equal(applied.kind, "planUpdated");
     if (applied.kind !== "planUpdated") return;
     revision = applied.revision;
-    assert.equal(applied.page.rows[0]?.values[4]?.display, "24.0");
+    assert.equal(applied.page.rows[0]?.values[4]?.display, expectedFirstRowScore);
     await waitFor(
       () => instrumentedRuntimeStarts(environmentA) >= 1,
       10_000,
@@ -5580,7 +5590,7 @@ async function exerciseRealPythonEnvironmentSelection(
       ["real-python-environment-score"],
       "The committed plan must replay after the selected Python environment changes."
     );
-    assert.equal(recoveredB.page.rows[0]?.values[4]?.display, "24.0");
+    assert.equal(recoveredB.page.rows[0]?.values[4]?.display, expectedFirstRowScore);
     await waitFor(
       () => instrumentedRuntimeStarts(environmentB) >= 1,
       10_000,
@@ -5615,7 +5625,7 @@ async function exerciseRealPythonEnvironmentSelection(
       recoveredA.metadata.steps.map((step) => step.id),
       ["real-python-environment-score"]
     );
-    assert.equal(recoveredA.page.rows[0]?.values[4]?.display, "24.0");
+    assert.equal(recoveredA.page.rows[0]?.values[4]?.display, expectedFirstRowScore);
     await waitFor(
       () => instrumentedRuntimeStarts(environmentA) >= 2,
       10_000,
@@ -5682,30 +5692,41 @@ function createInstrumentedPythonEnvironment(
     }
   ).trim();
   assert.ok(dependencySitePackages && environmentSitePackages);
-  writeFileSync(
-    path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
-    `${dependencySitePackages}\n`,
-    "utf8"
-  );
   const runtimeMarkerDirectory = path.join(environmentRoot, "runtime-starts");
   mkdirSync(runtimeMarkerDirectory);
+  const runtimeMarkerImportLine = [
+    "import os, sys, uuid; ",
+    "os.path.isfile(os.path.join(os.environ.get('PYTHONPATH', '').split(os.pathsep, 1)[0], ",
+    "'openwrangler_runtime', 'server.py')) and not hasattr(sys, '_openwrangler_acceptance_runtime_marked') and ",
+    `(setattr(sys, '_openwrangler_acceptance_runtime_marked', True), open(os.path.join(${JSON.stringify(runtimeMarkerDirectory)}, `,
+    "'runtime-' + uuid.uuid4().hex + '.marker'), 'x').close())"
+  ].join("");
   writeFileSync(
-    path.join(environmentSitePackages, "sitecustomize.py"),
-    [
-      "import os",
-      "import uuid",
-      "_runtime = any(",
-      "    os.path.isfile(os.path.join(entry, 'openwrangler_runtime', 'server.py'))",
-      "    for entry in os.environ.get('PYTHONPATH', '').split(os.pathsep)",
-      "    if entry",
-      ")",
-      "if _runtime:",
-      `    open(os.path.join(${JSON.stringify(runtimeMarkerDirectory)}, 'runtime-' + uuid.uuid4().hex + '.marker'), 'x').close()`,
-      ""
-    ].join("\n"),
+    path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
+    `${dependencySitePackages}\n${runtimeMarkerImportLine}\n`,
     "utf8"
   );
   return { executable, runtimeMarkerDirectory };
+}
+
+function verifyInstrumentedPythonEnvironmentMarker(
+  environment: InstrumentedPythonEnvironment,
+  runtimeRoot: string
+): void {
+  assert.deepEqual(instrumentedRuntimeMarkers(environment), []);
+  execFileSync(environment.executable, ["-c", "pass"], {
+    env: { ...process.env, PYTHONPATH: runtimeRoot },
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const markers = instrumentedRuntimeMarkers(environment);
+  assert.equal(markers.length, 1, "The executable .pth marker must identify one runtime-root launch.");
+  const markerPath = path.join(environment.runtimeMarkerDirectory, markers[0]!);
+  const metadata = lstatSync(markerPath);
+  assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1);
+  rmSync(markerPath);
+  assert.deepEqual(instrumentedRuntimeMarkers(environment), []);
 }
 
 async function waitForSelectedPythonEnvironment(
@@ -5733,9 +5754,13 @@ function sameAcceptanceExecutable(left: string, right: string): boolean {
 }
 
 function instrumentedRuntimeStarts(environment: InstrumentedPythonEnvironment): number {
+  return instrumentedRuntimeMarkers(environment).length;
+}
+
+function instrumentedRuntimeMarkers(environment: InstrumentedPythonEnvironment): string[] {
   const entries = readdirSync(environment.runtimeMarkerDirectory);
   assert.ok(entries.length <= 16, "Instrumented Python runtime markers exceeded their fixed bound.");
-  return entries.filter((entry) => /^runtime-[0-9a-f]{32}\.marker$/u.test(entry)).length;
+  return entries.filter((entry) => /^runtime-[0-9a-f]{32}\.marker$/u.test(entry));
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
