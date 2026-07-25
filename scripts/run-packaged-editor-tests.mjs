@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createVSIX } from "@vscode/vsce";
 import {
   configureEditorAcceptanceTempRoot,
   collectEditorAcceptancePrivateDiagnosticPaths,
@@ -66,6 +67,7 @@ let orchestrationRunId;
 let orchestrationStartedAt = Date.now();
 const MAX_FAILURE_SUMMARY_BYTES = 8 * 1024;
 const OVERSIZED_DIAGNOSTIC_MARKER = "<diagnostic-omitted-size-budget>";
+const EXPECTED_ACCEPTANCE_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const retainedFailures = new Set();
 const cleanupFailures = new Set();
 const evidenceReceipts = [];
@@ -207,6 +209,8 @@ try {
             const restrictedUserData = resolve(profile, "restricted-user-data");
             const extensions = resolve(profile, "extensions");
             const workspace = resolve(profile, "Open Wrangler Demo");
+            const acceptanceHarness = resolve(profile, "acceptance-harness");
+            const acceptanceHarnessVsix = resolve(profile, "openwrangler-packaged-test-harness.vsix");
             const resultPaths = {
               setup: resolve(profile, "setup-result.json"),
               restricted: resolve(profile, "restricted-result.json"),
@@ -235,7 +239,16 @@ try {
               run: async () => {
                 mkdirSync(workspace, { recursive: true });
                 cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
-                writeEditorAcceptanceHarness(profile);
+                writeEditorAcceptanceHarness(acceptanceHarness);
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:package-acceptance-harness");
+                await createVSIX({
+                  cwd: acceptanceHarness,
+                  packagePath: acceptanceHarnessVsix,
+                  dependencies: false,
+                  skipLicense: true,
+                  allowStarActivation: true,
+                  allowMissingRepository: true
+                });
                 writeEditorSettings(userData, {
                   "window.dialogStyle": "custom",
                   "window.menuStyle": "custom",
@@ -281,6 +294,25 @@ try {
                   },
                   { timeoutMs: 60_000 }
                 );
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-acceptance-harness");
+                await runBoundedEditorCliCommand(
+                  {
+                    editor,
+                    args: [
+                      "--user-data-dir",
+                      userData,
+                      "--extensions-dir",
+                      extensions,
+                      "--install-extension",
+                      acceptanceHarnessVsix,
+                      "--force",
+                      ...sandboxArgs
+                    ],
+                    environment: editorEnvironment,
+                    label: `${editor.name} acceptance-harness installation`
+                  },
+                  { timeoutMs: 60_000 }
+                );
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
                 const { stdout: installed } = await runBoundedEditorCliCommand(
                   {
@@ -304,6 +336,11 @@ try {
                     `${editor.name} did not report the installed Open Wrangler package. Output: ${installed}`
                   );
                 }
+                if (!installed.toLowerCase().includes(EXPECTED_ACCEPTANCE_HARNESS)) {
+                  throw new Error(
+                    `${editor.name} did not report the installed acceptance harness. Output: ${installed}`
+                  );
+                }
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:complete");
 
                 activePhase = "restricted";
@@ -312,7 +349,7 @@ try {
                   workspace,
                   userData: restrictedUserData,
                   extensions,
-                  developmentPaths: [profile],
+                  developmentPaths: [],
                   testModule: resolve(root, "dist-test", "test", "extensionHost", "restricted.js"),
                   python: process.env.OPEN_WRANGLER_TEST_PYTHON,
                   phase: "restricted",
@@ -330,7 +367,7 @@ try {
                     workspace,
                     userData,
                     extensions,
-                    developmentPaths: [profile, fakeJupyter],
+                    developmentPaths: [fakeJupyter],
                     testModule,
                     python: process.env.OPEN_WRANGLER_TEST_PYTHON,
                     phase,

@@ -2334,7 +2334,7 @@ test("restricted editor phases keep Workspace Trust enabled and reject unknown t
     workspace: directory,
     userData: join(directory, "restricted-user-data"),
     extensions: join(directory, "extensions"),
-    developmentPaths: [directory],
+    developmentPaths: [],
     testModule: join(directory, "restricted.js"),
     python: "python3",
     phase: "restricted",
@@ -2356,6 +2356,11 @@ test("restricted editor phases keep Workspace Trust enabled and reject unknown t
       launchedArguments.includes("--disable-workspace-trust"),
       false,
       "The restricted profile must exercise the editor's real Restricted Mode."
+    );
+    assert.equal(
+      launchedArguments.some((argument) => argument.startsWith("--extensionDevelopmentPath=")),
+      false,
+      "Restricted Mode must run the installed acceptance helper instead of a development extension."
     );
 
     let spawnCalls = 0;
@@ -3765,6 +3770,7 @@ test("the generated harness records startup before loading the acceptance module
       true,
       "The test harness must remain active while the installed package is blocked in Restricted Mode."
     );
+    assert.deepEqual(manifest.files, ["extension.js"]);
     const harnessMarker = source.indexOf('recordProgress(runId, phase, phase + ":harness-start")');
     const moduleLoad = source.indexOf("require(process.env.OPEN_WRANGLER_TEST_MODULE).run()");
     assert.notEqual(harnessMarker, -1);
