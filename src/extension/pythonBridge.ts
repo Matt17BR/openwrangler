@@ -70,6 +70,7 @@ interface RuntimeSlot {
   readonly provisionalSessionIds: Set<string>;
   readonly sessionIds: Set<string>;
   readonly stoppingProcesses: Set<ChildProcessWithoutNullStreams>;
+  leaseCount: number;
   process: ChildProcessWithoutNullStreams | undefined;
   processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
   processSelection: ProcessSelection | undefined;
@@ -92,6 +93,11 @@ interface PreparedRequest {
 }
 
 const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple Python runtime shutdown failures.";
+// Inactive scopes are retained as a small LRU so repeated external-file opens can
+// reuse dependency/environment work without allowing arbitrary resource URIs to
+// grow the bridge maps forever. Live or explicitly leased scopes may temporarily
+// exceed this bound; the next ownership release trims back to it.
+const MAX_RETAINED_INACTIVE_SCOPES = 128;
 const execFileAsync = promisify(execFile);
 
 async function joinProcessStops(previous: Promise<void>, current: Promise<void>): Promise<void> {
@@ -120,6 +126,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly configurationSubscription: vscode.Disposable;
   private readonly environmentApiBroker: PythonEnvironmentApiBroker;
   private generation = 0;
+  private scopeUseClock = 0;
+  private readonly scopeRecency = new Map<string, number>();
   private selectionEpoch = 0;
   private readonly selectionEpochs = new Map<string, number>();
   private disposed = false;
@@ -166,6 +174,12 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     let runtime: RuntimeSlot;
     let desired: ProcessSelection | undefined;
     let proc: ChildProcessWithoutNullStreams;
+    let requestLease: (() => void) | undefined;
+    const releaseRequestLease = (): void => {
+      const release = requestLease;
+      requestLease = undefined;
+      release?.();
+    };
 
     if (isSessionBoundRequest(request)) {
       const confirmedOwner = this.sessionOwners.get(request.sessionId);
@@ -180,40 +194,74 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       }
       if (!confirmedOwner && provisional) provisional.state = "closing";
       runtime = owner;
-      proc = owner.process ?? (await owner.processStart!);
+      requestLease = this.retainRuntime(owner);
+      try {
+        proc = owner.process ?? (await owner.processStart!);
+      } catch (error) {
+        releaseRequestLease();
+        throw error;
+      }
     } else if (request.kind === "cancelRequest") {
       const target = this.pending.get(request.targetRequestId);
       if (!target || (!target.runtime.process && !target.runtime.processStart)) {
         return this.cancellationUnavailableError(request.targetRequestId);
       }
       runtime = target.runtime;
-      proc = runtime.process ?? (await runtime.processStart!);
-    } else {
-      const prepared = await this.prepareRequestForDispatch(request);
-      if (prepared.request.kind === "error") return prepared.request;
-      if (options.cancellation?.isCancellationRequested) {
-        return { kind: "cancelled", targetRequestId: "not-started" };
-      }
-      runtimeRequest = prepared.request;
-      desired = prepared.processSelection ?? (await this.processSelectionFor(runtimeRequest));
-      if (!this.isCurrentEnvironmentSelection(desired.selection)) {
-        return this.runtimeSelectionChangedError();
-      }
-      runtime = this.runtimeSlot(desired.selection.key);
+      requestLease = this.retainRuntime(runtime);
       try {
-        proc = await this.ensureProcess(runtime, desired);
+        proc = runtime.process ?? (await runtime.processStart!);
       } catch (error) {
-        if (!this.isCurrentEnvironmentSelection(desired.selection)) {
-          return this.runtimeSelectionChangedError();
-        }
+        releaseRequestLease();
         throw error;
       }
-      if (!this.isCurrentEnvironmentSelection(desired.selection)) {
-        return this.runtimeSelectionChangedError();
+    } else {
+      const preparationRuntime = this.runtimeSlot(
+        pythonSelectionScope(request.kind === "openSession" ? sourceResource(request.source) : undefined).key
+      );
+      requestLease = this.retainRuntime(preparationRuntime);
+      try {
+        const prepared = await this.prepareRequestForDispatch(request);
+        if (prepared.request.kind === "error") {
+          releaseRequestLease();
+          return prepared.request;
+        }
+        if (options.cancellation?.isCancellationRequested) {
+          releaseRequestLease();
+          return { kind: "cancelled", targetRequestId: "not-started" };
+        }
+        runtimeRequest = prepared.request;
+        desired = prepared.processSelection ?? (await this.processSelectionFor(runtimeRequest));
+        if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+          releaseRequestLease();
+          return this.runtimeSelectionChangedError();
+        }
+        runtime = this.runtimeSlot(desired.selection.key);
+        if (runtime !== preparationRuntime) {
+          const desiredLease = this.retainRuntime(runtime);
+          releaseRequestLease();
+          requestLease = desiredLease;
+        }
+        try {
+          proc = await this.ensureProcess(runtime, desired);
+        } catch (error) {
+          if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+            releaseRequestLease();
+            return this.runtimeSelectionChangedError();
+          }
+          throw error;
+        }
+        if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+          releaseRequestLease();
+          return this.runtimeSelectionChangedError();
+        }
+      } catch (error) {
+        releaseRequestLease();
+        throw error;
       }
     }
     if (options.cancellation?.isCancellationRequested) {
       this.stopRuntimeIfIdle(runtime);
+      releaseRequestLease();
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
 
@@ -221,6 +269,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const provisionalError = this.reserveRequestedSession(runtimeRequest, runtime, requestId);
     if (provisionalError) {
       this.stopRuntimeIfIdle(runtime);
+      releaseRequestLease();
       return provisionalError;
     }
     const envelope: RuntimeRequestEnvelope = {
@@ -238,11 +287,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     return new Promise<OpenWranglerResponse>((resolve, reject) => {
       if (runtime.runtimeExitError) {
         this.releaseProvisionalReservationForRequest(runtimeRequest, requestId, runtime);
+        releaseRequestLease();
         reject(runtime.runtimeExitError);
         return;
       }
       if (proc.stdin.destroyed || !proc.stdin.writable) {
         this.releaseProvisionalReservationForRequest(runtimeRequest, requestId, runtime);
+        releaseRequestLease();
         reject(this.runtimeUnavailableError(runtime));
         return;
       }
@@ -273,6 +324,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       };
       this.pending.set(requestId, pending);
       runtime.pendingIds.add(requestId);
+      releaseRequestLease();
       const cancellation = options.cancellation?.onCancellationRequested(() => this.cancelRequest(requestId));
       pending.cancellation = cancellation;
       if (!this.pending.has(requestId)) cancellation?.dispose();
@@ -335,28 +387,37 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private invalidateSelectionScopes(keys: ReadonlySet<string>, reason: string, force = false): void {
-    const affected = [...keys].filter(
-      (key) =>
+    const affected = [...keys].filter((key) => {
+      const runtime = this.runtimeSlots.get(key);
+      return (
         force ||
         this.environmentSelections.has(key) ||
-        this.runtimeSlots.get(key)?.process !== undefined ||
-        this.runtimeSlots.get(key)?.processStart !== undefined ||
-        this.lastMissingDependencies?.selection.key === key
-    );
+        this.lastMissingDependencies?.selection.key === key ||
+        Boolean(runtime && !this.isInactiveScope(runtime))
+      );
+    });
     if (affected.length === 0) return;
 
     this.selectionEpoch += 1;
     for (const key of affected) {
       this.selectionEpochs.set(key, (this.selectionEpochs.get(key) ?? 0) + 1);
       const selection = this.environmentSelections.get(key);
+      const hadActiveMissingTarget = this.lastMissingDependencies?.selection === selection;
       if (selection) {
         this.environmentSelections.delete(key);
         for (const dependencyKey of selection.dependencyKeys) this.dependencyCache.delete(dependencyKey);
       }
       if (this.lastMissingDependencies?.selection.key === key) this.lastMissingDependencies = undefined;
       const runtime = this.runtimeSlots.get(key);
-      if (runtime && !this.disposed) this.stopRuntime(runtime, reason);
+      if (runtime && !this.disposed) {
+        if (hadActiveMissingTarget || !this.isInactiveScope(runtime)) {
+          this.stopRuntime(runtime, reason);
+        } else {
+          this.evictInactiveScope(runtime);
+        }
+      }
     }
+    this.trimInactiveScopes();
   }
 
   async installMissingDependencies(): Promise<boolean> {
@@ -399,77 +460,84 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
       return false;
     }
-    const executable = missing.environment.executable;
-    const requirements = [...missing.requirements];
-    if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
-      await this.reportInvalidDependencyInstallTarget();
-      return false;
-    }
-    const choice = await vscode.window.showWarningMessage(
-      `Install ${requirements.join(", ")} into ${executable}?`,
-      { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
-      "Install"
-    );
-    if (choice !== "Install") return false;
-    if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
-      await this.reportInvalidDependencyInstallTarget();
-      return false;
-    }
+    const runtime = this.runtimeSlot(missing.selection.key);
+    const release = this.retainRuntime(runtime);
+    try {
+      const executable = missing.environment.executable;
+      const requirements = [...missing.requirements];
+      if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
+        await this.reportInvalidDependencyInstallTarget();
+        return false;
+      }
+      const choice = await vscode.window.showWarningMessage(
+        `Install ${requirements.join(", ")} into ${executable}?`,
+        { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
+        "Install"
+      );
+      if (choice !== "Install") return false;
+      if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
+        await this.reportInvalidDependencyInstallTarget();
+        return false;
+      }
 
-    let installationStarted = false;
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
-      async () => {
-        if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) return;
-        installationStarted = true;
-        await this.executeFile(executable, ["-m", "pip", "install", ...requirements], {
-          timeout: 10 * 60_000
-        });
-      }
-    );
-    if (!installationStarted) {
-      await this.reportInvalidDependencyInstallTarget();
-      return false;
-    }
-    const targetWasCurrent = this.isCurrentDependencyInstallTarget(missing, executable, requirements);
-    const executableKey = pythonExecutableKey(executable);
-    const dependencyPrefix = `${executableKey}:`;
-    for (const key of this.dependencyCache.keys()) {
-      if (key.startsWith(dependencyPrefix)) this.dependencyCache.delete(key);
-    }
-    const affected = new Set(
-      [...this.environmentSelections.values()]
-        .filter(
-          (selection) =>
-            selection.resolvedEnvironment &&
-            pythonExecutableKey(selection.resolvedEnvironment.executable) === executableKey
-        )
-        .map((selection) => selection.key)
-    );
-    for (const runtime of this.runtimeSlots.values()) {
-      const runtimeExecutable =
-        runtime.processSelection?.environment.executable ?? runtime.processStartSelection?.environment.executable;
-      if (runtimeExecutable && pythonExecutableKey(runtimeExecutable) === executableKey) {
-        affected.add(runtime.key);
-      }
-    }
-    if (affected.size > 0) {
-      this.invalidateSelectionScopes(
-        affected,
-        "Python dependencies changed; restarting the Open Wrangler runtime.",
-        true
+      let installationStarted = false;
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
+        async () => {
+          if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) return;
+          installationStarted = true;
+          await this.executeFile(executable, ["-m", "pip", "install", ...requirements], {
+            timeout: 10 * 60_000
+          });
+        }
       );
-    }
-    if (targetWasCurrent) {
-      if (!this.disposed) {
-        await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
+      if (!installationStarted) {
+        await this.reportInvalidDependencyInstallTarget();
+        return false;
       }
-    } else if (!this.disposed) {
-      await vscode.window.showInformationMessage(
-        `Installed ${requirements.join(", ")} into ${executable}, but the initiating dependency target changed before installation completed. Any active Open Wrangler runtime using that interpreter was invalidated.`
+      const targetWasCurrent = this.isCurrentDependencyInstallTarget(missing, executable, requirements);
+      const executableKey = pythonExecutableKey(executable);
+      const dependencyPrefix = `${executableKey}:`;
+      for (const key of this.dependencyCache.keys()) {
+        if (key.startsWith(dependencyPrefix)) this.dependencyCache.delete(key);
+      }
+      const affected = new Set(
+        [...this.environmentSelections.values()]
+          .filter(
+            (selection) =>
+              selection.resolvedEnvironment &&
+              pythonExecutableKey(selection.resolvedEnvironment.executable) === executableKey
+          )
+          .map((selection) => selection.key)
       );
+      for (const activeRuntime of this.runtimeSlots.values()) {
+        const runtimeExecutable =
+          activeRuntime.processSelection?.environment.executable ??
+          activeRuntime.processStartSelection?.environment.executable;
+        if (runtimeExecutable && pythonExecutableKey(runtimeExecutable) === executableKey) {
+          affected.add(activeRuntime.key);
+        }
+      }
+      if (affected.size > 0) {
+        this.invalidateSelectionScopes(
+          affected,
+          "Python dependencies changed; restarting the Open Wrangler runtime.",
+          true
+        );
+      }
+      if (targetWasCurrent) {
+        if (!this.disposed) {
+          await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
+        }
+      } else if (!this.disposed) {
+        await vscode.window.showInformationMessage(
+          `Installed ${requirements.join(", ")} into ${executable}, but the initiating dependency target changed before installation completed. Any active Open Wrangler runtime using that interpreter was invalidated.`
+        );
+      }
+      return true;
+    } finally {
+      release();
     }
-    return true;
   }
 
   private isCurrentDependencyInstallTarget(
@@ -566,13 +634,17 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private runtimeSlot(key: string): RuntimeSlot {
     const existing = this.runtimeSlots.get(key);
-    if (existing) return existing;
+    if (existing) {
+      this.markScopeUsed(key);
+      return existing;
+    }
     const runtime: RuntimeSlot = {
       key,
       pendingIds: new Set(),
       provisionalSessionIds: new Set(),
       sessionIds: new Set(),
       stoppingProcesses: new Set(),
+      leaseCount: 0,
       process: undefined,
       processStart: undefined,
       processSelection: undefined,
@@ -583,7 +655,138 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       runtimeEpoch: 0
     };
     this.runtimeSlots.set(key, runtime);
+    this.markScopeUsed(key);
     return runtime;
+  }
+
+  private markScopeUsed(key: string): void {
+    this.scopeUseClock += 1;
+    this.scopeRecency.set(key, this.scopeUseClock);
+  }
+
+  private retainRuntime(runtime: RuntimeSlot): () => void {
+    if (this.runtimeSlots.get(runtime.key) !== runtime) {
+      throw new Error(`Open Wrangler refused to lease detached Python scope ${runtime.key}.`);
+    }
+    runtime.leaseCount += 1;
+    this.markScopeUsed(runtime.key);
+    let retained = true;
+    return () => {
+      if (!retained) return;
+      retained = false;
+      runtime.leaseCount = Math.max(0, runtime.leaseCount - 1);
+      if (this.runtimeSlots.get(runtime.key) === runtime) this.trimInactiveScopes();
+    };
+  }
+
+  private trimInactiveScopes(): void {
+    const retainedKeys = (): Set<string> =>
+      new Set([
+        ...this.runtimeSlots.keys(),
+        ...this.environmentSelections.keys(),
+        ...this.selectionEpochs.keys(),
+        ...this.scopeRecency.keys()
+      ]);
+    let keys = retainedKeys();
+    while (keys.size > MAX_RETAINED_INACTIVE_SCOPES) {
+      const ordered = [...keys].sort(
+        (left, right) =>
+          (this.scopeRecency.get(left) ?? 0) - (this.scopeRecency.get(right) ?? 0) || left.localeCompare(right)
+      );
+      let evicted = false;
+      for (const key of ordered) {
+        const runtime = this.runtimeSlots.get(key);
+        if (runtime ? this.evictInactiveScope(runtime) : this.evictOrphanedScope(key)) {
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) return;
+      keys = retainedKeys();
+    }
+  }
+
+  private evictInactiveScope(runtime: RuntimeSlot): boolean {
+    if (this.runtimeSlots.get(runtime.key) !== runtime || !this.isInactiveScope(runtime)) return false;
+
+    const selection = this.environmentSelections.get(runtime.key);
+    const selectionEpoch = this.selectionEpochs.get(runtime.key);
+    const recency = this.scopeRecency.get(runtime.key);
+    if (!this.runtimeSlots.delete(runtime.key)) return false;
+    if (selection && this.environmentSelections.get(runtime.key) === selection) {
+      this.environmentSelections.delete(runtime.key);
+      this.clearUnreferencedDependencyKeys(selection.dependencyKeys);
+    }
+    if (this.selectionEpochs.get(runtime.key) === selectionEpoch) {
+      this.selectionEpochs.delete(runtime.key);
+    }
+    if (this.scopeRecency.get(runtime.key) === recency) {
+      this.scopeRecency.delete(runtime.key);
+    }
+    runtime.stderrBuffer = "";
+    runtime.runtimeExitError = undefined;
+    runtime.processSelection = undefined;
+    runtime.processStartSelection = undefined;
+    return true;
+  }
+
+  private clearUnreferencedDependencyKeys(keys: ReadonlySet<string>): void {
+    for (const key of keys) {
+      const retained = [...this.environmentSelections.values()].some((selection) => selection.dependencyKeys.has(key));
+      if (retained || this.lastMissingDependencies?.selection.dependencyKeys.has(key)) continue;
+      this.dependencyCache.delete(key);
+    }
+  }
+
+  private evictOrphanedScope(key: string): boolean {
+    if (this.runtimeSlots.has(key)) return false;
+    const selection = this.environmentSelections.get(key);
+    // A selection without its owning slot violates the scope-retention
+    // invariant. Its promise may still be resolving, so fail closed rather than
+    // guessing that it is safe to detach.
+    if (selection) return false;
+    if (this.lastMissingDependencies?.selection.key === key) return false;
+    const selectionEpoch = this.selectionEpochs.get(key);
+    const recency = this.scopeRecency.get(key);
+    if (this.selectionEpochs.get(key) === selectionEpoch) {
+      this.selectionEpochs.delete(key);
+    }
+    if (this.scopeRecency.get(key) === recency) {
+      this.scopeRecency.delete(key);
+    }
+    return true;
+  }
+
+  private isInactiveScope(runtime: RuntimeSlot): boolean {
+    const selection = this.environmentSelections.get(runtime.key);
+    if (
+      runtime.leaseCount > 0 ||
+      runtime.process ||
+      runtime.processStart ||
+      runtime.processStop ||
+      runtime.processSelection ||
+      runtime.processStartSelection ||
+      runtime.stoppingProcesses.size > 0 ||
+      runtime.pendingIds.size > 0 ||
+      runtime.provisionalSessionIds.size > 0 ||
+      runtime.sessionIds.size > 0 ||
+      Boolean(this.lastMissingDependencies && this.lastMissingDependencies.selection === selection)
+    ) {
+      return false;
+    }
+    for (const pending of this.pending.values()) {
+      if (pending.runtime === runtime) return false;
+    }
+    for (const reservation of this.provisionalSessions.values()) {
+      if (reservation.runtime === runtime) return false;
+    }
+    for (const owner of this.sessionOwners.values()) {
+      if (owner === runtime) return false;
+    }
+    for (const target of this.cancellationTargets.values()) {
+      if (target.runtime === runtime) return false;
+    }
+    return true;
   }
 
   private restartRuntime(runtime: RuntimeSlot, reason: string): void {
@@ -606,6 +809,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.releaseRuntimeSessionState(runtime);
     this.rejectRuntime(runtime, new Error(reason));
     if (proc) this.trackProcessStop(runtime, proc, gracefulTimeoutMs);
+    this.trimInactiveScopes();
   }
 
   private stopRuntimeIfIdle(runtime: RuntimeSlot): void {
@@ -614,10 +818,24 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     if (runtime.process || runtime.processStart) {
       this.stopRuntime(runtime, "Open Wrangler runtime stopped after its last session closed.");
+    } else {
+      this.trimInactiveScopes();
     }
   }
 
   private async ensureProcess(
+    runtime: RuntimeSlot,
+    desired: ProcessSelection
+  ): Promise<ChildProcessWithoutNullStreams> {
+    const release = this.retainRuntime(runtime);
+    try {
+      return await this.ensureProcessRetained(runtime, desired);
+    } finally {
+      release();
+    }
+  }
+
+  private async ensureProcessRetained(
     runtime: RuntimeSlot,
     desired: ProcessSelection
   ): Promise<ChildProcessWithoutNullStreams> {
@@ -696,6 +914,19 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private async startProcess(
+    runtime: RuntimeSlot,
+    epoch: number,
+    processSelection: ProcessSelection
+  ): Promise<ChildProcessWithoutNullStreams> {
+    const release = this.retainRuntime(runtime);
+    try {
+      return await this.startProcessRetained(runtime, epoch, processSelection);
+    } finally {
+      release();
+    }
+  }
+
+  private async startProcessRetained(
     runtime: RuntimeSlot,
     epoch: number,
     processSelection: ProcessSelection
@@ -789,21 +1020,26 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     proc: ChildProcessWithoutNullStreams,
     gracefulTimeoutMs?: number
   ): void {
+    const release = this.retainRuntime(runtime);
     const current = stopChildProcessGracefully(proc, gracefulTimeoutMs);
     const previous = runtime.processStop;
     const stopping = previous ? joinProcessStops(previous, current) : current;
     runtime.stoppingProcesses.add(proc);
     runtime.processStop = stopping;
-    const confirmLateExit = (): void => {
+    let owned = true;
+    const releaseOwnedStop = (): void => {
+      if (!owned) return;
+      owned = false;
       runtime.stoppingProcesses.delete(proc);
       if (runtime.stoppingProcesses.size === 0) runtime.processStop = undefined;
+      release();
     };
+    const confirmLateExit = (): void => releaseOwnedStop();
     proc.once("exit", confirmLateExit);
     void current.then(
       () => {
         proc.off("exit", confirmLateExit);
-        runtime.stoppingProcesses.delete(proc);
-        if (runtime.stoppingProcesses.size === 0) runtime.processStop = undefined;
+        releaseOwnedStop();
       },
       (error: unknown) => {
         try {
@@ -826,6 +1062,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.releaseRuntimeSessionState(runtime);
     this.output.appendLine(error.message);
     this.rejectRuntime(runtime, error);
+    this.trimInactiveScopes();
   }
 
   private handleRuntimeLine(runtime: RuntimeSlot, proc: ChildProcessWithoutNullStreams, line: string): void {
@@ -1210,11 +1447,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.environmentSelections.set(scope.key, selection);
     void promise.then(
       (environment) => {
-        selection.resolvedEnvironment = environment;
+        if (!this.disposed && this.environmentSelections.get(scope.key) === selection) {
+          selection.resolvedEnvironment = environment;
+        }
       },
       () => {
         if (this.environmentSelections.get(scope.key) === selection) {
           this.environmentSelections.delete(scope.key);
+          this.trimInactiveScopes();
         }
       }
     );
@@ -1223,8 +1463,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private async processSelectionFor(request: OpenWranglerRequest): Promise<ProcessSelection> {
     const resource = request.kind === "openSession" ? sourceResource(request.source) : undefined;
-    const selection = this.environmentSelection(resource);
-    return { selection, environment: await selection.promise };
+    const runtime = this.runtimeSlot(pythonSelectionScope(resource).key);
+    const release = this.retainRuntime(runtime);
+    try {
+      const selection = this.environmentSelection(resource);
+      return { selection, environment: await selection.promise };
+    } finally {
+      release();
+    }
   }
 
   private isCurrentEnvironmentSelection(selection: EnvironmentSelection): boolean {
@@ -1252,7 +1498,15 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
-    return (await this.prepareRequestForDispatch(request)).request;
+    const runtime = this.runtimeSlot(
+      pythonSelectionScope(request.kind === "openSession" ? sourceResource(request.source) : undefined).key
+    );
+    const release = this.retainRuntime(runtime);
+    try {
+      return (await this.prepareRequestForDispatch(request)).request;
+    } finally {
+      release();
+    }
   }
 
   private async prepareRequestForDispatch(request: OpenWranglerRequest): Promise<PreparedRequest> {

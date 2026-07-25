@@ -859,22 +859,37 @@ describe("PythonBridge process lifecycle", () => {
   it("fails closed instead of spawning after forced shutdown lacks exit confirmation", async () => {
     vi.useFakeTimers();
     const { bridge, internals, process } = createLifecycleHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
 
     bridge.onIdle();
     const stopping = internals.processStop;
     expect(stopping).toBeDefined();
-    const rejected = expect(stopping).rejects.toThrow("could not confirm that its Python runtime exited");
+    addInactiveScopePressure(raw, 160, "failed-stop-pressure");
+    expect(raw.runtimeSlots.get(internals.runtime.key)).toBe(internals.runtime);
+    expect(internals.runtime.leaseCount).toBeGreaterThan(0);
 
     await vi.advanceTimersByTimeAsync(4_000);
-    await rejected;
+    const stopFailure = await stopping!.catch((error: unknown) => error);
+    expect(stopFailure).toMatchObject({
+      message: expect.stringContaining("could not confirm that its Python runtime exited")
+    });
     expect(process.kill).toHaveBeenCalledOnce();
     expect(bridge.runtimeRunning).toBe(true);
+    expect(raw.runtimeSlots.get(internals.runtime.key)).toBe(internals.runtime);
+    expect(internals.runtime.stoppingProcesses.has(process as unknown as ChildProcessWithoutNullStreams)).toBe(true);
     await expect(internals.ensureProcess(initializeRequest)).rejects.toThrow(
       "could not confirm shutdown of its previous Python runtime"
     );
     expect(internals.spawnProcess).not.toHaveBeenCalled();
+    expect(raw.runtimeSlots.get(internals.runtime.key)).toBe(internals.runtime);
+
+    const shutdown = bridge.shutdown();
+    await expect(shutdown).rejects.toBe(stopFailure);
+    expect(raw.runtimeSlots.get(internals.runtime.key)).toBe(internals.runtime);
+    expect(bridge.runtimeRunning).toBe(true);
 
     process.emit("exit", null, "SIGKILL");
+    await Promise.resolve();
     expect(bridge.runtimeRunning).toBe(false);
   });
 
@@ -1013,6 +1028,37 @@ describe("PythonBridge process lifecycle", () => {
     bridge.restart("Acceptance cleanup.");
     const cleanup = internals.processStop;
     replacement.emit("exit", null, "SIGKILL");
+    await expect(cleanup).resolves.toBeUndefined();
+  });
+
+  it("keeps a concurrent reopen attached to its exact slot while the prior process stops", async () => {
+    const { bridge, internals, process } = createLifecycleHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const replacement = new LifecycleChildProcess();
+    internals.spawnProcess.mockReturnValue(replacement as unknown as ChildProcessWithoutNullStreams);
+
+    bridge.onIdle();
+    const stopping = internals.processStop;
+    expect(stopping).toBeDefined();
+    const reopening = internals.ensureProcess(initializeRequest);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+
+    addInactiveScopePressure(raw, 160, "reopen-pressure");
+    expect(raw.runtimeSlots.get(internals.runtime.key)).toBe(internals.runtime);
+    expect(internals.runtime.leaseCount).toBeGreaterThanOrEqual(2);
+
+    process.emit("exit", 0, null);
+    await expect(stopping).resolves.toBeUndefined();
+    await expect(reopening).resolves.toBe(replacement);
+    expect(internals.spawnProcess).toHaveBeenCalledOnce();
+    expect(raw.runtimeSlots.get(internals.runtime.key)).toBe(internals.runtime);
+    expect(internals.runtime.process).toBe(replacement);
+
+    bridge.onIdle();
+    const cleanup = internals.processStop;
+    replacement.emit("exit", 0, null);
     await expect(cleanup).resolves.toBeUndefined();
   });
 
@@ -1950,6 +1996,307 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.dependencyCache.size).toBe(0);
     expect(internals.lastMissingDependencies).toBeUndefined();
   });
+
+  it("bounds retained inactive external-resource scopes and scrubs exact evicted state", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => ({
+      ...environment,
+      executable: `/envs${resource?.path ?? "/default"}/python`
+    }));
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    const oldestSource = remoteSourceAt("/retention/0.csv");
+    await internals.prepareRequest(openSessionRequest(oldestSource));
+    const oldest = raw.runtimeSlots.get(oldestSource.uri!);
+    expect(oldest).toBeDefined();
+    oldest!.stderrBuffer = "scope-local diagnostic";
+    oldest!.runtimeExitError = new Error("old runtime failure");
+    raw.selectionEpochs.set(oldestSource.uri!, 7);
+
+    for (let index = 1; index < 144; index += 1) {
+      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/retention/${index}.csv`)));
+    }
+
+    expect(raw.runtimeSlots.size).toBe(128);
+    expect(raw.environmentSelections.size).toBe(128);
+    expect(raw.scopeRecency.size).toBe(128);
+    expect(raw.runtimeSlots.has(oldestSource.uri!)).toBe(false);
+    expect(raw.environmentSelections.has(oldestSource.uri!)).toBe(false);
+    expect(raw.selectionEpochs.has(oldestSource.uri!)).toBe(false);
+    expect(raw.scopeRecency.has(oldestSource.uri!)).toBe(false);
+    expect(oldest!.stderrBuffer).toBe("");
+    expect(oldest!.runtimeExitError).toBeUndefined();
+    expect(raw.dependencyCache.size).toBe(128);
+    expect(raw.runtimeSlots.has(remoteSourceAt("/retention/143.csv").uri!)).toBe(true);
+  });
+
+  it("never evicts the exact actionable missing-dependency scope", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const missingSource = remoteSourceAt("/retention/missing.csv");
+    const missingEnvironment = { ...environment, executable: "/envs/missing/python" };
+    const healthyEnvironment = { ...environment, executable: "/envs/healthy/python" };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
+      resource?.toString(true) === missingSource.uri ? missingEnvironment : healthyEnvironment
+    );
+    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation(async (executable) =>
+      executable === missingEnvironment.executable
+        ? { missing: ["polars"], available: [] }
+        : { missing: [], available: ["polars"] }
+    );
+
+    await expect(internals.prepareRequest(openSessionRequest(missingSource))).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+    const exactTarget = internals.lastMissingDependencies;
+    expect(exactTarget?.selection.key).toBe(missingSource.uri);
+
+    for (let index = 0; index < 144; index += 1) {
+      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/retention/healthy-${index}.csv`)));
+    }
+
+    expect(raw.runtimeSlots.size).toBe(128);
+    expect(raw.environmentSelections.size).toBe(128);
+    expect(raw.runtimeSlots.has(missingSource.uri!)).toBe(true);
+    expect(raw.environmentSelections.get(missingSource.uri!)).toBe(exactTarget?.selection);
+    expect(internals.lastMissingDependencies).toBe(exactTarget);
+  });
+
+  it("leases one exact scope through deferred environment resolution and dependency probing", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const targetSource = remoteSourceAt("/retention/deferred.csv");
+    const targetEnvironment = { ...environment, executable: "/envs/deferred/python" };
+    const healthyEnvironment = { ...environment, executable: "/envs/healthy/python" };
+    const resolution = deferred<TestPythonEnvironment>();
+    const probe = deferred<{ missing: string[]; available: string[] }>();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation((_context, resource) =>
+      resource?.toString(true) === targetSource.uri ? resolution.promise : Promise.resolve(healthyEnvironment)
+    );
+    vi.mocked(pythonEnvironment.probeDependencies).mockImplementation((executable) =>
+      executable === targetEnvironment.executable
+        ? probe.promise
+        : Promise.resolve({ missing: [], available: ["polars"] })
+    );
+
+    const preparation = internals.prepareRequest(openSessionRequest(targetSource));
+    await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    const targetRuntime = raw.runtimeSlots.get(targetSource.uri!);
+    expect(targetRuntime?.leaseCount).toBe(1);
+
+    for (let index = 0; index < 144; index += 1) {
+      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/retention/deferred-peer-${index}.csv`)));
+    }
+    expect(raw.runtimeSlots.get(targetSource.uri!)).toBe(targetRuntime);
+    expect(targetRuntime?.leaseCount).toBe(1);
+
+    resolution.resolve(targetEnvironment);
+    await vi.waitFor(() =>
+      expect(pythonEnvironment.probeDependencies).toHaveBeenCalledWith(targetEnvironment.executable, expect.any(Array))
+    );
+    expect(raw.runtimeSlots.get(targetSource.uri!)).toBe(targetRuntime);
+    expect(targetRuntime?.leaseCount).toBe(1);
+
+    probe.resolve({ missing: [], available: ["polars"] });
+    await expect(preparation).resolves.toMatchObject({ kind: "openSession", backend: "polars" });
+    expect(targetRuntime?.leaseCount).toBe(0);
+
+    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/retention/deferred-peer-final.csv")));
+    expect(raw.runtimeSlots.has(targetSource.uri!)).toBe(false);
+    expect(raw.environmentSelections.has(targetSource.uri!)).toBe(false);
+    expect(raw.dependencyCache.size).toBe(1);
+  });
+
+  it("does not let a stale lease release mutate a same-key replacement slot", () => {
+    const { bridge } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const original = raw.runtimeSlot("replacement-scope");
+    const release = raw.retainRuntime(original);
+    const replacement = testRuntimeSlot(original.key);
+    raw.runtimeSlots.set(replacement.key, replacement);
+    raw.scopeRecency.set(replacement.key, 41);
+
+    release();
+
+    expect(original.leaseCount).toBe(0);
+    expect(raw.runtimeSlots.get(replacement.key)).toBe(replacement);
+    expect(raw.scopeRecency.get(replacement.key)).toBe(41);
+  });
+
+  it("permits overflow only while every excess scope is leased and trims on release", () => {
+    const { bridge } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const releases: Array<() => void> = [];
+    for (let index = 0; index < 130; index += 1) {
+      releases.push(raw.retainRuntime(raw.runtimeSlot(`leased-overflow-${index}`)));
+    }
+
+    raw.trimInactiveScopes();
+    expect(raw.runtimeSlots.size).toBe(130);
+
+    releases[0]();
+    expect(raw.runtimeSlots.size).toBe(129);
+    expect(raw.runtimeSlots.has("leased-overflow-0")).toBe(false);
+    expect([...raw.runtimeSlots.values()].every((runtime) => runtime.leaseCount > 0)).toBe(true);
+
+    releases[1]();
+    expect(raw.runtimeSlots.size).toBe(128);
+    expect(raw.runtimeSlots.has("leased-overflow-1")).toBe(false);
+    for (const release of releases.slice(2)) release();
+  });
+
+  it("refreshes scope recency without changing deterministic runtime-slot order", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    for (let index = 0; index < 128; index += 1) {
+      await internals.prepareRequest(openSessionRequest(remoteSourceAt(`/recency/${index}.csv`)));
+    }
+    const insertionOrder = [...raw.runtimeSlots.keys()];
+    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/recency/0.csv")));
+    expect([...raw.runtimeSlots.keys()]).toEqual(insertionOrder);
+
+    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/recency/128.csv")));
+    expect(raw.runtimeSlots.has(remoteSourceAt("/recency/0.csv").uri!)).toBe(true);
+    expect(raw.runtimeSlots.has(remoteSourceAt("/recency/1.csv").uri!)).toBe(false);
+    expect(raw.runtimeSlots.has(remoteSourceAt("/recency/128.csv").uri!)).toBe(true);
+  });
+
+  it("pins a scope through an exact global cancellation backlink", () => {
+    const { bridge } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    for (let index = 0; index < 129; index += 1) raw.runtimeSlot(`backlink-${index}`);
+    const pinned = raw.runtimeSlots.get("backlink-0")!;
+    raw.cancellationTargets.set("cancel-backlink", {
+      targetRequestId: "target",
+      runtime: pinned
+    });
+
+    raw.trimInactiveScopes();
+    expect(raw.runtimeSlots.size).toBe(128);
+    expect(raw.runtimeSlots.get(pinned.key)).toBe(pinned);
+
+    raw.cancellationTargets.delete("cancel-backlink");
+    raw.runtimeSlot("backlink-final");
+    raw.trimInactiveScopes();
+    expect(raw.runtimeSlots.size).toBe(128);
+    expect(raw.runtimeSlots.has(pinned.key)).toBe(false);
+  });
+
+  it("cleans orphan metadata but fails closed on an orphan unresolved selection", () => {
+    const { bridge } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    for (let index = 0; index < 129; index += 1) {
+      const key = `orphan-metadata-${index}`;
+      raw.selectionEpochs.set(key, index);
+      raw.scopeRecency.set(key, index);
+    }
+    raw.trimInactiveScopes();
+    expect(raw.selectionEpochs.size).toBe(128);
+    expect(raw.scopeRecency.size).toBe(128);
+    expect(raw.selectionEpochs.has("orphan-metadata-0")).toBe(false);
+
+    const unresolved = deferred<TestPythonEnvironment>();
+    const orphanKey = "orphan-unresolved-selection";
+    const orphan: TestEnvironmentSelection = {
+      key: orphanKey,
+      epoch: 0,
+      resource: vscode.Uri.parse("vscode-remote://ssh-remote+example/orphan.csv", true),
+      workspaceFolder: undefined,
+      promise: unresolved.promise,
+      dependencyKeys: new Set()
+    };
+    raw.environmentSelections.set(orphanKey, orphan);
+    raw.selectionEpochs.set(orphanKey, 0);
+    raw.scopeRecency.set(orphanKey, -1);
+
+    raw.trimInactiveScopes();
+    expect(raw.environmentSelections.get(orphanKey)).toBe(orphan);
+    expect(raw.selectionEpochs.has(orphanKey)).toBe(true);
+    expect(raw.scopeRecency.has(orphanKey)).toBe(true);
+    expect(
+      new Set([...raw.environmentSelections.keys(), ...raw.selectionEpochs.keys(), ...raw.scopeRecency.keys()]).size
+    ).toBe(128);
+  });
+
+  it("does not let a stale environment-resolution callback overwrite a same-key recreation", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const source = remoteSourceAt("/recreated/resolution.csv");
+    const staleEnvironment = { ...environment, executable: "/envs/stale/python" };
+    const currentEnvironment = { ...environment, executable: "/envs/current/python" };
+    const staleResolution = deferred<TestPythonEnvironment>();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+      .mockReturnValueOnce(staleResolution.promise)
+      .mockResolvedValue(currentEnvironment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    const stalePreparation = internals.prepareRequest(openSessionRequest(source));
+    await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "replacement",
+      path: currentEnvironment.executable,
+      resource: vscode.Uri.parse(source.uri!, true)
+    });
+    await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+    const currentSelection = raw.environmentSelections.get(source.uri!);
+    expect(currentSelection?.resolvedEnvironment).toEqual(currentEnvironment);
+
+    staleResolution.resolve(staleEnvironment);
+    await expect(stalePreparation).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed"
+    });
+    expect(raw.environmentSelections.get(source.uri!)).toBe(currentSelection);
+    expect(currentSelection?.resolvedEnvironment).toEqual(currentEnvironment);
+    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce();
+    expect(vi.mocked(pythonEnvironment.probeDependencies).mock.calls[0]?.[0]).toBe(currentEnvironment.executable);
+  });
+
+  it("does not let a stale dependency probe publish after a same-key recreation", async () => {
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const source = remoteSourceAt("/recreated/probe.csv");
+    const staleEnvironment = { ...environment, executable: "/envs/stale-probe/python" };
+    const currentEnvironment = { ...environment, executable: "/envs/current-probe/python" };
+    const staleProbe = deferred<{ missing: string[]; available: string[] }>();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+      .mockResolvedValueOnce(staleEnvironment)
+      .mockResolvedValue(currentEnvironment);
+    vi.mocked(pythonEnvironment.probeDependencies)
+      .mockReturnValueOnce(staleProbe.promise)
+      .mockResolvedValue({ missing: [], available: ["polars"] });
+
+    const stalePreparation = internals.prepareRequest(openSessionRequest(source));
+    await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "replacement",
+      path: currentEnvironment.executable,
+      resource: vscode.Uri.parse(source.uri!, true)
+    });
+    await expect(internals.prepareRequest(openSessionRequest(source))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+    const currentSelection = raw.environmentSelections.get(source.uri!);
+
+    staleProbe.resolve({ missing: ["polars"], available: [] });
+    await expect(stalePreparation).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed"
+    });
+    expect(raw.environmentSelections.get(source.uri!)).toBe(currentSelection);
+    expect(currentSelection?.resolvedEnvironment).toEqual(currentEnvironment);
+    expect(internals.lastMissingDependencies).toBeUndefined();
+    expect([...raw.dependencyCache.keys()].some((key) => key.startsWith(staleEnvironment.executable))).toBe(false);
+  });
 });
 
 class ManualCancellation implements CancellationTokenLike {
@@ -1990,6 +2337,7 @@ interface TestRuntimeSlot {
   readonly provisionalSessionIds: Set<string>;
   readonly sessionIds: Set<string>;
   readonly stoppingProcesses: Set<ChildProcessWithoutNullStreams>;
+  leaseCount: number;
   process: ChildProcessWithoutNullStreams | undefined;
   processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
   processSelection: TestProcessSelection | undefined;
@@ -2008,6 +2356,8 @@ interface TestProvisionalSessionReservation {
 
 interface RawBridgeInternals {
   disposed: boolean;
+  scopeUseClock: number;
+  scopeRecency: Map<string, number>;
   selectionEpoch: number;
   selectionEpochs: Map<string, number>;
   runtimeSlots: Map<string, TestRuntimeSlot>;
@@ -2026,6 +2376,7 @@ interface RawBridgeInternals {
   }>;
   processSelectionFor(request: OpenWranglerRequest): Promise<TestProcessSelection>;
   runtimeSlot(key: string): TestRuntimeSlot;
+  retainRuntime(runtime: TestRuntimeSlot): () => void;
   ensureProcess(runtime: TestRuntimeSlot, selection: TestProcessSelection): Promise<ChildProcessWithoutNullStreams>;
   startProcess(
     runtime: TestRuntimeSlot,
@@ -2037,6 +2388,7 @@ interface RawBridgeInternals {
   handlePythonEnvironmentSelectionChange(event: pythonEnvironment.PythonEnvironmentSelectionChangeEvent): void;
   restartRuntime(runtime: TestRuntimeSlot, reason: string): void;
   stopRuntimeIfIdle(runtime: TestRuntimeSlot): void;
+  trimInactiveScopes(): void;
 }
 
 interface LifecycleBridgeInternals {
@@ -2102,6 +2454,8 @@ function createLifecycleHarness(): {
     selectionEpoch: 0,
     selectionEpochs: new Map([[selection.key, 0]]),
     generation: 0,
+    scopeUseClock: 1,
+    scopeRecency: new Map([[selection.key, 1]]),
     disposed: false,
     environmentSelections: new Map([[selection.key, selection]]),
     dependencyCache: new Map<string, string[]>(),
@@ -2222,6 +2576,8 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     selectionEpoch: 0,
     selectionEpochs: new Map<string, number>(),
     disposed: options.disposed ?? false,
+    scopeUseClock: 0,
+    scopeRecency: new Map<string, number>(),
     environmentSelections: new Map<string, TestEnvironmentSelection>(),
     dependencyCache: new Map<string, string[]>(),
     lastMissingDependencies: undefined,
@@ -2289,6 +2645,8 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     selectionEpoch: 0,
     selectionEpochs: new Map([[target.selection.key, 0]]),
     disposed: false,
+    scopeUseClock: 1,
+    scopeRecency: new Map([[target.selection.key, 1]]),
     environmentSelections: new Map([[target.selection.key, target.selection]]),
     dependencyCache: new Map<string, string[]>([["cached-diagnostic", ["pandas"]]]),
     lastMissingDependencies: target,
@@ -2372,6 +2730,7 @@ function testRuntimeSlot(
     provisionalSessionIds: new Set(),
     sessionIds: new Set(),
     stoppingProcesses: new Set(),
+    leaseCount: 0,
     process,
     processStart: undefined,
     processSelection,
@@ -2569,6 +2928,11 @@ function createMultiScopeHarness(): {
       [secondSelection.key, 0]
     ]),
     disposed: false,
+    scopeUseClock: 2,
+    scopeRecency: new Map([
+      [firstSelection.key, 1],
+      [secondSelection.key, 2]
+    ]),
     environmentSelections: new Map([
       [firstSelection.key, firstSelection],
       [secondSelection.key, secondSelection]
@@ -2665,6 +3029,8 @@ function createHarness(
     selectionEpoch: 0,
     selectionEpochs: new Map([[selection.key, 0]]),
     disposed: false,
+    scopeUseClock: 1,
+    scopeRecency: new Map([[selection.key, 1]]),
     environmentSelections: new Map([[selection.key, selection]]),
     dependencyCache: new Map<string, string[]>(),
     lastMissingDependencies: undefined,
@@ -2702,6 +3068,13 @@ function createHarness(
       internals.environmentSelections.delete(selection.key);
     }
   };
+}
+
+function addInactiveScopePressure(raw: RawBridgeInternals, count: number, prefix: string): void {
+  for (let index = 0; index < count; index += 1) {
+    raw.runtimeSlot(`${prefix}-${index}`);
+  }
+  raw.trimInactiveScopes();
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
