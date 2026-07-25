@@ -4,6 +4,7 @@ import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonE
 
 import {
   PythonEnvironmentApiBroker,
+  PythonEnvironmentApiBrokerDisposedError,
   resolvePythonEnvironment,
   type PythonEnvironmentResource
 } from "../extension/pythonEnvironment";
@@ -118,7 +119,11 @@ describe("Python environment API broker", () => {
     mockExtensionLookup(extension(activate));
     const broker = new PythonEnvironmentApiBroker();
 
-    const resolution = broker.resolveSelectedExecutable(vscode.Uri.file("/workspace/data.csv"));
+    const resolution = resolvePythonEnvironment(
+      { extensionPath: "/extension" } as vscode.ExtensionContext,
+      vscode.Uri.file("/workspace/data.csv"),
+      broker
+    );
     expect(activate).toHaveBeenCalledOnce();
     broker.dispose();
     broker.dispose();
@@ -130,8 +135,59 @@ describe("Python environment API broker", () => {
       }
     });
 
-    await expect(resolution).resolves.toBeUndefined();
+    await expect(resolution).rejects.toBeInstanceOf(PythonEnvironmentApiBrokerDisposedError);
     expect(onDidChangeActiveEnvironmentPath).not.toHaveBeenCalled();
+  });
+
+  it("rejects resolution after disposal instead of falling through to a system interpreter", async () => {
+    const getExtension = mockExtensionLookup();
+    const broker = new PythonEnvironmentApiBroker();
+    broker.dispose();
+
+    await expect(
+      resolvePythonEnvironment(
+        { extensionPath: "/extension" } as vscode.ExtensionContext,
+        vscode.Uri.file("/workspace/data.csv"),
+        broker
+      )
+    ).rejects.toMatchObject({
+      name: "PythonEnvironmentApiBrokerDisposedError",
+      code: "python_environment_api_broker_disposed"
+    });
+    expect(getExtension).not.toHaveBeenCalled();
+  });
+
+  it("rejects when disposed while the selected environment is resolving", async () => {
+    const environmentResolution = deferred<{
+      executable: { uri: vscode.Uri };
+    }>();
+    const resolutionStarted = deferred<void>();
+    const disposeSelection = vi.fn();
+    const resolveEnvironment = vi.fn(() => {
+      resolutionStarted.resolve();
+      return environmentResolution.promise;
+    });
+    mockExtensionLookup(
+      extension(async () => ({
+        environments: {
+          getActiveEnvironmentPath: vi.fn(() => ({ id: "env", path: "/selected/python" })),
+          resolveEnvironment,
+          onDidChangeActiveEnvironmentPath: vi.fn(() => ({ dispose: disposeSelection }))
+        }
+      }))
+    );
+    const broker = new PythonEnvironmentApiBroker();
+
+    const resolution = broker.resolveSelectedExecutable(vscode.Uri.file("/workspace/data.csv"));
+    await resolutionStarted.promise;
+    broker.dispose();
+    environmentResolution.resolve({
+      executable: { uri: vscode.Uri.file("/resolved/python") }
+    });
+
+    await expect(resolution).rejects.toBeInstanceOf(PythonEnvironmentApiBrokerDisposedError);
+    expect(resolveEnvironment).toHaveBeenCalledOnce();
+    expect(disposeSelection).toHaveBeenCalledOnce();
   });
 
   it("retries after absent, failed, and malformed extension activation", async () => {
@@ -166,7 +222,7 @@ describe("Python environment API broker", () => {
     broker.dispose();
   });
 
-  it("uses an already-active compatible API without requiring the optional change event", async () => {
+  it("rejects an already-active API that cannot report selection changes", async () => {
     const activate = vi.fn();
     const uri = vscode.Uri.file("/workspace/data.csv");
     const getActiveEnvironmentPath = vi.fn(() => ({ id: "active-env", path: "/active/python" }));
@@ -185,15 +241,24 @@ describe("Python environment API broker", () => {
     } as unknown as vscode.Extension<unknown>);
     const broker = new PythonEnvironmentApiBroker();
 
-    await expect(broker.resolveSelectedExecutable(uri)).resolves.toBe("/active/python");
+    await expect(broker.resolveSelectedExecutable(uri)).resolves.toBeUndefined();
     expect(activate).not.toHaveBeenCalled();
-    expect(getActiveEnvironmentPath).toHaveBeenCalledWith(uri);
-    expect(resolveEnvironment).toHaveBeenCalledOnce();
+    expect(getActiveEnvironmentPath).not.toHaveBeenCalled();
+    expect(resolveEnvironment).not.toHaveBeenCalled();
     broker.dispose();
   });
 
-  it("falls back to a system interpreter when the activated API is malformed", async () => {
-    const activate = vi.fn(async () => ({ environments: { getActiveEnvironmentPath: vi.fn() } }));
+  it("falls back to a system interpreter when the activated API has no stable selection event", async () => {
+    const getActiveEnvironmentPath = vi.fn(() => ({ id: "env", path: "/selected/python" }));
+    const resolveEnvironment = vi.fn(async () => ({
+      executable: { uri: vscode.Uri.file("/selected/python") }
+    }));
+    const activate = vi.fn(async () => ({
+      environments: {
+        getActiveEnvironmentPath,
+        resolveEnvironment
+      }
+    }));
     mockExtensionLookup(extension(activate));
 
     const environment = await resolvePythonEnvironment({ extensionPath: "/extension" } as vscode.ExtensionContext);
@@ -201,6 +266,8 @@ describe("Python environment API broker", () => {
     expect(environment.executable).toBeTruthy();
     expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
     expect(activate).toHaveBeenCalledOnce();
+    expect(getActiveEnvironmentPath).not.toHaveBeenCalled();
+    expect(resolveEnvironment).not.toHaveBeenCalled();
   });
 });
 

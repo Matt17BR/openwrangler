@@ -21,10 +21,17 @@ export type PythonEnvironmentSelectionChangeEvent = ActiveEnvironmentPathChangeE
 
 type PythonEnvironmentsApi = Pick<
   PythonExtension["environments"],
-  "getActiveEnvironmentPath" | "resolveEnvironment"
-> & {
-  readonly onDidChangeActiveEnvironmentPath?: PythonExtension["environments"]["onDidChangeActiveEnvironmentPath"];
-};
+  "getActiveEnvironmentPath" | "resolveEnvironment" | "onDidChangeActiveEnvironmentPath"
+>;
+
+export class PythonEnvironmentApiBrokerDisposedError extends Error {
+  readonly code = "python_environment_api_broker_disposed";
+
+  constructor() {
+    super("Python environment resolution was cancelled because its API broker was disposed.");
+    this.name = "PythonEnvironmentApiBrokerDisposedError";
+  }
+}
 
 export class PythonEnvironmentApiBroker implements vscode.Disposable {
   private api: PythonEnvironmentsApi | undefined;
@@ -37,17 +44,21 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
   ) {}
 
   async resolveSelectedExecutable(resource?: PythonEnvironmentResource): Promise<string | undefined> {
+    this.throwIfDisposed();
     const api = await this.acquireApi();
-    if (!api || this.disposed) return undefined;
+    this.throwIfDisposed();
+    if (!api) return undefined;
 
     try {
       const selected: unknown = api.getActiveEnvironmentPath(resource);
       if (!isEnvironmentPath(selected)) return undefined;
       const resolved = await api.resolveEnvironment(selected);
-      if (this.disposed) return undefined;
+      this.throwIfDisposed();
       const executable = resolved?.executable?.uri?.fsPath;
       return typeof executable === "string" && executable.trim() ? executable : selected.path;
-    } catch {
+    } catch (error) {
+      if (error instanceof PythonEnvironmentApiBrokerDisposedError) throw error;
+      this.throwIfDisposed();
       return undefined;
     }
   }
@@ -61,7 +72,7 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
   }
 
   private acquireApi(): Promise<PythonEnvironmentsApi | undefined> {
-    if (this.disposed) return Promise.resolve(undefined);
+    this.throwIfDisposed();
     if (this.api) return Promise.resolve(this.api);
     if (this.activation) return this.activation;
 
@@ -80,6 +91,7 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
   }
 
   private async activateApi(): Promise<PythonEnvironmentsApi | undefined> {
+    this.throwIfDisposed();
     const extension = vscode.extensions.getExtension<unknown>("ms-python.python");
     if (!extension) return undefined;
 
@@ -87,29 +99,35 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
     try {
       const candidate = extension as vscode.Extension<unknown>;
       activated = candidate.isActive ? candidate.exports : await candidate.activate();
-    } catch {
+    } catch (error) {
+      if (error instanceof PythonEnvironmentApiBrokerDisposedError) throw error;
+      this.throwIfDisposed();
       return undefined;
     }
-    if (this.disposed || !isPythonEnvironmentsApi(activated)) return undefined;
+    this.throwIfDisposed();
+    if (!isPythonEnvironmentsApi(activated)) return undefined;
 
     const event = activated.environments.onDidChangeActiveEnvironmentPath;
-    if (typeof event === "function") {
-      let subscription: vscode.Disposable;
-      try {
-        subscription = event((selectionEvent) => {
-          if (!this.disposed) this.onDidChangeSelection(selectionEvent);
-        });
-      } catch {
-        return undefined;
-      }
-      if (!isDisposable(subscription)) return undefined;
-      if (this.disposed) {
-        subscription.dispose();
-        return undefined;
-      }
-      this.selectionSubscription = subscription;
+    let subscription: vscode.Disposable;
+    try {
+      subscription = event((selectionEvent) => {
+        if (!this.disposed) this.onDidChangeSelection(selectionEvent);
+      });
+    } catch {
+      this.throwIfDisposed();
+      return undefined;
     }
+    if (!isDisposable(subscription)) return undefined;
+    if (this.disposed) {
+      subscription.dispose();
+      this.throwIfDisposed();
+    }
+    this.selectionSubscription = subscription;
     return activated.environments;
+  }
+
+  private throwIfDisposed(): void {
+    if (this.disposed) throw new PythonEnvironmentApiBrokerDisposedError();
   }
 }
 
@@ -190,8 +208,7 @@ function isPythonEnvironmentsApi(value: unknown): value is { environments: Pytho
   return (
     typeof candidate.getActiveEnvironmentPath === "function" &&
     typeof candidate.resolveEnvironment === "function" &&
-    (candidate.onDidChangeActiveEnvironmentPath === undefined ||
-      typeof candidate.onDidChangeActiveEnvironmentPath === "function")
+    typeof candidate.onDidChangeActiveEnvironmentPath === "function"
   );
 }
 
