@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export const DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS = 5_000;
@@ -44,10 +44,10 @@ export function startDependencyInstall(
 ): OwnedDependencyInstall {
   const environment = dependencyInstallEnvironment(options.environment ?? process.env);
   const spawnProcess = options.spawnProcess ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
-  const workingDirectory = dependencyInstallWorkingDirectory(executable, options.cwd);
+  const workingDirectory = dependencyInstallWorkingDirectory();
   let child: ChildProcess;
   try {
-    child = spawnProcess(executable, ["-m", "pip", "install", "--no-input", ...requirements], {
+    child = spawnProcess(executable, ["-I", "-m", "pip", "install", "--no-input", "--no-user", ...requirements], {
       cwd: workingDirectory.cwd,
       env: environment,
       shell: false,
@@ -201,31 +201,43 @@ export async function waitForDependencyInstallExit(
 
 function dependencyInstallEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...source };
-  const removedKeys = new Set([
-    "PIP_BUILD_TRACKER",
-    "PIP_CONFIG_FILE",
-    "PIP_EDITABLE",
-    "PIP_LOG",
-    "PIP_PREFIX",
-    "PIP_PYTHON",
-    "PIP_REPORT",
-    "PIP_REQUIREMENT",
-    "PIP_ROOT",
-    "PIP_SRC",
-    "PIP_TARGET",
-    "PIP_USER",
-    "PYTHONHOME",
-    "PYTHONPATH",
-    "PYTHONUSERBASE"
+  const allowedPipKeys = new Set([
+    "PIP_CACHE_DIR",
+    "PIP_CERT",
+    "PIP_CLIENT_CERT",
+    "PIP_DISABLE_PIP_VERSION_CHECK",
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_INDEX_URL",
+    "PIP_NO_CACHE_DIR",
+    "PIP_PROXY",
+    "PIP_RETRIES",
+    "PIP_TIMEOUT",
+    "PIP_TRUSTED_HOST"
   ]);
+  const allowedPipValues = new Map<string, string>();
+  const removedPythonKeys = new Set(["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE"]);
   for (const key of Object.keys(environment)) {
     const normalized = key.toLocaleUpperCase("en-US");
-    if (normalized === "PIP_NO_INPUT" || removedKeys.has(normalized)) delete environment[key];
+    if (normalized.startsWith("PIP_")) {
+      const value = environment[key];
+      if (
+        allowedPipKeys.has(normalized) &&
+        value !== undefined &&
+        (key === normalized || !allowedPipValues.has(normalized))
+      ) {
+        allowedPipValues.set(normalized, value);
+      }
+      delete environment[key];
+      continue;
+    }
+    if (removedPythonKeys.has(normalized)) delete environment[key];
   }
+  for (const [key, value] of allowedPipValues) environment[key] = value;
   // pip compares this string with Python's os.devnull to disable every config
   // layer. Node spells the Windows device differently, so use Python's value.
   environment.PIP_CONFIG_FILE = process.platform === "win32" ? "nul" : devNull;
   environment.PIP_NO_INPUT = "1";
+  environment.PIP_USER = "0";
   return environment;
 }
 
@@ -234,15 +246,21 @@ interface DependencyInstallWorkingDirectory {
   cleanup(): Error | undefined;
 }
 
-function dependencyInstallWorkingDirectory(
-  executable: string,
-  requestedCwd: string
-): DependencyInstallWorkingDirectory {
-  if (basename(executable) !== executable) {
-    return { cwd: requestedCwd, cleanup: () => undefined };
-  }
-
+function dependencyInstallWorkingDirectory(): DependencyInstallWorkingDirectory {
   const cwd = mkdtempSync(join(tmpdir(), "openwrangler-pip-"));
+  try {
+    chmodSync(cwd, 0o700);
+  } catch (error) {
+    try {
+      rmSync(cwd, { force: false, recursive: true });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Open Wrangler could not secure or clean its private dependency-install working directory."
+      );
+    }
+    throw error;
+  }
   let cleaned = false;
   return {
     cwd,
