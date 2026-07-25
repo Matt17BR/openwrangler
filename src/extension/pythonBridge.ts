@@ -16,13 +16,15 @@ import type {
 import { isSessionBoundRequest, PROTOCOL_VERSION } from "../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
-import { runtimeRequestTimeoutMs } from "./configuration";
+import { getSetting, runtimeRequestTimeoutMs } from "./configuration";
 import {
   automaticBackends,
+  PythonEnvironmentApiBroker,
   probeDependencies,
   requiredDependencies,
   resolvePythonEnvironment,
-  type PythonEnvironment
+  type PythonEnvironment,
+  type PythonEnvironmentSelectionChangeEvent
 } from "./pythonEnvironment";
 import { backendImportCapabilityFailure } from "./pythonEnvironmentModel";
 import { stopChildProcessGracefully } from "./processShutdown";
@@ -41,6 +43,18 @@ interface MissingDependencies {
   readonly environment: PythonEnvironment;
   readonly requirements: readonly string[];
   readonly selectionEpoch: number;
+}
+
+interface EnvironmentSelection {
+  readonly key: string;
+  readonly resource: vscode.Uri | undefined;
+  readonly workspaceFolder: vscode.WorkspaceFolder | undefined;
+  readonly promise: Promise<PythonEnvironment>;
+}
+
+interface ProcessSelection {
+  readonly environment: PythonEnvironment;
+  readonly selection: EnvironmentSelection;
 }
 
 const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple Python runtime shutdown failures.";
@@ -62,6 +76,8 @@ async function joinProcessStops(previous: Promise<void>, current: Promise<void>)
 export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private process: ChildProcessWithoutNullStreams | undefined;
   private processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
+  private processSelection: ProcessSelection | undefined;
+  private processStartSelection: ProcessSelection | undefined;
   private processStop: Promise<void> | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private readonly stoppingProcesses = new Set<ChildProcessWithoutNullStreams>();
@@ -73,16 +89,20 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly executeFile = execFileAsync;
   private readonly spawnProcess = spawn;
   private readonly configurationSubscription: vscode.Disposable;
+  private readonly environmentApiBroker: PythonEnvironmentApiBroker;
   private generation = 0;
   private runtimeEpoch = 0;
   private selectionEpoch = 0;
   private disposed = false;
-  private environmentPromise: Promise<PythonEnvironment> | undefined;
+  private readonly environmentSelections = new Map<string, EnvironmentSelection>();
   private readonly dependencyCache = new Map<string, string[]>();
   private lastMissingDependencies: MissingDependencies | undefined;
   private dependencyInstallPromise: Promise<boolean> | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
+    this.environmentApiBroker = new PythonEnvironmentApiBroker((event) =>
+      this.handlePythonEnvironmentSelectionChange(event)
+    );
     this.configurationSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
       if (!this.disposed && event.affectsConfiguration("openWrangler.pythonPath")) {
         this.clearRuntimeSelection();
@@ -110,13 +130,31 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         kind: "error",
         code: "unknown_session",
         message: `Open Wrangler runtime session ${request.sessionId} is not available.`,
+        recoverable: true,
+        sessionId: request.sessionId,
+        viewRequestId: "viewRequestId" in request ? request.viewRequestId : undefined
+      };
+    }
+    if (request.kind === "cancelRequest" && !this.process && !this.processStart) {
+      return {
+        kind: "error",
+        code: "cancellation_unavailable",
+        message: `Open Wrangler runtime request ${request.targetRequestId} is not available for cancellation.`,
         recoverable: true
       };
     }
 
     const selectionEpoch =
       request.kind === "openSession" && request.source.kind === "file" ? this.selectionEpoch : undefined;
-    const prepared = await this.prepareRequest(request);
+    let prepared: OpenWranglerRequest | ErrorResponse;
+    try {
+      prepared = await this.prepareRequest(request);
+    } catch (error) {
+      if (selectionEpoch !== undefined && selectionEpoch !== this.selectionEpoch) {
+        return this.runtimeSelectionChangedError();
+      }
+      throw error;
+    }
     if (selectionEpoch !== undefined && selectionEpoch !== this.selectionEpoch) {
       return this.runtimeSelectionChangedError();
     }
@@ -125,7 +163,15 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
     const runtimeRequest = prepared;
-    const proc = await this.ensureProcess(runtimeRequest);
+    let proc: ChildProcessWithoutNullStreams;
+    try {
+      proc = await this.ensureProcess(runtimeRequest);
+    } catch (error) {
+      if (selectionEpoch !== undefined && selectionEpoch !== this.selectionEpoch) {
+        return this.runtimeSelectionChangedError();
+      }
+      throw error;
+    }
     if (selectionEpoch !== undefined && selectionEpoch !== this.selectionEpoch) {
       return this.runtimeSelectionChangedError();
     }
@@ -200,6 +246,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const proc = this.process;
     this.process = undefined;
     this.processStart = undefined;
+    this.processSelection = undefined;
+    this.processStartSelection = undefined;
     this.rejectAll(new Error(reason));
     if (proc) this.trackProcessStop(proc, 0);
   }
@@ -221,7 +269,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private invalidateRuntimeSelection(reason: string, force = false): void {
     if (
       !force &&
-      !this.environmentPromise &&
+      this.environmentSelections.size === 0 &&
       this.dependencyCache.size === 0 &&
       !this.lastMissingDependencies &&
       !this.process &&
@@ -230,7 +278,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       return;
     }
     this.selectionEpoch += 1;
-    this.environmentPromise = undefined;
+    this.environmentSelections.clear();
     this.dependencyCache.clear();
     this.lastMissingDependencies = undefined;
     if (!this.disposed) this.stopGracefully(reason);
@@ -369,6 +417,11 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       failures.push(error);
     }
     try {
+      this.environmentApiBroker?.dispose();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       this.stopGracefully("Open Wrangler runtime stopped.");
     } catch (error) {
       failures.push(error);
@@ -400,27 +453,72 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const proc = this.process;
     this.process = undefined;
     this.processStart = undefined;
+    this.processSelection = undefined;
+    this.processStartSelection = undefined;
     if (proc) this.trackProcessStop(proc);
     this.rejectAll(new Error(reason));
   }
 
   private async ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams> {
-    if (this.process) {
-      return this.process;
+    const initialEpoch = this.runtimeEpoch;
+    const stopping = this.processStop;
+    if (stopping && !this.process && !this.processStart) {
+      try {
+        await stopping;
+      } catch (error) {
+        throw new Error(
+          `Open Wrangler could not confirm shutdown of its previous Python runtime: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      if (this.disposed || initialEpoch !== this.runtimeEpoch) {
+        throw new Error("Open Wrangler runtime start was cancelled.");
+      }
     }
-    if (this.processStart) return this.processStart;
+    const desired = await this.processSelectionFor(request);
+    for (;;) {
+      if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+        throw new Error("Open Wrangler runtime selection changed before process startup.");
+      }
+      if (this.process) {
+        if (samePythonExecutable(this.processSelection?.environment.executable, desired.environment.executable)) {
+          return this.process;
+        }
+        this.stopGracefully(
+          `Python environment changed from ${this.processSelection?.environment.executable ?? "unknown"} to ${desired.environment.executable}; rotating the Open Wrangler runtime.`
+        );
+      }
+      const pendingStart = this.processStart;
+      if (pendingStart) {
+        try {
+          await pendingStart;
+        } catch {
+          if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+            throw new Error("Open Wrangler runtime selection changed while process startup was pending.");
+          }
+        }
+        continue;
+      }
 
-    const epoch = this.runtimeEpoch;
-    const start = this.startProcess(request, epoch);
-    this.processStart = start;
-    try {
-      return await start;
-    } finally {
-      if (this.processStart === start) this.processStart = undefined;
+      const epoch = this.runtimeEpoch;
+      const start = this.startProcess(request, epoch, desired);
+      this.processStart = start;
+      this.processStartSelection = desired;
+      try {
+        return await start;
+      } finally {
+        if (this.processStart === start) {
+          this.processStart = undefined;
+          this.processStartSelection = undefined;
+        }
+      }
     }
   }
 
-  private async startProcess(request: OpenWranglerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams> {
+  private async startProcess(
+    request: OpenWranglerRequest,
+    epoch: number,
+    desired?: ProcessSelection
+  ): Promise<ChildProcessWithoutNullStreams> {
     const stopping = this.processStop;
     if (stopping) {
       try {
@@ -434,17 +532,32 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (stopping && (this.disposed || epoch !== this.runtimeEpoch)) {
       throw new Error("Open Wrangler runtime start was cancelled.");
     }
-    if (this.process) return this.process;
+    if (
+      this.process &&
+      desired &&
+      samePythonExecutable(this.processSelection?.environment.executable, desired.environment.executable)
+    ) {
+      return this.process;
+    }
 
     this.runtimeExitError = undefined;
     this.stderrBuffer = "";
 
-    const resource = request.kind === "openSession" ? sourceResource(request.source) : undefined;
-    const environment = await this.environment(resource);
-    if (this.disposed || epoch !== this.runtimeEpoch) {
+    const processSelection = desired ?? (await this.processSelectionFor(request));
+    const environment = processSelection.environment;
+    if (
+      this.disposed ||
+      epoch !== this.runtimeEpoch ||
+      !this.isCurrentEnvironmentSelection(processSelection.selection)
+    ) {
       throw new Error("Open Wrangler runtime start was cancelled.");
     }
-    if (this.process) return this.process;
+    if (this.process) {
+      if (samePythonExecutable(this.processSelection?.environment.executable, environment.executable)) {
+        return this.process;
+      }
+      throw new Error("A different Open Wrangler Python runtime became active during process startup.");
+    }
     const pythonPath = environment.executable;
     const runtimeRoot = path.join(this.context.extensionPath, "python");
 
@@ -480,6 +593,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     });
 
     this.process = proc;
+    this.processSelection = processSelection;
     return proc;
   }
 
@@ -517,6 +631,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (this.process !== proc) return;
     this.runtimeExitError = error;
     this.process = undefined;
+    this.processSelection = undefined;
     this.output.appendLine(error.message);
     this.rejectAll(error);
   }
@@ -623,9 +738,54 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (pending?.cancellationRequestId === requestId) pending.cancellationRequestId = undefined;
   }
 
-  private environment(resource?: vscode.Uri): Promise<PythonEnvironment> {
-    this.environmentPromise ??= resolvePythonEnvironment(this.context, resource);
-    return this.environmentPromise;
+  private environmentSelection(resource?: vscode.Uri): EnvironmentSelection {
+    const scope = pythonSelectionScope(resource);
+    const existing = this.environmentSelections.get(scope.key);
+    if (existing) return existing;
+
+    const promise = resolvePythonEnvironment(this.context, resource, this.environmentApiBroker);
+    const selection: EnvironmentSelection = {
+      key: scope.key,
+      resource,
+      workspaceFolder: scope.workspaceFolder,
+      promise
+    };
+    this.environmentSelections.set(scope.key, selection);
+    void promise.catch(() => {
+      if (this.environmentSelections.get(scope.key) === selection) {
+        this.environmentSelections.delete(scope.key);
+      }
+    });
+    return selection;
+  }
+
+  private async processSelectionFor(request: OpenWranglerRequest): Promise<ProcessSelection> {
+    if (request.kind !== "openSession") {
+      const active = this.processSelection ?? this.processStartSelection;
+      if (active) return active;
+    }
+    const resource = request.kind === "openSession" ? sourceResource(request.source) : undefined;
+    const selection = this.environmentSelection(resource);
+    return { selection, environment: await selection.promise };
+  }
+
+  private isCurrentEnvironmentSelection(selection: EnvironmentSelection): boolean {
+    return this.environmentSelections.get(selection.key) === selection;
+  }
+
+  private handlePythonEnvironmentSelectionChange(event: PythonEnvironmentSelectionChangeEvent): void {
+    if (this.disposed) return;
+    const affected = [...this.environmentSelections.values()].some(
+      (selection) =>
+        pythonSelectionEventAffects(event, selection) &&
+        getSetting("pythonPath", "", selection.resource).trim().length === 0
+    );
+    if (affected) {
+      this.invalidateRuntimeSelection(
+        "The active Python extension environment changed; restarting Open Wrangler so sessions can replay safely.",
+        true
+      );
+    }
   }
 
   private async prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse> {
@@ -644,7 +804,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       }
     }
     const selectionEpoch = this.selectionEpoch;
-    const environment = await this.environment(sourceResource(request.source));
+    const selection = this.environmentSelection(sourceResource(request.source));
+    const environment = await selection.promise;
     if (selectionEpoch !== this.selectionEpoch) return this.runtimeSelectionChangedError();
     const backends = request.backend ? [request.backend] : automaticBackends(request.source);
     const failures: Array<{ backend: DataBackend; missing: string[] }> = [];
@@ -713,4 +874,45 @@ function sourceResource(source: SessionSource): vscode.Uri | undefined {
     }
   }
   return source.path ? vscode.Uri.file(source.path) : undefined;
+}
+
+function pythonSelectionScope(resource?: vscode.Uri): {
+  key: string;
+  workspaceFolder: vscode.WorkspaceFolder | undefined;
+} {
+  const workspaceFolder = resource ? vscode.workspace.getWorkspaceFolder?.(resource) : undefined;
+  const scope = workspaceFolder?.uri ?? resource;
+  return {
+    key: scope ? scope.toString(true) : "<workspace-default>",
+    workspaceFolder
+  };
+}
+
+function pythonSelectionEventAffects(
+  event: PythonEnvironmentSelectionChangeEvent,
+  selection: EnvironmentSelection
+): boolean {
+  if (!event.resource) return true;
+  if (isWorkspaceFolder(event.resource)) {
+    return Boolean(selection.workspaceFolder && sameUri(selection.workspaceFolder.uri, event.resource.uri));
+  }
+  if (selection.resource && sameUri(selection.resource, event.resource)) return true;
+  return Boolean(selection.workspaceFolder && sameUri(selection.workspaceFolder.uri, event.resource));
+}
+
+function isWorkspaceFolder(resource: vscode.Uri | vscode.WorkspaceFolder): resource is vscode.WorkspaceFolder {
+  return "uri" in resource;
+}
+
+function sameUri(left: vscode.Uri, right: vscode.Uri): boolean {
+  return left.toString(true) === right.toString(true);
+}
+
+function samePythonExecutable(left: string | undefined, right: string): boolean {
+  if (!left) return false;
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US")
+    : normalizedLeft === normalizedRight;
 }

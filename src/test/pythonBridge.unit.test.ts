@@ -9,6 +9,7 @@ import type {
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope,
+  SessionBoundRequest,
   SessionSource
 } from "../shared/protocol";
 import type { CancellationTokenLike } from "../extension/dataBridge";
@@ -114,7 +115,7 @@ describe("PythonBridge cancellation", () => {
     expect(harness.writes()).toEqual([]);
   });
 
-  it.each<OpenWranglerRequest>([
+  it.each<SessionBoundRequest>([
     {
       kind: "closeSession",
       sessionId: "candidate-session",
@@ -137,6 +138,21 @@ describe("PythonBridge cancellation", () => {
       message: expect.stringContaining(request.sessionId)
     });
 
+    expect(harness.ensureProcess).not.toHaveBeenCalled();
+    expect(harness.writes()).toEqual([]);
+  });
+
+  it("does not start a stopped runtime for a direct cancellation request", async () => {
+    const harness = createHarness();
+    (harness.bridge as unknown as { process?: ChildProcessWithoutNullStreams }).process = undefined;
+
+    await expect(
+      harness.bridge.request({ kind: "cancelRequest", targetRequestId: "missing-request" })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "cancellation_unavailable",
+      message: expect.stringContaining("missing-request")
+    });
     expect(harness.ensureProcess).not.toHaveBeenCalled();
     expect(harness.writes()).toEqual([]);
   });
@@ -546,6 +562,45 @@ describe("PythonBridge process lifecycle", () => {
     replacement.emit("exit", null, "SIGKILL");
     await expect(cleanup).resolves.toBeUndefined();
   });
+
+  it("rotates the shared process only after a different selected interpreter shuts down cleanly", async () => {
+    const { bridge, internals, process } = createLifecycleHarness();
+    const replacement = new LifecycleChildProcess();
+    const nextEnvironment = {
+      executable: "/second-env/bin/python",
+      version: "3.13.2",
+      source: "pythonExtension" as const
+    };
+    internals.spawnProcess.mockReturnValue(replacement as unknown as ChildProcessWithoutNullStreams);
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(nextEnvironment);
+
+    const starting = internals.ensureProcess(openSessionRequest(remoteFileSource()));
+    await vi.waitFor(() => expect(process.stdin.end).toHaveBeenCalledOnce());
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+
+    process.emit("exit", 0, null);
+    await expect(starting).resolves.toBe(replacement);
+    expect(internals.spawnProcess).toHaveBeenCalledOnce();
+    expect(internals.spawnProcess.mock.calls[0]?.[0]).toBe(nextEnvironment.executable);
+
+    bridge.restart("Interpreter rotation cleanup.");
+    const cleanup = internals.processStop;
+    replacement.emit("exit", null, "SIGKILL");
+    await expect(cleanup).resolves.toBeUndefined();
+  });
+
+  it("reuses the shared process when another resource resolves to the same interpreter", async () => {
+    const { internals, process } = createLifecycleHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      executable: "/env/bin/python",
+      version: "3.12.4",
+      source: "pythonExtension"
+    });
+
+    await expect(internals.ensureProcess(openSessionRequest(remoteFileSource()))).resolves.toBe(process);
+    expect(process.stdin.end).not.toHaveBeenCalled();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
+  });
 });
 
 describe("PythonBridge dependency installation", () => {
@@ -786,7 +841,7 @@ describe("PythonBridge dependency installation", () => {
     expect(internals.selectionEpoch).toBe(1);
     expect(internals.lastMissingDependencies).toBeUndefined();
     expect(internals.dependencyCache.size).toBe(0);
-    expect(internals.environmentPromise).toBeUndefined();
+    expect(internals.environmentSelections.size).toBe(0);
 
     overlappingProbe.resolve({ missing: ["polars"], available: [] });
     await expect(overlappingPreparation).resolves.toMatchObject({
@@ -971,7 +1026,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(resource?.scheme).toBe("vscode-remote");
     expect(resource?.authority).toBe("ssh-remote+example");
     expect(resource?.toString()).toBe(source.uri);
-    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource, undefined);
   });
 
   it("passes the exact remote source URI to process startup without rebuilding it as file://", async () => {
@@ -989,7 +1044,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(resource?.scheme).toBe("vscode-remote");
     expect(resource?.authority).toBe("ssh-remote+example");
     expect(resource?.toString()).toBe(source.uri);
-    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource, undefined);
   });
 
   it("falls back to the concrete path when a persisted source URI is malformed", async () => {
@@ -1008,6 +1063,85 @@ describe("PythonBridge environment resource selection", () => {
     const resource = vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.[1];
     expect(resource?.scheme).toBe("file");
     expect(resource?.fsPath).toBe(malformed.path);
+  });
+
+  it("shares one selection inside a workspace folder but resolves different roots independently", async () => {
+    const firstFolder = workspaceFolder("vscode-remote://ssh-remote+example/first", "first", 0);
+    const secondFolder = workspaceFolder("vscode-remote://ssh-remote+example/second", "second", 1);
+    vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockImplementation((resource) =>
+      resource.path.startsWith("/first/") ? firstFolder : secondFolder
+    );
+    const firstSource = remoteSourceAt("/first/one.csv");
+    const siblingSource = remoteSourceAt("/first/two.csv");
+    const secondSource = remoteSourceAt("/second/three.csv");
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    await internals.prepareRequest(openSessionRequest(firstSource));
+    await internals.prepareRequest(openSessionRequest(siblingSource));
+    await internals.prepareRequest(openSessionRequest(secondSource));
+
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[0]?.[1]?.toString()).toBe(firstSource.uri);
+    expect(vi.mocked(pythonEnvironment.resolvePythonEnvironment).mock.calls[1]?.[1]?.toString()).toBe(secondSource.uri);
+    expect(internals.environmentSelections.size).toBe(2);
+  });
+
+  it("invalidates cached selection state only for a relevant Python extension event", async () => {
+    const firstFolder = workspaceFolder("vscode-remote://ssh-remote+example/first", "first", 0);
+    const secondFolder = workspaceFolder("vscode-remote://ssh-remote+example/second", "second", 1);
+    vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockImplementation((resource) =>
+      resource.path.startsWith("/first/") ? firstFolder : secondFolder
+    );
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/first/data.csv")));
+
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "second-env",
+      path: "/envs/second/python",
+      resource: secondFolder
+    });
+    expect(internals.selectionEpoch).toBe(0);
+    expect(internals.runtimeEpoch).toBe(0);
+    expect(internals.environmentSelections.size).toBe(1);
+    expect(internals.dependencyCache.size).toBe(1);
+
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "first-env",
+      path: "/envs/first/python",
+      resource: firstFolder
+    });
+    expect(internals.selectionEpoch).toBe(1);
+    expect(internals.runtimeEpoch).toBe(1);
+    expect(internals.environmentSelections.size).toBe(0);
+    expect(internals.dependencyCache.size).toBe(0);
+  });
+
+  it("ignores Python extension events while an explicit Open Wrangler interpreter wins", async () => {
+    const source = remoteFileSource();
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      ...environment,
+      source: "configuration"
+    });
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+      get: <T>(key: string, fallback: T): T => (key === "pythonPath" ? ("/configured/python" as T) : fallback)
+    } as vscode.WorkspaceConfiguration);
+    await internals.prepareRequest(openSessionRequest(source));
+
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "python-extension-env",
+      path: "/extension/python",
+      resource: vscode.Uri.parse(source.uri!, true)
+    });
+
+    expect(internals.selectionEpoch).toBe(0);
+    expect(internals.environmentSelections.size).toBe(1);
+    expect(internals.dependencyCache.size).toBe(1);
   });
 
   it("clears a stale install target after successful dependency resolution without discarding the probe cache", async () => {
@@ -1059,7 +1193,11 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
-    internals.clearRuntimeSelection();
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "changed",
+      path: "/changed/python",
+      resource: vscode.Uri.parse(source.uri!, true)
+    });
     probe.resolve({ missing: ["polars"], available: [] });
 
     await expect(preparation).resolves.toMatchObject({
@@ -1080,7 +1218,11 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
-    internals.clearRuntimeSelection();
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "changed",
+      path: "/changed/python",
+      resource: vscode.Uri.parse(source.uri!, true)
+    });
     resolution.resolve(environment);
 
     await expect(preparation).resolves.toMatchObject({
@@ -1128,6 +1270,8 @@ interface LifecycleBridgeInternals {
   processStop: Promise<void> | undefined;
   disposed: boolean;
   runtimeEpoch: number;
+  processSelection: unknown;
+  environmentSelections: Map<string, unknown>;
   spawnProcess: ReturnType<typeof vi.fn>;
   ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
   trackProcessStop(proc: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void;
@@ -1162,10 +1306,23 @@ function createLifecycleHarness(): {
   const process = new LifecycleChildProcess();
   const configurationSubscription = { dispose: vi.fn() };
   const output = { appendLine: vi.fn(), dispose: vi.fn() };
+  const environment = {
+    executable: "/env/bin/python",
+    version: "3.12.4",
+    source: "configuration" as const
+  };
+  const selection = {
+    key: "<workspace-default>",
+    resource: undefined,
+    workspaceFolder: undefined,
+    promise: Promise.resolve(environment)
+  };
   Object.assign(bridge as object, {
     context: { extensionPath: "/extension" } as vscode.ExtensionContext,
     process: process as unknown as ChildProcessWithoutNullStreams,
     processStart: undefined,
+    processSelection: { environment, selection },
+    processStartSelection: undefined,
     processStop: undefined,
     shutdownPromise: undefined,
     stoppingProcesses: new Set<ChildProcessWithoutNullStreams>(),
@@ -1175,7 +1332,7 @@ function createLifecycleHarness(): {
     selectionEpoch: 0,
     generation: 0,
     disposed: false,
-    environmentPromise: undefined,
+    environmentSelections: new Map<string, unknown>([[selection.key, selection]]),
     dependencyCache: new Map<string, string[]>(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
@@ -1195,17 +1352,20 @@ function createLifecycleHarness(): {
 
 interface EnvironmentBridgeInternals {
   dependencyCache: Map<string, string[]>;
+  environmentSelections: Map<string, unknown>;
   lastMissingDependencies: TestMissingDependencies | undefined;
+  runtimeEpoch: number;
   selectionEpoch: number;
   clearRuntimeSelection(): void;
   ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
+  handlePythonEnvironmentSelectionChange(event: pythonEnvironment.PythonEnvironmentSelectionChangeEvent): void;
   prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
   startProcess(request: OpenWranglerRequest, epoch: number): Promise<ChildProcessWithoutNullStreams>;
 }
 
 interface DependencyBridgeInternals {
   dependencyCache: Map<string, string[]>;
-  environmentPromise: Promise<TestPythonEnvironment> | undefined;
+  environmentSelections: Map<string, unknown>;
   lastMissingDependencies: TestMissingDependencies | undefined;
   runtimeEpoch: number;
   selectionEpoch: number;
@@ -1248,7 +1408,7 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     runtimeEpoch: 0,
     selectionEpoch: 0,
     disposed: options.disposed ?? false,
-    environmentPromise: undefined,
+    environmentSelections: new Map<string, unknown>(),
     dependencyCache: new Map<string, string[]>(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
@@ -1275,7 +1435,17 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     runtimeEpoch: 0,
     selectionEpoch: 0,
     disposed: false,
-    environmentPromise: Promise.resolve(missingDependencies().environment),
+    environmentSelections: new Map<string, unknown>([
+      [
+        "<workspace-default>",
+        {
+          key: "<workspace-default>",
+          resource: undefined,
+          workspaceFolder: undefined,
+          promise: Promise.resolve(missingDependencies().environment)
+        }
+      ]
+    ]),
     dependencyCache: new Map<string, string[]>([["cached-diagnostic", ["pandas"]]]),
     lastMissingDependencies: missingDependencies(),
     dependencyInstallPromise: undefined,
@@ -1304,6 +1474,23 @@ function remoteFileSource(): SessionSource {
     label: "data.csv",
     path: "/workspace/data.csv",
     uri: "vscode-remote://ssh-remote+example/workspace/data.csv"
+  };
+}
+
+function remoteSourceAt(path: string): SessionSource {
+  return {
+    kind: "file",
+    label: path.slice(path.lastIndexOf("/") + 1),
+    path,
+    uri: `vscode-remote://ssh-remote+example${path}`
+  };
+}
+
+function workspaceFolder(uri: string, name: string, index: number): vscode.WorkspaceFolder {
+  return {
+    uri: vscode.Uri.parse(uri, true),
+    name,
+    index
   };
 }
 

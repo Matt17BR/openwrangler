@@ -1061,7 +1061,7 @@ export class SessionCoordinator implements vscode.Disposable {
       response = await session.delegate.request(runtimeRequest(), options);
     }
 
-    if (isUnknownRuntimeSession(response)) {
+    if (isUnknownRuntimeSession(response, requestRuntimeId)) {
       // An explicit unknown-session response proves the request did not run, so
       // replay and reissue are safe for all interactive operations.
       const recovered = canRecoverUnknownSession() && (await this.replay(session, options));
@@ -2262,9 +2262,13 @@ function publicOpenedResponse(
   };
 }
 
-function isUnknownRuntimeSession(response: OpenWranglerResponse): response is ErrorResponse {
+function isUnknownRuntimeSession(response: OpenWranglerResponse, expectedSessionId: string): response is ErrorResponse {
+  if (response.kind !== "error") return false;
+  if (response.code === "unknown_session") return response.sessionId === expectedSessionId;
   return (
-    response.kind === "error" && response.code === "engine_error" && response.message.startsWith("Unknown session:")
+    response.code === "engine_error" &&
+    response.message === `Unknown session: ${expectedSessionId}` &&
+    (response.sessionId === undefined || response.sessionId === expectedSessionId)
   );
 }
 

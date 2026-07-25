@@ -636,6 +636,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.7",
     "@vscode/jupyter-extension": "^1.1.1",
+    "@vscode/python-extension": "1.0.6",
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.9.1",
     "axe-core": "^4.12.1",

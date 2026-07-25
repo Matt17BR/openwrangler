@@ -2,6 +2,12 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
+import type {
+  ActiveEnvironmentPathChangeEvent,
+  EnvironmentPath,
+  PythonExtension,
+  Resource
+} from "@vscode/python-extension";
 import { getSetting } from "./configuration";
 import { resolvePythonExecutable } from "./pythonPath";
 import { isSupportedPythonVersion, type PythonDependency } from "./pythonEnvironmentModel";
@@ -10,14 +16,101 @@ export { automaticBackends, isSupportedPythonVersion, requiredDependencies } fro
 
 const execFileAsync = promisify(execFile);
 
-interface PythonExtensionApi {
-  environments?: {
-    getActiveEnvironmentPath(resource?: vscode.Uri): { path?: string } | undefined;
-    resolveEnvironment?(environment: { path?: string } | string): Promise<{
-      executable?: { uri?: vscode.Uri };
-      version?: { major?: number; minor?: number; micro?: number };
-    } | null>;
-  };
+export type PythonEnvironmentResource = Resource;
+export type PythonEnvironmentSelectionChangeEvent = ActiveEnvironmentPathChangeEvent;
+
+type PythonEnvironmentsApi = Pick<
+  PythonExtension["environments"],
+  "getActiveEnvironmentPath" | "resolveEnvironment"
+> & {
+  readonly onDidChangeActiveEnvironmentPath?: PythonExtension["environments"]["onDidChangeActiveEnvironmentPath"];
+};
+
+export class PythonEnvironmentApiBroker implements vscode.Disposable {
+  private api: PythonEnvironmentsApi | undefined;
+  private activation: Promise<PythonEnvironmentsApi | undefined> | undefined;
+  private selectionSubscription: vscode.Disposable | undefined;
+  private disposed = false;
+
+  constructor(
+    private readonly onDidChangeSelection: (event: PythonEnvironmentSelectionChangeEvent) => unknown = () => undefined
+  ) {}
+
+  async resolveSelectedExecutable(resource?: PythonEnvironmentResource): Promise<string | undefined> {
+    const api = await this.acquireApi();
+    if (!api || this.disposed) return undefined;
+
+    try {
+      const selected: unknown = api.getActiveEnvironmentPath(resource);
+      if (!isEnvironmentPath(selected)) return undefined;
+      const resolved = await api.resolveEnvironment(selected);
+      if (this.disposed) return undefined;
+      const executable = resolved?.executable?.uri?.fsPath;
+      return typeof executable === "string" && executable.trim() ? executable : selected.path;
+    } catch {
+      return undefined;
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    const subscription = this.selectionSubscription;
+    this.selectionSubscription = undefined;
+    subscription?.dispose();
+  }
+
+  private acquireApi(): Promise<PythonEnvironmentsApi | undefined> {
+    if (this.disposed) return Promise.resolve(undefined);
+    if (this.api) return Promise.resolve(this.api);
+    if (this.activation) return this.activation;
+
+    const attempt = this.activateApi();
+    this.activation = attempt;
+    void attempt.then(
+      (api) => {
+        if (this.activation === attempt) this.activation = undefined;
+        if (api && !this.disposed) this.api = api;
+      },
+      () => {
+        if (this.activation === attempt) this.activation = undefined;
+      }
+    );
+    return attempt;
+  }
+
+  private async activateApi(): Promise<PythonEnvironmentsApi | undefined> {
+    const extension = vscode.extensions.getExtension<unknown>("ms-python.python");
+    if (!extension) return undefined;
+
+    let activated: unknown;
+    try {
+      const candidate = extension as vscode.Extension<unknown>;
+      activated = candidate.isActive ? candidate.exports : await candidate.activate();
+    } catch {
+      return undefined;
+    }
+    if (this.disposed || !isPythonEnvironmentsApi(activated)) return undefined;
+
+    const event = activated.environments.onDidChangeActiveEnvironmentPath;
+    if (typeof event === "function") {
+      let subscription: vscode.Disposable;
+      try {
+        subscription = event((selectionEvent) => {
+          if (!this.disposed) this.onDidChangeSelection(selectionEvent);
+        });
+      } catch {
+        return undefined;
+      }
+      if (!isDisposable(subscription)) return undefined;
+      if (this.disposed) {
+        subscription.dispose();
+        return undefined;
+      }
+      this.selectionSubscription = subscription;
+    }
+    return activated.environments;
+  }
 }
 
 export interface PythonEnvironment {
@@ -33,7 +126,8 @@ export interface DependencyProbe {
 
 export async function resolvePythonEnvironment(
   context: vscode.ExtensionContext,
-  resource?: vscode.Uri
+  resource?: vscode.Uri,
+  apiBroker?: PythonEnvironmentApiBroker
 ): Promise<PythonEnvironment> {
   const configured = getSetting("pythonPath", "", resource).trim();
   if (configured) {
@@ -46,20 +140,19 @@ export async function resolvePythonEnvironment(
     return probeEnvironment(executable, "configuration");
   }
 
-  const pythonExtension = vscode.extensions.getExtension<PythonExtensionApi>("ms-python.python");
-  if (pythonExtension) {
-    try {
-      const api = await pythonExtension.activate();
-      const selected = api.environments?.getActiveEnvironmentPath(resource);
-      const resolved =
-        selected && api.environments?.resolveEnvironment
-          ? await api.environments.resolveEnvironment(selected)
-          : undefined;
-      const executable = resolved?.executable?.uri?.fsPath ?? selected?.path;
-      if (executable) return await probeEnvironment(executable, "pythonExtension");
-    } catch {
-      // Fall through to system interpreters. Diagnostics are surfaced if every candidate fails.
+  const broker = apiBroker ?? new PythonEnvironmentApiBroker();
+  const ownsBroker = apiBroker === undefined;
+  try {
+    const executable = await broker.resolveSelectedExecutable(resource);
+    if (executable) {
+      try {
+        return await probeEnvironment(executable, "pythonExtension");
+      } catch {
+        // Fall through to system interpreters. Diagnostics are surfaced if every candidate fails.
+      }
     }
+  } finally {
+    if (ownsBroker) broker.dispose();
   }
 
   const candidates = process.platform === "win32" ? ["python", "py"] : ["python3", "python"];
@@ -72,6 +165,38 @@ export async function resolvePythonEnvironment(
     }
   }
   throw new Error(`No compatible Python 3.10-3.14 interpreter was found. ${failures.join(" ")}`);
+}
+
+function isEnvironmentPath(value: unknown): value is EnvironmentPath {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { id?: unknown; path?: unknown };
+  return (
+    typeof candidate.id === "string" &&
+    candidate.id.length > 0 &&
+    typeof candidate.path === "string" &&
+    candidate.path.trim().length > 0
+  );
+}
+
+function isPythonEnvironmentsApi(value: unknown): value is { environments: PythonEnvironmentsApi } {
+  if (!value || typeof value !== "object") return false;
+  const environments = (value as { environments?: unknown }).environments;
+  if (!environments || typeof environments !== "object") return false;
+  const candidate = environments as {
+    getActiveEnvironmentPath?: unknown;
+    resolveEnvironment?: unknown;
+    onDidChangeActiveEnvironmentPath?: unknown;
+  };
+  return (
+    typeof candidate.getActiveEnvironmentPath === "function" &&
+    typeof candidate.resolveEnvironment === "function" &&
+    (candidate.onDidChangeActiveEnvironmentPath === undefined ||
+      typeof candidate.onDidChangeActiveEnvironmentPath === "function")
+  );
+}
+
+function isDisposable(value: unknown): value is vscode.Disposable {
+  return Boolean(value && typeof value === "object" && typeof (value as { dispose?: unknown }).dispose === "function");
 }
 
 export async function probeDependencies(
