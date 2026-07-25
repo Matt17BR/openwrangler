@@ -11,6 +11,7 @@ import type {
 import { getSetting } from "./configuration";
 import { resolvePythonExecutable } from "./pythonPath";
 import { isSupportedPythonVersion, type PythonDependency } from "./pythonEnvironmentModel";
+import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 
 export { automaticBackends, isSupportedPythonVersion, requiredDependencies } from "./pythonEnvironmentModel";
 
@@ -239,7 +240,12 @@ export async function probeDependencies(
     " out[d['importModule']]={'found':found,'version':version}",
     "print(json.dumps(out))"
   ].join("\n");
-  const { stdout } = await execFileAsync(executable, ["-c", program], { timeout: 10_000 });
+  const { stdout } = await execFileAsync(executable, ["-I", "-c", program], {
+    env: buildPythonProcessEnvironment(),
+    shell: false,
+    timeout: 10_000,
+    windowsHide: true
+  });
   const result = JSON.parse(stdout.trim()) as Record<string, { found: boolean; version?: string }>;
   const supported = (dependency: PythonDependency): boolean => {
     const observed = result[dependency.importModule];
@@ -287,7 +293,12 @@ async function probeEnvironment(executable: string, source: PythonEnvironment["s
       " },",
       "},separators=(',',':')))"
     ].join("\n");
-    const result = await execFileAsync(executable, ["-c", program], { timeout: 10_000 });
+    const result = await execFileAsync(executable, ["-I", "-c", program], {
+      env: buildPythonProcessEnvironment(),
+      shell: false,
+      timeout: 10_000,
+      windowsHide: true
+    });
     stdout = result.stdout.trim();
   } catch (error) {
     throw new Error(`${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`);
@@ -352,6 +363,9 @@ function decodePythonPackageRootIdentity(value: unknown): PythonPackageRootIdent
     throw new Error("Python environment probe returned an invalid package root identity.");
   }
   if (!isCanonicalFileIdentityInteger(candidate.device) || !isCanonicalFileIdentityInteger(candidate.inode)) {
+    throw new Error("Python environment probe returned an invalid package root identity.");
+  }
+  if (candidate.device === "0" && candidate.inode === "0") {
     throw new Error("Python environment probe returned an invalid package root identity.");
   }
   return {

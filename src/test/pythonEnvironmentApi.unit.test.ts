@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, symlink } from "node:fs/promises";
+import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
@@ -9,11 +9,13 @@ import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonE
 
 import {
   decodePythonEnvironmentProbeOutput,
+  probeDependencies,
   PythonEnvironmentApiBroker,
   PythonEnvironmentApiBrokerDisposedError,
   resolvePythonEnvironment,
   type PythonEnvironmentResource
 } from "../extension/pythonEnvironment";
+import { buildPythonProcessEnvironment } from "../extension/pythonProcessEnvironment";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +58,64 @@ describe("Python environment API broker", () => {
 
     expect(getExtension).not.toHaveBeenCalled();
     broker.dispose();
+  });
+
+  it("builds a controlled Python process environment case-insensitively", () => {
+    const environment = buildPythonProcessEnvironment({
+      Path: "/system/bin",
+      OPEN_WRANGLER_SENTINEL: "preserved",
+      pythonpath: "/hostile/modules",
+      PythonHome: "/hostile/home",
+      PythonHashSeed: "random",
+      __pyvenv_launcher__: "/hostile/launcher",
+      Virtual_Env: "/hostile/venv",
+      conda_prefix_2: "/hostile/conda",
+      PyEnv_Version: "hostile"
+    });
+
+    expect(environment).toEqual({
+      Path: "/system/bin",
+      OPEN_WRANGLER_SENTINEL: "preserved",
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONIOENCODING: "utf-8",
+      PYTHONNOUSERSITE: "1",
+      PYTHONSAFEPATH: "1",
+      PYTHONUNBUFFERED: "1",
+      PYTHONUTF8: "1"
+    });
+  });
+
+  it("isolates environment and dependency probes from hostile inherited Python settings", async () => {
+    const executable = testPythonExecutable();
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-hostile-python-env-"));
+    const moduleName = "openwrangler_hostile_probe_module";
+    const previousPythonHome = process.env.PYTHONHOME;
+    const previousPythonPath = process.env.PYTHONPATH;
+    try {
+      await writeFile(path.join(directory, `${moduleName}.py`), "HOSTILE = True\n", "utf8");
+      process.env.PYTHONHOME = path.join(directory, "missing-python-home");
+      process.env.PYTHONPATH = directory;
+
+      const environment = await resolveConfiguredEnvironment(executable);
+      const dependencies = await probeDependencies(executable, [
+        {
+          importModule: moduleName,
+          distribution: moduleName,
+          installSpec: moduleName
+        }
+      ]);
+
+      expect(environment.executable).toBe(executable);
+      expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
+      expect(dependencies).toEqual({
+        available: [],
+        missing: [moduleName]
+      });
+    } finally {
+      restoreProcessEnvironment("PYTHONHOME", previousPythonHome);
+      restoreProcessEnvironment("PYTHONPATH", previousPythonPath);
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("single-flights activation, subscribes before selection, and forwards exact resource objects", async () => {
@@ -398,6 +458,10 @@ describe("Python environment API broker", () => {
     {
       payload: probePayload({ packageRootIdentity: { device: "1", inode: "18446744073709551616" } }),
       message: "invalid package root identity"
+    },
+    {
+      payload: probePayload({ packageRootIdentity: { device: "0", inode: "0" } }),
+      message: "invalid package root identity"
     }
   ])("rejects malformed interpreter probe payload: $payload", ({ payload, message }) => {
     expect(() => decodePythonEnvironmentProbeOutput(payload)).toThrow(message);
@@ -448,6 +512,14 @@ function probePayload(overrides: Record<string, unknown> = {}): string {
     },
     ...overrides
   });
+}
+
+function restoreProcessEnvironment(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
 }
 
 function deferred<T>(): {
