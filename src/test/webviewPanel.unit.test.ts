@@ -290,6 +290,45 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).not.toContainEqual({ kind: "requestImportOptionsChange" });
   });
 
+  it("waits for the exact post-commit acknowledgement when the test API resynchronizes a panel", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened)
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    harness.posted.length = 0;
+
+    const synchronization = OpenWranglerPanel.synchronizePanelForSession(opened.metadata.sessionId);
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    const marker = latestRendererSynchronization(harness.posted);
+    let settled = false;
+    void synchronization.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: marker.syncId,
+      sessionId: marker.sessionId,
+      revision: marker.revision
+    });
+    await expect(synchronization).resolves.toBe(true);
+  });
+
   it("replays retained state when an unhydrated renderer pulls its snapshot", async () => {
     const source: SessionSource = {
       kind: "file",

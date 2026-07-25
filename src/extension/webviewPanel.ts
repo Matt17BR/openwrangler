@@ -18,6 +18,7 @@ import { ImportCancelledError, promptImportOptions } from "./files/importOptions
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
+const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
@@ -47,6 +48,13 @@ export class OpenWranglerPanel {
       }
     | undefined;
   private rendererHydratedSyncId: string | undefined;
+  private rendererSynchronizationAcknowledgement:
+    | {
+        syncId: string;
+        promise: Promise<boolean>;
+        resolve: (hydrated: boolean) => void;
+      }
+    | undefined;
   private rendererSynchronization: Promise<void> | undefined;
   private rendererSynchronizationRequested = false;
   private rendererSynchronizationNeedsInspectionClear = false;
@@ -113,6 +121,16 @@ export class OpenWranglerPanel {
     target.dispose();
     target.panel.dispose();
     return target.closing;
+  }
+
+  static async synchronizePanelForSession(sessionId: string): Promise<boolean> {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
+    if (!target?.rendererReady || target.disposed) return false;
+    target.invalidateRendererSynchronization();
+    await target.enqueueRendererSynchronization(false);
+    const synchronization = target.rendererSynchronizationIdentity;
+    if (!synchronization) return false;
+    return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
 
   static async changeActiveImportOptions(): Promise<boolean> {
@@ -206,6 +224,7 @@ export class OpenWranglerPanel {
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
     this.settleRendererImportAction(undefined, false);
+    this.settleRendererSynchronizationAcknowledgement(undefined, false);
     OpenWranglerPanel.panels.delete(this);
     this.deactivate();
     if (this.sessionId) {
@@ -254,6 +273,7 @@ export class OpenWranglerPanel {
       ) {
         this.rendererHydratedSyncId = decoded.syncId;
         this.pendingPreReadyImportResponse = undefined;
+        this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
       }
       return;
     }
@@ -671,9 +691,35 @@ export class OpenWranglerPanel {
   }
 
   private invalidateRendererSynchronization(): void {
+    this.settleRendererSynchronizationAcknowledgement(undefined, false);
     this.rendererSynchronizationIdentity = undefined;
     this.rendererHydratedSyncId = undefined;
     this.settleRendererImportAction(undefined, false);
+  }
+
+  private waitForRendererSynchronizationAcknowledgement(syncId: string): Promise<boolean> {
+    if (this.hasHydratedRenderer() && this.rendererHydratedSyncId === syncId) return Promise.resolve(true);
+    const acknowledgement = this.rendererSynchronizationAcknowledgement;
+    if (!acknowledgement || acknowledgement.syncId !== syncId) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (hydrated: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(hydrated);
+      };
+      const timer = setTimeout(() => finish(false), RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS);
+      void acknowledgement.promise.then(finish);
+    });
+  }
+
+  private settleRendererSynchronizationAcknowledgement(syncId: string | undefined, hydrated: boolean): boolean {
+    const acknowledgement = this.rendererSynchronizationAcknowledgement;
+    if (!acknowledgement || (syncId !== undefined && acknowledgement.syncId !== syncId)) return false;
+    this.rendererSynchronizationAcknowledgement = undefined;
+    acknowledgement.resolve(hydrated);
+    return true;
   }
 
   private requestRendererImportOptionsChange(): Promise<boolean> {
@@ -753,8 +799,18 @@ export class OpenWranglerPanel {
           revision: null
         };
     this.settleRendererImportAction(undefined, false);
+    this.settleRendererSynchronizationAcknowledgement(undefined, false);
     this.rendererSynchronizationIdentity = synchronization;
     this.rendererHydratedSyncId = undefined;
+    let resolveAcknowledgement!: (hydrated: boolean) => void;
+    const acknowledgement = new Promise<boolean>((resolve) => {
+      resolveAcknowledgement = resolve;
+    });
+    this.rendererSynchronizationAcknowledgement = {
+      syncId: synchronization.syncId,
+      promise: acknowledgement,
+      resolve: resolveAcknowledgement
+    };
     if (this.snapshot) {
       await this.post(this.snapshot);
       await this.postSessionPresentation();

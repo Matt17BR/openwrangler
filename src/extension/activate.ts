@@ -15,6 +15,7 @@ export interface OpenWranglerTestApi {
   setActiveSession(sessionId: string | undefined): void;
   activeSession: SessionCoordinator["activeSession"];
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
+  synchronizePanel(sessionId: string): Promise<boolean>;
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
@@ -53,6 +54,7 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         setActiveSession: (sessionId) => coordinator.setActive(sessionId),
         activeSession: () => coordinator.activeSession(),
         updateViewState: async (sessionId, state) => coordinatedBridge.updateViewState?.(sessionId, state),
+        synchronizePanel: (sessionId) => OpenWranglerPanel.synchronizePanelForSession(sessionId),
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,

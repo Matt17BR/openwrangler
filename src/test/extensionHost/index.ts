@@ -51,6 +51,7 @@ interface TestApi {
       }
     | undefined;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
+  synchronizePanel(sessionId: string): Promise<boolean>;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
@@ -4730,6 +4731,11 @@ async function exerciseLiveImportReconfiguration(
     viewport: { firstVisibleRow: 1, scrollLeft: 23 }
   };
   await testing.updateViewState(stableSessionId, retainedViewState);
+  assert.equal(
+    await testing.synchronizePanel(stableSessionId),
+    true,
+    "The acceptance view-state injection must commit through the real renderer before native import actions."
+  );
   await waitFor(
     () => {
       const active = testing.activeSession();
