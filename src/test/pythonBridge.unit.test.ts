@@ -1811,6 +1811,28 @@ describe("PythonBridge dependency installation", () => {
     expect(raw.dependencyMutations.size).toBe(0);
   });
 
+  it("rejects Python version drift within the same executable and package root after quiescence", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      ...missingDependencies().environment,
+      version: "3.14.0"
+    } as pythonEnvironment.PythonEnvironment);
+    runtimeProcess.emit("exit", 0, null);
+
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+  });
+
   it("revalidates the target inside the progress callback immediately before pip", async () => {
     const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const enteredProgress = deferred<void>();
@@ -2453,6 +2475,92 @@ describe("PythonBridge environment resource selection", () => {
     });
     const republished = internals.lastMissingDependencies as TestMissingDependencies | undefined;
     expect(republished?.selection.key).toBe(source.uri);
+  });
+
+  it("keys dependency probes by normalized executable and exact version within one package root", async () => {
+    const baseSource = remoteSourceAt("/cache-identity/base.csv");
+    const executableSource = remoteSourceAt("/cache-identity/executable.csv");
+    const versionSource = remoteSourceAt("/cache-identity/version.csv");
+    const normalizedAliasSource = remoteSourceAt("/cache-identity/normalized-alias.csv");
+    const packageRootIdentity = testPackageRootIdentity("/usr");
+    const environments = new Map<string, TestPythonEnvironment>([
+      [
+        baseSource.uri!,
+        {
+          ...environment,
+          executable: "/usr/bin/python",
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.12.9"
+        }
+      ],
+      [
+        executableSource.uri!,
+        {
+          ...environment,
+          executable: "/usr/bin/python3",
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.12.9"
+        }
+      ],
+      [
+        versionSource.uri!,
+        {
+          ...environment,
+          executable: "/usr/bin/python",
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.14.0"
+        }
+      ],
+      [
+        normalizedAliasSource.uri!,
+        {
+          ...environment,
+          executable: "/usr/bin/../bin/python",
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.12.9"
+        }
+      ]
+    ]);
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => {
+      const resolved = environments.get(resource?.toString(true) ?? "");
+      if (!resolved) throw new Error("unexpected dependency probe resource");
+      return resolved as pythonEnvironment.PythonEnvironment;
+    });
+    vi.mocked(pythonEnvironment.probeDependencies)
+      .mockResolvedValueOnce({ missing: ["polars"], available: [] })
+      .mockResolvedValueOnce({ missing: [], available: ["polars"] })
+      .mockResolvedValueOnce({ missing: [], available: ["polars"] });
+
+    await expect(internals.prepareRequest(openSessionRequest(baseSource))).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+    await expect(internals.prepareRequest(openSessionRequest(executableSource))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+    await expect(internals.prepareRequest(openSessionRequest(versionSource))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+    await expect(internals.prepareRequest(openSessionRequest(normalizedAliasSource))).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+
+    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(3);
+    expect(internals.dependencyCache.size).toBe(3);
+    const dependencyKeyFor = (source: SessionSource): string =>
+      [...raw.environmentSelections.get(source.uri!)!.dependencyKeys][0]!;
+    expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(executableSource));
+    expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(versionSource));
+    expect(dependencyKeyFor(baseSource)).toBe(dependencyKeyFor(normalizedAliasSource));
   });
 
   it("does not publish an old deferred probe after runtime selection is cleared", async () => {

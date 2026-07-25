@@ -729,7 +729,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     return (
       this.isDependencyInstallOperationAuthorized(operation, executable, requirements, authorizationEpoch) &&
-      samePythonExecutable(currentEnvironment.executable, executable) &&
+      pythonEnvironmentIdentityKey(currentEnvironment) === pythonEnvironmentIdentityKey(missing.environment) &&
       pythonPackageEnvironmentKey(currentEnvironment) === operation.mutationKey
     );
   }
@@ -1785,7 +1785,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
       const dependencies = requiredDependencies(backend, request.source);
       const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
-      const key = `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${JSON.stringify(
+      const environmentIdentityKey = pythonEnvironmentIdentityKey(environment);
+      const key = `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${environmentIdentityKey.length}:${environmentIdentityKey}:${JSON.stringify(
         dependencies.map((dependency) => dependency.installSpec)
       )}`;
       selection.dependencyKeys.add(key);
@@ -1937,6 +1938,16 @@ function pythonExecutableKey(executable: string): string {
 
 function pythonPackageEnvironmentKey(environment: Pick<PythonEnvironment, "packageRootIdentity">): string {
   return JSON.stringify([environment.packageRootIdentity.device, environment.packageRootIdentity.inode]);
+}
+
+function pythonEnvironmentIdentityKey(
+  environment: Pick<PythonEnvironment, "executable" | "packageRootIdentity" | "version">
+): string {
+  return JSON.stringify([
+    pythonPackageEnvironmentKey(environment),
+    pythonExecutableKey(environment.executable),
+    environment.version
+  ]);
 }
 
 function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {
