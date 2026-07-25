@@ -2404,7 +2404,7 @@ test("restricted editor phases keep Workspace Trust enabled and reject unknown t
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "r"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [],
     testModule: join(directory, "restricted.js"),
