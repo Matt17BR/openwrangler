@@ -33,6 +33,7 @@ import {
   type PythonEnvironmentSelectionChangeEvent
 } from "./pythonEnvironment";
 import { backendImportCapabilityFailure } from "./pythonEnvironmentModel";
+import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
 
@@ -1194,6 +1195,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       throw new Error("A different Open Wrangler Python runtime became active during process startup.");
     }
     const pythonPath = environment.executable;
+    if (!isFullyQualifiedPythonPath(pythonPath)) {
+      throw new Error("Open Wrangler runtime startup requires an absolute Python executable path.");
+    }
     const runtimeRoot = path.join(this.context.extensionPath, "python");
 
     const proc = this.spawnProcess(pythonPath, ["-s", "-m", "openwrangler_runtime.server"], {

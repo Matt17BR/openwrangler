@@ -16,6 +16,7 @@ const ACTIVE_PYTHON_ENVIRONMENT_KEYS = new Set([
 ]);
 
 const OWNED_PYTHON_ENVIRONMENT: Readonly<Record<string, string>> = Object.freeze({
+  PYTHON_MANAGER_AUTOMATIC_INSTALL: "0",
   PYTHONDONTWRITEBYTECODE: "1",
   PYTHONIOENCODING: "utf-8",
   PYTHONNOUSERSITE: "1",
@@ -30,6 +31,9 @@ export function buildPythonProcessEnvironment(source: NodeJS.ProcessEnv = proces
     const normalized = key.toLocaleUpperCase("en-US");
     if (
       normalized.startsWith("PYTHON") ||
+      normalized.startsWith("PYLAUNCHER_") ||
+      normalized.startsWith("PYMANAGER_") ||
+      normalized.startsWith("PY_") ||
       ACTIVE_PYTHON_ENVIRONMENT_KEYS.has(normalized) ||
       /^CONDA_PREFIX(?:_\d+)?$/.test(normalized)
     ) {

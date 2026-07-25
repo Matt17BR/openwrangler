@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { chmodSync, mkdtempSync, rmdirSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { join } from "node:path";
+import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -42,6 +43,9 @@ export function startDependencyInstall(
   requirements: readonly string[],
   options: StartDependencyInstallOptions
 ): OwnedDependencyInstall {
+  if (!isFullyQualifiedPythonPath(executable)) {
+    throw new Error("Python dependency installation requires an absolute executable path.");
+  }
   const environment = dependencyInstallEnvironment(options.environment ?? process.env);
   const spawnProcess = options.spawnProcess ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   const workingDirectory = dependencyInstallWorkingDirectory();

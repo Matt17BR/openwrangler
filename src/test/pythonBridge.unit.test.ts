@@ -1,5 +1,6 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,6 +43,10 @@ function testPackageRootIdentity(packageRoot: string): { device: string; inode: 
     hash = Math.imul(hash, 16_777_619);
   }
   return { device: "1", inode: String(hash >>> 0) };
+}
+
+function testPythonExecutablePath(posixPath: string): string {
+  return process.platform === "win32" ? win32.join("C:\\", ...posixPath.split("/").filter(Boolean)) : posixPath;
 }
 const initializedResponse: OpenWranglerResponse = {
   kind: "initialized",
@@ -1025,7 +1030,7 @@ describe("PythonBridge process lifecycle", () => {
     const replacement = new LifecycleChildProcess();
     internals.spawnProcess.mockReturnValue(replacement as unknown as ChildProcessWithoutNullStreams);
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
-      executable: "/env/bin/python",
+      executable: testPythonExecutablePath("/env/bin/python"),
       packageRoot: "/env",
       packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
       version: "3.12.4",
@@ -1042,7 +1047,7 @@ describe("PythonBridge process lifecycle", () => {
     await expect(starting).resolves.toBe(replacement);
     expect(internals.spawnProcess).toHaveBeenCalledOnce();
     const [executable, args, options] = internals.spawnProcess.mock.calls[0] ?? [];
-    expect(executable).toBe("/env/bin/python");
+    expect(executable).toBe(testPythonExecutablePath("/env/bin/python"));
     expect(args).toEqual(["-s", "-m", "openwrangler_runtime.server"]);
     expect(options).toMatchObject({
       cwd: "/extension",
@@ -1059,6 +1064,23 @@ describe("PythonBridge process lifecycle", () => {
     const cleanup = internals.processStop;
     replacement.emit("exit", null, "SIGKILL");
     await expect(cleanup).resolves.toBeUndefined();
+  });
+
+  it("rejects an unpinned runtime executable before spawning", async () => {
+    const { internals } = createLifecycleHarness();
+    internals.process = undefined;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      executable: process.platform === "win32" ? "\\root-relative\\python.exe" : "python3",
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+      version: "3.12.4",
+      source: "configuration"
+    });
+
+    await expect(internals.ensureProcess(initializeRequest)).rejects.toThrow(
+      "requires an absolute Python executable path"
+    );
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
   });
 
   it("keeps a concurrent reopen attached to its exact slot while the prior process stops", async () => {
@@ -1096,7 +1118,7 @@ describe("PythonBridge process lifecycle", () => {
     const { bridge, internals, process } = createLifecycleHarness();
     const replacement = new LifecycleChildProcess();
     const nextEnvironment = {
-      executable: "/second-env/bin/python",
+      executable: testPythonExecutablePath("/second-env/bin/python"),
       packageRoot: "/second-env",
       packageRootIdentity: testPackageRootIdentity("/second-env"),
       version: "3.13.2",
@@ -1123,7 +1145,7 @@ describe("PythonBridge process lifecycle", () => {
   it("reuses the shared process when another resource resolves to the same interpreter", async () => {
     const { internals, process } = createLifecycleHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
-      executable: "/env/bin/python",
+      executable: testPythonExecutablePath("/env/bin/python"),
       packageRoot: "/env",
       packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
       version: "3.12.4",
@@ -1184,7 +1206,11 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.installMissingDependencies()).resolves.toBe(true);
 
     expect(launchDependencyInstall).toHaveBeenCalledOnce();
-    expect(launchDependencyInstall).toHaveBeenCalledWith("/env/bin/python", ["pandas", "xlrd>=2.0.1"], {});
+    expect(launchDependencyInstall).toHaveBeenCalledWith(
+      testPythonExecutablePath("/env/bin/python"),
+      ["pandas", "xlrd>=2.0.1"],
+      {}
+    );
     expect(internals.lastMissingDependencies).toBeUndefined();
     expect(internals.dependencyCache.size).toBe(0);
     expect(internals.runtimeEpoch).toBe(1);
@@ -1281,7 +1307,7 @@ describe("PythonBridge dependency installation", () => {
     await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
     const replacement = {
       environment: {
-        executable: "/env/bin/python",
+        executable: testPythonExecutablePath("/env/bin/python"),
         packageRoot: "/env",
         packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
         version: "3.12.4",
@@ -1535,7 +1561,7 @@ describe("PythonBridge dependency installation", () => {
     runtime.processSelection = {
       selection,
       environment: {
-        executable: "/other/bin/python",
+        executable: testPythonExecutablePath("/other/bin/python"),
         packageRoot: "/other",
         packageRootIdentity: testPackageRootIdentity("/other"),
         version: "3.12.4",
@@ -1560,7 +1586,7 @@ describe("PythonBridge dependency installation", () => {
     const { bridge, raw, internals } = createDependencyHarness();
     const installTarget = internals.lastMissingDependencies!;
     const independentEnvironment: TestPythonEnvironment = {
-      executable: "/env:independent/bin/python",
+      executable: testPythonExecutablePath("/env:independent/bin/python"),
       packageRoot: "/env:independent",
       packageRootIdentity: testPackageRootIdentity("/env:independent"),
       version: "3.12.4",
@@ -1635,7 +1661,7 @@ describe("PythonBridge dependency installation", () => {
     const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
     const aliasEnvironment = {
       ...missingDependencies().environment,
-      executable: "/env/bin/python3"
+      executable: testPythonExecutablePath("/env/bin/python3")
     };
     launchDependencyInstall.mockReturnValue(controlled.operation);
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
@@ -1666,7 +1692,7 @@ describe("PythonBridge dependency installation", () => {
     const target = missingDependencies();
     const aliasEnvironment: TestPythonEnvironment = {
       ...target.environment,
-      executable: "/env/bin/python3"
+      executable: testPythonExecutablePath("/env/bin/python3")
     };
     const aliasSelection = testEnvironmentSelection("alias-scope", aliasEnvironment);
     const runtimeProcess = new LifecycleChildProcess();
@@ -1789,7 +1815,7 @@ describe("PythonBridge dependency installation", () => {
     await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
       ...missingDependencies().environment,
-      executable: "/replacement/bin/python",
+      executable: testPythonExecutablePath("/replacement/bin/python"),
       packageRoot: "/replacement",
       packageRootIdentity: testPackageRootIdentity("/replacement")
     } as pythonEnvironment.PythonEnvironment);
@@ -1860,7 +1886,7 @@ describe("PythonBridge dependency installation", () => {
     await enteredProgress.promise;
     internals.lastMissingDependencies = {
       environment: {
-        executable: "/env/bin/python",
+        executable: testPythonExecutablePath("/env/bin/python"),
         packageRoot: "/env",
         packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
         version: "3.12.4",
@@ -1886,7 +1912,7 @@ describe("PythonBridge dependency installation", () => {
     bridge.clearRuntimeSelection();
     const newerTarget = {
       environment: {
-        executable: "/new/bin/python",
+        executable: testPythonExecutablePath("/new/bin/python"),
         packageRoot: "/new",
         packageRootIdentity: testPackageRootIdentity("/new"),
         version: "3.13.1",
@@ -1896,7 +1922,7 @@ describe("PythonBridge dependency installation", () => {
       selection: testEnvironmentSelection(
         "<workspace-default>",
         {
-          executable: "/new/bin/python",
+          executable: testPythonExecutablePath("/new/bin/python"),
           packageRoot: "/new",
           packageRootIdentity: testPackageRootIdentity("/new"),
           version: "3.13.1",
@@ -1936,7 +1962,7 @@ describe("PythonBridge dependency installation", () => {
 
     raw.environmentSelections.delete("<workspace-default>");
     const newerEnvironment: TestPythonEnvironment = {
-      executable: "/new/bin/python",
+      executable: testPythonExecutablePath("/new/bin/python"),
       packageRoot: "/new",
       packageRootIdentity: testPackageRootIdentity("/new"),
       version: "3.13.1",
@@ -2068,7 +2094,7 @@ describe("PythonBridge dependency installation", () => {
 
 describe("PythonBridge environment resource selection", () => {
   const environment = {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
     packageRoot: "/env",
     packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
@@ -2247,14 +2273,14 @@ describe("PythonBridge environment resource selection", () => {
       resource.path.startsWith("/first/") ? firstFolder : secondFolder
     );
     const firstEnvironment: TestPythonEnvironment = {
-      executable: "/envs/first/python",
+      executable: testPythonExecutablePath("/envs/first/python"),
       packageRoot: "/envs/first",
       packageRootIdentity: testPackageRootIdentity("/envs/first"),
       version: "3.12.4",
       source: "pythonExtension"
     };
     const secondEnvironment: TestPythonEnvironment = {
-      executable: "/envs/second/python",
+      executable: testPythonExecutablePath("/envs/second/python"),
       packageRoot: "/envs/second",
       packageRootIdentity: testPackageRootIdentity("/envs/second"),
       version: "3.13.2",
@@ -2511,7 +2537,7 @@ describe("PythonBridge environment resource selection", () => {
         baseSource.uri!,
         {
           ...environment,
-          executable: "/usr/bin/python",
+          executable: testPythonExecutablePath("/usr/bin/python"),
           packageRoot: "/usr",
           packageRootIdentity,
           version: "3.12.9"
@@ -2521,7 +2547,7 @@ describe("PythonBridge environment resource selection", () => {
         executableSource.uri!,
         {
           ...environment,
-          executable: "/usr/bin/python3",
+          executable: testPythonExecutablePath("/usr/bin/python3"),
           packageRoot: "/usr",
           packageRootIdentity,
           version: "3.12.9"
@@ -2531,7 +2557,7 @@ describe("PythonBridge environment resource selection", () => {
         versionSource.uri!,
         {
           ...environment,
-          executable: "/usr/bin/python",
+          executable: testPythonExecutablePath("/usr/bin/python"),
           packageRoot: "/usr",
           packageRootIdentity,
           version: "3.14.0"
@@ -2541,7 +2567,7 @@ describe("PythonBridge environment resource selection", () => {
         normalizedAliasSource.uri!,
         {
           ...environment,
-          executable: "/usr/bin/../bin/python",
+          executable: testPythonExecutablePath("/usr/bin/../bin/python"),
           packageRoot: "/usr",
           packageRootIdentity,
           version: "3.12.9"
@@ -2728,13 +2754,13 @@ describe("PythonBridge environment resource selection", () => {
     const missingSource = remoteSourceAt("/retention/missing.csv");
     const missingEnvironment = {
       ...environment,
-      executable: "/envs/missing/python",
+      executable: testPythonExecutablePath("/envs/missing/python"),
       packageRoot: "/envs/missing",
       packageRootIdentity: testPackageRootIdentity("/envs/missing")
     };
     const healthyEnvironment = {
       ...environment,
-      executable: "/envs/healthy/python",
+      executable: testPythonExecutablePath("/envs/healthy/python"),
       packageRoot: "/envs/healthy",
       packageRootIdentity: testPackageRootIdentity("/envs/healthy")
     };
@@ -2771,13 +2797,13 @@ describe("PythonBridge environment resource selection", () => {
     const targetSource = remoteSourceAt("/retention/deferred.csv");
     const targetEnvironment = {
       ...environment,
-      executable: "/envs/deferred/python",
+      executable: testPythonExecutablePath("/envs/deferred/python"),
       packageRoot: "/envs/deferred",
       packageRootIdentity: testPackageRootIdentity("/envs/deferred")
     };
     const healthyEnvironment = {
       ...environment,
-      executable: "/envs/healthy/python",
+      executable: testPythonExecutablePath("/envs/healthy/python"),
       packageRoot: "/envs/healthy",
       packageRootIdentity: testPackageRootIdentity("/envs/healthy")
     };
@@ -2940,13 +2966,13 @@ describe("PythonBridge environment resource selection", () => {
     const source = remoteSourceAt("/recreated/resolution.csv");
     const staleEnvironment = {
       ...environment,
-      executable: "/envs/stale/python",
+      executable: testPythonExecutablePath("/envs/stale/python"),
       packageRoot: "/envs/stale",
       packageRootIdentity: testPackageRootIdentity("/envs/stale")
     };
     const currentEnvironment = {
       ...environment,
-      executable: "/envs/current/python",
+      executable: testPythonExecutablePath("/envs/current/python"),
       packageRoot: "/envs/current",
       packageRootIdentity: testPackageRootIdentity("/envs/current")
     };
@@ -2987,13 +3013,13 @@ describe("PythonBridge environment resource selection", () => {
     const source = remoteSourceAt("/recreated/probe.csv");
     const staleEnvironment = {
       ...environment,
-      executable: "/envs/stale-probe/python",
+      executable: testPythonExecutablePath("/envs/stale-probe/python"),
       packageRoot: "/envs/stale-probe",
       packageRootIdentity: testPackageRootIdentity("/envs/stale-probe")
     };
     const currentEnvironment = {
       ...environment,
-      executable: "/envs/current-probe/python",
+      executable: testPythonExecutablePath("/envs/current-probe/python"),
       packageRoot: "/envs/current-probe",
       packageRootIdentity: testPackageRootIdentity("/envs/current-probe")
     };
@@ -3188,7 +3214,7 @@ function createLifecycleHarness(): {
   const configurationSubscription = { dispose: vi.fn() };
   const output = { appendLine: vi.fn(), dispose: vi.fn() };
   const environment = {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
     packageRoot: "/env",
     packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
@@ -3459,7 +3485,7 @@ function fakeOwnedDependencyInstall(execute: () => Promise<unknown>): OwnedDepen
   void completion.catch(() => undefined);
   return {
     child: { unref: vi.fn() } as unknown as ChildProcess,
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
     requirements: ["pandas", "xlrd>=2.0.1"],
     exit: completion.then(
       () => undefined,
@@ -3471,7 +3497,7 @@ function fakeOwnedDependencyInstall(execute: () => Promise<unknown>): OwnedDepen
   };
 }
 
-function controlledDependencyInstall(executable = "/env/bin/python"): {
+function controlledDependencyInstall(executable = testPythonExecutablePath("/env/bin/python")): {
   operation: OwnedDependencyInstall;
   child: LifecycleChildProcess;
   closeSuccessfully(): void;
@@ -3506,7 +3532,7 @@ function controlledDependencyInstall(executable = "/env/bin/python"): {
 
 function missingDependencies(
   selection = testEnvironmentSelection("<workspace-default>", {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
     packageRoot: "/env",
     packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
@@ -3681,7 +3707,7 @@ function createMultiScopeHarness(): {
   respond(scope: "first" | "second", requestId: string, response: OpenWranglerResponse): void;
 } {
   const environment: TestPythonEnvironment = {
-    executable: "/shared/bin/python",
+    executable: testPythonExecutablePath("/shared/bin/python"),
     packageRoot: "/shared",
     packageRootIdentity: testPackageRootIdentity("/shared"),
     version: "3.12.4",
@@ -3841,7 +3867,7 @@ function createHarness(
   } as unknown as ChildProcessWithoutNullStreams;
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
   const environment: TestPythonEnvironment = {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
     packageRoot: "/env",
     packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",

@@ -2,7 +2,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DependencyInstallExitUnconfirmedError,
@@ -11,6 +11,7 @@ import {
 } from "../extension/dependencyInstaller";
 
 const OWNED_PYTHON_PROCESS_ENVIRONMENT = {
+  PYTHON_MANAGER_AUTOMATIC_INSTALL: "0",
   PYTHONDONTWRITEBYTECODE: "1",
   PYTHONIOENCODING: "utf-8",
   PYTHONNOUSERSITE: "1",
@@ -18,6 +19,7 @@ const OWNED_PYTHON_PROCESS_ENVIRONMENT = {
   PYTHONUNBUFFERED: "1",
   PYTHONUTF8: "1"
 };
+const TEST_PYTHON_EXECUTABLE = testPythonPath("/env/bin/python");
 
 class DependencyChildProcess extends EventEmitter {
   readonly kill = vi.fn(() => true);
@@ -37,7 +39,7 @@ describe("owned dependency installation", () => {
     );
     const requirements = ["pandas>=2", "xlrd>=2.0.1"];
 
-    const operation = startDependencyInstall("/env/bin/python", requirements, {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, requirements, {
       environment: {
         PATH: "/usr/bin",
         PYTHONPATH: "/private/runtime",
@@ -67,7 +69,7 @@ describe("owned dependency installation", () => {
 
     const [spawnedExecutable, spawnedArgs, spawnOptions] = spawnProcess.mock.calls[0] ?? [];
     const privateCwd = spawnOptions?.cwd;
-    expect(spawnedExecutable).toBe("/env/bin/python");
+    expect(spawnedExecutable).toBe(TEST_PYTHON_EXECUTABLE);
     expect(spawnedArgs).toEqual(["-I", "-m", "pip", "install", "--no-input", "--no-user", "pandas>=2", "xlrd>=2.0.1"]);
     expect(spawnOptions).toEqual({
       cwd: privateCwd,
@@ -102,38 +104,47 @@ describe("owned dependency installation", () => {
     expect(existsSync(privateCwd as string)).toBe(false);
   });
 
-  it.each(["python", "/env/bin/python"])(
-    "uses a private short-lived cwd for %s instead of importing from the requested directory",
-    async (executable) => {
-      const userHome = mkdtempSync(join(tmpdir(), "openwrangler-home-"));
-      writeFileSync(join(userHome, "pip.py"), "raise RuntimeError('must not import')\n", "utf8");
-      const child = new DependencyChildProcess();
-      const spawnProcess = vi.fn(
-        (_executable: string, _args: string[], _options: SpawnOptions) => child as unknown as ChildProcess
-      );
+  it("uses a private short-lived cwd instead of importing from the requested directory", async () => {
+    const executable = TEST_PYTHON_EXECUTABLE;
+    const userHome = mkdtempSync(join(tmpdir(), "openwrangler-home-"));
+    writeFileSync(join(userHome, "pip.py"), "raise RuntimeError('must not import')\n", "utf8");
+    const child = new DependencyChildProcess();
+    const spawnProcess = vi.fn(
+      (_executable: string, _args: string[], _options: SpawnOptions) => child as unknown as ChildProcess
+    );
 
-      try {
-        const operation = startDependencyInstall(executable, ["pandas"], {
-          environment: { PATH: "/usr/bin" },
-          spawnProcess
-        });
-        const spawnOptions = spawnProcess.mock.calls[0]?.[2];
-        const privateCwd = spawnOptions?.cwd;
+    try {
+      const operation = startDependencyInstall(executable, ["pandas"], {
+        environment: { PATH: "/usr/bin" },
+        spawnProcess
+      });
+      const spawnOptions = spawnProcess.mock.calls[0]?.[2];
+      const privateCwd = spawnOptions?.cwd;
 
-        expect(typeof privateCwd).toBe("string");
-        expect(privateCwd).not.toBe(userHome);
-        expect(existsSync(privateCwd as string)).toBe(true);
-        if (process.platform !== "win32") {
-          expect(statSync(privateCwd as string).mode & 0o077).toBe(0);
-        }
-
-        child.emit("spawn");
-        child.emit("close", 0, null);
-        await expect(operation.completion).resolves.toBeUndefined();
-        expect(existsSync(privateCwd as string)).toBe(false);
-      } finally {
-        rmSync(userHome, { force: true, recursive: true });
+      expect(typeof privateCwd).toBe("string");
+      expect(privateCwd).not.toBe(userHome);
+      expect(existsSync(privateCwd as string)).toBe(true);
+      if (process.platform !== "win32") {
+        expect(statSync(privateCwd as string).mode & 0o077).toBe(0);
       }
+
+      child.emit("spawn");
+      child.emit("close", 0, null);
+      await expect(operation.completion).resolves.toBeUndefined();
+      expect(existsSync(privateCwd as string)).toBe(false);
+    } finally {
+      rmSync(userHome, { force: true, recursive: true });
+    }
+  });
+
+  it.each(["python", process.platform === "win32" ? "\\root-relative\\python.exe" : "relative/python"])(
+    "rejects unpinned executable %s before creating an installer process",
+    (executable) => {
+      const spawnProcess = vi.fn();
+      expect(() => startDependencyInstall(executable, ["pandas"], { spawnProcess })).toThrow(
+        "requires an absolute executable path"
+      );
+      expect(spawnProcess).not.toHaveBeenCalled();
     }
   );
 
@@ -142,7 +153,7 @@ describe("owned dependency installation", () => {
     const spawnProcess = vi.fn(
       (_executable: string, _args: string[], _options: SpawnOptions) => child as unknown as ChildProcess
     );
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       environment: {
         pip_index_url: "https://lower.invalid/simple",
         PIP_INDEX_URL: "https://canonical.invalid/simple",
@@ -173,7 +184,8 @@ describe("owned dependency installation", () => {
   it("treats a pre-spawn error as proof that no package-writing process exists", async () => {
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
-    const operation = startDependencyInstall("/missing/python", ["pandas"], {
+    const missingExecutable = testPythonPath("/missing/python");
+    const operation = startDependencyInstall(missingExecutable, ["pandas"], {
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -185,7 +197,7 @@ describe("owned dependency installation", () => {
     expect(operation.didSpawn()).toBe(false);
     await expect(operation.exit).resolves.toBeUndefined();
     await expect(operation.completion).rejects.toThrow(
-      "could not start dependency installation with /missing/python: ENOENT"
+      `could not start dependency installation with ${missingExecutable}: ENOENT`
     );
     expect(child.kill).not.toHaveBeenCalled();
     expect(privateCwd).toBeDefined();
@@ -194,7 +206,7 @@ describe("owned dependency installation", () => {
 
   it("fails closed when close arrives without either spawn or pre-spawn error proof", async () => {
     const child = new DependencyChildProcess();
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: () => child as unknown as ChildProcess
     });
 
@@ -209,7 +221,7 @@ describe("owned dependency installation", () => {
   it("does not let a post-spawn error impersonate exact process close", async () => {
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -236,7 +248,7 @@ describe("owned dependency installation", () => {
 
   it("ignores exit until Node confirms that every child-process stdio handle closed", async () => {
     const child = new DependencyChildProcess();
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: () => child as unknown as ChildProcess
     });
     let exited = false;
@@ -260,7 +272,7 @@ describe("owned dependency installation", () => {
     { code: null, signal: null, detail: "exit code unknown" }
   ])("reports unsuccessful close as $detail", async ({ code, signal, detail }) => {
     const child = new DependencyChildProcess();
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: () => child as unknown as ChildProcess
     });
     child.emit("spawn");
@@ -275,7 +287,7 @@ describe("owned dependency installation", () => {
   it("propagates a synchronous spawn failure without claiming process ownership", () => {
     let privateCwd: string | undefined;
     expect(() =>
-      startDependencyInstall("/env/bin/python", ["pandas"], {
+      startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
         spawnProcess: (_executable, _args, options) => {
           privateCwd = options.cwd as string;
           throw new Error("invalid spawn options");
@@ -289,7 +301,7 @@ describe("owned dependency installation", () => {
   it("fails cleanup without recursively deleting an entry planted in the private cwd", async () => {
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -314,7 +326,7 @@ describe("owned dependency installation", () => {
     vi.useFakeTimers();
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -340,7 +352,7 @@ describe("owned dependency installation", () => {
   it("cancels its timeout when exact close arrives first", async () => {
     vi.useFakeTimers();
     const child = new DependencyChildProcess();
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: () => child as unknown as ChildProcess
     });
     child.emit("spawn");
@@ -360,7 +372,7 @@ describe("owned dependency installation", () => {
     child.unref.mockImplementation(() => {
       throw new Error("unref failed");
     });
-    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+    const operation = startDependencyInstall(TEST_PYTHON_EXECUTABLE, ["pandas"], {
       spawnProcess: () => child as unknown as ChildProcess
     });
     child.emit("spawn");
@@ -378,3 +390,7 @@ describe("owned dependency installation", () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 });
+
+function testPythonPath(posixPath: string): string {
+  return process.platform === "win32" ? win32.join("C:\\", ...posixPath.split("/").filter(Boolean)) : posixPath;
+}

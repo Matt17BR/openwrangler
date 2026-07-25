@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
+import * as path from "node:path";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import type {
@@ -9,7 +10,7 @@ import type {
   Resource
 } from "@vscode/python-extension";
 import { getSetting } from "./configuration";
-import { resolvePythonExecutable } from "./pythonPath";
+import { isFullyQualifiedPythonPath, resolvePythonCommandPath, resolvePythonExecutable } from "./pythonPath";
 import { isSupportedPythonVersion, type PythonDependency } from "./pythonEnvironmentModel";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 
@@ -181,16 +182,118 @@ export async function resolvePythonEnvironment(
     if (ownsBroker) broker.dispose();
   }
 
-  const candidates = process.platform === "win32" ? ["python", "py"] : ["python3", "python"];
+  let candidates: Array<{ executable: string; arguments: readonly string[] }>;
+  try {
+    candidates =
+      process.platform === "win32"
+        ? (await discoverWindowsSystemPythonExecutables()).map((executable) => ({
+            executable,
+            arguments: []
+          }))
+        : [
+            { executable: "python3", arguments: [] },
+            { executable: "python", arguments: [] }
+          ];
+  } catch (error) {
+    throw new Error(
+      `No compatible Python 3.10-3.14 interpreter was found. Windows Python discovery failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
   const failures: string[] = [];
   for (const candidate of candidates) {
     try {
-      return await probeEnvironment(candidate, "system");
+      return await probeEnvironment(candidate.executable, "system", candidate.arguments);
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error));
     }
   }
   throw new Error(`No compatible Python 3.10-3.14 interpreter was found. ${failures.join(" ")}`);
+}
+
+export interface WindowsPythonDiscoveryOptions {
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly isExecutable?: (candidate: string) => boolean;
+  readonly executeLauncher?: (
+    executable: string,
+    arguments_: readonly string[],
+    options: {
+      env: NodeJS.ProcessEnv;
+      maxBuffer: number;
+      shell: false;
+      timeout: number;
+      windowsHide: true;
+    }
+  ) => Promise<{ stdout: string; stderr: string }>;
+}
+
+export async function discoverWindowsSystemPythonExecutables(
+  options: WindowsPythonDiscoveryOptions = {}
+): Promise<string[]> {
+  const environment = buildPythonProcessEnvironment(options.environment);
+  const executableCheck = options.isExecutable ?? isExecutableFile;
+  const launcher = resolvePythonCommandPath("py", environment, executableCheck, "win32");
+  if (!launcher) return [];
+  const executeLauncher =
+    options.executeLauncher ??
+    (async (executable, arguments_, launchOptions) => {
+      const result = await execFileAsync(executable, [...arguments_], launchOptions);
+      return { stdout: result.stdout, stderr: result.stderr };
+    });
+  let stdout: string;
+  let stderr: string;
+  try {
+    const result = await executeLauncher(launcher, ["-0p"], {
+      env: {
+        ...environment,
+        PYLAUNCHER_NO_SEARCH_PATH: "1",
+        PYTHON_MANAGER_AUTOMATIC_INSTALL: "0"
+      },
+      maxBuffer: 256 * 1024,
+      shell: false,
+      timeout: 10_000,
+      windowsHide: true
+    });
+    stdout = result.stdout;
+    stderr = result.stderr;
+  } catch (error) {
+    throw new Error(
+      `the Python launcher could not list installed runtimes: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  return parseWindowsPythonLauncherOutput(`${stdout}\n${stderr}`).filter(executableCheck);
+}
+
+export function parseWindowsPythonLauncherOutput(output: string): string[] {
+  const candidates: Array<{ executable: string; minor: number }> = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match =
+      /^\s*-(?:V:)?(?:(?:PythonCore)[\\/])?3\.(10|11|12|13|14)t?(?:-[A-Za-z0-9]+)?(?:\s+\*)?\s+(.+?)\s*$/i.exec(line);
+    if (!match) continue;
+    let executable = match[2]?.trim() ?? "";
+    if (executable.endsWith("*")) executable = executable.slice(0, -1).trimEnd();
+    if (executable.startsWith('"') || executable.endsWith('"')) {
+      const quoted = /^"([^"]+)"$/.exec(executable);
+      if (!quoted) continue;
+      executable = quoted[1] ?? "";
+    }
+    if (!isFullyQualifiedWindowsExecutable(executable)) continue;
+    candidates.push({
+      executable: path.win32.normalize(executable),
+      minor: Number.parseInt(match[1] ?? "", 10)
+    });
+  }
+  candidates.sort((left, right) => right.minor - left.minor);
+  const seen = new Set<string>();
+  return candidates
+    .map(({ executable }) => executable)
+    .filter((executable) => {
+      const key = executable.toLocaleLowerCase("en-US");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function isEnvironmentPath(value: unknown): value is EnvironmentPath {
@@ -229,6 +332,9 @@ export async function probeDependencies(
   dependencies: readonly PythonDependency[]
 ): Promise<DependencyProbe> {
   if (dependencies.length === 0) return { missing: [], available: [] };
+  if (!isFullyQualifiedPythonPath(executable)) {
+    throw new Error("Python dependency probing requires an absolute executable path.");
+  }
   const program = [
     "import importlib.metadata,importlib.util,json",
     `deps=${JSON.stringify(dependencies)}`,
@@ -277,14 +383,59 @@ function compareVersions(observed: string | undefined, expected: string): number
   return 0;
 }
 
-async function probeEnvironment(executable: string, source: PythonEnvironment["source"]): Promise<PythonEnvironment> {
+async function probeEnvironment(
+  executable: string,
+  source: PythonEnvironment["source"],
+  launcherArguments: readonly string[] = []
+): Promise<PythonEnvironment> {
+  const processEnvironment = buildPythonProcessEnvironment();
+  const resolvedExecutable = resolvePythonCommandPath(
+    executable,
+    processEnvironment,
+    isExecutableFile,
+    process.platform
+  );
+  if (!resolvedExecutable) {
+    throw new Error(`${executable} could not be resolved to an absolute executable.`);
+  }
+  const initial = await executeEnvironmentProbe(resolvedExecutable, processEnvironment, launcherArguments);
+  const reportedExecutable = path.normalize(initial.executable);
+  const result = sameExecutablePath(resolvedExecutable, reportedExecutable)
+    ? initial
+    : await executeEnvironmentProbe(reportedExecutable, processEnvironment);
+  if (!sameExecutablePath(result.executable, reportedExecutable)) {
+    throw new Error(`${executable} did not resolve to a stable Python executable.`);
+  }
+  const { version, packageRoot, packageRootIdentity } = result;
+  const [major, minor, patch] = version;
+  if (!isSupportedPythonVersion(major, minor)) {
+    throw new Error(
+      `${reportedExecutable} is Python ${major}.${minor}.${patch}; Open Wrangler requires Python 3.10-3.14.`
+    );
+  }
+  return {
+    executable: reportedExecutable,
+    version: `${major}.${minor}.${patch}`,
+    packageRoot,
+    packageRootIdentity,
+    source
+  };
+}
+
+async function executeEnvironmentProbe(
+  executable: string,
+  processEnvironment: NodeJS.ProcessEnv,
+  launcherArguments: readonly string[] = []
+): Promise<ReturnType<typeof decodePythonEnvironmentProbeOutput>> {
   let stdout: string;
   try {
     const program = [
       "import json,os,sys",
+      "executable=os.path.abspath(sys.executable)",
       "package_root=os.path.realpath(os.path.abspath(sys.prefix))",
       "package_root_stat=os.stat(package_root)",
       "print(json.dumps({",
+      " 'executable':executable,",
       " 'version':list(sys.version_info[:3]),",
       " 'packageRoot':package_root,",
       " 'packageRootIdentity':{",
@@ -293,8 +444,8 @@ async function probeEnvironment(executable: string, source: PythonEnvironment["s
       " },",
       "},separators=(',',':')))"
     ].join("\n");
-    const result = await execFileAsync(executable, ["-I", "-c", program], {
-      env: buildPythonProcessEnvironment(),
+    const result = await execFileAsync(executable, [...launcherArguments, "-I", "-c", program], {
+      env: processEnvironment,
       shell: false,
       timeout: 10_000,
       windowsHide: true
@@ -303,15 +454,11 @@ async function probeEnvironment(executable: string, source: PythonEnvironment["s
   } catch (error) {
     throw new Error(`${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const { version, packageRoot, packageRootIdentity } = decodePythonEnvironmentProbeOutput(stdout);
-  const [major, minor, patch] = version;
-  if (!isSupportedPythonVersion(major, minor)) {
-    throw new Error(`${executable} is Python ${major}.${minor}.${patch}; Open Wrangler requires Python 3.10-3.14.`);
-  }
-  return { executable, version: `${major}.${minor}.${patch}`, packageRoot, packageRootIdentity, source };
+  return decodePythonEnvironmentProbeOutput(stdout);
 }
 
 export function decodePythonEnvironmentProbeOutput(stdout: string): {
+  executable: string;
   version: [number, number, number];
   packageRoot: string;
   packageRootIdentity: PythonPackageRootIdentity;
@@ -327,8 +474,21 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   }
   const candidate = decoded as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
-  if (keys.length !== 3 || keys[0] !== "packageRoot" || keys[1] !== "packageRootIdentity" || keys[2] !== "version") {
+  if (
+    keys.length !== 4 ||
+    keys[0] !== "executable" ||
+    keys[1] !== "packageRoot" ||
+    keys[2] !== "packageRootIdentity" ||
+    keys[3] !== "version"
+  ) {
     throw new Error("Python environment probe returned an invalid payload.");
+  }
+  if (
+    typeof candidate.executable !== "string" ||
+    !isFullyQualifiedPythonPath(candidate.executable) ||
+    candidate.executable.includes("\0")
+  ) {
+    throw new Error("Python environment probe returned an invalid executable.");
   }
   const version = candidate.version;
   if (
@@ -341,12 +501,14 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   if (
     typeof candidate.packageRoot !== "string" ||
     candidate.packageRoot.trim().length === 0 ||
+    !isFullyQualifiedPythonPath(candidate.packageRoot) ||
     candidate.packageRoot.includes("\0")
   ) {
     throw new Error("Python environment probe returned an invalid package root.");
   }
   const packageRootIdentity = decodePythonPackageRootIdentity(candidate.packageRootIdentity);
   return {
+    executable: path.normalize(candidate.executable),
     version: [version[0] as number, version[1] as number, version[2] as number],
     packageRoot: candidate.packageRoot,
     packageRootIdentity
@@ -362,7 +524,7 @@ function decodePythonPackageRootIdentity(value: unknown): PythonPackageRootIdent
   if (keys.length !== 2 || keys[0] !== "device" || keys[1] !== "inode") {
     throw new Error("Python environment probe returned an invalid package root identity.");
   }
-  if (!isCanonicalFileIdentityInteger(candidate.device) || !isCanonicalFileIdentityInteger(candidate.inode)) {
+  if (!isCanonicalDeviceInteger(candidate.device) || !isCanonicalInodeInteger(candidate.inode)) {
     throw new Error("Python environment probe returned an invalid package root identity.");
   }
   if (candidate.device === "0" && candidate.inode === "0") {
@@ -374,8 +536,43 @@ function decodePythonPackageRootIdentity(value: unknown): PythonPackageRootIdent
   };
 }
 
-function isCanonicalFileIdentityInteger(value: unknown): value is string {
+function isCanonicalDeviceInteger(value: unknown): value is string {
   return (
     typeof value === "string" && /^(?:0|[1-9]\d{0,19})$/.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n
+  );
+}
+
+function isCanonicalInodeInteger(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^(?:0|[1-9]\d{0,38})$/.test(value) &&
+    BigInt(value) <= 340_282_366_920_938_463_463_374_607_431_768_211_455n
+  );
+}
+
+function isExecutableFile(candidate: string): boolean {
+  try {
+    const stat = statSync(candidate);
+    if (!stat.isFile()) return false;
+    accessSync(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sameExecutablePath(left: string, right: string): boolean {
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US")
+    : normalizedLeft === normalizedRight;
+}
+
+function isFullyQualifiedWindowsExecutable(candidate: string): boolean {
+  return (
+    isFullyQualifiedPythonPath(candidate, "win32") &&
+    path.win32.extname(candidate).toLocaleLowerCase("en-US") === ".exe" &&
+    !candidate.includes("\0")
   );
 }

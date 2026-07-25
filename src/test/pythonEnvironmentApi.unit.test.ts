@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
@@ -9,6 +9,8 @@ import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonE
 
 import {
   decodePythonEnvironmentProbeOutput,
+  discoverWindowsSystemPythonExecutables,
+  parseWindowsPythonLauncherOutput,
   probeDependencies,
   PythonEnvironmentApiBroker,
   PythonEnvironmentApiBrokerDisposedError,
@@ -46,10 +48,8 @@ describe("Python environment API broker", () => {
       broker
     );
 
-    expect(environment).toMatchObject({
-      executable,
-      source: "configuration"
-    });
+    expect(environment.source).toBe("configuration");
+    expect(path.isAbsolute(environment.executable)).toBe(true);
     expect(environment.packageRoot.trim()).not.toBe("");
     expect(environment.packageRootIdentity).toEqual({
       device: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
@@ -76,6 +76,7 @@ describe("Python environment API broker", () => {
     expect(environment).toEqual({
       Path: "/system/bin",
       OPEN_WRANGLER_SENTINEL: "preserved",
+      PYTHON_MANAGER_AUTOMATIC_INSTALL: "0",
       PYTHONDONTWRITEBYTECODE: "1",
       PYTHONIOENCODING: "utf-8",
       PYTHONNOUSERSITE: "1",
@@ -83,6 +84,97 @@ describe("Python environment API broker", () => {
       PYTHONUNBUFFERED: "1",
       PYTHONUTF8: "1"
     });
+  });
+
+  it("strictly extracts supported direct interpreters from legacy Windows launcher listings", () => {
+    expect(
+      parseWindowsPythonLauncherOutput(
+        [
+          "Installed Pythons found by py Launcher for Windows",
+          ' -3.14-64        "C:\\Program Files\\Python314\\python.exe" *',
+          " -V:PythonCore/3.12-arm64 C:\\Users\\user\\Python312\\python.exe",
+          " -3.15-64        C:\\Python315\\python.exe",
+          " -3.11-64        relative\\python.exe",
+          " -3.10-64        C:\\Python310\\python.cmd",
+          " -V:3.13t        C:\\Python313t\\python.exe",
+          " -3.12-64        C:\\USERS\\USER\\Python312\\PYTHON.EXE"
+        ].join("\r\n")
+      )
+    ).toEqual([
+      "C:\\Program Files\\Python314\\python.exe",
+      "C:\\Python313t\\python.exe",
+      "C:\\Users\\user\\Python312\\python.exe"
+    ]);
+  });
+
+  it("uses the Windows launcher only to list installed runtimes with automatic installs disabled", async () => {
+    const executeLauncher = vi.fn(
+      async (
+        _executable: string,
+        _arguments_: readonly string[],
+        _options: {
+          env: NodeJS.ProcessEnv;
+          maxBuffer: number;
+          shell: false;
+          timeout: number;
+          windowsHide: true;
+        }
+      ) => ({
+        stdout: [
+          "Installed Pythons found by py Launcher for Windows",
+          " -3.14-64        C:\\Python314\\python.exe *"
+        ].join("\r\n"),
+        stderr: ""
+      })
+    );
+    const isExecutable = vi.fn(
+      (candidate: string) =>
+        candidate.toLocaleLowerCase("en-US") === "c:\\tools\\py.exe" ||
+        candidate.toLocaleLowerCase("en-US") === "c:\\python314\\python.exe"
+    );
+
+    await expect(
+      discoverWindowsSystemPythonExecutables({
+        environment: {
+          Path: "C:\\Tools",
+          PYLAUNCHER_ALLOW_INSTALL: "1",
+          PYTHON_MANAGER_AUTOMATIC_INSTALL: "1"
+        },
+        isExecutable,
+        executeLauncher
+      })
+    ).resolves.toEqual(["C:\\Python314\\python.exe"]);
+    expect(executeLauncher).toHaveBeenCalledOnce();
+    expect(executeLauncher).toHaveBeenCalledWith(
+      "C:\\Tools\\py.exe",
+      ["-0p"],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PYLAUNCHER_NO_SEARCH_PATH: "1",
+          PYTHON_MANAGER_AUTOMATIC_INSTALL: "0"
+        }),
+        shell: false,
+        windowsHide: true
+      })
+    );
+    const launcherEnvironment = executeLauncher.mock.calls[0]?.[2]?.env;
+    expect(launcherEnvironment).not.toHaveProperty("PYLAUNCHER_ALLOW_INSTALL");
+  });
+
+  it("returns no Windows interpreter candidates for an empty or malformed launcher listing", async () => {
+    const executeLauncher = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: "No installed runtimes.", stderr: "" })
+      .mockResolvedValueOnce({ stdout: " -3.14-64 relative\\python.exe", stderr: "" });
+    const options = {
+      environment: { Path: "C:\\Tools" },
+      isExecutable: (candidate: string) => candidate.toLocaleLowerCase("en-US") === "c:\\tools\\py.exe",
+      executeLauncher
+    };
+
+    await expect(discoverWindowsSystemPythonExecutables(options)).resolves.toEqual([]);
+    await expect(discoverWindowsSystemPythonExecutables(options)).resolves.toEqual([]);
+    expect(executeLauncher).toHaveBeenCalledTimes(2);
   });
 
   it("isolates environment and dependency probes from hostile inherited Python settings", async () => {
@@ -97,7 +189,7 @@ describe("Python environment API broker", () => {
       process.env.PYTHONPATH = directory;
 
       const environment = await resolveConfiguredEnvironment(executable);
-      const dependencies = await probeDependencies(executable, [
+      const dependencies = await probeDependencies(environment.executable, [
         {
           importModule: moduleName,
           distribution: moduleName,
@@ -105,7 +197,7 @@ describe("Python environment API broker", () => {
         }
       ]);
 
-      expect(environment.executable).toBe(executable);
+      expect(path.isAbsolute(environment.executable)).toBe(true);
       expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
       expect(dependencies).toEqual({
         available: [],
@@ -114,6 +206,46 @@ describe("Python environment API broker", () => {
     } finally {
       restoreProcessEnvironment("PYTHONHOME", previousPythonHome);
       restoreProcessEnvironment("PYTHONPATH", previousPythonPath);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unpinned dependency-probe executable before process creation", async () => {
+    const executable = process.platform === "win32" ? "\\root-relative\\python.exe" : "python3";
+    await expect(
+      probeDependencies(executable, [
+        {
+          importModule: "pandas",
+          distribution: "pandas",
+          installSpec: "pandas"
+        }
+      ])
+    ).rejects.toThrow("requires an absolute executable path");
+  });
+
+  it("pins a wrapper to its reported interpreter without realpathing away a virtual environment", async () => {
+    if (process.platform === "win32") return;
+    const directEnvironment = await resolveConfiguredEnvironment(testPythonExecutable());
+    const directExecutable = directEnvironment.executable;
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-python-wrapper-"));
+    const wrapper = path.join(directory, "python-wrapper");
+    const counter = path.join(directory, "wrapper-count");
+    try {
+      await writeFile(
+        wrapper,
+        ["#!/bin/sh", `printf x >> ${shellQuote(counter)}`, `exec ${shellQuote(directExecutable)} "$@"`].join("\n"),
+        "utf8"
+      );
+      await chmod(wrapper, 0o700);
+
+      const wrappedEnvironment = await resolveConfiguredEnvironment(wrapper);
+
+      expect(wrappedEnvironment.executable).toBe(directEnvironment.executable);
+      expect(wrappedEnvironment.packageRoot).toBe(directEnvironment.packageRoot);
+      expect(wrappedEnvironment.packageRootIdentity).toEqual(directEnvironment.packageRootIdentity);
+      expect(wrappedEnvironment.executable).not.toBe(wrapper);
+      expect(await readFile(counter, "utf8")).toBe("x");
+    } finally {
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -336,7 +468,7 @@ describe("Python environment API broker", () => {
 
     const environment = await resolvePythonEnvironment({ extensionPath: "/extension" } as vscode.ExtensionContext);
     expect(environment.source).toBe("system");
-    expect(environment.executable).toBeTruthy();
+    expect(path.isAbsolute(environment.executable)).toBe(true);
     expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
     expect(environment.packageRoot.trim()).not.toBe("");
     expect(environment.packageRootIdentity).toEqual({
@@ -397,11 +529,19 @@ describe("Python environment API broker", () => {
   });
 
   it("strictly decodes the interpreter version and package root", () => {
+    const executable = testAbsolutePath(
+      "workspace",
+      ".venv",
+      "bin",
+      process.platform === "win32" ? "python.exe" : "python"
+    );
+    const packageRoot = testAbsolutePath("workspace", ".venv");
     expect(
       decodePythonEnvironmentProbeOutput(
         JSON.stringify({
+          executable,
           version: [3, 12, 4],
-          packageRoot: "/workspace/.venv",
+          packageRoot,
           packageRootIdentity: {
             device: "64513",
             inode: "25334067"
@@ -409,12 +549,29 @@ describe("Python environment API broker", () => {
         })
       )
     ).toEqual({
+      executable: path.normalize(executable),
       version: [3, 12, 4],
-      packageRoot: "/workspace/.venv",
+      packageRoot,
       packageRootIdentity: {
         device: "64513",
         inode: "25334067"
       }
+    });
+  });
+
+  it("accepts the full Windows 128-bit inode range", () => {
+    expect(
+      decodePythonEnvironmentProbeOutput(
+        probePayload({
+          packageRootIdentity: {
+            device: "18446744073709551615",
+            inode: "340282366920938463463374607431768211455"
+          }
+        })
+      ).packageRootIdentity
+    ).toEqual({
+      device: "18446744073709551615",
+      inode: "340282366920938463463374607431768211455"
     });
   });
 
@@ -428,14 +585,18 @@ describe("Python environment API broker", () => {
     },
     {
       payload: JSON.stringify({
+        executable: testAbsolutePath("env", "bin", process.platform === "win32" ? "python.exe" : "python"),
         version: [3, 12, 4],
-        packageRoot: "/env"
+        packageRoot: testAbsolutePath("env")
       }),
       message: "invalid payload"
     },
     { payload: probePayload({ version: [3, 12] }), message: "invalid version" },
     { payload: probePayload({ version: [3, 12, 4.5] }), message: "invalid version" },
+    { payload: probePayload({ executable: "python3" }), message: "invalid executable" },
+    { payload: probePayload({ executable: "/env/bin/python\0alias" }), message: "invalid executable" },
     { payload: probePayload({ packageRoot: "   " }), message: "invalid package root" },
+    { payload: probePayload({ packageRoot: "relative-env" }), message: "invalid package root" },
     { payload: probePayload({ packageRoot: "/env\0alias" }), message: "invalid package root" },
     { payload: probePayload({ packageRootIdentity: null }), message: "invalid package root identity" },
     { payload: probePayload({ packageRootIdentity: [] }), message: "invalid package root identity" },
@@ -456,7 +617,13 @@ describe("Python environment API broker", () => {
       message: "invalid package root identity"
     },
     {
-      payload: probePayload({ packageRootIdentity: { device: "1", inode: "18446744073709551616" } }),
+      payload: probePayload({ packageRootIdentity: { device: "18446744073709551616", inode: "1" } }),
+      message: "invalid package root identity"
+    },
+    {
+      payload: probePayload({
+        packageRootIdentity: { device: "1", inode: "340282366920938463463374607431768211456" }
+      }),
       message: "invalid package root identity"
     },
     {
@@ -504,14 +671,23 @@ async function reportedPythonExecutable(executable: string): Promise<string> {
 
 function probePayload(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
+    executable: testAbsolutePath("env", "bin", process.platform === "win32" ? "python.exe" : "python"),
     version: [3, 12, 4],
-    packageRoot: "/env",
+    packageRoot: testAbsolutePath("env"),
     packageRootIdentity: {
       device: "1",
       inode: "2"
     },
     ...overrides
   });
+}
+
+function testAbsolutePath(...segments: string[]): string {
+  return process.platform === "win32" ? path.win32.join("C:\\", ...segments) : path.posix.join("/", ...segments);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function restoreProcessEnvironment(key: string, value: string | undefined): void {
