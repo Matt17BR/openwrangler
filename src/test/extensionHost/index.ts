@@ -5956,47 +5956,33 @@ function instrumentedRuntimeMarkers(environment: InstrumentedPythonEnvironment):
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
-  if (process.platform === "win32") {
-    const environment = path.join(directory, "environment");
-    execFileSync(python, ["-m", "venv", "--without-pip", environment], {
-      stdio: "pipe",
+  const environment = path.join(directory, "environment");
+  execFileSync(python, ["-m", "venv", "--without-pip", environment], {
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environment, "Scripts", "python.exe")
+      : path.join(environment, "bin", "python");
+  assert.ok(existsSync(executable), "The dependency-isolated Python environment is missing its interpreter.");
+  const sitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 30_000,
       windowsHide: true
-    });
-    const sitePackages = path.join(environment, "Lib", "site-packages");
-    const siteCustomize = path.join(sitePackages, "sitecustomize.py");
-    writeFileSync(
-      siteCustomize,
-      [
-        "import sys",
-        'sys.path[:] = [entry for entry in sys.path if entry != ""]',
-        "import os",
-        "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
-        "sys.path[:] = [",
-        "    entry",
-        "    for entry in sys.path",
-        "    if os.path.normcase(os.path.abspath(entry)) != cwd",
-        "]",
-        `with open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8") as stream:`,
-        '    stream.write("invoked\\n")',
-        ""
-      ].join("\n"),
-      { encoding: "utf8", flag: "wx" }
-    );
-    const executable = path.join(environment, "Scripts", "python.exe");
-    assert.ok(existsSync(executable), "The Windows dependency-isolated Python environment is missing python.exe.");
-    return executable;
-  }
-
-  const executable = path.join(directory, "python-without-site-packages");
-  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
-  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(sitePackages), "The dependency-isolated environment returned an invalid site-packages.");
   writeFileSync(
-    executable,
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`,
+    path.join(sitePackages, "openwrangler-acceptance-invocations.pth"),
+    `import builtins; builtins.open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8").write("invoked\\n")\n`,
     { encoding: "utf8", flag: "wx" }
   );
-  chmodSync(executable, 0o755);
   return executable;
 }
 
