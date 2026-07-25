@@ -1,6 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import * as vscode from "vscode";
@@ -34,6 +33,7 @@ import {
   type PythonEnvironmentSelectionChangeEvent
 } from "./pythonEnvironment";
 import { backendImportCapabilityFailure } from "./pythonEnvironmentModel";
+import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
 
 interface PendingRequest {
@@ -181,7 +181,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           .filter((selection) => event.affectsConfiguration("openWrangler.pythonPath", selection.resource))
           .map((selection) => selection.key)
       );
-      if (affectsAuthorizedInstall || affected.size > 0) this.dependencyAuthorizationEpoch += 1;
+      if (affectsAuthorizedInstall) this.dependencyAuthorizationEpoch += 1;
       if (affected.size > 0) {
         this.invalidateSelectionScopes(affected, "Python runtime selection changed.", true);
       }
@@ -553,9 +553,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         }
 
         operation.phase = "starting";
-        const process = this.launchDependencyInstall(executable, requirements, {
-          cwd: dependencyInstallWorkingDirectory(executable)
-        });
+        const process = this.launchDependencyInstall(executable, requirements, {});
         operation.process = process;
         operation.phase = "mutating";
         installationStarted = true;
@@ -1198,12 +1196,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const pythonPath = environment.executable;
     const runtimeRoot = path.join(this.context.extensionPath, "python");
 
-    const proc = this.spawnProcess(pythonPath, ["-m", "openwrangler_runtime.server"], {
+    const proc = this.spawnProcess(pythonPath, ["-s", "-m", "openwrangler_runtime.server"], {
       cwd: this.context.extensionPath,
       env: {
-        ...process.env,
-        PYTHONPATH: [runtimeRoot, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
+        ...buildPythonProcessEnvironment(),
+        PYTHONPATH: runtimeRoot
+      },
+      shell: false,
+      windowsHide: true
     });
     this.generation += 1;
     this.output.appendLine(
@@ -1723,7 +1723,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         )
         .map((selection) => selection.key)
     );
-    if (affectsAuthorizedInstall || affected.size > 0) this.dependencyAuthorizationEpoch += 1;
+    if (affectsAuthorizedInstall) this.dependencyAuthorizationEpoch += 1;
     if (affected.size > 0) {
       this.invalidateSelectionScopes(
         affected,
@@ -1952,11 +1952,6 @@ function pythonEnvironmentIdentityKey(
 
 function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {
   return `${packageEnvironmentKey.length}:${packageEnvironmentKey}:`;
-}
-
-function dependencyInstallWorkingDirectory(executable: string): string {
-  if (path.isAbsolute(executable)) return path.dirname(executable);
-  return os.homedir();
 }
 
 function waitForRuntimeProcessExit(proc: ChildProcessWithoutNullStreams): Promise<void> {

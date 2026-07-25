@@ -1041,6 +1041,19 @@ describe("PythonBridge process lifecycle", () => {
     process.emit("exit", null, "SIGKILL");
     await expect(starting).resolves.toBe(replacement);
     expect(internals.spawnProcess).toHaveBeenCalledOnce();
+    const [executable, args, options] = internals.spawnProcess.mock.calls[0] ?? [];
+    expect(executable).toBe("/env/bin/python");
+    expect(args).toEqual(["-s", "-m", "openwrangler_runtime.server"]);
+    expect(options).toMatchObject({
+      cwd: "/extension",
+      shell: false,
+      windowsHide: true,
+      env: expect.objectContaining({
+        PYTHONNOUSERSITE: "1",
+        PYTHONPATH: "/extension/python",
+        PYTHONSAFEPATH: "1"
+      })
+    });
 
     bridge.restart("Acceptance cleanup.");
     const cleanup = internals.processStop;
@@ -1171,9 +1184,7 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.installMissingDependencies()).resolves.toBe(true);
 
     expect(launchDependencyInstall).toHaveBeenCalledOnce();
-    expect(launchDependencyInstall).toHaveBeenCalledWith("/env/bin/python", ["pandas", "xlrd>=2.0.1"], {
-      cwd: "/env/bin"
-    });
+    expect(launchDependencyInstall).toHaveBeenCalledWith("/env/bin/python", ["pandas", "xlrd>=2.0.1"], {});
     expect(internals.lastMissingDependencies).toBeUndefined();
     expect(internals.dependencyCache.size).toBe(0);
     expect(internals.runtimeEpoch).toBe(1);
@@ -2359,10 +2370,20 @@ describe("PythonBridge environment resource selection", () => {
     vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockImplementation((resource) =>
       resource.path.startsWith("/first/") ? firstFolder : secondFolder
     );
-    const { internals } = createEnvironmentHarness();
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
     await internals.prepareRequest(openSessionRequest(remoteSourceAt("/first/data.csv")));
+    const authorizedSelection = raw.environmentSelections.get(firstFolder.uri.toString(true));
+    expect(authorizedSelection?.resolvedEnvironment).toEqual(environment);
+    Object.assign(bridge as object, {
+      dependencyInstallOperation: {
+        phase: "quiescing",
+        authorizationEpoch: 0,
+        authorizationSelection: authorizedSelection
+      }
+    });
 
     internals.handlePythonEnvironmentSelectionChange({
       id: "second-env",
@@ -2373,6 +2394,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.runtimeEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(1);
     expect(internals.dependencyCache.size).toBe(1);
+    expect(raw.dependencyAuthorizationEpoch).toBe(0);
 
     internals.handlePythonEnvironmentSelectionChange({
       id: "first-env",
@@ -2383,6 +2405,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.runtimeEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(0);
     expect(internals.dependencyCache.size).toBe(0);
+    expect(raw.dependencyAuthorizationEpoch).toBe(1);
   });
 
   it("treats an event URI in the same workspace folder as affecting sibling file selections", async () => {

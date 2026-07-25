@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmdirSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export const DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS = 5_000;
@@ -19,7 +20,6 @@ export interface OwnedDependencyInstall {
 }
 
 export interface StartDependencyInstallOptions {
-  readonly cwd: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly spawnProcess?: DependencyInstallSpawner;
 }
@@ -200,7 +200,7 @@ export async function waitForDependencyInstallExit(
 }
 
 function dependencyInstallEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...source };
+  const environment = buildPythonProcessEnvironment(source);
   const allowedPipKeys = new Set([
     "PIP_CACHE_DIR",
     "PIP_CERT",
@@ -252,7 +252,7 @@ function dependencyInstallWorkingDirectory(): DependencyInstallWorkingDirectory 
     chmodSync(cwd, 0o700);
   } catch (error) {
     try {
-      rmSync(cwd, { force: false, recursive: true });
+      rmdirSync(cwd);
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
@@ -268,7 +268,7 @@ function dependencyInstallWorkingDirectory(): DependencyInstallWorkingDirectory 
       if (cleaned) return undefined;
       cleaned = true;
       try {
-        rmSync(cwd, { force: false, recursive: true });
+        rmdirSync(cwd);
         return undefined;
       } catch (error) {
         return error instanceof Error ? error : new Error(String(error));

@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
 import { devNull, tmpdir } from "node:os";
@@ -5530,8 +5531,9 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
     );
 
     const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
-    assert.deepEqual(started.args, ["install", "--no-input", "pandas", "xlrd>=2.0.1"]);
+    assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "pandas", "xlrd>=2.0.1"]);
     assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
+    assert.equal(started.pipUser, "0", "The owned pip process must explicitly prohibit user-site installation.");
     assert.equal(
       started.pipConfigFile,
       process.platform === "win32" ? "nul" : devNull,
@@ -5539,11 +5541,16 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
     );
     assert.equal(started.pythonPathPresent, false, "The owned pip process must not inherit PYTHONPATH.");
     assert.equal(started.pythonHomePresent, false, "The owned pip process must not inherit PYTHONHOME.");
-    assert.equal(
-      sameAcceptanceExecutable(String(started.cwd), path.dirname(lifecycle.executable)),
-      true,
-      "Dependency installation must start from the selected interpreter's directory."
+    assert.notEqual(
+      path.normalize(String(started.cwd)),
+      path.normalize(path.dirname(lifecycle.executable)),
+      "Dependency installation must not import a neighboring pip module from the interpreter directory."
     );
+    assert.match(path.basename(String(started.cwd)), /^openwrangler-pip-/u);
+    assert.equal(existsSync(String(started.cwd)), true, "The private pip directory must remain owned until close.");
+    if (process.platform !== "win32") {
+      assert.equal(statSync(String(started.cwd)).mode & 0o077, 0, "The private pip directory must be mode 0700.");
+    }
     assert.equal(
       existsSync(lifecycle.completed),
       false,
@@ -5597,6 +5604,11 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
     );
     assert.equal(testing.runtimeRunning(), false);
     assert.equal(testing.diagnostics().sessionCount, 0);
+    assert.equal(
+      existsSync(String(started.cwd)),
+      false,
+      "The private pip directory must be removed only after authoritative child close."
+    );
   } finally {
     if (existsSync(lifecycle.started) && !existsSync(lifecycle.release)) {
       try {
@@ -6010,6 +6022,7 @@ function createDependencyInstallLifecyclePython(
     '    "cwd": os.getcwd(),',
     '    "pipNoInput": os.environ.get("PIP_NO_INPUT"),',
     '    "pipConfigFile": os.environ.get("PIP_CONFIG_FILE"),',
+    '    "pipUser": os.environ.get("PIP_USER"),',
     '    "pythonPathPresent": "PYTHONPATH" in environment_keys,',
     '    "pythonHomePresent": "PYTHONHOME" in environment_keys,',
     "}",
@@ -6070,8 +6083,8 @@ function createDependencyInstallLifecyclePython(
     executable,
     [
       "#!/bin/sh",
-      'if [ "$#" -ge 2 ] && [ "$1" = "-m" ] && [ "$2" = "pip" ]; then',
-      "  shift 2",
+      'if [ "$#" -ge 3 ] && [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then',
+      "  shift 3",
       `  exec ${quote(dependencyPython)} -I -S ${quote(fakePip)} "$@"`,
       "fi",
       `exec ${quote(dependencyPython)} -I -S "$@"`,

@@ -10,6 +10,15 @@ import {
   waitForDependencyInstallExit
 } from "../extension/dependencyInstaller";
 
+const OWNED_PYTHON_PROCESS_ENVIRONMENT = {
+  PYTHONDONTWRITEBYTECODE: "1",
+  PYTHONIOENCODING: "utf-8",
+  PYTHONNOUSERSITE: "1",
+  PYTHONSAFEPATH: "1",
+  PYTHONUNBUFFERED: "1",
+  PYTHONUTF8: "1"
+};
+
 class DependencyChildProcess extends EventEmitter {
   readonly kill = vi.fn(() => true);
   readonly unref = vi.fn();
@@ -29,7 +38,6 @@ describe("owned dependency installation", () => {
     const requirements = ["pandas>=2", "xlrd>=2.0.1"];
 
     const operation = startDependencyInstall("/env/bin/python", requirements, {
-      cwd: "/extension",
       environment: {
         PATH: "/usr/bin",
         PYTHONPATH: "/private/runtime",
@@ -65,6 +73,7 @@ describe("owned dependency installation", () => {
       cwd: privateCwd,
       env: {
         PATH: "/usr/bin",
+        ...OWNED_PYTHON_PROCESS_ENVIRONMENT,
         PIP_CONFIG_FILE: process.platform === "win32" ? "nul" : devNull,
         PIP_INDEX_URL: "https://example.invalid/simple",
         PIP_NO_INPUT: "1",
@@ -105,7 +114,6 @@ describe("owned dependency installation", () => {
 
       try {
         const operation = startDependencyInstall(executable, ["pandas"], {
-          cwd: userHome,
           environment: { PATH: "/usr/bin" },
           spawnProcess
         });
@@ -135,7 +143,6 @@ describe("owned dependency installation", () => {
       (_executable: string, _args: string[], _options: SpawnOptions) => child as unknown as ChildProcess
     );
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       environment: {
         pip_index_url: "https://lower.invalid/simple",
         PIP_INDEX_URL: "https://canonical.invalid/simple",
@@ -149,6 +156,7 @@ describe("owned dependency installation", () => {
     });
 
     expect(spawnProcess.mock.calls[0]?.[2].env).toEqual({
+      ...OWNED_PYTHON_PROCESS_ENVIRONMENT,
       PIP_CACHE_DIR: "/private/cache",
       PIP_CONFIG_FILE: process.platform === "win32" ? "nul" : devNull,
       PIP_INDEX_URL: "https://canonical.invalid/simple",
@@ -166,7 +174,6 @@ describe("owned dependency installation", () => {
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
     const operation = startDependencyInstall("/missing/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -188,7 +195,6 @@ describe("owned dependency installation", () => {
   it("fails closed when close arrives without either spawn or pre-spawn error proof", async () => {
     const child = new DependencyChildProcess();
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: () => child as unknown as ChildProcess
     });
 
@@ -204,7 +210,6 @@ describe("owned dependency installation", () => {
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -232,7 +237,6 @@ describe("owned dependency installation", () => {
   it("ignores exit until Node confirms that every child-process stdio handle closed", async () => {
     const child = new DependencyChildProcess();
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: () => child as unknown as ChildProcess
     });
     let exited = false;
@@ -257,7 +261,6 @@ describe("owned dependency installation", () => {
   ])("reports unsuccessful close as $detail", async ({ code, signal, detail }) => {
     const child = new DependencyChildProcess();
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: () => child as unknown as ChildProcess
     });
     child.emit("spawn");
@@ -273,7 +276,6 @@ describe("owned dependency installation", () => {
     let privateCwd: string | undefined;
     expect(() =>
       startDependencyInstall("/env/bin/python", ["pandas"], {
-        cwd: "/extension",
         spawnProcess: (_executable, _args, options) => {
           privateCwd = options.cwd as string;
           throw new Error("invalid spawn options");
@@ -284,12 +286,35 @@ describe("owned dependency installation", () => {
     expect(existsSync(privateCwd as string)).toBe(false);
   });
 
+  it("fails cleanup without recursively deleting an entry planted in the private cwd", async () => {
+    const child = new DependencyChildProcess();
+    let privateCwd: string | undefined;
+    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+      spawnProcess: (_executable, _args, options) => {
+        privateCwd = options.cwd as string;
+        return child as unknown as ChildProcess;
+      }
+    });
+    const planted = join(privateCwd!, "foreign-entry");
+    try {
+      writeFileSync(planted, "preserve me", "utf8");
+
+      child.emit("spawn");
+      child.emit("close", 0, null);
+
+      await expect(operation.exit).resolves.toBeUndefined();
+      await expect(operation.completion).rejects.toThrow();
+      expect(existsSync(planted)).toBe(true);
+    } finally {
+      rmSync(privateCwd!, { recursive: true, force: true });
+    }
+  });
+
   it("times out by unreferencing the exact child and never signalling it", async () => {
     vi.useFakeTimers();
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
         return child as unknown as ChildProcess;
@@ -316,7 +341,6 @@ describe("owned dependency installation", () => {
     vi.useFakeTimers();
     const child = new DependencyChildProcess();
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: () => child as unknown as ChildProcess
     });
     child.emit("spawn");
@@ -337,7 +361,6 @@ describe("owned dependency installation", () => {
       throw new Error("unref failed");
     });
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
-      cwd: "/extension",
       spawnProcess: () => child as unknown as ChildProcess
     });
     child.emit("spawn");
