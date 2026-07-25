@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
@@ -5532,6 +5532,11 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
     const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
     assert.deepEqual(started.args, ["install", "--no-input", "pandas", "xlrd>=2.0.1"]);
     assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
+    assert.equal(
+      started.pipConfigFile,
+      process.platform === "win32" ? "nul" : devNull,
+      "The owned pip process must disable every inherited pip configuration file."
+    );
     assert.equal(started.pythonPathPresent, false, "The owned pip process must not inherit PYTHONPATH.");
     assert.equal(started.pythonHomePresent, false, "The owned pip process must not inherit PYTHONHOME.");
     assert.equal(
@@ -6004,6 +6009,7 @@ function createDependencyInstallLifecyclePython(
     '    "args": sys.argv[1:],',
     '    "cwd": os.getcwd(),',
     '    "pipNoInput": os.environ.get("PIP_NO_INPUT"),',
+    '    "pipConfigFile": os.environ.get("PIP_CONFIG_FILE"),',
     '    "pythonPathPresent": "PYTHONPATH" in environment_keys,',
     '    "pythonHomePresent": "PYTHONHOME" in environment_keys,',
     "}",

@@ -108,6 +108,8 @@ interface PreparedRequest {
 interface DependencyInstallOperation {
   phase: "confirming" | "quiescing" | "starting" | "mutating" | "uncertain" | "settled";
   promise?: Promise<boolean>;
+  authorizationEpoch?: number;
+  authorizationSelection?: EnvironmentSelection;
   runtime?: RuntimeSlot;
   releaseRuntime?: () => void;
   executable?: string;
@@ -155,6 +157,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private scopeUseClock = 0;
   private readonly scopeRecency = new Map<string, number>();
   private selectionEpoch = 0;
+  private dependencyAuthorizationEpoch = 0;
   private readonly selectionEpochs = new Map<string, number>();
   private disposed = false;
   private readonly environmentSelections = new Map<string, EnvironmentSelection>();
@@ -169,11 +172,16 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     );
     this.configurationSubscription = vscode.workspace.onDidChangeConfiguration((event) => {
       if (this.disposed || !event.affectsConfiguration("openWrangler.pythonPath")) return;
+      const authorizedSelection = this.dependencyInstallOperation?.authorizationSelection;
+      const affectsAuthorizedInstall = Boolean(
+        authorizedSelection && event.affectsConfiguration("openWrangler.pythonPath", authorizedSelection.resource)
+      );
       const affected = new Set(
         [...this.environmentSelections.values()]
           .filter((selection) => event.affectsConfiguration("openWrangler.pythonPath", selection.resource))
           .map((selection) => selection.key)
       );
+      if (affectsAuthorizedInstall || affected.size > 0) this.dependencyAuthorizationEpoch += 1;
       if (affected.size > 0) {
         this.invalidateSelectionScopes(affected, "Python runtime selection changed.", true);
       }
@@ -522,6 +530,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       { location: vscode.ProgressLocation.Notification, title: "Installing Open Wrangler dependencies" },
       async () => {
         if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) return false;
+        operation.authorizationEpoch = this.dependencyAuthorizationEpoch;
+        operation.authorizationSelection = missing.selection;
         try {
           await this.beginDependencyMutation(operation, missing.environment);
         } catch (error) {
@@ -536,6 +546,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           !operation.mutationKey ||
           this.dependencyMutations.get(operation.mutationKey) !== operation
         ) {
+          return false;
+        }
+        if (!(await this.revalidateDependencyInstallAuthorization(operation, missing, executable, requirements))) {
           return false;
         }
 
@@ -687,6 +700,57 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       missing.environment.executable === executable &&
       missing.requirements.length === requirements.length &&
       missing.requirements.every((requirement, index) => requirement === requirements[index])
+    );
+  }
+
+  private async revalidateDependencyInstallAuthorization(
+    operation: DependencyInstallOperation,
+    missing: MissingDependencies,
+    executable: string,
+    requirements: readonly string[]
+  ): Promise<boolean> {
+    const authorizationEpoch = operation.authorizationEpoch;
+    if (
+      authorizationEpoch === undefined ||
+      !this.isDependencyInstallOperationAuthorized(operation, executable, requirements, authorizationEpoch)
+    ) {
+      return false;
+    }
+
+    let currentEnvironment: PythonEnvironment;
+    try {
+      currentEnvironment = await resolvePythonEnvironment(
+        this.context,
+        missing.selection.resource,
+        this.environmentApiBroker
+      );
+    } catch {
+      return false;
+    }
+    return (
+      this.isDependencyInstallOperationAuthorized(operation, executable, requirements, authorizationEpoch) &&
+      samePythonExecutable(currentEnvironment.executable, executable) &&
+      pythonPackageEnvironmentKey(currentEnvironment) === operation.mutationKey
+    );
+  }
+
+  private isDependencyInstallOperationAuthorized(
+    operation: DependencyInstallOperation,
+    executable: string,
+    requirements: readonly string[],
+    authorizationEpoch: number
+  ): boolean {
+    return (
+      !this.disposed &&
+      vscode.workspace.isTrusted &&
+      this.dependencyInstallOperation === operation &&
+      operation.authorizationEpoch === authorizationEpoch &&
+      this.dependencyAuthorizationEpoch === authorizationEpoch &&
+      operation.executable === executable &&
+      operation.requirements?.length === requirements.length &&
+      operation.requirements.every((requirement, index) => requirement === requirements[index]) &&
+      Boolean(operation.mutationKey) &&
+      this.dependencyMutations.get(operation.mutationKey!) === operation
     );
   }
 
@@ -1643,6 +1707,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private handlePythonEnvironmentSelectionChange(event: PythonEnvironmentSelectionChangeEvent): void {
     if (this.disposed) return;
+    const authorizedSelection = this.dependencyInstallOperation?.authorizationSelection;
+    const affectsAuthorizedInstall = Boolean(
+      authorizedSelection &&
+      authorizedSelection.resolvedEnvironment?.source === "pythonExtension" &&
+      getSetting("pythonPath", "", authorizedSelection.resource).trim().length === 0 &&
+      pythonSelectionEventAffects(event, authorizedSelection)
+    );
     const affected = new Set(
       [...this.environmentSelections.values()]
         .filter(
@@ -1652,6 +1723,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         )
         .map((selection) => selection.key)
     );
+    if (affectsAuthorizedInstall || affected.size > 0) this.dependencyAuthorizationEpoch += 1;
     if (affected.size > 0) {
       this.invalidateSelectionScopes(
         affected,
@@ -1863,9 +1935,8 @@ function pythonExecutableKey(executable: string): string {
   return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
 }
 
-function pythonPackageEnvironmentKey(environment: Pick<PythonEnvironment, "packageRoot">): string {
-  const normalized = path.normalize(environment.packageRoot);
-  return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+function pythonPackageEnvironmentKey(environment: Pick<PythonEnvironment, "packageRootIdentity">): string {
+  return JSON.stringify([environment.packageRootIdentity.device, environment.packageRootIdentity.inode]);
 }
 
 function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {
