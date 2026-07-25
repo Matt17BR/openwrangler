@@ -255,6 +255,56 @@ describe("DataGrid", () => {
     expect(onPage).not.toHaveBeenCalled();
   });
 
+  it("publishes the physical viewport when the browser clamps impossible restored offsets", () => {
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined
+    });
+    Object.defineProperty(scroller, "scrollLeft", {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined
+    });
+    onViewStateChange.mockClear();
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 35 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: { "c:1": 280 },
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    expect(props.onPage).not.toHaveBeenCalled();
+  });
+
   it("carries the scroll-requested row into the next block's roving focus", async () => {
     const onPage = vi.fn();
     const scrollMetadata = {

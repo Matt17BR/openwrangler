@@ -3857,6 +3857,18 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     writeFileSync(path.join(directory, "sample-polars.jsonl"), sampleJsonl);
     writeFileSync(path.join(directory, "sample-duckdb.jsonl"), sampleJsonl);
     writeFileSync(path.join(directory, "configured.csv"), "name;value\nalpha;1\nbeta;2\n", "utf8");
+    writeFileSync(
+      path.join(directory, "reconfigure.csv"),
+      [
+        "name;value;category;status;amount;date;note;flag",
+        ...Array.from(
+          { length: 80 },
+          (_, index) =>
+            `row-${index};${index};group-${index % 4};${index % 2 === 0 ? "active" : "paused"};${index * 10};2026-07-${String((index % 28) + 1).padStart(2, "0")};note-${index};${index % 2 === 0}`
+        )
+      ].join("\n") + "\n",
+      "utf8"
+    );
     writeFileSync(path.join(directory, "configured.tsv"), "name|value\nalpha|1\nbeta|2\n", "utf8");
     writeFileSync(
       path.join(directory, "damaged.csv"),
@@ -4451,6 +4463,62 @@ async function waitForOpenWranglerWebviewButtonEnabled(page: Page, name: string)
   return waitForOpenWranglerWebviewButton(page, name, true);
 }
 
+interface GridViewportMeasurement {
+  scrollTop: number;
+  scrollLeft: number;
+  scrollHeight: number;
+  scrollWidth: number;
+  clientHeight: number;
+  clientWidth: number;
+}
+
+async function waitForOpenWranglerGridViewport(
+  action: Locator,
+  expected: Pick<GridViewportMeasurement, "scrollTop" | "scrollLeft">
+): Promise<GridViewportMeasurement> {
+  return withAcceptanceOperationDeadline(
+    action.evaluate(
+      (_element, target) =>
+        new Promise<GridViewportMeasurement>((resolve, reject) => {
+          const scroller = _element.ownerDocument.querySelector('[data-testid="data-grid-scroller"]');
+          if (!scroller) {
+            reject(new Error("The Open Wrangler grid scroller is unavailable."));
+            return;
+          }
+          const deadline = performance.now() + 5_000;
+          const read = (): GridViewportMeasurement => ({
+            scrollTop: scroller.scrollTop,
+            scrollLeft: scroller.scrollLeft,
+            scrollHeight: scroller.scrollHeight,
+            scrollWidth: scroller.scrollWidth,
+            clientHeight: scroller.clientHeight,
+            clientWidth: scroller.clientWidth
+          });
+          const poll = () => {
+            const current = read();
+            const overflowed = current.scrollHeight > current.clientHeight && current.scrollWidth > current.clientWidth;
+            const positioned =
+              Math.abs(current.scrollTop - target.scrollTop) <= 1 &&
+              Math.abs(current.scrollLeft - target.scrollLeft) <= 1;
+            if (overflowed && positioned) {
+              resolve(current);
+              return;
+            }
+            if (performance.now() >= deadline) {
+              resolve(current);
+              return;
+            }
+            setTimeout(poll, 25);
+          };
+          poll();
+        }),
+      expected
+    ),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the synchronized Open Wrangler grid viewport"
+  );
+}
+
 interface OpenWranglerWebviewTarget {
   page: Page;
   frame: Frame;
@@ -4620,7 +4688,7 @@ async function exerciseLiveImportReconfiguration(
   config: vscode.WorkspaceConfiguration
 ): Promise<void> {
   const page = await connectToEditorWorkbench();
-  const configured = vscode.Uri.file(path.join(directory, "configured.csv"));
+  const configured = vscode.Uri.file(path.join(directory, "reconfigure.csv"));
   const configuredBytes = readFileSync(configured.fsPath);
   await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
@@ -4637,7 +4705,7 @@ async function exerciseLiveImportReconfiguration(
       const active = testing.activeSession();
       return (
         active?.metadata.source.path === configured.fsPath &&
-        active.metadata.shape.rows === 2 &&
+        active.metadata.shape.rows === 80 &&
         active.metadata.shape.columns === 1
       );
     },
@@ -4682,8 +4750,8 @@ async function exerciseLiveImportReconfiguration(
       return (
         active?.sessionId === stableSessionId &&
         active.metadata.source.path === configured.fsPath &&
-        active.metadata.shape.rows === 2 &&
-        active.metadata.shape.columns === 2 &&
+        active.metadata.shape.rows === 80 &&
+        active.metadata.shape.columns === 8 &&
         active.metadata.source.importOptions?.delimiter === ";"
       );
     },
@@ -4725,9 +4793,10 @@ async function exerciseLiveImportReconfiguration(
   );
   const retainedColumn = changed.metadata.schema.find((column) => column.name === "value");
   assert.ok(retainedColumn, "The reconfigured CSV must expose its value column for reload-state acceptance.");
+  const retainedColumnWidths = Object.fromEntries(changed.metadata.schema.map((column) => [column.id, 640]));
   const retainedViewState = {
     selectedColumnId: retainedColumn.id,
-    columnWidths: { [retainedColumn.id]: 247 },
+    columnWidths: retainedColumnWidths,
     viewport: { firstVisibleRow: 1, scrollLeft: 23 }
   };
   await testing.updateViewState(stableSessionId, retainedViewState);
@@ -4736,12 +4805,33 @@ async function exerciseLiveImportReconfiguration(
     true,
     "The acceptance view-state injection must commit through the real renderer before native import actions."
   );
+  const synchronizedGridAction = await waitForOpenWranglerWebviewButton(page, "Import options", true);
+  const physicalViewport = await waitForOpenWranglerGridViewport(synchronizedGridAction, {
+    scrollTop: 29,
+    scrollLeft: 23
+  });
+  assert.ok(
+    physicalViewport.scrollHeight > physicalViewport.clientHeight,
+    "The import-reconfiguration fixture must overflow the real grid vertically."
+  );
+  assert.ok(
+    physicalViewport.scrollWidth > physicalViewport.clientWidth,
+    "The import-reconfiguration fixture must overflow the real grid horizontally."
+  );
+  assert.ok(
+    Math.abs(physicalViewport.scrollTop - 29) <= 1,
+    "The real grid must commit the injected first visible row before cancellation acceptance."
+  );
+  assert.ok(
+    Math.abs(physicalViewport.scrollLeft - 23) <= 1,
+    "The real grid must commit the injected horizontal viewport before cancellation acceptance."
+  );
   await waitFor(
     () => {
       const active = testing.activeSession();
       return (
         active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
-        active.viewState.columnWidths[retainedColumn.id] === 247 &&
+        changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
         active.viewState.viewport.firstVisibleRow === 1 &&
         active.viewState.viewport.scrollLeft === 23
       );
@@ -4750,8 +4840,6 @@ async function exerciseLiveImportReconfiguration(
     "the reconfigured CSV view state to persist under its confirmed source and backend"
   );
 
-  const confirmedBeforeCancellation = stableImportReconfigurationSnapshot(testing.activeSession());
-  const diagnosticsBeforeCancellation = stableImportDiagnostics(testing.diagnostics());
   const activeTab = page
     .locator(".part.editor .editor-group-container.active .tabs-container .tab.active")
     .filter({ hasText: path.basename(configured.fsPath) })
@@ -4764,6 +4852,21 @@ async function exerciseLiveImportReconfiguration(
   assert.ok(tabImportAction, "The generic Open Wrangler tab must expose Change Import Options.");
   await tabImportAction.click();
   const delimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
+        changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+        active.viewState.viewport.firstVisibleRow === 1 &&
+        active.viewState.viewport.scrollLeft === 23
+      );
+    },
+    5_000,
+    "the native import action to flush the physically confirmed renderer view"
+  );
+  const confirmedBeforeCancellation = stableImportReconfigurationSnapshot(testing.activeSession());
+  const diagnosticsBeforeCancellation = stableImportDiagnostics(testing.diagnostics());
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Escape"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -4826,10 +4929,10 @@ async function exerciseLiveImportReconfiguration(
           active?.metadata.source.path === configured.fsPath &&
           active.metadata.backend === changed.metadata.backend &&
           active.metadata.source.importOptions?.delimiter === ";" &&
-          active.metadata.shape.rows === 2 &&
-          active.metadata.shape.columns === 2 &&
+          active.metadata.shape.rows === 80 &&
+          active.metadata.shape.columns === 8 &&
           active.viewState.selectedColumnId === retainedColumn.id &&
-          active.viewState.columnWidths[retainedColumn.id] === 247 &&
+          changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
           active.viewState.viewport.firstVisibleRow === 1 &&
           active.viewState.viewport.scrollLeft === 23
         );
