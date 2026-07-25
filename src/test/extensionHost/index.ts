@@ -5479,7 +5479,6 @@ async function exerciseRealPythonEnvironmentSelection(
   const config = vscode.workspace.getConfiguration("openWrangler", fixture);
   await config.update("pythonPath", undefined, vscode.ConfigurationTarget.Global);
   await config.update("pythonPath", undefined, vscode.ConfigurationTarget.Workspace);
-  await config.update("pythonPath", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
   assert.equal(
     getSetting("pythonPath", "", fixture),
     "",
