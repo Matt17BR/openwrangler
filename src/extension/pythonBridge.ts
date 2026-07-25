@@ -72,7 +72,7 @@ interface ProcessSelection {
 }
 
 interface StoppingRuntimeProcess {
-  readonly executable: string | undefined;
+  readonly packageEnvironmentKey: string | undefined;
   readonly shutdown: Promise<void>;
   readonly exit: Promise<void>;
 }
@@ -523,7 +523,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       async () => {
         if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) return false;
         try {
-          await this.beginDependencyMutation(operation, executable);
+          await this.beginDependencyMutation(operation, missing.environment);
         } catch (error) {
           if (!this.disposed) {
             operation.phase = "uncertain";
@@ -571,28 +571,32 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (!completed || this.disposed) return false;
 
     const currentTarget = this.lastMissingDependencies;
+    this.releaseDependencyInstallOperation(operation);
     if (!currentTarget) {
-      await vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
+      void vscode.window.showInformationMessage("Open Wrangler runtime dependencies were installed.");
     } else {
-      await vscode.window.showInformationMessage(
+      void vscode.window.showInformationMessage(
         `Installed ${requirements.join(", ")} into ${executable}, but the dependency target changed before installation completed. Reopen the source to validate the current interpreter.`
       );
     }
     return true;
   }
 
-  private async beginDependencyMutation(operation: DependencyInstallOperation, executable: string): Promise<void> {
-    const mutationKey = pythonExecutableKey(executable);
+  private async beginDependencyMutation(
+    operation: DependencyInstallOperation,
+    environment: PythonEnvironment
+  ): Promise<void> {
+    const mutationKey = pythonPackageEnvironmentKey(environment);
     const existing = this.dependencyMutations.get(mutationKey);
     if (existing && existing !== operation) {
-      throw new Error(`Open Wrangler is already changing Python dependencies in ${executable}.`);
+      throw new Error(`Open Wrangler is already changing Python dependencies in ${environment.executable}.`);
     }
     operation.mutationKey = mutationKey;
     this.dependencyMutations.set(mutationKey, operation);
     operation.phase = "quiescing";
 
-    const stops = this.invalidateDependencyStateForExecutable(
-      executable,
+    const stops = this.invalidateDependencyStateForEnvironment(
+      environment,
       "Python dependencies are changing; stopping the Open Wrangler runtime before package writes begin."
     );
     operation.quiescence = Promise.all(stops.map((stop) => stop.exit)).then(() => undefined);
@@ -607,9 +611,12 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
   }
 
-  private invalidateDependencyStateForExecutable(executable: string, reason: string): StoppingRuntimeProcess[] {
-    const executableKey = pythonExecutableKey(executable);
-    const dependencyPrefix = `${executableKey}:`;
+  private invalidateDependencyStateForEnvironment(
+    environment: PythonEnvironment,
+    reason: string
+  ): StoppingRuntimeProcess[] {
+    const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
+    const dependencyPrefix = pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey);
     for (const key of this.dependencyCache.keys()) {
       if (key.startsWith(dependencyPrefix)) this.dependencyCache.delete(key);
     }
@@ -618,20 +625,19 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         .filter(
           (selection) =>
             selection.resolvedEnvironment &&
-            pythonExecutableKey(selection.resolvedEnvironment.executable) === executableKey
+            pythonPackageEnvironmentKey(selection.resolvedEnvironment) === packageEnvironmentKey
         )
         .map((selection) => selection.key)
     );
     for (const activeRuntime of this.runtimeSlots.values()) {
-      const runtimeExecutable =
-        activeRuntime.processSelection?.environment.executable ??
-        activeRuntime.processStartSelection?.environment.executable;
-      if (runtimeExecutable && pythonExecutableKey(runtimeExecutable) === executableKey) {
+      const runtimeEnvironment =
+        activeRuntime.processSelection?.environment ?? activeRuntime.processStartSelection?.environment;
+      if (runtimeEnvironment && pythonPackageEnvironmentKey(runtimeEnvironment) === packageEnvironmentKey) {
         affected.add(activeRuntime.key);
       }
       if (
         [...activeRuntime.stoppingProcesses.values()].some(
-          (stopping) => stopping.executable !== undefined && pythonExecutableKey(stopping.executable) === executableKey
+          (stopping) => stopping.packageEnvironmentKey === packageEnvironmentKey
         )
       ) {
         affected.add(activeRuntime.key);
@@ -640,7 +646,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (affected.size > 0) this.invalidateSelectionScopes(affected, reason, true);
     return [...this.runtimeSlots.values()].flatMap((runtime) =>
       [...runtime.stoppingProcesses.values()].filter(
-        (stopping) => stopping.executable !== undefined && pythonExecutableKey(stopping.executable) === executableKey
+        (stopping) => stopping.packageEnvironmentKey === packageEnvironmentKey
       )
     );
   }
@@ -947,7 +953,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     runtime.runtimeEpoch += 1;
     const proc = runtime.process;
-    const executable = runtime.processSelection?.environment.executable;
+    const packageEnvironmentKey = runtime.processSelection
+      ? pythonPackageEnvironmentKey(runtime.processSelection.environment)
+      : undefined;
+    if (proc) this.trackProcessStop(runtime, proc, gracefulTimeoutMs, packageEnvironmentKey);
     runtime.process = undefined;
     runtime.processStart = undefined;
     runtime.processSelection = undefined;
@@ -955,7 +964,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime.runtimeExitError = undefined;
     this.releaseRuntimeSessionState(runtime);
     this.rejectRuntime(runtime, new Error(reason));
-    if (proc) this.trackProcessStop(runtime, proc, gracefulTimeoutMs, executable);
     this.trimInactiveScopes();
   }
 
@@ -986,7 +994,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime: RuntimeSlot,
     desired: ProcessSelection
   ): Promise<ChildProcessWithoutNullStreams> {
-    this.assertDependencyEnvironmentAvailable(desired.environment.executable);
+    this.assertDependencyEnvironmentAvailable(desired.environment);
     const initialEpoch = runtime.runtimeEpoch;
     const stopping = runtime.processStop;
     if (stopping && !runtime.process && !runtime.processStart) {
@@ -1002,7 +1010,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       }
     }
     for (;;) {
-      this.assertDependencyEnvironmentAvailable(desired.environment.executable);
+      this.assertDependencyEnvironmentAvailable(desired.environment);
       if (!this.isCurrentEnvironmentSelection(desired.selection)) {
         throw new Error("Open Wrangler runtime selection changed before process startup.");
       }
@@ -1080,7 +1088,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     epoch: number,
     processSelection: ProcessSelection
   ): Promise<ChildProcessWithoutNullStreams> {
-    this.assertDependencyEnvironmentAvailable(processSelection.environment.executable);
+    this.assertDependencyEnvironmentAvailable(processSelection.environment);
     const stopping = runtime.processStop;
     if (stopping) {
       try {
@@ -1113,7 +1121,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     ) {
       throw new Error("Open Wrangler runtime start was cancelled.");
     }
-    this.assertDependencyEnvironmentAvailable(environment.executable);
+    this.assertDependencyEnvironmentAvailable(environment);
     if (runtime.process) {
       if (
         runtime.processSelection?.selection === processSelection.selection &&
@@ -1170,14 +1178,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime: RuntimeSlot,
     proc: ChildProcessWithoutNullStreams,
     gracefulTimeoutMs?: number,
-    executable?: string
+    packageEnvironmentKey?: string
   ): void {
     const release = this.retainRuntime(runtime);
     const current = stopChildProcessGracefully(proc, gracefulTimeoutMs);
     const exactExit = waitForRuntimeProcessExit(proc);
     const previous = runtime.processStop;
     const stopping = previous ? joinProcessStops(previous, current) : current;
-    runtime.stoppingProcesses.set(proc, { executable, shutdown: current, exit: exactExit });
+    runtime.stoppingProcesses.set(proc, { packageEnvironmentKey, shutdown: current, exit: exactExit });
     runtime.processStop = stopping;
     let owned = true;
     const releaseOwnedStop = (): void => {
@@ -1272,7 +1280,17 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.pending.delete(requestId);
     pending.runtime.pendingIds.delete(requestId);
     clearTimeout(pending.timer);
-    pending.cancellation?.dispose();
+    try {
+      pending.cancellation?.dispose();
+    } catch (error) {
+      try {
+        this.output.appendLine(
+          `Open Wrangler could not dispose a runtime cancellation listener: ${error instanceof Error ? error.message : String(error)}`
+        );
+      } catch {
+        // Pending ownership must still be released when diagnostics are unavailable.
+      }
+    }
     if (pending.cancellationRequestId) this.cancellationTargets.delete(pending.cancellationRequestId);
     return pending;
   }
@@ -1674,7 +1692,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const selection = this.environmentSelection(sourceResource(request.source));
     const environment = await selection.promise;
     if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
-    const mutation = this.dependencyMutations.get(pythonExecutableKey(environment.executable));
+    const mutation = this.dependencyMutations.get(pythonPackageEnvironmentKey(environment));
     if (mutation) {
       return {
         request: {
@@ -1694,15 +1712,16 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     for (const backend of backends) {
       if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
       const dependencies = requiredDependencies(backend, request.source);
-      const key = `${pythonExecutableKey(environment.executable)}:${dependencies
-        .map((dependency) => dependency.installSpec)
-        .join(",")}`;
+      const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
+      const key = `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${JSON.stringify(
+        dependencies.map((dependency) => dependency.installSpec)
+      )}`;
       selection.dependencyKeys.add(key);
       let missing = this.dependencyCache.get(key);
       if (!missing) {
         const result = await probeDependencies(environment.executable, dependencies);
         if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
-        if (this.dependencyMutations.has(pythonExecutableKey(environment.executable))) {
+        if (this.dependencyMutations.has(packageEnvironmentKey)) {
           return { request: this.runtimeSelectionChangedError() };
         }
         missing = result.missing;
@@ -1746,10 +1765,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     };
   }
 
-  private assertDependencyEnvironmentAvailable(executable: string): void {
-    if (!this.dependencyMutations.has(pythonExecutableKey(executable))) return;
+  private assertDependencyEnvironmentAvailable(environment: PythonEnvironment): void {
+    if (!this.dependencyMutations.has(pythonPackageEnvironmentKey(environment))) return;
     throw new Error(
-      `Open Wrangler cannot start or reuse ${executable} while its Python dependencies are being changed.`
+      `Open Wrangler cannot start or reuse ${environment.executable} while its Python dependencies are being changed.`
     );
   }
 
@@ -1842,6 +1861,15 @@ function isConfirmedUnknownSession(response: OpenWranglerResponse, sessionId: st
 function pythonExecutableKey(executable: string): string {
   const normalized = path.normalize(executable);
   return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+}
+
+function pythonPackageEnvironmentKey(environment: Pick<PythonEnvironment, "packageRoot">): string {
+  const normalized = path.normalize(environment.packageRoot);
+  return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+}
+
+function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {
+  return `${packageEnvironmentKey.length}:${packageEnvironmentKey}:`;
 }
 
 function dependencyInstallWorkingDirectory(executable: string): string {

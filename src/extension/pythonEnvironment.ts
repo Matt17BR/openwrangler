@@ -134,6 +134,7 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
 export interface PythonEnvironment {
   executable: string;
   version: string;
+  packageRoot: string;
   source: "configuration" | "pythonExtension" | "system";
 }
 
@@ -269,16 +270,52 @@ async function probeEnvironment(executable: string, source: PythonEnvironment["s
   try {
     const result = await execFileAsync(
       executable,
-      ["-c", "import json,sys; print(json.dumps(list(sys.version_info[:3])))"],
+      ["-c", "import json,sys; print(json.dumps({'version':list(sys.version_info[:3]),'packageRoot':sys.prefix}))"],
       { timeout: 10_000 }
     );
     stdout = result.stdout.trim();
   } catch (error) {
     throw new Error(`${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const [major, minor, patch] = JSON.parse(stdout) as [number, number, number];
+  const { version, packageRoot } = decodePythonEnvironmentProbeOutput(stdout);
+  const [major, minor, patch] = version;
   if (!isSupportedPythonVersion(major, minor)) {
     throw new Error(`${executable} is Python ${major}.${minor}.${patch}; Open Wrangler requires Python 3.10-3.14.`);
   }
-  return { executable, version: `${major}.${minor}.${patch}`, source };
+  return { executable, version: `${major}.${minor}.${patch}`, packageRoot, source };
+}
+
+export function decodePythonEnvironmentProbeOutput(stdout: string): {
+  version: [number, number, number];
+  packageRoot: string;
+} {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(stdout);
+  } catch {
+    throw new Error("Python environment probe did not return valid JSON.");
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new Error("Python environment probe returned an invalid payload.");
+  }
+  const candidate = decoded as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (keys.length !== 2 || keys[0] !== "packageRoot" || keys[1] !== "version") {
+    throw new Error("Python environment probe returned an invalid payload.");
+  }
+  const version = candidate.version;
+  if (
+    !Array.isArray(version) ||
+    version.length !== 3 ||
+    !version.every((part) => Number.isSafeInteger(part) && (part as number) >= 0)
+  ) {
+    throw new Error("Python environment probe returned an invalid version.");
+  }
+  if (typeof candidate.packageRoot !== "string" || candidate.packageRoot.trim().length === 0) {
+    throw new Error("Python environment probe returned an invalid package root.");
+  }
+  return {
+    version: [version[0] as number, version[1] as number, version[2] as number],
+    packageRoot: candidate.packageRoot
+  };
 }

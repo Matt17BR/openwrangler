@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonEnvironment";
 
 import {
+  decodePythonEnvironmentProbeOutput,
   PythonEnvironmentApiBroker,
   PythonEnvironmentApiBrokerDisposedError,
   resolvePythonEnvironment,
@@ -30,16 +31,17 @@ describe("Python environment API broker", () => {
     const getExtension = mockExtensionLookup();
     const broker = new PythonEnvironmentApiBroker();
 
-    await expect(
-      resolvePythonEnvironment(
-        { extensionPath: "/extension" } as vscode.ExtensionContext,
-        vscode.Uri.file("/data.csv"),
-        broker
-      )
-    ).resolves.toMatchObject({
+    const environment = await resolvePythonEnvironment(
+      { extensionPath: "/extension" } as vscode.ExtensionContext,
+      vscode.Uri.file("/data.csv"),
+      broker
+    );
+
+    expect(environment).toMatchObject({
       executable,
       source: "configuration"
     });
+    expect(environment.packageRoot.trim()).not.toBe("");
 
     expect(getExtension).not.toHaveBeenCalled();
     broker.dispose();
@@ -265,9 +267,39 @@ describe("Python environment API broker", () => {
     expect(environment.source).toBe("system");
     expect(environment.executable).toBeTruthy();
     expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
+    expect(environment.packageRoot.trim()).not.toBe("");
     expect(activate).toHaveBeenCalledOnce();
     expect(getActiveEnvironmentPath).not.toHaveBeenCalled();
     expect(resolveEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("strictly decodes the interpreter version and package root", () => {
+    expect(
+      decodePythonEnvironmentProbeOutput(
+        JSON.stringify({
+          version: [3, 12, 4],
+          packageRoot: "/workspace/.venv"
+        })
+      )
+    ).toEqual({
+      version: [3, 12, 4],
+      packageRoot: "/workspace/.venv"
+    });
+  });
+
+  it.each([
+    { payload: "not-json", message: "did not return valid JSON" },
+    { payload: "null", message: "invalid payload" },
+    { payload: "[]", message: "invalid payload" },
+    {
+      payload: JSON.stringify({ version: [3, 12, 4], packageRoot: "/env", extra: true }),
+      message: "invalid payload"
+    },
+    { payload: JSON.stringify({ version: [3, 12], packageRoot: "/env" }), message: "invalid version" },
+    { payload: JSON.stringify({ version: [3, 12, 4.5], packageRoot: "/env" }), message: "invalid version" },
+    { payload: JSON.stringify({ version: [3, 12, 4], packageRoot: "   " }), message: "invalid package root" }
+  ])("rejects malformed interpreter probe payload: $payload", ({ payload, message }) => {
+    expect(() => decodePythonEnvironmentProbeOutput(payload)).toThrow(message);
   });
 });
 
