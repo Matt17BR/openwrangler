@@ -5106,7 +5106,8 @@ async function acceptQuickPickOptionWithKeyboard(
   quickInput: Locator,
   title: string,
   option: string,
-  checkpoint?: string
+  checkpoint?: string,
+  waitForPromptToHide = true
 ): Promise<void> {
   const selected = quickInput.getByRole("option", { name: option }).first();
   await withAcceptanceOperationDeadline(
@@ -5165,19 +5166,21 @@ async function acceptQuickPickOptionWithKeyboard(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `${title} option ${JSON.stringify(option)} keyboard acceptance`
   );
-  try {
-    await withAcceptanceOperationDeadline(
-      quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} prompt to advance`
-    );
-  } catch (error) {
-    const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
-    throw new Error(
-      `${title} did not advance after accepting focused option ${JSON.stringify(option)} with Enter. ` +
-        `Visible options: ${JSON.stringify(visibleOptions)}`,
-      { cause: error }
-    );
+  if (waitForPromptToHide) {
+    try {
+      await withAcceptanceOperationDeadline(
+        quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} prompt to advance`
+      );
+    } catch (error) {
+      const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+      throw new Error(
+        `${title} did not advance after accepting focused option ${JSON.stringify(option)} with Enter. ` +
+          `Visible options: ${JSON.stringify(visibleOptions)}`,
+        { cause: error }
+      );
+    }
   }
   if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accepted`);
 }
@@ -5191,7 +5194,9 @@ async function acceptExcelImportOptions(
   value: string
 ): Promise<void> {
   const modePrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet");
-  await acceptQuickPickOptionWithKeyboard(page, modePrompt, "Excel sheet", mode);
+  // "Excel sheet" remains a substring of the next value prompt, so the
+  // following exact input-title wait is the transition proof for this step.
+  await acceptQuickPickOptionWithKeyboard(page, modePrompt, "Excel sheet", mode, undefined, false);
 
   const valuePrompt = await waitForImportQuickInput(page, testing, expectedSource, inputTitle);
   const field = valuePrompt.locator(".quick-input-box input").first();
