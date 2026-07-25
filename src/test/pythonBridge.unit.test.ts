@@ -114,22 +114,27 @@ describe("PythonBridge cancellation", () => {
     expect(harness.writes()).toEqual([]);
   });
 
-  it("does not start a stopped runtime for candidate cleanup", async () => {
+  it.each<OpenWranglerRequest>([
+    {
+      kind: "closeSession",
+      sessionId: "candidate-session",
+      revision: 0
+    },
+    {
+      kind: "getSummary",
+      sessionId: "confirmed-session",
+      revision: 3,
+      viewRequestId: "summary-after-runtime-stop",
+      filterModel: { filters: [], sort: [] }
+    }
+  ])("does not start a stopped runtime for session-bound request $kind", async (request) => {
     const harness = createHarness();
     (harness.bridge as unknown as { process?: ChildProcessWithoutNullStreams }).process = undefined;
 
-    await expect(
-      harness.bridge.request(
-        {
-          kind: "closeSession",
-          sessionId: "candidate-session",
-          revision: 0
-        },
-        { startRuntimeIfNeeded: false }
-      )
-    ).resolves.toMatchObject({
+    await expect(harness.bridge.request(request)).resolves.toMatchObject({
       kind: "error",
-      code: "unknown_session"
+      code: "unknown_session",
+      message: expect.stringContaining(request.sessionId)
     });
 
     expect(harness.ensureProcess).not.toHaveBeenCalled();

@@ -13,7 +13,7 @@ import type {
   RuntimeResponseEnvelope,
   SessionSource
 } from "../shared/protocol";
-import { PROTOCOL_VERSION } from "../shared/protocol";
+import { isSessionBoundRequest, PROTOCOL_VERSION } from "../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "./dataBridge";
 import { runtimeRequestTimeoutMs } from "./configuration";
@@ -105,12 +105,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (options.cancellation?.isCancellationRequested) {
       return { kind: "cancelled", targetRequestId: "not-started" };
     }
-    if (
-      request.kind === "closeSession" &&
-      options.startRuntimeIfNeeded === false &&
-      !this.process &&
-      !this.processStart
-    ) {
+    if (isSessionBoundRequest(request) && !this.process && !this.processStart) {
       return {
         kind: "error",
         code: "unknown_session",
