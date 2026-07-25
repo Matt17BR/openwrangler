@@ -135,7 +135,13 @@ export interface PythonEnvironment {
   executable: string;
   version: string;
   packageRoot: string;
+  packageRootIdentity: PythonPackageRootIdentity;
   source: "configuration" | "pythonExtension" | "system";
+}
+
+export interface PythonPackageRootIdentity {
+  device: string;
+  inode: string;
 }
 
 export interface DependencyProbe {
@@ -268,26 +274,36 @@ function compareVersions(observed: string | undefined, expected: string): number
 async function probeEnvironment(executable: string, source: PythonEnvironment["source"]): Promise<PythonEnvironment> {
   let stdout: string;
   try {
-    const result = await execFileAsync(
-      executable,
-      ["-c", "import json,sys; print(json.dumps({'version':list(sys.version_info[:3]),'packageRoot':sys.prefix}))"],
-      { timeout: 10_000 }
-    );
+    const program = [
+      "import json,os,sys",
+      "package_root=os.path.realpath(os.path.abspath(sys.prefix))",
+      "package_root_stat=os.stat(package_root)",
+      "print(json.dumps({",
+      " 'version':list(sys.version_info[:3]),",
+      " 'packageRoot':package_root,",
+      " 'packageRootIdentity':{",
+      "  'device':str(package_root_stat.st_dev),",
+      "  'inode':str(package_root_stat.st_ino),",
+      " },",
+      "},separators=(',',':')))"
+    ].join("\n");
+    const result = await execFileAsync(executable, ["-c", program], { timeout: 10_000 });
     stdout = result.stdout.trim();
   } catch (error) {
     throw new Error(`${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const { version, packageRoot } = decodePythonEnvironmentProbeOutput(stdout);
+  const { version, packageRoot, packageRootIdentity } = decodePythonEnvironmentProbeOutput(stdout);
   const [major, minor, patch] = version;
   if (!isSupportedPythonVersion(major, minor)) {
     throw new Error(`${executable} is Python ${major}.${minor}.${patch}; Open Wrangler requires Python 3.10-3.14.`);
   }
-  return { executable, version: `${major}.${minor}.${patch}`, packageRoot, source };
+  return { executable, version: `${major}.${minor}.${patch}`, packageRoot, packageRootIdentity, source };
 }
 
 export function decodePythonEnvironmentProbeOutput(stdout: string): {
   version: [number, number, number];
   packageRoot: string;
+  packageRootIdentity: PythonPackageRootIdentity;
 } {
   let decoded: unknown;
   try {
@@ -300,7 +316,7 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   }
   const candidate = decoded as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
-  if (keys.length !== 2 || keys[0] !== "packageRoot" || keys[1] !== "version") {
+  if (keys.length !== 3 || keys[0] !== "packageRoot" || keys[1] !== "packageRootIdentity" || keys[2] !== "version") {
     throw new Error("Python environment probe returned an invalid payload.");
   }
   const version = candidate.version;
@@ -311,11 +327,41 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   ) {
     throw new Error("Python environment probe returned an invalid version.");
   }
-  if (typeof candidate.packageRoot !== "string" || candidate.packageRoot.trim().length === 0) {
+  if (
+    typeof candidate.packageRoot !== "string" ||
+    candidate.packageRoot.trim().length === 0 ||
+    candidate.packageRoot.includes("\0")
+  ) {
     throw new Error("Python environment probe returned an invalid package root.");
   }
+  const packageRootIdentity = decodePythonPackageRootIdentity(candidate.packageRootIdentity);
   return {
     version: [version[0] as number, version[1] as number, version[2] as number],
-    packageRoot: candidate.packageRoot
+    packageRoot: candidate.packageRoot,
+    packageRootIdentity
   };
+}
+
+function decodePythonPackageRootIdentity(value: unknown): PythonPackageRootIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Python environment probe returned an invalid package root identity.");
+  }
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (keys.length !== 2 || keys[0] !== "device" || keys[1] !== "inode") {
+    throw new Error("Python environment probe returned an invalid package root identity.");
+  }
+  if (!isCanonicalFileIdentityInteger(candidate.device) || !isCanonicalFileIdentityInteger(candidate.inode)) {
+    throw new Error("Python environment probe returned an invalid package root identity.");
+  }
+  return {
+    device: candidate.device,
+    inode: candidate.inode
+  };
+}
+
+function isCanonicalFileIdentityInteger(value: unknown): value is string {
+  return (
+    typeof value === "string" && /^(?:0|[1-9]\d{0,19})$/.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n
+  );
 }

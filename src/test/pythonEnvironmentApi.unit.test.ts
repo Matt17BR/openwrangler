@@ -1,3 +1,8 @@
+import { access, mkdtemp, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PythonEnvironmentSelectionChangeEvent } from "../extension/pythonEnvironment";
@@ -9,6 +14,8 @@ import {
   resolvePythonEnvironment,
   type PythonEnvironmentResource
 } from "../extension/pythonEnvironment";
+
+const execFileAsync = promisify(execFile);
 
 type ExtensionLookup = (id: string) => vscode.Extension<unknown> | undefined;
 
@@ -42,6 +49,10 @@ describe("Python environment API broker", () => {
       source: "configuration"
     });
     expect(environment.packageRoot.trim()).not.toBe("");
+    expect(environment.packageRootIdentity).toEqual({
+      device: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
+      inode: expect.stringMatching(/^(?:0|[1-9]\d*)$/)
+    });
 
     expect(getExtension).not.toHaveBeenCalled();
     broker.dispose();
@@ -268,9 +279,61 @@ describe("Python environment API broker", () => {
     expect(environment.executable).toBeTruthy();
     expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
     expect(environment.packageRoot.trim()).not.toBe("");
+    expect(environment.packageRootIdentity).toEqual({
+      device: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
+      inode: expect.stringMatching(/^(?:0|[1-9]\d*)$/)
+    });
     expect(activate).toHaveBeenCalledOnce();
     expect(getActiveEnvironmentPath).not.toHaveBeenCalled();
     expect(resolveEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("canonicalizes a real package-root symlink or junction and preserves its filesystem identity", async () => {
+    const executable = testPythonExecutable();
+    const directEnvironment = await resolveConfiguredEnvironment(executable);
+    const canonicalExecutable = await reportedPythonExecutable(executable);
+    const executableWithinRoot = path.relative(directEnvironment.packageRoot, canonicalExecutable);
+    if (
+      executableWithinRoot.length === 0 ||
+      executableWithinRoot === ".." ||
+      executableWithinRoot.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(executableWithinRoot)
+    ) {
+      return;
+    }
+
+    const directory = await mkdtemp(path.join(tmpdir(), "openwrangler-python-root-alias-"));
+    const aliasRoot = path.join(directory, "alias");
+    try {
+      await symlink(directEnvironment.packageRoot, aliasRoot, process.platform === "win32" ? "junction" : "dir");
+      const aliasEnvironment = await resolveConfiguredEnvironment(path.join(aliasRoot, executableWithinRoot));
+
+      expect(aliasEnvironment.packageRoot).toBe(directEnvironment.packageRoot);
+      expect(aliasEnvironment.packageRootIdentity).toEqual(directEnvironment.packageRootIdentity);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("canonicalizes a real Linux proc-root alias when procfs is available", async () => {
+    if (process.platform !== "linux") return;
+    try {
+      await access("/proc/self/root");
+    } catch {
+      return;
+    }
+
+    const executable = testPythonExecutable();
+    const directEnvironment = await resolveConfiguredEnvironment(executable);
+    const canonicalExecutable = await reportedPythonExecutable(executable);
+    if (!path.isAbsolute(canonicalExecutable)) return;
+
+    const procAliasEnvironment = await resolveConfiguredEnvironment(
+      path.join("/proc/self/root", canonicalExecutable.slice(path.parse(canonicalExecutable).root.length))
+    );
+
+    expect(procAliasEnvironment.packageRoot).toBe(directEnvironment.packageRoot);
+    expect(procAliasEnvironment.packageRootIdentity).toEqual(directEnvironment.packageRootIdentity);
   });
 
   it("strictly decodes the interpreter version and package root", () => {
@@ -278,12 +341,20 @@ describe("Python environment API broker", () => {
       decodePythonEnvironmentProbeOutput(
         JSON.stringify({
           version: [3, 12, 4],
-          packageRoot: "/workspace/.venv"
+          packageRoot: "/workspace/.venv",
+          packageRootIdentity: {
+            device: "64513",
+            inode: "25334067"
+          }
         })
       )
     ).toEqual({
       version: [3, 12, 4],
-      packageRoot: "/workspace/.venv"
+      packageRoot: "/workspace/.venv",
+      packageRootIdentity: {
+        device: "64513",
+        inode: "25334067"
+      }
     });
   });
 
@@ -292,12 +363,42 @@ describe("Python environment API broker", () => {
     { payload: "null", message: "invalid payload" },
     { payload: "[]", message: "invalid payload" },
     {
-      payload: JSON.stringify({ version: [3, 12, 4], packageRoot: "/env", extra: true }),
+      payload: probePayload({ extra: true }),
       message: "invalid payload"
     },
-    { payload: JSON.stringify({ version: [3, 12], packageRoot: "/env" }), message: "invalid version" },
-    { payload: JSON.stringify({ version: [3, 12, 4.5], packageRoot: "/env" }), message: "invalid version" },
-    { payload: JSON.stringify({ version: [3, 12, 4], packageRoot: "   " }), message: "invalid package root" }
+    {
+      payload: JSON.stringify({
+        version: [3, 12, 4],
+        packageRoot: "/env"
+      }),
+      message: "invalid payload"
+    },
+    { payload: probePayload({ version: [3, 12] }), message: "invalid version" },
+    { payload: probePayload({ version: [3, 12, 4.5] }), message: "invalid version" },
+    { payload: probePayload({ packageRoot: "   " }), message: "invalid package root" },
+    { payload: probePayload({ packageRoot: "/env\0alias" }), message: "invalid package root" },
+    { payload: probePayload({ packageRootIdentity: null }), message: "invalid package root identity" },
+    { payload: probePayload({ packageRootIdentity: [] }), message: "invalid package root identity" },
+    {
+      payload: probePayload({ packageRootIdentity: { device: "1", inode: "2", extra: true } }),
+      message: "invalid package root identity"
+    },
+    {
+      payload: probePayload({ packageRootIdentity: { device: 1, inode: "2" } }),
+      message: "invalid package root identity"
+    },
+    {
+      payload: probePayload({ packageRootIdentity: { device: "01", inode: "2" } }),
+      message: "invalid package root identity"
+    },
+    {
+      payload: probePayload({ packageRootIdentity: { device: "1", inode: "-2" } }),
+      message: "invalid package root identity"
+    },
+    {
+      payload: probePayload({ packageRootIdentity: { device: "1", inode: "18446744073709551616" } }),
+      message: "invalid package root identity"
+    }
   ])("rejects malformed interpreter probe payload: $payload", ({ payload, message }) => {
     expect(() => decodePythonEnvironmentProbeOutput(payload)).toThrow(message);
   });
@@ -321,6 +422,32 @@ function testPythonExecutable(): string {
     process.env.OPEN_WRANGLER_PYTHON ??
     (process.platform === "win32" ? "python" : "python3")
   );
+}
+
+async function resolveConfiguredEnvironment(executable: string) {
+  vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+    get: <T>(key: string, fallback: T): T => (key === "pythonPath" ? (executable as T) : fallback)
+  } as vscode.WorkspaceConfiguration);
+  return resolvePythonEnvironment({ extensionPath: "/extension" } as vscode.ExtensionContext);
+}
+
+async function reportedPythonExecutable(executable: string): Promise<string> {
+  const { stdout } = await execFileAsync(executable, ["-c", "import sys; print(sys.executable)"], {
+    timeout: 10_000
+  });
+  return stdout.trim();
+}
+
+function probePayload(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    version: [3, 12, 4],
+    packageRoot: "/env",
+    packageRootIdentity: {
+      device: "1",
+      inode: "2"
+    },
+    ...overrides
+  });
 }
 
 function deferred<T>(): {
