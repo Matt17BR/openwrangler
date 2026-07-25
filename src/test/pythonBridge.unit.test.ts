@@ -10,6 +10,8 @@ import type {
   RuntimeRequestEnvelope,
   RuntimeResponseEnvelope,
   SessionBoundRequest,
+  SessionMetadata,
+  SessionOpenedResponse,
   SessionSource
 } from "../shared/protocol";
 import type { CancellationTokenLike } from "../extension/dataBridge";
@@ -269,6 +271,424 @@ describe("PythonBridge transport validation and timeout isolation", () => {
   });
 });
 
+describe("PythonBridge process-slot routing", () => {
+  it("keeps independent workspace sessions on their owning process even with the same interpreter", async () => {
+    const harness = createMultiScopeHarness();
+    const firstRequest = {
+      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+      requestedSessionId: "first-session"
+    };
+    const secondRequest = {
+      ...openSessionRequest(remoteSourceAt("/second/data.csv")),
+      requestedSessionId: "second-session"
+    };
+
+    const firstOpen = harness.bridge.request(firstRequest);
+    const secondOpen = harness.bridge.request(secondRequest);
+    await harness.waitForWrites("first", 1);
+    await harness.waitForWrites("second", 1);
+    expect(harness.sessionOwners.has("first-session")).toBe(false);
+    expect(harness.provisionalSessions.get("first-session")?.runtime).toBe(harness.runtimes.first);
+    harness.respond("first", harness.writes("first")[0].requestId, openedFor(firstRequest, "first-session"));
+    harness.respond("second", harness.writes("second")[0].requestId, openedFor(secondRequest, "second-session"));
+    await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+    await expect(secondOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+    expect(harness.provisionalSessions.has("first-session")).toBe(false);
+    expect(harness.sessionOwners.get("first-session")).toBe(harness.runtimes.first);
+
+    const closeFirst = harness.bridge.request({
+      kind: "closeSession",
+      sessionId: "first-session",
+      revision: 0
+    });
+    await harness.waitForWrites("first", 2);
+    expect(harness.writes("second")).toHaveLength(1);
+    harness.respond("first", harness.writes("first")[1].requestId, {
+      kind: "sessionClosed",
+      sessionId: "first-session"
+    });
+    await expect(closeFirst).resolves.toEqual({ kind: "sessionClosed", sessionId: "first-session" });
+
+    expect(harness.stopRuntime).toHaveBeenCalledOnce();
+    expect(harness.stopRuntime).toHaveBeenCalledWith(
+      harness.runtimes.first,
+      "Open Wrangler runtime stopped after its last session closed."
+    );
+    expect(harness.runtimes.second.process).toBe(harness.processes.second);
+    expect(harness.sessionOwners.get("second-session")).toBe(harness.runtimes.second);
+  });
+
+  it("routes cancellation to the process that owns the pending request", async () => {
+    const harness = createMultiScopeHarness();
+    const token = new ManualCancellation();
+    const request = {
+      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+      requestedSessionId: "first-candidate"
+    };
+    const response = harness.bridge.request(request, { cancellation: token, timeoutMs: 5_000 });
+    await harness.waitForWrites("first", 1);
+
+    token.cancel();
+    await harness.waitForWrites("first", 2);
+    expect(harness.writes("second")).toEqual([]);
+    const original = harness.writes("first")[0];
+    const cancellation = harness.writes("first")[1];
+    expect(cancellation.request).toEqual({ kind: "cancelRequest", targetRequestId: original.requestId });
+
+    harness.respond("first", cancellation.requestId, {
+      kind: "cancelled",
+      targetRequestId: original.requestId
+    });
+    harness.respond("first", original.requestId, {
+      kind: "cancelled",
+      targetRequestId: original.requestId
+    });
+    await expect(response).resolves.toEqual({ kind: "cancelled", targetRequestId: original.requestId });
+    expect(harness.sessionOwners.has("first-candidate")).toBe(false);
+  });
+
+  it("does not route ordinary session queries through an unconfirmed candidate reservation", async () => {
+    const harness = createMultiScopeHarness();
+    const request = {
+      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+      requestedSessionId: "pending-candidate"
+    };
+    const opening = harness.bridge.request(request);
+    await harness.waitForWrites("first", 1);
+
+    await expect(
+      harness.bridge.request({
+        kind: "getSummary",
+        sessionId: "pending-candidate",
+        revision: 0,
+        viewRequestId: "pending-query",
+        filterModel: { filters: [], sort: [] }
+      })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session",
+      sessionId: "pending-candidate"
+    });
+    expect(harness.writes("first")).toHaveLength(1);
+
+    harness.respond("first", harness.writes("first")[0].requestId, {
+      kind: "error",
+      code: "engine_error",
+      message: "Open failed.",
+      recoverable: true,
+      sessionId: "pending-candidate"
+    });
+    await expect(opening).resolves.toMatchObject({ kind: "error", code: "engine_error" });
+  });
+
+  it.each([
+    {
+      label: "closed",
+      response: { kind: "sessionClosed", sessionId: "racing-candidate" } as OpenWranglerResponse
+    },
+    {
+      label: "unknown",
+      response: {
+        kind: "error",
+        code: "unknown_session",
+        message: "Unknown session: racing-candidate",
+        recoverable: true,
+        sessionId: "racing-candidate"
+      } as OpenWranglerResponse
+    },
+    {
+      label: "failed",
+      response: {
+        kind: "error",
+        code: "engine_error",
+        message: "Cleanup failed before confirmation.",
+        recoverable: true,
+        sessionId: "racing-candidate"
+      } as OpenWranglerResponse
+    }
+  ])(
+    "never resurrects a candidate when cleanup returns $label before its delayed open response",
+    async ({ response }) => {
+      const harness = createMultiScopeHarness();
+      const request = {
+        ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+        requestedSessionId: "racing-candidate"
+      };
+      const opening = harness.bridge.request(request);
+      await harness.waitForWrites("first", 1);
+      const closing = harness.bridge.request({
+        kind: "closeSession",
+        sessionId: "racing-candidate",
+        revision: 0
+      });
+      await harness.waitForWrites("first", 2);
+
+      harness.respond("first", harness.writes("first")[1].requestId, response);
+      await expect(closing).resolves.toEqual(response);
+      if (response.kind === "error" && response.code === "engine_error") {
+        expect(harness.provisionalSessions.get("racing-candidate")?.state).toBe("closing");
+      } else {
+        expect(harness.provisionalSessions.has("racing-candidate")).toBe(false);
+      }
+      expect(harness.sessionOwners.has("racing-candidate")).toBe(false);
+
+      harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "racing-candidate"));
+      await expect(opening).resolves.toMatchObject({
+        kind: "error",
+        code: "invalid_runtime_response",
+        sessionId: "racing-candidate"
+      });
+      expect(harness.restartRuntime).toHaveBeenCalledWith(
+        harness.runtimes.first,
+        expect.stringContaining("reservation ended")
+      );
+      expect(harness.sessionOwners.has("racing-candidate")).toBe(false);
+    }
+  );
+
+  it("forces a targeted restart when an open timeout explicitly suppresses generic restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createMultiScopeHarness();
+      const request = {
+        ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+        requestedSessionId: "timeout-candidate"
+      };
+      const opening = harness.bridge.request(request, {
+        timeoutMs: 10,
+        restartRuntimeOnTimeout: false
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.provisionalSessions.has("timeout-candidate")).toBe(true);
+
+      const rejection = expect(opening).rejects.toThrow("timed out after 10 ms");
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+      expect(harness.provisionalSessions.has("timeout-candidate")).toBe(false);
+      expect(harness.sessionOwners.has("timeout-candidate")).toBe(false);
+      expect(harness.restartRuntime).toHaveBeenCalledOnce();
+      expect(harness.restartRuntime).toHaveBeenCalledWith(harness.runtimes.first, expect.stringContaining("timed out"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prevents promotion after a provisional cleanup close times out without restarting", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createMultiScopeHarness();
+      const request = {
+        ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+        requestedSessionId: "cleanup-timeout-candidate"
+      };
+      const opening = harness.bridge.request(request, { timeoutMs: 5_000 });
+      await Promise.resolve();
+      await Promise.resolve();
+      const closing = harness.bridge.request(
+        {
+          kind: "closeSession",
+          sessionId: "cleanup-timeout-candidate",
+          revision: 0
+        },
+        { timeoutMs: 10, restartRuntimeOnTimeout: false }
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.provisionalSessions.get("cleanup-timeout-candidate")?.state).toBe("closing");
+
+      const closeRejection = expect(closing).rejects.toThrow("timed out after 10 ms");
+      await vi.advanceTimersByTimeAsync(10);
+      await closeRejection;
+      expect(harness.restartRuntime).not.toHaveBeenCalled();
+      expect(harness.provisionalSessions.get("cleanup-timeout-candidate")?.state).toBe("closing");
+
+      harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "cleanup-timeout-candidate"));
+      await expect(opening).resolves.toMatchObject({
+        kind: "error",
+        code: "invalid_runtime_response",
+        sessionId: "cleanup-timeout-candidate"
+      });
+      expect(harness.restartRuntime).toHaveBeenCalledWith(
+        harness.runtimes.first,
+        expect.stringContaining("reservation ended")
+      );
+      expect(harness.sessionOwners.has("cleanup-timeout-candidate")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts an open-timeout slot even when another confirmed session shares it", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createMultiScopeHarness();
+      const confirmedRequest = {
+        ...openSessionRequest(remoteSourceAt("/first/confirmed.csv")),
+        requestedSessionId: "confirmed-first"
+      };
+      const confirmedOpen = harness.bridge.request(confirmedRequest);
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.respond("first", harness.writes("first")[0].requestId, openedFor(confirmedRequest, "confirmed-first"));
+      await expect(confirmedOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+
+      const candidateRequest = {
+        ...openSessionRequest(remoteSourceAt("/first/candidate.csv")),
+        requestedSessionId: "timed-out-candidate"
+      };
+      const candidateOpen = harness.bridge.request(candidateRequest, {
+        timeoutMs: 10,
+        restartRuntimeOnTimeout: false
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.sessionOwners.get("confirmed-first")).toBe(harness.runtimes.first);
+      expect(harness.provisionalSessions.get("timed-out-candidate")?.runtime).toBe(harness.runtimes.first);
+
+      const rejection = expect(candidateOpen).rejects.toThrow("timed out after 10 ms");
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+      expect(harness.restartRuntime).toHaveBeenCalledWith(harness.runtimes.first, expect.stringContaining("timed out"));
+      expect(harness.sessionOwners.has("confirmed-first")).toBe(false);
+      expect(harness.provisionalSessions.has("timed-out-candidate")).toBe(false);
+      expect(harness.runtimes.second.process).toBe(harness.processes.second);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prevents promotion after a provisional cleanup write fails", async () => {
+    const harness = createMultiScopeHarness();
+    const request = {
+      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+      requestedSessionId: "write-failure-candidate"
+    };
+    const opening = harness.bridge.request(request);
+    await harness.waitForWrites("first", 1);
+    const write = harness.processes.first.stdin.write as unknown as ReturnType<typeof vi.fn>;
+    write.mockImplementationOnce((_value: string, callback?: (error?: Error | null) => void) => {
+      callback?.(new Error("cleanup write failed"));
+      return false;
+    });
+
+    await expect(
+      harness.bridge.request({
+        kind: "closeSession",
+        sessionId: "write-failure-candidate",
+        revision: 0
+      })
+    ).rejects.toThrow("cleanup write failed");
+    expect(harness.provisionalSessions.get("write-failure-candidate")?.state).toBe("closing");
+
+    harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "write-failure-candidate"));
+    await expect(opening).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_runtime_response",
+      sessionId: "write-failure-candidate"
+    });
+    expect(harness.restartRuntime).toHaveBeenCalledWith(
+      harness.runtimes.first,
+      expect.stringContaining("reservation ended")
+    );
+    expect(harness.sessionOwners.has("write-failure-candidate")).toBe(false);
+  });
+
+  it("prevents promotion after provisional cleanup is cancelled before dispatch", async () => {
+    const harness = createMultiScopeHarness();
+    const request = {
+      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+      requestedSessionId: "cancelled-cleanup-candidate"
+    };
+    const opening = harness.bridge.request(request);
+    await harness.waitForWrites("first", 1);
+    const cleanupCancellation: CancellationTokenLike = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener) => {
+        listener();
+        return { dispose: vi.fn() };
+      }
+    };
+
+    await expect(
+      harness.bridge.request(
+        {
+          kind: "closeSession",
+          sessionId: "cancelled-cleanup-candidate",
+          revision: 0
+        },
+        { cancellation: cleanupCancellation }
+      )
+    ).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
+    expect(harness.provisionalSessions.get("cancelled-cleanup-candidate")?.state).toBe("closing");
+
+    harness.respond("first", harness.writes("first")[0].requestId, openedFor(request, "cancelled-cleanup-candidate"));
+    await expect(opening).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_runtime_response",
+      sessionId: "cancelled-cleanup-candidate"
+    });
+    expect(harness.restartRuntime).toHaveBeenCalledWith(
+      harness.runtimes.first,
+      expect.stringContaining("reservation ended")
+    );
+    expect(harness.sessionOwners.has("cancelled-cleanup-candidate")).toBe(false);
+  });
+
+  it("fails closed when a second process returns a session identity owned by another scope", async () => {
+    const harness = createMultiScopeHarness();
+    const firstRequest = openSessionRequest(remoteSourceAt("/first/data.csv"));
+    const secondRequest = openSessionRequest(remoteSourceAt("/second/data.csv"));
+    const firstOpen = harness.bridge.request(firstRequest);
+    await harness.waitForWrites("first", 1);
+    harness.respond("first", harness.writes("first")[0].requestId, openedFor(firstRequest, "duplicate-session"));
+    await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+
+    const secondOpen = harness.bridge.request(secondRequest);
+    await harness.waitForWrites("second", 1);
+    harness.respond("second", harness.writes("second")[0].requestId, openedFor(secondRequest, "duplicate-session"));
+
+    await expect(secondOpen).resolves.toMatchObject({
+      kind: "error",
+      code: "invalid_runtime_response",
+      sessionId: "duplicate-session"
+    });
+    expect(harness.restartRuntime).toHaveBeenCalledOnce();
+    expect(harness.restartRuntime).toHaveBeenCalledWith(
+      harness.runtimes.second,
+      expect.stringContaining("duplicate session")
+    );
+    expect(harness.sessionOwners.get("duplicate-session")).toBe(harness.runtimes.first);
+  });
+
+  it("restarts only the timed-out process slot", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createMultiScopeHarness();
+      const firstRequest = openSessionRequest(remoteSourceAt("/first/data.csv"));
+      const secondRequest = openSessionRequest(remoteSourceAt("/second/data.csv"));
+      const firstOpen = harness.bridge.request(firstRequest, { timeoutMs: 10 });
+      const secondOpen = harness.bridge.request(secondRequest, { timeoutMs: 5_000 });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(harness.writes("first")).toHaveLength(1);
+      expect(harness.writes("second")).toHaveLength(1);
+      harness.respond("second", harness.writes("second")[0].requestId, openedFor(secondRequest, "second-session"));
+      await expect(secondOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+
+      const rejection = expect(firstOpen).rejects.toThrow("timed out after 10 ms");
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+      expect(harness.restartRuntime).toHaveBeenCalledOnce();
+      expect(harness.restartRuntime).toHaveBeenCalledWith(harness.runtimes.first, expect.stringContaining("timed out"));
+      expect(harness.runtimes.second.process).toBe(harness.processes.second);
+      expect(harness.sessionOwners.get("second-session")).toBe(harness.runtimes.second);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("PythonBridge process lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -368,6 +788,39 @@ describe("PythonBridge process lifecycle", () => {
     process.emit("exit", null, "SIGKILL");
   });
 
+  it("awaits every process slot and preserves shutdown failures in stable slot order", async () => {
+    vi.useFakeTimers();
+    const { bridge, internals, process: first } = createLifecycleHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    const second = new LifecycleChildProcess();
+    first.kill.mockReturnValue(false);
+    second.kill.mockImplementation(() => {
+      throw new Error("second slot termination failed");
+    });
+    const secondRuntime = testRuntimeSlot(
+      "second-scope",
+      second as unknown as ChildProcessWithoutNullStreams,
+      internals.runtime.processSelection
+    );
+    raw.runtimeSlots.set(secondRuntime.key, secondRuntime);
+
+    const shutdown = bridge.shutdown();
+    const rejected = shutdown.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const error = await rejected;
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toHaveLength(2);
+    expect((error as AggregateError).errors[0]).toMatchObject({
+      message: expect.stringContaining("operating system did not accept the termination signal")
+    });
+    expect((error as AggregateError).errors[1]).toMatchObject({
+      message: expect.stringContaining("second slot termination failed")
+    });
+    first.emit("exit", null, "SIGKILL");
+    second.emit("exit", null, "SIGKILL");
+  });
+
   it("surfaces missing exit confirmation through awaited shutdown while synchronous dispose observes it", async () => {
     vi.useFakeTimers();
     const { bridge, process, configurationSubscription, output } = createLifecycleHarness();
@@ -395,12 +848,12 @@ describe("PythonBridge process lifecycle", () => {
 
     const starting = internals.ensureProcess(initializeRequest);
     await Promise.resolve();
-    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
 
     internals.runtimeEpoch += 1;
     stopping.resolve(undefined);
     await expect(starting).rejects.toThrow("runtime start was cancelled");
-    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
   });
 
   it("fails closed instead of spawning after forced shutdown lacks exit confirmation", async () => {
@@ -419,7 +872,7 @@ describe("PythonBridge process lifecycle", () => {
     await expect(internals.ensureProcess(initializeRequest)).rejects.toThrow(
       "could not confirm shutdown of its previous Python runtime"
     );
-    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
 
     process.emit("exit", null, "SIGKILL");
     expect(bridge.runtimeRunning).toBe(false);
@@ -634,7 +1087,11 @@ describe("PythonBridge dependency installation", () => {
       "Install"
     );
     expect(executeFile).not.toHaveBeenCalled();
-    expect(internals.lastMissingDependencies).toEqual(missingDependencies());
+    expect(internals.lastMissingDependencies).toMatchObject({
+      environment: missingDependencies().environment,
+      requirements: missingDependencies().requirements,
+      selectionEpoch: 0
+    });
     expect([...internals.dependencyCache]).toEqual([["cached-diagnostic", ["pandas"]]]);
     expect(internals.runtimeEpoch).toBe(0);
   });
@@ -669,7 +1126,11 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.declineMissingDependencyInstallForTesting()).resolves.toBe(false);
     expect(warning).not.toHaveBeenCalled();
     expect(executeFile).not.toHaveBeenCalled();
-    expect(internals.lastMissingDependencies).toEqual(missingDependencies());
+    expect(internals.lastMissingDependencies).toMatchObject({
+      environment: missingDependencies().environment,
+      requirements: missingDependencies().requirements,
+      selectionEpoch: 0
+    });
   });
 
   it("keeps a test decline independent from an already-open production install", async () => {
@@ -730,6 +1191,7 @@ describe("PythonBridge dependency installation", () => {
     const replacement = {
       environment: { executable: "/env/bin/python", version: "3.12.4", source: "configuration" as const },
       requirements: ["polars"],
+      selection: missingDependencies().selection,
       selectionEpoch: 0
     };
     internals.lastMissingDependencies = replacement;
@@ -753,7 +1215,11 @@ describe("PythonBridge dependency installation", () => {
     await expect(installation).resolves.toBe(false);
 
     expect(executeFile).not.toHaveBeenCalled();
-    expect(internals.lastMissingDependencies).toEqual(missingDependencies());
+    expect(internals.lastMissingDependencies).toMatchObject({
+      environment: missingDependencies().environment,
+      requirements: missingDependencies().requirements,
+      selectionEpoch: 0
+    });
   });
 
   it("does not run pip when the bridge is disposed while its modal is open", async () => {
@@ -787,6 +1253,7 @@ describe("PythonBridge dependency installation", () => {
     internals.lastMissingDependencies = {
       environment: { executable: "/env/bin/python", version: "3.12.4", source: "configuration" },
       requirements: ["polars"],
+      selection: missingDependencies().selection,
       selectionEpoch: 0
     };
     releaseProgress.resolve();
@@ -806,6 +1273,11 @@ describe("PythonBridge dependency installation", () => {
     const newerTarget = {
       environment: { executable: "/new/bin/python", version: "3.13.1", source: "configuration" as const },
       requirements: ["polars"],
+      selection: testEnvironmentSelection(
+        "<workspace-default>",
+        { executable: "/new/bin/python", version: "3.13.1", source: "configuration" },
+        { epoch: 1 }
+      ),
       selectionEpoch: 1
     };
     internals.lastMissingDependencies = newerTarget;
@@ -817,6 +1289,49 @@ describe("PythonBridge dependency installation", () => {
     expect(internals.lastMissingDependencies).toBe(newerTarget);
     expect([...internals.dependencyCache]).toEqual([["new-selection", ["polars"]]]);
     expect(internals.runtimeEpoch).toBe(runtimeEpochAfterSelectionChange);
+  });
+
+  it("invalidates every current scope still using the interpreter mutated by a stale pip target", async () => {
+    const execution = deferred<void>();
+    const { bridge, internals, executeFile } = createDependencyHarness(() => execution.promise);
+    const raw = bridge as unknown as RawBridgeInternals;
+    const sharedEnvironment = missingDependencies().environment;
+    const sharedSelection = testEnvironmentSelection("shared-second-scope", sharedEnvironment);
+    const sharedRuntime = testRuntimeSlot("shared-second-scope", undefined, {
+      selection: sharedSelection,
+      environment: sharedEnvironment
+    });
+    raw.environmentSelections.set(sharedSelection.key, sharedSelection);
+    raw.runtimeSlots.set(sharedRuntime.key, sharedRuntime);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(executeFile).toHaveBeenCalledOnce());
+
+    raw.environmentSelections.delete("<workspace-default>");
+    const newerEnvironment: TestPythonEnvironment = {
+      executable: "/new/bin/python",
+      version: "3.13.1",
+      source: "configuration"
+    };
+    const newerSelection = testEnvironmentSelection("<workspace-default>", newerEnvironment, { epoch: 1 });
+    raw.environmentSelections.set(newerSelection.key, newerSelection);
+    const newerTarget: TestMissingDependencies = {
+      environment: newerEnvironment,
+      requirements: ["polars"],
+      selection: newerSelection,
+      selectionEpoch: 1
+    };
+    internals.lastMissingDependencies = newerTarget;
+    internals.dependencyCache.set("new-selection", ["polars"]);
+    execution.resolve();
+
+    await expect(installation).resolves.toBe(true);
+    expect(raw.environmentSelections.get("<workspace-default>")).toBe(newerSelection);
+    expect(raw.environmentSelections.has(sharedSelection.key)).toBe(false);
+    expect(sharedRuntime.runtimeEpoch).toBe(1);
+    expect(internals.lastMissingDependencies).toBe(newerTarget);
+    expect(internals.dependencyCache.get("new-selection")).toEqual(["polars"]);
   });
 
   it("invalidates an older overlapping probe when pip completes in the same selection epoch", async () => {
@@ -870,7 +1385,11 @@ describe("PythonBridge dependency installation", () => {
     expect(error).toHaveBeenCalledWith("Trust this workspace before installing Python dependencies.");
     expect(warning).not.toHaveBeenCalled();
     expect(executeFile).not.toHaveBeenCalled();
-    expect(internals.lastMissingDependencies).toEqual(missingDependencies());
+    expect(internals.lastMissingDependencies).toMatchObject({
+      environment: missingDependencies().environment,
+      requirements: missingDependencies().requirements,
+      selectionEpoch: 0
+    });
   });
 
   it("invalidates an actionable dependency target when runtime selection changes", () => {
@@ -899,8 +1418,11 @@ describe("PythonBridge dependency installation", () => {
   it("invalidates runtime selection on direct pythonPath configuration changes and disposes the listener", () => {
     const bridge = new PythonBridge({ extensionPath: "/extension" } as vscode.ExtensionContext);
     const internals = bridge as unknown as DependencyBridgeInternals;
-    internals.lastMissingDependencies = missingDependencies();
+    const target = missingDependencies();
+    internals.lastMissingDependencies = target;
+    internals.environmentSelections.set(target.selection.key, target.selection);
     internals.dependencyCache.set("configured", ["pandas"]);
+    target.selection.dependencyKeys.add("configured");
     const workspace = vscode.workspace as unknown as TestWorkspace;
 
     workspace.__fireDidChangeConfiguration("editor.fontSize");
@@ -1088,6 +1610,126 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.environmentSelections.size).toBe(2);
   });
 
+  it("isolates real process selection, startup, invalidation, and stop barriers across workspace roots", async () => {
+    const firstFolder = workspaceFolder("vscode-remote://ssh-remote+example/first", "first", 0);
+    const secondFolder = workspaceFolder("vscode-remote://ssh-remote+example/second", "second", 1);
+    vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockImplementation((resource) =>
+      resource.path.startsWith("/first/") ? firstFolder : secondFolder
+    );
+    const firstEnvironment: TestPythonEnvironment = {
+      executable: "/envs/first/python",
+      version: "3.12.4",
+      source: "pythonExtension"
+    };
+    const secondEnvironment: TestPythonEnvironment = {
+      executable: "/envs/second/python",
+      version: "3.13.2",
+      source: "pythonExtension"
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
+      resource?.path.startsWith("/first/") ? firstEnvironment : secondEnvironment
+    );
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({
+      missing: [],
+      available: ["polars"]
+    });
+    const firstProcess = new LifecycleChildProcess();
+    const secondProcess = new LifecycleChildProcess();
+    const firstWrites: string[] = [];
+    const secondWrites: string[] = [];
+    firstProcess.stdin.on("data", (chunk: Buffer) => firstWrites.push(chunk.toString()));
+    secondProcess.stdin.on("data", (chunk: Buffer) => secondWrites.push(chunk.toString()));
+    const bridge = new PythonBridge({ extensionPath: "/extension" } as vscode.ExtensionContext);
+    const raw = bridge as unknown as RawBridgeInternals;
+    const spawnProcess = vi.fn((executable: string) =>
+      executable === firstEnvironment.executable
+        ? (firstProcess as unknown as ChildProcessWithoutNullStreams)
+        : (secondProcess as unknown as ChildProcessWithoutNullStreams)
+    );
+    Object.assign(bridge as object, { spawnProcess });
+    const firstRequest = {
+      ...openSessionRequest(remoteSourceAt("/first/data.csv")),
+      requestedSessionId: "first-live-session"
+    };
+    const secondRequest = {
+      ...openSessionRequest(remoteSourceAt("/second/data.csv")),
+      requestedSessionId: "second-live-session"
+    };
+
+    const firstOpen = bridge.request(firstRequest);
+    const secondOpen = bridge.request(secondRequest);
+    await vi.waitFor(() => {
+      expect(firstWrites).toHaveLength(1);
+      expect(secondWrites).toHaveLength(1);
+    });
+    const firstRuntime = raw.runtimeSlots.get(firstFolder.uri.toString(true));
+    const secondRuntime = raw.runtimeSlots.get(secondFolder.uri.toString(true));
+    expect(firstRuntime).toBeDefined();
+    expect(secondRuntime).toBeDefined();
+    expect(firstRuntime).not.toBe(secondRuntime);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    raw.handleRuntimeLine(
+      firstRuntime!,
+      firstProcess as unknown as ChildProcessWithoutNullStreams,
+      JSON.stringify({
+        protocolVersion: 2,
+        requestId: (JSON.parse(firstWrites[0]) as RuntimeRequestEnvelope).requestId,
+        response: openedFor(firstRequest, "first-live-session")
+      } satisfies RuntimeResponseEnvelope)
+    );
+    raw.handleRuntimeLine(
+      secondRuntime!,
+      secondProcess as unknown as ChildProcessWithoutNullStreams,
+      JSON.stringify({
+        protocolVersion: 2,
+        requestId: (JSON.parse(secondWrites[0]) as RuntimeRequestEnvelope).requestId,
+        response: openedFor(secondRequest, "second-live-session")
+      } satisfies RuntimeResponseEnvelope)
+    );
+    await expect(firstOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+    await expect(secondOpen).resolves.toMatchObject({ kind: "sessionOpened" });
+
+    const secondClose = bridge.request({
+      kind: "closeSession",
+      sessionId: "second-live-session",
+      revision: 0
+    });
+    await vi.waitFor(() => expect(secondWrites).toHaveLength(2));
+    raw.handlePythonEnvironmentSelectionChange({
+      id: "first-replacement",
+      path: "/envs/first-replacement/python",
+      resource: firstFolder
+    });
+
+    expect(firstProcess.stdin.end).toHaveBeenCalledOnce();
+    expect(secondProcess.stdin.end).not.toHaveBeenCalled();
+    expect(raw.sessionOwners.has("first-live-session")).toBe(false);
+    expect(raw.sessionOwners.get("second-live-session")).toBe(secondRuntime);
+    expect(raw.pending.size).toBe(1);
+    raw.handleRuntimeLine(
+      secondRuntime!,
+      secondProcess as unknown as ChildProcessWithoutNullStreams,
+      JSON.stringify({
+        protocolVersion: 2,
+        requestId: (JSON.parse(secondWrites[1]) as RuntimeRequestEnvelope).requestId,
+        response: { kind: "sessionClosed", sessionId: "second-live-session" }
+      } satisfies RuntimeResponseEnvelope)
+    );
+    await expect(secondClose).resolves.toEqual({
+      kind: "sessionClosed",
+      sessionId: "second-live-session"
+    });
+    expect(secondProcess.stdin.end).toHaveBeenCalledOnce();
+
+    const firstStop = firstRuntime!.processStop;
+    const secondStop = secondRuntime!.processStop;
+    firstProcess.emit("exit", 0, null);
+    secondProcess.emit("exit", 0, null);
+    await expect(firstStop).resolves.toBeUndefined();
+    await expect(secondStop).resolves.toBeUndefined();
+    await bridge.shutdown();
+  });
+
   it("invalidates cached selection state only for a relevant Python extension event", async () => {
     const firstFolder = workspaceFolder("vscode-remote://ssh-remote+example/first", "first", 0);
     const secondFolder = workspaceFolder("vscode-remote://ssh-remote+example/second", "second", 1);
@@ -1115,7 +1757,29 @@ describe("PythonBridge environment resource selection", () => {
       resource: firstFolder
     });
     expect(internals.selectionEpoch).toBe(1);
-    expect(internals.runtimeEpoch).toBe(1);
+    expect(internals.runtimeEpoch).toBe(0);
+    expect(internals.environmentSelections.size).toBe(0);
+    expect(internals.dependencyCache.size).toBe(0);
+  });
+
+  it("treats an event URI in the same workspace folder as affecting sibling file selections", async () => {
+    const firstFolder = workspaceFolder("vscode-remote://ssh-remote+example/first", "first", 0);
+    const secondFolder = workspaceFolder("vscode-remote://ssh-remote+example/second", "second", 1);
+    vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockImplementation((resource) =>
+      resource.path.startsWith("/first/") ? firstFolder : secondFolder
+    );
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    await internals.prepareRequest(openSessionRequest(remoteSourceAt("/first/data.csv")));
+
+    internals.handlePythonEnvironmentSelectionChange({
+      id: "first-env",
+      path: "/envs/first/python",
+      resource: vscode.Uri.parse("vscode-remote://ssh-remote+example/first/sibling.py", true)
+    });
+
+    expect(internals.selectionEpoch).toBe(1);
     expect(internals.environmentSelections.size).toBe(0);
     expect(internals.dependencyCache.size).toBe(0);
   });
@@ -1147,7 +1811,11 @@ describe("PythonBridge environment resource selection", () => {
   it("clears a stale install target after successful dependency resolution without discarding the probe cache", async () => {
     const source = remoteFileSource();
     const { internals } = createEnvironmentHarness();
-    internals.lastMissingDependencies = missingDependencies();
+    internals.lastMissingDependencies = missingDependencies(
+      testEnvironmentSelection(source.uri!, environment, {
+        resource: vscode.Uri.parse(source.uri!, true)
+      })
+    );
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
 
@@ -1177,11 +1845,13 @@ describe("PythonBridge environment resource selection", () => {
     await internals.prepareRequest(openSessionRequest(source));
 
     expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce();
-    expect(internals.lastMissingDependencies).toEqual({
+    expect(internals.lastMissingDependencies).toMatchObject({
       environment,
       requirements: ["polars"],
       selectionEpoch: 0
     });
+    const republished = internals.lastMissingDependencies as TestMissingDependencies | undefined;
+    expect(republished?.selection.key).toBe(source.uri);
   });
 
   it("does not publish an old deferred probe after runtime selection is cleared", async () => {
@@ -1233,6 +1903,53 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.lastMissingDependencies).toBeUndefined();
     expect(internals.dependencyCache.size).toBe(0);
   });
+
+  it("terminally invalidates a deferred environment resolution before shutdown awaits cleanup", async () => {
+    const source = remoteFileSource();
+    const resolution = deferred<typeof environment>();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReturnValue(resolution.promise);
+    const bridge = new PythonBridge({ extensionPath: "/extension" } as vscode.ExtensionContext);
+    const internals = bridge as unknown as RawBridgeInternals;
+
+    const preparation = internals.prepareRequest(openSessionRequest(source));
+    await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    await bridge.shutdown();
+    expect(internals.environmentSelections.size).toBe(0);
+    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.lastMissingDependencies).toBeUndefined();
+
+    resolution.resolve(environment);
+    await expect(preparation).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed"
+    });
+    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+    expect(internals.environmentSelections.size).toBe(0);
+    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.lastMissingDependencies).toBeUndefined();
+  });
+
+  it("does not let a dependency probe republish cache or install state after shutdown", async () => {
+    const source = remoteFileSource();
+    const probe = deferred<{ missing: string[]; available: string[] }>();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(probe.promise);
+    const bridge = new PythonBridge({ extensionPath: "/extension" } as vscode.ExtensionContext);
+    const internals = bridge as unknown as RawBridgeInternals;
+
+    const preparation = internals.prepareRequest(openSessionRequest(source));
+    await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
+    await bridge.shutdown();
+    probe.resolve({ missing: ["polars"], available: [] });
+
+    await expect(preparation).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed"
+    });
+    expect(internals.environmentSelections.size).toBe(0);
+    expect(internals.dependencyCache.size).toBe(0);
+    expect(internals.lastMissingDependencies).toBeUndefined();
+  });
 });
 
 class ManualCancellation implements CancellationTokenLike {
@@ -1252,26 +1969,83 @@ class ManualCancellation implements CancellationTokenLike {
   }
 }
 
-interface BridgeInternals {
-  process: ChildProcessWithoutNullStreams;
-  disposed: boolean;
+interface TestEnvironmentSelection {
+  readonly key: string;
+  readonly epoch: number;
+  readonly resource: vscode.Uri | undefined;
+  readonly workspaceFolder: vscode.WorkspaceFolder | undefined;
+  readonly promise: Promise<TestPythonEnvironment>;
+  readonly dependencyKeys: Set<string>;
+  resolvedEnvironment?: TestPythonEnvironment;
+}
+
+interface TestProcessSelection {
+  readonly selection: TestEnvironmentSelection;
+  readonly environment: TestPythonEnvironment;
+}
+
+interface TestRuntimeSlot {
+  readonly key: string;
+  readonly pendingIds: Set<string>;
+  readonly provisionalSessionIds: Set<string>;
+  readonly sessionIds: Set<string>;
+  readonly stoppingProcesses: Set<ChildProcessWithoutNullStreams>;
+  process: ChildProcessWithoutNullStreams | undefined;
+  processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
+  processSelection: TestProcessSelection | undefined;
+  processStartSelection: TestProcessSelection | undefined;
+  processStop: Promise<void> | undefined;
+  runtimeExitError: Error | undefined;
   stderrBuffer: string;
+  runtimeEpoch: number;
+}
+
+interface TestProvisionalSessionReservation {
+  readonly runtime: TestRuntimeSlot;
+  readonly openRequestId: string;
+  state: "pending" | "closing";
+}
+
+interface RawBridgeInternals {
+  disposed: boolean;
+  selectionEpoch: number;
+  selectionEpochs: Map<string, number>;
+  runtimeSlots: Map<string, TestRuntimeSlot>;
+  sessionOwners: Map<string, TestRuntimeSlot>;
+  provisionalSessions: Map<string, TestProvisionalSessionReservation>;
+  environmentSelections: Map<string, TestEnvironmentSelection>;
+  dependencyCache: Map<string, string[]>;
+  lastMissingDependencies: TestMissingDependencies | undefined;
   pending: Map<string, unknown>;
-  cancellationTargets: Map<string, string>;
+  cancellationTargets: Map<string, unknown>;
   output: { appendLine(message: string): void };
   prepareRequest(request: OpenWranglerRequest): Promise<OpenWranglerRequest | ErrorResponse>;
-  ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
-  handleRuntimeLine(line: string): void;
+  prepareRequestForDispatch(request: OpenWranglerRequest): Promise<{
+    request: OpenWranglerRequest | ErrorResponse;
+    processSelection?: TestProcessSelection;
+  }>;
+  processSelectionFor(request: OpenWranglerRequest): Promise<TestProcessSelection>;
+  runtimeSlot(key: string): TestRuntimeSlot;
+  ensureProcess(runtime: TestRuntimeSlot, selection: TestProcessSelection): Promise<ChildProcessWithoutNullStreams>;
+  startProcess(
+    runtime: TestRuntimeSlot,
+    epoch: number,
+    selection: TestProcessSelection
+  ): Promise<ChildProcessWithoutNullStreams>;
+  trackProcessStop(runtime: TestRuntimeSlot, process: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void;
+  handleRuntimeLine(runtime: TestRuntimeSlot, process: ChildProcessWithoutNullStreams, line: string): void;
+  handlePythonEnvironmentSelectionChange(event: pythonEnvironment.PythonEnvironmentSelectionChangeEvent): void;
+  restartRuntime(runtime: TestRuntimeSlot, reason: string): void;
+  stopRuntimeIfIdle(runtime: TestRuntimeSlot): void;
 }
 
 interface LifecycleBridgeInternals {
   process: ChildProcessWithoutNullStreams | undefined;
-  processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
   processStop: Promise<void> | undefined;
   disposed: boolean;
   runtimeEpoch: number;
-  processSelection: unknown;
-  environmentSelections: Map<string, unknown>;
+  readonly runtime: TestRuntimeSlot;
+  readonly selection: TestEnvironmentSelection;
   spawnProcess: ReturnType<typeof vi.fn>;
   ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
   trackProcessStop(proc: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void;
@@ -1311,39 +2085,77 @@ function createLifecycleHarness(): {
     version: "3.12.4",
     source: "configuration" as const
   };
-  const selection = {
-    key: "<workspace-default>",
-    resource: undefined,
-    workspaceFolder: undefined,
-    promise: Promise.resolve(environment)
-  };
+  const selection = testEnvironmentSelection("<workspace-default>", environment);
+  const runtime = testRuntimeSlot(selection.key, process as unknown as ChildProcessWithoutNullStreams, {
+    environment,
+    selection
+  });
+  const raw = bridge as unknown as RawBridgeInternals;
+  const spawnProcess = vi.fn();
+  vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
   Object.assign(bridge as object, {
     context: { extensionPath: "/extension" } as vscode.ExtensionContext,
-    process: process as unknown as ChildProcessWithoutNullStreams,
-    processStart: undefined,
-    processSelection: { environment, selection },
-    processStartSelection: undefined,
-    processStop: undefined,
     shutdownPromise: undefined,
-    stoppingProcesses: new Set<ChildProcessWithoutNullStreams>(),
-    runtimeExitError: undefined,
-    stderrBuffer: "",
-    runtimeEpoch: 0,
+    runtimeSlots: new Map([[runtime.key, runtime]]),
+    sessionOwners: new Map<string, TestRuntimeSlot>(),
+    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
     selectionEpoch: 0,
+    selectionEpochs: new Map([[selection.key, 0]]),
     generation: 0,
     disposed: false,
-    environmentSelections: new Map<string, unknown>([[selection.key, selection]]),
+    environmentSelections: new Map([[selection.key, selection]]),
     dependencyCache: new Map<string, string[]>(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, string>(),
-    spawnProcess: vi.fn(),
+    cancellationTargets: new Map<string, unknown>(),
+    spawnProcess,
     configurationSubscription,
+    environmentApiBroker: { dispose: vi.fn() },
     output
   });
+  const internals: LifecycleBridgeInternals = {
+    get process() {
+      return runtime.process;
+    },
+    set process(value) {
+      runtime.process = value;
+    },
+    get processStop() {
+      return runtime.processStop;
+    },
+    set processStop(value) {
+      runtime.processStop = value;
+    },
+    get disposed() {
+      return raw.disposed;
+    },
+    set disposed(value) {
+      raw.disposed = value;
+    },
+    get runtimeEpoch() {
+      return runtime.runtimeEpoch;
+    },
+    set runtimeEpoch(value) {
+      runtime.runtimeEpoch = value;
+    },
+    runtime,
+    selection,
+    spawnProcess,
+    ensureProcess: async (request) => {
+      const resource =
+        request.kind === "openSession" && request.source.uri ? vscode.Uri.parse(request.source.uri, true) : undefined;
+      const nextEnvironment = await pythonEnvironment.resolvePythonEnvironment(
+        { extensionPath: "/extension" } as vscode.ExtensionContext,
+        resource,
+        undefined
+      );
+      return raw.ensureProcess(runtime, { selection, environment: nextEnvironment });
+    },
+    trackProcessStop: (child, gracefulTimeoutMs) => raw.trackProcessStop(runtime, child, gracefulTimeoutMs)
+  };
   return {
     bridge,
-    internals: bridge as unknown as LifecycleBridgeInternals,
+    internals,
     process,
     configurationSubscription,
     output
@@ -1352,7 +2164,7 @@ function createLifecycleHarness(): {
 
 interface EnvironmentBridgeInternals {
   dependencyCache: Map<string, string[]>;
-  environmentSelections: Map<string, unknown>;
+  environmentSelections: Map<string, TestEnvironmentSelection>;
   lastMissingDependencies: TestMissingDependencies | undefined;
   runtimeEpoch: number;
   selectionEpoch: number;
@@ -1365,7 +2177,7 @@ interface EnvironmentBridgeInternals {
 
 interface DependencyBridgeInternals {
   dependencyCache: Map<string, string[]>;
-  environmentSelections: Map<string, unknown>;
+  environmentSelections: Map<string, TestEnvironmentSelection>;
   lastMissingDependencies: TestMissingDependencies | undefined;
   runtimeEpoch: number;
   selectionEpoch: number;
@@ -1381,6 +2193,7 @@ interface TestPythonEnvironment {
 interface TestMissingDependencies {
   environment: TestPythonEnvironment;
   requirements: readonly string[];
+  selection: TestEnvironmentSelection;
   selectionEpoch: number;
 }
 
@@ -1399,23 +2212,60 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
 } {
   const context = { extensionPath: "/extension" } as vscode.ExtensionContext;
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
+  const raw = bridge as unknown as RawBridgeInternals;
+  const runtimeSlots = new Map<string, TestRuntimeSlot>();
   Object.assign(bridge as object, {
     context,
-    process: undefined,
-    processStart: undefined,
-    runtimeExitError: undefined,
-    stderrBuffer: "",
-    runtimeEpoch: 0,
+    runtimeSlots,
+    sessionOwners: new Map<string, TestRuntimeSlot>(),
+    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
     selectionEpoch: 0,
+    selectionEpochs: new Map<string, number>(),
     disposed: options.disposed ?? false,
-    environmentSelections: new Map<string, unknown>(),
+    environmentSelections: new Map<string, TestEnvironmentSelection>(),
     dependencyCache: new Map<string, string[]>(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, string>(),
+    cancellationTargets: new Map<string, unknown>(),
+    generation: 0,
+    spawnProcess: vi.fn(),
     output: { appendLine: vi.fn() }
   });
-  return { bridge, context, internals: bridge as unknown as EnvironmentBridgeInternals };
+  const internals: EnvironmentBridgeInternals = {
+    get dependencyCache() {
+      return raw.dependencyCache;
+    },
+    get environmentSelections() {
+      return raw.environmentSelections;
+    },
+    get lastMissingDependencies() {
+      return raw.lastMissingDependencies;
+    },
+    set lastMissingDependencies(value) {
+      raw.lastMissingDependencies = value;
+    },
+    get runtimeEpoch() {
+      return Math.max(0, ...[...runtimeSlots.values()].map((runtime) => runtime.runtimeEpoch));
+    },
+    get selectionEpoch() {
+      return raw.selectionEpoch;
+    },
+    set selectionEpoch(value) {
+      raw.selectionEpoch = value;
+    },
+    clearRuntimeSelection: () => bridge.clearRuntimeSelection(),
+    ensureProcess: async (request) => {
+      const desired = await raw.processSelectionFor(request);
+      return raw.ensureProcess(raw.runtimeSlot(desired.selection.key), desired);
+    },
+    handlePythonEnvironmentSelectionChange: (event) => raw.handlePythonEnvironmentSelectionChange(event),
+    prepareRequest: (request) => raw.prepareRequest(request),
+    startProcess: async (request, epoch) => {
+      const desired = await raw.processSelectionFor(request);
+      return raw.startProcess(raw.runtimeSlot(desired.selection.key), epoch, desired);
+    }
+  };
+  return { bridge, context, internals };
 }
 
 function createDependencyHarness(execute: () => Promise<unknown> = async () => undefined): {
@@ -1424,48 +2274,113 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
   executeFile: ReturnType<typeof vi.fn>;
 } {
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
+  const raw = bridge as unknown as RawBridgeInternals;
   const executeFile = vi.fn(execute);
+  const target = missingDependencies();
+  target.selection.dependencyKeys.add("cached-diagnostic");
+  const runtime = testRuntimeSlot(target.selection.key);
   Object.assign(bridge as object, {
-    process: undefined,
-    processStart: undefined,
-    runtimeExitError: undefined,
-    stderrBuffer: "",
+    context: { extensionPath: "/extension" } as vscode.ExtensionContext,
+    runtimeSlots: new Map([[runtime.key, runtime]]),
+    sessionOwners: new Map<string, TestRuntimeSlot>(),
+    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
     pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, string>(),
-    runtimeEpoch: 0,
+    cancellationTargets: new Map<string, unknown>(),
     selectionEpoch: 0,
+    selectionEpochs: new Map([[target.selection.key, 0]]),
     disposed: false,
-    environmentSelections: new Map<string, unknown>([
-      [
-        "<workspace-default>",
-        {
-          key: "<workspace-default>",
-          resource: undefined,
-          workspaceFolder: undefined,
-          promise: Promise.resolve(missingDependencies().environment)
-        }
-      ]
-    ]),
+    environmentSelections: new Map([[target.selection.key, target.selection]]),
     dependencyCache: new Map<string, string[]>([["cached-diagnostic", ["pandas"]]]),
-    lastMissingDependencies: missingDependencies(),
+    lastMissingDependencies: target,
     dependencyInstallPromise: undefined,
     executeFile,
     configurationSubscription: { dispose: vi.fn() },
+    environmentApiBroker: { dispose: vi.fn() },
     output: { appendLine: vi.fn(), dispose: vi.fn() }
   });
-  return { bridge, internals: bridge as unknown as DependencyBridgeInternals, executeFile };
+  const internals: DependencyBridgeInternals = {
+    get dependencyCache() {
+      return raw.dependencyCache;
+    },
+    get environmentSelections() {
+      return raw.environmentSelections;
+    },
+    get lastMissingDependencies() {
+      return raw.lastMissingDependencies;
+    },
+    set lastMissingDependencies(value) {
+      raw.lastMissingDependencies = value;
+    },
+    get runtimeEpoch() {
+      return runtime.runtimeEpoch;
+    },
+    get selectionEpoch() {
+      return raw.selectionEpoch;
+    },
+    prepareRequest: (request) => raw.prepareRequest(request)
+  };
+  return { bridge, internals, executeFile };
 }
 
-function missingDependencies(): TestMissingDependencies {
+function missingDependencies(
+  selection = testEnvironmentSelection("<workspace-default>", {
+    executable: "/env/bin/python",
+    version: "3.12.4",
+    source: "configuration"
+  })
+): TestMissingDependencies {
   return {
-    environment: { executable: "/env/bin/python", version: "3.12.4", source: "configuration" },
+    environment: selection.resolvedEnvironment!,
     requirements: ["pandas", "xlrd>=2.0.1"],
-    selectionEpoch: 0
+    selection,
+    selectionEpoch: selection.epoch
   };
 }
 
 function setWorkspaceTrust(value: boolean): void {
   Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, value, writable: true });
+}
+
+function testEnvironmentSelection(
+  key: string,
+  environment: TestPythonEnvironment,
+  options: {
+    epoch?: number;
+    resource?: vscode.Uri;
+    workspaceFolder?: vscode.WorkspaceFolder;
+  } = {}
+): TestEnvironmentSelection {
+  return {
+    key,
+    epoch: options.epoch ?? 0,
+    resource: options.resource,
+    workspaceFolder: options.workspaceFolder,
+    promise: Promise.resolve(environment),
+    dependencyKeys: new Set(),
+    resolvedEnvironment: environment
+  };
+}
+
+function testRuntimeSlot(
+  key: string,
+  process?: ChildProcessWithoutNullStreams,
+  processSelection?: TestProcessSelection
+): TestRuntimeSlot {
+  return {
+    key,
+    pendingIds: new Set(),
+    provisionalSessionIds: new Set(),
+    sessionIds: new Set(),
+    stoppingProcesses: new Set(),
+    process,
+    processStart: undefined,
+    processSelection,
+    processStartSelection: undefined,
+    processStop: undefined,
+    runtimeExitError: undefined,
+    stderrBuffer: "",
+    runtimeEpoch: 0
+  };
 }
 
 function remoteFileSource(): SessionSource {
@@ -1517,6 +2432,190 @@ function automaticOpenSessionRequest(source: SessionSource): Extract<OpenWrangle
   };
 }
 
+function openedFor(
+  request: Extract<OpenWranglerRequest, { kind: "openSession" }>,
+  sessionId: string
+): SessionOpenedResponse {
+  const metadata: SessionMetadata = {
+    protocolVersion: 2,
+    sessionId,
+    revision: 0,
+    backend: request.backend ?? "polars",
+    mode: request.mode ?? "editing",
+    source: request.source,
+    capabilities: {
+      editable: true,
+      lazy: true,
+      cancel: true,
+      exportCsv: true,
+      exportParquet: true,
+      notebookInsert: false
+    },
+    shape: { rows: 0, columns: 1 },
+    filteredShape: { rows: 0, columns: 1 },
+    filterModel: { filters: [], sort: [] },
+    steps: [],
+    schema: [
+      {
+        id: "c:0",
+        name: "value",
+        position: 0,
+        rawType: "String",
+        type: "string",
+        nullable: true
+      }
+    ]
+  };
+  return {
+    kind: "sessionOpened",
+    metadata,
+    page: {
+      offset: 0,
+      limit: request.pageSize,
+      totalRows: 0,
+      columnIds: ["c:0"],
+      rows: []
+    },
+    summaries: []
+  };
+}
+
+function createMultiScopeHarness(): {
+  bridge: PythonBridge;
+  runtimes: { first: TestRuntimeSlot; second: TestRuntimeSlot };
+  processes: {
+    first: ChildProcessWithoutNullStreams;
+    second: ChildProcessWithoutNullStreams;
+  };
+  sessionOwners: Map<string, TestRuntimeSlot>;
+  provisionalSessions: Map<string, TestProvisionalSessionReservation>;
+  restartRuntime: ReturnType<typeof vi.fn>;
+  stopRuntime: ReturnType<typeof vi.fn>;
+  writes(scope: "first" | "second"): RuntimeRequestEnvelope[];
+  waitForWrites(scope: "first" | "second", count: number): Promise<void>;
+  respond(scope: "first" | "second", requestId: string, response: OpenWranglerResponse): void;
+} {
+  const environment: TestPythonEnvironment = {
+    executable: "/shared/bin/python",
+    version: "3.12.4",
+    source: "pythonExtension"
+  };
+  const firstSelection = testEnvironmentSelection("first", environment);
+  const secondSelection = testEnvironmentSelection("second", environment);
+  const writesByScope = {
+    first: [] as string[],
+    second: [] as string[]
+  };
+  const processFor = (scope: "first" | "second"): ChildProcessWithoutNullStreams =>
+    ({
+      killed: false,
+      stdin: {
+        destroyed: false,
+        writable: true,
+        write: vi.fn((value: string, callback?: (error?: Error | null) => void) => {
+          writesByScope[scope].push(value);
+          callback?.();
+          return true;
+        })
+      },
+      kill: vi.fn()
+    }) as unknown as ChildProcessWithoutNullStreams;
+  const processes = {
+    first: processFor("first"),
+    second: processFor("second")
+  };
+  const runtimes = {
+    first: testRuntimeSlot("first", processes.first, {
+      selection: firstSelection,
+      environment
+    }),
+    second: testRuntimeSlot("second", processes.second, {
+      selection: secondSelection,
+      environment
+    })
+  };
+  const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
+  const raw = bridge as unknown as RawBridgeInternals;
+  const sessionOwners = new Map<string, TestRuntimeSlot>();
+  const provisionalSessions = new Map<string, TestProvisionalSessionReservation>();
+  const releaseRuntimeClaims = (runtime: TestRuntimeSlot): void => {
+    for (const sessionId of runtime.sessionIds) {
+      if (sessionOwners.get(sessionId) === runtime) sessionOwners.delete(sessionId);
+    }
+    runtime.sessionIds.clear();
+    for (const sessionId of runtime.provisionalSessionIds) {
+      if (provisionalSessions.get(sessionId)?.runtime === runtime) provisionalSessions.delete(sessionId);
+    }
+    runtime.provisionalSessionIds.clear();
+  };
+  const restartRuntime = vi.fn((runtime: TestRuntimeSlot, _reason: string) => {
+    releaseRuntimeClaims(runtime);
+    runtime.process = undefined;
+  });
+  const stopRuntime = vi.fn((runtime: TestRuntimeSlot, _reason: string) => {
+    releaseRuntimeClaims(runtime);
+    runtime.process = undefined;
+  });
+  Object.assign(bridge as object, {
+    runtimeSlots: new Map([
+      [runtimes.first.key, runtimes.first],
+      [runtimes.second.key, runtimes.second]
+    ]),
+    sessionOwners,
+    provisionalSessions,
+    selectionEpoch: 0,
+    selectionEpochs: new Map([
+      [firstSelection.key, 0],
+      [secondSelection.key, 0]
+    ]),
+    disposed: false,
+    environmentSelections: new Map([
+      [firstSelection.key, firstSelection],
+      [secondSelection.key, secondSelection]
+    ]),
+    dependencyCache: new Map<string, string[]>(),
+    lastMissingDependencies: undefined,
+    pending: new Map<string, unknown>(),
+    cancellationTargets: new Map<string, unknown>(),
+    output: { appendLine: vi.fn() },
+    prepareRequestForDispatch: vi.fn(async (request: OpenWranglerRequest) => {
+      const scope = request.kind === "openSession" && request.source.path?.startsWith("/second/") ? "second" : "first";
+      const selection = scope === "first" ? firstSelection : secondSelection;
+      return {
+        request,
+        processSelection: { selection, environment }
+      };
+    }),
+    ensureProcess: vi.fn(async (runtime: TestRuntimeSlot) => runtime.process!),
+    restartRuntime,
+    stopRuntime,
+    stopRuntimeIfIdle: vi.fn((runtime: TestRuntimeSlot) => {
+      if (runtime.sessionIds.size === 0 && runtime.pendingIds.size === 0 && runtime.process) {
+        stopRuntime(runtime, "Open Wrangler runtime stopped after its last session closed.");
+      }
+    })
+  });
+  const writes = (scope: "first" | "second"): RuntimeRequestEnvelope[] =>
+    writesByScope[scope].map((line) => JSON.parse(line) as RuntimeRequestEnvelope);
+  return {
+    bridge,
+    runtimes,
+    processes,
+    sessionOwners,
+    provisionalSessions,
+    restartRuntime,
+    stopRuntime,
+    writes,
+    waitForWrites: async (scope, count) => {
+      await vi.waitFor(() => expect(writesByScope[scope]).toHaveLength(count));
+    },
+    respond: (scope, requestId, response) => {
+      const envelope: RuntimeResponseEnvelope = { protocolVersion: 2, requestId, response };
+      raw.handleRuntimeLine(runtimes[scope], processes[scope], JSON.stringify(envelope));
+    }
+  };
+}
+
 function createHarness(
   prepareRequest: (request: OpenWranglerRequest) => Promise<OpenWranglerRequest | ErrorResponse> = async (request) =>
     request
@@ -1548,20 +2647,37 @@ function createHarness(
     kill: vi.fn()
   } as unknown as ChildProcessWithoutNullStreams;
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
+  const environment: TestPythonEnvironment = {
+    executable: "/env/bin/python",
+    version: "3.12.4",
+    source: "configuration"
+  };
+  const selection = testEnvironmentSelection("<workspace-default>", environment);
+  const processSelection = { selection, environment };
+  const runtime = testRuntimeSlot(selection.key, process, processSelection);
   const ensureProcess = vi.fn(async () => process);
   const restart = vi.fn();
-  const internals = bridge as unknown as BridgeInternals;
-  Object.assign(internals, {
-    process,
+  const internals = bridge as unknown as RawBridgeInternals;
+  Object.assign(bridge as object, {
+    runtimeSlots: new Map([[runtime.key, runtime]]),
+    sessionOwners: new Map<string, TestRuntimeSlot>(),
+    provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
     selectionEpoch: 0,
+    selectionEpochs: new Map([[selection.key, 0]]),
     disposed: false,
-    stderrBuffer: "",
+    environmentSelections: new Map([[selection.key, selection]]),
+    dependencyCache: new Map<string, string[]>(),
+    lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
-    cancellationTargets: new Map<string, string>(),
+    cancellationTargets: new Map<string, unknown>(),
     output: { appendLine: vi.fn() },
-    prepareRequest: vi.fn(prepareRequest),
+    prepareRequestForDispatch: vi.fn(async (request: OpenWranglerRequest) => {
+      const prepared = await prepareRequest(request);
+      return prepared.kind === "error" ? { request: prepared } : { request: prepared, processSelection };
+    }),
     ensureProcess,
-    restart
+    restartRuntime: restart,
+    stopRuntimeIfIdle: vi.fn()
   });
 
   const writes = (): RuntimeRequestEnvelope[] => rawWrites.map((line) => JSON.parse(line) as RuntimeRequestEnvelope);
@@ -1575,14 +2691,15 @@ function createHarness(
     },
     respond: (requestId, response) => {
       const envelope: RuntimeResponseEnvelope = { protocolVersion: 2, requestId, response };
-      internals.handleRuntimeLine(JSON.stringify(envelope));
+      internals.handleRuntimeLine(runtime, process, JSON.stringify(envelope));
     },
-    respondRaw: (value) => internals.handleRuntimeLine(JSON.stringify(value)),
+    respondRaw: (value) => internals.handleRuntimeLine(runtime, process, JSON.stringify(value)),
     pendingCount: () => internals.pending.size,
     cancellationCount: () => internals.cancellationTargets.size,
     advanceSelectionEpoch: () => {
-      const state = internals as unknown as { selectionEpoch: number };
-      state.selectionEpoch += 1;
+      internals.selectionEpoch += 1;
+      internals.selectionEpochs.set(selection.key, selection.epoch + 1);
+      internals.environmentSelections.delete(selection.key);
     }
   };
 }
