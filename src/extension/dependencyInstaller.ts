@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { devNull, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 
 export const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60_000;
 export const DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS = 5_000;
@@ -41,13 +44,26 @@ export function startDependencyInstall(
 ): OwnedDependencyInstall {
   const environment = dependencyInstallEnvironment(options.environment ?? process.env);
   const spawnProcess = options.spawnProcess ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
-  const child = spawnProcess(executable, ["-m", "pip", "install", "--no-input", ...requirements], {
-    cwd: options.cwd,
-    env: environment,
-    shell: false,
-    stdio: "ignore",
-    windowsHide: true
-  });
+  const workingDirectory = dependencyInstallWorkingDirectory(executable, options.cwd);
+  let child: ChildProcess;
+  try {
+    child = spawnProcess(executable, ["-m", "pip", "install", "--no-input", ...requirements], {
+      cwd: workingDirectory.cwd,
+      env: environment,
+      shell: false,
+      stdio: "ignore",
+      windowsHide: true
+    });
+  } catch (error) {
+    const cleanupError = workingDirectory.cleanup();
+    if (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Open Wrangler could not start dependency installation or clean its private working directory."
+      );
+    }
+    throw error;
+  }
 
   let spawned = false;
   let unreferenced = false;
@@ -80,6 +96,18 @@ export function startDependencyInstall(
     if (error) rejectCompletion(error);
     else resolveCompletion();
   };
+  const settleCompletionWithCleanup = (error: Error | undefined, cleanupError: Error | undefined): void => {
+    if (error && cleanupError) {
+      settleCompletion(
+        new AggregateError(
+          [error, cleanupError],
+          "Open Wrangler dependency installation and private working-directory cleanup both failed."
+        )
+      );
+      return;
+    }
+    settleCompletion(error ?? cleanupError);
+  };
 
   child.once("spawn", () => {
     spawned = true;
@@ -89,32 +117,39 @@ export function startDependencyInstall(
     if (spawned) return;
     // Node's pre-spawn error proves that no package-writing process exists.
     settleExit();
-    settleCompletion(
-      new Error(`Open Wrangler could not start dependency installation with ${executable}: ${error.message}`)
+    settleCompletionWithCleanup(
+      new Error(`Open Wrangler could not start dependency installation with ${executable}: ${error.message}`),
+      workingDirectory.cleanup()
     );
   });
   child.once("close", (code, signal) => {
     settleExit();
+    const cleanupError = workingDirectory.cleanup();
     if (processError) {
-      settleCompletion(
-        new Error(`Open Wrangler dependency installation with ${executable} failed: ${processError.message}`)
+      settleCompletionWithCleanup(
+        new Error(`Open Wrangler dependency installation with ${executable} failed: ${processError.message}`),
+        cleanupError
       );
       return;
     }
     if (!spawned) {
-      settleCompletion(
+      settleCompletionWithCleanup(
         new Error(
           `Open Wrangler dependency installation with ${executable} closed before spawn ownership was confirmed.`
-        )
+        ),
+        cleanupError
       );
       return;
     }
     if (code === 0) {
-      settleCompletion();
+      settleCompletionWithCleanup(undefined, cleanupError);
       return;
     }
     const detail = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-    settleCompletion(new Error(`Open Wrangler dependency installation with ${executable} ended with ${detail}.`));
+    settleCompletionWithCleanup(
+      new Error(`Open Wrangler dependency installation with ${executable} ended with ${detail}.`),
+      cleanupError
+    );
   });
 
   return {
@@ -165,10 +200,61 @@ export async function waitForDependencyInstallExit(
 }
 
 function dependencyInstallEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...source, PIP_NO_INPUT: "1" };
+  const environment: NodeJS.ProcessEnv = { ...source };
+  const removedKeys = new Set([
+    "PIP_BUILD_TRACKER",
+    "PIP_CONFIG_FILE",
+    "PIP_EDITABLE",
+    "PIP_LOG",
+    "PIP_PREFIX",
+    "PIP_PYTHON",
+    "PIP_REPORT",
+    "PIP_REQUIREMENT",
+    "PIP_ROOT",
+    "PIP_SRC",
+    "PIP_TARGET",
+    "PIP_USER",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONUSERBASE"
+  ]);
   for (const key of Object.keys(environment)) {
     const normalized = key.toLocaleUpperCase("en-US");
-    if (normalized === "PYTHONPATH" || normalized === "PYTHONHOME") delete environment[key];
+    if (normalized === "PIP_NO_INPUT" || removedKeys.has(normalized)) delete environment[key];
   }
+  // pip compares this string with Python's os.devnull to disable every config
+  // layer. Node spells the Windows device differently, so use Python's value.
+  environment.PIP_CONFIG_FILE = process.platform === "win32" ? "nul" : devNull;
+  environment.PIP_NO_INPUT = "1";
   return environment;
+}
+
+interface DependencyInstallWorkingDirectory {
+  readonly cwd: string;
+  cleanup(): Error | undefined;
+}
+
+function dependencyInstallWorkingDirectory(
+  executable: string,
+  requestedCwd: string
+): DependencyInstallWorkingDirectory {
+  if (basename(executable) !== executable) {
+    return { cwd: requestedCwd, cleanup: () => undefined };
+  }
+
+  const cwd = mkdtempSync(join(tmpdir(), "openwrangler-pip-"));
+  let cleaned = false;
+  return {
+    cwd,
+    cleanup: () => {
+      if (cleaned) return undefined;
+      cleaned = true;
+      try {
+        rmSync(cwd, { force: false, recursive: true });
+        return undefined;
+      } catch (error) {
+        return error instanceof Error ? error : new Error(String(error));
+      }
+    }
+  };
 }

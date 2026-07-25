@@ -1,5 +1,8 @@
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { devNull, tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DependencyInstallExitUnconfirmedError,
@@ -20,7 +23,9 @@ afterEach(() => {
 describe("owned dependency installation", () => {
   it("spawns exact pip argv without a shell, output pipes, or inherited Python path overrides", async () => {
     const child = new DependencyChildProcess();
-    const spawnProcess = vi.fn(() => child as unknown as ChildProcess);
+    const spawnProcess = vi.fn(
+      (_executable: string, _args: string[], _options: SpawnOptions) => child as unknown as ChildProcess
+    );
     const requirements = ["pandas>=2", "xlrd>=2.0.1"];
 
     const operation = startDependencyInstall("/env/bin/python", requirements, {
@@ -29,6 +34,20 @@ describe("owned dependency installation", () => {
         PATH: "/usr/bin",
         PYTHONPATH: "/private/runtime",
         PythonHome: "/private/home",
+        pythonUserBase: "/private/user-base",
+        PIP_TARGET: "/private/target",
+        Pip_Prefix: "/private/prefix",
+        pip_user: "1",
+        PIP_ROOT: "/private/root",
+        Pip_Python: "/other/python",
+        pip_config_file: "/private/pip.conf",
+        PIP_REQUIREMENT: "/private/extra-requirements.txt",
+        PIP_EDITABLE: "/private/editable",
+        PIP_SRC: "/private/src",
+        PIP_BUILD_TRACKER: "/private/tracker",
+        PIP_LOG: "/private/pip.log",
+        PIP_REPORT: "/private/report.json",
+        pip_no_input: "0",
         PIP_INDEX_URL: "https://example.invalid/simple"
       },
       spawnProcess
@@ -42,6 +61,7 @@ describe("owned dependency installation", () => {
         cwd: "/extension",
         env: {
           PATH: "/usr/bin",
+          PIP_CONFIG_FILE: process.platform === "win32" ? "nul" : devNull,
           PIP_INDEX_URL: "https://example.invalid/simple",
           PIP_NO_INPUT: "1"
         },
@@ -60,6 +80,39 @@ describe("owned dependency installation", () => {
     await expect(operation.exit).resolves.toBeUndefined();
     await expect(operation.completion).resolves.toBeUndefined();
     expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("uses a private short-lived cwd for a PATH-resolved interpreter instead of importing from home", async () => {
+    const userHome = mkdtempSync(join(tmpdir(), "openwrangler-home-"));
+    writeFileSync(join(userHome, "pip.py"), "raise RuntimeError('must not import')\n", "utf8");
+    const child = new DependencyChildProcess();
+    const spawnProcess = vi.fn(
+      (_executable: string, _args: string[], _options: SpawnOptions) => child as unknown as ChildProcess
+    );
+
+    try {
+      const operation = startDependencyInstall("python", ["pandas"], {
+        cwd: userHome,
+        environment: { PATH: "/usr/bin" },
+        spawnProcess
+      });
+      const spawnOptions = spawnProcess.mock.calls[0]?.[2];
+      const privateCwd = spawnOptions?.cwd;
+
+      expect(typeof privateCwd).toBe("string");
+      expect(privateCwd).not.toBe(userHome);
+      expect(existsSync(privateCwd as string)).toBe(true);
+      if (process.platform !== "win32") {
+        expect(statSync(privateCwd as string).mode & 0o077).toBe(0);
+      }
+
+      child.emit("spawn");
+      child.emit("close", 0, null);
+      await expect(operation.completion).resolves.toBeUndefined();
+      expect(existsSync(privateCwd as string)).toBe(false);
+    } finally {
+      rmSync(userHome, { force: true, recursive: true });
+    }
   });
 
   it("treats a pre-spawn error as proof that no package-writing process exists", async () => {
