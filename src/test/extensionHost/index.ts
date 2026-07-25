@@ -4813,17 +4813,25 @@ async function exerciseLiveImportReconfiguration(
     columnWidths: retainedColumnWidths,
     viewport: { firstVisibleRow: 1, scrollLeft: 23 }
   };
+  assert.equal(
+    await testing.synchronizePanel(stableSessionId),
+    true,
+    "The reconfigured renderer must settle its authoritative default view before acceptance injects retained state."
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:default-synchronized");
   await testing.updateViewState(stableSessionId, retainedViewState);
   assert.equal(
     await testing.synchronizePanel(stableSessionId),
     true,
     "The acceptance view-state injection must commit through the real renderer before native import actions."
   );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:retained-synchronized");
   const synchronizedGridAction = await waitForOpenWranglerWebviewButton(page, "Import options", true);
   const physicalViewport = await waitForOpenWranglerGridViewport(synchronizedGridAction, {
     scrollTop: 29,
     scrollLeft: 23
   });
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:physical");
   assert.ok(
     physicalViewport.scrollHeight > physicalViewport.clientHeight,
     "The import-reconfiguration fixture must overflow the real grid vertically."
@@ -4851,8 +4859,14 @@ async function exerciseLiveImportReconfiguration(
       );
     },
     5_000,
-    "the reconfigured CSV view state to persist under its confirmed source and backend"
+    "the reconfigured CSV view state to persist under its confirmed source and backend",
+    () =>
+      JSON.stringify({
+        expected: retainedViewState,
+        actual: testing.activeSession()?.viewState
+      })
   );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:persisted");
 
   const activeTab = page
     .locator(".part.editor .editor-group-container.active .tabs-container .tab.active")

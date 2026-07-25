@@ -1269,6 +1269,7 @@ export function App() {
         ? metadata === undefined
         : metadata?.sessionId === synchronization.sessionId && metadata.revision === synchronization.revision;
     if (!matchesCommittedSession) return;
+    flushGridViewState();
     vscode.postMessage({
       kind: "rendererSynchronized",
       syncId: synchronization.syncId,
@@ -1276,7 +1277,7 @@ export function App() {
       revision: synchronization.revision
     });
     acknowledgedRendererSynchronizationId.current = synchronization.syncId;
-  }, [metadata, pendingRendererSynchronization]);
+  }, [flushGridViewState, metadata, pendingRendererSynchronization]);
 
   const rendererNeedsSnapshot = pendingRendererSynchronization === undefined;
   useEffect(() => {

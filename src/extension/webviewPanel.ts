@@ -48,6 +48,7 @@ export class OpenWranglerPanel {
       }
     | undefined;
   private rendererHydratedSyncId: string | undefined;
+  private rendererViewStateLocked = true;
   private rendererSynchronizationAcknowledgement:
     | {
         syncId: string;
@@ -272,6 +273,7 @@ export class OpenWranglerPanel {
         synchronization.revision === decoded.revision
       ) {
         this.rendererHydratedSyncId = decoded.syncId;
+        this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
       }
@@ -292,7 +294,7 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "updateViewState") {
-      if (this.changingImportOptions) {
+      if (this.changingImportOptions || this.rendererViewStateLocked) {
         await this.postViewState();
       } else if (this.sessionId) {
         await this.bridge.updateViewState?.(this.sessionId, decoded.state);
@@ -694,6 +696,7 @@ export class OpenWranglerPanel {
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
     this.rendererSynchronizationIdentity = undefined;
     this.rendererHydratedSyncId = undefined;
+    this.rendererViewStateLocked = true;
     this.settleRendererImportAction(undefined, false);
   }
 
@@ -782,6 +785,7 @@ export class OpenWranglerPanel {
 
   private async synchronizeRenderer(clearInspection: boolean): Promise<void> {
     if (this.disposed) return;
+    this.rendererViewStateLocked = true;
     if (clearInspection) {
       if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
       await this.postStepInspectionCleared(false);

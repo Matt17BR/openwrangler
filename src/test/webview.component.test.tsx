@@ -754,6 +754,40 @@ describe("App file import options", () => {
     }
   });
 
+  it("flushes pending grid presentation before acknowledging renderer synchronization", () => {
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+      fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+      webviewPostMessage.mockClear();
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "F".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+
+      const synchronizationMessages = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message?.kind === "updateViewState" || message?.kind === "rendererSynchronized");
+      expect(synchronizationMessages).toHaveLength(2);
+      expect(synchronizationMessages[0]).toMatchObject({
+        kind: "updateViewState",
+        state: { columnWidths: { "c:0": 200 } }
+      });
+      expect(synchronizationMessages[1]).toEqual({
+        kind: "rendererSynchronized",
+        syncId: "F".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps bounded recovery pulls alive until the matching final marker commits", () => {
     vi.useFakeTimers();
     try {

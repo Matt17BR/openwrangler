@@ -299,9 +299,22 @@ describe("OpenWranglerPanel retained view state", () => {
       importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
     };
     const opened = responseForSource(source);
+    const authoritativeState = {
+      columnWidths: { "c:0": 280 },
+      selectedColumnId: "c:0",
+      viewport: { firstVisibleRow: 1, scrollLeft: 24 }
+    };
+    const rendererState = {
+      columnWidths: { "c:0": 320 },
+      selectedColumnId: "c:0",
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    };
+    const updateViewState = vi.fn(async () => undefined);
     const harness = createPanelHarness(
       {
-        request: vi.fn(async () => opened)
+        request: vi.fn(async () => opened),
+        getViewState: vi.fn(() => authoritativeState),
+        updateViewState
       },
       { source, openResponse: opened }
     );
@@ -320,6 +333,11 @@ describe("OpenWranglerPanel retained view state", () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
+    harness.posted.length = 0;
+    await harness.receive({ kind: "updateViewState", state: rendererState });
+    expect(updateViewState).not.toHaveBeenCalled();
+    expect(harness.posted).toContainEqual({ kind: "viewState", state: authoritativeState });
+
     await harness.receive({
       kind: "rendererSynchronized",
       syncId: marker.syncId,
@@ -327,6 +345,10 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: marker.revision
     });
     await expect(synchronization).resolves.toBe(true);
+
+    await harness.receive({ kind: "updateViewState", state: rendererState });
+    expect(updateViewState).toHaveBeenCalledOnce();
+    expect(updateViewState).toHaveBeenCalledWith(opened.metadata.sessionId, rendererState);
   });
 
   it("replays retained state when an unhydrated renderer pulls its snapshot", async () => {
@@ -862,7 +884,18 @@ describe("OpenWranglerPanel retained view state", () => {
       viewport: { firstVisibleRow: 1, scrollLeft: 44 }
     };
     const bridge: OpenWranglerBridge = {
-      request: vi.fn(async () => openedResponse),
+      request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "getPage") {
+          return {
+            kind: "page",
+            revision: metadata.revision + 1,
+            viewRequestId: request.viewRequestId,
+            metadata: { ...metadata, revision: metadata.revision + 1 },
+            page
+          };
+        }
+        return openedResponse;
+      }),
       getViewState: vi.fn(() => state),
       updateViewState: vi.fn(async () => undefined)
     };
@@ -872,6 +905,28 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.send({ kind: "ready" });
     expect(harness.posted).toContainEqual({ kind: "viewState", state });
 
+    const synchronization = latestRendererSynchronization(harness.posted);
+    const staleSyncId = `${synchronization.syncId.startsWith("A") ? "B" : "A"}${synchronization.syncId.slice(1)}`;
+    harness.posted.length = 0;
+    await harness.send({ kind: "updateViewState", state });
+    expect(bridge.updateViewState).not.toHaveBeenCalled();
+    expect(harness.posted).toContainEqual({ kind: "viewState", state });
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: staleSyncId,
+      sessionId: synchronization.sessionId,
+      revision: synchronization.revision
+    });
+    await harness.send({ kind: "updateViewState", state });
+    expect(bridge.updateViewState).not.toHaveBeenCalled();
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: synchronization.syncId,
+      sessionId: synchronization.sessionId,
+      revision: synchronization.revision
+    });
     await harness.send({ kind: "updateViewState", state });
     await harness.send({
       kind: "updateViewState",
@@ -884,6 +939,15 @@ describe("OpenWranglerPanel retained view state", () => {
 
     expect(bridge.updateViewState).toHaveBeenCalledOnce();
     expect(bridge.updateViewState).toHaveBeenCalledWith("session", state);
+
+    await harness.send(pageMessage("next-page", "current-view"));
+    const stateAfterPageRevision = {
+      ...state,
+      columnWidths: { "c:0": 261 }
+    };
+    await harness.send({ kind: "updateViewState", state: stateAfterPageRevision });
+    expect(bridge.updateViewState).toHaveBeenCalledTimes(2);
+    expect(bridge.updateViewState).toHaveBeenLastCalledWith("session", stateAfterPageRevision);
   });
 
   it("rejects a late renderer view-state write while import reconfiguration owns the session", async () => {
