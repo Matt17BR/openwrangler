@@ -33,6 +33,7 @@ export class OpenWranglerPanel {
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
   private rendererReady = false;
+  private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
   private unpublishedAuthoritativeSnapshot = false;
   private openAttemptGeneration = 0;
   private closing: Promise<OpenWranglerResponse> | undefined;
@@ -98,7 +99,7 @@ export class OpenWranglerPanel {
       if (posted) return true;
       active.rendererReady = false;
     }
-    await active.enqueueImportOptionsChange();
+    await active.enqueueImportOptionsChange(true);
     return true;
   }
 
@@ -222,6 +223,11 @@ export class OpenWranglerPanel {
       } else {
         await this.open();
       }
+      if (this.pendingPreReadyImportResponse) {
+        const response = this.pendingPreReadyImportResponse;
+        this.pendingPreReadyImportResponse = undefined;
+        await this.post(response);
+      }
       await this.postImportOptionsBusyState();
       this.rendererReady = true;
       return;
@@ -294,15 +300,17 @@ export class OpenWranglerPanel {
     await this.forward(request, decoded.viewContextId);
   }
 
-  private enqueueImportOptionsChange(): Promise<void> {
+  private enqueueImportOptionsChange(retainResponseUntilReady = false): Promise<void> {
     const generation = ++this.openAttemptGeneration;
     this.importChangeCancellation?.cancel();
-    const task = this.importChangeTail.catch(() => undefined).then(() => this.changeImportOptions(generation));
+    const task = this.importChangeTail
+      .catch(() => undefined)
+      .then(() => this.changeImportOptions(generation, retainResponseUntilReady));
     this.importChangeTail = task.catch(() => undefined);
     return task;
   }
 
-  private async changeImportOptions(generation: number): Promise<void> {
+  private async changeImportOptions(generation: number, retainResponseUntilReady: boolean): Promise<void> {
     if (this.disposed || generation !== this.openAttemptGeneration || !canChangeImportOptions(this.source)) {
       return;
     }
@@ -324,12 +332,15 @@ export class OpenWranglerPanel {
       const uri = fileSourceUri(this.source);
       if (!uri) {
         await this.postUnpublishedAuthoritativeSnapshot();
-        await this.post({
-          kind: "error",
-          code: "invalid_import_source",
-          message: "Open Wrangler cannot resolve the file behind this session.",
-          recoverable: true
-        });
+        await this.postImportResponse(
+          {
+            kind: "error",
+            code: "invalid_import_source",
+            message: "Open Wrangler cannot resolve the file behind this session.",
+            recoverable: true
+          },
+          retainResponseUntilReady
+        );
         return;
       }
 
@@ -340,7 +351,7 @@ export class OpenWranglerPanel {
         if (error instanceof ImportCancelledError) {
           if (this.disposed || generation !== this.openAttemptGeneration) return;
           await this.postUnpublishedAuthoritativeSnapshot();
-          await this.post(reconfigurationCancelledResponse());
+          await this.postImportResponse(reconfigurationCancelledResponse(), retainResponseUntilReady);
           return;
         }
         throw error;
@@ -348,7 +359,7 @@ export class OpenWranglerPanel {
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       if (cancellation.token.isCancellationRequested) {
         await this.postUnpublishedAuthoritativeSnapshot();
-        await this.post(reconfigurationCancelledResponse());
+        await this.postImportResponse(reconfigurationCancelledResponse(), retainResponseUntilReady);
         return;
       }
       if (this.sessionId) {
@@ -356,7 +367,7 @@ export class OpenWranglerPanel {
         if (this.disposed || generation !== this.openAttemptGeneration) return;
         if (cancellation.token.isCancellationRequested) {
           await this.postUnpublishedAuthoritativeSnapshot();
-          await this.post(reconfigurationCancelledResponse());
+          await this.postImportResponse(reconfigurationCancelledResponse(), retainResponseUntilReady);
           return;
         }
       }
@@ -380,12 +391,15 @@ export class OpenWranglerPanel {
 
       if (!this.bridge.reconfigureFileSession) {
         await this.postUnpublishedAuthoritativeSnapshot();
-        await this.post({
-          kind: "error",
-          code: "import_reconfiguration_unavailable",
-          message: "This Open Wrangler session does not support changing import options.",
-          recoverable: true
-        });
+        await this.postImportResponse(
+          {
+            kind: "error",
+            code: "import_reconfiguration_unavailable",
+            message: "This Open Wrangler session does not support changing import options.",
+            recoverable: true
+          },
+          retainResponseUntilReady
+        );
         return;
       }
       const response = await this.bridge.reconfigureFileSession(this.sessionId, this.sessionRevision, nextSource, {
@@ -407,7 +421,7 @@ export class OpenWranglerPanel {
         if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
       }
       if (response.kind !== "sessionOpened") await this.postUnpublishedAuthoritativeSnapshot();
-      await this.post(response);
+      await this.postImportResponse(response, retainResponseUntilReady);
       if (response.kind === "sessionOpened") {
         this.unpublishedAuthoritativeSnapshot = false;
         await this.postSessionPresentation();
@@ -416,12 +430,15 @@ export class OpenWranglerPanel {
     } catch (error) {
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       await this.postUnpublishedAuthoritativeSnapshot();
-      await this.post({
-        kind: "error",
-        code: "bridge_error",
-        message: error instanceof Error ? error.message : String(error),
-        recoverable: true
-      });
+      await this.postImportResponse(
+        {
+          kind: "error",
+          code: "bridge_error",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true
+        },
+        retainResponseUntilReady
+      );
     } finally {
       if (this.importChangeCancellation === cancellation) {
         this.importChangeCancellation = undefined;
@@ -603,6 +620,15 @@ export class OpenWranglerPanel {
   private async post(response: OpenWranglerResponse): Promise<void> {
     if (this.disposed) return;
     await this.panel.webview.postMessage(response);
+  }
+
+  private async postImportResponse(response: OpenWranglerResponse, retainResponseUntilReady: boolean): Promise<void> {
+    if (response.kind === "sessionOpened") {
+      this.pendingPreReadyImportResponse = undefined;
+    } else if (retainResponseUntilReady && !this.rendererReady) {
+      this.pendingPreReadyImportResponse = response;
+    }
+    await this.post(response);
   }
 
   private activate(): void {

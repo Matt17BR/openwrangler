@@ -280,6 +280,52 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, configured]);
   });
 
+  it("replays a pre-renderer native import failure after restoring the confirmed snapshot", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const failure: OpenWranglerResponse = {
+      kind: "error",
+      code: "invalid_import_options",
+      message: "The selected delimiter does not match this file.",
+      recoverable: true
+    };
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => failure);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    harness.posted.length = 0;
+
+    await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
+
+    expect(harness.posted).toEqual([
+      { kind: "importOptionsState", busy: true },
+      failure,
+      { kind: "importOptionsState", busy: false }
+    ]);
+
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+
+    expect(harness.posted).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, opened, failure]);
+  });
+
   it("does not let an initially hidden panel replace the active command target", async () => {
     const executeCommand = vi.spyOn(commands, "executeCommand");
     const active = createPanelHarness(
