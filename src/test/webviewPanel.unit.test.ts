@@ -193,7 +193,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenLastCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
   });
 
-  it("routes the native import command through the active renderer before starting host reconfiguration", async () => {
+  it("routes the native import command through the active renderer once its readiness handshake completes", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "records.csv",
@@ -211,6 +211,7 @@ describe("OpenWranglerPanel retained view state", () => {
       { source, openResponse: opened }
     );
     await harness.open();
+    await harness.receive({ kind: "ready" });
     harness.posted.length = 0;
 
     await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
@@ -218,6 +219,65 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toEqual([{ kind: "requestImportOptionsChange" }]);
     expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
     expect(reconfigureFileSession).not.toHaveBeenCalled();
+  });
+
+  it("runs the native import command in the host before the renderer first becomes ready", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const configured = responseForSource(
+      {
+        ...source,
+        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      1
+    );
+    const reconfigureFileSession = vi.fn(
+      async (
+        _sessionId: string,
+        _revision: number,
+        _nextSource: SessionSource,
+        _options?: BridgeRequestOptions
+      ): Promise<OpenWranglerResponse> => configured
+    );
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    harness.posted.length = 0;
+
+    await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
+
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledTimes(3);
+    expect(panelPromptMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    expect(reconfigureFileSession.mock.calls[0]?.[2].importOptions).toEqual(configured.metadata.source.importOptions);
+    expect(harness.posted).toEqual([
+      { kind: "importOptionsState", busy: true },
+      configured,
+      { kind: "importOptionsState", busy: false }
+    ]);
+    expect(harness.posted).not.toContainEqual({ kind: "requestImportOptionsChange" });
+
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+
+    expect(harness.posted).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, configured]);
   });
 
   it("does not let an initially hidden panel replace the active command target", async () => {

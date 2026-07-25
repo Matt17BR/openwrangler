@@ -32,6 +32,7 @@ export class OpenWranglerPanel {
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
+  private rendererReady = false;
   private unpublishedAuthoritativeSnapshot = false;
   private openAttemptGeneration = 0;
   private closing: Promise<OpenWranglerResponse> | undefined;
@@ -92,7 +93,13 @@ export class OpenWranglerPanel {
   static async changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
     if (!active?.panel.active || !canChangeImportOptions(active.source)) return false;
-    return active.panel.webview.postMessage({ kind: "requestImportOptionsChange" });
+    if (active.rendererReady) {
+      const posted = await active.panel.webview.postMessage({ kind: "requestImportOptionsChange" });
+      if (posted) return true;
+      active.rendererReady = false;
+    }
+    await active.enqueueImportOptionsChange();
+    return true;
   }
 
   static create(
@@ -210,16 +217,13 @@ export class OpenWranglerPanel {
         await this.postSessionPresentation();
         await this.postViewState();
         this.unpublishedAuthoritativeSnapshot = false;
-        await this.postImportOptionsBusyState();
-        return;
-      }
-      if (this.openResponse) {
+      } else if (this.openResponse) {
         await this.post(this.openResponse);
-        await this.postImportOptionsBusyState();
-        return;
+      } else {
+        await this.open();
       }
-      await this.open();
       await this.postImportOptionsBusyState();
+      this.rendererReady = true;
       return;
     }
 
