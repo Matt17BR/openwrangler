@@ -1412,7 +1412,7 @@ describe("PythonBridge dependency installation", () => {
     expect(information).not.toHaveBeenCalled();
   });
 
-  it("waits for a same-interpreter runtime that was already stopping before pip can start", async () => {
+  it("cancels a pending replacement and waits for its same-interpreter predecessor before pip", async () => {
     const controlled = controlledDependencyInstall();
     const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
     const runtime = raw.runtimeSlots.get("<workspace-default>")!;
@@ -1425,12 +1425,18 @@ describe("PythonBridge dependency installation", () => {
 
     bridge.onIdle();
     expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce();
+    const pendingReplacement = raw.ensureProcess(runtime, {
+      selection,
+      environment: missingDependencies().environment
+    });
+    await Promise.resolve();
     const installation = bridge.installMissingDependencies();
     await Promise.resolve();
     await Promise.resolve();
     expect(launchDependencyInstall).not.toHaveBeenCalled();
 
     runtimeProcess.emit("exit", 0, null);
+    await expect(pendingReplacement).rejects.toThrow("runtime start was cancelled");
     await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
     controlled.closeSuccessfully();
     await expect(installation).resolves.toBe(true);
@@ -2923,6 +2929,7 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     dependencyMutations: new Map(),
     launchDependencyInstall,
     waitForDependencyInstallExit,
+    spawnProcess: vi.fn(),
     configurationSubscription: { dispose: vi.fn() },
     environmentApiBroker: { dispose: vi.fn() },
     output: { appendLine: vi.fn(), dispose: vi.fn() }

@@ -101,6 +101,14 @@ export function startDependencyInstall(
       );
       return;
     }
+    if (!spawned) {
+      settleCompletion(
+        new Error(
+          `Open Wrangler dependency installation with ${executable} closed before spawn ownership was confirmed.`
+        )
+      );
+      return;
+    }
     if (code === 0) {
       settleCompletion();
       return;

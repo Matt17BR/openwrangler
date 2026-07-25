@@ -79,6 +79,21 @@ describe("owned dependency installation", () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  it("fails closed when close arrives without either spawn or pre-spawn error proof", async () => {
+    const child = new DependencyChildProcess();
+    const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
+      cwd: "/extension",
+      spawnProcess: () => child as unknown as ChildProcess
+    });
+
+    child.emit("close", 0, null);
+
+    await expect(operation.exit).resolves.toBeUndefined();
+    await expect(operation.completion).rejects.toThrow("closed before spawn ownership was confirmed");
+    expect(operation.didSpawn()).toBe(false);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   it("does not let a post-spawn error impersonate exact process close", async () => {
     const child = new DependencyChildProcess();
     const operation = startDependencyInstall("/env/bin/python", ["pandas"], {
