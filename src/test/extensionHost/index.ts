@@ -5444,7 +5444,7 @@ const PINNED_REAL_PYTHON_EXTENSION_VERSION = "2026.4.0";
 
 interface InstrumentedPythonEnvironment {
   executable: string;
-  invocationLog: string;
+  runtimeMarkerDirectory: string;
 }
 
 async function exerciseRealPythonEnvironmentSelection(
@@ -5688,25 +5688,25 @@ function createInstrumentedPythonEnvironment(
     `${dependencySitePackages}\n`,
     "utf8"
   );
-  const invocationLog = path.join(environmentRoot, "openwrangler-invocations.jsonl");
+  const runtimeMarkerDirectory = path.join(environmentRoot, "runtime-starts");
+  mkdirSync(runtimeMarkerDirectory);
   writeFileSync(
     path.join(environmentSitePackages, "sitecustomize.py"),
     [
-      "import json",
       "import os",
-      "import sys",
+      "import uuid",
       "_runtime = any(",
       "    os.path.isfile(os.path.join(entry, 'openwrangler_runtime', 'server.py'))",
       "    for entry in os.environ.get('PYTHONPATH', '').split(os.pathsep)",
       "    if entry",
       ")",
-      `with open(${JSON.stringify(invocationLog)}, 'a', encoding='utf-8') as _stream:`,
-      `    _stream.write(json.dumps({'environment': ${JSON.stringify(label)}, 'runtime': _runtime, 'executable': sys.executable}, sort_keys=True) + '\\n')`,
+      "if _runtime:",
+      `    open(os.path.join(${JSON.stringify(runtimeMarkerDirectory)}, 'runtime-' + uuid.uuid4().hex + '.marker'), 'x').close()`,
       ""
     ].join("\n"),
     "utf8"
   );
-  return { executable, invocationLog };
+  return { executable, runtimeMarkerDirectory };
 }
 
 async function waitForSelectedPythonEnvironment(
@@ -5734,14 +5734,9 @@ function sameAcceptanceExecutable(left: string, right: string): boolean {
 }
 
 function instrumentedRuntimeStarts(environment: InstrumentedPythonEnvironment): number {
-  if (!existsSync(environment.invocationLog)) return 0;
-  const log = readFileSync(environment.invocationLog, "utf8");
-  assert.ok(Buffer.byteLength(log, "utf8") <= 64 * 1024, "Instrumented Python invocation log exceeded its bound.");
-  return log
-    .split(/\r?\n/u)
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as { runtime?: unknown })
-    .filter((entry) => entry.runtime === true).length;
+  const entries = readdirSync(environment.runtimeMarkerDirectory);
+  assert.ok(entries.length <= 16, "Instrumented Python runtime markers exceeded their fixed bound.");
+  return entries.filter((entry) => /^runtime-[0-9a-f]{32}\.marker$/u.test(entry)).length;
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
