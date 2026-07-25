@@ -203,10 +203,10 @@ try {
               "setup",
               `setup:editor-${editor.key}`
             );
-            const profile = mkdtempSync(join(temporaryRoot, `pkg-${editor.key}-`));
+            const profile = mkdtempSync(join(temporaryRoot, `p-${editor.key.slice(0, 1)}-`));
             const profileReceipt = capturePrivateRootReceipt(profile, temporaryRoot);
-            const userData = resolve(profile, "user-data");
-            const restrictedUserData = resolve(profile, "restricted-user-data");
+            const userData = resolve(profile, "u");
+            const restrictedUserData = resolve(profile, "r");
             const extensions = resolve(profile, "extensions");
             const workspace = resolve(profile, "Open Wrangler Demo");
             const acceptanceHarness = resolve(profile, "acceptance-harness");

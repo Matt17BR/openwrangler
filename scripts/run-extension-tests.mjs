@@ -59,7 +59,7 @@ try {
     containedBy: temporaryParent
   });
   configureEditorAcceptanceTempRoot(temporaryRoot);
-  profile = mkdtempSync(join(temporaryRoot, "host-"));
+  profile = mkdtempSync(join(temporaryRoot, "h-"));
   fakeJupyter = resolve(profile, "fake-jupyter");
   const requestedVersion = process.env.VSCODE_TEST_VERSION;
   const installedExecutable = "/usr/share/code/code";
@@ -80,9 +80,9 @@ try {
   };
   const editorVersion = await readEditorVersion(editorLaunch, editorEnvironment);
   const harness = resolve(profile, "harness");
-  const singleUserData = resolve(profile, "single-user-data");
+  const singleUserData = resolve(profile, "u1");
   const singleExtensions = resolve(profile, "single-extensions");
-  const userData = resolve(profile, "reload-user-data");
+  const userData = resolve(profile, "u2");
   const extensions = resolve(profile, "reload-extensions");
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
   writeEditorAcceptanceHarness(harness);

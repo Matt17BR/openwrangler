@@ -4,13 +4,14 @@ import { EventEmitter } from "node:events";
 import { linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   acceptancePathSnapshotShowsAtomicPublication,
   acceptanceProgressCheckpoint,
   acceptanceProgressDetail,
+  assertEditorUserDataIpcPathSafe,
   collectEditorAcceptancePrivateDiagnosticPaths,
   configureEditorAcceptanceTempRoot,
   createAcceptanceProgressEnvelope,
@@ -33,6 +34,7 @@ import {
   editorAcceptanceProgressSignalPath,
   editorProcessTreeMayBeLive,
   editorProcessGroupRunning,
+  MACOS_EDITOR_IPC_PATH_LIMIT_BYTES,
   prepareWindowsEditorProcessSupervisor,
   readBoundedAcceptanceText,
   readXvfbDisplayNumber,
@@ -623,6 +625,38 @@ test("downloaded macOS editors use the official CLI resolver instead of the GUI 
     () => resolveDownloadedEditorCliPath("C:\\VSCode\\renamed.exe", "win32"),
     /unsupported product filename/u
   );
+});
+
+test("macOS editor IPC preflight accepts 102 bytes, rejects 103, and covers isolated CI layouts", () => {
+  const acceptedUserData = `/${"a".repeat(86)}`;
+  const rejectedUserData = `/${"a".repeat(87)}`;
+  const unicodeRejectedUserData = `/${"a".repeat(85)}é`;
+  const suffix = "/1.13-main.sock";
+  assert.equal(Buffer.byteLength(acceptedUserData + suffix, "utf8"), MACOS_EDITOR_IPC_PATH_LIMIT_BYTES - 1);
+  assert.equal(Buffer.byteLength(rejectedUserData + suffix, "utf8"), MACOS_EDITOR_IPC_PATH_LIMIT_BYTES);
+  assert.equal(Buffer.byteLength(unicodeRejectedUserData + suffix, "utf8"), MACOS_EDITOR_IPC_PATH_LIMIT_BYTES);
+  assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(acceptedUserData, "1.130.0", "darwin"));
+  assert.throws(
+    () => assertEditorUserDataIpcPathSafe(rejectedUserData, "1.130.0", "darwin"),
+    /shorter than 103 UTF-8 bytes/u
+  );
+  assert.throws(
+    () => assertEditorUserDataIpcPathSafe(unicodeRejectedUserData, "1.130.0", "darwin"),
+    /shorter than 103 UTF-8 bytes/u
+  );
+
+  const githubRoot = "/Users/runner/work/openwrangler/openwrangler/tmp/ow/x-ABC123";
+  const packagedProfile = posix.join(githubRoot, "p-v-ABC123");
+  const extensionHostProfile = posix.join(githubRoot, "h-ABC123");
+  for (const userData of [
+    posix.join(packagedProfile, "u"),
+    posix.join(packagedProfile, "r"),
+    posix.join(extensionHostProfile, "u1"),
+    posix.join(extensionHostProfile, "u2")
+  ]) {
+    assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(userData, "1.130.0", "darwin"));
+  }
+  assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(rejectedUserData, "not-a-version", "linux"));
 });
 
 function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
@@ -1960,7 +1994,7 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
 });
 
 test("editor phase inactivity includes work before observation starts", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-pre-observation-inactivity-"));
+  const directory = await mkdtemp(join(tmpdir(), "ow-i-"));
   const resultPath = join(directory, "result.json");
   const child = fakeStoppableCommandChild(17341);
   let clock = 0;
@@ -2327,12 +2361,12 @@ test("editor phases pass only runner-owned test values through the environment",
 });
 
 test("restricted editor phases keep Workspace Trust enabled and reject unknown trust modes", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-restricted-phase-"));
+  const directory = await mkdtemp(join(tmpdir(), "ow-r-"));
   const resultPath = join(directory, "result.json");
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "restricted-user-data"),
+    userData: join(directory, "r"),
     extensions: join(directory, "extensions"),
     developmentPaths: [],
     testModule: join(directory, "restricted.js"),

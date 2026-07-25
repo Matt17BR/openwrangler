@@ -70,6 +70,7 @@ const XVFB_DISPLAY_OUTPUT_MAX_BYTES = 64;
 const XVFB_DIAGNOSTIC_MAX_BYTES = 16 * 1024;
 const EDITOR_OUTPUT_CLOSE_TIMEOUT_MS = 5_000;
 const EDITOR_DEBUG_PORT_RELEASE_GRACE_MS = 100;
+export const MACOS_EDITOR_IPC_PATH_LIMIT_BYTES = 103;
 const OVERSIZED_EDITOR_DIAGNOSTIC =
   "Diagnostic text was suppressed because its complete value exceeded the fixed safety limit.";
 const SENSITIVE_EDITOR_DIAGNOSTIC = "Sensitive harness details were suppressed.";
@@ -572,6 +573,25 @@ export function editorDisplayLaunchArgs(platform = process.platform, environment
   if (mode === "headless") return ["--ozone-platform=headless", "--disable-gpu", ...ISOLATED_EDITOR_ARGS];
   if (mode === "xvfb") return ["--ozone-platform=x11", ...ISOLATED_EDITOR_ARGS];
   return [...ISOLATED_EDITOR_ARGS];
+}
+
+export function assertEditorUserDataIpcPathSafe(userData, editorVersion, platform = process.platform) {
+  if (platform !== "darwin") return;
+  if (typeof userData !== "string" || !posix.isAbsolute(userData) || /[\0\r\n]/u.test(userData)) {
+    throw new Error("macOS editor acceptance requires one absolute, single-line user-data path.");
+  }
+  if (typeof editorVersion !== "string" || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(editorVersion)) {
+    throw new Error("macOS editor acceptance requires a numeric major.minor.patch editor version.");
+  }
+  // VS Code derives its static main-process socket from --user-data-dir and
+  // truncates only the version component. Node 24 rejects rather than silently
+  // truncating an overlong sockaddr_un path, so fail before any process starts.
+  const handle = posix.join(posix.resolve(userData), `${editorVersion.slice(0, 4)}-main.sock`);
+  if (Buffer.byteLength(handle, "utf8") >= MACOS_EDITOR_IPC_PATH_LIMIT_BYTES) {
+    throw new Error(
+      `macOS editor acceptance requires its main IPC handle to be shorter than ${MACOS_EDITOR_IPC_PATH_LIMIT_BYTES} UTF-8 bytes; shorten the isolated profile layout.`
+    );
+  }
 }
 
 function editorDisplayMode(environment) {
@@ -2264,6 +2284,7 @@ export async function runEditorAcceptancePhase(
   if (workspaceTrust !== "trusted" && workspaceTrust !== "restricted") {
     throw new Error('An editor acceptance phase workspace-trust mode must be "trusted" or "restricted".');
   }
+  assertEditorUserDataIpcPathSafe(userData, editor.version, platform);
   const expectedProgressPath = editorAcceptanceProgressPath(resultPath, runId, phase);
   if (progressPath !== expectedProgressPath) {
     throw new Error("An editor acceptance progress path must be the unique path derived for its run and phase.");
