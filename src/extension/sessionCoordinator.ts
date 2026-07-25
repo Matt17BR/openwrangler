@@ -1784,7 +1784,7 @@ export class SessionCoordinator implements vscode.Disposable {
         options
       );
       if (response.kind === "sessionClosed" && response.sessionId === state.runtimeId) return;
-      if (unknownSessionIsClean && isConfirmedAbsentSession(response)) return;
+      if (unknownSessionIsClean && isConfirmedAbsentSession(response, state.runtimeId)) return;
       this.reportRuntimeCleanupDiagnostic(state, role, cleanupResponseDescription(response, state.runtimeId));
     } catch (error) {
       this.reportRuntimeCleanupDiagnostic(state, role, error instanceof Error ? error.message : String(error));
@@ -2145,11 +2145,13 @@ function runtimeRecoveryOptions(): BridgeRequestOptions {
   return { priority: "interactive" };
 }
 
-function isConfirmedAbsentSession(response: OpenWranglerResponse): boolean {
+function isConfirmedAbsentSession(response: OpenWranglerResponse, expectedSessionId: string): boolean {
+  if (response.kind !== "error") return false;
+  if (response.code === "unknown_session") return response.sessionId === expectedSessionId;
   return (
-    response.kind === "error" &&
-    (response.code === "unknown_session" ||
-      (response.code === "engine_error" && response.message.startsWith("Unknown session:")))
+    response.code === "engine_error" &&
+    response.message === `Unknown session: ${expectedSessionId}` &&
+    (response.sessionId === undefined || response.sessionId === expectedSessionId)
   );
 }
 
