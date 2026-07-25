@@ -56,6 +56,10 @@ import {
 } from "./editor-acceptance.mjs";
 
 const PROGRESS_RUN_ID = "8be8c321-d21d-4de8-a890-13d18844a3c7";
+// Fake editor phases never access their profile on disk. Keep their synthetic
+// profile short and host-independent so Darwin seam tests exercise their
+// intended lifecycle behavior instead of the real macOS socket-path preflight.
+const SYNTHETIC_EDITOR_USER_DATA = "/tmp/ow-u";
 const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
   createAcceptanceProgressEnvelope(runId, phase, checkpoint);
 
@@ -657,6 +661,40 @@ test("macOS editor IPC preflight accepts 102 bytes, rejects 103, and covers isol
     assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(userData, "1.130.0", "darwin"));
   }
   assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(rejectedUserData, "not-a-version", "linux"));
+});
+
+test("editor phases reject an unsafe macOS IPC path before reserving a port or spawning", async () => {
+  let reserveCalls = 0;
+  let spawnCalls = 0;
+  await assert.rejects(
+    runEditorAcceptancePhase(
+      {
+        editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+        workspace: "/tmp/ow-workspace",
+        userData: `/${"a".repeat(87)}`,
+        extensions: "/tmp/ow-extensions",
+        developmentPaths: [],
+        testModule: "/tmp/ow-tests.js",
+        python: "python3",
+        phase: "verify",
+        resultPath: "/tmp/ow-result-never-opened.json"
+      },
+      {
+        platform: "darwin",
+        reserveDebugPort() {
+          reserveCalls += 1;
+          throw new Error("port reservation must not run");
+        },
+        spawnProcess() {
+          spawnCalls += 1;
+          return fakeEditorChild();
+        }
+      }
+    ),
+    /shorter than 103 UTF-8 bytes/u
+  );
+  assert.equal(reserveCalls, 0);
+  assert.equal(spawnCalls, 0);
 });
 
 function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
@@ -1953,7 +1991,7 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -2004,7 +2042,7 @@ test("editor phase inactivity includes work before observation starts", async ()
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -2046,7 +2084,7 @@ test("editor phases reject results first observed after the hard deadline", asyn
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2102,7 +2140,7 @@ test("editor phases reject results first observed after inactivity unless a new 
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2169,7 +2207,7 @@ test("expired phase deadlines override non-deadline debugging-port errors", asyn
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2223,7 +2261,7 @@ test("expired phase deadlines override synchronous spawn errors and retain unver
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2280,7 +2318,7 @@ test("editor phases pass only runner-owned test values through the environment",
       {
         editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
         workspace: directory,
-        userData: join(directory, "user-data"),
+        userData: SYNTHETIC_EDITOR_USER_DATA,
         extensions: join(directory, "extensions"),
         developmentPaths: [directory],
         testModule: expectedModule,
@@ -2648,7 +2686,7 @@ test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", 
       {
         editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
         workspace: directory,
-        userData: join(directory, "user-data"),
+        userData: SYNTHETIC_EDITOR_USER_DATA,
         extensions: join(directory, "extensions"),
         developmentPaths: [directory],
         testModule: join(directory, "tests.js"),
@@ -2821,7 +2859,7 @@ test("a synchronous editor spawn failure is not reported as an early exit", asyn
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "missing-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -2872,7 +2910,7 @@ test("a late child error cannot impersonate editor-phase exit", async () => {
       {
         editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
         workspace: directory,
-        userData: join(directory, "user-data"),
+        userData: SYNTHETIC_EDITOR_USER_DATA,
         extensions: join(directory, "extensions"),
         developmentPaths: [directory],
         testModule: join(directory, "tests.js"),
@@ -2928,7 +2966,7 @@ test("editor phase failures distinguish emitted spawn errors, early exits, malfo
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -3051,7 +3089,7 @@ test("editor phase output is captured, bounded, and redacted instead of inheriti
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3102,7 +3140,7 @@ test("editor phase failures retain a redacted bounded startup tail", async () =>
         {
           editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [],
           testModule: join(directory, "tests.js"),
@@ -3149,7 +3187,7 @@ test("editor phase output rejects private-key containers before retaining a tail
         {
           editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [],
           testModule: join(directory, "tests.js"),
@@ -3193,7 +3231,7 @@ test("editor phase output remains captured through close before it can be retain
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3247,7 +3285,7 @@ test("editor phase output is omitted within a bound when close cannot be verifie
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3440,7 +3478,7 @@ test("result reads reject oversized, symlinked, and FIFO payloads as protocol fa
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -3502,7 +3540,7 @@ test("a result replacement during editor shutdown is rejected even when its enve
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3774,7 +3812,7 @@ test("a live timed-out editor phase terminates its child and removes signal hook
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -3837,7 +3875,7 @@ test("editor shutdown failures are explicit cleanup diagnostics with their origi
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
