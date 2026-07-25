@@ -23,6 +23,7 @@ import { vscode } from "./vscodeApi";
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
 const drawerSummaryConcurrency = 4;
+const sessionSnapshotRetryDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
 
@@ -58,6 +59,10 @@ export function App() {
   const [activeViewContextId, setActiveViewContextId] = useState("");
   const [gridViewState, setGridViewState] = useState<GridViewState>(emptyGridViewState);
   const [viewStateRestoreVersion, setViewStateRestoreVersion] = useState(0);
+  const [pendingRendererSynchronization, setPendingRendererSynchronization] = useState<
+    RendererSynchronizationMessage | undefined
+  >();
+  const acknowledgedRendererSynchronizationId = useRef<string | undefined>(undefined);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
   const pageRef = useRef<GridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
@@ -544,21 +549,27 @@ export function App() {
     importOptionsUiBusyRef.current = loading || mutationPending || projectionLoading;
   }, [loading, mutationPending, projectionLoading]);
 
-  const requestImportOptionsChange = useCallback(() => {
-    if (
-      importOptionsUiBusyRef.current ||
-      foregroundRequest.current ||
-      pendingStepInspectionRef.current?.reason === "projection" ||
-      importOptionsPendingRef.current
-    ) {
-      return;
-    }
-    flushGridViewState();
-    cancelBackgroundRequests();
-    clearDrawerSummaryScheduling();
-    storeImportOptionsPending(true);
-    vscode.postMessage({ kind: "changeImportOptions" });
-  }, [cancelBackgroundRequests, clearDrawerSummaryScheduling, flushGridViewState, storeImportOptionsPending]);
+  const requestImportOptionsChange = useCallback(
+    (actionId?: string) => {
+      flushGridViewState();
+      cancelBackgroundRequests();
+      clearDrawerSummaryScheduling();
+      if (
+        importOptionsUiBusyRef.current ||
+        foregroundRequest.current ||
+        pendingStepInspectionRef.current?.reason === "projection" ||
+        importOptionsPendingRef.current
+      ) {
+        return;
+      }
+      storeImportOptionsPending(true);
+      vscode.postMessage({
+        kind: "changeImportOptions",
+        ...(actionId === undefined ? {} : { actionId })
+      });
+    },
+    [cancelBackgroundRequests, clearDrawerSummaryScheduling, flushGridViewState, storeImportOptionsPending]
+  );
 
   const updateImportOptionsPending = useCallback(
     (pending: boolean) => {
@@ -752,6 +763,7 @@ export function App() {
         | OpenWranglerResponse
         | EditorActionMessage
         | RequestImportOptionsChangeMessage
+        | RendererSynchronizationMessage
         | ImportOptionsStateMessage
         | SessionPresentationMessage
         | ViewStateMessage
@@ -761,8 +773,19 @@ export function App() {
     ) => {
       if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "rendererSynchronization") {
+        const current = metadataRef.current;
+        const matchesSession =
+          response.sessionId === null && response.revision === null
+            ? current === undefined
+            : current?.sessionId === response.sessionId && current.revision === response.revision;
+        if (matchesSession) {
+          setPendingRendererSynchronization(response);
+        }
+        return;
+      }
       if (response.kind === "requestImportOptionsChange") {
-        requestImportOptionsChange();
+        requestImportOptionsChange(response.actionId);
         return;
       }
       if (response.kind === "importOptionsState") {
@@ -947,6 +970,8 @@ export function App() {
           setForegroundError(response.message);
           return;
         } else if (!metadataRef.current) {
+          setPendingRendererSynchronization(undefined);
+          acknowledgedRendererSynchronizationId.current = undefined;
           setLoading(false);
           setProjectionLoading(false);
         }
@@ -976,6 +1001,8 @@ export function App() {
           } else if (importOptionsPendingRef.current) {
             return;
           } else if (!metadataRef.current) {
+            setPendingRendererSynchronization(undefined);
+            acknowledgedRendererSynchronizationId.current = undefined;
             setLoading(false);
             setProjectionLoading(false);
             setForegroundError("Opening the dataframe was cancelled.");
@@ -1009,6 +1036,8 @@ export function App() {
       }
 
       if (response.kind === "sessionOpened") {
+        setPendingRendererSynchronization(undefined);
+        acknowledgedRendererSynchronizationId.current = undefined;
         storeImportOptionsPending(false);
         setOperationOpen(false);
         setEditingStep(undefined);
@@ -1088,6 +1117,8 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        setPendingRendererSynchronization(undefined);
+        acknowledgedRendererSynchronizationId.current = undefined;
         const previous = mutationSnapshot.current;
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
@@ -1229,6 +1260,60 @@ export function App() {
     storeSummaries,
     updateImportOptionsPending
   ]);
+
+  useEffect(() => {
+    const synchronization = pendingRendererSynchronization;
+    if (!synchronization || acknowledgedRendererSynchronizationId.current === synchronization.syncId) return;
+    const matchesCommittedSession =
+      synchronization.sessionId === null && synchronization.revision === null
+        ? metadata === undefined
+        : metadata?.sessionId === synchronization.sessionId && metadata.revision === synchronization.revision;
+    if (!matchesCommittedSession) return;
+    vscode.postMessage({
+      kind: "rendererSynchronized",
+      syncId: synchronization.syncId,
+      sessionId: synchronization.sessionId,
+      revision: synchronization.revision
+    });
+    acknowledgedRendererSynchronizationId.current = synchronization.syncId;
+  }, [metadata, pendingRendererSynchronization]);
+
+  const rendererNeedsSnapshot = pendingRendererSynchronization === undefined;
+  useEffect(() => {
+    if (!rendererNeedsSnapshot) return;
+    let retryIndex = 0;
+    let retry: number | undefined;
+    const clearRetry = () => {
+      if (retry !== undefined) window.clearTimeout(retry);
+      retry = undefined;
+    };
+    const scheduleRetry = () => {
+      clearRetry();
+      if (document.visibilityState !== "visible" || retryIndex >= sessionSnapshotRetryDelaysMs.length) return;
+      retry = window.setTimeout(() => {
+        retry = undefined;
+        if (document.visibilityState !== "visible") return;
+        vscode.postMessage({ kind: "requestSessionSnapshot" });
+        retryIndex += 1;
+        scheduleRetry();
+      }, sessionSnapshotRetryDelaysMs[retryIndex]);
+    };
+    const restoreVisibleSnapshot = () => {
+      clearRetry();
+      retryIndex = 0;
+      if (document.visibilityState === "visible") {
+        vscode.postMessage({ kind: "requestSessionSnapshot" });
+        retryIndex = 1;
+        scheduleRetry();
+      }
+    };
+    document.addEventListener("visibilitychange", restoreVisibleSnapshot);
+    scheduleRetry();
+    return () => {
+      clearRetry();
+      document.removeEventListener("visibilitychange", restoreVisibleSnapshot);
+    };
+  }, [rendererNeedsSnapshot]);
 
   const schemaByName = useMemo(
     () => new Map(metadata?.schema.map((column) => [column.name, column]) ?? []),
@@ -1613,7 +1698,7 @@ export function App() {
               disabled={importOptionsDisabled}
               aria-busy={importOptionsPending || undefined}
               title="Change file import options"
-              onClick={requestImportOptionsChange}
+              onClick={() => requestImportOptionsChange()}
             >
               <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
             </button>
@@ -1654,7 +1739,7 @@ export function App() {
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
                   title="Change file import options"
-                  onClick={requestImportOptionsChange}
+                  onClick={() => requestImportOptionsChange()}
                 >
                   <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
                 </button>
@@ -2020,6 +2105,14 @@ interface EditorActionMessage {
 
 interface RequestImportOptionsChangeMessage {
   kind: "requestImportOptionsChange";
+  actionId: string;
+}
+
+interface RendererSynchronizationMessage {
+  kind: "rendererSynchronization";
+  syncId: string;
+  sessionId: string | null;
+  revision: number | null;
 }
 
 interface ImportOptionsStateMessage {

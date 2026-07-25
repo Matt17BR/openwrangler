@@ -212,13 +212,278 @@ describe("OpenWranglerPanel retained view state", () => {
     );
     await harness.open();
     await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    configureDelimitedPrompts({
+      delimiter: ",",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    harness.posted.length = 0;
+
+    const command = OpenWranglerPanel.changeActiveImportOptions();
+    await vi.waitFor(() => expect(harness.posted.some((message) => isRendererImportRequest(message))).toBe(true));
+    const rendererRequest = harness.posted.find(isRendererImportRequest);
+    if (!rendererRequest) throw new Error("The panel did not publish a renderer import request.");
+    const rendererResponse = harness.receive({
+      kind: "changeImportOptions",
+      actionId: rendererRequest.actionId
+    });
+    await expect(command).resolves.toBe(true);
+    await rendererResponse;
+
+    expect(rendererRequest).toEqual({
+      kind: "requestImportOptionsChange",
+      actionId: expect.stringMatching(/^[A-Za-z0-9]{32}$/u)
+    });
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalled();
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+  });
+
+  it("requires a fresh synchronization acknowledgement after an already hydrated renderer pulls again", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const configured = responseForSource(
+      {
+        ...source,
+        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      1
+    );
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    const firstSynchronization = await acknowledgeLatestRendererSynchronization(harness);
+    await harness.receive({ kind: "requestSessionSnapshot" });
+    const secondSynchronization = latestRendererSynchronization(harness.posted);
+    expect(secondSynchronization.syncId).not.toBe(firstSynchronization.syncId);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: firstSynchronization.syncId,
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
     harness.posted.length = 0;
 
     await expect(OpenWranglerPanel.changeActiveImportOptions()).resolves.toBe(true);
 
-    expect(harness.posted).toEqual([{ kind: "requestImportOptionsChange" }]);
-    expect(panelPromptMocks.showQuickPick).not.toHaveBeenCalled();
-    expect(reconfigureFileSession).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    expect(harness.posted).not.toContainEqual({ kind: "requestImportOptionsChange" });
+  });
+
+  it("replays retained state when an unhydrated renderer pulls its snapshot", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened)
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+
+    await harness.receive({ kind: "requestSessionSnapshot" });
+
+    expect(harness.posted.slice(0, 2)).toEqual([opened, { kind: "importOptionsState", busy: false }]);
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+  });
+
+  it("retains a host-side import failure when an older synchronization is acknowledged during publication", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const failure: OpenWranglerResponse = {
+      kind: "error",
+      code: "invalid_import_options",
+      message: "The selected delimiter does not match this file.",
+      recoverable: true,
+      sessionId: opened.metadata.sessionId
+    };
+    const heldFailurePublication = deferred<boolean>();
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession: vi.fn(async (): Promise<OpenWranglerResponse> => failure)
+      },
+      {
+        source,
+        openResponse: opened,
+        postMessage: (message) =>
+          typeof message === "object" && message !== null && (message as { kind?: unknown }).kind === "error"
+            ? heldFailurePublication.promise
+            : Promise.resolve(true)
+      }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    const olderSynchronization = latestRendererSynchronization(harness.posted);
+    configureDelimitedPrompts({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    harness.posted.length = 0;
+
+    const changing = OpenWranglerPanel.changeActiveImportOptions();
+    await vi.waitFor(() => expect(harness.posted).toContainEqual(failure));
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: olderSynchronization.syncId,
+      sessionId: olderSynchronization.sessionId,
+      revision: olderSynchronization.revision
+    });
+    heldFailurePublication.resolve(true);
+    await changing;
+
+    harness.posted.length = 0;
+    await harness.receive({ kind: "requestSessionSnapshot" });
+
+    expect(harness.posted).toContainEqual(opened);
+    expect(harness.posted).toContainEqual(failure);
+    expect(harness.posted.indexOf(opened)).toBeLessThan(harness.posted.indexOf(failure));
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
+  });
+
+  it("falls back exactly once when a hydrated renderer does not acknowledge a native import action", async () => {
+    vi.useFakeTimers();
+    try {
+      const source: SessionSource = {
+        kind: "file",
+        label: "records.csv",
+        path: "/workspace/records.csv",
+        uri: "file:///workspace/records.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const opened = responseForSource(source);
+      const configured = responseForSource(
+        {
+          ...source,
+          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+        },
+        1
+      );
+      const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+      const harness = createPanelHarness(
+        {
+          request: vi.fn(async () => opened),
+          reconfigureFileSession
+        },
+        { source, openResponse: opened }
+      );
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      configureDelimitedPrompts({
+        delimiter: ";",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true
+      });
+      harness.posted.length = 0;
+
+      const command = OpenWranglerPanel.changeActiveImportOptions();
+      const rendererRequest = harness.posted.find(isRendererImportRequest);
+      if (!rendererRequest) throw new Error("The panel did not publish a renderer import request.");
+      await vi.advanceTimersByTimeAsync(1_500);
+      await command;
+
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+      await harness.receive({ kind: "changeImportOptions", actionId: rendererRequest.actionId });
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces a manual renderer import intent with a pending native action", async () => {
+    vi.useFakeTimers();
+    try {
+      const source: SessionSource = {
+        kind: "file",
+        label: "records.csv",
+        path: "/workspace/records.csv",
+        uri: "file:///workspace/records.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const opened = responseForSource(source);
+      const configured = responseForSource(
+        {
+          ...source,
+          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+        },
+        1
+      );
+      const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+      const harness = createPanelHarness(
+        {
+          request: vi.fn(async () => opened),
+          reconfigureFileSession
+        },
+        { source, openResponse: opened }
+      );
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      configureDelimitedPrompts({
+        delimiter: ";",
+        encoding: "utf-8",
+        quoteChar: '"',
+        hasHeader: true
+      });
+      harness.posted.length = 0;
+
+      const command = OpenWranglerPanel.changeActiveImportOptions();
+      const rendererRequest = harness.posted.find(isRendererImportRequest);
+      if (!rendererRequest) throw new Error("The panel did not publish a renderer import request.");
+      const manualIntent = harness.receive({ kind: "changeImportOptions" });
+      await expect(command).resolves.toBe(true);
+      await manualIntent;
+      await vi.advanceTimersByTimeAsync(1_500);
+
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+      await harness.receive({ kind: "changeImportOptions", actionId: rendererRequest.actionId });
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runs the native import command in the host before the renderer first becomes ready", async () => {
@@ -277,7 +542,12 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
 
-    expect(harness.posted).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, configured]);
+    expect(harness.posted.slice(0, 2)).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, configured]);
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: configured.metadata.sessionId,
+      revision: configured.metadata.revision
+    });
   });
 
   it("replays a pre-renderer native import failure after restoring the confirmed snapshot", async () => {
@@ -323,7 +593,16 @@ describe("OpenWranglerPanel retained view state", () => {
     harness.posted.length = 0;
     await harness.receive({ kind: "ready" });
 
-    expect(harness.posted).toEqual([{ kind: "stepInspectionCleared", resumeProfiling: false }, opened, failure]);
+    expect(harness.posted.slice(0, 3)).toEqual([
+      { kind: "stepInspectionCleared", resumeProfiling: false },
+      opened,
+      failure
+    ]);
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: false });
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision
+    });
   });
 
   it("does not let an initially hidden panel replace the active command target", async () => {
@@ -447,7 +726,10 @@ describe("OpenWranglerPanel retained view state", () => {
     await Promise.all([stale, staleStats]);
 
     await harness.send({ kind: "ready" });
-    const retained = harness.posted.at(-1) as SessionOpenedResponse;
+    const retained = [...harness.posted]
+      .reverse()
+      .find((message): message is SessionOpenedResponse => isSessionOpenedResponse(message));
+    if (!retained) throw new Error("The panel did not retain the opened session response.");
     expect(retained.kind).toBe("sessionOpened");
     expect(retained.summaries).toEqual([]);
     expect(retained.metadata.stats).toBeUndefined();
@@ -510,7 +792,10 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.send(pageMessage("same-view-next-page", "current-view"));
     await harness.send({ kind: "ready" });
 
-    const retained = harness.posted.at(-1) as SessionOpenedResponse;
+    const retained = [...harness.posted]
+      .reverse()
+      .find((message): message is SessionOpenedResponse => isSessionOpenedResponse(message));
+    if (!retained) throw new Error("The panel did not retain the opened session response.");
     expect(retained.summaries).toEqual([summary]);
     expect(retained.metadata.stats?.missingCells).toBe(0);
     expect(retained.page.offset).toBe(200);
@@ -546,7 +831,7 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
 
     await harness.send({ kind: "ready" });
-    expect(harness.posted.at(-1)).toEqual({ kind: "viewState", state });
+    expect(harness.posted).toContainEqual({ kind: "viewState", state });
 
     await harness.send({ kind: "updateViewState", state });
     await harness.send({
@@ -655,7 +940,11 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "ready" });
 
     expect(harness.posted).toContainEqual(initial);
-    expect(harness.posted.at(-1)).toEqual({ kind: "importOptionsState", busy: true });
+    expect(harness.posted).toContainEqual({ kind: "importOptionsState", busy: true });
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: initial.metadata.sessionId,
+      revision: initial.metadata.revision
+    });
 
     replacement.resolve(
       responseForSource(
@@ -817,6 +1106,32 @@ describe("OpenWranglerPanel retained view state", () => {
       request: { kind: "closeSession", force: true }
     });
     await harness.send({ kind: "ready", unexpected: true });
+    await harness.send({ kind: "requestSessionSnapshot", unexpected: true });
+    await harness.send({
+      kind: "rendererSynchronized",
+      syncId: "",
+      sessionId: "session",
+      revision: 0
+    });
+    await harness.send({
+      kind: "rendererSynchronized",
+      syncId: "S".repeat(32),
+      sessionId: "session",
+      revision: -1
+    });
+    await harness.send({
+      kind: "rendererSynchronized",
+      syncId: "S".repeat(32),
+      sessionId: null,
+      revision: 0
+    });
+    await harness.send({
+      kind: "rendererSynchronized",
+      syncId: "S".repeat(32),
+      sessionId: "session",
+      revision: 0,
+      unexpected: true
+    });
 
     expect(bridge.request).not.toHaveBeenCalled();
     expect(harness.posted).toEqual([]);
@@ -839,7 +1154,9 @@ describe("OpenWranglerPanel retained view state", () => {
       null,
       { kind: "changeImportOptions", unexpected: true },
       { kind: "changeImportOptions", request: {} },
-      { kind: "changeImportOptions", busy: false }
+      { kind: "changeImportOptions", busy: false },
+      { kind: "changeImportOptions", actionId: "short" },
+      { kind: "changeImportOptions", actionId: "A".repeat(32), unexpected: true }
     ]) {
       await harness.receive(malformed);
     }
@@ -2159,11 +2476,15 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.receive({ kind: "ready" });
 
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
-    expect(harness.posted.at(-1)).toEqual({
+    expect(harness.posted).toContainEqual({
       kind: "error",
       code: "kernel_access_denied",
       message: "Kernel access was denied.",
       recoverable: true
+    });
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: null,
+      revision: null
     });
   });
 
@@ -2277,6 +2598,59 @@ function pageMessage(viewRequestId: string, viewContextId: string) {
   };
 }
 
+interface RendererSynchronizationMessage {
+  kind: "rendererSynchronization";
+  syncId: string;
+  sessionId: string | null;
+  revision: number | null;
+}
+
+interface RendererImportRequest {
+  kind: "requestImportOptionsChange";
+  actionId: string;
+}
+
+function latestRendererSynchronization(messages: unknown[]): RendererSynchronizationMessage {
+  const synchronization = [...messages].reverse().find(isRendererSynchronizationMessage);
+  if (!synchronization) throw new Error("The panel did not publish a renderer synchronization marker.");
+  return synchronization;
+}
+
+function isRendererSynchronizationMessage(message: unknown): message is RendererSynchronizationMessage {
+  if (!message || typeof message !== "object") return false;
+  const candidate = message as Partial<RendererSynchronizationMessage>;
+  return (
+    candidate.kind === "rendererSynchronization" &&
+    typeof candidate.syncId === "string" &&
+    (typeof candidate.sessionId === "string" || candidate.sessionId === null) &&
+    (typeof candidate.revision === "number" || candidate.revision === null)
+  );
+}
+
+function isRendererImportRequest(message: unknown): message is RendererImportRequest {
+  if (!message || typeof message !== "object") return false;
+  const candidate = message as Partial<RendererImportRequest>;
+  return candidate.kind === "requestImportOptionsChange" && typeof candidate.actionId === "string";
+}
+
+function isSessionOpenedResponse(message: unknown): message is SessionOpenedResponse {
+  return Boolean(message && typeof message === "object" && (message as { kind?: unknown }).kind === "sessionOpened");
+}
+
+async function acknowledgeLatestRendererSynchronization(harness: {
+  posted: unknown[];
+  receive(message: unknown): Promise<void>;
+}): Promise<RendererSynchronizationMessage> {
+  const synchronization = latestRendererSynchronization(harness.posted);
+  await harness.receive({
+    kind: "rendererSynchronized",
+    syncId: synchronization.syncId,
+    sessionId: synchronization.sessionId,
+    revision: synchronization.revision
+  });
+  return synchronization;
+}
+
 function createPanelHarness(
   bridge: OpenWranglerBridge,
   options?: {
@@ -2288,6 +2662,7 @@ function createPanelHarness(
     workspaceState?: Pick<vscode.Memento, "get" | "update">;
     backend?: DataBackend;
     backendPreference?: DataBackend | "auto";
+    postMessage?: (message: unknown) => Promise<boolean>;
   }
 ): {
   posted: unknown[];
@@ -2314,7 +2689,7 @@ function createPanelHarness(
     },
     postMessage: async (message: unknown) => {
       posted.push(message);
-      return true;
+      return options?.postMessage ? options.postMessage(message) : true;
     }
   };
   const panel = {

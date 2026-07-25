@@ -30,7 +30,7 @@ const MAX_MANIFEST_ENTRIES = 4_000;
 const MAX_FAILURE_BYTES = 128 * 1024;
 const MAX_FAILURE_DEPTH = 8;
 const MAX_FAILURE_ENTRIES = 256;
-const MAX_FAILURE_STRING_BYTES = 8 * 1024;
+export const EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES = 8 * 1024;
 const OVERSIZED_DIAGNOSTIC_MARKER = "<diagnostic-omitted-size-budget>";
 // Converting an arbitrary BigInt to decimal allocates the complete digit string before a text cap can run.
 // Preserve ordinary diagnostic values while replacing anything beyond this fixed comparison-only bound.
@@ -1257,7 +1257,7 @@ function redactFailureBigInt(value, replacements) {
   return redactFailureText(value.toString(), replacements);
 }
 
-function redactFailureText(value, replacements, byteLimit = MAX_FAILURE_STRING_BYTES) {
+function redactFailureText(value, replacements, byteLimit = EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES) {
   const raw = String(value);
   // Never truncate an unredacted diagnostic. Doing so can remove the trailing
   // `@`, query delimiter, or private-key label terminator that makes the secret

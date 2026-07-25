@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
-import { chromium, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
@@ -86,6 +86,9 @@ const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_
 const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
 const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
 const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
+const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
+const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -4401,45 +4404,213 @@ function stableImportDiagnostics(diagnostics: ReturnType<TestApi["diagnostics"]>
   return structuredClone(diagnostics);
 }
 
-async function waitForOpenWranglerWebviewButton(page: Page, name: string): Promise<Locator> {
-  const deadline = Date.now() + 10_000;
-  do {
-    const browser = page.context().browser();
-    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [page];
-    for (const candidate of pages.slice(0, 16)) {
-      for (const frame of candidate.frames().slice(0, 32)) {
-        const button = frame.getByRole("button", { name, exact: true }).first();
-        if ((await button.count().catch(() => 0)) > 0 && (await button.isVisible().catch(() => false))) {
-          return button;
-        }
+async function waitForOpenWranglerWebviewButton(
+  workbench: Page,
+  name: string,
+  requireEnabled = false
+): Promise<Locator> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  discovery: do {
+    const browser = workbench.context().browser();
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const button = target.frame.getByRole("button", { name, exact: true }).first();
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break discovery;
+        const available = await withAcceptanceOperationDeadline(
+          (async () => {
+            if ((await button.count()) === 0 || !(await button.isVisible())) return false;
+            return !requireEnabled || (await button.isEnabled());
+          })(),
+          remainingMs,
+          `the Open Wrangler ${JSON.stringify(name)} button`
+        );
+        if (available) return button;
+      } catch (error) {
+        if (Date.now() >= deadline) break discovery;
+        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
       }
     }
-    await page.waitForTimeout(50);
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
   } while (Date.now() < deadline);
 
+  const browser = workbench.context().browser();
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  const diagnostics = await openWranglerWebviewDiagnostics(workbench, browser, name);
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
   throw new Error(
-    `The Open Wrangler webview did not expose a visible ${JSON.stringify(name)} button. Frames: ${JSON.stringify(
-      page
-        .context()
-        .browser()
-        ?.contexts()
-        .flatMap((context) => context.pages())
-        .flatMap((candidate) => candidate.frames().map((frame) => frame.url()))
-        .slice(0, 64) ?? [page.url()]
-    )}`
+    `The Open Wrangler webview did not expose a visible${requireEnabled ? " enabled" : ""} ` +
+      `${JSON.stringify(name)} button: ${JSON.stringify(diagnostics)}`
   );
 }
 
 async function waitForOpenWranglerWebviewButtonEnabled(page: Page, name: string): Promise<Locator> {
-  const button = await waitForOpenWranglerWebviewButton(page, name);
-  const started = Date.now();
-  while (!(await button.isEnabled().catch(() => false))) {
-    if (Date.now() - started > WORKBENCH_OPERATION_TIMEOUT_MS) {
-      throw new Error(`Timed out waiting for the Open Wrangler ${JSON.stringify(name)} button to become enabled.`);
+  return waitForOpenWranglerWebviewButton(page, name, true);
+}
+
+interface OpenWranglerWebviewTarget {
+  page: Page;
+  frame: Frame;
+  pageIndex: number;
+  frameIndex: number;
+  isWorkbenchPage: boolean;
+  isMainFrame: boolean;
+  protocol: string;
+  isWebview: boolean;
+  isOpenWranglerWebview: boolean;
+}
+
+function openWranglerWebviewTargets(
+  workbench: Page,
+  browser: Browser | null,
+  limit: number
+): OpenWranglerWebviewTarget[] {
+  const discovered = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+  const pages = [workbench, ...discovered.filter((candidate) => candidate !== workbench && !candidate.isClosed())];
+  const uniquePages = pages.filter((candidate, index) => pages.indexOf(candidate) === index);
+  const targets: OpenWranglerWebviewTarget[] = [];
+  for (const [pageIndex, candidate] of uniquePages.entries()) {
+    if (candidate !== workbench && candidate.isClosed()) continue;
+    const frames = candidate
+      .frames()
+      .map((frame, frameIndex) => ({ frame, frameIndex, classification: classifyRendererUrl(frame.url()) }))
+      .sort(
+        (left, right) => rendererTargetPriority(left.classification) - rendererTargetPriority(right.classification)
+      );
+    for (const { frame, frameIndex, classification } of frames) {
+      if (targets.length >= limit) return targets;
+      targets.push({
+        page: candidate,
+        frame,
+        pageIndex,
+        frameIndex,
+        isWorkbenchPage: candidate === workbench,
+        isMainFrame: frame === candidate.mainFrame(),
+        ...classification
+      });
     }
-    await page.waitForTimeout(50);
   }
-  return button;
+  return targets;
+}
+
+function classifyRendererUrl(url: string): {
+  protocol: string;
+  isWebview: boolean;
+  isOpenWranglerWebview: boolean;
+} {
+  let protocol = "other";
+  try {
+    const candidate = new URL(url).protocol.toLowerCase();
+    if (
+      candidate === "about:" ||
+      candidate === "file:" ||
+      candidate === "http:" ||
+      candidate === "https:" ||
+      candidate === "vscode-file:" ||
+      candidate === "vscode-webview:"
+    ) {
+      protocol = candidate;
+    }
+  } catch {
+    // The diagnostic retains only an allowlisted protocol classification.
+  }
+  const normalized = url.toLowerCase();
+  return {
+    protocol,
+    isWebview: protocol === "vscode-webview:" || normalized.includes("vscode-webview"),
+    isOpenWranglerWebview:
+      normalized.includes("matt17br.openwrangler") ||
+      normalized.includes("openwrangler") ||
+      normalized.includes("open-wrangler")
+  };
+}
+
+function rendererTargetPriority(classification: { isWebview: boolean; isOpenWranglerWebview: boolean }): number {
+  if (classification.isOpenWranglerWebview) return 0;
+  if (classification.isWebview) return 1;
+  return 2;
+}
+
+function assertOpenWranglerWebviewLifecycle(workbench: Page, browser: Browser | null): void {
+  if (workbench.isClosed()) throw new Error("The editor workbench closed during Open Wrangler webview discovery.");
+  if (browser !== null && !browser.isConnected()) {
+    throw new Error("The editor CDP browser disconnected during Open Wrangler webview discovery.");
+  }
+}
+
+async function openWranglerWebviewDiagnostics(
+  workbench: Page,
+  browser: Browser | null,
+  name: string
+): Promise<unknown> {
+  const targets = openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT);
+  try {
+    const diagnostics = await withAcceptanceOperationDeadline(
+      Promise.all(
+        targets.map(async (target) => {
+          if (isRetiredRendererTarget(workbench, target.page, target.frame)) {
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+          try {
+            const button = target.frame.getByRole("button", { name, exact: true });
+            const [readyState, roots, appWorkspaces, contentSecurityPolicies, scripts, buttons, firstButtonVisible] =
+              await Promise.all([
+                target.frame.locator(":root").evaluate((root) => root.ownerDocument.readyState),
+                target.frame.locator("#root").count(),
+                target.frame.locator('[data-testid="app-workspace"]').count(),
+                target.frame.locator('meta[http-equiv="Content-Security-Policy"]').count(),
+                target.frame.locator("script").count(),
+                button.count(),
+                button.first().isVisible()
+              ]);
+            return rendererTargetDiagnostic(target, {
+              readyState:
+                readyState === "loading" || readyState === "interactive" || readyState === "complete"
+                  ? readyState
+                  : "unavailable",
+              roots,
+              appWorkspaces,
+              contentSecurityPolicies,
+              scripts,
+              buttons,
+              firstButtonVisible
+            });
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+        })
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "bounded Open Wrangler webview diagnostics"
+    );
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    return diagnostics;
+  } catch (error) {
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for bounded Open Wrangler")) {
+      return "unavailable within the diagnostics deadline";
+    }
+    throw error;
+  }
+}
+
+function rendererTargetDiagnostic(
+  target: OpenWranglerWebviewTarget,
+  detail: Record<string, boolean | number | string>
+): Record<string, boolean | number | string> {
+  return {
+    pageIndex: target.pageIndex,
+    frameIndex: target.frameIndex,
+    isWorkbenchPage: target.isWorkbenchPage,
+    isMainFrame: target.isMainFrame,
+    protocol: target.protocol,
+    isWebview: target.isWebview,
+    isOpenWranglerWebview: target.isOpenWranglerWebview,
+    ...detail
+  };
 }
 
 async function exerciseLiveImportReconfiguration(

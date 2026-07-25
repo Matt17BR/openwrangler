@@ -1066,6 +1066,34 @@ test("failure metadata has hard byte, depth, entry, and string limits", async ()
   }
 });
 
+test("failure metadata preserves a redacted editor startup tail within the structured string budget", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-editor-tail-"));
+  try {
+    const fixture = await createEvidenceFixture(directory);
+    const finalStartupDetail = "macOS startup failed after workbench launch";
+    const error = new Error("editor startup failed");
+    error.kind = "premature-exit";
+    error.details = {
+      editorOutput: `<earlier editor output omitted>\n${"ordinary startup noise\n".repeat(
+        300
+      )}${finalStartupDetail} in ${process.cwd()}`
+    };
+
+    const target = retainEditorAcceptanceEvidence({ ...fixture.options, error });
+    const rawFailure = await readFile(join(target, "failure.json"), "utf8");
+    const failure = JSON.parse(rawFailure);
+    const retained = failure.details.editorOutput;
+
+    assert.match(retained, /<earlier editor output omitted>/u);
+    assert.match(retained, new RegExp(finalStartupDetail, "u"));
+    assert.match(retained, /<repository>/u);
+    assert.equal(retained.includes(process.cwd()), false);
+    assert.ok(Buffer.byteLength(retained, "utf8") <= 8 * 1024);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("failure-string bounds never cut security terminators before redaction", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-diagnostic-boundaries-"));
   const exactLength = (prefix, suffix, length) => {

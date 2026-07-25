@@ -17,6 +17,7 @@ import { rememberConfirmedFileConfiguration } from "./files/confirmedFileConfigu
 import { ImportCancelledError, promptImportOptions } from "./files/importOptions";
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
+const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
@@ -33,6 +34,29 @@ export class OpenWranglerPanel {
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
   private rendererReady = false;
+  private rendererSynchronizationIdentity:
+    | {
+        syncId: string;
+        sessionId: string;
+        revision: number;
+      }
+    | {
+        syncId: string;
+        sessionId: null;
+        revision: null;
+      }
+    | undefined;
+  private rendererHydratedSyncId: string | undefined;
+  private rendererSynchronization: Promise<void> | undefined;
+  private rendererSynchronizationRequested = false;
+  private rendererSynchronizationNeedsInspectionClear = false;
+  private pendingRendererImportAction:
+    | {
+        actionId: string;
+        timer: ReturnType<typeof setTimeout>;
+        resolve: (accepted: boolean) => void;
+      }
+    | undefined;
   private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
   private unpublishedAuthoritativeSnapshot = false;
   private openAttemptGeneration = 0;
@@ -94,12 +118,8 @@ export class OpenWranglerPanel {
   static async changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
     if (!active?.panel.active || !canChangeImportOptions(active.source)) return false;
-    if (active.rendererReady) {
-      const posted = await active.panel.webview.postMessage({ kind: "requestImportOptionsChange" });
-      if (posted) return true;
-      active.rendererReady = false;
-    }
-    await active.enqueueImportOptionsChange(true);
+    if (active.hasHydratedRenderer() && (await active.requestRendererImportOptionsChange())) return true;
+    await active.enqueueImportOptionsChange();
     return true;
   }
 
@@ -185,6 +205,7 @@ export class OpenWranglerPanel {
     this.importChangeCancellation?.cancel();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
+    this.settleRendererImportAction(undefined, false);
     OpenWranglerPanel.panels.delete(this);
     this.deactivate();
     if (this.sessionId) {
@@ -211,25 +232,29 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "ready") {
-      if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
-      await this.postStepInspectionCleared(false);
-      if (this.snapshot) {
-        await this.post(this.snapshot);
-        await this.postSessionPresentation();
-        await this.postViewState();
-        this.unpublishedAuthoritativeSnapshot = false;
-      } else if (this.openResponse) {
-        await this.post(this.openResponse);
-      } else {
-        await this.open();
-      }
-      if (this.pendingPreReadyImportResponse) {
-        const response = this.pendingPreReadyImportResponse;
-        this.pendingPreReadyImportResponse = undefined;
-        await this.post(response);
-      }
-      await this.postImportOptionsBusyState();
       this.rendererReady = true;
+      this.invalidateRendererSynchronization();
+      await this.enqueueRendererSynchronization(true);
+      return;
+    }
+
+    if (decoded.kind === "requestSessionSnapshot") {
+      this.rendererReady = true;
+      this.invalidateRendererSynchronization();
+      await this.enqueueRendererSynchronization(false);
+      return;
+    }
+
+    if (decoded.kind === "rendererSynchronized") {
+      const synchronization = this.rendererSynchronizationIdentity;
+      if (
+        synchronization?.syncId === decoded.syncId &&
+        synchronization.sessionId === decoded.sessionId &&
+        synchronization.revision === decoded.revision
+      ) {
+        this.rendererHydratedSyncId = decoded.syncId;
+        this.pendingPreReadyImportResponse = undefined;
+      }
       return;
     }
 
@@ -261,6 +286,11 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "changeImportOptions") {
+      if (decoded.actionId !== undefined) {
+        if (!this.settleRendererImportAction(decoded.actionId, true)) return;
+      } else {
+        this.settleRendererImportAction(undefined, true);
+      }
       await this.enqueueImportOptionsChange();
       return;
     }
@@ -300,17 +330,15 @@ export class OpenWranglerPanel {
     await this.forward(request, decoded.viewContextId);
   }
 
-  private enqueueImportOptionsChange(retainResponseUntilReady = false): Promise<void> {
+  private enqueueImportOptionsChange(): Promise<void> {
     const generation = ++this.openAttemptGeneration;
     this.importChangeCancellation?.cancel();
-    const task = this.importChangeTail
-      .catch(() => undefined)
-      .then(() => this.changeImportOptions(generation, retainResponseUntilReady));
+    const task = this.importChangeTail.catch(() => undefined).then(() => this.changeImportOptions(generation));
     this.importChangeTail = task.catch(() => undefined);
     return task;
   }
 
-  private async changeImportOptions(generation: number, retainResponseUntilReady: boolean): Promise<void> {
+  private async changeImportOptions(generation: number): Promise<void> {
     if (this.disposed || generation !== this.openAttemptGeneration || !canChangeImportOptions(this.source)) {
       return;
     }
@@ -332,15 +360,12 @@ export class OpenWranglerPanel {
       const uri = fileSourceUri(this.source);
       if (!uri) {
         await this.postUnpublishedAuthoritativeSnapshot();
-        await this.postImportResponse(
-          {
-            kind: "error",
-            code: "invalid_import_source",
-            message: "Open Wrangler cannot resolve the file behind this session.",
-            recoverable: true
-          },
-          retainResponseUntilReady
-        );
+        await this.postImportResponse({
+          kind: "error",
+          code: "invalid_import_source",
+          message: "Open Wrangler cannot resolve the file behind this session.",
+          recoverable: true
+        });
         return;
       }
 
@@ -351,7 +376,7 @@ export class OpenWranglerPanel {
         if (error instanceof ImportCancelledError) {
           if (this.disposed || generation !== this.openAttemptGeneration) return;
           await this.postUnpublishedAuthoritativeSnapshot();
-          await this.postImportResponse(reconfigurationCancelledResponse(), retainResponseUntilReady);
+          await this.postImportResponse(reconfigurationCancelledResponse());
           return;
         }
         throw error;
@@ -359,7 +384,7 @@ export class OpenWranglerPanel {
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       if (cancellation.token.isCancellationRequested) {
         await this.postUnpublishedAuthoritativeSnapshot();
-        await this.postImportResponse(reconfigurationCancelledResponse(), retainResponseUntilReady);
+        await this.postImportResponse(reconfigurationCancelledResponse());
         return;
       }
       if (this.sessionId) {
@@ -367,7 +392,7 @@ export class OpenWranglerPanel {
         if (this.disposed || generation !== this.openAttemptGeneration) return;
         if (cancellation.token.isCancellationRequested) {
           await this.postUnpublishedAuthoritativeSnapshot();
-          await this.postImportResponse(reconfigurationCancelledResponse(), retainResponseUntilReady);
+          await this.postImportResponse(reconfigurationCancelledResponse());
           return;
         }
       }
@@ -391,21 +416,19 @@ export class OpenWranglerPanel {
 
       if (!this.bridge.reconfigureFileSession) {
         await this.postUnpublishedAuthoritativeSnapshot();
-        await this.postImportResponse(
-          {
-            kind: "error",
-            code: "import_reconfiguration_unavailable",
-            message: "This Open Wrangler session does not support changing import options.",
-            recoverable: true
-          },
-          retainResponseUntilReady
-        );
+        await this.postImportResponse({
+          kind: "error",
+          code: "import_reconfiguration_unavailable",
+          message: "This Open Wrangler session does not support changing import options.",
+          recoverable: true
+        });
         return;
       }
       const response = await this.bridge.reconfigureFileSession(this.sessionId, this.sessionRevision, nextSource, {
         cancellation: cancellation.token
       });
       if (response.kind === "sessionOpened") {
+        this.invalidateRendererSynchronization();
         this.source = response.metadata.source;
         this.openResponse = response;
         this.sessionId = response.metadata.sessionId;
@@ -421,7 +444,7 @@ export class OpenWranglerPanel {
         if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
       }
       if (response.kind !== "sessionOpened") await this.postUnpublishedAuthoritativeSnapshot();
-      await this.postImportResponse(response, retainResponseUntilReady);
+      await this.postImportResponse(response);
       if (response.kind === "sessionOpened") {
         this.unpublishedAuthoritativeSnapshot = false;
         await this.postSessionPresentation();
@@ -430,15 +453,12 @@ export class OpenWranglerPanel {
     } catch (error) {
       if (this.disposed || generation !== this.openAttemptGeneration) return;
       await this.postUnpublishedAuthoritativeSnapshot();
-      await this.postImportResponse(
-        {
-          kind: "error",
-          code: "bridge_error",
-          message: error instanceof Error ? error.message : String(error),
-          recoverable: true
-        },
-        retainResponseUntilReady
-      );
+      await this.postImportResponse({
+        kind: "error",
+        code: "bridge_error",
+        message: error instanceof Error ? error.message : String(error),
+        recoverable: true
+      });
     } finally {
       if (this.importChangeCancellation === cancellation) {
         this.importChangeCancellation = undefined;
@@ -447,6 +467,7 @@ export class OpenWranglerPanel {
       if (!this.disposed && generation === this.openAttemptGeneration) {
         this.changingImportOptions = false;
         await this.panel.webview.postMessage({ kind: "importOptionsState", busy: false });
+        if (this.rendererReady) await this.enqueueRendererSynchronization(false);
       }
     }
   }
@@ -536,6 +557,7 @@ export class OpenWranglerPanel {
       }
       if (request.kind === "openSession") this.openResponse = response;
       if (response.kind === "sessionOpened") {
+        this.invalidateRendererSynchronization();
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.metadata.revision;
         this.snapshot = response;
@@ -543,6 +565,7 @@ export class OpenWranglerPanel {
         if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
+        if (response.kind !== "page") this.invalidateRendererSynchronization();
         this.sessionId = response.metadata.sessionId;
         this.sessionRevision = response.revision;
         const acceptsPage =
@@ -595,6 +618,7 @@ export class OpenWranglerPanel {
       if (response.kind === "sessionOpened") await this.postSessionPresentation();
       if (response.kind === "sessionOpened" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         await this.postViewState();
+        if (this.rendererReady) this.scheduleRendererSynchronization(false);
       }
     } catch (error) {
       if (this.disposed) return;
@@ -614,6 +638,7 @@ export class OpenWranglerPanel {
       };
       if (request.kind === "openSession") this.openResponse = response;
       await this.postRuntimeResponse(request, response);
+      if (request.kind === "openSession" && this.rendererReady) this.scheduleRendererSynchronization(false);
     }
   }
 
@@ -622,13 +647,131 @@ export class OpenWranglerPanel {
     await this.panel.webview.postMessage(response);
   }
 
-  private async postImportResponse(response: OpenWranglerResponse, retainResponseUntilReady: boolean): Promise<void> {
+  private async postImportResponse(response: OpenWranglerResponse): Promise<void> {
     if (response.kind === "sessionOpened") {
+      if (this.pendingPreReadyImportResponse) this.invalidateRendererSynchronization();
       this.pendingPreReadyImportResponse = undefined;
-    } else if (retainResponseUntilReady && !this.rendererReady) {
+    } else {
       this.pendingPreReadyImportResponse = response;
+      this.invalidateRendererSynchronization();
     }
     await this.post(response);
+  }
+
+  private hasHydratedRenderer(): boolean {
+    const synchronization = this.rendererSynchronizationIdentity;
+    return Boolean(
+      this.rendererReady &&
+      this.snapshot &&
+      synchronization &&
+      this.rendererHydratedSyncId === synchronization.syncId &&
+      synchronization.sessionId === this.snapshot.metadata.sessionId &&
+      synchronization.revision === this.snapshot.metadata.revision
+    );
+  }
+
+  private invalidateRendererSynchronization(): void {
+    this.rendererSynchronizationIdentity = undefined;
+    this.rendererHydratedSyncId = undefined;
+    this.settleRendererImportAction(undefined, false);
+  }
+
+  private requestRendererImportOptionsChange(): Promise<boolean> {
+    if (!this.hasHydratedRenderer()) return Promise.resolve(false);
+    this.settleRendererImportAction(undefined, false);
+    const actionId = randomNonce();
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.settleRendererImportAction(actionId, false);
+      }, RENDERER_IMPORT_PREPARATION_TIMEOUT_MS);
+      this.pendingRendererImportAction = { actionId, timer, resolve };
+      void this.panel.webview.postMessage({ kind: "requestImportOptionsChange", actionId }).then(
+        (posted) => {
+          if (!posted) this.settleRendererImportAction(actionId, false);
+        },
+        () => this.settleRendererImportAction(actionId, false)
+      );
+    });
+  }
+
+  private settleRendererImportAction(actionId: string | undefined, accepted: boolean): boolean {
+    const pending = this.pendingRendererImportAction;
+    if (!pending || (actionId !== undefined && pending.actionId !== actionId)) return false;
+    this.pendingRendererImportAction = undefined;
+    clearTimeout(pending.timer);
+    pending.resolve(accepted);
+    return true;
+  }
+
+  private scheduleRendererSynchronization(clearInspection: boolean): void {
+    void this.enqueueRendererSynchronization(clearInspection).catch(() => {
+      this.bridge.reportDiagnostic?.("Open Wrangler could not synchronize the active editor renderer.");
+    });
+  }
+
+  private enqueueRendererSynchronization(clearInspection: boolean): Promise<void> {
+    this.rendererSynchronizationRequested = true;
+    this.rendererSynchronizationNeedsInspectionClear ||= clearInspection;
+    if (this.rendererSynchronization) return this.rendererSynchronization;
+
+    const synchronization = (async () => {
+      do {
+        this.rendererSynchronizationRequested = false;
+        const shouldClearInspection = this.rendererSynchronizationNeedsInspectionClear;
+        this.rendererSynchronizationNeedsInspectionClear = false;
+        await this.synchronizeRenderer(shouldClearInspection);
+      } while (!this.disposed && this.rendererSynchronizationRequested);
+    })();
+    this.rendererSynchronization = synchronization;
+    void synchronization.then(
+      () => {
+        if (this.rendererSynchronization === synchronization) this.rendererSynchronization = undefined;
+      },
+      () => {
+        if (this.rendererSynchronization === synchronization) this.rendererSynchronization = undefined;
+      }
+    );
+    return synchronization;
+  }
+
+  private async synchronizeRenderer(clearInspection: boolean): Promise<void> {
+    if (this.disposed) return;
+    if (clearInspection) {
+      if (this.sessionId) this.bridge.clearStepInspection?.(this.sessionId);
+      await this.postStepInspectionCleared(false);
+    }
+    if (!this.snapshot && !this.openResponse) await this.open();
+    const synchronization = this.snapshot
+      ? {
+          syncId: randomNonce(),
+          sessionId: this.snapshot.metadata.sessionId,
+          revision: this.snapshot.metadata.revision
+        }
+      : {
+          syncId: randomNonce(),
+          sessionId: null,
+          revision: null
+        };
+    this.settleRendererImportAction(undefined, false);
+    this.rendererSynchronizationIdentity = synchronization;
+    this.rendererHydratedSyncId = undefined;
+    if (this.snapshot) {
+      await this.post(this.snapshot);
+      await this.postSessionPresentation();
+      await this.postViewState();
+      this.unpublishedAuthoritativeSnapshot = false;
+    } else if (this.openResponse) {
+      await this.post(this.openResponse);
+    }
+    if (this.pendingPreReadyImportResponse) {
+      await this.post(this.pendingPreReadyImportResponse);
+    }
+    await this.panel.webview.postMessage({ kind: "importOptionsState", busy: this.changingImportOptions });
+    if (this.rendererSynchronizationIdentity !== synchronization) {
+      this.rendererSynchronizationRequested = true;
+      return;
+    }
+    await this.panel.webview.postMessage({ kind: "rendererSynchronization", ...synchronization });
   }
 
   private activate(): void {
@@ -681,12 +824,6 @@ export class OpenWranglerPanel {
     if (state) await this.panel.webview.postMessage({ kind: "viewState", state });
   }
 
-  private async postImportOptionsBusyState(): Promise<void> {
-    if (this.changingImportOptions) {
-      await this.panel.webview.postMessage({ kind: "importOptionsState", busy: true });
-    }
-  }
-
   private async postSessionPresentation(): Promise<void> {
     if (!this.sessionId) return;
     const presentation = this.bridge.getSessionPresentation?.(this.sessionId);
@@ -728,6 +865,24 @@ export class OpenWranglerPanel {
     if (message.kind === "ready") {
       return hasExactKeys(message, ["kind"]) ? { kind: "ready" } : undefined;
     }
+    if (message.kind === "requestSessionSnapshot") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "requestSessionSnapshot" } : undefined;
+    }
+    if (message.kind === "rendererSynchronized") {
+      const hasSessionIdentity =
+        isNonEmptyString(message.sessionId) && Number.isSafeInteger(message.revision) && Number(message.revision) >= 0;
+      const hasNoSessionIdentity = message.sessionId === null && message.revision === null;
+      return hasExactKeys(message, ["kind", "syncId", "sessionId", "revision"]) &&
+        isRendererControlId(message.syncId) &&
+        (hasSessionIdentity || hasNoSessionIdentity)
+        ? {
+            kind: "rendererSynchronized",
+            syncId: message.syncId,
+            sessionId: hasSessionIdentity ? String(message.sessionId) : null,
+            revision: hasSessionIdentity ? Number(message.revision) : null
+          }
+        : undefined;
+    }
     if (message.kind === "setViewContext") {
       return hasExactKeys(message, ["kind", "viewContextId"]) && isNonEmptyString(message.viewContextId)
         ? { kind: "setViewContext", viewContextId: message.viewContextId }
@@ -749,7 +904,13 @@ export class OpenWranglerPanel {
       return hasExactKeys(message, ["kind"]) ? { kind: "clearStepInspection" } : undefined;
     }
     if (message.kind === "changeImportOptions") {
-      return hasExactKeys(message, ["kind"]) ? { kind: "changeImportOptions" } : undefined;
+      return hasExactKeys(message, ["kind"], ["actionId"]) &&
+        (message.actionId === undefined || isRendererControlId(message.actionId))
+        ? {
+            kind: "changeImportOptions",
+            ...(message.actionId === undefined ? {} : { actionId: message.actionId })
+          }
+        : undefined;
     }
     if (
       message.kind !== "runtimeRequest" ||
@@ -838,11 +999,18 @@ function withoutDatasetStats(metadata: SessionMetadata): SessionMetadata {
 
 type WebviewRequest =
   | { kind: "ready" }
+  | { kind: "requestSessionSnapshot" }
+  | {
+      kind: "rendererSynchronized";
+      syncId: string;
+      sessionId: string | null;
+      revision: number | null;
+    }
   | { kind: "setViewContext"; viewContextId: string }
   | { kind: "cancelViewRequests"; viewRequestIds: string[] }
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
-  | { kind: "changeImportOptions" }
+  | { kind: "changeImportOptions"; actionId?: string }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;
@@ -863,6 +1031,10 @@ const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRendererControlId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9]{32}$/u.test(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

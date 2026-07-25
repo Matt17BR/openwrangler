@@ -25,7 +25,10 @@ import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { resolveCliPathFromVSCodeExecutablePath } from "@vscode/test-electron";
-import { redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
+import {
+  EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES,
+  redactEditorAcceptanceText
+} from "./editor-acceptance-evidence.mjs";
 import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
@@ -69,8 +72,11 @@ const EDITOR_OUTPUT_CLOSE_TIMEOUT_MS = 5_000;
 const EDITOR_DEBUG_PORT_RELEASE_GRACE_MS = 100;
 const OVERSIZED_EDITOR_DIAGNOSTIC =
   "Diagnostic text was suppressed because its complete value exceeded the fixed safety limit.";
+const SENSITIVE_EDITOR_DIAGNOSTIC = "Sensitive harness details were suppressed.";
 const INCOMPLETE_EDITOR_OUTPUT_DIAGNOSTIC =
   "Editor output was suppressed because complete stream closure could not be verified.";
+const RETAINED_EDITOR_OUTPUT_MAX_BYTES = EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES;
+const RETAINED_EDITOR_OUTPUT_PREFIX = "<earlier editor output omitted>\n";
 const ACCEPTANCE_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const ACCEPTANCE_PHASE = /^[a-z][a-z0-9-]{0,63}$/u;
 const PRIVATE_DIAGNOSTIC_PATH_ENV_KEYS = [
@@ -2898,8 +2904,26 @@ function sanitizeHarnessFailure(value, additionalPrivatePaths = []) {
     raw = "The acceptance harness failed with an unreadable value.";
   }
   if (raw.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS) return OVERSIZED_EDITOR_DIAGNOSTIC;
+  const replacements = editorDiagnosticReplacements(additionalPrivatePaths);
+  const redacted = redactEditorAcceptanceText(raw, replacements);
+  if (redacted === undefined) return SENSITIVE_EDITOR_DIAGNOSTIC;
+  return redacted.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS ? OVERSIZED_EDITOR_DIAGNOSTIC : redacted;
+}
+
+function sanitizeEditorPhaseOutput(output) {
+  if (output.exceeded()) return OVERSIZED_EDITOR_DIAGNOSTIC;
+  const stdout = output.text("stdout").trim();
+  const stderr = output.text("stderr").trim();
+  const combined = [stdout ? `stdout:\n${stdout}` : "", stderr ? `stderr:\n${stderr}` : ""].filter(Boolean).join("\n");
+  if (!combined) return undefined;
+  const redacted = redactEditorAcceptanceText(combined, editorDiagnosticReplacements());
+  if (redacted === undefined) return SENSITIVE_EDITOR_DIAGNOSTIC;
+  return boundedUtf8Tail(redacted, RETAINED_EDITOR_OUTPUT_MAX_BYTES, RETAINED_EDITOR_OUTPUT_PREFIX);
+}
+
+function editorDiagnosticReplacements(additionalPrivatePaths = []) {
   const repository = process.cwd();
-  const replacements = [
+  return [
     [repository, "<repository>"],
     ...[process.env.HOME, process.env.USERPROFILE].filter(Boolean).map((path) => [path, "<host-home>"]),
     ...additionalPrivatePaths
@@ -2909,17 +2933,16 @@ function sanitizeHarnessFailure(value, additionalPrivatePaths = []) {
   ]
     .filter(([source], index, all) => all.findIndex(([candidate]) => candidate === source) === index)
     .sort((left, right) => right[0].length - left[0].length);
-  const redacted = redactEditorAcceptanceText(raw, replacements);
-  if (redacted === undefined) return "Sensitive harness details were suppressed.";
-  return redacted.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS ? OVERSIZED_EDITOR_DIAGNOSTIC : redacted;
 }
 
-function sanitizeEditorPhaseOutput(output) {
-  if (output.exceeded()) return OVERSIZED_EDITOR_DIAGNOSTIC;
-  const stdout = output.text("stdout").trim();
-  const stderr = output.text("stderr").trim();
-  const combined = [stdout ? `stdout:\n${stdout}` : "", stderr ? `stderr:\n${stderr}` : ""].filter(Boolean).join("\n");
-  return combined ? sanitizeHarnessFailure(combined) : undefined;
+function boundedUtf8Tail(value, maxBytes, prefix) {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.length <= maxBytes) return value;
+  const prefixBytes = Buffer.from(prefix, "utf8");
+  const retainedBytes = Math.max(0, maxBytes - prefixBytes.length);
+  let start = encoded.length - retainedBytes;
+  while (start < encoded.length && (encoded[start] & 0xc0) === 0x80) start += 1;
+  return `${prefix}${encoded.subarray(start).toString("utf8")}`;
 }
 
 function validateEditorAcceptanceOutcome(outcome, runId, phase) {

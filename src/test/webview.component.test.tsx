@@ -661,6 +661,143 @@ describe("App file import options", () => {
     webviewPostMessage.mockClear();
   });
 
+  it("acknowledges the exact rendered snapshot only after React commits it", () => {
+    const previousImplementation = webviewPostMessage.getMockImplementation();
+    try {
+      render(<App />);
+      webviewPostMessage.mockClear();
+      webviewPostMessage.mockImplementation((message) => {
+        if (message?.kind === "rendererSynchronized") {
+          expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+        }
+      });
+
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { kind: "sessionOpened", metadata, page, summaries: [] },
+            origin: window.location.origin
+          })
+        );
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              kind: "rendererSynchronization",
+              syncId: "S".repeat(32),
+              sessionId: metadata.sessionId,
+              revision: metadata.revision
+            },
+            origin: window.location.origin
+          })
+        );
+        expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(false);
+      });
+
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "S".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+    } finally {
+      webviewPostMessage.mockImplementation(previousImplementation ?? (() => undefined));
+    }
+  });
+
+  it("keeps bounded recovery pulls alive until the matching final marker commits", () => {
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+      webviewPostMessage.mockClear();
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+
+      act(() => vi.advanceTimersByTime(250));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(1);
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "W".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision + 1
+      });
+      act(() => vi.advanceTimersByTime(500));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(2);
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "N".repeat(32),
+        sessionId: null,
+        revision: null
+      });
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(3);
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "S".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "S".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+      const recoveryPullCount = webviewPostMessage.mock.calls.filter(
+        ([message]) => message?.kind === "requestSessionSnapshot"
+      ).length;
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(recoveryPullCount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds snapshot pulls per visible period and pauses them while the renderer is hidden", () => {
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    vi.useFakeTimers();
+    try {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      const { unmount } = render(<App />);
+      webviewPostMessage.mockClear();
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(0);
+
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(1);
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(6);
+
+      unmount();
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(6);
+    } finally {
+      if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the action for file sessions but not notebook sessions", async () => {
     const { unmount } = render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -806,7 +943,7 @@ describe("App file import options", () => {
 
     fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
     webviewPostMessage.mockClear();
-    dispatchAppMessage({ kind: "requestImportOptionsChange" });
+    dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "A".repeat(32) });
 
     const orderedMessages = webviewPostMessage.mock.calls
       .map(([message]) => message)
@@ -825,9 +962,28 @@ describe("App file import options", () => {
       kind: "cancelViewRequests",
       viewRequestIds: expect.arrayContaining([expect.any(String)])
     });
-    expect(orderedMessages[2]).toEqual({ kind: "changeImportOptions" });
+    expect(orderedMessages[2]).toEqual({ kind: "changeImportOptions", actionId: "A".repeat(32) });
     expect(screen.getByRole("button", { name: "Import options" })).toBeDisabled();
     expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("flushes pending presentation state before a busy renderer leaves the native request to host fallback", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "B".repeat(32) });
+
+    expect(webviewPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "updateViewState",
+        state: expect.objectContaining({ columnWidths: { "c:0": 200 } })
+      })
+    );
+    expect(outboundImportOptionMessages()).toEqual([]);
   });
 
   it("keeps grid and filter view controls locked for the complete import transaction", async () => {

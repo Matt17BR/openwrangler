@@ -3058,6 +3058,97 @@ test("editor phase output is captured, bounded, and redacted instead of inheriti
   }
 });
 
+test("editor phase failures retain a redacted bounded startup tail", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-output-tail-"));
+  const resultPath = join(directory, "result.json");
+  const startupDetail = "macOS startup failed: injected launch diagnostic";
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: join(directory, "user-data"),
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "restricted",
+          resultPath,
+          workspaceTrust: "restricted"
+        },
+        {
+          spawnProcess() {
+            const child = fakeEditorChild({ code: 17 });
+            child.stderr.write(
+              `${"ordinary editor startup noise\n".repeat(2_000)}${startupDetail} in ${process.cwd()}\n`
+            );
+            return child;
+          }
+        }
+      ),
+      (error) => {
+        assert.ok(error instanceof EditorAcceptanceFailure);
+        assert.equal(error.kind, "premature-exit");
+        assert.match(error.details.editorOutput, /<earlier editor output omitted>/u);
+        assert.match(error.details.editorOutput, new RegExp(startupDetail, "u"));
+        assert.match(error.details.editorOutput, /<repository>/u);
+        assert.doesNotMatch(
+          error.details.editorOutput,
+          new RegExp(process.cwd().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u")
+        );
+        assert.ok(Buffer.byteLength(error.details.editorOutput, "utf8") <= 8 * 1024);
+        return true;
+      }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phase output rejects private-key containers before retaining a tail", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-output-redaction-"));
+  const resultPath = join(directory, "result.json");
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: join(directory, "user-data"),
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "restricted",
+          resultPath,
+          workspaceTrust: "restricted"
+        },
+        {
+          spawnProcess() {
+            const child = fakeEditorChild({ code: 17 });
+            child.stderr.write(
+              `ordinary startup\n-----BEGIN PRIVATE KEY-----\n${"sensitive".repeat(
+                100
+              )}\n-----END PRIVATE KEY-----\n${"harmless trailing editor output\n".repeat(4_000)}`
+            );
+            return child;
+          }
+        }
+      ),
+      (error) => {
+        assert.ok(error instanceof EditorAcceptanceFailure);
+        assert.equal(error.kind, "premature-exit");
+        assert.equal(error.details.editorOutput, "Sensitive harness details were suppressed.");
+        assert.doesNotMatch(error.message, /BEGIN PRIVATE KEY|sensitive/u);
+        return true;
+      }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("editor phase output remains captured through close before it can be retained", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-output-close-"));
   const resultPath = join(directory, "result.json");
