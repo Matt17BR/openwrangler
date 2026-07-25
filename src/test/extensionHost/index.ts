@@ -1157,7 +1157,7 @@ async function waitForImportQuickInput(
     const active = testing.activeSession();
     if (active && active.sessionId !== existingSessionId) {
       throw new Error(
-        `The editor-title action created a dataframe session before the ${JSON.stringify(title)} import prompt appeared. ` +
+        `The import-options action created a dataframe session before the ${JSON.stringify(title)} prompt appeared. ` +
           `Expected source: ${JSON.stringify(expectedSource.fsPath)}. Actual source: ${JSON.stringify(active.metadata.source.path)}.`
       );
     }
@@ -1169,7 +1169,7 @@ async function waitForImportQuickInput(
   const hostInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   const activeSession = testing.activeSession();
   throw new Error(
-    `The ${JSON.stringify(title)} import prompt did not appear after the real editor-title action. ` +
+    `The ${JSON.stringify(title)} import prompt did not appear after the import-options action. ` +
       `Expected source: ${JSON.stringify(expectedSource.toString())}. ` +
       `Active host input: ${JSON.stringify(describeTabInput(hostInput))}. ` +
       `Active dataframe source: ${JSON.stringify(activeSession?.metadata.source.uri)}. ` +
@@ -4693,12 +4693,19 @@ async function exerciseLiveImportReconfiguration(
   await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   const opening = vscode.commands.executeCommand("openWrangler.openFile", configured);
-  await acceptDelimitedImportOptions(page, testing, configured, undefined, {
-    delimiter: "Comma",
-    encoding: "utf-8",
-    header: "First row contains column names",
-    quoteChar: '"'
-  });
+  await acceptDelimitedImportOptions(
+    page,
+    testing,
+    configured,
+    undefined,
+    "verify:file-inputs:reconfigure:initial-options",
+    {
+      delimiter: "Comma",
+      encoding: "utf-8",
+      header: "First row contains column names",
+      quoteChar: '"'
+    }
+  );
   await opening;
   await waitFor(
     () => {
@@ -4738,12 +4745,19 @@ async function exerciseLiveImportReconfiguration(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the generic Open Wrangler Change Import Options title action click"
   );
-  await acceptDelimitedImportOptions(page, testing, configured, stableSessionId, {
-    delimiter: "Semicolon",
-    encoding: "utf-8",
-    header: "First row contains column names",
-    quoteChar: '"'
-  });
+  await acceptDelimitedImportOptions(
+    page,
+    testing,
+    configured,
+    stableSessionId,
+    "verify:file-inputs:reconfigure:title-options",
+    {
+      delimiter: "Semicolon",
+      encoding: "utf-8",
+      header: "First row contains column names",
+      quoteChar: '"'
+    }
+  );
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -4971,12 +4985,19 @@ async function exerciseLiveImportReconfiguration(
 
   const errorImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
   await errorImportAction.click();
-  await acceptDelimitedImportOptions(page, testing, damaged, undefined, {
-    delimiter: "Comma",
-    encoding: "utf8-lossy",
-    header: "First row contains column names",
-    quoteChar: '"'
-  });
+  await acceptDelimitedImportOptions(
+    page,
+    testing,
+    damaged,
+    undefined,
+    "verify:file-inputs:reconfigure:damaged-options",
+    {
+      delimiter: "Comma",
+      encoding: "utf8-lossy",
+      header: "First row contains column names",
+      quoteChar: '"'
+    }
+  );
   await waitFor(
     () => {
       const active = testing.activeSession();
@@ -5021,6 +5042,7 @@ async function acceptDelimitedImportOptions(
   testing: TestApi,
   expectedSource: vscode.Uri,
   existingSessionId: string | undefined,
+  checkpointPrefix: string,
   selection: {
     delimiter: string;
     encoding: string;
@@ -5028,37 +5050,44 @@ async function acceptDelimitedImportOptions(
     quoteChar: string;
   }
 ): Promise<void> {
-  for (const { title, option } of [
-    { title: "Delimiter", option: selection.delimiter },
-    { title: "Text encoding", option: selection.encoding },
-    { title: "Header row", option: selection.header }
+  for (const { key, title, option } of [
+    { key: "delimiter", title: "Delimiter", option: selection.delimiter },
+    { key: "encoding", title: "Text encoding", option: selection.encoding },
+    { key: "header", title: "Header row", option: selection.header }
   ]) {
+    const checkpoint = `${checkpointPrefix}:${key}`;
+    recordAcceptanceProgress(`${checkpoint}:wait`);
     const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title, existingSessionId);
-    const selected = quickInput.getByRole("option", { name: option }).first();
-    await withAcceptanceOperationDeadline(
-      selected.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} option ${JSON.stringify(option)} to become visible`
-    );
-    await withAcceptanceOperationDeadline(
-      selected.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} option ${JSON.stringify(option)} acceptance`
-    );
-    await withAcceptanceOperationDeadline(
-      quickInput.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} prompt to advance`
-    );
+    recordAcceptanceProgress(`${checkpoint}:visible`);
+    await acceptQuickPickOptionWithKeyboard(page, quickInput, title, option, checkpoint);
   }
 
+  const quoteCheckpoint = `${checkpointPrefix}:quote`;
+  recordAcceptanceProgress(`${quoteCheckpoint}:wait`);
   const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character", existingSessionId);
+  recordAcceptanceProgress(`${quoteCheckpoint}:visible`);
   const field = quoteInput.locator(".quick-input-box input").first();
+  await withAcceptanceOperationDeadline(
+    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the configured quote-character field to become visible"
+  );
   await withAcceptanceOperationDeadline(
     field.fill(selection.quoteChar, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote character"
   );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      field.evaluate((element) => element === element.ownerDocument.activeElement),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the configured quote-character keyboard focus"
+    ),
+    true,
+    "The configured quote-character field must own keyboard focus before it is accepted."
+  );
+  recordAcceptanceProgress(`${quoteCheckpoint}:focused`);
+  recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -5069,6 +5098,88 @@ async function acceptDelimitedImportOptions(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the quote-character prompt to close"
   );
+  recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
+}
+
+async function acceptQuickPickOptionWithKeyboard(
+  page: Page,
+  quickInput: Locator,
+  title: string,
+  option: string,
+  checkpoint?: string
+): Promise<void> {
+  const selected = quickInput.getByRole("option", { name: option }).first();
+  await withAcceptanceOperationDeadline(
+    selected.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} option ${JSON.stringify(option)} to become visible`
+  );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} keyboard focus`
+    ),
+    true,
+    `${title} must own keyboard focus before selecting ${JSON.stringify(option)}.`
+  );
+  const optionCount = await withAcceptanceOperationDeadline(
+    quickInput.getByRole("option").count(),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} option count`
+  );
+  assert.ok(
+    optionCount > 0 && optionCount <= 16,
+    `${title} must expose between 1 and 16 bounded options; received ${optionCount}.`
+  );
+
+  let selectedIsFocused = false;
+  for (let attempt = 0; attempt <= optionCount; attempt += 1) {
+    const className =
+      (await withAcceptanceOperationDeadline(
+        selected.getAttribute("class", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} option ${JSON.stringify(option)} focus state`
+      )) ?? "";
+    selectedIsFocused = /(?:^|\s)focused(?:\s|$)/u.test(className);
+    if (selectedIsFocused) break;
+    if (attempt === optionCount) break;
+    await withAcceptanceOperationDeadline(
+      page.keyboard.press("ArrowDown"),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} keyboard navigation to ${JSON.stringify(option)}`
+    );
+  }
+
+  if (!selectedIsFocused) {
+    const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+    throw new Error(
+      `${title} did not focus requested option ${JSON.stringify(option)} within ${optionCount} keyboard steps. ` +
+        `Visible options: ${JSON.stringify(visibleOptions)}`
+    );
+  }
+  if (checkpoint) recordAcceptanceProgress(`${checkpoint}:focused`);
+  if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accept`);
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} option ${JSON.stringify(option)} keyboard acceptance`
+  );
+  try {
+    await withAcceptanceOperationDeadline(
+      quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} prompt to advance`
+    );
+  } catch (error) {
+    const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+    throw new Error(
+      `${title} did not advance after accepting focused option ${JSON.stringify(option)} with Enter. ` +
+        `Visible options: ${JSON.stringify(visibleOptions)}`,
+      { cause: error }
+    );
+  }
+  if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accepted`);
 }
 
 async function acceptExcelImportOptions(
@@ -5080,17 +5191,7 @@ async function acceptExcelImportOptions(
   value: string
 ): Promise<void> {
   const modePrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet");
-  const modeOption = modePrompt.getByRole("option", { name: mode }).first();
-  await withAcceptanceOperationDeadline(
-    modeOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${mode} option to become visible`
-  );
-  await withAcceptanceOperationDeadline(
-    modeOption.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${mode} option acceptance`
-  );
+  await acceptQuickPickOptionWithKeyboard(page, modePrompt, "Excel sheet", mode);
 
   const valuePrompt = await waitForImportQuickInput(page, testing, expectedSource, inputTitle);
   const field = valuePrompt.locator(".quick-input-box input").first();

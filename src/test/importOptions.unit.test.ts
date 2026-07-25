@@ -5,6 +5,7 @@ interface PromptOptions {
   readonly prompt?: string;
   readonly value?: string;
   readonly validateInput?: (value: string) => string | undefined;
+  readonly ignoreFocusOut?: boolean;
 }
 
 interface Pick {
@@ -68,8 +69,10 @@ describe("Excel import prompts", () => {
     });
     expect(inputOptionsAt(0)).toMatchObject({
       title: "Excel sheet name",
-      value: "2024"
+      value: "2024",
+      ignoreFocusOut: true
     });
+    expect(importOptionMocks.showQuickPick.mock.calls.map(([, options]) => options?.ignoreFocusOut)).toEqual([true]);
   });
 
   it("uses an explicit zero-based index mode and prefills the current index", async () => {
@@ -88,8 +91,10 @@ describe("Excel import prompts", () => {
     });
     expect(inputOptionsAt(0)).toMatchObject({
       title: "Excel sheet index",
-      value: "3"
+      value: "3",
+      ignoreFocusOut: true
     });
+    expect(importOptionMocks.showQuickPick.mock.calls.map(([, options]) => options?.ignoreFocusOut)).toEqual([true]);
   });
 
   it("switches from a current index to an exact numeric name without coercion", async () => {
@@ -196,8 +201,14 @@ describe("delimited-file import prompts", () => {
     });
     expect(inputOptionsAt(0)).toMatchObject({
       title: "Quote character",
-      value: "'"
+      value: "'",
+      ignoreFocusOut: true
     });
+    expect(importOptionMocks.showQuickPick.mock.calls.map(([, options]) => options?.ignoreFocusOut)).toEqual([
+      true,
+      true,
+      true
+    ]);
   });
 
   it("prefills the custom-delimiter field from the current value", async () => {
@@ -226,7 +237,12 @@ describe("delimited-file import prompts", () => {
 
     expect(inputOptionsAt(0)).toMatchObject({
       title: "Custom delimiter",
-      value: "\t"
+      value: "\t",
+      ignoreFocusOut: true
+    });
+    expect(inputOptionsAt(1)).toMatchObject({
+      title: "Quote character",
+      ignoreFocusOut: true
     });
   });
 

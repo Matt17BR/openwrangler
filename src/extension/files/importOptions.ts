@@ -48,7 +48,8 @@ export async function promptImportOptions(
     delimiterChoices(currentDelimiter),
     {
       title: "Delimiter",
-      placeHolder: "Choose the field delimiter"
+      placeHolder: "Choose the field delimiter",
+      ignoreFocusOut: true
     },
     cancellation
   );
@@ -61,7 +62,8 @@ export async function promptImportOptions(
             title: "Custom delimiter",
             prompt: "Enter exactly one character.",
             value: currentDelimiter,
-            validateInput: validateCharacter
+            validateInput: validateCharacter,
+            ignoreFocusOut: true
           },
           cancellation
         )
@@ -75,7 +77,8 @@ export async function promptImportOptions(
     valueChoices(["utf-8", "utf8-lossy", "iso-8859-1", "windows-1252"], currentEncoding, (value) => value),
     {
       title: "Text encoding",
-      placeHolder: "Choose the source encoding"
+      placeHolder: "Choose the source encoding",
+      ignoreFocusOut: true
     },
     cancellation
   );
@@ -91,7 +94,7 @@ export async function promptImportOptions(
       ],
       currentHasHeader
     ),
-    { title: "Header row" },
+    { title: "Header row", ignoreFocusOut: true },
     cancellation
   );
   ensureNotCancelled(cancellation);
@@ -102,7 +105,8 @@ export async function promptImportOptions(
     {
       title: "Quote character",
       value: currentQuoteChar,
-      validateInput: validateCharacter
+      validateInput: validateCharacter,
+      ignoreFocusOut: true
     },
     cancellation
   );
@@ -125,7 +129,8 @@ async function promptExcelImportOptions(
     excelSheetModeChoices(currentMode, currentSheetName, currentSheetIndex),
     {
       title: "Excel sheet",
-      placeHolder: "Choose how to identify the worksheet"
+      placeHolder: "Choose how to identify the worksheet",
+      ignoreFocusOut: true
     },
     cancellation
   );
@@ -138,7 +143,8 @@ async function promptExcelImportOptions(
         title: "Excel sheet name",
         prompt: "Enter the exact worksheet name. Numeric names remain names.",
         value: currentMode === "name" ? currentSheetName : "",
-        validateInput: validateSheetName
+        validateInput: validateSheetName,
+        ignoreFocusOut: true
       },
       cancellation
     );
@@ -153,7 +159,8 @@ async function promptExcelImportOptions(
       title: "Excel sheet index",
       prompt: "Enter a zero-based worksheet index.",
       value: currentMode === "index" ? String(currentSheetIndex) : "0",
-      validateInput: validateSheetIndex
+      validateInput: validateSheetIndex,
+      ignoreFocusOut: true
     },
     cancellation
   );
