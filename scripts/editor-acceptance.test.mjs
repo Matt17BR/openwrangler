@@ -35,12 +35,15 @@ import {
   editorProcessTreeMayBeLive,
   editorProcessGroupRunning,
   MACOS_EDITOR_IPC_PATH_LIMIT_BYTES,
+  PINNED_PYTHON_EXTENSION_ID,
+  PINNED_PYTHON_EXTENSION_VERSION,
   prepareWindowsEditorProcessSupervisor,
   readBoundedAcceptanceText,
   readXvfbDisplayNumber,
   reserveEditorDebugPort,
   resolveDownloadedEditorCliPath,
   resolveEditorCliLaunch,
+  resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCommand,
   runBoundedEditorCliCommand,
   serializeEditorAcceptanceHarnessOutcome,
@@ -101,6 +104,62 @@ test("relative editor helper overrides fail before launch without echoing their 
   } finally {
     if (previousXvfb === undefined) delete process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
     else process.env.OPEN_WRANGLER_XVFB_EXECUTABLE = previousXvfb;
+  }
+});
+
+test("real Python-extension acceptance is opt-in and pins one stable release", async () => {
+  assert.equal(PINNED_PYTHON_EXTENSION_VERSION, "2026.4.0");
+  assert.equal(PINNED_PYTHON_EXTENSION_ID, "ms-python.python@2026.4.0");
+  assert.equal(resolvePythonExtensionAcceptanceInstallTarget({}), undefined);
+  assert.equal(resolvePythonExtensionAcceptanceInstallTarget({ OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "0" }), undefined);
+  assert.equal(
+    resolvePythonExtensionAcceptanceInstallTarget({ OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1" }),
+    PINNED_PYTHON_EXTENSION_ID
+  );
+  assert.throws(
+    () => resolvePythonExtensionAcceptanceInstallTarget({ OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "true" }),
+    /literal value 1/u
+  );
+
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-python-extension-target-"));
+  const vsix = join(directory, "ms-python.python.vsix");
+  const linkedVsix = join(directory, "linked.vsix");
+  try {
+    await writeFile(vsix, "fixture");
+    assert.equal(
+      resolvePythonExtensionAcceptanceInstallTarget({
+        OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+        OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: vsix
+      }),
+      vsix
+    );
+    assert.throws(
+      () =>
+        resolvePythonExtensionAcceptanceInstallTarget({
+          OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+          OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: "relative.vsix"
+        }),
+      /absolute single-line path/u
+    );
+    assert.throws(
+      () =>
+        resolvePythonExtensionAcceptanceInstallTarget({
+          OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+          OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: join(directory, "missing.vsix")
+        }),
+      /was not found/u
+    );
+    await symlink(vsix, linkedVsix);
+    assert.throws(
+      () =>
+        resolvePythonExtensionAcceptanceInstallTarget({
+          OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+          OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: linkedVsix
+        }),
+      /regular file and not a symbolic link/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

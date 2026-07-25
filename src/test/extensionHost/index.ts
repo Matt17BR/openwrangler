@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
 import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
+import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
@@ -204,7 +205,8 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
-  if (testPython) {
+  const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
+  if (testPython && phase !== "python-environment") {
     await vscode.workspace
       .getConfiguration("openWrangler")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
@@ -411,8 +413,15 @@ export async function run(): Promise<void> {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
-  const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
   recordAcceptanceProgress("preflight:complete");
+  if (phase === "python-environment") {
+    assert.ok(testPython, "Real Python-extension acceptance requires the runner-selected dependency environment.");
+    recordAcceptanceProgress("python-environment:start");
+    await exerciseRealPythonEnvironmentSelection(testing, workspace, fixture, testPython);
+    recordAcceptanceProgress("python-environment:complete");
+    console.log("Open Wrangler real Python-environment selection acceptance passed.");
+    return;
+  }
   if (phase === "seed") {
     recordAcceptanceProgress("seed:start");
     await seedPersistedPlan(testing, fixture);
@@ -5429,6 +5438,310 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
       cleanupAcceptanceTemporaryDirectory(directory);
     }
   }
+}
+
+const PINNED_REAL_PYTHON_EXTENSION_VERSION = "2026.4.0";
+
+interface InstrumentedPythonEnvironment {
+  executable: string;
+  invocationLog: string;
+}
+
+async function exerciseRealPythonEnvironmentSelection(
+  testing: TestApi,
+  workspace: vscode.Uri,
+  fixture: vscode.Uri,
+  python: string
+): Promise<void> {
+  const pythonExtension = vscode.extensions.getExtension<PythonExtension>("ms-python.python");
+  assert.ok(pythonExtension, "The opt-in acceptance phase must install the released Python extension.");
+  assert.equal(
+    pythonExtension.packageJSON.version,
+    PINNED_REAL_PYTHON_EXTENSION_VERSION,
+    "Real environment-selection acceptance must run against the pinned stable Python extension."
+  );
+  const pythonApi = await pythonExtension.activate();
+  await pythonApi.ready;
+  assert.equal(
+    typeof pythonApi.environments.updateActiveEnvironmentPath,
+    "function",
+    "The released Python extension must expose its stable environment-selection API."
+  );
+  assert.equal(
+    typeof pythonApi.environments.onDidChangeActiveEnvironmentPath,
+    "function",
+    "The released Python extension must expose active-environment change notifications."
+  );
+
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(fixture);
+  assert.ok(workspaceFolder, "The Python-environment fixture must belong to the isolated workspace.");
+  assert.equal(workspaceFolder.uri.toString(), workspace.toString());
+  const config = vscode.workspace.getConfiguration("openWrangler", fixture);
+  await config.update("pythonPath", undefined, vscode.ConfigurationTarget.Global);
+  await config.update("pythonPath", undefined, vscode.ConfigurationTarget.Workspace);
+  await config.update("pythonPath", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+  assert.equal(
+    getSetting("pythonPath", "", fixture),
+    "",
+    "The real Python-extension phase must not bypass environment selection with an Open Wrangler override."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-real-python-environments-"));
+  const environmentA = createInstrumentedPythonEnvironment(path.join(directory, "environment-a"), python, "a");
+  const environmentB = createInstrumentedPythonEnvironment(path.join(directory, "environment-b"), python, "b");
+  const originalSource = readFileSync(fixture.fsPath);
+  let sessionId: string | undefined;
+  let revision = 0;
+
+  try {
+    recordAcceptanceProgress("python-environment:select-a");
+    await pythonApi.environments.updateActiveEnvironmentPath(environmentA.executable, workspaceFolder);
+    await waitForSelectedPythonEnvironment(pythonApi, workspaceFolder, environmentA.executable);
+
+    recordAcceptanceProgress("python-environment:open-a");
+    const opened = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: csvSource(fixture),
+      backend: "polars",
+      pageSize: 20,
+      mode: "editing"
+    });
+    assert.equal(opened.kind, "sessionOpened", `Environment A failed to open the fixture: ${JSON.stringify(opened)}`);
+    if (opened.kind !== "sessionOpened") return;
+    sessionId = opened.metadata.sessionId;
+    revision = opened.metadata.revision;
+
+    const preview = await testing.request({
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId,
+      revision,
+      step: {
+        id: "real-python-environment-score",
+        kind: "formula",
+        params: {
+          leftColumn: columnReference(opened.metadata, "sales"),
+          operator: "multiply",
+          value: 2,
+          newColumn: "score"
+        }
+      },
+      offset: 0,
+      limit: 20
+    });
+    assert.equal(preview.kind, "stepPreview");
+    if (preview.kind !== "stepPreview") return;
+    revision = preview.revision;
+    const applied = await testing.request({
+      kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
+      sessionId,
+      revision,
+      offset: 0,
+      limit: 20
+    });
+    assert.equal(applied.kind, "planUpdated");
+    if (applied.kind !== "planUpdated") return;
+    revision = applied.revision;
+    assert.equal(applied.page.rows[0]?.values[4]?.display, "24.0");
+    await waitFor(
+      () => instrumentedRuntimeStarts(environmentA) >= 1,
+      10_000,
+      "environment A to launch the Open Wrangler runtime"
+    );
+    const generationA = testing.runtimeGeneration();
+    assert.ok(generationA > 0);
+
+    recordAcceptanceProgress("python-environment:switch-b");
+    await pythonApi.environments.updateActiveEnvironmentPath(environmentB.executable, workspaceFolder);
+    await waitForSelectedPythonEnvironment(pythonApi, workspaceFolder, environmentB.executable);
+    await waitFor(
+      () => !testing.runtimeRunning(),
+      30_000,
+      "the environment-A runtime to stop after the workspace selection changed"
+    );
+
+    recordAcceptanceProgress("python-environment:recover-b");
+    const recoveredB = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "real-python-environment-b",
+      sessionId,
+      revision,
+      offset: 0,
+      limit: 20,
+      filterModel: applied.metadata.filterModel
+    });
+    assert.equal(recoveredB.kind, "page", `Environment B recovery failed: ${JSON.stringify(recoveredB)}`);
+    if (recoveredB.kind !== "page") return;
+    revision = recoveredB.revision;
+    assert.deepEqual(
+      recoveredB.metadata.steps.map((step) => step.id),
+      ["real-python-environment-score"],
+      "The committed plan must replay after the selected Python environment changes."
+    );
+    assert.equal(recoveredB.page.rows[0]?.values[4]?.display, "24.0");
+    await waitFor(
+      () => instrumentedRuntimeStarts(environmentB) >= 1,
+      10_000,
+      "environment B to launch the recovered Open Wrangler runtime"
+    );
+    assert.equal(
+      testing.runtimeGeneration(),
+      generationA + 1,
+      "One workspace environment switch must create exactly one replacement runtime."
+    );
+
+    recordAcceptanceProgress("python-environment:switch-a");
+    await pythonApi.environments.updateActiveEnvironmentPath(environmentA.executable, workspaceFolder);
+    await waitForSelectedPythonEnvironment(pythonApi, workspaceFolder, environmentA.executable);
+    await waitFor(() => !testing.runtimeRunning(), 30_000, "the environment-B runtime to stop after switching back");
+
+    recordAcceptanceProgress("python-environment:recover-a");
+    const recoveredA = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "real-python-environment-a-return",
+      sessionId,
+      revision,
+      offset: 0,
+      limit: 20,
+      filterModel: recoveredB.metadata.filterModel
+    });
+    assert.equal(recoveredA.kind, "page", `Environment A replay failed: ${JSON.stringify(recoveredA)}`);
+    if (recoveredA.kind !== "page") return;
+    revision = recoveredA.revision;
+    assert.deepEqual(
+      recoveredA.metadata.steps.map((step) => step.id),
+      ["real-python-environment-score"]
+    );
+    assert.equal(recoveredA.page.rows[0]?.values[4]?.display, "24.0");
+    await waitFor(
+      () => instrumentedRuntimeStarts(environmentA) >= 2,
+      10_000,
+      "environment A to launch the second recovered runtime"
+    );
+    assert.equal(
+      testing.runtimeGeneration(),
+      generationA + 2,
+      "Switching back must create exactly one further replacement runtime."
+    );
+    assert.deepEqual(readFileSync(fixture.fsPath), originalSource, "Environment recovery must not modify the source.");
+  } finally {
+    if (sessionId) {
+      await testing
+        .request({
+          kind: "closeSession",
+          sessionId,
+          revision
+        })
+        .catch(() => undefined);
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        30_000,
+        "the real Python-environment session and runtime to close"
+      );
+    }
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+function createInstrumentedPythonEnvironment(
+  environmentRoot: string,
+  dependencyPython: string,
+  label: string
+): InstrumentedPythonEnvironment {
+  execFileSync(dependencyPython, ["-m", "venv", "--without-pip", environmentRoot], {
+    stdio: "pipe",
+    timeout: 60_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environmentRoot, "Scripts", "python.exe")
+      : path.join(environmentRoot, "bin", "python");
+  assert.equal(existsSync(executable), true, `Instrumented Python environment ${label} must be executable.`);
+  const dependencySitePackages = execFileSync(
+    dependencyPython,
+    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  const environmentSitePackages = execFileSync(
+    executable,
+    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(dependencySitePackages && environmentSitePackages);
+  writeFileSync(
+    path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
+    `${dependencySitePackages}\n`,
+    "utf8"
+  );
+  const invocationLog = path.join(environmentRoot, "openwrangler-invocations.jsonl");
+  writeFileSync(
+    path.join(environmentSitePackages, "sitecustomize.py"),
+    [
+      "import json",
+      "import os",
+      "import sys",
+      "_runtime = any(",
+      "    os.path.isfile(os.path.join(entry, 'openwrangler_runtime', 'server.py'))",
+      "    for entry in os.environ.get('PYTHONPATH', '').split(os.pathsep)",
+      "    if entry",
+      ")",
+      `with open(${JSON.stringify(invocationLog)}, 'a', encoding='utf-8') as _stream:`,
+      `    _stream.write(json.dumps({'environment': ${JSON.stringify(label)}, 'runtime': _runtime, 'executable': sys.executable}, sort_keys=True) + '\\n')`,
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  return { executable, invocationLog };
+}
+
+async function waitForSelectedPythonEnvironment(
+  pythonApi: PythonExtension,
+  resource: vscode.WorkspaceFolder,
+  expectedExecutable: string
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started <= 30_000) {
+    const active = pythonApi.environments.getActiveEnvironmentPath(resource);
+    const resolved = await pythonApi.environments.resolveEnvironment(active);
+    const selectedExecutable = resolved?.executable.uri?.fsPath ?? active.path;
+    if (sameAcceptanceExecutable(selectedExecutable, expectedExecutable)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for the released Python extension to publish the selected environment.");
+}
+
+function sameAcceptanceExecutable(left: string, right: string): boolean {
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US")
+    : normalizedLeft === normalizedRight;
+}
+
+function instrumentedRuntimeStarts(environment: InstrumentedPythonEnvironment): number {
+  if (!existsSync(environment.invocationLog)) return 0;
+  const log = readFileSync(environment.invocationLog, "utf8");
+  assert.ok(Buffer.byteLength(log, "utf8") <= 64 * 1024, "Instrumented Python invocation log exceeded its bound.");
+  return log
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { runtime?: unknown })
+    .filter((entry) => entry.runtime === true).length;
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
