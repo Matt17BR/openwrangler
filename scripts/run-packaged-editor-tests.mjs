@@ -443,6 +443,7 @@ try {
                       "window.dialogStyle": "custom",
                       "window.menuStyle": "custom",
                       "files.simpleDialog.enable": true,
+                      "extensions.ignoreRecommendations": true,
                       "notebook.globalToolbar": true,
                       "jupyter.askForKernelRestart": false
                     });

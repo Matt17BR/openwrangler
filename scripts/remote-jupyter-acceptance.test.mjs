@@ -1186,6 +1186,11 @@ test("the container definition pins its base and direct wheels and never receive
   assert.equal(REMOTE_JUPYTER_SETUP_HEARTBEAT_MS, 60_000);
 });
 
+test("the private released-Jupyter profiles suppress unrelated extension recommendations", async () => {
+  const runner = await readFile(resolve(SCRIPT_DIRECTORY, "run-packaged-editor-tests.mjs"), "utf8");
+  assert.match(runner, /"extensions\.ignoreRecommendations": true/u);
+});
+
 test("the default bounded runner rejects oversized output without invoking Docker", async () => {
   await assert.rejects(
     runBoundedDockerCommand(
