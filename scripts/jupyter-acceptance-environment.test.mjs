@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,17 +87,28 @@ test("remote Jupyter descriptors are exclusive, private, and correlated", async 
       { containedBy: directory }
     );
     assert.equal(descriptorPath, join(descriptorDirectory, "remote-jupyter.json"));
-    const metadata = lstatSync(descriptorPath, { bigint: true });
-    assert.equal(metadata.isFile(), true);
-    assert.equal(metadata.nlink, 1n);
-    assert.equal(metadata.mode & 0o777n, 0o400n);
-    assert.deepEqual(JSON.parse(await readFile(descriptorPath, "utf8")), {
-      protocol: "openwrangler-remote-jupyter-v1",
-      baseUrl: "http://127.0.0.1:49153",
-      token,
-      runId,
-      hostname: "owr-abcdef123456"
-    });
+    const descriptor = openSync(descriptorPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = fstatSync(descriptor, { bigint: true });
+      assert.equal(before.isFile(), true);
+      assert.equal(before.nlink, 1n);
+      assert.equal(before.mode & 0o777n, 0o400n);
+      assert.deepEqual(JSON.parse(readFileSync(descriptor, "utf8")), {
+        protocol: "openwrangler-remote-jupyter-v1",
+        baseUrl: "http://127.0.0.1:49153",
+        token,
+        runId,
+        hostname: "owr-abcdef123456"
+      });
+      const after = fstatSync(descriptor, { bigint: true });
+      assert.equal(after.dev, before.dev);
+      assert.equal(after.ino, before.ino);
+      assert.equal(after.nlink, before.nlink);
+      assert.equal(after.mode, before.mode);
+      assert.equal(after.size, before.size);
+    } finally {
+      closeSync(descriptor);
+    }
     assert.equal(descriptorPath.includes(token), false);
     assert.throws(
       () =>
