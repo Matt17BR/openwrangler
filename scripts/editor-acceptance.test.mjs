@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createWriteStream, linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import test from "node:test";
+import { ZipFile } from "yazl";
 import {
   acceptancePathSnapshotShowsAtomicPublication,
   acceptanceProgressCheckpoint,
   acceptanceProgressDetail,
+  assertJupyterExtensionAcceptanceVsixSnapshot,
   assertEditorUserDataIpcPathSafe,
   collectEditorAcceptancePrivateDiagnosticPaths,
   configureEditorAcceptanceTempRoot,
@@ -51,12 +54,14 @@ import {
   resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCommand,
   runBoundedEditorCliCommand,
-  serializeEditorAcceptanceHarnessOutcome,
-  spawnOwnedEditorProcess,
   runEditorAcceptancePhase,
   sanitizeEditorAcceptanceDiagnostic,
+  serializeEditorAcceptanceHarnessOutcome,
   signalPosixEditorTree,
+  spawnOwnedEditorProcess,
+  stageJupyterExtensionAcceptanceVsix,
   startIsolatedEditorDisplay,
+  validateJupyterExtensionAcceptanceVsix,
   validateEditorAcceptancePrivatePathOverrides,
   waitForEditorAcceptanceObservation,
   writeEditorAcceptanceHarness,
@@ -70,6 +75,42 @@ const PROGRESS_RUN_ID = "8be8c321-d21d-4de8-a890-13d18844a3c7";
 const SYNTHETIC_EDITOR_USER_DATA = "/__open_wrangler_fake_phase__/u";
 const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
   createAcceptanceProgressEnvelope(runId, phase, checkpoint);
+
+async function writeJupyterVsixFixture(path, { targetPlatform, nativePayloads = [] }) {
+  const zip = new ZipFile();
+  const targetAttribute = targetPlatform === undefined ? "" : ` TargetPlatform="${targetPlatform}"`;
+  zip.addBuffer(
+    Buffer.from(
+      [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">',
+        "<Metadata>",
+        `<Identity Id="jupyter" Version="${PINNED_JUPYTER_EXTENSION_VERSION}" Publisher="ms-toolsai"${targetAttribute}/>`,
+        "</Metadata>",
+        "</PackageManifest>"
+      ].join("")
+    ),
+    "extension.vsixmanifest"
+  );
+  for (const payload of nativePayloads) {
+    const payloadPath = typeof payload === "string" ? payload : payload.path;
+    let architecture = "x64";
+    if (/\/linux-arm64\//u.test(payloadPath)) architecture = "arm64";
+    if (/\/linux-armhf\//u.test(payloadPath)) architecture = "armhf";
+    zip.addBuffer(typeof payload === "string" ? linuxNativeFixture(architecture) : payload.contents, payloadPath);
+  }
+  zip.end();
+  await pipeline(zip.outputStream, createWriteStream(path, { flags: "wx", mode: 0o600 }));
+}
+
+function linuxNativeFixture(architecture) {
+  const header = Buffer.alloc(64);
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46]).copy(header);
+  header[4] = architecture === "armhf" ? 1 : 2;
+  header[5] = 1;
+  header.writeUInt16LE({ x64: 62, arm64: 183, armhf: 40 }[architecture], 18);
+  return header;
+}
 
 test("private diagnostic paths include hosted Python and external editor helpers", () => {
   const previousPythonLocation = process.env.pythonLocation;
@@ -247,6 +288,130 @@ test("real Jupyter-extension acceptance is opt-in and pins one stable release", 
           [JUPYTER_EXTENSION_VSIX_ENV]: linkedVsix
         }),
       /regular file and not a symbolic link/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Jupyter VSIX preflight accepts only the host target and native ZeroMQ payload", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-vsix-platform-"));
+  const compatible = join(directory, "compatible.vsix");
+  const wrongTarget = join(directory, "wrong-target.vsix");
+  const wrongArchitecture = join(directory, "wrong-architecture.vsix");
+  const wrongLibc = join(directory, "wrong-libc.vsix");
+  const genericLinux = join(directory, "generic-linux.vsix");
+  const emptyNative = join(directory, "empty-native.vsix");
+  const host = { platform: "linux", architecture: "x64", libc: "glibc" };
+  try {
+    await writeJupyterVsixFixture(compatible, {
+      targetPlatform: "linux-x64",
+      nativePayloads: [
+        "extension/dist/node_modules/zeromq/prebuilds/linux-x64/node.napi.glibc.node",
+        "extension/dist/node_modules/zeromqold/prebuilds/linux-x64/node.napi.glibc.node"
+      ]
+    });
+    await validateJupyterExtensionAcceptanceVsix(compatible, host);
+
+    await writeJupyterVsixFixture(wrongTarget, {
+      targetPlatform: "alpine-arm64",
+      nativePayloads: ["extension/dist/node_modules/zeromq/prebuilds/linux-arm64/node.napi.glibc.node"]
+    });
+    await assert.rejects(validateJupyterExtensionAcceptanceVsix(wrongTarget, host), /target platform is incompatible/u);
+
+    await writeJupyterVsixFixture(wrongArchitecture, {
+      targetPlatform: "linux-x64",
+      nativePayloads: ["extension/dist/node_modules/zeromq/prebuilds/linux-arm64/node.napi.glibc.node"]
+    });
+    await assert.rejects(
+      validateJupyterExtensionAcceptanceVsix(wrongArchitecture, host),
+      /compatible native ZeroMQ payload/u
+    );
+
+    await writeJupyterVsixFixture(wrongLibc, {
+      targetPlatform: "linux-x64",
+      nativePayloads: ["extension/dist/node_modules/zeromq/prebuilds/linux-x64/node.napi.musl.node"]
+    });
+    await assert.rejects(validateJupyterExtensionAcceptanceVsix(wrongLibc, host), /compatible native ZeroMQ payload/u);
+
+    await writeJupyterVsixFixture(genericLinux, {
+      targetPlatform: "linux-x64",
+      nativePayloads: ["extension/dist/node_modules/zeromq/prebuilds/linux-x64/node.napi.node"]
+    });
+    await assert.rejects(
+      validateJupyterExtensionAcceptanceVsix(genericLinux, host),
+      /compatible native ZeroMQ payload/u
+    );
+
+    await writeJupyterVsixFixture(emptyNative, {
+      targetPlatform: "linux-x64",
+      nativePayloads: [
+        {
+          path: "extension/dist/node_modules/zeromq/prebuilds/linux-x64/node.napi.glibc.node",
+          contents: Buffer.alloc(0)
+        }
+      ]
+    });
+    await assert.rejects(
+      validateJupyterExtensionAcceptanceVsix(emptyNative, host),
+      /could not be validated as a bounded VSIX archive/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Jupyter VSIX preflight validates and installs one private immutable snapshot", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-vsix-snapshot-"));
+  const source = join(directory, "source.vsix");
+  const snapshot = join(directory, "private-snapshot.vsix");
+  const host = { platform: "linux", architecture: "x64", libc: "glibc" };
+  try {
+    await writeJupyterVsixFixture(source, {
+      targetPlatform: "linux-x64",
+      nativePayloads: ["extension/dist/node_modules/zeromq/prebuilds/linux-x64/node.napi.glibc.node"]
+    });
+    const receipt = stageJupyterExtensionAcceptanceVsix(source, snapshot);
+    assert.equal(assertJupyterExtensionAcceptanceVsixSnapshot(receipt), snapshot);
+    await writeFile(source, "replaced after staging");
+    await validateJupyterExtensionAcceptanceVsix(snapshot, host);
+    await assert.rejects(
+      validateJupyterExtensionAcceptanceVsix(source, host),
+      /could not be validated as a bounded VSIX archive/u
+    );
+    await chmod(snapshot, 0o600);
+    await writeFile(snapshot, "replaced private snapshot");
+    assert.throws(
+      () => assertJupyterExtensionAcceptanceVsixSnapshot(receipt),
+      /could not be validated as a bounded VSIX archive/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Jupyter VSIX preflight fails closed on malformed or unbounded archive metadata", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-vsix-invalid-"));
+  const malformed = join(directory, "malformed.vsix");
+  const missingManifest = join(directory, "missing-manifest.vsix");
+  const host = { platform: "linux", architecture: "x64", libc: "glibc" };
+  try {
+    await writeFile(malformed, "not a zip");
+    await assert.rejects(
+      validateJupyterExtensionAcceptanceVsix(malformed, host),
+      /could not be validated as a bounded VSIX archive/u
+    );
+
+    const zip = new ZipFile();
+    zip.addBuffer(
+      Buffer.from("native fixture"),
+      "extension/dist/node_modules/zeromq/prebuilds/linux-x64/node.napi.glibc.node"
+    );
+    zip.end();
+    await pipeline(zip.outputStream, createWriteStream(missingManifest, { flags: "wx", mode: 0o600 }));
+    await assert.rejects(
+      validateJupyterExtensionAcceptanceVsix(missingManifest, host),
+      /could not be validated as a bounded VSIX archive/u
     );
   } finally {
     await rm(directory, { recursive: true, force: true });

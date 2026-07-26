@@ -1,4 +1,4 @@
-import type * as vscode from "vscode";
+import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const lifecycle = vi.hoisted(() => ({
@@ -34,25 +34,27 @@ vi.mock("../extension/webviewPanel", () => ({
   OpenWranglerPanel: { disposePanelForSession: vi.fn() }
 }));
 
-import { activate, deactivate } from "../extension/activate";
+import { activate, deactivate, isCursorAppName } from "../extension/activate";
 
 describe("extension deactivation", () => {
   const originalExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    (vscode.env as { appName: string }).appName = "Visual Studio Code";
     lifecycle.bridge.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.bridge.reportDiagnostic.mockReset();
     lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting.mockReset().mockResolvedValue(false);
     lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.coordinator.createBridge.mockReset().mockReturnValue({ request: vi.fn() });
-    activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
+    await activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
   });
 
   afterEach(async () => {
     lifecycle.bridge.shutdown.mockResolvedValue(undefined);
     lifecycle.coordinator.shutdown.mockResolvedValue(undefined);
     await deactivate();
+    vi.restoreAllMocks();
     if (originalExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
     else process.env.OPEN_WRANGLER_EXTENSION_TESTS = originalExtensionTests;
   });
@@ -105,7 +107,7 @@ describe("extension deactivation", () => {
     lifecycle.bridge.shutdown.mockReset().mockResolvedValue(undefined);
     process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
 
-    const api = activate({
+    const api = await activate({
       subscriptions: [],
       workspaceState: {}
     } as unknown as vscode.ExtensionContext);
@@ -118,7 +120,7 @@ describe("extension deactivation", () => {
     await deactivate();
     process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
 
-    const api = activate({
+    const api = await activate({
       subscriptions: [],
       workspaceState: {}
     } as unknown as vscode.ExtensionContext);
@@ -131,6 +133,62 @@ describe("extension deactivation", () => {
     expect(testingApi.runtimeDependencyRevalidationToken).toBeUndefined();
     expect(testingApi.runtimeDependencyRevalidationTarget).toBeUndefined();
     expect(testingApi.clearRuntimeDependencyMarker).toBeUndefined();
+  });
+
+  it.each([
+    ["Cursor", true],
+    ["Cursor Nightly", true],
+    [" cursor insiders ", true],
+    ["Visual Studio Code", false],
+    ["VSCodium", false],
+    ["", false]
+  ])("classifies the editor host name %j without broad fork guessing", (appName, expected) => {
+    expect(isCursorAppName(appName)).toBe(expected);
+  });
+
+  it.each([
+    ["Cursor", true],
+    ["Visual Studio Code", false]
+  ])("publishes the immutable editor-title override for %s", async (appName, expected) => {
+    await deactivate();
+    (vscode.env as { appName: string }).appName = appName;
+    const executeCommand = vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined);
+
+    await activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
+
+    expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.forceNotebookEditorTitleAction", expected);
+  });
+
+  it("waits for the editor-title override before registering extension services", async () => {
+    await deactivate();
+    lifecycle.coordinator.createBridge.mockClear();
+    const contextGate = deferred<void>();
+    vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(
+      () => contextGate.promise as unknown as Thenable<undefined>
+    );
+
+    const activation = activate({
+      subscriptions: [],
+      workspaceState: {}
+    } as unknown as vscode.ExtensionContext);
+    await Promise.resolve();
+    expect(lifecycle.coordinator.createBridge).not.toHaveBeenCalled();
+
+    contextGate.resolve(undefined);
+    await activation;
+    expect(lifecycle.coordinator.createBridge).toHaveBeenCalledOnce();
+  });
+
+  it("fails activation before services register when the editor-title override cannot be published", async () => {
+    await deactivate();
+    lifecycle.coordinator.createBridge.mockClear();
+    const failure = new Error("setContext unavailable");
+    vi.spyOn(vscode.commands, "executeCommand").mockRejectedValueOnce(failure);
+
+    await expect(
+      activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext)
+    ).rejects.toBe(failure);
+    expect(lifecycle.coordinator.createBridge).not.toHaveBeenCalled();
   });
 });
 

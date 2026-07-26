@@ -135,7 +135,11 @@ const RELEASED_JUPYTER_CONSENT_MESSAGE =
   "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?";
 const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
 const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
-const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION = "Open Variable";
+const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
+const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN =
+  /^(?:Open Variable|Open Wrangler: Open Notebook Variable)$/u;
+const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
+const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE = "Open Notebook Variable in Open Wrangler";
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
@@ -328,7 +332,8 @@ export async function run(): Promise<void> {
   assert.ok(enabledFileTypes?.default?.includes("xls"));
   assert.deepEqual(contributions.configurationDefaults?.["cursor.general.pinnedTitleActions"], [
     "openWrangler.openFile",
-    "openWrangler.changeImportOptions"
+    "openWrangler.changeImportOptions",
+    "openWrangler.openNotebookVariable"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
@@ -404,10 +409,9 @@ export async function run(): Promise<void> {
     ),
     "The argument-only Jupyter viewer command must stay out of the Command Palette."
   );
-  const notebookVariableWhen =
-    "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook && isWorkspaceTrusted && jupyter.ispythonnotebook && jupyter.kernel.isjupyter";
+  const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
   const notebookVariableWhenCompact =
-    "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook && isWorkspaceTrusted && config.notebook.globalToolbar != true && jupyter.ispythonnotebook && jupyter.kernel.isjupyter";
+    "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)";
   for (const [menu, when] of [
     ["editor/title", notebookVariableWhenCompact],
     ["notebook/toolbar", notebookVariableWhen]
@@ -1882,74 +1886,471 @@ async function invokeReleasedNotebookToolbarVariable(
     notebook,
     "The exact released-Jupyter notebook must be active before its Open Wrangler toolbar action."
   );
-  await clickReleasedNotebookToolbarAction(workbench);
+  await clickReleasedNotebookVariableAction(workbench);
   const input = await waitForReleasedNotebookVariableInput(workbench);
   await input.fill(variableName);
   await input.press("Enter");
   assertExactOpenNotebookDocument(notebook, "after submitting the Open Wrangler notebook toolbar variable");
 }
 
-async function clickReleasedNotebookToolbarAction(workbench: Page): Promise<void> {
+async function clickReleasedNotebookVariableAction(workbench: Page): Promise<void> {
+  const cursorHost = process.env.OPEN_WRANGLER_TEST_EDITOR === "cursor";
+  const globalToolbar = vscode.workspace.getConfiguration("notebook").get<boolean>("globalToolbar");
+  if (cursorHost) {
+    const pinnedTitleActions = vscode.workspace
+      .getConfiguration("cursor.general")
+      .inspect<string[]>("pinnedTitleActions");
+    assert.ok(pinnedTitleActions, "Cursor must register its pinned-title-action setting.");
+    assert.ok(
+      pinnedTitleActions.defaultValue?.includes(RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND),
+      "The packaged Cursor default must pin the canonical notebook-variable action."
+    );
+    assert.equal(
+      pinnedTitleActions.globalValue,
+      undefined,
+      "Cursor notebook acceptance must not persist a user-level title-action setting."
+    );
+    assert.equal(
+      pinnedTitleActions.workspaceValue,
+      undefined,
+      "Cursor notebook acceptance must not persist a workspace title-action setting."
+    );
+  }
+  if (cursorHost || globalToolbar !== true) {
+    await clickReleasedNotebookEditorTitleAction(workbench);
+    return;
+  }
+  await clickReleasedNotebookToolbarAction(workbench);
+}
+
+async function clickReleasedNotebookEditorTitleAction(workbench: Page): Promise<void> {
   const deadline = Date.now() + 20_000;
-  let lastError: unknown;
   do {
-    let action:
-      | {
-          readonly kind: "direct" | "overflow";
-          readonly locator: Locator;
-        }
-      | undefined;
     for (const frame of releasedWorkbenchFrames(workbench)) {
       try {
-        const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
-        const direct = toolbar
-          .getByRole("button", { name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION, exact: true })
-          .first();
-        if ((await direct.count()) > 0 && (await direct.isVisible()) && (await direct.isEnabled())) {
-          action = { kind: "direct", locator: direct };
-          break;
-        }
+        const titleActions = frame.locator(".part.editor .editor-group-container.active .editor-actions:visible");
+        const commandItems = notebookToolbarCommandItems(titleActions, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+        const commandCount = await commandItems.count();
+        assert.ok(commandCount < 2, "The active editor title exposed duplicate Open Wrangler notebook actions.");
+        const byLabel = titleActions.getByRole("button", {
+          name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
+        });
+        const labelCount = await byLabel.count();
+        assert.ok(labelCount < 2, "The active editor title exposed duplicate labeled Open Wrangler actions.");
 
-        const more = toolbar.getByRole("button", { name: /More Actions/u }).first();
-        if ((await more.count()) > 0 && (await more.isVisible())) {
-          await more.click({ timeout: 2_000 });
-          // VS Code delays overflow-action mouseup registration for 100 ms
-          // so the pointer that opened a menu cannot also invoke an action.
-          // Resolve the exact item only after that guard to avoid retaining a
-          // menu node that the workbench may replace during initial layout.
-          await workbench.waitForTimeout(150);
-          const menuItem = frame
-            .getByRole("menuitem", { name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION, exact: true })
-            .first();
-          if ((await menuItem.count()) > 0 && (await menuItem.isVisible()) && (await menuItem.isEnabled())) {
-            action = { kind: "overflow", locator: menuItem };
-            break;
-          }
-          await frame
-            .locator("body")
-            .press("Escape")
-            .catch(() => {});
+        const action =
+          commandCount === 1
+            ? releasedCommandOwnedLabeledAction(titleActions, commandItems.first(), "button")
+            : labelCount === 1
+              ? byLabel.first()
+              : undefined;
+        const actionCount = action ? await action.count() : 0;
+        assert.ok(actionCount < 2, "The active editor title exposed duplicate command-owned labeled actions.");
+        if (actionCount === 1 && action && (await action.isVisible()) && (await action.isEnabled())) {
+          const overflow = await probeReleasedNotebookToolbarOverflow(workbench);
+          const surfaceMatches = await withReleasedNotebookOverflow(overflow, () =>
+            releasedNotebookLaunchSurfaceMatches(workbench, "editor-title", overflow.inventory.visible)
+          );
+          if (!surfaceMatches) continue;
+          await action.click({ timeout: 2_000 });
+          return;
         }
       } catch (error) {
-        lastError = error;
-        // The notebook toolbar can rerender after the selected kernel changes.
+        if (isReleasedNotebookSurfaceTerminalError(error)) throw error;
+        // The active editor title can rerender after the selected kernel changes.
       }
-    }
-    if (action) {
-      if (action.kind === "direct") {
-        await action.locator.click({ timeout: 2_000 });
-      } else {
-        await action.locator.click({ timeout: 2_000 });
-      }
-      return;
     }
     await workbench.waitForTimeout(100);
   } while (Date.now() < deadline);
-  const detail = lastError instanceof Error ? lastError.message : lastError === undefined ? "none" : String(lastError);
+
+  const diagnostics = await releasedNotebookToolbarDiagnostics(workbench, "none", {
+    total: 0,
+    visible: 0,
+    enabled: 0
+  });
+  throw new Error(
+    "Timed out clicking the real Open Wrangler action in the active notebook editor title. " +
+      `Structure: ${JSON.stringify(diagnostics)}`
+  );
+}
+
+async function clickReleasedNotebookToolbarAction(workbench: Page): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastStructuralFailure: "none" | "transient-toolbar-rerender" = "none";
+  let observedOverflowAction = { total: 0, visible: 0, enabled: 0 };
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      try {
+        const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+        const directItems = notebookToolbarCommandItems(toolbar, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+        const directCount = await directItems.count();
+        assert.ok(directCount < 2, "The notebook toolbar exposed duplicate Open Wrangler variable actions.");
+        const directByLabel = toolbar.getByRole("button", {
+          name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
+        });
+        const directLabelCount = await directByLabel.count();
+        assert.ok(directLabelCount < 2, "The notebook toolbar exposed duplicate labeled Open Wrangler actions.");
+        let directAction: Locator | undefined;
+        if (directCount === 1) {
+          const direct = releasedCommandOwnedLabeledAction(toolbar, directItems.first(), "button");
+          const directOwnedCount = await direct.count();
+          assert.ok(directOwnedCount < 2, "The notebook toolbar exposed duplicate command-owned labeled actions.");
+          if (directOwnedCount === 1) directAction = direct;
+        } else if (directLabelCount === 1) {
+          directAction = directByLabel.first();
+        }
+        if (directAction && (await directAction.isVisible()) && (await directAction.isEnabled())) {
+          const overflow = await probeReleasedNotebookToolbarOverflow(workbench);
+          observedOverflowAction = {
+            total: Math.max(observedOverflowAction.total, overflow.inventory.total),
+            visible: Math.max(observedOverflowAction.visible, overflow.inventory.visible),
+            enabled: Math.max(observedOverflowAction.enabled, overflow.inventory.enabled)
+          };
+          const surfaceMatches = await withReleasedNotebookOverflow(overflow, () =>
+            releasedNotebookLaunchSurfaceMatches(workbench, "notebook-toolbar", overflow.inventory.visible)
+          );
+          if (!surfaceMatches) continue;
+          await directAction.click({ timeout: 2_000 });
+          return;
+        }
+
+        const overflow = await probeReleasedNotebookToolbarOverflow(workbench);
+        observedOverflowAction = {
+          total: Math.max(observedOverflowAction.total, overflow.inventory.total),
+          visible: Math.max(observedOverflowAction.visible, overflow.inventory.visible),
+          enabled: Math.max(observedOverflowAction.enabled, overflow.inventory.enabled)
+        };
+        const invoked = await withReleasedNotebookOverflow(overflow, async () => {
+          if (overflow.action && overflow.actionState.visible === 1 && overflow.actionState.enabled === 1) {
+            if (await releasedNotebookLaunchSurfaceMatches(workbench, "notebook-toolbar", overflow.inventory.visible)) {
+              await overflow.action.click({ timeout: 2_000 });
+              return true;
+            }
+          }
+          return false;
+        });
+        if (invoked) return;
+      } catch (error) {
+        if (isReleasedNotebookSurfaceTerminalError(error)) throw error;
+        lastStructuralFailure = "transient-toolbar-rerender";
+        // The notebook toolbar can rerender after the selected kernel changes.
+      }
+    }
+    await workbench.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  const diagnostics = await releasedNotebookToolbarDiagnostics(
+    workbench,
+    lastStructuralFailure,
+    observedOverflowAction
+  );
   throw new Error(
     "Timed out clicking the real Open Wrangler action in the released Jupyter notebook toolbar. " +
-      `Last structural error: ${detail.slice(0, 500)}`
+      `Structure: ${JSON.stringify(diagnostics)}`
   );
+}
+
+function notebookToolbarCommandItems(container: Locator, command: string): Locator {
+  return container.locator(`.action-item[data-command-id="${command}"]`);
+}
+
+function notebookToolbarCommandAction(item: Locator, command: string): Locator {
+  return item.locator(`:scope > .action-label[data-command-id="${command}"]`);
+}
+
+function releasedCommandOwnedLabeledAction(
+  container: Locator,
+  commandItem: Locator,
+  role: "button" | "menuitem"
+): Locator {
+  const exactLabel = container.getByRole(role, {
+    name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
+  });
+  return commandItem.and(exactLabel).or(
+    commandItem.getByRole(role, {
+      name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
+    })
+  );
+}
+
+async function releasedNotebookLaunchSurfaceMatches(
+  workbench: Page,
+  expected: "notebook-toolbar" | "editor-title",
+  notebookToolbarOverflow = 0
+): Promise<boolean> {
+  let notebookToolbar = 0;
+  let editorTitle = 0;
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+    const title = frame.locator(".part.editor .editor-group-container.active .editor-actions:visible");
+    notebookToolbar += await releasedVisibleCommandOrLabelCount(toolbar, "button");
+    editorTitle += await releasedVisibleCommandOrLabelCount(title, "button");
+  }
+  notebookToolbar += notebookToolbarOverflow;
+  assert.ok(
+    notebookToolbar <= 1 && editorTitle <= 1 && notebookToolbar + editorTitle <= 1,
+    "Released notebook launch exposed duplicate Open Wrangler actions across native surfaces."
+  );
+  return expected === "notebook-toolbar"
+    ? notebookToolbar === 1 && editorTitle === 0
+    : notebookToolbar === 0 && editorTitle === 1;
+}
+
+interface ReleasedNotebookOverflowProbe {
+  readonly inventory: ReleasedLocatorState;
+  readonly actionState: ReleasedLocatorState;
+  readonly action?: Locator;
+  close(): Promise<void>;
+}
+
+class ReleasedNotebookSurfaceTerminalError extends AggregateError {}
+
+function isReleasedNotebookSurfaceTerminalError(error: unknown): boolean {
+  return (
+    error instanceof ReleasedNotebookSurfaceTerminalError ||
+    (error as { code?: unknown } | undefined)?.code === "ERR_ASSERTION"
+  );
+}
+
+async function withReleasedNotebookOverflow<T>(
+  overflow: ReleasedNotebookOverflowProbe,
+  operation: () => Promise<T>
+): Promise<T> {
+  let result: T;
+  try {
+    result = await operation();
+  } catch (error) {
+    try {
+      await overflow.close();
+    } catch (cleanupError) {
+      throw new ReleasedNotebookSurfaceTerminalError(
+        [error, cleanupError],
+        "Notebook launch-surface inspection and exact overflow cleanup both failed."
+      );
+    }
+    throw error;
+  }
+  try {
+    await overflow.close();
+  } catch (cleanupError) {
+    throw new ReleasedNotebookSurfaceTerminalError(
+      [cleanupError],
+      "The exact notebook overflow menu could not be closed after launch-surface inspection."
+    );
+  }
+  return result;
+}
+
+async function probeReleasedNotebookToolbarOverflow(workbench: Page): Promise<ReleasedNotebookOverflowProbe> {
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    const toolbar = frame.locator(".notebook-editor:visible .notebook-toolbar-container:visible");
+    const moreItems = notebookToolbarCommandItems(toolbar, NOTEBOOK_TOOLBAR_MORE_COMMAND);
+    const moreCount = await moreItems.count();
+    assert.ok(moreCount < 2, "The notebook toolbar exposed duplicate More Actions buttons.");
+    const moreByLabel = toolbar.getByRole("button", { name: /^More Actions(?:\.\.\.)?$/u });
+    const moreLabelCount = moreCount === 0 ? await moreByLabel.count() : 0;
+    assert.ok(moreLabelCount < 2, "The notebook toolbar exposed duplicate labeled More Actions buttons.");
+    if (moreCount !== 1 && moreLabelCount !== 1) continue;
+
+    const more =
+      moreCount === 1
+        ? notebookToolbarCommandAction(moreItems.first(), NOTEBOOK_TOOLBAR_MORE_COMMAND)
+        : moreByLabel.first();
+    if (!(await more.isVisible())) continue;
+    await more.click({ timeout: 2_000 });
+    const visibleMenus = frame.locator(".context-view .monaco-menu-container:visible");
+    const menuContainer = visibleMenus.first();
+    let openedMenu: ElementHandle<unknown> | undefined;
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      if (openedMenu && !(await openedMenu.isVisible())) {
+        closed = true;
+        return;
+      }
+      if (!openedMenu && (await visibleMenus.count()) === 0) {
+        closed = true;
+        return;
+      }
+      await frame.locator("body").press("Escape");
+      if (openedMenu) {
+        await openedMenu.waitForElementState("hidden", { timeout: 2_000 });
+      } else {
+        await visibleMenus.waitFor({ state: "hidden", timeout: 2_000 });
+      }
+      closed = true;
+    };
+    try {
+      // VS Code delays overflow-action mouseup registration for 100 ms so the
+      // pointer that opened a menu cannot also invoke an action.
+      await workbench.waitForTimeout(150);
+      await menuContainer.waitFor({ state: "visible", timeout: 2_000 });
+      openedMenu = (await menuContainer.elementHandle()) ?? undefined;
+      assert.ok(openedMenu, "The exact opened notebook overflow menu must remain addressable.");
+
+      const menuItems = notebookToolbarCommandItems(menuContainer, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+      const commandState = await releasedLocatorState(menuItems);
+      const menuByLabel = menuContainer.getByRole("menuitem", {
+        name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
+      });
+      const labelState = await releasedLocatorState(menuByLabel);
+      const commandOwned =
+        commandState.total === 1
+          ? releasedCommandOwnedLabeledAction(menuContainer, menuItems.first(), "menuitem")
+          : undefined;
+      const commandOwnedState = commandOwned
+        ? await releasedLocatorState(commandOwned)
+        : { total: 0, visible: 0, enabled: 0 };
+      assert.ok(commandState.total < 2, "The notebook overflow exposed duplicate Open Wrangler variable actions.");
+      assert.ok(labelState.total < 2, "The notebook overflow exposed duplicate labeled Open Wrangler actions.");
+      assert.ok(commandOwnedState.total < 2, "The notebook overflow exposed duplicate command-owned labeled actions.");
+      const inventory = commandState.total === 0 ? labelState : commandState;
+      const actionState = commandState.total === 0 ? labelState : commandOwnedState;
+      const action =
+        commandState.total === 0 ? (labelState.total === 1 ? menuByLabel.first() : undefined) : commandOwned;
+      return { inventory, actionState, action, close };
+    } catch (error) {
+      try {
+        await close();
+      } catch (cleanupError) {
+        throw new ReleasedNotebookSurfaceTerminalError(
+          [error, cleanupError],
+          "Notebook overflow inspection and exact-menu cleanup both failed."
+        );
+      }
+      throw error;
+    }
+  }
+  return {
+    inventory: { total: 0, visible: 0, enabled: 0 },
+    actionState: { total: 0, visible: 0, enabled: 0 },
+    close: async () => undefined
+  };
+}
+
+async function releasedVisibleCommandOrLabelCount(container: Locator, role: "button" | "menuitem"): Promise<number> {
+  const commandItems = notebookToolbarCommandItems(container, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+  const commandCount = await commandItems.count();
+  if (commandCount > 0) {
+    return (await releasedLocatorState(commandItems)).visible;
+  }
+  const label = await releasedLocatorState(
+    container.getByRole(role, {
+      name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
+    })
+  );
+  return label.visible;
+}
+
+interface ReleasedLocatorState {
+  total: number;
+  visible: number;
+  enabled: number;
+}
+
+async function releasedLocatorState(locator: Locator): Promise<ReleasedLocatorState> {
+  const total = await locator.count().catch(() => -1);
+  if (total <= 0) return { total, visible: 0, enabled: 0 };
+  let visible = 0;
+  let enabled = 0;
+  for (let index = 0; index < Math.min(total, 8); index += 1) {
+    const candidate = locator.nth(index);
+    if (await candidate.isVisible().catch(() => false)) {
+      visible += 1;
+      if (await candidate.isEnabled().catch(() => false)) enabled += 1;
+    }
+  }
+  return { total, visible, enabled };
+}
+
+async function releasedNotebookToolbarDiagnostics(
+  workbench: Page,
+  lastStructuralFailure: "none" | "transient-toolbar-rerender",
+  observedOverflowAction: ReleasedLocatorState
+): Promise<unknown> {
+  const registeredCommands = await vscode.commands.getCommands(true);
+  const jupyter = vscode.extensions.getExtension("ms-toolsai.jupyter");
+  const frames = await Promise.all(
+    releasedWorkbenchFrames(workbench)
+      .slice(0, NOTEBOOK_RENDERER_TARGET_LIMIT)
+      .map(async (frame) => {
+        const notebookEditors = frame.locator(".notebook-editor");
+        const toolbars = frame.locator(".notebook-editor .notebook-toolbar-container");
+        const directAction = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+        const jupyterExport = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_EXPORT_COMMAND);
+        return {
+          notebookEditors: await releasedLocatorState(notebookEditors),
+          toolbars: await releasedLocatorState(toolbars),
+          toolbarButtons: await releasedLocatorState(toolbars.getByRole("button", { includeHidden: true })),
+          directAction: await releasedLocatorState(directAction),
+          jupyterExport: await releasedLocatorState(jupyterExport),
+          tableIcons: await toolbars
+            .locator(".codicon-table")
+            .count()
+            .catch(() => -1)
+        };
+      })
+  );
+  const totals = frames.reduce(
+    (result, frame) => ({
+      notebookEditors: result.notebookEditors + Math.max(frame.notebookEditors.total, 0),
+      visibleNotebookEditors: result.visibleNotebookEditors + frame.notebookEditors.visible,
+      toolbars: result.toolbars + Math.max(frame.toolbars.total, 0),
+      visibleToolbars: result.visibleToolbars + frame.toolbars.visible,
+      directActions: result.directActions + Math.max(frame.directAction.total, 0),
+      visibleDirectActions: result.visibleDirectActions + frame.directAction.visible,
+      enabledDirectActions: result.enabledDirectActions + frame.directAction.enabled,
+      toolbarButtons: result.toolbarButtons + Math.max(frame.toolbarButtons.total, 0),
+      jupyterExports: result.jupyterExports + Math.max(frame.jupyterExport.total, 0),
+      tableIcons: result.tableIcons + Math.max(frame.tableIcons, 0)
+    }),
+    {
+      notebookEditors: 0,
+      visibleNotebookEditors: 0,
+      toolbars: 0,
+      visibleToolbars: 0,
+      directActions: 0,
+      visibleDirectActions: 0,
+      enabledDirectActions: 0,
+      toolbarButtons: 0,
+      jupyterExports: 0,
+      tableIcons: 0
+    }
+  );
+  const classification =
+    totals.visibleNotebookEditors === 0
+      ? "notebook-missing"
+      : totals.toolbars === 0
+        ? "toolbar-missing"
+        : totals.visibleToolbars === 0
+          ? "toolbar-hidden"
+          : totals.directActions > 1 || observedOverflowAction.total > 1
+            ? "duplicate"
+            : totals.directActions > 0 && totals.visibleDirectActions === 0
+              ? "action-hidden"
+              : totals.visibleDirectActions > 0 && totals.enabledDirectActions === 0
+                ? "action-disabled"
+                : totals.jupyterExports === 0
+                  ? "scoped-context-unavailable"
+                  : totals.tableIcons > 0
+                    ? "label-mismatch"
+                    : lastStructuralFailure !== "none"
+                      ? "race"
+                      : registeredCommands.includes("openWrangler.openNotebookVariable")
+                        ? "contribution-suppressed"
+                        : "ambiguous";
+  return {
+    classification,
+    lastStructuralFailure,
+    framesInspected: frames.length,
+    globalToolbar: vscode.workspace.getConfiguration("notebook").get<boolean>("globalToolbar"),
+    workspaceTrusted: vscode.workspace.isTrusted,
+    activeNotebookType: vscode.window.activeNotebookEditor?.notebook.notebookType,
+    jupyterInstalled: jupyter !== undefined,
+    jupyterActive: jupyter?.isActive ?? false,
+    commandRegistered: registeredCommands.includes("openWrangler.openNotebookVariable"),
+    observedOverflowAction,
+    totals
+  };
 }
 
 async function waitForReleasedNotebookVariableInput(workbench: Page): Promise<Locator> {

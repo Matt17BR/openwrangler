@@ -36,7 +36,16 @@ export interface OpenWranglerExtensionApi {
 let activeCoordinator: SessionCoordinator | undefined;
 let activeBridge: PythonBridge | undefined;
 
-export function activate(context: vscode.ExtensionContext): OpenWranglerExtensionApi | undefined {
+const NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT = "openWrangler.forceNotebookEditorTitleAction";
+
+export function isCursorAppName(appName: string): boolean {
+  const normalized = appName.trim().toLowerCase();
+  return normalized === "cursor" || normalized.startsWith("cursor ");
+}
+
+export async function activate(context: vscode.ExtensionContext): Promise<OpenWranglerExtensionApi | undefined> {
+  await setNotebookEditorTitleActionContext(isCursorAppName(vscode.env.appName));
+
   const bridge = new PythonBridge(context);
   const coordinator = new SessionCoordinator(context.workspaceState, (message) => bridge.reportDiagnostic(message));
   activeCoordinator = coordinator;
@@ -73,6 +82,10 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
     };
   }
   return undefined;
+}
+
+async function setNotebookEditorTitleActionContext(value: boolean): Promise<void> {
+  await vscode.commands.executeCommand("setContext", NOTEBOOK_EDITOR_TITLE_ACTION_CONTEXT, value);
 }
 
 export async function deactivate(): Promise<void> {

@@ -6,6 +6,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -15,6 +16,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  writeSync,
   writeFileSync
 } from "node:fs";
 import { createServer } from "node:net";
@@ -25,6 +27,8 @@ import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { resolveCliPathFromVSCodeExecutablePath } from "@vscode/test-electron";
+import { SaxesParser } from "saxes";
+import { open as openZip } from "yauzl";
 import {
   EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES,
   redactEditorAcceptanceText
@@ -46,6 +50,23 @@ export const PINNED_PYTHON_EXTENSION_VERSION = "2026.4.0";
 export const PINNED_PYTHON_EXTENSION_ID = `ms-python.python@${PINNED_PYTHON_EXTENSION_VERSION}`;
 export const PINNED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
 export const PINNED_JUPYTER_EXTENSION_ID = `ms-toolsai.jupyter@${PINNED_JUPYTER_EXTENSION_VERSION}`;
+const JUPYTER_VSIX_MANIFEST_ENTRY = "extension.vsixmanifest";
+const JUPYTER_VSIX_MANIFEST_MAX_BYTES = 256 * 1024;
+const JUPYTER_VSIX_MAX_ENTRIES = 100_000;
+const JUPYTER_VSIX_MAX_NATIVE_PAYLOADS = 1_024;
+const JUPYTER_VSIX_NATIVE_PAYLOAD_MAX_BYTES = 32 * 1024 * 1024;
+const JUPYTER_VSIX_NATIVE_PAYLOAD_TOTAL_MAX_BYTES = 128 * 1024 * 1024;
+const JUPYTER_VSIX_NATIVE_HEADER_MAX_BYTES = 4 * 1024;
+const JUPYTER_VSIX_MAX_BYTES = 512 * 1024 * 1024;
+const JUPYTER_VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
+const JUPYTER_ZEROMQ_PREBUILD =
+  /^extension\/dist\/node_modules\/(zeromq|zeromqold)\/prebuilds\/([^/]+)\/([^/]+\.node)$/u;
+const INVALID_JUPYTER_VSIX = "The real Jupyter-extension VSIX could not be validated as a bounded VSIX archive.";
+const INCOMPATIBLE_JUPYTER_VSIX_TARGET =
+  "The real Jupyter-extension VSIX target platform is incompatible with this acceptance host.";
+const INCOMPATIBLE_JUPYTER_ZEROMQ =
+  "The real Jupyter-extension VSIX does not contain a compatible native ZeroMQ payload for this acceptance host.";
+const JUPYTER_VSIX_SNAPSHOT_RECEIPT = Symbol("openWranglerJupyterVsixSnapshotReceipt");
 export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
 export const EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const EDITOR_ACCEPTANCE_RESULT_MAX_BYTES = 1024 * 1024;
@@ -201,6 +222,405 @@ export function resolveJupyterExtensionAcceptanceInstallTarget(environment = pro
     throw new Error("The real Jupyter-extension acceptance VSIX must be a regular file and not a symbolic link.");
   }
   return vsix;
+}
+
+export function stageJupyterExtensionAcceptanceVsix(source, destination) {
+  let sourceDescriptor;
+  let destinationDescriptor;
+  let destinationCreated = false;
+  let staged = false;
+  try {
+    sourceDescriptor = openSync(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const sourceOpened = fstatSync(sourceDescriptor, { bigint: true });
+    if (
+      !sourceOpened.isFile() ||
+      sourceOpened.isSymbolicLink() ||
+      sourceOpened.size <= 0n ||
+      sourceOpened.size > BigInt(JUPYTER_VSIX_MAX_BYTES)
+    ) {
+      throw new Error(INVALID_JUPYTER_VSIX);
+    }
+
+    destinationDescriptor = openSync(
+      destination,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o400
+    );
+    destinationCreated = true;
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let copied = 0n;
+    while (copied < sourceOpened.size) {
+      const remaining = sourceOpened.size - copied;
+      const requested = Number(remaining < BigInt(buffer.length) ? remaining : BigInt(buffer.length));
+      const bytesRead = readSync(sourceDescriptor, buffer, 0, requested, null);
+      if (bytesRead === 0) {
+        throw new Error(INVALID_JUPYTER_VSIX);
+      }
+      let written = 0;
+      while (written < bytesRead) {
+        const bytesWritten = writeSync(destinationDescriptor, buffer, written, bytesRead - written);
+        if (bytesWritten === 0) {
+          throw new Error(INVALID_JUPYTER_VSIX);
+        }
+        written += bytesWritten;
+      }
+      copied += BigInt(bytesRead);
+    }
+    fsyncSync(destinationDescriptor);
+    const sourceCompleted = fstatSync(sourceDescriptor, { bigint: true });
+    const destinationCompleted = fstatSync(destinationDescriptor, { bigint: true });
+    if (
+      !sameImmutablePathSnapshot(sourceCompleted, sourceOpened) ||
+      !destinationCompleted.isFile() ||
+      destinationCompleted.isSymbolicLink() ||
+      destinationCompleted.size !== sourceOpened.size ||
+      destinationCompleted.nlink !== 1n
+    ) {
+      throw new Error(INVALID_JUPYTER_VSIX);
+    }
+    staged = true;
+    return Object.freeze({
+      [JUPYTER_VSIX_SNAPSHOT_RECEIPT]: true,
+      path: destination,
+      metadata: destinationCompleted
+    });
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  } finally {
+    if (destinationDescriptor !== undefined) closeSync(destinationDescriptor);
+    if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
+    if (destinationCreated && !staged) {
+      rmSync(destination, { force: true });
+    }
+  }
+}
+
+export function assertJupyterExtensionAcceptanceVsixSnapshot(receipt) {
+  if (
+    receipt?.[JUPYTER_VSIX_SNAPSHOT_RECEIPT] !== true ||
+    typeof receipt.path !== "string" ||
+    receipt.metadata === undefined
+  ) {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  let current;
+  try {
+    current = lstatSync(receipt.path, { bigint: true });
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  if (current.isSymbolicLink() || !current.isFile() || !sameImmutablePathSnapshot(current, receipt.metadata)) {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  return receipt.path;
+}
+
+function currentJupyterVsixHost() {
+  const architecture = process.arch === "arm" ? "armhf" : process.arch;
+  if (!["x64", "arm64", "armhf"].includes(architecture)) {
+    throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+  }
+  if (process.platform !== "linux") {
+    return { platform: process.platform, architecture };
+  }
+
+  let report;
+  try {
+    report = process.report?.getReport();
+  } catch {
+    // A disabled diagnostic report is handled by the fixed fail-closed error below.
+  }
+  const glibcVersion = report?.header?.glibcVersionRuntime;
+  if (typeof glibcVersion === "string" && glibcVersion.length > 0) {
+    return { platform: "linux", architecture, libc: "glibc" };
+  }
+  if (
+    existsSync("/etc/alpine-release") ||
+    report?.sharedObjects?.some((entry) => typeof entry === "string" && entry.toLowerCase().includes("musl"))
+  ) {
+    return { platform: "linux", architecture, libc: "musl" };
+  }
+  throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+}
+
+function expectedJupyterVsixTarget(host) {
+  if (host.platform === "linux") {
+    if (!["glibc", "musl"].includes(host.libc)) {
+      throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+    }
+    return `${host.libc === "musl" ? "alpine" : "linux"}-${host.architecture}`;
+  }
+  if (!["darwin", "win32"].includes(host.platform)) {
+    throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+  }
+  return `${host.platform}-${host.architecture}`;
+}
+
+function parseJupyterVsixTargetPlatform(manifest) {
+  const elementPath = [];
+  const parser = new SaxesParser({ xmlns: true });
+  let identityCount = 0;
+  let targetPlatform;
+
+  parser.on("doctype", () => {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  });
+  parser.on("opentag", (tag) => {
+    elementPath.push({ name: tag.name, uri: tag.uri });
+    if (
+      elementPath.length !== 3 ||
+      elementPath[0]?.name !== "PackageManifest" ||
+      elementPath[0]?.uri !== JUPYTER_VSIX_MANIFEST_NAMESPACE ||
+      elementPath[1]?.name !== "Metadata" ||
+      elementPath[1]?.uri !== JUPYTER_VSIX_MANIFEST_NAMESPACE ||
+      tag.name !== "Identity" ||
+      tag.uri !== JUPYTER_VSIX_MANIFEST_NAMESPACE
+    ) {
+      return;
+    }
+    identityCount += 1;
+    const attribute = Object.values(tag.attributes).find(
+      (candidate) =>
+        typeof candidate === "object" &&
+        candidate.name === "TargetPlatform" &&
+        candidate.prefix === "" &&
+        candidate.local === "TargetPlatform" &&
+        candidate.uri === ""
+    );
+    if (attribute !== undefined) {
+      if (typeof attribute.value !== "string" || attribute.value.trim() !== attribute.value) {
+        throw new Error(INVALID_JUPYTER_VSIX);
+      }
+      targetPlatform = attribute.value.toLowerCase();
+    }
+  });
+  parser.on("closetag", () => {
+    elementPath.pop();
+  });
+  try {
+    parser.write(manifest).close();
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  if (identityCount !== 1) {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  return targetPlatform;
+}
+
+function openJupyterVsix(vsix) {
+  return new Promise((resolveZip, rejectZip) => {
+    openZip(vsix, { autoClose: true, lazyEntries: true, validateEntrySizes: true }, (error, archive) => {
+      if (error || archive === undefined) {
+        rejectZip(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      resolveZip(archive);
+    });
+  });
+}
+
+function readBoundedJupyterVsixManifest(archive, entry) {
+  if (entry.uncompressedSize > JUPYTER_VSIX_MANIFEST_MAX_BYTES) {
+    return Promise.reject(new Error(INVALID_JUPYTER_VSIX));
+  }
+  return new Promise((resolveManifest, rejectManifest) => {
+    archive.openReadStream(entry, (openError, stream) => {
+      if (openError || stream === undefined) {
+        rejectManifest(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      const chunks = [];
+      let total = 0;
+      stream.on("data", (chunk) => {
+        total += chunk.length;
+        if (total > JUPYTER_VSIX_MANIFEST_MAX_BYTES) {
+          stream.destroy(new Error(INVALID_JUPYTER_VSIX));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      stream.once("error", () => rejectManifest(new Error(INVALID_JUPYTER_VSIX)));
+      stream.once("end", () => resolveManifest(Buffer.concat(chunks, total).toString("utf8")));
+    });
+  });
+}
+
+function readBoundedJupyterNativeHeader(archive, entry) {
+  if (
+    entry.uncompressedSize <= 0 ||
+    entry.uncompressedSize > JUPYTER_VSIX_NATIVE_PAYLOAD_MAX_BYTES ||
+    entry.fileName.endsWith("/")
+  ) {
+    return Promise.reject(new Error(INVALID_JUPYTER_VSIX));
+  }
+  return new Promise((resolveHeader, rejectHeader) => {
+    archive.openReadStream(entry, (openError, stream) => {
+      if (openError || stream === undefined) {
+        rejectHeader(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      const header = Buffer.alloc(Math.min(entry.uncompressedSize, JUPYTER_VSIX_NATIVE_HEADER_MAX_BYTES));
+      let headerBytes = 0;
+      let total = 0;
+      stream.on("data", (chunk) => {
+        total += chunk.length;
+        if (total > JUPYTER_VSIX_NATIVE_PAYLOAD_MAX_BYTES) {
+          stream.destroy(new Error(INVALID_JUPYTER_VSIX));
+          return;
+        }
+        if (headerBytes < header.length) {
+          headerBytes += chunk.copy(header, headerBytes, 0, header.length - headerBytes);
+        }
+      });
+      stream.once("error", () => rejectHeader(new Error(INVALID_JUPYTER_VSIX)));
+      stream.once("end", () => {
+        if (total !== entry.uncompressedSize || headerBytes === 0) {
+          rejectHeader(new Error(INVALID_JUPYTER_VSIX));
+          return;
+        }
+        resolveHeader(header.subarray(0, headerBytes));
+      });
+    });
+  });
+}
+
+async function inspectJupyterExtensionVsix(vsix) {
+  const archive = await openJupyterVsix(vsix);
+  return new Promise((resolveInspection, rejectInspection) => {
+    let settled = false;
+    let entryCount = 0;
+    let manifest;
+    let nativePayloadBytes = 0;
+    const nativePayloads = [];
+    const rejectInvalid = () => {
+      if (settled) return;
+      settled = true;
+      archive.close();
+      rejectInspection(new Error(INVALID_JUPYTER_VSIX));
+    };
+
+    archive.once("error", rejectInvalid);
+    archive.on("entry", (entry) => {
+      entryCount += 1;
+      if (entryCount > JUPYTER_VSIX_MAX_ENTRIES) {
+        rejectInvalid();
+        return;
+      }
+      const nativePayload = JUPYTER_ZEROMQ_PREBUILD.exec(entry.fileName);
+      if (nativePayload?.[1] === "zeromq") {
+        nativePayloadBytes += entry.uncompressedSize;
+        if (nativePayloads.length >= JUPYTER_VSIX_MAX_NATIVE_PAYLOADS) {
+          rejectInvalid();
+          return;
+        }
+        if (nativePayloadBytes > JUPYTER_VSIX_NATIVE_PAYLOAD_TOTAL_MAX_BYTES) {
+          rejectInvalid();
+          return;
+        }
+        void readBoundedJupyterNativeHeader(archive, entry).then((header) => {
+          if (settled) return;
+          nativePayloads.push({
+            packageName: nativePayload[1],
+            platform: nativePayload[2],
+            filename: nativePayload[3],
+            header
+          });
+          archive.readEntry();
+        }, rejectInvalid);
+        return;
+      }
+      if (entry.fileName !== JUPYTER_VSIX_MANIFEST_ENTRY) {
+        archive.readEntry();
+        return;
+      }
+      if (manifest !== undefined || entry.fileName.endsWith("/")) {
+        rejectInvalid();
+        return;
+      }
+      manifest = null;
+      void readBoundedJupyterVsixManifest(archive, entry).then((contents) => {
+        if (settled) return;
+        manifest = contents;
+        archive.readEntry();
+      }, rejectInvalid);
+    });
+    archive.once("end", () => {
+      if (settled) return;
+      settled = true;
+      if (typeof manifest !== "string") {
+        rejectInspection(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      resolveInspection({ manifest, nativePayloads });
+    });
+    archive.readEntry();
+  });
+}
+
+function jupyterZeroMqPayloadMatchesHost(payload, host) {
+  const nativePlatform = host.platform === "linux" ? "linux" : host.platform;
+  if (payload.platform !== `${nativePlatform}-${host.architecture}`) {
+    return false;
+  }
+  if (host.platform !== "linux") {
+    return jupyterNativeHeaderMatchesHost(payload.header, host);
+  }
+  const requiredSuffix = host.libc === "musl" ? ".musl.node" : ".glibc.node";
+  return payload.filename.endsWith(requiredSuffix) && jupyterNativeHeaderMatchesHost(payload.header, host);
+}
+
+function jupyterNativeHeaderMatchesHost(header, host) {
+  if (host.platform === "linux") {
+    if (header.length < 20 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || header[5] !== 1) {
+      return false;
+    }
+    const expectedClass = host.architecture === "armhf" ? 1 : 2;
+    const expectedMachine = { x64: 62, arm64: 183, armhf: 40 }[host.architecture];
+    return header[4] === expectedClass && header.readUInt16LE(18) === expectedMachine;
+  }
+  if (host.platform === "win32") {
+    if (header.length < 64 || header[0] !== 0x4d || header[1] !== 0x5a) {
+      return false;
+    }
+    const peOffset = header.readUInt32LE(60);
+    if (peOffset + 6 > header.length || header.readUInt32LE(peOffset) !== 0x00004550) {
+      return false;
+    }
+    const expectedMachine = { x64: 0x8664, arm64: 0xaa64, armhf: 0x01c4 }[host.architecture];
+    return header.readUInt16LE(peOffset + 4) === expectedMachine;
+  }
+  if (host.platform === "darwin") {
+    if (header.length < 8 || header.readUInt32LE(0) !== 0xfeedfacf) {
+      return false;
+    }
+    const expectedCpu = { x64: 0x01000007, arm64: 0x0100000c, armhf: 12 }[host.architecture];
+    return header.readUInt32LE(4) === expectedCpu;
+  }
+  return false;
+}
+
+export async function validateJupyterExtensionAcceptanceVsix(vsix, host = currentJupyterVsixHost()) {
+  let inspection;
+  try {
+    inspection = await inspectJupyterExtensionVsix(vsix);
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  const targetPlatform = parseJupyterVsixTargetPlatform(inspection.manifest);
+  const expectedTarget = expectedJupyterVsixTarget(host);
+  const portableTargets =
+    host.platform === "darwin"
+      ? new Set([undefined, "universal", "darwin-universal"])
+      : new Set([undefined, "universal"]);
+  if (targetPlatform !== expectedTarget && !portableTargets.has(targetPlatform)) {
+    throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+  }
+
+  const modernPayloads = inspection.nativePayloads.filter((payload) => payload.packageName === "zeromq");
+  if (!modernPayloads.some((payload) => jupyterZeroMqPayloadMatchesHost(payload, host))) {
+    throw new Error(INCOMPATIBLE_JUPYTER_ZEROMQ);
+  }
 }
 const INCOMPLETE_XVFB_DIAGNOSTIC =
   "Xvfb stderr was suppressed because its complete stream contents were not available.";

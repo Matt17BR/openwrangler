@@ -69,7 +69,8 @@ describe("file launch contributions", () => {
   it("uses one canonical, compact command for every file launch surface", () => {
     expect(manifest.contributes?.configurationDefaults?.["cursor.general.pinnedTitleActions"]).toEqual([
       "openWrangler.openFile",
-      "openWrangler.changeImportOptions"
+      "openWrangler.changeImportOptions",
+      "openWrangler.openNotebookVariable"
     ]);
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
@@ -121,6 +122,38 @@ describe("file launch contributions", () => {
     }
     expect(match.test("notes.txt")).toBe(false);
     expect(match.test("data.csv.backup")).toBe(false);
+  });
+});
+
+describe("notebook launch contributions", () => {
+  const stableJupyterContext = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
+
+  it("keeps the notebook action discoverable without Jupyter-private context keys", () => {
+    expect(manifest.activationEvents).toContain("onNotebook:jupyter-notebook");
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.openNotebookVariable",
+      title: "Open Wrangler: Open Notebook Variable",
+      shortTitle: "Open Variable",
+      icon: "$(table)"
+    });
+    expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({
+      command: "openWrangler.openNotebookVariable",
+      when: stableJupyterContext,
+      group: "navigation@50"
+    });
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
+      command: "openWrangler.openNotebookVariable",
+      when: `${stableJupyterContext} && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)`,
+      group: "navigation@50"
+    });
+    for (const menu of ["notebook/toolbar", "editor/title"]) {
+      const entry = manifest.contributes?.menus?.[menu]?.find(
+        (candidate) => candidate.command === "openWrangler.openNotebookVariable"
+      );
+      expect(entry?.when).not.toContain("jupyter.ispythonnotebook");
+      expect(entry?.when).not.toContain("jupyter.kernel.isjupyter");
+      expect(entry?.when).not.toContain("notebookKernel");
+    }
   });
 });
 

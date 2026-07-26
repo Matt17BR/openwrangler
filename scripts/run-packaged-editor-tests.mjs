@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createVSIX } from "@vscode/vsce";
 import {
+  assertJupyterExtensionAcceptanceVsixSnapshot,
   configureEditorAcceptanceTempRoot,
   collectEditorAcceptancePrivateDiagnosticPaths,
   createEditorAcceptanceEnvironment,
@@ -20,7 +21,9 @@ import {
   resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
+  stageJupyterExtensionAcceptanceVsix,
   startIsolatedEditorDisplay,
+  validateJupyterExtensionAcceptanceVsix,
   validateEditorAcceptancePrivatePathOverrides,
   writeEditorAcceptanceHarness,
   writeAcceptanceProgress,
@@ -122,7 +125,22 @@ try {
           const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
           const expectedExtension = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
           const pythonExtensionInstallTarget = resolvePythonExtensionAcceptanceInstallTarget();
-          const jupyterExtensionInstallTarget = resolveJupyterExtensionAcceptanceInstallTarget();
+          let jupyterExtensionInstallTarget = resolveJupyterExtensionAcceptanceInstallTarget();
+          let jupyterExtensionSnapshot;
+          if (jupyterExtensionInstallTarget && isAbsolute(jupyterExtensionInstallTarget)) {
+            writeCorrelatedProgress(
+              orchestrationProgressPath,
+              orchestrationRunId,
+              "setup",
+              "setup:validate-jupyter-vsix"
+            );
+            jupyterExtensionSnapshot = stageJupyterExtensionAcceptanceVsix(
+              jupyterExtensionInstallTarget,
+              resolve(orchestrationProfile, "released-jupyter.vsix")
+            );
+            jupyterExtensionInstallTarget = assertJupyterExtensionAcceptanceVsixSnapshot(jupyterExtensionSnapshot);
+            await validateJupyterExtensionAcceptanceVsix(jupyterExtensionInstallTarget);
+          }
 
           writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-editors");
           const requested = process.env.OPEN_WRANGLER_PACKAGED_EDITORS?.split(",")
@@ -483,6 +501,10 @@ try {
                     "setup",
                     "setup:install-jupyter-extension"
                   );
+                  if (jupyterExtensionSnapshot) {
+                    jupyterExtensionInstallTarget =
+                      assertJupyterExtensionAcceptanceVsixSnapshot(jupyterExtensionSnapshot);
+                  }
                   await runBoundedEditorCliCommand(
                     {
                       editor: isAbsolute(jupyterExtensionInstallTarget) ? editor : jupyterMarketplaceInstaller,
