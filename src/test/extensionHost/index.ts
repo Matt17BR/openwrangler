@@ -8862,6 +8862,29 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
     assert.equal(await installButton.isVisible(), true, "The dependency lifecycle Install action must be visible.");
     assert.equal(await installButton.isEnabled(), true, "The dependency lifecycle Install action must be enabled.");
     recordAcceptanceProgress("verify:dependency-install-confirmation-visible");
+    const viewport = await confirmationPage.evaluate(() => {
+      const pageWindow = globalThis as unknown as {
+        innerWidth: number;
+        innerHeight: number;
+      };
+      return {
+        width: pageWindow.innerWidth,
+        height: pageWindow.innerHeight
+      };
+    });
+    await confirmationPage.mouse.move(Math.max(1, viewport.width - 8), Math.max(1, viewport.height - 8));
+    const transientHoverDismissed = await pollAcceptanceCondition(
+      async () => (await confirmationPage.locator(".monaco-hover:visible").count()) === 0,
+      {
+        timeoutMs: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+        intervalMs: 50
+      }
+    );
+    assert.equal(
+      transientHoverDismissed,
+      true,
+      "A transient workbench hover must leave before the real dependency lifecycle action is clicked."
+    );
     await installButton.click({
       noWaitAfter: true,
       timeout: WORKBENCH_OPERATION_TIMEOUT_MS
