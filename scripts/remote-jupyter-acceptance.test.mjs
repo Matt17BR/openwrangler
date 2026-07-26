@@ -35,6 +35,14 @@ const PRIVATE_DIRECTORY = mkdtempSync(join(tmpdir(), "openwrangler-remote-jupyte
 chmodSync(PRIVATE_DIRECTORY, 0o700);
 after(() => rmSync(PRIVATE_DIRECTORY, { recursive: true, force: true }));
 const linuxTest = process.platform === "linux" ? test : test.skip;
+const BOUNDED_RUNNER_ENVIRONMENT = Object.freeze(
+  Object.fromEntries(
+    [
+      ["PATH", process.env.PATH],
+      ["SYSTEMROOT", process.env.SystemRoot ?? process.env.SYSTEMROOT]
+    ].filter((entry) => typeof entry[1] === "string")
+  )
+);
 
 function createFakeChild(pid = 12345) {
   const child = new EventEmitter();
@@ -1184,7 +1192,7 @@ test("the default bounded runner rejects oversized output without invoking Docke
       {
         executable: process.execPath,
         args: ["-e", 'process.stdout.write("x".repeat(2048))'],
-        environment: process.env,
+        environment: BOUNDED_RUNNER_ENVIRONMENT,
         label: "bounded test"
       },
       { timeoutMs: 5_000, maxOutputBytes: 128 }
@@ -1202,7 +1210,7 @@ test("the bounded runner treats ChildProcess error as data and settles only afte
     {
       executable: process.execPath,
       args: ["-e", "void 0"],
-      environment: process.env,
+      environment: BOUNDED_RUNNER_ENVIRONMENT,
       label: "late-error test"
     },
     {
@@ -1241,7 +1249,7 @@ test("the bounded runner reports ownership uncertainty when forced process-tree 
       {
         executable: process.execPath,
         args: ["-e", "setInterval(() => {}, 1000)"],
-        environment: process.env,
+        environment: BOUNDED_RUNNER_ENVIRONMENT,
         label: "unclosed process test"
       },
       {
@@ -1267,7 +1275,7 @@ test("an attached Docker heartbeat failure forces shutdown and waits for observe
     {
       executable: process.execPath,
       args: ["version"],
-      environment: process.env,
+      environment: BOUNDED_RUNNER_ENVIRONMENT,
       label: "checkpoint failure test"
     },
     {
@@ -1324,7 +1332,7 @@ linuxTest("the bounded runner owns and terminates a descendant process group", a
         {
           executable: process.execPath,
           args: ["-e", parentSource, descendantSource, heartbeatPath],
-          environment: process.env,
+          environment: BOUNDED_RUNNER_ENVIRONMENT,
           label: "descendant process-group test"
         },
         { timeoutMs: 2_000, forceCloseTimeoutMs: 200, maxOutputBytes: 128 }
