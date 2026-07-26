@@ -5714,7 +5714,7 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
       "The private pip directory must be removed only after authoritative child close."
     );
   } finally {
-    if (existsSync(lifecycle.started) && !existsSync(lifecycle.release)) {
+    if (existsSync(lifecycle.started)) {
       try {
         writeFileSync(lifecycle.release, "release\n", { encoding: "utf8", flag: "wx" });
       } catch {
