@@ -1,4 +1,17 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  writeFileSync,
+  writeSync
+} from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 import {
@@ -9,6 +22,25 @@ import {
 const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars"]);
 const BOUNDED_PYTHON_VERSION =
   /^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:(?:\.post|\.dev)[0-9]+)*(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/iu;
+const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
+const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
+const REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES = 2_048;
+
+export function createRemoteJupyterAcceptanceToken(randomBytesImpl = randomBytes) {
+  if (typeof randomBytesImpl !== "function") {
+    throw new TypeError("Remote Jupyter acceptance requires one cryptographic random source.");
+  }
+  const entropy = randomBytesImpl(30);
+  if (!Buffer.isBuffer(entropy) || entropy.length !== 30) {
+    throw new Error("Remote Jupyter acceptance did not receive its exact private-token entropy.");
+  }
+  const token = `owr_${entropy.toString("base64url").slice(0, 39)}`;
+  if (!REMOTE_JUPYTER_TOKEN.test(token)) {
+    throw new Error("Remote Jupyter acceptance could not create its bounded private token.");
+  }
+  return token;
+}
 
 export function acceptancePythonForPhase(phase, testPython, jupyterKernelPython) {
   if (phase === "jupyter-deny" || phase === "jupyter-allow") {
@@ -159,6 +191,141 @@ export function writeRemoteJupyterAcceptanceEnvironment(directory) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
   return { dataDir, runtimeDir, configDir, path: pathDir };
+}
+
+export function writeRemoteJupyterAcceptanceDescriptor(
+  directory,
+  { baseUrl, token, runId, hostname },
+  { containedBy, platform = process.platform } = {}
+) {
+  if (platform !== "linux") {
+    throw new Error("Remote Jupyter acceptance descriptors are supported only on Linux.");
+  }
+  if (
+    typeof directory !== "string" ||
+    !isAbsolute(directory) ||
+    /[\0\r\n]/u.test(directory) ||
+    typeof containedBy !== "string" ||
+    !isAbsolute(containedBy) ||
+    /[\0\r\n]/u.test(containedBy)
+  ) {
+    throw new Error("Remote Jupyter acceptance requires one contained absolute descriptor directory.");
+  }
+  const directoryReceipt = createEditorAcceptancePrivateRootReceipt(directory, { containedBy });
+  if (!REMOTE_JUPYTER_RUN_ID.test(runId ?? "")) {
+    throw new Error("Remote Jupyter acceptance requires one correlated UUID run ID.");
+  }
+  const expectedHostname = `owr-${runId.replaceAll("-", "").slice(0, 12).toLowerCase()}`;
+  if (hostname !== expectedHostname) {
+    throw new Error("Remote Jupyter acceptance requires its run-derived container hostname.");
+  }
+  if (!REMOTE_JUPYTER_TOKEN.test(token ?? "")) {
+    throw new Error("Remote Jupyter acceptance requires one bounded opaque private token.");
+  }
+  const canonicalBaseUrl = validateRemoteJupyterBaseUrl(baseUrl);
+  const contents = Buffer.from(
+    `${JSON.stringify({
+      protocol: REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL,
+      baseUrl: canonicalBaseUrl,
+      token,
+      runId,
+      hostname
+    })}\n`,
+    "utf8"
+  );
+  if (contents.length === 0 || contents.length > REMOTE_JUPYTER_DESCRIPTOR_MAX_BYTES) {
+    throw new Error("Remote Jupyter acceptance descriptor exceeds its fixed byte bound.");
+  }
+
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  const descriptorPath = resolve(directory, "remote-jupyter.json");
+  let descriptor;
+  try {
+    descriptor = openSync(
+      descriptorPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o400
+    );
+    const opened = fstatSync(descriptor, { bigint: true });
+    assertRemoteJupyterDescriptorIdentity(opened, 0n);
+    let offset = 0;
+    while (offset < contents.length) {
+      const written = writeSync(descriptor, contents, offset, contents.length - offset, offset);
+      if (written <= 0) throw new Error("Remote Jupyter acceptance descriptor write made no progress.");
+      offset += written;
+    }
+    fsyncSync(descriptor);
+    const completed = fstatSync(descriptor, { bigint: true });
+    assertSameRemoteJupyterDescriptor(opened, completed);
+    assertRemoteJupyterDescriptorIdentity(completed, BigInt(contents.length));
+    closeSync(descriptor);
+    descriptor = undefined;
+
+    const atPath = lstatSync(descriptorPath, { bigint: true });
+    assertSameRemoteJupyterDescriptor(completed, atPath);
+    assertRemoteJupyterDescriptorIdentity(atPath, BigInt(contents.length));
+    if (realpathSync(descriptorPath) !== descriptorPath) {
+      throw new Error("Remote Jupyter acceptance descriptor did not retain its exact path.");
+    }
+    assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+    return descriptorPath;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function validateRemoteJupyterBaseUrl(baseUrl) {
+  if (typeof baseUrl !== "string" || baseUrl.length === 0 || baseUrl.length > 64 || /[\0\r\n]/u.test(baseUrl)) {
+    throw new Error("Remote Jupyter acceptance requires one bounded loopback origin.");
+  }
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error("Remote Jupyter acceptance requires one bounded loopback origin.");
+  }
+  if (
+    parsed.protocol !== "http:" ||
+    parsed.hostname !== "127.0.0.1" ||
+    !/^(?:[1-9][0-9]{0,4})$/u.test(parsed.port) ||
+    Number(parsed.port) > 65_535 ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.origin !== baseUrl
+  ) {
+    throw new Error("Remote Jupyter acceptance requires one canonical IPv4-loopback HTTP origin.");
+  }
+  return baseUrl;
+}
+
+function assertRemoteJupyterDescriptorIdentity(metadata, expectedSize) {
+  const currentUser = typeof process.getuid === "function" ? BigInt(process.getuid()) : undefined;
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.size !== expectedSize ||
+    (metadata.mode & 0o777n) !== 0o400n ||
+    (currentUser !== undefined && metadata.uid !== currentUser)
+  ) {
+    throw new Error("Remote Jupyter acceptance descriptor lost its owned mode-0400 file identity.");
+  }
+}
+
+function assertSameRemoteJupyterDescriptor(expected, actual) {
+  if (
+    actual.dev !== expected.dev ||
+    actual.ino !== expected.ino ||
+    actual.mode !== expected.mode ||
+    actual.nlink !== expected.nlink ||
+    actual.uid !== expected.uid ||
+    actual.gid !== expected.gid
+  ) {
+    throw new Error("Remote Jupyter acceptance descriptor identity changed.");
+  }
 }
 
 export async function probeJupyterAcceptancePython(

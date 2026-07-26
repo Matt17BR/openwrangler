@@ -69,6 +69,7 @@ import {
 } from "./editor-acceptance.mjs";
 
 const PROGRESS_RUN_ID = "8be8c321-d21d-4de8-a890-13d18844a3c7";
+const posixTest = process.platform === "win32" ? test.skip : test;
 // Fake editor phases never access their profile on disk. Keep their synthetic
 // profile short and host-independent so Darwin seam tests exercise their
 // intended lifecycle behavior instead of the real macOS socket-path preflight.
@@ -2928,7 +2929,7 @@ test("editor phases reject partial or invalid Jupyter environments before launch
   }
 });
 
-test("remote Jupyter phases forward only an owned private descriptor path", async () => {
+posixTest("remote Jupyter phases forward only an owned private descriptor path", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-remote-jupyter-"));
   const privateRoot = join(directory, "private");
   const descriptorPath = join(privateRoot, "remote-jupyter.json");

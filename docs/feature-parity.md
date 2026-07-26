@@ -594,6 +594,13 @@ Released-Jupyter packaged acceptance harness, 2026-07-26:
 
 The notebook-variable row remains **Partial** pending the real remote-kernel and remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local combined run below closes the released-Jupyter functional gate for both supported Linux desktop editors.
 
+Real remote-Jupyter acceptance harness, 2026-07-26:
+
+- The opt-in Linux phase uses the same packaged VSIX and pinned released Jupyter extension against a real Jupyter Server in an unprivileged, read-only, resource-bounded Docker container. The image is digest-pinned, every Python wheel is hash-locked, the exact kernelspec is proven through the authenticated server API, and no checkout/runtime path is mounted into the container.
+- A run-derived hostname and public correlation ID prove remote identity. The private token has one redaction-friendly fixed shape, enters through bounded stdin and atomic private-file publication, and reaches the editor only through an owned mode-0400 descriptor under its isolated root. It is absent from Docker metadata, phase envelopes, logs, and workflow configuration.
+- The remote phase follows the released server-collection and workbench kernel-picker path, then runs the existing Pandas/Polars DataFrame/Series, MIME-v2 renderer, exact-origin insertion, runtime-transfer, kernel-restart, plan-replay, and zero-session contract. Cleanup reattests the Docker engine and exact labelled container/image; ambiguous completion or disappearance suppresses evidence and preserves the private root.
+- `.github/workflows/released-jupyter.yml` enables this phase weekly and on manual dispatch. No real Docker daemon was invoked while implementing the harness, so the notebook-variable row remains **Partial** until a green exact-artifact workflow result is recorded here and in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+
 Local released-Jupyter evidence, 2026-07-26:
 
 - The 70-entry, 592,787-byte packaged preview VSIX built from product commit `3b9c000` has SHA-256 `295183cee93dce7843a7470ddab47b2014e231b585e8b7bceb3e3bbdb96f359a`. Those exact bytes ran against VS Code 1.130.0 and Cursor 3.13.10 with `ms-toolsai.jupyter@2025.9.1`; the corrected exact-overflow acceptance harness is commit `23895f8`.

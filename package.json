@@ -77,7 +77,7 @@
     "watch:webview:main": "vite build --watch --mode production",
     "watch:webview:renderer": "vite build --watch --mode notebook-renderer",
     "test": "npm run test:scripts && npm run test:ts && npm run test:python",
-    "test:scripts": "node --test scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/packaged-editor-orchestration.test.mjs scripts/prepare-xvfb.test.mjs",
+    "test:scripts": "node --test scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/packaged-editor-orchestration.test.mjs scripts/prepare-xvfb.test.mjs scripts/remote-jupyter-acceptance.test.mjs",
     "test:ts": "vitest run",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",

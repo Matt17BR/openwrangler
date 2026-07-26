@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   acceptancePythonForPhase,
+  createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
   probeJupyterAcceptancePython,
   writeJupyterAcceptanceEnvironment,
+  writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
 } from "./jupyter-acceptance-environment.mjs";
 
@@ -18,6 +20,18 @@ const dependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   polars: "1.35.2",
   openwranglerRuntimePresent,
   ...overrides
+});
+
+test("remote Jupyter tokens use one fixed redaction-friendly high-entropy shape", () => {
+  const requested = [];
+  const token = createRemoteJupyterAcceptanceToken((length) => {
+    requested.push(length);
+    return Buffer.alloc(length, 0xab);
+  });
+  assert.deepEqual(requested, [30]);
+  assert.match(token, /^owr_[A-Za-z0-9_-]{39}$/u);
+  assert.equal(token.length, 43);
+  assert.throws(() => createRemoteJupyterAcceptanceToken(() => Buffer.alloc(29)), /exact private-token entropy/u);
 });
 
 test("released-Jupyter phases alone receive the dedicated kernel interpreter", () => {
@@ -46,6 +60,97 @@ test("remote Jupyter phases receive empty private client roots without a host ke
       assert.equal(await readFile(join(candidate, "kernel.json"), "utf8").catch(() => undefined), undefined);
     }
     assert.throws(() => writeRemoteJupyterAcceptanceEnvironment("relative"), /absolute private environment directory/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("remote Jupyter descriptors are exclusive, private, and correlated", async (context) => {
+  if (process.platform !== "linux") {
+    context.skip("Remote Jupyter container acceptance is Linux-only.");
+    return;
+  }
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-remote-jupyter-descriptor-"));
+  const descriptorDirectory = join(directory, "descriptor");
+  const runId = "abcdef12-3456-4789-8abc-def012345678";
+  const token = `owr_${"A".repeat(39)}`;
+  try {
+    mkdirSync(descriptorDirectory, { mode: 0o700 });
+    const descriptorPath = writeRemoteJupyterAcceptanceDescriptor(
+      descriptorDirectory,
+      {
+        baseUrl: "http://127.0.0.1:49153",
+        token,
+        runId,
+        hostname: "owr-abcdef123456"
+      },
+      { containedBy: directory }
+    );
+    assert.equal(descriptorPath, join(descriptorDirectory, "remote-jupyter.json"));
+    const metadata = lstatSync(descriptorPath, { bigint: true });
+    assert.equal(metadata.isFile(), true);
+    assert.equal(metadata.nlink, 1n);
+    assert.equal(metadata.mode & 0o777n, 0o400n);
+    assert.deepEqual(JSON.parse(await readFile(descriptorPath, "utf8")), {
+      protocol: "openwrangler-remote-jupyter-v1",
+      baseUrl: "http://127.0.0.1:49153",
+      token,
+      runId,
+      hostname: "owr-abcdef123456"
+    });
+    assert.equal(descriptorPath.includes(token), false);
+    assert.throws(
+      () =>
+        writeRemoteJupyterAcceptanceDescriptor(
+          descriptorDirectory,
+          {
+            baseUrl: "http://127.0.0.1:49153",
+            token,
+            runId,
+            hostname: "owr-abcdef123456"
+          },
+          { containedBy: directory }
+        ),
+      /EEXIST|file already exists/iu
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("remote Jupyter descriptor validation rejects unredactable secrets and non-loopback origins", async (context) => {
+  if (process.platform !== "linux") {
+    context.skip("Remote Jupyter container acceptance is Linux-only.");
+    return;
+  }
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-remote-jupyter-invalid-descriptor-"));
+  const runId = "abcdef12-3456-4789-8abc-def012345678";
+  try {
+    const cases = [
+      [{ token: "A".repeat(43) }, /bounded opaque private token/u],
+      [{ baseUrl: "http://example.com:49153" }, /IPv4-loopback HTTP origin/u],
+      [{ baseUrl: "http://127.0.0.1:49153/path" }, /IPv4-loopback HTTP origin/u],
+      [{ hostname: "owr-unrelated" }, /run-derived container hostname/u]
+    ];
+    for (const [index, [overrides, pattern]] of cases.entries()) {
+      const descriptorDirectory = join(directory, `case-${index}`);
+      mkdirSync(descriptorDirectory, { mode: 0o700 });
+      assert.throws(
+        () =>
+          writeRemoteJupyterAcceptanceDescriptor(
+            descriptorDirectory,
+            {
+              baseUrl: "http://127.0.0.1:49153",
+              token: `owr_${"A".repeat(39)}`,
+              runId,
+              hostname: "owr-abcdef123456",
+              ...overrides
+            },
+            { containedBy: directory }
+          ),
+        pattern
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

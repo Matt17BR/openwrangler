@@ -61,6 +61,7 @@ import {
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
+import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -1105,14 +1106,11 @@ function readReleasedRemoteJupyterDescriptor(runId: string): {
     assert.equal(record.protocol, RELEASED_JUPYTER_REMOTE_DESCRIPTOR_PROTOCOL);
     assert.equal(record.runId, runId);
     assert.equal(record.hostname, `owr-${runId.replaceAll("-", "").slice(0, 12)}`);
-    assert.ok(
-      typeof record.token === "string" && /^[A-Za-z0-9_-]{43}$/u.test(record.token),
-      "The remote Jupyter descriptor token is malformed."
-    );
+    const token = readReleasedRemoteJupyterDescriptorToken(record.token);
     assert.ok(typeof record.baseUrl === "string" && record.baseUrl.length <= 64);
     return {
       baseUrl: record.baseUrl,
-      token: record.token,
+      token,
       hostname: String(record.hostname)
     };
   } catch (error) {
