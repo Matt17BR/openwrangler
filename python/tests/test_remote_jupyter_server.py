@@ -51,6 +51,7 @@ def test_prepare_jupyter_environment_uses_private_writable_directories(
         directories.ipython,
     ]:
         assert directory.is_dir()
-        assert stat.S_IMODE(directory.stat().st_mode) == stat.S_IRWXU
+        if os.name == "posix":
+            assert stat.S_IMODE(directory.stat().st_mode) == stat.S_IRWXU
     for variable, name in expected_names.items():
         assert os.environ[variable] == str(tmp_path / name)
