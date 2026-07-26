@@ -2716,6 +2716,38 @@ describe("PythonBridge environment resource selection", () => {
     }
   );
 
+  it("does not launch a deferred dependency probe after a same-key replacement", async () => {
+    const dependency: PythonDependency = {
+      importModule: "polars",
+      distribution: "polars",
+      installSpec: "polars"
+    };
+    const replacementProbe = deferred<{ missing: string[]; available: string[] }>();
+    const { bridge } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    vi.mocked(pythonEnvironment.probeDependencies).mockReturnValue(replacementProbe.promise);
+
+    const stale = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
+    const staleOutcome = stale.catch((error: unknown) => error);
+    const key = [...raw.dependencyProbes.keys()][0]!;
+    const staleFlight = raw.dependencyProbes.get(key)!;
+    raw.invalidateDependencyProbeKey(key);
+    const current = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
+    const currentFlight = raw.dependencyProbes.get(key)!;
+
+    expect(staleFlight.detached).toBe(true);
+    expect(currentFlight).not.toBe(staleFlight);
+    await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
+    expect(raw.dependencyProbes.get(key)).toBe(currentFlight);
+
+    replacementProbe.resolve({ missing: [], available: ["polars"] });
+    await expect(staleOutcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
+    await expect(current).resolves.toMatchObject({ missing: [] });
+    expect(raw.dependencyProbes.size).toBe(0);
+    expect(raw.dependencyCache.get(key)).toEqual([]);
+    expect(raw.dependencyProbeOwners.get(key)).toBe(currentFlight);
+  });
+
   it("does not launch a dependency probe whose deferred start is overtaken by shutdown", async () => {
     const dependency: PythonDependency = {
       importModule: "polars",
