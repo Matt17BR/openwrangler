@@ -9,6 +9,7 @@ const notebookMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   notebookDocuments: [] as NotebookDocument[],
   activeNotebookEditor: undefined as NotebookEditor | undefined,
+  activeTabInput: undefined as unknown,
   activeEditorReads: 0,
   showWarningMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
@@ -89,6 +90,12 @@ vi.mock("vscode", () => {
       };
     }
   }
+  class TabInputNotebook {
+    constructor(
+      readonly uri: Uri,
+      readonly notebookType = "jupyter-notebook"
+    ) {}
+  }
   function uriComponents(value: string): {
     scheme: string;
     authority?: string;
@@ -119,6 +126,7 @@ vi.mock("vscode", () => {
   }
   return {
     Uri,
+    TabInputNotebook,
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
         notebookMocks.commands.set(id, handler);
@@ -129,6 +137,13 @@ vi.mock("vscode", () => {
       get activeNotebookEditor() {
         notebookMocks.activeEditorReads += 1;
         return notebookMocks.activeNotebookEditor;
+      },
+      tabGroups: {
+        activeTabGroup: {
+          get activeTab() {
+            return notebookMocks.activeTabInput === undefined ? undefined : { input: notebookMocks.activeTabInput };
+          }
+        }
       },
       showWarningMessage: notebookMocks.showWarningMessage,
       showInformationMessage: notebookMocks.showInformationMessage,
@@ -165,6 +180,7 @@ describe("notebook command provenance", () => {
     notebookMocks.commands.clear();
     notebookMocks.notebookDocuments.length = 0;
     notebookMocks.activeNotebookEditor = undefined;
+    notebookMocks.activeTabInput = undefined;
     notebookMocks.activeEditorReads = 0;
     notebookMocks.showWarningMessage.mockClear();
     notebookMocks.showInformationMessage.mockClear();
@@ -610,6 +626,212 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.createPanel).not.toHaveBeenCalled();
   });
 
+  it("opens the exact active notebook tab when toolbar focus clears the active notebook editor", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")({
+      ui: true,
+      notebookEditor: { private: true },
+      source: "notebookToolbar"
+    });
+
+    expect(notebookMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(notebookMocks.kernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it("rejects disagreeing public active-editor and active-tab notebook origins", async () => {
+    const editorNotebook = notebook("file:///workspace/editor.ipynb");
+    const tabNotebook = notebook("file:///workspace/tab.ipynb");
+    notebookMocks.notebookDocuments.push(editorNotebook, tabNotebook);
+    notebookMocks.activeNotebookEditor = editor(editorNotebook);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(tabNotebook.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("rejects a direct interactive origin that disagrees with the active notebook", async () => {
+    const explicitNotebook = notebook("file:///workspace/explicit.ipynb");
+    const activeNotebook = notebook("file:///workspace/active.ipynb");
+    notebookMocks.notebookDocuments.push(explicitNotebook, activeNotebook);
+    notebookMocks.activeNotebookEditor = editor(activeNotebook);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(activeNotebook.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")(explicitNotebook.uri);
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("accepts a direct interactive origin that agrees with the active notebook", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")(vscode.Uri.parse(original.uri.toString()));
+
+    expect(notebookMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it("rejects a non-notebook active tab instead of falling back to a stale notebook editor", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.activeTabInput = { uri: vscode.Uri.parse("file:///workspace/source.py") };
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("rejects duplicate active-tab notebook documents before prompting", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    const duplicate = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original, duplicate);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Close duplicate notebook views and try again."
+    );
+  });
+
+  it("rejects an active notebook tab whose public notebook type does not match the document", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "different-notebook-type");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("rejects matching non-Jupyter editor and tab origins", async () => {
+    const original = notebook("file:///workspace/shared.ipynb", "quarto-notebook");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "quarto-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("rejects a direct non-Jupyter notebook origin without active editor or tab state", async () => {
+    const original = notebook("file:///workspace/shared.ipynb", "quarto-notebook");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")(original.uri);
+
+    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    );
+  });
+
+  it("ignores private toolbar context properties while resolving from public active state", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const privateEditorGetter = vi.fn(() => {
+      throw new Error("private notebook editor context must not be read");
+    });
+    const toolbarContext = { ui: true, source: "notebookToolbar" };
+    Object.defineProperty(toolbarContext, "notebookEditor", { get: privateEditorGetter });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")(toolbarContext);
+
+    expect(privateEditorGetter).not.toHaveBeenCalled();
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it("ignores URI-like properties on private toolbar context objects", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockResolvedValue("frame");
+    const uriGetter = vi.fn(() => vscode.Uri.parse("file:///workspace/private.ipynb"));
+    const toolbarContext = { ui: true, source: "notebookToolbar" };
+    Object.defineProperty(toolbarContext, "uri", { get: uriGetter });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")(toolbarContext);
+
+    expect(uriGetter).not.toHaveBeenCalled();
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it("does not retarget an active-tab launch after the captured notebook closes during the prompt", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    const replacement = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
+    notebookMocks.showInputBox.mockImplementationOnce(async () => {
+      closeNotebook(original);
+      notebookMocks.notebookDocuments.splice(0, 1, replacement);
+      notebookMocks.activeTabInput = new vscode.TabInputNotebook(replacement.uri, "jupyter-notebook");
+      return "frame";
+    });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.kernelOrigins).toEqual([]);
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The originating notebook is no longer open. Reopen it and try again."
+    );
+  });
+
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {
     const original = notebook("file:///workspace/shared.ipynb");
     const replacement = notebook("file:///workspace/shared.ipynb");
@@ -730,8 +952,12 @@ function command(id: string): CommandHandler {
   return handler;
 }
 
-function notebook(uri: string): NotebookDocument {
-  return { uri: vscode.Uri.parse(uri), isClosed: false } as unknown as NotebookDocument;
+function notebook(uri: string, notebookType = "jupyter-notebook"): NotebookDocument {
+  return {
+    uri: vscode.Uri.parse(uri),
+    notebookType,
+    isClosed: false
+  } as unknown as NotebookDocument;
 }
 
 function closeNotebook(document: NotebookDocument): void {

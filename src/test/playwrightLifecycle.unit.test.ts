@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
+  invokeAcceptanceActionOnce,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
@@ -31,6 +33,95 @@ function page(mainFrame: FakeFrame, closed = false): FakePage {
 const connectedBrowser = { isConnected: () => true };
 
 describe("extension-host Playwright lifecycle", () => {
+  it("invokes an acceptance action once and treats its receipt as completion", async () => {
+    const events: string[] = [];
+    const result = await invokeAcceptanceActionOnce({
+      description: "the notebook action",
+      click: vi.fn(async () => {
+        events.push("click");
+      }),
+      receipt: vi.fn(async () => {
+        events.push("receipt");
+        return "input";
+      })
+    });
+
+    expect(result).toBe("input");
+    expect(events).toEqual(["click", "receipt"]);
+  });
+
+  it("observes natural launch-surface dismissal without issuing cleanup input", async () => {
+    const events: string[] = [];
+    let resolveReceipt!: (value: string) => void;
+    let resolveDismissal!: () => void;
+    const receipt = new Promise<string>((resolve) => {
+      resolveReceipt = resolve;
+    });
+    const dismissal = new Promise<void>((resolve) => {
+      resolveDismissal = resolve;
+    });
+    const outcome = invokeAcceptanceActionOnce({
+      description: "the notebook overflow action",
+      click: vi.fn(async () => {
+        events.push("click");
+      }),
+      receipt: vi.fn(() => {
+        events.push("receipt-started");
+        return receipt;
+      }),
+      naturalDismissal: vi.fn(() => {
+        events.push("dismissal-observed");
+        return dismissal;
+      })
+    });
+
+    await vi.waitFor(() => expect(events).toEqual(["click", "receipt-started", "dismissal-observed"]));
+    resolveDismissal();
+    resolveReceipt("input");
+    await expect(outcome).resolves.toBe("input");
+  });
+
+  it("classifies a one-shot browser-click failure as indeterminate without requesting a receipt", async () => {
+    const failure = new Error("CDP response was lost");
+    const click = vi.fn().mockRejectedValue(failure);
+    const receipt = vi.fn().mockResolvedValue("input");
+    const naturalDismissal = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      invokeAcceptanceActionOnce({
+        description: "the notebook overflow action",
+        click,
+        receipt,
+        naturalDismissal
+      })
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<IndeterminateAcceptanceActionError>>({
+        name: "IndeterminateAcceptanceActionError",
+        cause: failure
+      })
+    );
+    expect(click).toHaveBeenCalledOnce();
+    expect(receipt).not.toHaveBeenCalled();
+    expect(naturalDismissal).not.toHaveBeenCalled();
+  });
+
+  it("retains both a missing receipt and failed natural dismissal", async () => {
+    const receiptFailure = new Error("input missing");
+    const dismissalFailure = new Error("menu remained open");
+
+    await expect(
+      invokeAcceptanceActionOnce({
+        description: "the notebook overflow action",
+        click: vi.fn().mockResolvedValue(undefined),
+        receipt: vi.fn().mockRejectedValue(receiptFailure),
+        naturalDismissal: vi.fn().mockRejectedValue(dismissalFailure)
+      })
+    ).rejects.toMatchObject({
+      message: "the notebook overflow action did not publish its receipt or dismiss its launch surface naturally.",
+      errors: [receiptFailure, dismissalFailure]
+    });
+  });
+
   it("clears its deadline after an operation settles", async () => {
     vi.useFakeTimers();
     try {

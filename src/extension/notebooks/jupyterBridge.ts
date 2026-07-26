@@ -42,13 +42,11 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("openWrangler.openNotebookVariable", async () => {
-      const notebookResolution = resolveNotebookAtCommandReceipt([]);
+    vscode.commands.registerCommand("openWrangler.openNotebookVariable", async (...args: unknown[]) => {
+      const notebookResolution = resolveInteractiveNotebookAtCommandReceipt(args);
       const notebook = notebookResolution.notebook;
       if (!notebook) {
-        vscode.window.showWarningMessage(
-          "Open a Jupyter notebook before launching a notebook variable in Open Wrangler."
-        );
+        vscode.window.showWarningMessage(notebookResolution.error);
         return;
       }
 
@@ -397,10 +395,59 @@ function resolveNotebookAtCommandReceipt(args: unknown[]): NotebookResolution {
     return { error: "The originating notebook is no longer open. Reopen it and try again." };
   }
 
-  const notebook = vscode.window.activeNotebookEditor?.notebook;
-  return notebook && isExactOpenNotebook(notebook)
-    ? { notebook }
-    : { error: "Open a Jupyter notebook before launching a notebook variable in Open Wrangler." };
+  return resolveActiveNotebookAtCommandReceipt();
+}
+
+function resolveInteractiveNotebookAtCommandReceipt(args: unknown[]): NotebookResolution {
+  const explicitUris = args.filter((arg): arg is vscode.Uri => arg instanceof vscode.Uri);
+  return resolveActiveNotebookAtCommandReceipt(explicitUris);
+}
+
+function resolveActiveNotebookAtCommandReceipt(explicitUris: vscode.Uri[] = []): NotebookResolution {
+  const editorNotebook = vscode.window.activeNotebookEditor?.notebook;
+  const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  if (activeTab && !(activeTab.input instanceof vscode.TabInputNotebook)) {
+    return {
+      error: "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    };
+  }
+
+  const tabUri = activeTab?.input instanceof vscode.TabInputNotebook ? activeTab.input.uri : undefined;
+  const editorUri = editorNotebook?.uri;
+  const originUris = [...explicitUris, ...(editorUri ? [editorUri] : []), ...(tabUri ? [tabUri] : [])];
+  const uriKeys = new Set(originUris.map((uri) => uri.toString()));
+  if (uriKeys.size > 1) {
+    return {
+      error: "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    };
+  }
+
+  const originUri = originUris[0];
+  if (!originUri) {
+    return { error: "Open a Jupyter notebook before launching a notebook variable in Open Wrangler." };
+  }
+
+  const uriKey = originUri.toString();
+  const matches = vscode.workspace.notebookDocuments.filter(
+    (document) => !document.isClosed && document.uri.toString() === uriKey
+  );
+  if (matches.length > 1) {
+    return {
+      error: "Open Wrangler could not identify one active notebook. Close duplicate notebook views and try again."
+    };
+  }
+  const notebook = matches[0];
+  if (
+    !notebook ||
+    notebook.notebookType !== "jupyter-notebook" ||
+    (editorNotebook && editorNotebook !== notebook) ||
+    (activeTab?.input instanceof vscode.TabInputNotebook && activeTab.input.notebookType !== notebook.notebookType)
+  ) {
+    return {
+      error: "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
+    };
+  }
+  return { notebook };
 }
 
 function isExactOpenNotebook(notebook: vscode.NotebookDocument): boolean {
