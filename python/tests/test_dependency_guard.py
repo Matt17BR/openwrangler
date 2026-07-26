@@ -307,13 +307,103 @@ def _marker_paths(fixture: GuardFixture) -> list[Path]:
     return sorted(fixture.journal.glob("mutation-*.json"))
 
 
-def _create_manual_journal(fixture: GuardFixture) -> None:
+def _create_manual_empty_journal(fixture: GuardFixture) -> None:
+    if os.name == "nt":
+        guard = _load_dependency_guard()
+        assert (
+            guard._windows_create_secure_directory(
+                fixture.journal,
+                allow_permission_failure=False,
+                code="malformed_state",
+            )
+            is True
+        )
+        guard._validate_private_directory(fixture.journal)
+        return
     fixture.journal.mkdir(mode=0o700)
+    fixture.journal.chmod(0o700)
+
+
+def _create_manual_journal(fixture: GuardFixture) -> None:
+    if os.name == "nt":
+        code, frames, stderr = _run(fixture, "status", _status_request(fixture))
+        assert code == 0
+        assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
+        assert stderr == b""
+        return
+    _create_manual_empty_journal(fixture)
     lock = fixture.journal / "mutation.lock"
     lock.write_bytes(b"")
+    lock.chmod(0o600)
+
+
+def _write_manual_journal_leaf(path: Path, payload: bytes) -> None:
     if os.name != "nt":
-        fixture.journal.chmod(0o700)
-        lock.chmod(0o600)
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        return
+    guard = _load_dependency_guard()
+    descriptor = guard._windows_create_secure_leaf_descriptor(
+        path,
+        desired_access=(
+            guard._WINDOWS_GENERIC_WRITE | guard._WINDOWS_READ_CONTROL | guard._WINDOWS_FILE_READ_ATTRIBUTES
+        ),
+        share_mode=0,
+        descriptor_flags=os.O_WRONLY,
+        code="malformed_state",
+    )
+    try:
+        guard._write_all(descriptor, payload)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    guard._lstat_private_file(path, code="malformed_state")
+
+
+def _run_icacls(path: Path, *arguments: str) -> None:
+    result = subprocess.run(
+        ["icacls", str(path), *arguments],
+        capture_output=True,
+        text=True,
+        timeout=PROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _assert_windows_namespace_replace_blocked(
+    fixture: GuardFixture,
+    source: Path,
+    destination: Path,
+) -> None:
+    program = "\n".join(
+        [
+            "import errno,json,os,sys",
+            "try:",
+            "    os.replace(sys.argv[1],sys.argv[2])",
+            "except OSError as error:",
+            "    print(json.dumps({'errno':error.errno,'winerror':getattr(error,'winerror',None)}))",
+            "    raise SystemExit(0)",
+            "raise SystemExit(1)",
+        ]
+    )
+    result = subprocess.run(
+        [
+            str(fixture.executable),
+            "-I",
+            "-c",
+            program,
+            str(source),
+            str(destination),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=PROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stderr
+    failure = json.loads(result.stdout)
+    assert failure["errno"] in {errno.EACCES, errno.EPERM}
+    assert failure["winerror"] in {None, 5, 32}
+    assert result.stderr == ""
 
 
 def _load_dependency_guard() -> Any:
@@ -335,6 +425,71 @@ def _arm(
     _write_frame(process, _install_request(fixture, token, dependency=dependency))
     assert _read_frame(process) == {"kind": "ready", "protocol": PROTOCOL, "token": token}
     return process
+
+
+def test_journal_lock_exit_preserves_a_primary_body_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    lock = object.__new__(guard._JournalLock)
+    close_modes: list[bool] = []
+
+    monkeypatch.setattr(lock, "_release", lambda: None)
+
+    def close(*, suppress_errors: bool = False) -> None:
+        close_modes.append(suppress_errors)
+        if not suppress_errors:
+            raise OSError("simulated close failure")
+
+    monkeypatch.setattr(lock, "_close", close)
+    primary = RuntimeError("primary body failure")
+    lock.__exit__(RuntimeError, primary, primary.__traceback__)
+    assert close_modes == [True]
+
+
+def test_journal_lock_exit_preserves_body_over_release_and_close_faults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    lock = object.__new__(guard._JournalLock)
+    primary = RuntimeError("primary body failure")
+    cleanup_calls: list[str] = []
+
+    def release() -> None:
+        cleanup_calls.append("release")
+        raise OSError("simulated release failure")
+
+    def close(*, suppress_errors: bool = False) -> None:
+        cleanup_calls.append(f"close:{suppress_errors}")
+        raise OSError("simulated close failure")
+
+    monkeypatch.setattr(lock, "_release", release)
+    monkeypatch.setattr(lock, "_close", close)
+    lock.__exit__(RuntimeError, primary, primary.__traceback__)
+    assert cleanup_calls == ["release", "close:True"]
+
+
+def test_journal_lock_exit_preserves_a_primary_release_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    lock = object.__new__(guard._JournalLock)
+    primary = RuntimeError("primary release failure")
+    close_modes: list[bool] = []
+
+    def release() -> None:
+        raise primary
+
+    def close(*, suppress_errors: bool = False) -> None:
+        close_modes.append(suppress_errors)
+        raise OSError("simulated close failure")
+
+    monkeypatch.setattr(lock, "_release", release)
+    monkeypatch.setattr(lock, "_close", close)
+    with pytest.raises(RuntimeError) as raised:
+        lock.__exit__(None, None, None)
+    assert raised.value is primary
+    assert close_modes == [True]
 
 
 @pytest.mark.skipif(
@@ -363,10 +518,182 @@ def test_status_establishes_guard_state_on_a_writable_absent_prefix(guard_fixtur
     assert (guard_fixture.journal / "mutation.lock").is_file()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+def test_windows_status_creates_exact_protected_journal_and_lock_acls(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 0
+    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
+    assert stderr == b""
+
+    guard._validate_private_directory(guard_fixture.journal)
+    guard._lstat_private_file(
+        guard_fixture.journal / "mutation.lock",
+        code="malformed_state",
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+def test_windows_secure_state_excludes_broad_parent_inheritance(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _run_icacls(
+        guard_fixture.root,
+        "/grant",
+        "*S-1-1-0:(OI)(CI)F",
+    )
+    inherited_probe = guard_fixture.root / "ordinary-inherited-directory"
+    inherited_probe.mkdir()
+    with pytest.raises(guard.GuardError) as raised:
+        guard._validate_private_directory(inherited_probe)
+    assert raised.value.code == "malformed_state"
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 0
+    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
+    assert stderr == b""
+    guard._validate_private_directory(guard_fixture.journal)
+    guard._lstat_private_file(
+        guard_fixture.journal / "mutation.lock",
+        code="malformed_state",
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+@pytest.mark.parametrize(
+    "acl_arguments",
+    [
+        ("/grant", "*S-1-1-0:F"),
+        ("/deny", "*S-1-1-0:W"),
+        ("/inheritance:e",),
+    ],
+    ids=["extra-allow", "deny", "unprotected"],
+)
+def test_windows_malformed_journal_acl_fails_closed_without_repair(
+    guard_fixture: GuardFixture,
+    acl_arguments: tuple[str, ...],
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    _run_icacls(guard_fixture.journal, *acl_arguments)
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert guard_fixture.journal.is_dir()
+    assert lock.is_file()
+    with pytest.raises(guard.GuardError) as raised:
+        guard._validate_private_directory(guard_fixture.journal)
+    assert raised.value.code == "malformed_state"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+def test_windows_malformed_leaf_acl_fails_closed_without_repair(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    _run_icacls(lock, "/grant", "*S-1-1-0:R")
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert lock.is_file()
+    with pytest.raises(guard.GuardError) as raised:
+        guard._lstat_private_file(lock, code="malformed_state")
+    assert raised.value.code == "malformed_state"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+def test_windows_expected_principal_mask_downgrade_is_rejected_without_repair(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    user_sid = guard._windows_token_user_sid(code="malformed_state")
+    _run_icacls(lock, "/grant:r", f"*{user_sid}:R")
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert lock.is_file()
+    with pytest.raises(guard.GuardError) as raised:
+        guard._lstat_private_file(lock, code="malformed_state")
+    assert raised.value.code == "malformed_state"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+def test_windows_malformed_orphan_temp_acl_is_retained(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    temporary = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
+    _write_manual_journal_leaf(temporary, b"partial")
+    _run_icacls(temporary, "/grant", "*S-1-1-0:R")
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert temporary.read_bytes() == b"partial"
+    with pytest.raises(guard.GuardError) as raised:
+        guard._lstat_private_file(temporary, code="malformed_state")
+    assert raised.value.code == "malformed_state"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows sharing semantics.")
+def test_windows_private_directory_handle_blocks_namespace_replacement(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    replacement = guard_fixture.root / f"{JOURNAL_NAME}-replacement"
+
+    identity = guard._validate_private_directory(guard_fixture.journal)
+    with guard._JournalLock(guard_fixture.journal, identity, create=False) as lock:
+        os.fstat(lock._windows_journal_descriptor)
+        _assert_windows_namespace_replace_blocked(
+            guard_fixture,
+            guard_fixture.journal,
+            replacement,
+        )
+    assert not replacement.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows sharing semantics.")
+def test_windows_empty_directory_handle_alone_blocks_namespace_replacement(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_empty_journal(guard_fixture)
+    replacement = guard_fixture.root / f"{JOURNAL_NAME}-replacement"
+
+    def attempt_replacement(path: Path) -> None:
+        _assert_windows_namespace_replace_blocked(
+            guard_fixture,
+            path,
+            replacement,
+        )
+
+    guard._validate_private_directory(
+        guard_fixture.journal,
+        _while_pinned_for_test=attempt_replacement,
+    )
+    assert not replacement.exists()
+
+
 def test_status_recovers_an_empty_journal_left_before_lock_creation(guard_fixture: GuardFixture) -> None:
-    guard_fixture.journal.mkdir(mode=0o700)
-    if os.name != "nt":
-        guard_fixture.journal.chmod(0o700)
+    _create_manual_empty_journal(guard_fixture)
     code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
     assert code == 0
     assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
@@ -530,6 +857,69 @@ def test_marker_publication_rejects_same_size_post_close_tamper(guard_fixture: G
     assert list(guard_fixture.journal.glob(".pending-*.tmp")) == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
+def test_windows_marker_publication_protects_temp_and_final_leaf_acls(
+    guard_fixture: GuardFixture,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    journal_identity = guard._validate_private_directory(guard_fixture.journal)
+    token = str(uuid.uuid4())
+    observed_temp: list[Path] = []
+
+    def validate_temp(temporary: Path) -> None:
+        guard._lstat_private_file(temporary, code="malformed_state")
+        observed_temp.append(temporary)
+
+    destination, _payload, _identity = guard._publish_marker(
+        guard_fixture.journal,
+        journal_identity,
+        token,
+        guard_fixture.environment,
+        [guard_fixture.dependency],
+        _after_writer_close_for_test=validate_temp,
+    )
+    assert observed_temp == [guard_fixture.journal / f".pending-{token}.tmp"]
+    assert not observed_temp[0].exists()
+    assert destination == guard_fixture.journal / f"mutation-{token}.json"
+    guard._lstat_private_file(destination, code="malformed_state")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows MoveFileEx semantics.")
+def test_windows_marker_publication_never_replaces_racing_destination(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    journal_identity = guard._validate_private_directory(guard_fixture.journal)
+    token = str(uuid.uuid4())
+    temporary = guard_fixture.journal / f".pending-{token}.tmp"
+    destination = guard_fixture.journal / f"mutation-{token}.json"
+    retained = b"existing-marker-must-survive"
+    durable_replace = guard._durable_replace
+
+    def race_before_replace(source: Path, target: Path) -> None:
+        assert source == temporary
+        assert target == destination
+        _write_manual_journal_leaf(destination, retained)
+        durable_replace(source, target)
+
+    monkeypatch.setattr(guard, "_durable_replace", race_before_replace)
+    with pytest.raises(guard.GuardError) as raised:
+        guard._publish_marker(
+            guard_fixture.journal,
+            journal_identity,
+            token,
+            guard_fixture.environment,
+            [guard_fixture.dependency],
+        )
+    assert raised.value.code == "malformed_state"
+    assert destination.read_bytes() == retained
+    guard._lstat_private_file(destination, code="malformed_state")
+    assert not temporary.exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Requires native Windows CreateFile sharing semantics.")
 def test_windows_marker_reader_denies_same_size_concurrent_writer(guard_fixture: GuardFixture) -> None:
     guard = _load_dependency_guard()
@@ -544,7 +934,7 @@ def test_windows_marker_reader_denies_same_size_concurrent_writer(guard_fixture:
     payload = guard._marker_bytes(expected_marker)
     replacement = bytes([payload[0] ^ 1]) + payload[1:]
     marker_path = guard_fixture.journal / f"mutation-{token}.json"
-    marker_path.write_bytes(payload)
+    _write_manual_journal_leaf(marker_path, payload)
 
     attacker = "\n".join(
         [
@@ -779,9 +1169,7 @@ def test_malformed_marker_fails_closed_and_is_retained(guard_fixture: GuardFixtu
     _create_manual_journal(guard_fixture)
     token = str(uuid.uuid4())
     marker = guard_fixture.journal / f"mutation-{token}.json"
-    marker.write_bytes(b'{"protocol":')
-    if os.name != "nt":
-        marker.chmod(0o600)
+    _write_manual_journal_leaf(marker, b'{"protocol":')
 
     code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
     assert code == 12
@@ -793,15 +1181,88 @@ def test_malformed_marker_fails_closed_and_is_retained(guard_fixture: GuardFixtu
 def test_orphaned_prepublish_temp_is_cleaned_only_under_lock(guard_fixture: GuardFixture) -> None:
     _create_manual_journal(guard_fixture)
     temporary = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
-    temporary.write_bytes(b"partial")
-    if os.name != "nt":
-        temporary.chmod(0o600)
+    _write_manual_journal_leaf(temporary, b"partial")
 
     code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
     assert code == 0
     assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
     assert stderr == b""
     assert not temporary.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows directory junctions.")
+def test_windows_journal_junction_is_rejected_without_touching_target(
+    guard_fixture: GuardFixture,
+) -> None:
+    target = guard_fixture.root.parent / "journal-junction-target"
+    target.mkdir()
+    sentinel = target / "unchanged.txt"
+    sentinel.write_bytes(b"unchanged")
+    result = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(guard_fixture.journal),
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=PROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert sentinel.read_bytes() == b"unchanged"
+    assert not (target / "mutation.lock").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows directory junctions.")
+@pytest.mark.parametrize("leaf", ["lock", "temporary", "marker"])
+def test_windows_leaf_junction_is_rejected_without_touching_target(
+    guard_fixture: GuardFixture,
+    leaf: str,
+) -> None:
+    if leaf == "lock":
+        _create_manual_empty_journal(guard_fixture)
+    else:
+        _create_manual_journal(guard_fixture)
+    target = guard_fixture.root.parent / f"{leaf}-junction-target"
+    target.mkdir()
+    sentinel = target / "unchanged.txt"
+    sentinel.write_bytes(b"unchanged")
+    if leaf == "lock":
+        path = guard_fixture.journal / "mutation.lock"
+    elif leaf == "temporary":
+        path = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
+    else:
+        path = guard_fixture.journal / f"mutation-{uuid.uuid4()}.json"
+    result = subprocess.run(
+        [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(path),
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=PROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
+    assert code == 12
+    assert frames == [{"code": "malformed_state", "kind": "error", "protocol": PROTOCOL}]
+    assert stderr == b""
+    assert sentinel.read_bytes() == b"unchanged"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Creating Windows symlinks requires host-specific privileges.")

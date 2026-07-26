@@ -372,6 +372,736 @@ def _normalize_request(mode: str, request: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_WINDOWS_FILE_ALL_ACCESS = 0x001F01FF
+_WINDOWS_GENERIC_READ = 0x80000000
+_WINDOWS_GENERIC_WRITE = 0x40000000
+_WINDOWS_READ_CONTROL = 0x00020000
+_WINDOWS_FILE_READ_ATTRIBUTES = 0x00000080
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FILE_SHARE_DELETE = 0x00000004
+_WINDOWS_CREATE_NEW = 1
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_FILE_ATTRIBUTE_DIRECTORY = 0x00000010
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_ERROR_ACCESS_DENIED = 5
+_WINDOWS_ERROR_WRITE_PROTECT = 19
+_WINDOWS_ERROR_FILE_EXISTS = 80
+_WINDOWS_ERROR_ALREADY_EXISTS = 183
+_WINDOWS_ERROR_INSUFFICIENT_BUFFER = 122
+_WINDOWS_TOKEN_QUERY = 0x0008
+_WINDOWS_TOKEN_USER = 1
+_WINDOWS_SE_FILE_OBJECT = 1
+_WINDOWS_OWNER_SECURITY_INFORMATION = 0x00000001
+_WINDOWS_DACL_SECURITY_INFORMATION = 0x00000004
+_WINDOWS_SE_OWNER_DEFAULTED = 0x0001
+_WINDOWS_SE_DACL_PRESENT = 0x0004
+_WINDOWS_SE_DACL_DEFAULTED = 0x0008
+_WINDOWS_SE_DACL_PROTECTED = 0x1000
+_WINDOWS_SE_SELF_RELATIVE = 0x8000
+_WINDOWS_ACCESS_ALLOWED_ACE_TYPE = 0
+_WINDOWS_OBJECT_INHERIT_ACE = 0x01
+_WINDOWS_CONTAINER_INHERIT_ACE = 0x02
+_WINDOWS_ACL_REVISION = 2
+_WINDOWS_ACL_REVISION_INFORMATION = 1
+_WINDOWS_ACL_SIZE_INFORMATION = 2
+_WINDOWS_FILE_ATTRIBUTE_TAG_INFO = 9
+_WINDOWS_SYSTEM_SID = "S-1-5-18"
+_WINDOWS_ADMINISTRATORS_SID = "S-1-5-32-544"
+_WINDOWS_SID_PATTERN = re.compile(r"^S-[0-9]+(?:-[0-9]+)+$")
+
+
+class _WindowsSecurityAttributes(ctypes.Structure):
+    _fields_ = [
+        ("nLength", ctypes.c_uint32),
+        ("lpSecurityDescriptor", ctypes.c_void_p),
+        ("bInheritHandle", ctypes.c_int),
+    ]
+
+
+class _WindowsSidAndAttributes(ctypes.Structure):
+    _fields_ = [
+        ("Sid", ctypes.c_void_p),
+        ("Attributes", ctypes.c_uint32),
+    ]
+
+
+class _WindowsTokenUser(ctypes.Structure):
+    _fields_ = [("User", _WindowsSidAndAttributes)]
+
+
+class _WindowsFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [
+        ("FileAttributes", ctypes.c_uint32),
+        ("ReparseTag", ctypes.c_uint32),
+    ]
+
+
+class _WindowsAclSizeInformation(ctypes.Structure):
+    _fields_ = [
+        ("AceCount", ctypes.c_uint32),
+        ("AclBytesInUse", ctypes.c_uint32),
+        ("AclBytesFree", ctypes.c_uint32),
+    ]
+
+
+class _WindowsAclRevisionInformation(ctypes.Structure):
+    _fields_ = [("AclRevision", ctypes.c_uint32)]
+
+
+class _WindowsAceHeader(ctypes.Structure):
+    _fields_ = [
+        ("AceType", ctypes.c_ubyte),
+        ("AceFlags", ctypes.c_ubyte),
+        ("AceSize", ctypes.c_uint16),
+    ]
+
+
+def _windows_last_error() -> int:
+    get_last_error = getattr(ctypes, "get_last_error", None)
+    if not callable(get_last_error):
+        _fail("malformed_state")
+    error = get_last_error()
+    if not isinstance(error, int):
+        _fail("malformed_state")
+    return error
+
+
+def _windows_set_last_error(value: int) -> None:
+    set_last_error = getattr(ctypes, "set_last_error", None)
+    if not callable(set_last_error):
+        _fail("malformed_state")
+    set_last_error(value)
+
+
+def _windows_close_handle(handle: int, *, code: str, suppress_error: bool) -> None:
+    from ctypes import wintypes
+
+    close_handle = _windows_kernel32().CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(wintypes.HANDLE(handle)) and not suppress_error:
+        _fail(code)
+
+
+@contextlib.contextmanager
+def _windows_owned_handle(handle: int, *, code: str) -> Iterator[int]:
+    try:
+        yield handle
+    except BaseException:
+        _windows_close_handle(handle, code=code, suppress_error=True)
+        raise
+    else:
+        _windows_close_handle(handle, code=code, suppress_error=False)
+
+
+def _windows_local_free(pointer: int, *, code: str, suppress_error: bool) -> None:
+    from ctypes import wintypes
+
+    local_free = _windows_kernel32().LocalFree
+    local_free.argtypes = [wintypes.HLOCAL]
+    local_free.restype = wintypes.HLOCAL
+    remaining = local_free(wintypes.HLOCAL(pointer))
+    if remaining and not suppress_error:
+        _fail(code)
+
+
+@contextlib.contextmanager
+def _windows_owned_local(pointer: int, *, code: str) -> Iterator[int]:
+    try:
+        yield pointer
+    except BaseException:
+        _windows_local_free(pointer, code=code, suppress_error=True)
+        raise
+    else:
+        _windows_local_free(pointer, code=code, suppress_error=False)
+
+
+def _windows_sid_to_string(sid: int, *, code: str) -> str:
+    convert_sid = _windows_advapi32().ConvertSidToStringSidW
+    convert_sid.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    convert_sid.restype = ctypes.c_int
+    encoded = ctypes.c_void_p()
+    if not convert_sid(ctypes.c_void_p(sid), ctypes.byref(encoded)) or not encoded.value:
+        _fail(code)
+    with _windows_owned_local(encoded.value, code=code):
+        value = ctypes.wstring_at(encoded.value)
+    if not 1 <= len(value) <= 184 or not _WINDOWS_SID_PATTERN.fullmatch(value):
+        _fail(code)
+    return value
+
+
+def _windows_token_user_sid(*, code: str) -> str:
+    from ctypes import wintypes
+
+    kernel32 = _windows_kernel32()
+    get_current_process = kernel32.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = wintypes.HANDLE
+    open_process_token = _windows_advapi32().OpenProcessToken
+    open_process_token.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    open_process_token.restype = wintypes.BOOL
+    token = wintypes.HANDLE()
+    if not open_process_token(get_current_process(), _WINDOWS_TOKEN_QUERY, ctypes.byref(token)) or not token.value:
+        _fail(code)
+    with _windows_owned_handle(token.value, code=code):
+        get_token_information = _windows_advapi32().GetTokenInformation
+        get_token_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_token_information.restype = wintypes.BOOL
+        required = wintypes.DWORD()
+        _windows_set_last_error(0)
+        if get_token_information(
+            token,
+            _WINDOWS_TOKEN_USER,
+            None,
+            0,
+            ctypes.byref(required),
+        ):
+            _fail(code)
+        if _windows_last_error() != _WINDOWS_ERROR_INSUFFICIENT_BUFFER or not 1 <= required.value <= 65_536:
+            _fail(code)
+        buffer = ctypes.create_string_buffer(required.value)
+        if not get_token_information(
+            token,
+            _WINDOWS_TOKEN_USER,
+            buffer,
+            required,
+            ctypes.byref(required),
+        ):
+            _fail(code)
+        token_user = ctypes.cast(buffer, ctypes.POINTER(_WindowsTokenUser)).contents
+        if not token_user.User.Sid:
+            _fail(code)
+        return _windows_sid_to_string(token_user.User.Sid, code=code)
+
+
+def _windows_expected_sids(*, user_sid: str | None = None, code: str) -> tuple[str, ...]:
+    result: list[str] = []
+    for sid in (
+        user_sid or _windows_token_user_sid(code=code),
+        _WINDOWS_SYSTEM_SID,
+        _WINDOWS_ADMINISTRATORS_SID,
+    ):
+        if sid not in result:
+            result.append(sid)
+    return tuple(result)
+
+
+@contextlib.contextmanager
+def _windows_security_attributes(*, is_directory: bool, code: str) -> Iterator[ctypes.c_void_p]:
+    user_sid = _windows_token_user_sid(code=code)
+    inheritance = "OICI" if is_directory else ""
+    aces = "".join(f"(A;{inheritance};FA;;;{sid})" for sid in _windows_expected_sids(user_sid=user_sid, code=code))
+    sddl = f"O:{user_sid}D:P{aces}"
+    convert = _windows_advapi32().ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    convert.restype = ctypes.c_int
+    descriptor = ctypes.c_void_p()
+    descriptor_size = ctypes.c_uint32()
+    if not convert(sddl, 1, ctypes.byref(descriptor), ctypes.byref(descriptor_size)) or not descriptor.value:
+        _fail(code)
+    with _windows_owned_local(descriptor.value, code=code):
+        attributes = _WindowsSecurityAttributes(
+            nLength=ctypes.sizeof(_WindowsSecurityAttributes),
+            lpSecurityDescriptor=descriptor.value,
+            bInheritHandle=0,
+        )
+        yield ctypes.cast(ctypes.byref(attributes), ctypes.c_void_p)
+
+
+def _windows_create_secure_directory(
+    path: Path,
+    *,
+    allow_permission_failure: bool,
+    code: str,
+) -> bool | None:
+    create_directory = _windows_kernel32().CreateDirectoryW
+    create_directory.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
+    create_directory.restype = ctypes.c_int
+    with _windows_security_attributes(is_directory=True, code=code) as attributes:
+        _windows_set_last_error(0)
+        if create_directory(str(path), attributes):
+            return True
+        error = _windows_last_error()
+    if error == _WINDOWS_ERROR_ALREADY_EXISTS:
+        return False
+    if allow_permission_failure and error in {
+        _WINDOWS_ERROR_ACCESS_DENIED,
+        _WINDOWS_ERROR_WRITE_PROTECT,
+    }:
+        return None
+    _fail(code)
+
+
+def _windows_create_file_handle(
+    path: Path,
+    *,
+    desired_access: int,
+    share_mode: int,
+    creation_disposition: int,
+    is_directory: bool,
+    secure_create: bool,
+    code: str,
+) -> int:
+    from ctypes import wintypes
+
+    create_file = _windows_kernel32().CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+    if is_directory:
+        flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
+
+    def create(attributes: ctypes.c_void_p | None) -> int:
+        _windows_set_last_error(0)
+        handle = create_file(
+            str(path),
+            desired_access,
+            share_mode,
+            attributes,
+            creation_disposition,
+            flags,
+            None,
+        )
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle is not None and handle != invalid_handle:
+            return handle
+        error = _windows_last_error()
+        if creation_disposition == _WINDOWS_CREATE_NEW and error in {
+            _WINDOWS_ERROR_FILE_EXISTS,
+            _WINDOWS_ERROR_ALREADY_EXISTS,
+        }:
+            raise FileExistsError(errno.EEXIST, "secure leaf already exists")
+        _fail(code)
+
+    if secure_create:
+        with _windows_security_attributes(is_directory=is_directory, code=code) as attributes:
+            return create(attributes)
+    return create(None)
+
+
+def _windows_handle_to_descriptor(handle: int, flags: int, *, code: str) -> int:
+    import msvcrt
+
+    open_osfhandle = getattr(msvcrt, "open_osfhandle", None)
+    if not callable(open_osfhandle):
+        _windows_close_handle(handle, code=code, suppress_error=True)
+        _fail(code)
+    try:
+        descriptor = cast(
+            int,
+            open_osfhandle(
+                handle,
+                flags | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
+            ),
+        )
+    except (OSError, ValueError):
+        _windows_close_handle(handle, code=code, suppress_error=True)
+        _fail(code)
+    except BaseException:
+        _windows_close_handle(handle, code=code, suppress_error=True)
+        raise
+    if descriptor < 0:
+        _windows_close_handle(handle, code=code, suppress_error=True)
+        _fail(code)
+    try:
+        os.set_inheritable(descriptor, False)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        _fail(code)
+    return descriptor
+
+
+def _windows_descriptor_handle(descriptor: int, *, code: str) -> int:
+    import msvcrt
+
+    get_osfhandle = getattr(msvcrt, "get_osfhandle", None)
+    if not callable(get_osfhandle):
+        _fail(code)
+    try:
+        handle = get_osfhandle(descriptor)
+    except OSError:
+        _fail(code)
+    if not isinstance(handle, int) or handle == -1:
+        _fail(code)
+    return handle
+
+
+def _windows_validate_handle_security(
+    handle: int,
+    *,
+    is_directory: bool,
+    code: str,
+) -> None:
+    from ctypes import wintypes
+
+    get_information = _windows_kernel32().GetFileInformationByHandleEx
+    get_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    get_information.restype = wintypes.BOOL
+    attributes = _WindowsFileAttributeTagInfo()
+    if not get_information(
+        wintypes.HANDLE(handle),
+        _WINDOWS_FILE_ATTRIBUTE_TAG_INFO,
+        ctypes.byref(attributes),
+        ctypes.sizeof(attributes),
+    ):
+        _fail(code)
+    if attributes.FileAttributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+        _fail(code)
+    if bool(attributes.FileAttributes & _WINDOWS_FILE_ATTRIBUTE_DIRECTORY) != is_directory:
+        _fail(code)
+
+    get_security = _windows_advapi32().GetSecurityInfo
+    get_security.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    get_security.restype = wintypes.DWORD
+    owner = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    security_descriptor = ctypes.c_void_p()
+    error = get_security(
+        wintypes.HANDLE(handle),
+        _WINDOWS_SE_FILE_OBJECT,
+        _WINDOWS_OWNER_SECURITY_INFORMATION | _WINDOWS_DACL_SECURITY_INFORMATION,
+        ctypes.byref(owner),
+        None,
+        ctypes.byref(dacl),
+        None,
+        ctypes.byref(security_descriptor),
+    )
+    if error or not security_descriptor.value:
+        _fail(code)
+    with _windows_owned_local(security_descriptor.value, code=code):
+        advapi32 = _windows_advapi32()
+        user_sid = _windows_token_user_sid(code=code)
+        is_valid_descriptor = advapi32.IsValidSecurityDescriptor
+        is_valid_descriptor.argtypes = [ctypes.c_void_p]
+        is_valid_descriptor.restype = wintypes.BOOL
+        if not is_valid_descriptor(security_descriptor):
+            _fail(code)
+
+        control = ctypes.c_uint16()
+        revision = wintypes.DWORD()
+        get_control = advapi32.GetSecurityDescriptorControl
+        get_control.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint16),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_control.restype = wintypes.BOOL
+        if not get_control(security_descriptor, ctypes.byref(control), ctypes.byref(revision)):
+            _fail(code)
+        required_control = _WINDOWS_SE_DACL_PRESENT | _WINDOWS_SE_DACL_PROTECTED
+        rejected_control = _WINDOWS_SE_OWNER_DEFAULTED | _WINDOWS_SE_DACL_DEFAULTED
+        if (
+            revision.value != 1
+            or control.value & required_control != required_control
+            or control.value & _WINDOWS_SE_SELF_RELATIVE != _WINDOWS_SE_SELF_RELATIVE
+            or control.value & rejected_control
+        ):
+            _fail(code)
+
+        descriptor_owner = ctypes.c_void_p()
+        owner_defaulted = wintypes.BOOL()
+        get_owner = advapi32.GetSecurityDescriptorOwner
+        get_owner.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        get_owner.restype = wintypes.BOOL
+        if (
+            not get_owner(
+                security_descriptor,
+                ctypes.byref(descriptor_owner),
+                ctypes.byref(owner_defaulted),
+            )
+            or not descriptor_owner.value
+            or owner_defaulted.value
+        ):
+            _fail(code)
+
+        descriptor_dacl = ctypes.c_void_p()
+        dacl_present = wintypes.BOOL()
+        dacl_defaulted = wintypes.BOOL()
+        get_dacl = advapi32.GetSecurityDescriptorDacl
+        get_dacl.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        get_dacl.restype = wintypes.BOOL
+        if (
+            not get_dacl(
+                security_descriptor,
+                ctypes.byref(dacl_present),
+                ctypes.byref(descriptor_dacl),
+                ctypes.byref(dacl_defaulted),
+            )
+            or not dacl_present.value
+            or not descriptor_dacl.value
+            or dacl_defaulted.value
+        ):
+            _fail(code)
+        if owner.value != descriptor_owner.value or dacl.value != descriptor_dacl.value:
+            _fail(code)
+
+        is_valid_sid = advapi32.IsValidSid
+        is_valid_sid.argtypes = [ctypes.c_void_p]
+        is_valid_sid.restype = wintypes.BOOL
+        if not is_valid_sid(descriptor_owner):
+            _fail(code)
+        if _windows_sid_to_string(descriptor_owner.value, code=code) != user_sid:
+            _fail(code)
+
+        is_valid_acl = advapi32.IsValidAcl
+        is_valid_acl.argtypes = [ctypes.c_void_p]
+        is_valid_acl.restype = wintypes.BOOL
+        if not is_valid_acl(descriptor_dacl):
+            _fail(code)
+        acl_revision = _WindowsAclRevisionInformation()
+        get_acl_information = advapi32.GetAclInformation
+        get_acl_information.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_int,
+        ]
+        get_acl_information.restype = wintypes.BOOL
+        if (
+            not get_acl_information(
+                descriptor_dacl,
+                ctypes.byref(acl_revision),
+                ctypes.sizeof(acl_revision),
+                _WINDOWS_ACL_REVISION_INFORMATION,
+            )
+            or acl_revision.AclRevision != _WINDOWS_ACL_REVISION
+        ):
+            _fail(code)
+        acl_information = _WindowsAclSizeInformation()
+        if not get_acl_information(
+            descriptor_dacl,
+            ctypes.byref(acl_information),
+            ctypes.sizeof(acl_information),
+            _WINDOWS_ACL_SIZE_INFORMATION,
+        ):
+            _fail(code)
+        expected_sids = set(_windows_expected_sids(user_sid=user_sid, code=code))
+        if (
+            acl_information.AceCount != len(expected_sids)
+            or acl_information.AclBytesInUse < 8
+            or acl_information.AclBytesInUse > 65_535
+        ):
+            _fail(code)
+        get_ace = advapi32.GetAce
+        get_ace.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+        get_ace.restype = wintypes.BOOL
+        get_length_sid = advapi32.GetLengthSid
+        get_length_sid.argtypes = [ctypes.c_void_p]
+        get_length_sid.restype = wintypes.DWORD
+        expected_flags = _WINDOWS_OBJECT_INHERIT_ACE | _WINDOWS_CONTAINER_INHERIT_ACE if is_directory else 0
+        observed_sids: set[str] = set()
+        observed_bytes = 8
+        acl_start = descriptor_dacl.value
+        acl_end = acl_start + acl_information.AclBytesInUse
+        for index in range(acl_information.AceCount):
+            ace = ctypes.c_void_p()
+            if not get_ace(descriptor_dacl, index, ctypes.byref(ace)) or not ace.value:
+                _fail(code)
+            if ace.value < acl_start + 8 or ace.value + ctypes.sizeof(_WindowsAceHeader) > acl_end:
+                _fail(code)
+            header = _WindowsAceHeader.from_address(ace.value)
+            if (
+                header.AceType != _WINDOWS_ACCESS_ALLOWED_ACE_TYPE
+                or header.AceFlags != expected_flags
+                or header.AceSize < 16
+                or ace.value + header.AceSize > acl_end
+            ):
+                _fail(code)
+            mask = ctypes.c_uint32.from_address(ace.value + 4).value
+            sid = ace.value + 8
+            if sid + 2 > ace.value + header.AceSize:
+                _fail(code)
+            sid_revision = ctypes.c_ubyte.from_address(sid).value
+            sub_authority_count = ctypes.c_ubyte.from_address(sid + 1).value
+            if sid_revision != 1 or sub_authority_count > 15:
+                _fail(code)
+            sid_size = 8 + 4 * sub_authority_count
+            if (
+                header.AceSize != 8 + sid_size
+                or sid + sid_size != ace.value + header.AceSize
+                or mask != _WINDOWS_FILE_ALL_ACCESS
+                or not is_valid_sid(ctypes.c_void_p(sid))
+            ):
+                _fail(code)
+            sid_length = get_length_sid(ctypes.c_void_p(sid))
+            if sid_length != sid_size:
+                _fail(code)
+            sid_string = _windows_sid_to_string(sid, code=code)
+            if sid_string in observed_sids:
+                _fail(code)
+            observed_sids.add(sid_string)
+            observed_bytes += header.AceSize
+        if observed_sids != expected_sids or observed_bytes != acl_information.AclBytesInUse:
+            _fail(code)
+
+
+def _windows_open_validated_descriptor(
+    path: Path,
+    *,
+    desired_access: int,
+    share_mode: int,
+    creation_disposition: int,
+    descriptor_flags: int,
+    is_directory: bool,
+    secure_create: bool,
+    code: str,
+) -> int:
+    handle = _windows_create_file_handle(
+        path,
+        desired_access=desired_access,
+        share_mode=share_mode,
+        creation_disposition=creation_disposition,
+        is_directory=is_directory,
+        secure_create=secure_create,
+        code=code,
+    )
+    descriptor = _windows_handle_to_descriptor(handle, descriptor_flags, code=code)
+    try:
+        _windows_validate_handle_security(
+            _windows_descriptor_handle(descriptor, code=code),
+            is_directory=is_directory,
+            code=code,
+        )
+        return descriptor
+    except GuardError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
+def _windows_open_private_directory(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None,
+    code: str,
+) -> tuple[int, os.stat_result]:
+    descriptor = _windows_open_validated_descriptor(
+        path,
+        desired_access=_WINDOWS_READ_CONTROL | _WINDOWS_FILE_READ_ATTRIBUTES,
+        share_mode=_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+        creation_disposition=_WINDOWS_OPEN_EXISTING,
+        descriptor_flags=os.O_RDONLY,
+        is_directory=True,
+        secure_create=False,
+        code=code,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        observed = path.lstat()
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(observed.st_mode)
+            or not _same_file_identity(opened, observed)
+        ):
+            _fail(code)
+        identity = (opened.st_dev, opened.st_ino)
+        if expected_identity is not None and identity != expected_identity:
+            _fail(code)
+        return descriptor, opened
+    except GuardError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        _fail(code)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
+def _windows_create_secure_leaf_descriptor(
+    path: Path,
+    *,
+    desired_access: int,
+    share_mode: int,
+    descriptor_flags: int,
+    code: str,
+) -> int:
+    return _windows_open_validated_descriptor(
+        path,
+        desired_access=desired_access,
+        share_mode=share_mode,
+        creation_disposition=_WINDOWS_CREATE_NEW,
+        descriptor_flags=descriptor_flags,
+        is_directory=False,
+        secure_create=True,
+        code=code,
+    )
+
+
+def _windows_open_secure_leaf_descriptor(
+    path: Path,
+    *,
+    desired_access: int,
+    share_mode: int,
+    descriptor_flags: int,
+    code: str,
+) -> int:
+    return _windows_open_validated_descriptor(
+        path,
+        desired_access=desired_access,
+        share_mode=share_mode,
+        creation_disposition=_WINDOWS_OPEN_EXISTING,
+        descriptor_flags=descriptor_flags,
+        is_directory=False,
+        secure_create=False,
+        code=code,
+    )
+
+
 def _has_reparse_point(path: Path) -> bool:
     if os.name != "nt":
         return False
@@ -390,7 +1120,51 @@ def _has_reparse_point(path: Path) -> bool:
     return bool(attributes & 0x400)
 
 
-def _validate_private_directory(path: Path, expected_identity: tuple[int, int] | None = None) -> tuple[int, int]:
+def _validate_private_directory(
+    path: Path,
+    expected_identity: tuple[int, int] | None = None,
+    *,
+    _while_pinned_for_test: Callable[[Path], None] | None = None,
+) -> tuple[int, int]:
+    if os.name == "nt":
+        descriptor, opened = _windows_open_private_directory(
+            path,
+            expected_identity=expected_identity,
+            code="malformed_state",
+        )
+        try:
+            if _while_pinned_for_test is not None:
+                _while_pinned_for_test(path)
+            after = os.fstat(descriptor)
+            observed = path.lstat()
+            if (
+                not stat.S_ISDIR(after.st_mode)
+                or not stat.S_ISDIR(observed.st_mode)
+                or not _same_file_identity(opened, after)
+                or not _same_file_identity(after, observed)
+            ):
+                _fail("malformed_state")
+            identity = (after.st_dev, after.st_ino)
+            if expected_identity is not None and identity != expected_identity:
+                _fail("malformed_state")
+        except GuardError:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+            raise
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+            _fail("malformed_state")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+            raise
+        try:
+            os.close(descriptor)
+        except OSError:
+            _fail("malformed_state")
+        return identity
+
     try:
         result = path.lstat()
     except OSError:
@@ -413,6 +1187,39 @@ def _validate_private_file(result: os.stat_result, *, code: str) -> None:
 
 
 def _lstat_private_file(path: Path, *, code: str) -> os.stat_result:
+    if os.name == "nt":
+        descriptor = _windows_open_secure_leaf_descriptor(
+            path,
+            desired_access=_WINDOWS_READ_CONTROL | _WINDOWS_FILE_READ_ATTRIBUTES,
+            share_mode=_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+            descriptor_flags=os.O_RDONLY,
+            code=code,
+        )
+        try:
+            opened = os.fstat(descriptor)
+            observed = path.lstat()
+            _validate_private_file(opened, code=code)
+            _validate_private_file(observed, code=code)
+            if not _same_leaf_descriptor_snapshot(observed, opened):
+                _fail(code)
+        except GuardError:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+            raise
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+            _fail(code)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+            raise
+        try:
+            os.close(descriptor)
+        except OSError:
+            _fail(code)
+        return observed
+
     try:
         result = path.lstat()
     except OSError:
@@ -486,16 +1293,25 @@ def _create_journal(environment: dict[str, Any]) -> tuple[Path, tuple[int, int]]
     root = Path(environment["packageRoot"])
     journal = root / JOURNAL_NAME
     created = False
-    try:
-        journal.mkdir(mode=0o700)
-        created = True
-    except FileExistsError:
-        pass
-    except OSError:
-        _fail("malformed_state")
+    if os.name == "nt":
+        result = _windows_create_secure_directory(
+            journal,
+            allow_permission_failure=False,
+            code="malformed_state",
+        )
+        created = result is True
+    else:
+        try:
+            journal.mkdir(mode=0o700)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError:
+            _fail("malformed_state")
     if created:
         try:
-            os.chmod(journal, 0o700)
+            if os.name != "nt":
+                os.chmod(journal, 0o700)
             _fsync_directory(root)
         except OSError:
             _fail("malformed_state")
@@ -531,14 +1347,26 @@ def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int
     try:
         journal.lstat()
     except FileNotFoundError:
-        try:
-            journal.mkdir(mode=0o700)
-            created = True
-        except FileExistsError:
-            pass
-        except OSError as error:
-            if error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
-                _fail("malformed_state")
+        if os.name == "nt":
+            result = _windows_create_secure_directory(
+                journal,
+                allow_permission_failure=True,
+                code="malformed_state",
+            )
+            created = result is True
+            permission_failure = result is None
+        else:
+            permission_failure = False
+            try:
+                journal.mkdir(mode=0o700)
+                created = True
+            except FileExistsError:
+                pass
+            except OSError as error:
+                if error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+                    _fail("malformed_state")
+                permission_failure = True
+        if permission_failure:
             _revalidate_actual_environment(environment)
             try:
                 journal.lstat()
@@ -551,7 +1379,8 @@ def _status_journal(environment: dict[str, Any]) -> tuple[Path | None, tuple[int
         _fail("malformed_state")
     if created:
         try:
-            os.chmod(journal, 0o700)
+            if os.name != "nt":
+                os.chmod(journal, 0o700)
             _fsync_directory(root)
         except OSError:
             _fail("malformed_state")
@@ -596,11 +1425,14 @@ class _JournalLock:
         self._journal_identity = journal_identity
         self._create = create
         self._descriptor = -1
+        self._windows_journal_descriptor = -1
         self._windows_overlapped: Any | None = None
         self._windows_unlock: Any | None = None
         self._windows_handle: Any | None = None
 
     def __enter__(self) -> _JournalLock:
+        if os.name == "nt":
+            return self._enter_windows()
         _validate_private_directory(self._journal, self._journal_identity)
         path = self._journal / LOCK_NAME
         base_flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -625,7 +1457,7 @@ class _JournalLock:
             else:
                 before = _lstat_private_file(path, code="malformed_state")
                 self._descriptor = os.open(path, base_flags)
-            if created and os.name != "nt":
+            if created:
                 os.fchmod(self._descriptor, 0o600)
             opened = os.fstat(self._descriptor)
             _validate_private_file(opened, code="malformed_state")
@@ -641,19 +1473,102 @@ class _JournalLock:
             _validate_private_directory(self._journal, self._journal_identity)
             return self
         except GuardError:
-            self._close()
+            self._close(suppress_errors=True)
             raise
         except OSError as error:
-            self._close()
+            self._close(suppress_errors=True)
             if error.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
                 _fail("busy")
             _fail("malformed_state")
+        except BaseException:
+            self._close(suppress_errors=True)
+            raise
+
+    def _enter_windows(self) -> _JournalLock:
+        path = self._journal / LOCK_NAME
+        created = False
+        try:
+            self._windows_journal_descriptor, pinned = _windows_open_private_directory(
+                self._journal,
+                expected_identity=self._journal_identity,
+                code="malformed_state",
+            )
+            if self._create:
+                try:
+                    self._descriptor = _windows_create_secure_leaf_descriptor(
+                        path,
+                        desired_access=_WINDOWS_GENERIC_READ | _WINDOWS_GENERIC_WRITE,
+                        share_mode=_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+                        descriptor_flags=os.O_RDWR,
+                        code="malformed_state",
+                    )
+                    created = True
+                except FileExistsError:
+                    self._descriptor = _windows_open_secure_leaf_descriptor(
+                        path,
+                        desired_access=_WINDOWS_GENERIC_READ | _WINDOWS_GENERIC_WRITE,
+                        share_mode=_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+                        descriptor_flags=os.O_RDWR,
+                        code="malformed_state",
+                    )
+            else:
+                self._descriptor = _windows_open_secure_leaf_descriptor(
+                    path,
+                    desired_access=_WINDOWS_GENERIC_READ | _WINDOWS_GENERIC_WRITE,
+                    share_mode=_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+                    descriptor_flags=os.O_RDWR,
+                    code="malformed_state",
+                )
+            opened = os.fstat(self._descriptor)
+            _validate_private_file(opened, code="malformed_state")
+            _assert_leaf_identity_matches(path, opened, code="malformed_state")
+            if created:
+                os.fsync(self._descriptor)
+            self._acquire_windows()
+            _assert_leaf_identity_matches(path, opened, code="malformed_state")
+            journal_after = os.fstat(self._windows_journal_descriptor)
+            journal_path = self._journal.lstat()
+            _windows_validate_handle_security(
+                _windows_descriptor_handle(
+                    self._windows_journal_descriptor,
+                    code="malformed_state",
+                ),
+                is_directory=True,
+                code="malformed_state",
+            )
+            if (
+                not _same_file_identity(pinned, journal_after)
+                or not _same_file_identity(journal_after, journal_path)
+                or (journal_after.st_dev, journal_after.st_ino) != self._journal_identity
+            ):
+                _fail("malformed_state")
+            return self
+        except GuardError:
+            self._close(suppress_errors=True)
+            raise
+        except OSError as error:
+            self._close(suppress_errors=True)
+            if error.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                _fail("busy")
+            _fail("malformed_state")
+        except BaseException:
+            self._close(suppress_errors=True)
+            raise
 
     def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        if _type is not None:
+            with contextlib.suppress(BaseException):
+                self._release()
+            with contextlib.suppress(BaseException):
+                self._close(suppress_errors=True)
+            return
         try:
             self._release()
-        finally:
-            self._close()
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                self._close(suppress_errors=True)
+            raise
+        self._close()
 
     def _acquire(self) -> None:
         if os.name == "nt":
@@ -745,12 +1660,25 @@ class _JournalLock:
         self._windows_unlock = unlock_file_ex
         self._windows_handle = handle
 
-    def _close(self) -> None:
+    def _close(self, *, suppress_errors: bool = False) -> None:
+        first_error: OSError | None = None
         if self._descriptor >= 0:
             try:
                 os.close(self._descriptor)
+            except OSError as error:
+                first_error = error
             finally:
                 self._descriptor = -1
+        if self._windows_journal_descriptor >= 0:
+            try:
+                os.close(self._windows_journal_descriptor)
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+            finally:
+                self._windows_journal_descriptor = -1
+        if first_error is not None and not suppress_errors:
+            raise first_error
 
 
 def _marker_bytes(marker: dict[str, Any]) -> bytes:
@@ -770,71 +1698,20 @@ def _write_all(descriptor: int, payload: bytes) -> None:
 
 
 def _open_windows_private_reader(path: Path, *, allow_delete: bool, code: str) -> int:
-    import msvcrt
-    from ctypes import wintypes
-
-    kernel32 = _windows_kernel32()
-    create_file = kernel32.CreateFileW
-    create_file.argtypes = [
-        ctypes.c_wchar_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    create_file.restype = wintypes.HANDLE
-    close_handle = kernel32.CloseHandle
-    close_handle.argtypes = [wintypes.HANDLE]
-    close_handle.restype = wintypes.BOOL
-
     # FILE_SHARE_READ permits other validators to inspect the marker.  Omitting
     # FILE_SHARE_WRITE excludes an existing or new writer for this handle's
     # lifetime.  Ordinary reads also omit FILE_SHARE_DELETE so the exact leaf
     # cannot be renamed or deleted.  Publication temporarily allows delete
     # sharing so MoveFileEx can rename the already-verified file while this
     # no-write handle remains open.
-    share_mode = 0x00000001 | (0x00000004 if allow_delete else 0)
-    handle_value = create_file(
-        str(path),
-        0x80000000,
-        share_mode,
-        None,
-        3,
-        0x00200000,
-        None,
+    share_mode = _WINDOWS_FILE_SHARE_READ | (_WINDOWS_FILE_SHARE_DELETE if allow_delete else 0)
+    return _windows_open_secure_leaf_descriptor(
+        path,
+        desired_access=_WINDOWS_GENERIC_READ,
+        share_mode=share_mode,
+        descriptor_flags=os.O_RDONLY,
+        code=code,
     )
-    invalid_handle = ctypes.c_void_p(-1).value
-    if handle_value is None or handle_value == invalid_handle:
-        _fail(code)
-
-    open_osfhandle_candidate = getattr(msvcrt, "open_osfhandle", None)
-    if not callable(open_osfhandle_candidate):
-        with contextlib.suppress(AttributeError, OSError):
-            close_handle(wintypes.HANDLE(handle_value))
-        _fail(code)
-    open_osfhandle = cast(Callable[[int, int], int], open_osfhandle_candidate)
-    try:
-        descriptor = open_osfhandle(
-            handle_value,
-            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
-        )
-    except (OSError, ValueError):
-        with contextlib.suppress(AttributeError, OSError):
-            close_handle(wintypes.HANDLE(handle_value))
-        _fail(code)
-    if descriptor < 0:
-        with contextlib.suppress(AttributeError, OSError):
-            close_handle(wintypes.HANDLE(handle_value))
-        _fail(code)
-    try:
-        os.set_inheritable(descriptor, False)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.close(descriptor)
-        _fail(code)
-    return descriptor
 
 
 def _open_private_reader(path: Path, *, allow_delete: bool, code: str) -> tuple[int, os.stat_result]:
@@ -959,7 +1836,10 @@ def _durable_replace(source: Path, destination: Path) -> None:
     move_file_ex = _windows_kernel32().MoveFileExW
     move_file_ex.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
     move_file_ex.restype = ctypes.c_int
-    if not move_file_ex(str(source), str(destination), 0x1 | 0x8):
+    # Destination names are UUID-derived and are proved absent immediately
+    # before this call.  Never replace an existing leaf if the namespace
+    # changes between that check and publication.
+    if not move_file_ex(str(source), str(destination), 0x8):
         _fail("malformed_state")
 
 
@@ -969,6 +1849,16 @@ def _windows_kernel32() -> Any:
         _fail("malformed_state")
     try:
         return loader("kernel32", use_last_error=True)
+    except OSError:
+        _fail("malformed_state")
+
+
+def _windows_advapi32() -> Any:
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        _fail("malformed_state")
+    try:
+        return loader("advapi32", use_last_error=True)
     except OSError:
         _fail("malformed_state")
 
@@ -999,8 +1889,16 @@ def _publish_marker(
     descriptor = -1
     try:
         _assert_leaf_absent(temporary, code="malformed_state")
-        descriptor = os.open(temporary, flags, 0o600)
-        if os.name != "nt":
+        if os.name == "nt":
+            descriptor = _windows_create_secure_leaf_descriptor(
+                temporary,
+                desired_access=(_WINDOWS_GENERIC_WRITE | _WINDOWS_READ_CONTROL | _WINDOWS_FILE_READ_ATTRIBUTES),
+                share_mode=0,
+                descriptor_flags=os.O_WRONLY,
+                code="malformed_state",
+            )
+        else:
+            descriptor = os.open(temporary, flags, 0o600)
             os.fchmod(descriptor, 0o600)
         os.set_inheritable(descriptor, False)
         _write_all(descriptor, payload)
