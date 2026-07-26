@@ -36,6 +36,7 @@ import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
+  pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
@@ -91,7 +92,7 @@ const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_
 const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
 const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
 const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
-const IMPORT_FOCUS_POLL_TIMEOUT_MS = 3_000;
+const IMPORT_FOCUS_POLL_TIMEOUT_MS = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
 const IMPORT_FOCUS_POLL_INTERVAL_MS = 50;
 const IMPORT_FOCUS_PROBE_TIMEOUT_MS = 1_000;
 const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
@@ -1107,7 +1108,7 @@ async function acceptDefaultDelimitedImport(
   await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "Quote character keyboard acceptance"
   );
@@ -5226,7 +5227,7 @@ async function acceptDelimitedImportOptions(
   recordAcceptanceProgress(`${quoteCheckpoint}:focused`);
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote character acceptance"
   );
@@ -5341,7 +5342,7 @@ async function acceptExcelImportOptions(
     `the ${inputTitle} value`
   );
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `the ${inputTitle} acceptance`
   );

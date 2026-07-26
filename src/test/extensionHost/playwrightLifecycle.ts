@@ -24,6 +24,11 @@ interface RendererButtonProbe {
   isEnabled(options?: { readonly timeout?: number }): Promise<boolean>;
 }
 
+interface KeyboardKeyPair {
+  down(key: string): Promise<void>;
+  up(key: string): Promise<void>;
+}
+
 export async function withAcceptanceOperationDeadline<T>(
   operation: PromiseLike<T>,
   timeoutMs: number,
@@ -69,6 +74,15 @@ export async function probeRendererButtonReadiness(
   if ((await button.count()) === 0) return false;
   if (!(await button.isVisible())) return false;
   return button.isEnabled({ timeout: enabledProbeTimeoutMs });
+}
+
+export async function pressKeyboardKeyPairWithoutTransitionGap(keyboard: KeyboardKeyPair, key: string): Promise<void> {
+  // Playwright's press() awaits key-down before it queues key-up. A final
+  // QuickInput can replace the active editor during that acknowledgement, so
+  // queue both genuine keyboard events first and then await both responses.
+  const keyDown = keyboard.down(key);
+  const keyUp = keyboard.up(key);
+  await Promise.all([keyDown, keyUp]);
 }
 
 export function isRetiredRendererTarget(workbench: PageLifecycle, page: PageLifecycle, frame: FrameLifecycle): boolean {

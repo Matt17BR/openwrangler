@@ -3,6 +3,7 @@ import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
+  pressKeyboardKeyPairWithoutTransitionGap,
   probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
@@ -92,6 +93,80 @@ describe("extension-host Playwright lifecycle", () => {
     ).resolves.toBe(false);
     expect(probe).toHaveBeenCalledTimes(5);
     expect(wait).toHaveBeenCalledTimes(4);
+  });
+
+  it("queues key-up before a final-prompt key-down acknowledgement and awaits key-down completion", async () => {
+    let resolveKeyDown!: () => void;
+    const keyDown = new Promise<void>((resolve) => {
+      resolveKeyDown = resolve;
+    });
+    const keyboard = {
+      down: vi.fn().mockReturnValue(keyDown),
+      up: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    let settled = false;
+    void outcome.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await Promise.resolve();
+
+    expect(keyboard.down).toHaveBeenCalledWith("Enter");
+    expect(keyboard.up).toHaveBeenCalledWith("Enter");
+    expect(settled).toBe(false);
+
+    resolveKeyDown();
+    await expect(outcome).resolves.toBeUndefined();
+  });
+
+  it("awaits final-prompt key-up completion after key-down settles", async () => {
+    let resolveKeyUp!: () => void;
+    const keyUp = new Promise<void>((resolve) => {
+      resolveKeyUp = resolve;
+    });
+    const keyboard = {
+      down: vi.fn().mockResolvedValue(undefined),
+      up: vi.fn().mockReturnValue(keyUp)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    let settled = false;
+    void outcome.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+
+    resolveKeyUp();
+    await expect(outcome).resolves.toBeUndefined();
+  });
+
+  it.each(["down", "up"] as const)("propagates a final-prompt key-%s failure", async (failedEvent) => {
+    const error = new Error(`${failedEvent} failed`);
+    const keyboard = {
+      down: vi.fn().mockImplementation(async () => {
+        if (failedEvent === "down") throw error;
+      }),
+      up: vi.fn().mockImplementation(async () => {
+        if (failedEvent === "up") throw error;
+      })
+    };
+
+    await expect(pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter")).rejects.toBe(error);
+    expect(keyboard.down).toHaveBeenCalledWith("Enter");
+    expect(keyboard.up).toHaveBeenCalledWith("Enter");
   });
 
   it("reports an absent renderer button without probing presentation or enabled state", async () => {

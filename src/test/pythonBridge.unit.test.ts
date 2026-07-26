@@ -3069,7 +3069,7 @@ describe("PythonBridge environment resource selection", () => {
       const packageRoot = `/envs${resource?.path ?? "/default"}`;
       return {
         ...environment,
-        executable: `${packageRoot}/python`,
+        executable: testPythonExecutablePath(`${packageRoot}/python`),
         packageRoot,
         packageRootIdentity: testPackageRootIdentity(packageRoot)
       };
