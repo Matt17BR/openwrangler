@@ -529,31 +529,25 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       packageEnvironmentKey,
       detached: false
     } as DependencyProbeFlight;
+    const detached = (): boolean =>
+      flight.detached ||
+      this.dependencyProbes.get(flight.key) !== flight ||
+      this.disposed ||
+      this.dependencyMutations.has(flight.packageEnvironmentKey);
     const promise = Promise.resolve()
-      .then(() => probeDependencies(environment.executable, dependencies))
+      .then(() => {
+        if (detached()) throw new DetachedDependencyProbeError();
+        return probeDependencies(environment.executable, dependencies);
+      })
       .then(
         (result) => {
           const missing = [...result.missing];
-          if (
-            flight.detached ||
-            this.dependencyProbes.get(flight.key) !== flight ||
-            this.disposed ||
-            this.dependencyMutations.has(flight.packageEnvironmentKey)
-          ) {
-            throw new DetachedDependencyProbeError();
-          }
+          if (detached()) throw new DetachedDependencyProbeError();
           this.dependencyProbes.delete(flight.key);
           return this.publishCompletedDependencyProbe(flight.key, missing, flight);
         },
         (error: unknown) => {
-          if (
-            flight.detached ||
-            this.dependencyProbes.get(flight.key) !== flight ||
-            this.disposed ||
-            this.dependencyMutations.has(flight.packageEnvironmentKey)
-          ) {
-            throw new DetachedDependencyProbeError();
-          }
+          if (detached()) throw new DetachedDependencyProbeError();
           this.dependencyProbes.delete(flight.key);
           throw error;
         }

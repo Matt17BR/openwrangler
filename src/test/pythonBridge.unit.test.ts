@@ -2686,6 +2686,7 @@ describe("PythonBridge environment resource selection", () => {
 
       const stale = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
       const staleOutcome = stale.catch((error: unknown) => error);
+      await vi.waitFor(() => expect(pythonEnvironment.probeDependencies).toHaveBeenCalledOnce());
       const key = [...raw.dependencyProbes.keys()][0]!;
       const staleFlight = raw.dependencyProbes.get(key)!;
       raw.invalidateDependencyProbeKey(key);
@@ -2714,6 +2715,51 @@ describe("PythonBridge environment resource selection", () => {
       expect(raw.dependencyProbeOwners.get(key)).toBe(currentFlight);
     }
   );
+
+  it("does not launch a dependency probe whose deferred start is overtaken by shutdown", async () => {
+    const dependency: PythonDependency = {
+      importModule: "polars",
+      distribution: "polars",
+      installSpec: "polars"
+    };
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    const bridge = new PythonBridge({ extensionPath: "/extension" } as vscode.ExtensionContext);
+    const raw = bridge as unknown as RawBridgeInternals;
+
+    const probe = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
+    const outcome = probe.catch((error: unknown) => error);
+    expect(raw.dependencyProbes.size).toBe(1);
+    await bridge.shutdown();
+
+    await expect(outcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
+    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+    expect(raw.dependencyProbes.size).toBe(0);
+    expect(raw.dependencyProbeOwners.size).toBe(0);
+    expect(raw.dependencyCache.size).toBe(0);
+  });
+
+  it("does not launch a deferred dependency probe after its package mutation begins", async () => {
+    const dependency: PythonDependency = {
+      importModule: "polars",
+      distribution: "polars",
+      installSpec: "polars"
+    };
+    const { bridge } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    const probe = Promise.resolve(raw.probeDependenciesForEnvironment(environment, [dependency]));
+    const outcome = probe.catch((error: unknown) => error);
+    const flight = [...raw.dependencyProbes.values()][0]!;
+    raw.dependencyMutations.set(flight.packageEnvironmentKey, {});
+    raw.invalidateDependencyProbesForPackageEnvironment(flight.packageEnvironmentKey);
+
+    await expect(outcome).resolves.toMatchObject({ name: "DetachedDependencyProbeError" });
+    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+    expect(raw.dependencyProbes.size).toBe(0);
+    expect(raw.dependencyProbeOwners.size).toBe(0);
+    expect(raw.dependencyCache.size).toBe(0);
+  });
 
   it("does not let a detached old completion overwrite newer cached or install state", async () => {
     const source = remoteSourceAt("/single-flight/newer-state.csv");
