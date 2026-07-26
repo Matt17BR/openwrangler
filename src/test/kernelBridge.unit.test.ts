@@ -28,6 +28,7 @@ const initializedResponse: OpenWranglerResponse = {
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   setOpenNotebookDocuments();
 });
@@ -276,6 +277,64 @@ describe("kernel retry classification", () => {
     expect(controller.statusListenerCount()).toBe(1);
     expect(getExtension).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["timeout", "cancellation"] as const)(
+    "does not let an old generation %s invalidate a concurrently executing replacement",
+    async (abortKind) => {
+      if (abortKind === "timeout") vi.useFakeTimers();
+      const firstDispatched = deferred<void>();
+      const secondDispatched = deferred<void>();
+      const releaseFirst = deferred<void>();
+      const releaseSecond = deferred<void>();
+      let initializeRequests = 0;
+      const controller = controlledFakeKernel(async (request) => {
+        if (request.kind === "initialize") {
+          initializeRequests += 1;
+          if (initializeRequests === 1) {
+            firstDispatched.resolve();
+            await releaseFirst.promise;
+          } else if (initializeRequests === 2) {
+            secondDispatched.resolve();
+            await releaseSecond.promise;
+          }
+        }
+        return initializedResponse;
+      });
+      const getExtension = mockKernel(controller.kernel);
+      const cancellation = cancellationSource();
+      const bridge = createKernelBridge();
+
+      const staleRequest = bridge.request(initializeRequest(), {
+        timeoutMs: abortKind === "timeout" ? 30 : 60_000,
+        ...(abortKind === "cancellation" ? { cancellation: cancellation.token } : {})
+      });
+      const staleRejection = expect(staleRequest).rejects.toThrow(
+        abortKind === "timeout" ? "timed out after 30 ms" : "kernel request was cancelled"
+      );
+      await firstDispatched.promise;
+      controller.setStatus("restarting");
+      controller.setStatus("idle");
+
+      const replacementRequest = bridge.request(initializeRequest(), { timeoutMs: 60_000 });
+      await secondDispatched.promise;
+      expect(controller.statusListenerCount()).toBe(1);
+
+      if (abortKind === "timeout") await vi.advanceTimersByTimeAsync(30);
+      else cancellation.cancel();
+      await staleRejection;
+      expect(controller.statusListenerCount()).toBe(1);
+
+      releaseSecond.resolve();
+      await expect(replacementRequest).resolves.toEqual(initializedResponse);
+      releaseFirst.resolve();
+      await Promise.resolve();
+
+      expect(initializeRequests).toBe(2);
+      expect(controller.bootstrapExecutionCount()).toBe(2);
+      expect(controller.statusListenerCount()).toBe(1);
+      expect(getExtension).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it.each(["error", "cancelled"] as const)(
     "closes the host-known candidate after an open returns %s",

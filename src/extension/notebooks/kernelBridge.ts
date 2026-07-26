@@ -23,6 +23,7 @@ export class KernelBridge implements OpenWranglerBridge {
   private readonly retiredSessionIds = new Set<string>();
   private cleanupAttempts = new WeakMap<Kernel, Set<string>>();
   private kernelObservation: KernelObservation | undefined;
+  private lifecycleVersion = 0;
   private readonly notebookUri: vscode.Uri;
 
   constructor(
@@ -71,12 +72,14 @@ export class KernelBridge implements OpenWranglerBridge {
     const tokenSource = new vscode.CancellationTokenSource();
     const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
     let requestObservation: KernelObservation | undefined;
+    const requestLifecycleVersion = this.lifecycleVersion;
     const abort = (): void => {
       tokenSource.cancel();
       // A timed-out acquisition must not trap future cleanup requests behind the
-      // same hung promise. Detaching is generation-safe: a late settle cannot
-      // replace or invalidate the next kernel.
-      this.invalidateLifecycle();
+      // same hung promise. Once this request has observed a kernel, invalidate
+      // only that exact observation. Before observation, the captured lifecycle
+      // version prevents a detached old acquisition from clearing a replacement.
+      this.invalidateLifecycle(requestObservation, requestLifecycleVersion);
     };
     let mismatchedRuntimeId: string | undefined;
     let cleanupMismatchedRuntimeId = false;
@@ -321,8 +324,13 @@ __ow_notebook.register_formatters()
     return observation;
   }
 
-  private invalidateLifecycle(expected?: KernelObservation): void {
-    if (expected && this.kernelObservation !== expected) return;
+  private invalidateLifecycle(expected?: KernelObservation, expectedVersion?: number): void {
+    if (expected) {
+      if (this.kernelObservation !== expected) return;
+    } else if (expectedVersion !== undefined && this.lifecycleVersion !== expectedVersion) {
+      return;
+    }
+    this.lifecycleVersion += 1;
     this.lifecycle.invalidate();
     this.disposeKernelObservation(expected);
   }
