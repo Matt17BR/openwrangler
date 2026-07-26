@@ -1337,7 +1337,21 @@ test("the container definition pins its base and direct wheels and never receive
   assert.match(server, /config\.IdentityProvider\.token = token/u);
   assert.match(server, /TOKEN_PATH\.unlink\(\)/u);
   assert.match(server, /^TOKEN_WAIT_SECONDS = 300$/mu);
-  assert.equal(/os\.environ|sys\.argv/u.test(server), false);
+  assert.equal(/sys\.argv/u.test(server), false);
+  assert.equal(/^from (?:IPython|jupyter_server|traitlets)/mu.test(server), false);
+  assert.equal(/config\.ServerApp\.(?:config_dir|runtime_dir)/u.test(server), false);
+  const pathVariables = ["JUPYTER_CONFIG_DIR", "JUPYTER_DATA_DIR", "JUPYTER_RUNTIME_DIR", "IPYTHONDIR"];
+  assert.deepEqual(
+    [...server.matchAll(/os\.environ\["([A-Z_]+)"\] =/gu)].map((match) => match[1]),
+    pathVariables
+  );
+  assert.equal(server.match(/os\.environ\[/gu)?.length, pathVariables.length);
+  assert.equal(/OPEN_WRANGLER_REMOTE_TOKEN|JUPYTER_TOKEN/u.test(server), false);
+  const tokenRead = server.indexOf("    token = read_token()");
+  const pathSetup = server.indexOf("    directories = prepare_jupyter_environment()");
+  const jupyterImport = server.indexOf("    from jupyter_server.serverapp import ServerApp");
+  assert.ok(tokenRead >= 0 && tokenRead < pathSetup && pathSetup < jupyterImport);
+  assert.match(server, /Remote Jupyter path isolation could not be established\./u);
   assert.match(injector, /sys\.stdin\.buffer\.read\(TOKEN_LIMIT \+ 1\)/u);
   assert.match(injector, /os\.O_EXCL/u);
   assert.match(injector, /renameat2/u);

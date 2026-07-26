@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import re
 import stat
 import time
-
-from jupyter_server.serverapp import ServerApp
-from traitlets.config import Config
-
+from dataclasses import dataclass
+from pathlib import Path
 
 TOKEN_PATH = Path("/run/openwrangler/token")
 TOKEN_LIMIT = 43
 TOKEN_PATTERN = re.compile(r"owr_[A-Za-z0-9_-]{39}")
 TOKEN_WAIT_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class JupyterDirectories:
+    work: Path
+    config: Path
+    data: Path
+    runtime: Path
+    ipython: Path
 
 
 def read_token() -> str:
@@ -57,31 +63,60 @@ def read_token() -> str:
     return token
 
 
+def prepare_jupyter_environment(base_directory: Path = Path("/tmp")) -> JupyterDirectories:
+    directories = JupyterDirectories(
+        work=base_directory / "work",
+        config=base_directory / "jupyter-config",
+        data=base_directory / "jupyter-data",
+        runtime=base_directory / "jupyter-runtime",
+        ipython=base_directory / "ipython",
+    )
+    for directory in (
+        directories.work,
+        directories.config,
+        directories.data,
+        directories.runtime,
+        directories.ipython,
+    ):
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o700)
+    os.environ["JUPYTER_CONFIG_DIR"] = str(directories.config)
+    os.environ["JUPYTER_DATA_DIR"] = str(directories.data)
+    os.environ["JUPYTER_RUNTIME_DIR"] = str(directories.runtime)
+    os.environ["IPYTHONDIR"] = str(directories.ipython)
+    return directories
+
+
 def main() -> None:
     token = read_token()
-    work_directory = Path("/tmp/work")
-    runtime_directory = Path("/tmp/jupyter-runtime")
-    config_directory = Path("/tmp/jupyter-config")
-    for directory in (work_directory, runtime_directory, config_directory):
-        directory.mkdir(mode=0o700)
+    directories = prepare_jupyter_environment()
+
+    from IPython.paths import get_ipython_dir
+    from jupyter_server.serverapp import ServerApp
+    from traitlets.config import Config
 
     config = Config()
     config.IdentityProvider.token = token
     config.ServerApp.allow_remote_access = True
     config.ServerApp.allow_root = False
     config.ServerApp.browser = ""
-    config.ServerApp.config_dir = str(config_directory)
     config.ServerApp.ip = "0.0.0.0"
     config.ServerApp.log_level = "WARN"
     config.ServerApp.open_browser = False
     config.ServerApp.password = ""
     config.ServerApp.port = 8888
     config.ServerApp.port_retries = 0
-    config.ServerApp.root_dir = str(work_directory)
-    config.ServerApp.runtime_dir = str(runtime_directory)
+    config.ServerApp.root_dir = str(directories.work)
     config.ServerApp.terminals_enabled = False
 
     application = ServerApp(config=config)
+    if (
+        Path(application.config_dir) != directories.config
+        or Path(application.data_dir) != directories.data
+        or Path(application.runtime_dir) != directories.runtime
+        or Path(get_ipython_dir()) != directories.ipython
+    ):
+        raise RuntimeError("Remote Jupyter path isolation could not be established.")
     application.initialize([])
     application.start()
 
