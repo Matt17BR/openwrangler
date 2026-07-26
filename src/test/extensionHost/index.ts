@@ -7318,17 +7318,28 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
       await confirmation.locator(".dialog-message-text").innerText(),
       `Install pandas, xlrd>=2.0.1 into ${lifecycle.executable}?`
     );
-    await withAcceptanceOperationDeadline(
-      confirmation.getByRole("button", { name: "Install", exact: true }).click(),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "the real dependency-install confirmation"
+    const installButton = confirmation.getByRole("button", { name: "Install", exact: true });
+    assert.equal(
+      await installButton.count(),
+      1,
+      "The dependency lifecycle modal must expose exactly one affirmative Install action."
     );
+    assert.equal(await installButton.isVisible(), true, "The dependency lifecycle Install action must be visible.");
+    assert.equal(await installButton.isEnabled(), true, "The dependency lifecycle Install action must be enabled.");
+    recordAcceptanceProgress("verify:dependency-install-confirmation-visible");
+    await installButton.click({
+      noWaitAfter: true,
+      timeout: WORKBENCH_OPERATION_TIMEOUT_MS
+    });
+    recordAcceptanceProgress("verify:dependency-install-action-dispatched");
     await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
+    recordAcceptanceProgress("verify:dependency-install-dialog-hidden");
     await waitFor(
       () => existsSync(lifecycle.started),
       10_000,
       "the disposable fake pip process to publish its start marker"
     );
+    recordAcceptanceProgress("verify:dependency-install-child-started");
 
     const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
     assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "--", "pandas", "xlrd>=2.0.1"]);
