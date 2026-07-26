@@ -460,7 +460,7 @@ describe("Python environment API broker", () => {
     broker.dispose();
   });
 
-  it("falls back to a system interpreter when the activated API has no stable selection event", async () => {
+  it("rejects an activated API that cannot report selection changes", async () => {
     const getActiveEnvironmentPath = vi.fn(() => ({ id: "env", path: "/selected/python" }));
     const resolveEnvironment = vi.fn(async () => ({
       executable: { uri: vscode.Uri.file("/selected/python") }
@@ -472,19 +472,13 @@ describe("Python environment API broker", () => {
       }
     }));
     mockExtensionLookup(extension(activate));
+    const broker = new PythonEnvironmentApiBroker();
 
-    const environment = await resolvePythonEnvironment({ extensionPath: "/extension" } as vscode.ExtensionContext);
-    expect(environment.source).toBe("system");
-    expect(path.isAbsolute(environment.executable)).toBe(true);
-    expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
-    expect(environment.packageRoot.trim()).not.toBe("");
-    expect(environment.packageRootIdentity).toEqual({
-      device: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
-      inode: expect.stringMatching(/^(?:0|[1-9]\d*)$/)
-    });
+    await expect(broker.resolveSelectedExecutable()).resolves.toBeUndefined();
     expect(activate).toHaveBeenCalledOnce();
     expect(getActiveEnvironmentPath).not.toHaveBeenCalled();
     expect(resolveEnvironment).not.toHaveBeenCalled();
+    broker.dispose();
   });
 
   it("canonicalizes a real package-root symlink or junction and preserves its filesystem identity", async () => {
