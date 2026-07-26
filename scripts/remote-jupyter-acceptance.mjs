@@ -34,7 +34,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u;
 const CONTAINER_ID = /^[0-9a-f]{64}$/u;
 const ENGINE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{7,127}$/u;
-const SAFE_VERSION = /^[0-9]+(?:\.[0-9]+){1,3}(?:[-+._a-z0-9]*)?$/iu;
+const BOUNDED_DOCKER_VERSION = /^[\x21-\x7e]{1,128}$/u;
 const CONTAINER_INSPECT_FORMAT = [
   "{{.Id}}",
   "{{.Name}}",
@@ -751,17 +751,12 @@ function createDockerClient({ dockerExecutable, environment, runCommand, dockerT
 }
 
 async function probeDockerEngine(docker) {
-  const version = await docker.required(
-    ["version", "--format", "{{.Server.Version}}\t{{.Server.Os}}\t{{.Server.Arch}}"],
-    "Remote Jupyter Docker availability probe"
+  const version = oneLine(
+    (await docker.required(["version", "--format", "{{.Server.Version}}"], "Remote Jupyter Docker version probe"))
+      .stdout,
+    "Docker version report"
   );
-  const versionFields = oneLine(version.stdout, "Docker version report").split("\t");
-  if (
-    versionFields.length !== 3 ||
-    !SAFE_VERSION.test(versionFields[0]) ||
-    versionFields[1] !== "linux" ||
-    !["amd64", "x86_64"].includes(versionFields[2])
-  ) {
+  if (!BOUNDED_DOCKER_VERSION.test(version)) {
     throw new Error("Remote Jupyter acceptance requires a bounded Linux Docker Engine.");
   }
 
@@ -781,14 +776,14 @@ async function probeDockerEngine(docker) {
     !ENGINE_ID.test(infoFields[0]) ||
     infoFields[1] !== "linux" ||
     !["amd64", "x86_64"].includes(infoFields[2]) ||
-    infoFields[3] !== versionFields[0]
+    infoFields[3] !== version
   ) {
     throw new Error("Remote Jupyter Docker engine identity is malformed or inconsistent.");
   }
   return Object.freeze({
     engineId: infoFields[0],
     contextName,
-    version: versionFields[0],
+    version,
     operatingSystem: infoFields[1],
     architecture: infoFields[2]
   });

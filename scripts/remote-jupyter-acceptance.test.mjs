@@ -104,6 +104,10 @@ function createFakeDocker({ alterResult } = {}) {
     imagePresent: false,
     containerPresent: false,
     engineId: ENGINE_ID,
+    versionReport: "28.3.0",
+    engineVersion: "28.3.0",
+    identityOperatingSystem: "linux",
+    identityArchitecture: "x86_64",
     ownerId: undefined,
     imageTag: undefined,
     containerName: undefined,
@@ -127,11 +131,18 @@ function createFakeDocker({ alterResult } = {}) {
     let result;
 
     if (command === "version") {
-      result = success("28.3.0\tlinux\tamd64\n");
+      const format = input.args.at(-1);
+      if (format === "{{.Server.Version}}") {
+        result = success(`${state.versionReport}\n`);
+      } else {
+        assert.fail(`Unexpected fake Docker version format: ${format}`);
+      }
     } else if (command === "context" && operation === "show") {
       result = success("default\n");
     } else if (command === "info") {
-      result = success(`${state.engineId}\tlinux\tx86_64\t28.3.0\n`);
+      result = success(
+        `${state.engineId}\t${state.identityOperatingSystem}\t${state.identityArchitecture}\t${state.engineVersion}\n`
+      );
     } else if (command === "container" && operation === "ls") {
       const filter = input.args.at(-1);
       const matches =
@@ -1048,24 +1059,95 @@ linuxTest("Docker availability failure happens before any mutating command", asy
 });
 
 linuxTest("Docker availability accepts the hosted Linux x86_64 report without an optional platform label", async () => {
-  const fake = createFakeDocker({
-    alterResult({ input, result }) {
-      if (input.args[0] === "version") return success("28.3.0\tlinux\tx86_64\n");
-      return result;
-    }
-  });
+  const fake = createFakeDocker();
 
   const fixture = await startWithFake(fake);
   await fixture.cleanup();
 
   const versionProbe = fake.commands.find(({ args }) => args[0] === "version");
-  assert.deepEqual(versionProbe?.args, [
-    "version",
-    "--format",
-    "{{.Server.Version}}\t{{.Server.Os}}\t{{.Server.Arch}}"
-  ]);
+  assert.deepEqual(versionProbe?.args, ["version", "--format", "{{.Server.Version}}"]);
   assert.equal(fake.state.containerPresent, false);
   assert.equal(fake.state.imagePresent, false);
+});
+
+linuxTest("Docker availability treats a bounded vendor version as an opaque engine identity", async () => {
+  const fake = createFakeDocker();
+  fake.state.versionReport = fake.state.engineVersion = "28.0.4+azure-1~ubuntu.24.04~noble";
+
+  const fixture = await startWithFake(fake);
+  await fixture.cleanup();
+
+  assert.equal(fake.state.containerPresent, false);
+  assert.equal(fake.state.imagePresent, false);
+});
+
+linuxTest("Docker availability rejects malformed, control-bearing, and oversized server versions", async (t) => {
+  const invalidVersions = [
+    ["malformed", "28.0.4 vendor"],
+    ["control-bearing", "28.0.4\u001b[31m"],
+    ["oversized", "v".repeat(129)]
+  ];
+
+  for (const [label, engineVersion] of invalidVersions) {
+    await t.test(label, async () => {
+      const fake = createFakeDocker();
+      fake.state.versionReport = engineVersion;
+
+      await assert.rejects(startWithFake(fake), /requires a bounded Linux Docker Engine/u);
+      assert.deepEqual(
+        fake.commands.map(({ args }) => args[0]),
+        ["version"]
+      );
+      assert.equal(fake.state.containerPresent, false);
+      assert.equal(fake.state.imagePresent, false);
+    });
+  }
+});
+
+linuxTest("Docker identity accepts the canonical amd64 architecture spelling", async () => {
+  const fake = createFakeDocker();
+  fake.state.identityArchitecture = "amd64";
+
+  const fixture = await startWithFake(fake);
+  await fixture.cleanup();
+
+  assert.equal(fake.state.containerPresent, false);
+  assert.equal(fake.state.imagePresent, false);
+});
+
+linuxTest("Docker identity rejects a version mismatch before mutation", async () => {
+  const fake = createFakeDocker();
+  fake.state.engineVersion = "28.3.1";
+
+  await assert.rejects(startWithFake(fake), /engine identity is malformed or inconsistent/u);
+  assert.equal(
+    fake.commands.some(({ args }) => ["build", "run"].includes(args[0])),
+    false
+  );
+  assert.equal(fake.state.containerPresent, false);
+  assert.equal(fake.state.imagePresent, false);
+});
+
+linuxTest("Docker availability still rejects non-Linux and non-x86-64 engines before mutation", async (t) => {
+  const invalidEngines = [
+    ["operating system", { identityOperatingSystem: "windows" }],
+    ["architecture", { identityArchitecture: "arm64" }]
+  ];
+
+  for (const [label, state] of invalidEngines) {
+    await t.test(label, async () => {
+      const fake = createFakeDocker();
+      Object.assign(fake.state, state);
+
+      await assert.rejects(startWithFake(fake), /engine identity is malformed or inconsistent/u);
+      assert.equal(
+        fake.commands.some(({ args }) => ["build", "run"].includes(args[0])),
+        false
+      );
+      assert.equal(fake.state.containerPresent, false);
+      assert.equal(fake.state.imagePresent, false);
+    });
+  }
 });
 
 linuxTest("an unverified Docker CLI tree prevents every subsequent Docker or cleanup command", async () => {
