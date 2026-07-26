@@ -241,7 +241,7 @@ describe("owned dependency installation", () => {
     child.emit("close", 1, null);
     await expect(operation.exit).resolves.toBeUndefined();
     await expect(operation.completion).rejects.toThrow(
-      "dependency installation with /env/bin/python failed: late child error"
+      `dependency installation with ${TEST_PYTHON_EXECUTABLE} failed: late child error`
     );
     expect(existsSync(privateCwd as string)).toBe(false);
   });
@@ -280,7 +280,7 @@ describe("owned dependency installation", () => {
 
     await expect(operation.exit).resolves.toBeUndefined();
     await expect(operation.completion).rejects.toThrow(
-      `dependency installation with /env/bin/python ended with ${detail}`
+      `dependency installation with ${TEST_PYTHON_EXECUTABLE} ended with ${detail}`
     );
   });
 

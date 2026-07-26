@@ -51,7 +51,7 @@ describe("resolvePythonCommandPath", () => {
     const trustedDirectory = path.resolve("trusted-bin");
     const relativeDirectory = "hostile-bin";
     const separator = path.delimiter;
-    const executable = path.join(trustedDirectory, "python3");
+    const executable = path.join(trustedDirectory, process.platform === "win32" ? "python3.exe" : "python3");
     const checked: string[] = [];
 
     expect(

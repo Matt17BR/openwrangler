@@ -1,6 +1,6 @@
 import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { win32 } from "node:path";
+import { join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1055,7 +1055,7 @@ describe("PythonBridge process lifecycle", () => {
       windowsHide: true,
       env: expect.objectContaining({
         PYTHONNOUSERSITE: "1",
-        PYTHONPATH: "/extension/python",
+        PYTHONPATH: join("/extension", "python"),
         PYTHONSAFEPATH: "1"
       })
     });
@@ -1184,7 +1184,7 @@ describe("PythonBridge dependency installation", () => {
     await expect(bridge.installMissingDependencies()).resolves.toBe(false);
 
     expect(warning).toHaveBeenCalledWith(
-      "Install pandas, xlrd>=2.0.1 into /env/bin/python?",
+      `Install pandas, xlrd>=2.0.1 into ${testPythonExecutablePath("/env/bin/python")}?`,
       { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
       "Install"
     );
