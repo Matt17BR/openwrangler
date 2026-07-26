@@ -2248,6 +2248,7 @@ async function invokeReleasedNotebookToolbarVariable(
 interface ReleasedNotebookPinnedAction {
   readonly action: ElementHandle<unknown>;
   readonly overflowMenu?: ElementHandle<unknown>;
+  readonly abandonBeforeDispatch?: () => Promise<void>;
   readonly description: string;
 }
 
@@ -2282,17 +2283,19 @@ async function clickReleasedNotebookVariableAction(
     cursorHost || globalToolbar !== true
       ? await resolveReleasedNotebookEditorTitleAction(workbench)
       : await resolveReleasedNotebookToolbarAction(workbench);
-  assertExactOpenNotebookDocument(notebook, "immediately before clicking its Open Wrangler notebook action");
-  assert.equal(
-    vscode.window.activeNotebookEditor?.notebook,
-    notebook,
-    "The exact released-Jupyter notebook must remain active after resolving its Open Wrangler action."
-  );
-  assertActiveNotebookTab(
-    notebook,
-    "The exact released-Jupyter notebook tab must remain active before clicking its Open Wrangler action."
-  );
+  let dispatchStarted = false;
   try {
+    assertExactOpenNotebookDocument(notebook, "immediately before clicking its Open Wrangler notebook action");
+    assert.equal(
+      vscode.window.activeNotebookEditor?.notebook,
+      notebook,
+      "The exact released-Jupyter notebook must remain active after resolving its Open Wrangler action."
+    );
+    assertActiveNotebookTab(
+      notebook,
+      "The exact released-Jupyter notebook tab must remain active before clicking its Open Wrangler action."
+    );
+    dispatchStarted = true;
     return await invokeAcceptanceActionOnce({
       description: pinned.description,
       click: () => pinned.action.click({ timeout: 2_000 }),
@@ -2302,7 +2305,11 @@ async function clickReleasedNotebookVariableAction(
         : undefined
     });
   } finally {
-    await Promise.allSettled([pinned.action.dispose(), pinned.overflowMenu?.dispose()]);
+    if (!dispatchStarted && pinned.abandonBeforeDispatch) {
+      await pinned.abandonBeforeDispatch();
+    } else {
+      await Promise.allSettled([pinned.action.dispose(), pinned.overflowMenu?.dispose()]);
+    }
   }
 }
 
@@ -2405,8 +2412,8 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
           ) {
             continue;
           }
-          const pinned = await refreshedAction.elementHandle();
-          if (!pinned || !(await pinned.isVisible()) || !(await pinned.isEnabled())) continue;
+          const pinned = await pinVisibleEnabledReleasedNotebookAction(refreshedAction);
+          if (!pinned) continue;
           return {
             action: pinned,
             description: "the real Open Wrangler action in the active notebook editor title"
@@ -2497,8 +2504,8 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
           ) {
             continue;
           }
-          const pinned = await refreshedAction.elementHandle();
-          if (!pinned || !(await pinned.isVisible()) || !(await pinned.isEnabled())) continue;
+          const pinned = await pinVisibleEnabledReleasedNotebookAction(refreshedAction);
+          if (!pinned) continue;
           return {
             action: pinned,
             description: "the real Open Wrangler action in the released Jupyter notebook toolbar"
@@ -2539,6 +2546,7 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
             return {
               action: overflow.action,
               overflowMenu: overflow.menu,
+              abandonBeforeDispatch: () => releaseReleasedNotebookOverflowAfterInspection(overflow),
               description: "the real Open Wrangler action in the released Jupyter notebook-toolbar overflow"
             };
           }
@@ -2584,6 +2592,19 @@ function releasedCommandOwnedLabeledAction(
       name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
     })
   );
+}
+
+async function pinVisibleEnabledReleasedNotebookAction(action: Locator): Promise<ElementHandle<unknown> | undefined> {
+  const pinned = await action.elementHandle();
+  if (!pinned) return undefined;
+  let transferred = false;
+  try {
+    if (!(await pinned.isVisible()) || !(await pinned.isEnabled())) return undefined;
+    transferred = true;
+    return pinned;
+  } finally {
+    if (!transferred) await pinned.dispose();
+  }
 }
 
 async function releasedNotebookLaunchSurfaceMatches(
