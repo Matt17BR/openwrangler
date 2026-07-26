@@ -18,6 +18,12 @@ interface AcceptancePollOptions {
   readonly wait?: (durationMs: number) => Promise<void>;
 }
 
+interface RendererButtonProbe {
+  count(): Promise<number>;
+  isVisible(): Promise<boolean>;
+  isEnabled(options?: { readonly timeout?: number }): Promise<boolean>;
+}
+
 export async function withAcceptanceOperationDeadline<T>(
   operation: PromiseLike<T>,
   timeoutMs: number,
@@ -54,6 +60,15 @@ export async function pollAcceptanceCondition(
     if (remainingMs <= 0) return false;
     await wait(Math.min(intervalMs, remainingMs));
   }
+}
+
+export async function probeRendererButtonReadiness(
+  button: RendererButtonProbe,
+  enabledProbeTimeoutMs: number
+): Promise<boolean> {
+  if ((await button.count()) === 0) return false;
+  if (!(await button.isVisible())) return false;
+  return button.isEnabled({ timeout: enabledProbeTimeoutMs });
 }
 
 export function isRetiredRendererTarget(workbench: PageLifecycle, page: PageLifecycle, frame: FrameLifecycle): boolean {

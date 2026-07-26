@@ -36,6 +36,7 @@ import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
+  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
@@ -93,6 +94,10 @@ const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
 const IMPORT_FOCUS_POLL_TIMEOUT_MS = 3_000;
 const IMPORT_FOCUS_POLL_INTERVAL_MS = 50;
 const IMPORT_FOCUS_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
+const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
+const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
 const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
@@ -3329,6 +3334,11 @@ async function exercisePackagedRendererProvenance(
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
     const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    assert.equal(
+      vscode.window.activeNotebookEditor?.notebook,
+      secondNotebook,
+      "Notebook B must still be the exact active document immediately before notebook A's renderer action."
+    );
     recordAcceptanceProgress("verify:notebook-renderer:click");
     await originButton.evaluate((button: unknown) => (button as { click(): void }).click());
     recordAcceptanceProgress("verify:notebook-renderer:session");
@@ -3487,59 +3497,110 @@ async function waitForNotebookRendererButton(
   label: string,
   buttonName = "Open in Open Wrangler"
 ): Promise<Locator> {
-  const deadline = Date.now() + 30_000;
-  do {
+  const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
+  discovery: do {
     const browser = workbench.context().browser();
-    if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
-    if (browser !== null && !browser.isConnected()) {
-      throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
-    }
-    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
-    for (const page of pages) {
-      if (page !== workbench && page.isClosed()) continue;
-      for (const frame of page.frames()) {
-        if (isRetiredRendererTarget(workbench, page, frame)) continue;
-        try {
-          const preview = frame.locator("section.openwrangler-notebook").filter({
-            hasText: `Open Wrangler preview: ${label}`
-          });
-          const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
-          if ((await button.count()) > 0) {
-            await button.scrollIntoViewIfNeeded();
-            if (await button.isVisible()) return button;
-          }
-        } catch (error) {
-          ignoreRetiredRendererProbeFailure(workbench, browser, page, frame, error);
+    assertNotebookRendererLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const preview = target.frame.locator("section.openwrangler-notebook").filter({
+          hasText: `Open Wrangler preview: ${label}`
+        });
+        const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break discovery;
+        const probeTimeoutMs = Math.min(NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS, remainingMs);
+        const ready = await withAcceptanceOperationDeadline(
+          probeRendererButtonReadiness(button, probeTimeoutMs),
+          probeTimeoutMs,
+          "the notebook renderer action readiness probe"
+        );
+        if (ready) return button;
+      } catch (error) {
+        const discoveryExpired = Date.now() >= deadline;
+        if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
         }
+        if (discoveryExpired) break discovery;
       }
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
   } while (Date.now() < deadline);
+
   const browser = workbench.context().browser();
+  assertNotebookRendererLifecycle(workbench, browser);
+  const diagnostics = await notebookRendererDiagnostics(workbench, browser, label, buttonName);
+  assertNotebookRendererLifecycle(workbench, browser);
+  throw new Error(`Timed out waiting for the exact notebook renderer action: ${JSON.stringify(diagnostics)}`);
+}
+
+function isNotebookRendererProbeDeadline(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith("Timed out waiting for the notebook renderer action readiness probe after ")
+  );
+}
+
+function assertNotebookRendererLifecycle(workbench: Page, browser: Browser | null): void {
   if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
   if (browser !== null && !browser.isConnected()) {
     throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
   }
-  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
-  const diagnostics = await Promise.all(
-    pages.flatMap((page) =>
-      page.frames().map(async (frame) => ({
-        page: page.url(),
-        frame: frame.url(),
-        previews: await frame
-          .locator("section.openwrangler-notebook")
-          .allInnerTexts()
-          .catch(() => []),
-        buttons: await frame
-          .getByRole("button", { name: buttonName, exact: true })
-          .count()
-          .catch(() => 0)
-      }))
-    )
-  );
-  throw new Error(
-    `Timed out waiting for the real notebook renderer button ${JSON.stringify(buttonName)} for ${JSON.stringify(label)}: ${JSON.stringify(diagnostics)}`
-  );
+}
+
+async function notebookRendererDiagnostics(
+  workbench: Page,
+  browser: Browser | null,
+  label: string,
+  buttonName: string
+): Promise<unknown> {
+  const targets = openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT);
+  try {
+    const diagnostics = await withAcceptanceOperationDeadline(
+      Promise.all(
+        targets.map(async (target) => {
+          if (isRetiredRendererTarget(workbench, target.page, target.frame)) {
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+          try {
+            const preview = target.frame.locator("section.openwrangler-notebook").filter({
+              hasText: `Open Wrangler preview: ${label}`
+            });
+            const button = preview.getByRole("button", { name: buttonName, exact: true });
+            const [previewCount, buttonCount] = await Promise.all([preview.count(), button.count()]);
+            const [firstButtonVisible, firstButtonEnabled] =
+              buttonCount > 0
+                ? await Promise.all([
+                    button.first().isVisible(),
+                    button.first().isEnabled({ timeout: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS })
+                  ])
+                : [false, false];
+            return rendererTargetDiagnostic(target, {
+              retired: false,
+              previewCount,
+              buttonCount,
+              firstButtonVisible,
+              firstButtonEnabled
+            });
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+        })
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "bounded notebook renderer diagnostics"
+    );
+    assertNotebookRendererLifecycle(workbench, browser);
+    return diagnostics;
+  } catch (error) {
+    assertNotebookRendererLifecycle(workbench, browser);
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for bounded notebook renderer")) {
+      return "unavailable within the diagnostics deadline";
+    }
+    throw error;
+  }
 }
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {

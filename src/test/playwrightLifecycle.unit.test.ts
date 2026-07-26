@@ -3,6 +3,7 @@ import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
+  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
 
@@ -91,6 +92,92 @@ describe("extension-host Playwright lifecycle", () => {
     ).resolves.toBe(false);
     expect(probe).toHaveBeenCalledTimes(5);
     expect(wait).toHaveBeenCalledTimes(4);
+  });
+
+  it("reports an absent renderer button without probing presentation or enabled state", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(0),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(true)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).not.toHaveBeenCalled();
+    expect(button.isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("reports a hidden renderer button without probing enabled state", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(false),
+      isEnabled: vi.fn().mockResolvedValue(true)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("reports a visible disabled renderer button as unavailable", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(false)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).toHaveBeenCalledWith({ timeout: 1_000 });
+  });
+
+  it("reports a visible enabled renderer button without scrolling, focusing, or clicking", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(true),
+      scrollIntoViewIfNeeded: vi.fn(),
+      focus: vi.fn(),
+      click: vi.fn()
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(true);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).toHaveBeenCalledWith({ timeout: 1_000 });
+    expect(button.scrollIntoViewIfNeeded).not.toHaveBeenCalled();
+    expect(button.focus).not.toHaveBeenCalled();
+    expect(button.click).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stalled renderer readiness probe inside its explicit operation deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const button = {
+        count: vi.fn(() => new Promise<number>(() => undefined)),
+        isVisible: vi.fn().mockResolvedValue(true),
+        isEnabled: vi.fn().mockResolvedValue(true)
+      };
+      const outcome = withAcceptanceOperationDeadline(
+        probeRendererButtonReadiness(button, 1_000),
+        1_000,
+        "the renderer readiness probe"
+      );
+      const assertion = expect(outcome).rejects.toThrow(
+        "Timed out waiting for the renderer readiness probe after 1000 ms."
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+      expect(button.count).toHaveBeenCalledOnce();
+      expect(button.isVisible).not.toHaveBeenCalled();
+      expect(button.isEnabled).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retires a closed auxiliary page without treating the workbench as closed", () => {
