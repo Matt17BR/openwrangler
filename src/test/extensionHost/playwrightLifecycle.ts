@@ -82,7 +82,12 @@ export async function pressKeyboardKeyPairWithoutTransitionGap(keyboard: Keyboar
   // queue both genuine keyboard events first and then await both responses.
   const keyDown = keyboard.down(key);
   const keyUp = keyboard.up(key);
-  await Promise.all([keyDown, keyUp]);
+  const [keyDownResult, keyUpResult] = await Promise.allSettled([keyDown, keyUp]);
+  if (keyDownResult.status === "rejected" && keyUpResult.status === "rejected") {
+    throw new AggregateError([keyDownResult.reason, keyUpResult.reason], "Both final-prompt keyboard events failed.");
+  }
+  if (keyDownResult.status === "rejected") throw keyDownResult.reason;
+  if (keyUpResult.status === "rejected") throw keyUpResult.reason;
 }
 
 export function isRetiredRendererTarget(workbench: PageLifecycle, page: PageLifecycle, frame: FrameLifecycle): boolean {

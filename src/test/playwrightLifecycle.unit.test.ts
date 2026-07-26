@@ -169,6 +169,49 @@ describe("extension-host Playwright lifecycle", () => {
     expect(keyboard.up).toHaveBeenCalledWith("Enter");
   });
 
+  it("awaits the peer keyboard event before propagating an early final-prompt failure", async () => {
+    const error = new Error("key-down failed");
+    let resolveKeyUp!: () => void;
+    const keyUp = new Promise<void>((resolve) => {
+      resolveKeyUp = resolve;
+    });
+    const keyboard = {
+      down: vi.fn().mockRejectedValue(error),
+      up: vi.fn().mockReturnValue(keyUp)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    let settled = false;
+    void outcome.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveKeyUp();
+    await expect(outcome).rejects.toBe(error);
+  });
+
+  it("retains both failures when both final-prompt keyboard events reject", async () => {
+    const keyDownError = new Error("key-down failed");
+    const keyUpError = new Error("key-up failed");
+    const keyboard = {
+      down: vi.fn().mockRejectedValue(keyDownError),
+      up: vi.fn().mockRejectedValue(keyUpError)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    await expect(outcome).rejects.toMatchObject({
+      message: "Both final-prompt keyboard events failed.",
+      errors: [keyDownError, keyUpError]
+    });
+  });
+
   it("reports an absent renderer button without probing presentation or enabled state", async () => {
     const button = {
       count: vi.fn().mockResolvedValue(0),
