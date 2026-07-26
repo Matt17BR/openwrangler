@@ -27,6 +27,14 @@ const sessionSnapshotRetryDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000] as c
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
 
+function scheduleWebviewFocusRestoration(restore: () => void): number {
+  const webviewOwnedFocus = document.hasFocus();
+  return window.requestAnimationFrame(() => {
+    if (!webviewOwnedFocus || !document.hasFocus()) return;
+    restore();
+  });
+}
+
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<GridPage | undefined>();
@@ -120,7 +128,7 @@ export function App() {
     operationWasOpen.current = false;
     const returnTarget = operationReturnFocus.current;
     operationReturnFocus.current = null;
-    const frame = window.requestAnimationFrame(() => {
+    const frame = scheduleWebviewFocusRestoration(() => {
       const targetIsAvailable =
         returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
       if (targetIsAvailable) {
@@ -1109,7 +1117,7 @@ export function App() {
         restartProfilingForConfirmedView();
         if (restoreGridFocusForPage.current === response.viewRequestId) {
           restoreGridFocusForPage.current = undefined;
-          window.requestAnimationFrame(() => {
+          scheduleWebviewFocusRestoration(() => {
             document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [tabindex="0"]')?.focus();
           });
         }
@@ -1675,7 +1683,7 @@ export function App() {
         (pending.kind === "summary" && !(summaryOwnersByColumn.current.get(pending.column)?.size ?? 0))
     );
     const returnTarget = sidePanelReturnFocus.current;
-    window.requestAnimationFrame(() => {
+    scheduleWebviewFocusRestoration(() => {
       if (returnTarget?.isConnected) returnTarget.focus();
       else sidePanelToggleRef.current?.focus();
     });

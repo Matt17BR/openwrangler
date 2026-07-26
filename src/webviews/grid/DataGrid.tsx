@@ -190,7 +190,8 @@ export function DataGrid({
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const update = () => {
-      preserveGridFocusAfterScroll.current = !focusRequested.current && scroller.contains(document.activeElement);
+      const gridOwnsFocus = document.hasFocus() && scroller.contains(document.activeElement);
+      preserveGridFocusAfterScroll.current = !focusRequested.current && gridOwnsFocus;
       const target = programmaticViewportTarget.current;
       const targetStillQuantized =
         target !== undefined &&
@@ -223,7 +224,7 @@ export function DataGrid({
       if (!busy && offset !== requestedOffset.current && offset < page.totalRows) {
         requestedOffset.current = offset;
         preserveGridFocusAfterScroll.current = false;
-        focusRequested.current = true;
+        focusRequested.current = gridOwnsFocus;
         setFocusedCell((current) => ({ row, column: current.column }));
         onPage(offset);
       }
@@ -286,6 +287,7 @@ export function DataGrid({
     if (!preserveGridFocusAfterScroll.current) return;
     preserveGridFocusAfterScroll.current = false;
     if (focusRequested.current) return;
+    if (!document.hasFocus()) return;
     if (rovingRow === undefined || rovingColumn === undefined) return;
     const selector = `[data-grid-row="${rovingRow}"][data-grid-column="${rovingColumn}"]`;
     scrollerRef.current?.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
@@ -312,7 +314,7 @@ export function DataGrid({
     if (index < 0) return;
     const animationFrame = window.requestAnimationFrame(() => {
       preserveGridFocusAfterScroll.current = false;
-      focusRequested.current = true;
+      focusRequested.current = document.hasFocus();
       const scroller = scrollerRef.current;
       if (scroller) scroller.scrollLeft = Math.max(0, sum(widths.slice(0, index)) - scroller.clientWidth / 3);
       setFocusedCell((current) => ({ ...current, column: index }));
@@ -331,6 +333,10 @@ export function DataGrid({
 
   useEffect(() => {
     if (!focusRequested.current) return;
+    if (!document.hasFocus()) {
+      focusRequested.current = false;
+      return;
+    }
     const selector = `[data-grid-row="${focusedCell.row}"][data-grid-column="${focusedCell.column}"]`;
     const target = scrollerRef.current?.querySelector<HTMLElement>(selector);
     if (!target) return;
@@ -346,7 +352,7 @@ export function DataGrid({
     requestedOffset.current = block;
     if (restoreFocus) {
       preserveGridFocusAfterScroll.current = false;
-      focusRequested.current = true;
+      focusRequested.current = document.hasFocus();
     }
     setFocusedCell((current) => ({ row: bounded, column: current.column }));
     if (scrollerRef.current) scrollerRef.current.scrollTop = bounded * rowHeight;
@@ -553,7 +559,7 @@ export function DataGrid({
     if (busy && block !== page.offset) return;
     event.preventDefault();
     preserveGridFocusAfterScroll.current = false;
-    focusRequested.current = true;
+    focusRequested.current = document.hasFocus();
     setFocusedCell({ row: nextRow, column: nextColumn });
     const scroller = scrollerRef.current;
     if (scroller) {
