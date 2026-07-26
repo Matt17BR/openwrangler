@@ -50,6 +50,13 @@ describe("Python environment API broker", () => {
 
     expect(environment.source).toBe("configuration");
     expect(path.isAbsolute(environment.executable)).toBe(true);
+    expect(environment.executableIdentity).toEqual({
+      device: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
+      inode: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
+      size: expect.stringMatching(/^[1-9]\d*$/),
+      mtimeNs: expect.stringMatching(/^(?:0|-?[1-9]\d*)$/),
+      ctimeNs: expect.stringMatching(/^(?:0|-?[1-9]\d*)$/)
+    });
     expect(environment.packageRoot.trim()).not.toBe("");
     expect(environment.packageRootIdentity).toEqual({
       device: expect.stringMatching(/^(?:0|[1-9]\d*)$/),
@@ -540,6 +547,13 @@ describe("Python environment API broker", () => {
       decodePythonEnvironmentProbeOutput(
         JSON.stringify({
           executable,
+          executableIdentity: {
+            device: "64513",
+            inode: "25334068",
+            size: "18200",
+            mtimeNs: "1717171717123456789",
+            ctimeNs: "1717171717987654321"
+          },
           version: [3, 12, 4],
           packageRoot,
           packageRootIdentity: {
@@ -550,6 +564,13 @@ describe("Python environment API broker", () => {
       )
     ).toEqual({
       executable: path.normalize(executable),
+      executableIdentity: {
+        device: "64513",
+        inode: "25334068",
+        size: "18200",
+        mtimeNs: "1717171717123456789",
+        ctimeNs: "1717171717987654321"
+      },
       version: [3, 12, 4],
       packageRoot,
       packageRootIdentity: {
@@ -575,6 +596,47 @@ describe("Python environment API broker", () => {
     });
   });
 
+  it("distinguishes a same-path executable replacement from stable package-root scope", () => {
+    const original = decodePythonEnvironmentProbeOutput(probePayload());
+    const replacement = decodePythonEnvironmentProbeOutput(
+      probePayload({
+        executableIdentity: {
+          ...original.executableIdentity,
+          inode: "3",
+          size: "16384",
+          mtimeNs: "1717171718000000000",
+          ctimeNs: "1717171718000000001"
+        }
+      })
+    );
+
+    expect(replacement.executable).toBe(original.executable);
+    expect(replacement.packageRootIdentity).toEqual(original.packageRootIdentity);
+    expect(replacement.executableIdentity).not.toEqual(original.executableIdentity);
+  });
+
+  it("accepts canonical signed timestamp and unsigned executable-identity bounds", () => {
+    expect(
+      decodePythonEnvironmentProbeOutput(
+        probePayload({
+          executableIdentity: {
+            device: "18446744073709551615",
+            inode: "340282366920938463463374607431768211455",
+            size: "340282366920938463463374607431768211455",
+            mtimeNs: "-170141183460469231731687303715884105728",
+            ctimeNs: "170141183460469231731687303715884105727"
+          }
+        })
+      ).executableIdentity
+    ).toEqual({
+      device: "18446744073709551615",
+      inode: "340282366920938463463374607431768211455",
+      size: "340282366920938463463374607431768211455",
+      mtimeNs: "-170141183460469231731687303715884105728",
+      ctimeNs: "170141183460469231731687303715884105727"
+    });
+  });
+
   it.each([
     { payload: "not-json", message: "did not return valid JSON" },
     { payload: "null", message: "invalid payload" },
@@ -595,6 +657,135 @@ describe("Python environment API broker", () => {
     { payload: probePayload({ version: [3, 12, 4.5] }), message: "invalid version" },
     { payload: probePayload({ executable: "python3" }), message: "invalid executable" },
     { payload: probePayload({ executable: "/env/bin/python\0alias" }), message: "invalid executable" },
+    { payload: probePayload({ executableIdentity: null }), message: "invalid executable identity" },
+    { payload: probePayload({ executableIdentity: [] }), message: "invalid executable identity" },
+    {
+      payload: probePayload({
+        executableIdentity: {
+          device: "1",
+          inode: "2",
+          size: "3",
+          mtimeNs: "4",
+          ctimeNs: "5",
+          extra: true
+        }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: 1, inode: "2", size: "3", mtimeNs: "4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "01", inode: "2", size: "3", mtimeNs: "4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "1", inode: "-2", size: "3", mtimeNs: "4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "1", inode: "2", size: "-3", mtimeNs: "4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "1", inode: "2", size: "0", mtimeNs: "4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "1", inode: "2", size: "3", mtimeNs: "+4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "1", inode: "2", size: "3", mtimeNs: "-0", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: {
+          device: "18446744073709551616",
+          inode: "2",
+          size: "3",
+          mtimeNs: "4",
+          ctimeNs: "5"
+        }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: {
+          device: "1",
+          inode: "340282366920938463463374607431768211456",
+          size: "3",
+          mtimeNs: "4",
+          ctimeNs: "5"
+        }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: {
+          device: "1",
+          inode: "2",
+          size: "340282366920938463463374607431768211456",
+          mtimeNs: "4",
+          ctimeNs: "5"
+        }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: {
+          device: "1",
+          inode: "2",
+          size: "3",
+          mtimeNs: "-170141183460469231731687303715884105729",
+          ctimeNs: "5"
+        }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: {
+          device: "1",
+          inode: "2",
+          size: "3",
+          mtimeNs: "4",
+          ctimeNs: "170141183460469231731687303715884105728"
+        }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "0", inode: "0", size: "3", mtimeNs: "4", ctimeNs: "5" }
+      }),
+      message: "invalid executable identity"
+    },
+    {
+      payload: probePayload({
+        executableIdentity: { device: "1", inode: "2", size: "3", mtimeNs: "0", ctimeNs: "0" }
+      }),
+      message: "invalid executable identity"
+    },
     { payload: probePayload({ packageRoot: "   " }), message: "invalid package root" },
     { payload: probePayload({ packageRoot: "relative-env" }), message: "invalid package root" },
     { payload: probePayload({ packageRoot: "/env\0alias" }), message: "invalid package root" },
@@ -672,6 +863,13 @@ async function reportedPythonExecutable(executable: string): Promise<string> {
 function probePayload(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     executable: testAbsolutePath("env", "bin", process.platform === "win32" ? "python.exe" : "python"),
+    executableIdentity: {
+      device: "1",
+      inode: "2",
+      size: "16384",
+      mtimeNs: "1717171717123456789",
+      ctimeNs: "1717171717987654321"
+    },
     version: [3, 12, 4],
     packageRoot: testAbsolutePath("env"),
     packageRootIdentity: {

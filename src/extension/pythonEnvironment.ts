@@ -135,10 +135,19 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
 
 export interface PythonEnvironment {
   executable: string;
+  executableIdentity: PythonExecutableIdentity;
   version: string;
   packageRoot: string;
   packageRootIdentity: PythonPackageRootIdentity;
   source: "configuration" | "pythonExtension" | "system";
+}
+
+export interface PythonExecutableIdentity {
+  device: string;
+  inode: string;
+  size: string;
+  mtimeNs: string;
+  ctimeNs: string;
 }
 
 export interface PythonPackageRootIdentity {
@@ -406,7 +415,7 @@ async function probeEnvironment(
   if (!sameExecutablePath(result.executable, reportedExecutable)) {
     throw new Error(`${executable} did not resolve to a stable Python executable.`);
   }
-  const { version, packageRoot, packageRootIdentity } = result;
+  const { version, executableIdentity, packageRoot, packageRootIdentity } = result;
   const [major, minor, patch] = version;
   if (!isSupportedPythonVersion(major, minor)) {
     throw new Error(
@@ -415,6 +424,7 @@ async function probeEnvironment(
   }
   return {
     executable: reportedExecutable,
+    executableIdentity,
     version: `${major}.${minor}.${patch}`,
     packageRoot,
     packageRootIdentity,
@@ -430,12 +440,21 @@ async function executeEnvironmentProbe(
   let stdout: string;
   try {
     const program = [
-      "import json,os,sys",
+      "import json,os,stat,sys",
       "executable=os.path.abspath(sys.executable)",
+      "executable_stat=os.stat(executable)",
+      "if not stat.S_ISREG(executable_stat.st_mode): raise RuntimeError('Python executable is not a regular file')",
       "package_root=os.path.realpath(os.path.abspath(sys.prefix))",
       "package_root_stat=os.stat(package_root)",
       "print(json.dumps({",
       " 'executable':executable,",
+      " 'executableIdentity':{",
+      "  'device':str(executable_stat.st_dev),",
+      "  'inode':str(executable_stat.st_ino),",
+      "  'size':str(executable_stat.st_size),",
+      "  'mtimeNs':str(executable_stat.st_mtime_ns),",
+      "  'ctimeNs':str(executable_stat.st_ctime_ns),",
+      " },",
       " 'version':list(sys.version_info[:3]),",
       " 'packageRoot':package_root,",
       " 'packageRootIdentity':{",
@@ -459,6 +478,7 @@ async function executeEnvironmentProbe(
 
 export function decodePythonEnvironmentProbeOutput(stdout: string): {
   executable: string;
+  executableIdentity: PythonExecutableIdentity;
   version: [number, number, number];
   packageRoot: string;
   packageRootIdentity: PythonPackageRootIdentity;
@@ -475,11 +495,12 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   const candidate = decoded as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
   if (
-    keys.length !== 4 ||
+    keys.length !== 5 ||
     keys[0] !== "executable" ||
-    keys[1] !== "packageRoot" ||
-    keys[2] !== "packageRootIdentity" ||
-    keys[3] !== "version"
+    keys[1] !== "executableIdentity" ||
+    keys[2] !== "packageRoot" ||
+    keys[3] !== "packageRootIdentity" ||
+    keys[4] !== "version"
   ) {
     throw new Error("Python environment probe returned an invalid payload.");
   }
@@ -490,6 +511,7 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   ) {
     throw new Error("Python environment probe returned an invalid executable.");
   }
+  const executableIdentity = decodePythonExecutableIdentity(candidate.executableIdentity);
   const version = candidate.version;
   if (
     !Array.isArray(version) ||
@@ -509,9 +531,51 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   const packageRootIdentity = decodePythonPackageRootIdentity(candidate.packageRootIdentity);
   return {
     executable: path.normalize(candidate.executable),
+    executableIdentity,
     version: [version[0] as number, version[1] as number, version[2] as number],
     packageRoot: candidate.packageRoot,
     packageRootIdentity
+  };
+}
+
+function decodePythonExecutableIdentity(value: unknown): PythonExecutableIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Python environment probe returned an invalid executable identity.");
+  }
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (
+    keys.length !== 5 ||
+    keys[0] !== "ctimeNs" ||
+    keys[1] !== "device" ||
+    keys[2] !== "inode" ||
+    keys[3] !== "mtimeNs" ||
+    keys[4] !== "size"
+  ) {
+    throw new Error("Python environment probe returned an invalid executable identity.");
+  }
+  if (
+    !isCanonicalDeviceInteger(candidate.device) ||
+    !isCanonicalInodeInteger(candidate.inode) ||
+    !isCanonicalUnsigned128Integer(candidate.size) ||
+    !isCanonicalSigned128Integer(candidate.mtimeNs) ||
+    !isCanonicalSigned128Integer(candidate.ctimeNs)
+  ) {
+    throw new Error("Python environment probe returned an invalid executable identity.");
+  }
+  if (
+    (candidate.device === "0" && candidate.inode === "0") ||
+    candidate.size === "0" ||
+    (candidate.mtimeNs === "0" && candidate.ctimeNs === "0")
+  ) {
+    throw new Error("Python environment probe returned an invalid executable identity.");
+  }
+  return {
+    device: candidate.device,
+    inode: candidate.inode,
+    size: candidate.size,
+    mtimeNs: candidate.mtimeNs,
+    ctimeNs: candidate.ctimeNs
   };
 }
 
@@ -543,10 +607,23 @@ function isCanonicalDeviceInteger(value: unknown): value is string {
 }
 
 function isCanonicalInodeInteger(value: unknown): value is string {
+  return isCanonicalUnsigned128Integer(value);
+}
+
+function isCanonicalUnsigned128Integer(value: unknown): value is string {
   return (
     typeof value === "string" &&
     /^(?:0|[1-9]\d{0,38})$/.test(value) &&
     BigInt(value) <= 340_282_366_920_938_463_463_374_607_431_768_211_455n
+  );
+}
+
+function isCanonicalSigned128Integer(value: unknown): value is string {
+  if (typeof value !== "string" || !/^(?:0|-?[1-9]\d{0,38})$/.test(value)) return false;
+  const decoded = BigInt(value);
+  return (
+    decoded >= -170_141_183_460_469_231_731_687_303_715_884_105_728n &&
+    decoded <= 170_141_183_460_469_231_731_687_303_715_884_105_727n
   );
 }
 
