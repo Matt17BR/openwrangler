@@ -582,6 +582,14 @@ Released-Jupyter argument provenance slice, 2026-07-26:
 
 The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch but does not replace the remaining opt-in acceptance against the actual released Jupyter extension, its consent UI, live Variables surface, toolbar action, Pandas/Polars kernels, restart behavior, and terminal cleanup tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
 
+Released-Jupyter packaged acceptance harness, 2026-07-26:
+
+- The opt-in packaged harness pins and verifies `ms-toolsai.jupyter@2025.9.1`; optional extension-pack members are not treated as the compatibility gate. It uses separate private allow/deny profiles, workspaces, kernelspecs, and Jupyter/IPython roots. Both phases keep the real workbench on the zero-window CDP path.
+- The acceptance contract drives Jupyter's actual consent dialog and Variables action plus Open Wrangler's notebook toolbar, covering Pandas and Polars DataFrame/Series values, automatic MIME v2 rendering and expansion, exact-origin generated-code insertion, restart/replay, and terminal session/kernel cleanup.
+- `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
+
+The notebook-variable row remains **Partial** until a real local or hosted released-Jupyter run is recorded green and the remaining Cursor/release-platform evidence is attached to [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). Adding the harness and non-required workflow alone is not acceptance evidence.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, DuckDB Excel/notebook/`.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. Native PySpark support is a tracked post-parity engine expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36); it remains unavailable until its distributed paging, Spark Connect, operation, recovery, and packaged-editor gates are green. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
