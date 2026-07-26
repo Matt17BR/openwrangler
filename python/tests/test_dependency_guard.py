@@ -546,9 +546,7 @@ def test_status_and_validation_fail_busy_while_pip_holds_lock(guard_fixture: Gua
     assert guard_fixture.pip_sentinel.exists()
 
     status_code, status_frames, _stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
-    validate_code, validate_frames, _stderr = _run(
-        guard_fixture, "validate", _validate_request(guard_fixture, token)
-    )
+    validate_code, validate_frames, _stderr = _run(guard_fixture, "validate", _validate_request(guard_fixture, token))
     assert status_code == 11
     assert status_frames == [{"code": "busy", "kind": "error", "protocol": PROTOCOL}]
     assert validate_code == 11

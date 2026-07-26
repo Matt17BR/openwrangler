@@ -52,12 +52,8 @@ _EXIT_BY_CODE = {
     "internal_error": EXIT_INTERNAL_ERROR,
 }
 
-_MARKER_PATTERN = re.compile(
-    r"^mutation-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$"
-)
-_TEMP_PATTERN = re.compile(
-    r"^\.pending-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.tmp$"
-)
+_MARKER_PATTERN = re.compile(r"^mutation-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$")
+_TEMP_PATTERN = re.compile(r"^\.pending-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.tmp$")
 _MODULE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _DISTRIBUTION_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,127})$")
 _INSTALL_SPEC_PATTERN = re.compile(
