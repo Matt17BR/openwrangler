@@ -9,7 +9,7 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 | Surface                                             | Pandas | Polars | Status  | Required evidence                                      |
 | --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Released Jupyter on Cursor/release platforms green     |
+| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Released Jupyter remote/release-platform matrix green  |
 | Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
 | Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
@@ -580,7 +580,7 @@ Released-Jupyter argument provenance slice, 2026-07-26:
 - The command captures the sole open `NotebookDocument` for that URI at receipt. String lookalikes, conflicting fields, duplicate same-URI document objects, closure, and same-URI replacement all fail closed without reading or retargeting through the active notebook editor.
 - Focused provenance coverage uses the released argument shape with another notebook active, verifies exact-object handoff into kernel acquisition and session coordination, and exercises malformed, conflicting, duplicate, agreeing, and replacement cases.
 
-The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch, and the local packaged run recorded below closes the released-Jupyter functional gate for VS Code 1.130.0. Cursor and the remaining release-platform evidence are still tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch, and the local packaged run recorded below closes the released-Jupyter functional gate for VS Code 1.130.0 and Cursor 3.13.10. Real remote-kernel and remaining release-platform evidence are still tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
 
 Released-Jupyter packaged acceptance harness, 2026-07-26:
 
@@ -590,13 +590,14 @@ Released-Jupyter packaged acceptance harness, 2026-07-26:
 - Every notebook cell result must follow a fresh execution-summary event. Restart recovery observes the released stable API's real kernel status transition back to idle, proves the process changed, and proves the replacement kernel again lacks the runtime before Open Wrangler retransfers and replays it. A persisted denial must reach a new terminal panel error without another consent prompt.
 - `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
 
-The notebook-variable row remains **Partial** pending Cursor and the remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local VS Code run below closes the released-Jupyter functional gate for that editor only.
+The notebook-variable row remains **Partial** pending the real remote-kernel and remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local combined run below closes the released-Jupyter functional gate for both supported Linux desktop editors.
 
 Local released-Jupyter evidence, 2026-07-26:
 
-- A packaged preview VSIX ran against VS Code 1.130.0 and `ms-toolsai.jupyter@2025.9.1` in a private Xvfb profile. Both released-Jupyter phases passed: the persisted consent-deny flow reached its terminal Open Wrangler diagnostic, while the allow flow selected the private kernel and used Jupyter's actual Variables action to open the exact Pandas notebook through the serialized `fileName` envelope.
+- The 70-entry, 592,787-byte packaged preview VSIX built from product commit `3b9c000` has SHA-256 `295183cee93dce7843a7470ddab47b2014e231b585e8b7bceb3e3bbdb96f359a`. Those exact bytes ran against VS Code 1.130.0 and Cursor 3.13.10 with `ms-toolsai.jupyter@2025.9.1`; the corrected exact-overflow acceptance harness is commit `23895f8`.
+- Both editors passed the independent released-Jupyter deny and allow profiles on private Xvfb displays. The persisted consent-deny flow reached its terminal Open Wrangler diagnostic, while the allow flow selected the private kernel and used Jupyter's actual Variables action to open the exact Pandas notebook through the serialized `fileName` envelope. Neither editor used a normal profile, opened on the user's desktop, or retained its private run root.
 - The allow flow passed exact-origin code insertion, freshly emitted MIME-v2 output, the nested packaged renderer action and snapshot expansion, Open Wrangler's notebook-toolbar input, Pandas and Polars DataFrame/Series sessions, the documented viewing-to-editing mode change, engine-native Polars preview/apply, kernel restart with plan replay, and terminal cleanup with zero retained sessions or kernel descendants.
-- The renderer proof came from the same-origin nested guest's 716×107 preview and enabled 157×23 action. The outer custom-output host element measured 732×0 and was explicitly not used as renderer evidence. The same invocation then passed the ordinary packaged Restricted Mode, persistence seed, three-engine recovery/export, workbench, and final cleanup phases. The row remains Partial only for the Cursor and remaining release-platform evidence above.
+- The renderer proof came from the same-origin nested guest's 716×107 preview and enabled 157×23 action. The outer custom-output host element measured 732×0 and was explicitly not used as renderer evidence. Each invocation then passed the ordinary packaged Restricted Mode, persistence seed, three-engine recovery/export, workbench, and final cleanup phases. The row remains **Partial** only for the separately required real remote-kernel and remaining release-platform evidence above.
 
 ## Explicitly deferred from 1.0
 
