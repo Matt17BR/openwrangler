@@ -1,7 +1,6 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -9,9 +8,10 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
@@ -62,6 +62,7 @@ interface TestApi {
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
+  shutdownRuntimeBridgeForTesting(): Promise<void>;
   disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
@@ -492,6 +493,10 @@ export async function run(): Promise<void> {
   if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
     recordAcceptanceProgress("verify:screenshots");
     await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+  }
+  if (testPython && process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    recordAcceptanceProgress("verify:dependency-install-shutdown");
+    await exerciseDependencyInstallShutdownLifecycle(testing, testPython);
   }
 
   recordAcceptanceProgress("verify:complete");
@@ -5440,6 +5445,192 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
   }
 }
 
+interface DependencyInstallLifecycleFixture {
+  executable: string;
+  started: string;
+  release: string;
+  completed: string;
+}
+
+async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, python: string): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Dependency-install shutdown acceptance must start after every dataframe session closed."
+  );
+  assert.equal(
+    testing.runtimeRunning(),
+    false,
+    "Dependency-install shutdown acceptance must start without a live dataframe runtime."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-shutdown-"));
+  const lifecycle = createDependencyInstallLifecyclePython(directory, python);
+  const config = vscode.workspace.getConfiguration("openWrangler");
+  const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
+  let shutdown: Promise<void> | undefined;
+  let shutdownConfirmed = false;
+
+  try {
+    assert.equal(
+      await vscode.commands.executeCommand("openWrangler.changeRuntime", lifecycle.executable),
+      lifecycle.executable
+    );
+    const rejected = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: {
+        kind: "file",
+        label: "dependency-shutdown.xls",
+        path: path.join(directory, "dependency-shutdown.xls"),
+        importOptions: { sheetIndex: 0 }
+      },
+      backend: "pandas",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(rejected.kind, "error");
+    if (rejected.kind === "error") {
+      assert.equal(rejected.code, "missing_dependencies");
+      assert.match(rejected.message, /Missing: pandas, xlrd>=2\.0\.1/);
+      assert.doesNotMatch(rejected.message, /openpyxl/);
+    }
+    assert.equal(testing.runtimeRunning(), false, "The fake pip target must fail before runtime startup.");
+
+    const page = await connectToEditorWorkbench();
+    const pendingCommand = vscode.commands
+      .executeCommand<boolean>("openWrangler.installRuntimeDependencies", true)
+      .then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error })
+      );
+    let commandState: "pending" | "fulfilled" | "rejected" = "pending";
+    void pendingCommand.then((outcome) => {
+      commandState = outcome.status;
+    });
+    const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
+      page,
+      "Install pandas, xlrd>=2.0.1"
+    );
+    await confirmationPage.bringToFront();
+    assert.equal(
+      await confirmation.locator(".dialog-message-text").innerText(),
+      `Install pandas, xlrd>=2.0.1 into ${lifecycle.executable}?`
+    );
+    await withAcceptanceOperationDeadline(
+      confirmation.getByRole("button", { name: "Install", exact: true }).click(),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the real dependency-install confirmation"
+    );
+    await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
+    await waitFor(
+      () => existsSync(lifecycle.started),
+      10_000,
+      "the disposable fake pip process to publish its start marker"
+    );
+
+    const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "pandas", "xlrd>=2.0.1"]);
+    assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
+    assert.equal(started.pipUser, "0", "The owned pip process must explicitly prohibit user-site installation.");
+    assert.equal(
+      started.pipConfigFile,
+      process.platform === "win32" ? "nul" : devNull,
+      "The owned pip process must disable every inherited pip configuration file."
+    );
+    assert.equal(started.pythonPathPresent, false, "The owned pip process must not inherit PYTHONPATH.");
+    assert.equal(started.pythonHomePresent, false, "The owned pip process must not inherit PYTHONHOME.");
+    assert.notEqual(
+      path.normalize(String(started.cwd)),
+      path.normalize(path.dirname(lifecycle.executable)),
+      "Dependency installation must not import a neighboring pip module from the interpreter directory."
+    );
+    assert.match(path.basename(String(started.cwd)), /^openwrangler-pip-/u);
+    assert.equal(existsSync(String(started.cwd)), true, "The private pip directory must remain owned until close.");
+    if (process.platform !== "win32") {
+      assert.equal(statSync(String(started.cwd)).mode & 0o077, 0, "The private pip directory must be mode 0700.");
+    }
+    assert.equal(
+      existsSync(lifecycle.completed),
+      false,
+      "The fake pip process must remain blocked until the acceptance harness releases it."
+    );
+
+    shutdown = testing.shutdownRuntimeBridgeForTesting();
+    let shutdownState: "pending" | "fulfilled" | "rejected" = "pending";
+    void shutdown.then(
+      () => {
+        shutdownState = "fulfilled";
+      },
+      () => {
+        shutdownState = "rejected";
+      }
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      shutdownState,
+      "pending",
+      "Runtime-bridge shutdown must remain pending while the exact pip child is still running."
+    );
+    assert.equal(
+      commandState,
+      "pending",
+      "The public install command must remain pending while its exact pip child is still running."
+    );
+    assert.equal(
+      existsSync(lifecycle.completed),
+      false,
+      "Runtime-bridge shutdown must not signal or kill the still-blocked pip child."
+    );
+
+    writeFileSync(lifecycle.release, "release\n", { encoding: "utf8", flag: "wx" });
+    await shutdown;
+    shutdownConfirmed = true;
+    assert.equal(
+      existsSync(lifecycle.completed),
+      true,
+      "Runtime-bridge shutdown must resolve only after the fake pip child exits naturally."
+    );
+    const completed = JSON.parse(readFileSync(lifecycle.completed, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(completed, { ...started, released: true });
+
+    const outcome = await pendingCommand;
+    if (outcome.status === "rejected") throw outcome.error;
+    assert.equal(
+      outcome.value,
+      false,
+      "An install that closes during bridge shutdown must not report post-disposal success."
+    );
+    assert.equal(testing.runtimeRunning(), false);
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    assert.equal(
+      existsSync(String(started.cwd)),
+      false,
+      "The private pip directory must be removed only after authoritative child close."
+    );
+  } finally {
+    if (existsSync(lifecycle.started) && !existsSync(lifecycle.release)) {
+      try {
+        writeFileSync(lifecycle.release, "release\n", { encoding: "utf8", flag: "wx" });
+      } catch {
+        // A concurrently observed release is equivalent for bounded cleanup.
+      }
+    }
+    shutdown ??= testing.shutdownRuntimeBridgeForTesting();
+    if (!shutdownConfirmed) {
+      try {
+        await shutdown;
+        shutdownConfirmed = true;
+      } catch {
+        // Preserve the primary acceptance failure. The outer owned-process
+        // harness will retain the private root when shutdown is unconfirmed.
+      }
+    }
+    await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
+    if (shutdownConfirmed) cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
 const PINNED_REAL_PYTHON_EXTENSION_VERSION = "2026.4.0";
 
 interface InstrumentedPythonEnvironment {
@@ -5764,48 +5955,166 @@ function instrumentedRuntimeMarkers(environment: InstrumentedPythonEnvironment):
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
-  if (process.platform === "win32") {
-    const environment = path.join(directory, "environment");
-    execFileSync(python, ["-m", "venv", "--without-pip", environment], {
-      stdio: "pipe",
+  const environment = path.join(directory, "environment");
+  execFileSync(python, ["-m", "venv", "--without-pip", environment], {
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environment, "Scripts", "python.exe")
+      : path.join(environment, "bin", "python");
+  assert.ok(existsSync(executable), "The dependency-isolated Python environment is missing its interpreter.");
+  const sitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 30_000,
       windowsHide: true
-    });
-    const sitePackages = path.join(environment, "Lib", "site-packages");
-    const siteCustomize = path.join(sitePackages, "sitecustomize.py");
-    writeFileSync(
-      siteCustomize,
-      [
-        "import sys",
-        'sys.path[:] = [entry for entry in sys.path if entry != ""]',
-        "import os",
-        "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
-        "sys.path[:] = [",
-        "    entry",
-        "    for entry in sys.path",
-        "    if os.path.normcase(os.path.abspath(entry)) != cwd",
-        "]",
-        `with open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8") as stream:`,
-        '    stream.write("invoked\\n")',
-        ""
-      ].join("\n"),
-      { encoding: "utf8", flag: "wx" }
-    );
-    const executable = path.join(environment, "Scripts", "python.exe");
-    assert.ok(existsSync(executable), "The Windows dependency-isolated Python environment is missing python.exe.");
-    return executable;
-  }
-
-  const executable = path.join(directory, "python-without-site-packages");
-  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
-  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(sitePackages), "The dependency-isolated environment returned an invalid site-packages.");
   writeFileSync(
-    executable,
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`,
+    path.join(sitePackages, "openwrangler-acceptance-invocations.pth"),
+    `import builtins; builtins.open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8").write("invoked\\n")\n`,
     { encoding: "utf8", flag: "wx" }
   );
-  chmodSync(executable, 0o755);
   return executable;
+}
+
+function createDependencyInstallLifecyclePython(
+  directory: string,
+  dependencyPython: string
+): DependencyInstallLifecycleFixture {
+  const started = path.join(directory, "pip-started.json");
+  const release = path.join(directory, "release-pip");
+  const completed = path.join(directory, "pip-completed.json");
+  const fakePipSource = [
+    "import json",
+    "import os",
+    "import sys",
+    "import time",
+    "",
+    `started_path = ${JSON.stringify(started)}`,
+    `release_path = ${JSON.stringify(release)}`,
+    `completed_path = ${JSON.stringify(completed)}`,
+    "environment_keys = {key.upper() for key in os.environ}",
+    "details = {",
+    '    "args": sys.argv[1:],',
+    '    "cwd": os.getcwd(),',
+    '    "pipNoInput": os.environ.get("PIP_NO_INPUT"),',
+    '    "pipConfigFile": os.environ.get("PIP_CONFIG_FILE"),',
+    '    "pipUser": os.environ.get("PIP_USER"),',
+    '    "pythonPathPresent": "PYTHONPATH" in environment_keys,',
+    '    "pythonHomePresent": "PYTHONHOME" in environment_keys,',
+    "}",
+    "with open(started_path, 'x', encoding='utf-8') as stream:",
+    "    json.dump(details, stream, sort_keys=True)",
+    "    stream.flush()",
+    "    os.fsync(stream.fileno())",
+    "deadline = time.monotonic() + 30",
+    "while not os.path.exists(release_path):",
+    "    if time.monotonic() >= deadline:",
+    "        raise SystemExit(92)",
+    "    time.sleep(0.025)",
+    "with open(completed_path, 'x', encoding='utf-8') as stream:",
+    "    json.dump({**details, 'released': True}, stream, sort_keys=True)",
+    "    stream.flush()",
+    "    os.fsync(stream.fileno())",
+    ""
+  ].join("\n");
+
+  const environment = path.join(directory, "environment");
+  execFileSync(dependencyPython, ["-m", "venv", "--without-pip", environment], {
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environment, "Scripts", "python.exe")
+      : path.join(environment, "bin", "python");
+  assert.ok(existsSync(executable), "The lifecycle-test Python environment is missing its interpreter.");
+  const sitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(sitePackages), "The lifecycle-test environment returned invalid site-packages.");
+  writeFileSync(
+    path.join(sitePackages, "sitecustomize.py"),
+    [
+      "import os",
+      "import sys",
+      'sys.path[:] = [entry for entry in sys.path if entry != ""]',
+      "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
+      "sys.path[:] = [",
+      "    entry",
+      "    for entry in sys.path",
+      "    if os.path.normcase(os.path.abspath(entry)) != cwd",
+      "]",
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  const pipPackage = path.join(sitePackages, "pip");
+  mkdirSync(pipPackage);
+  writeFileSync(path.join(pipPackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  writeFileSync(path.join(pipPackage, "__main__.py"), fakePipSource, { encoding: "utf8", flag: "wx" });
+  const preflight = JSON.parse(
+    execFileSync(
+      executable,
+      [
+        "-I",
+        "-c",
+        [
+          "import importlib.util",
+          "import json",
+          "import pip",
+          "import sys",
+          "print(json.dumps({",
+          "    'executable': sys.executable,",
+          "    'prefix': sys.prefix,",
+          "    'pandas': importlib.util.find_spec('pandas') is not None,",
+          "    'xlrd': importlib.util.find_spec('xlrd') is not None,",
+          "    'pip': pip.__file__,",
+          "}, sort_keys=True))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as Record<string, unknown>;
+  assert.equal(
+    typeof preflight.executable === "string" && sameAcceptanceExecutable(preflight.executable, executable),
+    true,
+    "The lifecycle-test interpreter must report the exact selected virtual-environment executable."
+  );
+  assert.equal(
+    typeof preflight.prefix === "string" && sameAcceptanceExecutable(preflight.prefix, environment),
+    true,
+    "The lifecycle-test interpreter must retain its isolated virtual-environment prefix."
+  );
+  assert.equal(preflight.pandas, false, "The lifecycle-test environment must not expose pandas.");
+  assert.equal(preflight.xlrd, false, "The lifecycle-test environment must not expose xlrd.");
+  assert.equal(
+    typeof preflight.pip === "string" && sameAcceptanceExecutable(preflight.pip, path.join(pipPackage, "__init__.py")),
+    true,
+    "The lifecycle-test environment must import only its owned fake pip package."
+  );
+  return { executable, started, release, completed };
 }
 
 async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.Uri): Promise<void> {

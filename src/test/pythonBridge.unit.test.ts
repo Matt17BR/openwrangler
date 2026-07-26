@@ -1,5 +1,6 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import * as vscode from "vscode";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +16,11 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import type { CancellationTokenLike } from "../extension/dataBridge";
+import {
+  DependencyInstallExitUnconfirmedError,
+  type OwnedDependencyInstall,
+  waitForDependencyInstallExit
+} from "../extension/dependencyInstaller";
 import * as pythonEnvironment from "../extension/pythonEnvironment";
 import { PythonBridge } from "../extension/pythonBridge";
 
@@ -28,6 +34,20 @@ vi.mock("../extension/pythonEnvironment", async (importOriginal) => {
 });
 
 const initializeRequest: OpenWranglerRequest = { kind: "initialize" };
+const TEST_PACKAGE_ROOT_IDENTITY = testPackageRootIdentity("/env");
+
+function testPackageRootIdentity(packageRoot: string): { device: string; inode: string } {
+  let hash = 2_166_136_261;
+  for (const codePoint of packageRoot) {
+    hash ^= codePoint.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return { device: "1", inode: String(hash >>> 0) };
+}
+
+function testPythonExecutablePath(posixPath: string): string {
+  return process.platform === "win32" ? win32.join("C:\\", ...posixPath.split("/").filter(Boolean)) : posixPath;
+}
 const initializedResponse: OpenWranglerResponse = {
   kind: "initialized",
   protocolVersion: 2,
@@ -1010,7 +1030,9 @@ describe("PythonBridge process lifecycle", () => {
     const replacement = new LifecycleChildProcess();
     internals.spawnProcess.mockReturnValue(replacement as unknown as ChildProcessWithoutNullStreams);
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
-      executable: "/env/bin/python",
+      executable: testPythonExecutablePath("/env/bin/python"),
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
       version: "3.12.4",
       source: "configuration"
     });
@@ -1024,11 +1046,41 @@ describe("PythonBridge process lifecycle", () => {
     process.emit("exit", null, "SIGKILL");
     await expect(starting).resolves.toBe(replacement);
     expect(internals.spawnProcess).toHaveBeenCalledOnce();
+    const [executable, args, options] = internals.spawnProcess.mock.calls[0] ?? [];
+    expect(executable).toBe(testPythonExecutablePath("/env/bin/python"));
+    expect(args).toEqual(["-s", "-m", "openwrangler_runtime.server"]);
+    expect(options).toMatchObject({
+      cwd: "/extension",
+      shell: false,
+      windowsHide: true,
+      env: expect.objectContaining({
+        PYTHONNOUSERSITE: "1",
+        PYTHONPATH: join("/extension", "python"),
+        PYTHONSAFEPATH: "1"
+      })
+    });
 
     bridge.restart("Acceptance cleanup.");
     const cleanup = internals.processStop;
     replacement.emit("exit", null, "SIGKILL");
     await expect(cleanup).resolves.toBeUndefined();
+  });
+
+  it("rejects an unpinned runtime executable before spawning", async () => {
+    const { internals } = createLifecycleHarness();
+    internals.process = undefined;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      executable: process.platform === "win32" ? "\\root-relative\\python.exe" : "python3",
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+      version: "3.12.4",
+      source: "configuration"
+    });
+
+    await expect(internals.ensureProcess(initializeRequest)).rejects.toThrow(
+      "requires an absolute Python executable path"
+    );
+    expect(internals.spawnProcess).not.toHaveBeenCalled();
   });
 
   it("keeps a concurrent reopen attached to its exact slot while the prior process stops", async () => {
@@ -1066,7 +1118,9 @@ describe("PythonBridge process lifecycle", () => {
     const { bridge, internals, process } = createLifecycleHarness();
     const replacement = new LifecycleChildProcess();
     const nextEnvironment = {
-      executable: "/second-env/bin/python",
+      executable: testPythonExecutablePath("/second-env/bin/python"),
+      packageRoot: "/second-env",
+      packageRootIdentity: testPackageRootIdentity("/second-env"),
       version: "3.13.2",
       source: "pythonExtension" as const
     };
@@ -1091,7 +1145,9 @@ describe("PythonBridge process lifecycle", () => {
   it("reuses the shared process when another resource resolves to the same interpreter", async () => {
     const { internals, process } = createLifecycleHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
-      executable: "/env/bin/python",
+      executable: testPythonExecutablePath("/env/bin/python"),
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
       version: "3.12.4",
       source: "pythonExtension"
     });
@@ -1122,17 +1178,17 @@ describe("PythonBridge dependency installation", () => {
   });
 
   it("requires the exact production modal and retains its diagnostic when the user cancels", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue(undefined);
 
     await expect(bridge.installMissingDependencies()).resolves.toBe(false);
 
     expect(warning).toHaveBeenCalledWith(
-      "Install pandas, xlrd>=2.0.1 into /env/bin/python?",
+      `Install pandas, xlrd>=2.0.1 into ${testPythonExecutablePath("/env/bin/python")}?`,
       { modal: true, detail: "Open Wrangler never installs packages without this confirmation." },
       "Install"
     );
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
     expect(internals.lastMissingDependencies).toMatchObject({
       environment: missingDependencies().environment,
       requirements: missingDependencies().requirements,
@@ -1143,16 +1199,18 @@ describe("PythonBridge dependency installation", () => {
   });
 
   it("installs the exact requirements only after the production modal returns Install", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
     const information = vi.spyOn(vscode.window, "showInformationMessage");
 
     await expect(bridge.installMissingDependencies()).resolves.toBe(true);
 
-    expect(executeFile).toHaveBeenCalledOnce();
-    expect(executeFile).toHaveBeenCalledWith("/env/bin/python", ["-m", "pip", "install", "pandas", "xlrd>=2.0.1"], {
-      timeout: 10 * 60_000
-    });
+    expect(launchDependencyInstall).toHaveBeenCalledOnce();
+    expect(launchDependencyInstall).toHaveBeenCalledWith(
+      testPythonExecutablePath("/env/bin/python"),
+      ["pandas", "xlrd>=2.0.1"],
+      {}
+    );
     expect(internals.lastMissingDependencies).toBeUndefined();
     expect(internals.dependencyCache.size).toBe(0);
     expect(internals.runtimeEpoch).toBe(1);
@@ -1160,8 +1218,21 @@ describe("PythonBridge dependency installation", () => {
     expect(information).toHaveBeenCalledWith("Open Wrangler runtime dependencies were installed.");
   });
 
+  it("releases the mutation barrier before an informational success toast is dismissed", async () => {
+    const { bridge, raw } = createDependencyHarness();
+    const toast = deferred<undefined>();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    vi.spyOn(vscode.window, "showInformationMessage").mockReturnValue(toast.promise as unknown as Thenable<never>);
+
+    await expect(bridge.installMissingDependencies()).resolves.toBe(true);
+
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect(raw.dependencyInstallOperation).toBeUndefined();
+    toast.resolve(undefined);
+  });
+
   it("exposes only a safe decline behind the environment-gated test method", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const warning = vi.spyOn(vscode.window, "showWarningMessage");
 
     await expect(bridge.declineMissingDependencyInstallForTesting()).rejects.toThrow(
@@ -1171,7 +1242,7 @@ describe("PythonBridge dependency installation", () => {
     process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
     await expect(bridge.declineMissingDependencyInstallForTesting()).resolves.toBe(false);
     expect(warning).not.toHaveBeenCalled();
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
     expect(internals.lastMissingDependencies).toMatchObject({
       environment: missingDependencies().environment,
       requirements: missingDependencies().requirements,
@@ -1180,7 +1251,7 @@ describe("PythonBridge dependency installation", () => {
   });
 
   it("keeps a test decline independent from an already-open production install", async () => {
-    const { bridge, executeFile } = createDependencyHarness();
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
     const modal = deferred<"Install" | undefined>();
     vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
     process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
@@ -1191,11 +1262,11 @@ describe("PythonBridge dependency installation", () => {
     modal.resolve("Install");
 
     await expect(Promise.all([productionInstallation, testDecline])).resolves.toEqual([true, false]);
-    expect(executeFile).toHaveBeenCalledOnce();
+    expect(launchDependencyInstall).toHaveBeenCalledOnce();
   });
 
   it("never lets a test decline suppress the next production confirmation modal", async () => {
-    const { bridge, executeFile } = createDependencyHarness();
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
     const modal = deferred<"Install" | undefined>();
     const warning = vi
       .spyOn(vscode.window, "showWarningMessage")
@@ -1208,11 +1279,11 @@ describe("PythonBridge dependency installation", () => {
     modal.resolve(undefined);
 
     await expect(Promise.all([testDecline, productionInstallation])).resolves.toEqual([false, false]);
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
   });
 
   it("joins concurrent install commands to one modal and one pip invocation", async () => {
-    const { bridge, executeFile } = createDependencyHarness();
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
     const modal = deferred<"Install" | undefined>();
     const warning = vi
       .spyOn(vscode.window, "showWarningMessage")
@@ -1225,17 +1296,23 @@ describe("PythonBridge dependency installation", () => {
 
     await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
     expect(warning).toHaveBeenCalledOnce();
-    expect(executeFile).toHaveBeenCalledOnce();
+    expect(launchDependencyInstall).toHaveBeenCalledOnce();
   });
 
   it("rejects an affirmative modal when its exact dependency target was replaced", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const modal = deferred<"Install" | undefined>();
     vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
     const installation = bridge.installMissingDependencies();
     await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
     const replacement = {
-      environment: { executable: "/env/bin/python", version: "3.12.4", source: "configuration" as const },
+      environment: {
+        executable: testPythonExecutablePath("/env/bin/python"),
+        packageRoot: "/env",
+        packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+        version: "3.12.4",
+        source: "configuration" as const
+      },
       requirements: ["polars"],
       selection: missingDependencies().selection,
       selectionEpoch: 0
@@ -1245,12 +1322,12 @@ describe("PythonBridge dependency installation", () => {
     modal.resolve("Install");
     await expect(installation).resolves.toBe(false);
 
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
     expect(internals.lastMissingDependencies).toBe(replacement);
   });
 
   it("revalidates selection and trust after an affirmative modal before running pip", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const modal = deferred<"Install" | undefined>();
     vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
     const installation = bridge.installMissingDependencies();
@@ -1260,7 +1337,7 @@ describe("PythonBridge dependency installation", () => {
     modal.resolve("Install");
     await expect(installation).resolves.toBe(false);
 
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
     expect(internals.lastMissingDependencies).toMatchObject({
       environment: missingDependencies().environment,
       requirements: missingDependencies().requirements,
@@ -1268,22 +1345,533 @@ describe("PythonBridge dependency installation", () => {
     });
   });
 
-  it("does not run pip when the bridge is disposed while its modal is open", async () => {
-    const { bridge, executeFile } = createDependencyHarness();
+  it("lets shutdown complete while its modal is open and never runs pip after the decision arrives", async () => {
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
     const modal = deferred<"Install" | undefined>();
     vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+    const error = vi.spyOn(vscode.window, "showErrorMessage");
     const installation = bridge.installMissingDependencies();
     await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
 
-    bridge.dispose();
+    const shutdown = bridge.shutdown();
+    await expect(shutdown).resolves.toBeUndefined();
     modal.resolve("Install");
 
     await expect(installation).resolves.toBe(false);
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(information).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("does not run pip when shutdown wins before a deferred progress callback starts", async () => {
+    const { bridge, launchDependencyInstall } = createDependencyHarness();
+    let progressTask: (() => Promise<boolean>) | undefined;
+    const progressResult = deferred<boolean>();
+    const progressWindow = vscode.window as unknown as TestProgressWindow;
+    vi.spyOn(progressWindow, "withProgress").mockImplementation((_options, task) => {
+      progressTask = task as () => Promise<boolean>;
+      return progressResult.promise;
+    });
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(progressTask).toBeDefined());
+    await expect(bridge.shutdown()).resolves.toBeUndefined();
+
+    const result = await progressTask!();
+    progressResult.resolve(result);
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+  });
+
+  it("awaits an active pip process during shutdown without killing it or publishing stale success", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    const shutdown = bridge.shutdown();
+    let settled = false;
+    void shutdown.finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    controlled.closeSuccessfully();
+
+    await expect(shutdown).resolves.toBeUndefined();
+    await expect(installation).resolves.toBe(false);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(controlled.child.unref).not.toHaveBeenCalled();
+    expect(information).not.toHaveBeenCalled();
+  });
+
+  it("reports a nonzero pip result after invalidating stale dependency state and releases its barrier", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, internals, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    expect(internals.lastMissingDependencies).toBeUndefined();
+    expect(internals.dependencyCache.size).toBe(0);
+    expect(raw.dependencyMutations.size).toBe(1);
+
+    controlled.closeWithFailure(new Error("pip exited with code 9"));
+    await expect(installation).rejects.toThrow("pip exited with code 9");
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(information).not.toHaveBeenCalled();
+  });
+
+  it("treats exact nonzero pip close as sufficient shutdown proof without reporting install success", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+    const error = vi.spyOn(vscode.window, "showErrorMessage");
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    const shutdown = bridge.shutdown();
+    controlled.closeWithFailure(new Error("pip exited with code 17"));
+
+    await expect(shutdown).resolves.toBeUndefined();
+    await expect(installation).resolves.toBe(false);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(information).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("fails shutdown closed after its pip wait bound, unreferences once, and releases only on late close", async () => {
+    vi.useFakeTimers();
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    const firstShutdown = bridge.shutdown();
+    const secondShutdown = bridge.shutdown();
+    expect(secondShutdown).toBe(firstShutdown);
+    const shutdownError = firstShutdown.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const error = await shutdownError;
+    expect(error).toBeInstanceOf(DependencyInstallExitUnconfirmedError);
+    expect(await secondShutdown.catch((reason: unknown) => reason)).toBe(error);
+    expect(controlled.child.unref).toHaveBeenCalledOnce();
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(1);
+
+    controlled.closeSuccessfully();
+    await expect(installation).resolves.toBe(false);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(information).not.toHaveBeenCalled();
+  });
+
+  it("retains the mutation barrier after the command timeout and latches that exact uncertainty through shutdown", async () => {
+    vi.useFakeTimers();
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, internals, launchDependencyInstall } = createDependencyHarness();
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    const installError = installation.catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    const error = await installError;
+    expect(error).toBeInstanceOf(DependencyInstallExitUnconfirmedError);
+    expect(controlled.operation.unref).toHaveBeenCalledOnce();
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(1);
+    expect(raw.dependencyInstallOperation?.phase).toBe("uncertain");
+    expect(internals.dependencyCache.size).toBe(0);
+    expect(information).not.toHaveBeenCalled();
+
+    const firstShutdown = bridge.shutdown();
+    const secondShutdown = bridge.shutdown();
+    expect(secondShutdown).toBe(firstShutdown);
+    expect(await firstShutdown.catch((reason: unknown) => reason)).toBe(error);
+    expect(await secondShutdown.catch((reason: unknown) => reason)).toBe(error);
+    expect(controlled.operation.unref).toHaveBeenCalledOnce();
+    expect(raw.dependencyMutations.size).toBe(1);
+
+    controlled.closeSuccessfully();
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(controlled.child.kill).not.toHaveBeenCalled();
+    expect(information).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending replacement and waits for its same-interpreter predecessor before pip", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    bridge.onIdle();
+    expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce();
+    const pendingReplacement = raw.ensureProcess(runtime, {
+      selection,
+      environment: missingDependencies().environment
+    });
+    await Promise.resolve();
+    const installation = bridge.installMissingDependencies();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+
+    runtimeProcess.emit("exit", 0, null);
+    await expect(pendingReplacement).rejects.toThrow("runtime start was cancelled");
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    controlled.closeSuccessfully();
+    await expect(installation).resolves.toBe(true);
+    expect(runtimeProcess.kill).not.toHaveBeenCalled();
+  });
+
+  it("does not wait for an already-stopping runtime owned by a different interpreter", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = {
+      selection,
+      environment: {
+        executable: testPythonExecutablePath("/other/bin/python"),
+        packageRoot: "/other",
+        packageRootIdentity: testPackageRootIdentity("/other"),
+        version: "3.12.4",
+        source: "configuration"
+      }
+    };
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    bridge.onIdle();
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+
+    controlled.closeSuccessfully();
+    await expect(installation).resolves.toBe(true);
+    expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce();
+    expect(runtimeProcess.kill).not.toHaveBeenCalled();
+    runtimeProcess.emit("exit", 0, null);
+  });
+
+  it("keeps a colon-prefixed but distinct package root independent during cache invalidation", async () => {
+    const { bridge, raw, internals } = createDependencyHarness();
+    const installTarget = internals.lastMissingDependencies!;
+    const independentEnvironment: TestPythonEnvironment = {
+      executable: testPythonExecutablePath("/env:independent/bin/python"),
+      packageRoot: "/env:independent",
+      packageRootIdentity: testPackageRootIdentity("/env:independent"),
+      version: "3.12.4",
+      source: "pythonExtension"
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(independentEnvironment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: ["polars"], available: [] });
+
+    await expect(
+      internals.prepareRequest(openSessionRequest(remoteSourceAt("/independent/data.csv")))
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+    const independentSelection = [...raw.environmentSelections.values()].find(
+      (selection) => selection.resolvedEnvironment === independentEnvironment
+    );
+    expect(independentSelection).toBeDefined();
+    const independentDependencyKeys = [...independentSelection!.dependencyKeys];
+    expect(independentDependencyKeys).toHaveLength(1);
+    internals.lastMissingDependencies = installTarget;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(
+      installTarget.environment as pythonEnvironment.PythonEnvironment
+    );
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    await expect(bridge.installMissingDependencies()).resolves.toBe(true);
+
+    expect(raw.environmentSelections.get(independentSelection!.key)).toBe(independentSelection);
+    expect(raw.dependencyCache.get(independentDependencyKeys[0]!)).toEqual(["polars"]);
+  });
+
+  it("keeps a failed pre-pip quiescence barrier until late runtime exit, then permits a clean retry", async () => {
+    vi.useFakeTimers();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    const rejected = installation.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const error = await rejected;
+
+    expect(error).toMatchObject({
+      message: expect.stringContaining("could not confirm that its Python runtime exited")
+    });
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(1);
+    expect(raw.dependencyInstallOperation?.phase).toBe("uncertain");
+    expect(runtimeProcess.kill).toHaveBeenCalledOnce();
+
+    runtimeProcess.emit("exit", null, "SIGKILL");
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(raw.dependencyInstallOperation).toBeUndefined();
+
+    const retrySelection = testEnvironmentSelection("<workspace-default>", missingDependencies().environment, {
+      epoch: raw.selectionEpochs.get("<workspace-default>") ?? 0
+    });
+    raw.environmentSelections.set(retrySelection.key, retrySelection);
+    raw.lastMissingDependencies = missingDependencies(retrySelection);
+
+    await expect(bridge.installMissingDependencies()).resolves.toBe(true);
+    expect(launchDependencyInstall).toHaveBeenCalledOnce();
+  });
+
+  it("blocks probes and process starts through an executable alias of the mutating package environment", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const aliasEnvironment = {
+      ...missingDependencies().environment,
+      executable: testPythonExecutablePath("/env/bin/python3")
+    };
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(aliasEnvironment);
+    await expect(raw.prepareRequest(openSessionRequest(remoteFileSource()))).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed"
+    });
+    expect(pythonEnvironment.probeDependencies).not.toHaveBeenCalled();
+
+    const selection = testEnvironmentSelection("<workspace-default>", aliasEnvironment);
+    const runtime = raw.runtimeSlot(selection.key);
+    await expect(raw.ensureProcess(runtime, { selection, environment: aliasEnvironment })).rejects.toThrow(
+      "while its Python dependencies are being changed"
+    );
+
+    controlled.closeSuccessfully();
+    await expect(installation).resolves.toBe(true);
+  });
+
+  it("quiesces a live runtime reached through another executable alias before starting pip", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const target = missingDependencies();
+    const aliasEnvironment: TestPythonEnvironment = {
+      ...target.environment,
+      executable: testPythonExecutablePath("/env/bin/python3")
+    };
+    const aliasSelection = testEnvironmentSelection("alias-scope", aliasEnvironment);
+    const runtimeProcess = new LifecycleChildProcess();
+    const aliasRuntime = testRuntimeSlot(
+      aliasSelection.key,
+      runtimeProcess as unknown as ChildProcessWithoutNullStreams,
+      { selection: aliasSelection, environment: aliasEnvironment }
+    );
+    raw.environmentSelections.set(aliasSelection.key, aliasSelection);
+    raw.runtimeSlots.set(aliasRuntime.key, aliasRuntime);
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(aliasRuntime.stoppingProcesses.size).toBe(1);
+
+    runtimeProcess.emit("exit", 0, null);
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    controlled.closeSuccessfully();
+    await expect(installation).resolves.toBe(true);
+    expect(runtimeProcess.kill).not.toHaveBeenCalled();
+  });
+
+  it("retains child ownership when a pending cancellation listener throws during quiescence cleanup", async () => {
+    const controlled = controlledDependencyInstall();
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    const reject = vi.fn();
+    const dispose = vi.fn(() => {
+      throw new Error("listener cleanup failed");
+    });
+    const requestId = "pending-with-failing-listener";
+    const timer = setTimeout(() => undefined, 60_000);
+    raw.pending.set(requestId, {
+      requestId,
+      resolve: vi.fn(),
+      reject,
+      timer,
+      runtime,
+      request: initializeRequest,
+      cancellation: { dispose },
+      cancellationRequested: false,
+      dispatched: true
+    });
+    runtime.pendingIds.add(requestId);
+    launchDependencyInstall.mockReturnValue(controlled.operation);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(reject).toHaveBeenCalledOnce();
+    expect(runtime.stoppingProcesses.has(runtimeProcess as unknown as ChildProcessWithoutNullStreams)).toBe(true);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.output.appendLine).toHaveBeenCalledWith(
+      expect.stringContaining("could not dispose a runtime cancellation listener")
+    );
+
+    runtimeProcess.emit("exit", 0, null);
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
+    controlled.closeSuccessfully();
+    await expect(installation).resolves.toBe(true);
+    expect(runtimeProcess.kill).not.toHaveBeenCalled();
+  });
+
+  it("rechecks Workspace Trust after runtime quiescence and before starting pip", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    setWorkspaceTrust(false);
+    runtimeProcess.emit("exit", 0, null);
+
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+  });
+
+  it("rejects a dependency-target authorization event that arrives during runtime quiescence", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    raw.dependencyAuthorizationEpoch += 1;
+    runtimeProcess.emit("exit", 0, null);
+
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+  });
+
+  it("freshly resolves the approved interpreter after quiescence and rejects a replacement target", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      ...missingDependencies().environment,
+      executable: testPythonExecutablePath("/replacement/bin/python"),
+      packageRoot: "/replacement",
+      packageRootIdentity: testPackageRootIdentity("/replacement")
+    } as pythonEnvironment.PythonEnvironment);
+    runtimeProcess.emit("exit", 0, null);
+
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+  });
+
+  it("rejects a same-path package root whose filesystem identity changed during quiescence", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      ...missingDependencies().environment,
+      packageRootIdentity: { device: "1", inode: "2" }
+    } as pythonEnvironment.PythonEnvironment);
+    runtimeProcess.emit("exit", 0, null);
+
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+  });
+
+  it("rejects Python version drift within the same executable and package root after quiescence", async () => {
+    const { bridge, raw, launchDependencyInstall } = createDependencyHarness();
+    const runtime = raw.runtimeSlots.get("<workspace-default>")!;
+    const selection = raw.environmentSelections.get("<workspace-default>")!;
+    const runtimeProcess = new LifecycleChildProcess();
+    runtime.process = runtimeProcess as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection, environment: missingDependencies().environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
+
+    const installation = bridge.installMissingDependencies();
+    await vi.waitFor(() => expect(runtimeProcess.stdin.end).toHaveBeenCalledOnce());
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue({
+      ...missingDependencies().environment,
+      version: "3.14.0"
+    } as pythonEnvironment.PythonEnvironment);
+    runtimeProcess.emit("exit", 0, null);
+
+    await expect(installation).resolves.toBe(false);
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
   });
 
   it("revalidates the target inside the progress callback immediately before pip", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const enteredProgress = deferred<void>();
     const releaseProgress = deferred<void>();
     const progressWindow = vscode.window as unknown as TestProgressWindow;
@@ -1297,7 +1885,13 @@ describe("PythonBridge dependency installation", () => {
     const installation = bridge.installMissingDependencies();
     await enteredProgress.promise;
     internals.lastMissingDependencies = {
-      environment: { executable: "/env/bin/python", version: "3.12.4", source: "configuration" },
+      environment: {
+        executable: testPythonExecutablePath("/env/bin/python"),
+        packageRoot: "/env",
+        packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+        version: "3.12.4",
+        source: "configuration"
+      },
       requirements: ["polars"],
       selection: missingDependencies().selection,
       selectionEpoch: 0
@@ -1305,23 +1899,35 @@ describe("PythonBridge dependency installation", () => {
     releaseProgress.resolve();
 
     await expect(installation).resolves.toBe(false);
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
   });
 
   it("never clears or restarts a newer selection after an old pip process finishes", async () => {
     const execution = deferred<void>();
-    const { bridge, internals, executeFile } = createDependencyHarness(() => execution.promise);
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness(() => execution.promise);
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
     const installation = bridge.installMissingDependencies();
-    await vi.waitFor(() => expect(executeFile).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
 
     bridge.clearRuntimeSelection();
     const newerTarget = {
-      environment: { executable: "/new/bin/python", version: "3.13.1", source: "configuration" as const },
+      environment: {
+        executable: testPythonExecutablePath("/new/bin/python"),
+        packageRoot: "/new",
+        packageRootIdentity: testPackageRootIdentity("/new"),
+        version: "3.13.1",
+        source: "configuration" as const
+      },
       requirements: ["polars"],
       selection: testEnvironmentSelection(
         "<workspace-default>",
-        { executable: "/new/bin/python", version: "3.13.1", source: "configuration" },
+        {
+          executable: testPythonExecutablePath("/new/bin/python"),
+          packageRoot: "/new",
+          packageRootIdentity: testPackageRootIdentity("/new"),
+          version: "3.13.1",
+          source: "configuration"
+        },
         { epoch: 1 }
       ),
       selectionEpoch: 1
@@ -1339,7 +1945,7 @@ describe("PythonBridge dependency installation", () => {
 
   it("invalidates every current scope still using the interpreter mutated by a stale pip target", async () => {
     const execution = deferred<void>();
-    const { bridge, internals, executeFile } = createDependencyHarness(() => execution.promise);
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness(() => execution.promise);
     const raw = bridge as unknown as RawBridgeInternals;
     const sharedEnvironment = missingDependencies().environment;
     const sharedSelection = testEnvironmentSelection("shared-second-scope", sharedEnvironment);
@@ -1352,11 +1958,13 @@ describe("PythonBridge dependency installation", () => {
     vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Install" as never);
 
     const installation = bridge.installMissingDependencies();
-    await vi.waitFor(() => expect(executeFile).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(launchDependencyInstall).toHaveBeenCalledOnce());
 
     raw.environmentSelections.delete("<workspace-default>");
     const newerEnvironment: TestPythonEnvironment = {
-      executable: "/new/bin/python",
+      executable: testPythonExecutablePath("/new/bin/python"),
+      packageRoot: "/new",
+      packageRootIdentity: testPackageRootIdentity("/new"),
       version: "3.13.1",
       source: "configuration"
     };
@@ -1421,7 +2029,7 @@ describe("PythonBridge dependency installation", () => {
   });
 
   it("enforces Workspace Trust before production confirmation", async () => {
-    const { bridge, internals, executeFile } = createDependencyHarness();
+    const { bridge, internals, launchDependencyInstall } = createDependencyHarness();
     const warning = vi.spyOn(vscode.window, "showWarningMessage");
     const error = vi.spyOn(vscode.window, "showErrorMessage");
     setWorkspaceTrust(false);
@@ -1430,7 +2038,7 @@ describe("PythonBridge dependency installation", () => {
 
     expect(error).toHaveBeenCalledWith("Trust this workspace before installing Python dependencies.");
     expect(warning).not.toHaveBeenCalled();
-    expect(executeFile).not.toHaveBeenCalled();
+    expect(launchDependencyInstall).not.toHaveBeenCalled();
     expect(internals.lastMissingDependencies).toMatchObject({
       environment: missingDependencies().environment,
       requirements: missingDependencies().requirements,
@@ -1486,7 +2094,9 @@ describe("PythonBridge dependency installation", () => {
 
 describe("PythonBridge environment resource selection", () => {
   const environment = {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
+    packageRoot: "/env",
+    packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
     source: "pythonExtension" as const
   };
@@ -1663,12 +2273,16 @@ describe("PythonBridge environment resource selection", () => {
       resource.path.startsWith("/first/") ? firstFolder : secondFolder
     );
     const firstEnvironment: TestPythonEnvironment = {
-      executable: "/envs/first/python",
+      executable: testPythonExecutablePath("/envs/first/python"),
+      packageRoot: "/envs/first",
+      packageRootIdentity: testPackageRootIdentity("/envs/first"),
       version: "3.12.4",
       source: "pythonExtension"
     };
     const secondEnvironment: TestPythonEnvironment = {
-      executable: "/envs/second/python",
+      executable: testPythonExecutablePath("/envs/second/python"),
+      packageRoot: "/envs/second",
+      packageRootIdentity: testPackageRootIdentity("/envs/second"),
       version: "3.13.2",
       source: "pythonExtension"
     };
@@ -1782,10 +2396,20 @@ describe("PythonBridge environment resource selection", () => {
     vi.spyOn(vscode.workspace, "getWorkspaceFolder").mockImplementation((resource) =>
       resource.path.startsWith("/first/") ? firstFolder : secondFolder
     );
-    const { internals } = createEnvironmentHarness();
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
     await internals.prepareRequest(openSessionRequest(remoteSourceAt("/first/data.csv")));
+    const authorizedSelection = raw.environmentSelections.get(firstFolder.uri.toString(true));
+    expect(authorizedSelection?.resolvedEnvironment).toEqual(environment);
+    Object.assign(bridge as object, {
+      dependencyInstallOperation: {
+        phase: "quiescing",
+        authorizationEpoch: 0,
+        authorizationSelection: authorizedSelection
+      }
+    });
 
     internals.handlePythonEnvironmentSelectionChange({
       id: "second-env",
@@ -1796,6 +2420,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.runtimeEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(1);
     expect(internals.dependencyCache.size).toBe(1);
+    expect(raw.dependencyAuthorizationEpoch).toBe(0);
 
     internals.handlePythonEnvironmentSelectionChange({
       id: "first-env",
@@ -1806,6 +2431,7 @@ describe("PythonBridge environment resource selection", () => {
     expect(internals.runtimeEpoch).toBe(0);
     expect(internals.environmentSelections.size).toBe(0);
     expect(internals.dependencyCache.size).toBe(0);
+    expect(raw.dependencyAuthorizationEpoch).toBe(1);
   });
 
   it("treats an event URI in the same workspace folder as affecting sibling file selections", async () => {
@@ -1898,6 +2524,92 @@ describe("PythonBridge environment resource selection", () => {
     });
     const republished = internals.lastMissingDependencies as TestMissingDependencies | undefined;
     expect(republished?.selection.key).toBe(source.uri);
+  });
+
+  it("keys dependency probes by normalized executable and exact version within one package root", async () => {
+    const baseSource = remoteSourceAt("/cache-identity/base.csv");
+    const executableSource = remoteSourceAt("/cache-identity/executable.csv");
+    const versionSource = remoteSourceAt("/cache-identity/version.csv");
+    const normalizedAliasSource = remoteSourceAt("/cache-identity/normalized-alias.csv");
+    const packageRootIdentity = testPackageRootIdentity("/usr");
+    const environments = new Map<string, TestPythonEnvironment>([
+      [
+        baseSource.uri!,
+        {
+          ...environment,
+          executable: testPythonExecutablePath("/usr/bin/python"),
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.12.9"
+        }
+      ],
+      [
+        executableSource.uri!,
+        {
+          ...environment,
+          executable: testPythonExecutablePath("/usr/bin/python3"),
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.12.9"
+        }
+      ],
+      [
+        versionSource.uri!,
+        {
+          ...environment,
+          executable: testPythonExecutablePath("/usr/bin/python"),
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.14.0"
+        }
+      ],
+      [
+        normalizedAliasSource.uri!,
+        {
+          ...environment,
+          executable: testPythonExecutablePath("/usr/bin/../bin/python"),
+          packageRoot: "/usr",
+          packageRootIdentity,
+          version: "3.12.9"
+        }
+      ]
+    ]);
+    const { bridge, internals } = createEnvironmentHarness();
+    const raw = bridge as unknown as RawBridgeInternals;
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => {
+      const resolved = environments.get(resource?.toString(true) ?? "");
+      if (!resolved) throw new Error("unexpected dependency probe resource");
+      return resolved as pythonEnvironment.PythonEnvironment;
+    });
+    vi.mocked(pythonEnvironment.probeDependencies)
+      .mockResolvedValueOnce({ missing: ["polars"], available: [] })
+      .mockResolvedValueOnce({ missing: [], available: ["polars"] })
+      .mockResolvedValueOnce({ missing: [], available: ["polars"] });
+
+    await expect(internals.prepareRequest(openSessionRequest(baseSource))).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+    await expect(internals.prepareRequest(openSessionRequest(executableSource))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+    await expect(internals.prepareRequest(openSessionRequest(versionSource))).resolves.toMatchObject({
+      kind: "openSession",
+      backend: "polars"
+    });
+    await expect(internals.prepareRequest(openSessionRequest(normalizedAliasSource))).resolves.toMatchObject({
+      kind: "error",
+      code: "missing_dependencies"
+    });
+
+    expect(pythonEnvironment.probeDependencies).toHaveBeenCalledTimes(3);
+    expect(internals.dependencyCache.size).toBe(3);
+    const dependencyKeyFor = (source: SessionSource): string =>
+      [...raw.environmentSelections.get(source.uri!)!.dependencyKeys][0]!;
+    expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(executableSource));
+    expect(dependencyKeyFor(baseSource)).not.toBe(dependencyKeyFor(versionSource));
+    expect(dependencyKeyFor(baseSource)).toBe(dependencyKeyFor(normalizedAliasSource));
   });
 
   it("does not publish an old deferred probe after runtime selection is cleared", async () => {
@@ -2000,10 +2712,15 @@ describe("PythonBridge environment resource selection", () => {
   it("bounds retained inactive external-resource scopes and scrubs exact evicted state", async () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
-    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => ({
-      ...environment,
-      executable: `/envs${resource?.path ?? "/default"}/python`
-    }));
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) => {
+      const packageRoot = `/envs${resource?.path ?? "/default"}`;
+      return {
+        ...environment,
+        executable: `${packageRoot}/python`,
+        packageRoot,
+        packageRootIdentity: testPackageRootIdentity(packageRoot)
+      };
+    });
     vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
 
     const oldestSource = remoteSourceAt("/retention/0.csv");
@@ -2035,8 +2752,18 @@ describe("PythonBridge environment resource selection", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     const missingSource = remoteSourceAt("/retention/missing.csv");
-    const missingEnvironment = { ...environment, executable: "/envs/missing/python" };
-    const healthyEnvironment = { ...environment, executable: "/envs/healthy/python" };
+    const missingEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/missing/python"),
+      packageRoot: "/envs/missing",
+      packageRootIdentity: testPackageRootIdentity("/envs/missing")
+    };
+    const healthyEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/healthy/python"),
+      packageRoot: "/envs/healthy",
+      packageRootIdentity: testPackageRootIdentity("/envs/healthy")
+    };
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
       resource?.toString(true) === missingSource.uri ? missingEnvironment : healthyEnvironment
     );
@@ -2068,8 +2795,18 @@ describe("PythonBridge environment resource selection", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     const targetSource = remoteSourceAt("/retention/deferred.csv");
-    const targetEnvironment = { ...environment, executable: "/envs/deferred/python" };
-    const healthyEnvironment = { ...environment, executable: "/envs/healthy/python" };
+    const targetEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/deferred/python"),
+      packageRoot: "/envs/deferred",
+      packageRootIdentity: testPackageRootIdentity("/envs/deferred")
+    };
+    const healthyEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/healthy/python"),
+      packageRoot: "/envs/healthy",
+      packageRootIdentity: testPackageRootIdentity("/envs/healthy")
+    };
     const resolution = deferred<TestPythonEnvironment>();
     const probe = deferred<{ missing: string[]; available: string[] }>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation((_context, resource) =>
@@ -2227,8 +2964,18 @@ describe("PythonBridge environment resource selection", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     const source = remoteSourceAt("/recreated/resolution.csv");
-    const staleEnvironment = { ...environment, executable: "/envs/stale/python" };
-    const currentEnvironment = { ...environment, executable: "/envs/current/python" };
+    const staleEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/stale/python"),
+      packageRoot: "/envs/stale",
+      packageRootIdentity: testPackageRootIdentity("/envs/stale")
+    };
+    const currentEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/current/python"),
+      packageRoot: "/envs/current",
+      packageRootIdentity: testPackageRootIdentity("/envs/current")
+    };
     const staleResolution = deferred<TestPythonEnvironment>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment)
       .mockReturnValueOnce(staleResolution.promise)
@@ -2264,8 +3011,18 @@ describe("PythonBridge environment resource selection", () => {
     const { bridge, internals } = createEnvironmentHarness();
     const raw = bridge as unknown as RawBridgeInternals;
     const source = remoteSourceAt("/recreated/probe.csv");
-    const staleEnvironment = { ...environment, executable: "/envs/stale-probe/python" };
-    const currentEnvironment = { ...environment, executable: "/envs/current-probe/python" };
+    const staleEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/stale-probe/python"),
+      packageRoot: "/envs/stale-probe",
+      packageRootIdentity: testPackageRootIdentity("/envs/stale-probe")
+    };
+    const currentEnvironment = {
+      ...environment,
+      executable: testPythonExecutablePath("/envs/current-probe/python"),
+      packageRoot: "/envs/current-probe",
+      packageRootIdentity: testPackageRootIdentity("/envs/current-probe")
+    };
     const staleProbe = deferred<{ missing: string[]; available: string[] }>();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment)
       .mockResolvedValueOnce(staleEnvironment)
@@ -2295,7 +3052,8 @@ describe("PythonBridge environment resource selection", () => {
     expect(raw.environmentSelections.get(source.uri!)).toBe(currentSelection);
     expect(currentSelection?.resolvedEnvironment).toEqual(currentEnvironment);
     expect(internals.lastMissingDependencies).toBeUndefined();
-    expect([...raw.dependencyCache.keys()].some((key) => key.startsWith(staleEnvironment.executable))).toBe(false);
+    expect(raw.dependencyCache.size).toBe(1);
+    expect([...currentSelection!.dependencyKeys]).toEqual([...raw.dependencyCache.keys()]);
   });
 });
 
@@ -2336,7 +3094,10 @@ interface TestRuntimeSlot {
   readonly pendingIds: Set<string>;
   readonly provisionalSessionIds: Set<string>;
   readonly sessionIds: Set<string>;
-  readonly stoppingProcesses: Set<ChildProcessWithoutNullStreams>;
+  readonly stoppingProcesses: Map<
+    ChildProcessWithoutNullStreams,
+    { packageEnvironmentKey: string | undefined; shutdown: Promise<void>; exit: Promise<void> }
+  >;
   leaseCount: number;
   process: ChildProcessWithoutNullStreams | undefined;
   processStart: Promise<ChildProcessWithoutNullStreams> | undefined;
@@ -2359,12 +3120,22 @@ interface RawBridgeInternals {
   scopeUseClock: number;
   scopeRecency: Map<string, number>;
   selectionEpoch: number;
+  dependencyAuthorizationEpoch: number;
   selectionEpochs: Map<string, number>;
   runtimeSlots: Map<string, TestRuntimeSlot>;
   sessionOwners: Map<string, TestRuntimeSlot>;
   provisionalSessions: Map<string, TestProvisionalSessionReservation>;
   environmentSelections: Map<string, TestEnvironmentSelection>;
   dependencyCache: Map<string, string[]>;
+  dependencyMutations: Map<string, unknown>;
+  dependencyInstallOperation:
+    | {
+        phase: string;
+        promise?: Promise<boolean>;
+        process?: OwnedDependencyInstall;
+        uncertainty?: unknown;
+      }
+    | undefined;
   lastMissingDependencies: TestMissingDependencies | undefined;
   pending: Map<string, unknown>;
   cancellationTargets: Map<string, unknown>;
@@ -2383,7 +3154,12 @@ interface RawBridgeInternals {
     epoch: number,
     selection: TestProcessSelection
   ): Promise<ChildProcessWithoutNullStreams>;
-  trackProcessStop(runtime: TestRuntimeSlot, process: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void;
+  trackProcessStop(
+    runtime: TestRuntimeSlot,
+    process: ChildProcessWithoutNullStreams,
+    gracefulTimeoutMs?: number,
+    packageEnvironmentKey?: string
+  ): void;
   handleRuntimeLine(runtime: TestRuntimeSlot, process: ChildProcessWithoutNullStreams, line: string): void;
   handlePythonEnvironmentSelectionChange(event: pythonEnvironment.PythonEnvironmentSelectionChangeEvent): void;
   restartRuntime(runtime: TestRuntimeSlot, reason: string): void;
@@ -2400,7 +3176,11 @@ interface LifecycleBridgeInternals {
   readonly selection: TestEnvironmentSelection;
   spawnProcess: ReturnType<typeof vi.fn>;
   ensureProcess(request: OpenWranglerRequest): Promise<ChildProcessWithoutNullStreams>;
-  trackProcessStop(proc: ChildProcessWithoutNullStreams, gracefulTimeoutMs?: number): void;
+  trackProcessStop(
+    proc: ChildProcessWithoutNullStreams,
+    gracefulTimeoutMs?: number,
+    packageEnvironmentKey?: string
+  ): void;
 }
 
 class LifecycleChildProcess extends EventEmitter {
@@ -2411,6 +3191,7 @@ class LifecycleChildProcess extends EventEmitter {
     this.killed = true;
     return true;
   });
+  readonly unref = vi.fn();
   killed = false;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
@@ -2433,7 +3214,9 @@ function createLifecycleHarness(): {
   const configurationSubscription = { dispose: vi.fn() };
   const output = { appendLine: vi.fn(), dispose: vi.fn() };
   const environment = {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
+    packageRoot: "/env",
+    packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
     source: "configuration" as const
   };
@@ -2452,6 +3235,7 @@ function createLifecycleHarness(): {
     sessionOwners: new Map<string, TestRuntimeSlot>(),
     provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
     selectionEpoch: 0,
+    dependencyAuthorizationEpoch: 0,
     selectionEpochs: new Map([[selection.key, 0]]),
     generation: 0,
     scopeUseClock: 1,
@@ -2459,6 +3243,7 @@ function createLifecycleHarness(): {
     disposed: false,
     environmentSelections: new Map([[selection.key, selection]]),
     dependencyCache: new Map<string, string[]>(),
+    dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
     cancellationTargets: new Map<string, unknown>(),
@@ -2505,7 +3290,8 @@ function createLifecycleHarness(): {
       );
       return raw.ensureProcess(runtime, { selection, environment: nextEnvironment });
     },
-    trackProcessStop: (child, gracefulTimeoutMs) => raw.trackProcessStop(runtime, child, gracefulTimeoutMs)
+    trackProcessStop: (child, gracefulTimeoutMs, packageEnvironmentKey) =>
+      raw.trackProcessStop(runtime, child, gracefulTimeoutMs, packageEnvironmentKey)
   };
   return {
     bridge,
@@ -2540,6 +3326,8 @@ interface DependencyBridgeInternals {
 
 interface TestPythonEnvironment {
   executable: string;
+  packageRoot: string;
+  packageRootIdentity: { device: string; inode: string };
   version: string;
   source: "configuration" | "pythonExtension" | "system";
 }
@@ -2574,12 +3362,14 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
     sessionOwners: new Map<string, TestRuntimeSlot>(),
     provisionalSessions: new Map<string, TestProvisionalSessionReservation>(),
     selectionEpoch: 0,
+    dependencyAuthorizationEpoch: 0,
     selectionEpochs: new Map<string, number>(),
     disposed: options.disposed ?? false,
     scopeUseClock: 0,
     scopeRecency: new Map<string, number>(),
     environmentSelections: new Map<string, TestEnvironmentSelection>(),
     dependencyCache: new Map<string, string[]>(),
+    dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
     cancellationTargets: new Map<string, unknown>(),
@@ -2626,13 +3416,17 @@ function createEnvironmentHarness(options: { disposed?: boolean } = {}): {
 
 function createDependencyHarness(execute: () => Promise<unknown> = async () => undefined): {
   bridge: PythonBridge;
+  raw: RawBridgeInternals;
   internals: DependencyBridgeInternals;
-  executeFile: ReturnType<typeof vi.fn>;
+  launchDependencyInstall: ReturnType<typeof vi.fn>;
 } {
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
   const raw = bridge as unknown as RawBridgeInternals;
-  const executeFile = vi.fn(execute);
+  const launchDependencyInstall = vi.fn(() => fakeOwnedDependencyInstall(execute));
   const target = missingDependencies();
+  vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(
+    target.environment as pythonEnvironment.PythonEnvironment
+  );
   target.selection.dependencyKeys.add("cached-diagnostic");
   const runtime = testRuntimeSlot(target.selection.key);
   Object.assign(bridge as object, {
@@ -2643,6 +3437,7 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     pending: new Map<string, unknown>(),
     cancellationTargets: new Map<string, unknown>(),
     selectionEpoch: 0,
+    dependencyAuthorizationEpoch: 0,
     selectionEpochs: new Map([[target.selection.key, 0]]),
     disposed: false,
     scopeUseClock: 1,
@@ -2650,8 +3445,11 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     environmentSelections: new Map([[target.selection.key, target.selection]]),
     dependencyCache: new Map<string, string[]>([["cached-diagnostic", ["pandas"]]]),
     lastMissingDependencies: target,
-    dependencyInstallPromise: undefined,
-    executeFile,
+    dependencyInstallOperation: undefined,
+    dependencyMutations: new Map(),
+    launchDependencyInstall,
+    waitForDependencyInstallExit,
+    spawnProcess: vi.fn(),
     configurationSubscription: { dispose: vi.fn() },
     environmentApiBroker: { dispose: vi.fn() },
     output: { appendLine: vi.fn(), dispose: vi.fn() }
@@ -2677,12 +3475,66 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     },
     prepareRequest: (request) => raw.prepareRequest(request)
   };
-  return { bridge, internals, executeFile };
+  return { bridge, raw, internals, launchDependencyInstall };
+}
+
+function fakeOwnedDependencyInstall(execute: () => Promise<unknown>): OwnedDependencyInstall {
+  const completion = Promise.resolve()
+    .then(execute)
+    .then(() => undefined);
+  void completion.catch(() => undefined);
+  return {
+    child: { unref: vi.fn() } as unknown as ChildProcess,
+    executable: testPythonExecutablePath("/env/bin/python"),
+    requirements: ["pandas", "xlrd>=2.0.1"],
+    exit: completion.then(
+      () => undefined,
+      () => undefined
+    ),
+    completion,
+    didSpawn: () => true,
+    unref: vi.fn()
+  };
+}
+
+function controlledDependencyInstall(executable = testPythonExecutablePath("/env/bin/python")): {
+  operation: OwnedDependencyInstall;
+  child: LifecycleChildProcess;
+  closeSuccessfully(): void;
+  closeWithFailure(error: Error): void;
+} {
+  const child = new LifecycleChildProcess();
+  const exit = deferred<void>();
+  const completion = deferred<void>();
+  void completion.promise.catch(() => undefined);
+  const unref = vi.fn(() => child.unref());
+  return {
+    operation: {
+      child: child as unknown as ChildProcess,
+      executable,
+      requirements: ["pandas", "xlrd>=2.0.1"],
+      exit: exit.promise,
+      completion: completion.promise,
+      didSpawn: () => true,
+      unref
+    },
+    child,
+    closeSuccessfully: () => {
+      exit.resolve(undefined);
+      completion.resolve(undefined);
+    },
+    closeWithFailure: (error) => {
+      exit.resolve(undefined);
+      completion.reject(error);
+    }
+  };
 }
 
 function missingDependencies(
   selection = testEnvironmentSelection("<workspace-default>", {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
+    packageRoot: "/env",
+    packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
     source: "configuration"
   })
@@ -2729,7 +3581,7 @@ function testRuntimeSlot(
     pendingIds: new Set(),
     provisionalSessionIds: new Set(),
     sessionIds: new Set(),
-    stoppingProcesses: new Set(),
+    stoppingProcesses: new Map(),
     leaseCount: 0,
     process,
     processStart: undefined,
@@ -2855,7 +3707,9 @@ function createMultiScopeHarness(): {
   respond(scope: "first" | "second", requestId: string, response: OpenWranglerResponse): void;
 } {
   const environment: TestPythonEnvironment = {
-    executable: "/shared/bin/python",
+    executable: testPythonExecutablePath("/shared/bin/python"),
+    packageRoot: "/shared",
+    packageRootIdentity: testPackageRootIdentity("/shared"),
     version: "3.12.4",
     source: "pythonExtension"
   };
@@ -2938,6 +3792,7 @@ function createMultiScopeHarness(): {
       [secondSelection.key, secondSelection]
     ]),
     dependencyCache: new Map<string, string[]>(),
+    dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
     cancellationTargets: new Map<string, unknown>(),
@@ -3012,7 +3867,9 @@ function createHarness(
   } as unknown as ChildProcessWithoutNullStreams;
   const bridge = Object.create(PythonBridge.prototype) as PythonBridge;
   const environment: TestPythonEnvironment = {
-    executable: "/env/bin/python",
+    executable: testPythonExecutablePath("/env/bin/python"),
+    packageRoot: "/env",
+    packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
     version: "3.12.4",
     source: "configuration"
   };
@@ -3033,6 +3890,7 @@ function createHarness(
     scopeRecency: new Map([[selection.key, 1]]),
     environmentSelections: new Map([[selection.key, selection]]),
     dependencyCache: new Map<string, string[]>(),
+    dependencyMutations: new Map(),
     lastMissingDependencies: undefined,
     pending: new Map<string, unknown>(),
     cancellationTargets: new Map<string, unknown>(),
@@ -3077,10 +3935,12 @@ function addInactiveScopePressure(raw: RawBridgeInternals, count: number, prefix
   raw.trimInactiveScopes();
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
