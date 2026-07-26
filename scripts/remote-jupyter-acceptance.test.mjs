@@ -220,7 +220,7 @@ function containerInspection(state, overrides = {}) {
     memorySwap: "1073741824",
     nanoCpus: "2000000000",
     capDrop: JSON.stringify(["ALL"]),
-    securityOptions: JSON.stringify(["no-new-privileges:true"]),
+    securityOptions: JSON.stringify(["no-new-privileges=true"]),
     binds: "null",
     tmpfs: JSON.stringify({
       "/tmp": "rw,noexec,nosuid,nodev,size=536870912,mode=1777",
@@ -839,19 +839,85 @@ linuxTest("rejects a non-loopback publication and still removes the owned contai
   assert.equal(fake.state.imagePresent, false);
 });
 
-linuxTest("rejects weakened isolation but can use independently proven ownership for cleanup", async () => {
-  const fake = createFakeDocker({
-    alterResult({ input, result, state }) {
-      if (input.args[0] === "container" && input.args[1] === "inspect") {
-        return success(containerInspection(state, { readOnly: "false" }));
+linuxTest(
+  "classifies weakened isolation without retaining inspected values and still cleans owned resources",
+  async () => {
+    const fake = createFakeDocker({
+      alterResult({ input, result, state }) {
+        if (input.args[0] === "container" && input.args[1] === "inspect") {
+          return success(
+            containerInspection(state, {
+              readOnly: "untrusted-read-only-value",
+              memorySwap: "-1"
+            })
+          );
+        }
+        return result;
       }
-      return result;
-    }
-  });
+    });
 
-  await assert.rejects(startWithFake(fake), /container isolation could not be proven/u);
-  assert.equal(fake.state.containerPresent, false);
-  assert.equal(fake.state.imagePresent, false);
+    await assert.rejects(
+      startWithFake(fake),
+      (error) =>
+        error instanceof Error &&
+        /container isolation could not be proven \[read-only-rootfs,memory-swap-limit\]/u.test(error.message) &&
+        !error.message.includes("untrusted-read-only-value") &&
+        !error.message.includes("-1")
+    );
+    assert.equal(fake.state.containerPresent, false);
+    assert.equal(fake.state.imagePresent, false);
+  }
+);
+
+linuxTest("accepts only Docker's true no-new-privileges inspection forms", async (t) => {
+  for (const securityOptions of [["no-new-privileges"], ["no-new-privileges=true"], ["no-new-privileges:true"]]) {
+    await t.test(`accepts ${securityOptions[0]}`, async () => {
+      const fake = createFakeDocker({
+        alterResult({ input, result, state }) {
+          if (input.args[0] === "container" && input.args[1] === "inspect") {
+            return success(
+              containerInspection(state, {
+                securityOptions: JSON.stringify(securityOptions)
+              })
+            );
+          }
+          return result;
+        }
+      });
+
+      const fixture = await startWithFake(fake);
+      await fixture.cleanup();
+      assert.equal(fake.state.containerPresent, false);
+      assert.equal(fake.state.imagePresent, false);
+    });
+  }
+
+  for (const securityOptions of [
+    [],
+    ["no-new-privileges=false"],
+    ["no-new-privileges:1"],
+    ["apparmor=unconfined"],
+    ["no-new-privileges=true", "seccomp=unconfined"]
+  ]) {
+    await t.test(`rejects ${JSON.stringify(securityOptions)}`, async () => {
+      const fake = createFakeDocker({
+        alterResult({ input, result, state }) {
+          if (input.args[0] === "container" && input.args[1] === "inspect") {
+            return success(
+              containerInspection(state, {
+                securityOptions: JSON.stringify(securityOptions)
+              })
+            );
+          }
+          return result;
+        }
+      });
+
+      await assert.rejects(startWithFake(fake), /\[no-new-privileges\]/u);
+      assert.equal(fake.state.containerPresent, false);
+      assert.equal(fake.state.imagePresent, false);
+    });
+  }
 });
 
 linuxTest("ownership mismatch fails closed without deleting an unproven container", async () => {

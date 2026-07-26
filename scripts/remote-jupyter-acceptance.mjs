@@ -35,6 +35,7 @@ const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u;
 const CONTAINER_ID = /^[0-9a-f]{64}$/u;
 const ENGINE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{7,127}$/u;
 const BOUNDED_DOCKER_VERSION = /^[\x21-\x7e]{1,128}$/u;
+const NO_NEW_PRIVILEGES_OPTIONS = new Set(["no-new-privileges", "no-new-privileges=true", "no-new-privileges:true"]);
 const CONTAINER_INSPECT_FORMAT = [
   "{{.Id}}",
   "{{.Name}}",
@@ -897,26 +898,43 @@ async function assertOwnedContainer(docker, resources, { requireRunning, require
   ) {
     throw new Error("Remote Jupyter container ownership could not be proven.");
   }
-  if (
-    requireIsolation &&
-    (user !== "65532:65532" ||
-      !["true", "false"].includes(running) ||
-      (requireRunning && running !== "true") ||
-      readOnly !== "true" ||
-      restart !== "no" ||
-      pids !== "256" ||
-      memory !== "1073741824" ||
-      memorySwap !== "1073741824" ||
-      nanoCpus !== "2000000000" ||
-      !Array.isArray(capDrop) ||
-      capDrop.length !== 1 ||
-      capDrop[0] !== "ALL" ||
+  if (requireIsolation) {
+    const isolationFailures = [];
+    if (user !== "65532:65532") isolationFailures.push("user");
+    if (!["true", "false"].includes(running) || (requireRunning && running !== "true")) {
+      isolationFailures.push("running-state");
+    }
+    if (readOnly !== "true") isolationFailures.push("read-only-rootfs");
+    if (restart !== "no") isolationFailures.push("restart-policy");
+    if (pids !== "256") isolationFailures.push("pids-limit");
+    if (memory !== "1073741824") isolationFailures.push("memory-limit");
+    if (memorySwap !== "1073741824") isolationFailures.push("memory-swap-limit");
+    if (nanoCpus !== "2000000000") isolationFailures.push("cpu-limit");
+    if (!Array.isArray(capDrop) || capDrop.length !== 1 || capDrop[0] !== "ALL") {
+      isolationFailures.push("capabilities");
+    }
+    if (
       !Array.isArray(securityOptions) ||
-      !securityOptions.some((value) => /^no-new-privileges(?::true)?$/u.test(value)) ||
-      !(binds === null || (Array.isArray(binds) && binds.length === 0)) ||
-      !isPlainObject(tmpfs) ||
-      Object.keys(tmpfs).length !== 2 ||
-      !hasTmpfsProtections(tmpfs["/tmp"], ["noexec", "nosuid", "nodev", "size=536870912", "mode=1777"]) ||
+      securityOptions.length !== 1 ||
+      !NO_NEW_PRIVILEGES_OPTIONS.has(securityOptions[0])
+    ) {
+      isolationFailures.push("no-new-privileges");
+    }
+    if (!(binds === null || (Array.isArray(binds) && binds.length === 0))) {
+      isolationFailures.push("host-binds");
+    }
+    const tmpfsIsPlainObject = isPlainObject(tmpfs);
+    if (!tmpfsIsPlainObject || Object.keys(tmpfs).length !== 2) {
+      isolationFailures.push("tmpfs-shape");
+    }
+    if (
+      tmpfsIsPlainObject &&
+      !hasTmpfsProtections(tmpfs["/tmp"], ["noexec", "nosuid", "nodev", "size=536870912", "mode=1777"])
+    ) {
+      isolationFailures.push("tmpfs-temporary");
+    }
+    if (
+      tmpfsIsPlainObject &&
       !hasTmpfsProtections(tmpfs["/run/openwrangler"], [
         "noexec",
         "nosuid",
@@ -925,10 +943,14 @@ async function assertOwnedContainer(docker, resources, { requireRunning, require
         "mode=0700",
         "uid=65532",
         "gid=65532"
-      ]) ||
-      networkMode !== "bridge")
-  ) {
-    throw new Error("Remote Jupyter container isolation could not be proven.");
+      ])
+    ) {
+      isolationFailures.push("tmpfs-runtime");
+    }
+    if (networkMode !== "bridge") isolationFailures.push("network-mode");
+    if (isolationFailures.length !== 0) {
+      throw new Error(`Remote Jupyter container isolation could not be proven [${isolationFailures.join(",")}].`);
+    }
   }
 }
 
