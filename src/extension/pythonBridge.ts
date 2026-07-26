@@ -19,8 +19,14 @@ import { getSetting, runtimeRequestTimeoutMs } from "./configuration";
 import {
   DEPENDENCY_INSTALL_SHUTDOWN_WAIT_MS,
   DEPENDENCY_INSTALL_TIMEOUT_MS,
+  DependencyGuardCommandError,
+  DependencyGuardCommandTimeoutError,
+  DependencyGuardProtocolError,
+  getDependencyGuardStatus,
+  type DependencyGuardStatus,
   type OwnedDependencyInstall,
   startDependencyInstall,
+  validateDependencyGuard,
   waitForDependencyInstallExit
 } from "./dependencyInstaller";
 import {
@@ -52,6 +58,7 @@ interface PendingRequest {
 
 interface MissingDependencies {
   readonly environment: PythonEnvironment;
+  readonly dependencies: readonly PythonDependency[];
   readonly requirements: readonly string[];
   readonly selection: EnvironmentSelection;
   readonly selectionEpoch: number;
@@ -107,13 +114,14 @@ interface PreparedRequest {
 }
 
 interface DependencyInstallOperation {
-  phase: "confirming" | "quiescing" | "starting" | "mutating" | "uncertain" | "settled";
+  phase: "confirming" | "quiescing" | "starting" | "ready" | "mutating" | "validating" | "uncertain" | "settled";
   promise?: Promise<boolean>;
   authorizationEpoch?: number;
   authorizationSelection?: EnvironmentSelection;
   runtime?: RuntimeSlot;
   releaseRuntime?: () => void;
   executable?: string;
+  dependencies?: readonly PythonDependency[];
   requirements?: readonly string[];
   mutationKey?: string;
   process?: OwnedDependencyInstall;
@@ -133,10 +141,29 @@ interface DependencyProbeOutcome {
   readonly flight?: DependencyProbeFlight;
 }
 
+interface DependencyGuardStatusFlight {
+  readonly environmentIdentityKey: string;
+  readonly promise: Promise<DependencyGuardStatus>;
+}
+
+interface DependencyEnvironmentUncertainty {
+  readonly environment: PythonEnvironment;
+  readonly token?: string;
+  readonly reason: string;
+  readonly guidance: string;
+}
+
 class DetachedDependencyProbeError extends Error {
   constructor() {
     super("The Python dependency probe was invalidated before it completed.");
     this.name = "DetachedDependencyProbeError";
+  }
+}
+
+class DependencyGuardCrossIdentityFlightError extends Error {
+  constructor() {
+    super("A dependency guard check for another executable identity in this package environment is still settling.");
+    this.name = "DependencyGuardCrossIdentityFlightError";
   }
 }
 
@@ -147,6 +174,7 @@ const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple P
 // exceed this bound; the next ownership release trims back to it.
 const MAX_RETAINED_INACTIVE_SCOPES = 128;
 const MAX_COMPLETED_DEPENDENCY_PROBES = 128;
+const MAX_RETAINED_DEPENDENCY_UNCERTAINTIES = 128;
 
 async function joinProcessStops(previous: Promise<void>, current: Promise<void>): Promise<void> {
   const results = await Promise.allSettled([previous, current]);
@@ -171,6 +199,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private readonly spawnProcess = spawn;
   private readonly launchDependencyInstall = startDependencyInstall;
+  private readonly readDependencyGuardStatus = getDependencyGuardStatus;
+  private readonly validateDependencyInstall = validateDependencyGuard;
   private readonly waitForDependencyInstallExit = waitForDependencyInstallExit;
   private readonly configurationSubscription: vscode.Disposable;
   private readonly environmentApiBroker: PythonEnvironmentApiBroker;
@@ -185,6 +215,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly dependencyCache = new Map<string, string[]>();
   private readonly dependencyProbes = new Map<string, DependencyProbeFlight>();
   private readonly dependencyProbeOwners = new Map<string, DependencyProbeFlight>();
+  private readonly dependencyGuardStatusFlights = new Map<string, DependencyGuardStatusFlight>();
+  private readonly dependencyEnvironmentUncertainty = new Map<string, DependencyEnvironmentUncertainty>();
   private lastMissingDependencies: MissingDependencies | undefined;
   private dependencyInstallOperation: DependencyInstallOperation | undefined;
   private readonly dependencyMutations = new Map<string, DependencyInstallOperation>();
@@ -645,8 +677,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     operation.runtime = runtime;
     operation.releaseRuntime = this.retainRuntime(runtime);
     const executable = missing.environment.executable;
+    const dependencies = missing.dependencies.map((dependency) => ({ ...dependency }));
     const requirements = [...missing.requirements];
     operation.executable = executable;
+    operation.dependencies = dependencies;
     operation.requirements = requirements;
     if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
       await this.reportInvalidDependencyInstallTarget();
@@ -691,10 +725,44 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         }
 
         operation.phase = "starting";
-        const process = this.launchDependencyInstall(executable, requirements, {});
+        const process = this.launchDependencyInstall(missing.environment, dependencies, {
+          helperPath: this.dependencyGuardHelperPath()
+        });
         operation.process = process;
-        operation.phase = "mutating";
         installationStarted = true;
+
+        let writesAuthorized = false;
+        let abortAttempted = false;
+        const abortBeforeWrites = (): void => {
+          if (writesAuthorized || abortAttempted) return;
+          abortAttempted = true;
+          try {
+            process.abortBeforeWrites();
+          } catch (error) {
+            this.output.appendLine(
+              `Dependency guard pre-write abort failed for ${executable}: ${dependencyGuardFailureReason(error)}`
+            );
+          }
+        };
+        try {
+          const ready = await process.ready;
+          operation.phase = "ready";
+          if (ready.token !== process.token) {
+            throw new Error("The dependency guard READY token did not match its owned install operation.");
+          }
+          if (!(await this.revalidateDependencyInstallAuthorization(operation, missing, executable, requirements))) {
+            return false;
+          }
+          process.authorizeWrites();
+          writesAuthorized = true;
+          operation.phase = "mutating";
+        } catch (error) {
+          abortBeforeWrites();
+          if (this.disposed) return false;
+          throw error;
+        } finally {
+          abortBeforeWrites();
+        }
 
         try {
           await this.waitForDependencyInstallExit(process, DEPENDENCY_INSTALL_TIMEOUT_MS);
@@ -707,6 +775,29 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         try {
           await process.completion;
         } catch (error) {
+          this.markDependencyEnvironmentUncertain(missing.environment, process.token, error);
+          if (this.disposed) return false;
+          throw error;
+        }
+
+        operation.phase = "validating";
+        this.markDependencyEnvironmentUncertain(
+          missing.environment,
+          process.token,
+          "The dependency install exited but its exact environment has not been validated yet."
+        );
+        if (this.disposed) return false;
+        try {
+          const validation = await this.validateDependencyInstall(missing.environment, process.token, {
+            helperPath: this.dependencyGuardHelperPath()
+          });
+          if (validation.token !== process.token) {
+            throw new Error("The dependency guard validation token did not match its owned install operation.");
+          }
+          this.clearDependencyEnvironmentUncertainty(missing.environment, process.token);
+        } catch (error) {
+          operation.phase = "uncertain";
+          this.markDependencyEnvironmentUncertain(missing.environment, process.token, error);
           if (this.disposed) return false;
           throw error;
         }
@@ -798,10 +889,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   }
 
   private finishDependencyInstallOperation(operation: DependencyInstallOperation): void {
-    if (operation.phase === "uncertain") {
-      const confirmation = operation.process?.exit ?? operation.quiescence;
-      if (confirmation) void confirmation.then(() => this.releaseDependencyInstallOperation(operation));
-      else this.releaseDependencyInstallOperation(operation);
+    const confirmation =
+      operation.process?.exit ?? (operation.phase === "uncertain" ? operation.quiescence : undefined);
+    if (confirmation) {
+      void confirmation.then(() => this.releaseDependencyInstallOperation(operation));
       return;
     }
     this.releaseDependencyInstallOperation(operation);
@@ -831,6 +922,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       missing.selectionEpoch === missing.selection.epoch &&
       this.lastMissingDependencies === missing &&
       missing.environment.executable === executable &&
+      missing.dependencies.length === requirements.length &&
+      missing.dependencies.every((dependency, index) => dependency.installSpec === requirements[index]) &&
       missing.requirements.length === requirements.length &&
       missing.requirements.every((requirement, index) => requirement === requirements[index])
     );
@@ -862,6 +955,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     return (
       this.isDependencyInstallOperationAuthorized(operation, executable, requirements, authorizationEpoch) &&
+      pythonDependenciesEqual(operation.dependencies ?? [], missing.dependencies) &&
       pythonEnvironmentIdentityKey(currentEnvironment) === pythonEnvironmentIdentityKey(missing.environment) &&
       pythonPackageEnvironmentKey(currentEnvironment) === operation.mutationKey
     );
@@ -880,6 +974,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       operation.authorizationEpoch === authorizationEpoch &&
       this.dependencyAuthorizationEpoch === authorizationEpoch &&
       operation.executable === executable &&
+      operation.dependencies !== undefined &&
       operation.requirements?.length === requirements.length &&
       operation.requirements.every((requirement, index) => requirement === requirements[index]) &&
       Boolean(operation.mutationKey) &&
@@ -947,6 +1042,15 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
     let dependencyInstallExit: Promise<void> | undefined;
     if (dependencyInstall?.process) {
+      if (!dependencyInstall.process.didAuthorize()) {
+        try {
+          dependencyInstall.process.abortBeforeWrites();
+        } catch (error) {
+          this.output.appendLine(
+            `Dependency guard pre-write abort during shutdown failed: ${dependencyGuardFailureReason(error)}`
+          );
+        }
+      }
       if (dependencyInstall.uncertainty) {
         dependencyInstallExit = Promise.reject(dependencyInstall.uncertainty);
       } else {
@@ -1905,11 +2009,17 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         }
       };
     }
+    const dependencyGuardError = await this.dependencyGuardErrorForEnvironment(environment);
+    if (dependencyGuardError) return { request: dependencyGuardError };
+    if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
+    if (this.dependencyMutations.has(pythonPackageEnvironmentKey(environment))) {
+      return { request: this.runtimeSelectionChangedError() };
+    }
     const processSelection = { selection, environment };
     if (request.source.kind !== "file") return { request, processSelection };
 
     const backends = request.backend ? [request.backend] : automaticBackends(request.source);
-    const failures: Array<{ backend: DataBackend; missing: string[] }> = [];
+    const failures: Array<{ backend: DataBackend; missing: string[]; dependencies: readonly PythonDependency[] }> = [];
     for (const backend of backends) {
       if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
       const dependencies = requiredDependencies(backend, request.source);
@@ -1938,13 +2048,19 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         }
         return { request: { ...request, backend }, processSelection };
       }
-      failures.push({ backend, missing });
+      failures.push({ backend, missing, dependencies });
     }
     const missing = [...new Set(failures.flatMap((failure) => failure.missing))];
     if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
+    const selectedFailure = failures[0];
+    const selectedRequirements = [...(selectedFailure?.missing ?? missing)];
+    const selectedRequirementSet = new Set(selectedRequirements);
     this.lastMissingDependencies = {
       environment,
-      requirements: [...(failures[0]?.missing ?? missing)],
+      dependencies: (selectedFailure?.dependencies ?? [])
+        .filter((dependency) => selectedRequirementSet.has(dependency.installSpec))
+        .map((dependency) => ({ ...dependency })),
+      requirements: selectedRequirements,
       selection,
       selectionEpoch: selection.epoch
     };
@@ -1969,10 +2085,137 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     };
   }
 
+  private dependencyGuardHelperPath(): string {
+    return this.context.asAbsolutePath(path.join("python", "openwrangler_runtime", "dependency_guard.py"));
+  }
+
+  private dependencyGuardStatusForEnvironment(environment: PythonEnvironment): Promise<DependencyGuardStatus> {
+    const key = pythonPackageEnvironmentKey(environment);
+    const environmentIdentityKey = pythonEnvironmentIdentityKey(environment);
+    const existing = this.dependencyGuardStatusFlights.get(key);
+    if (existing) {
+      if (existing.environmentIdentityKey === environmentIdentityKey) return existing.promise;
+      return existing.promise.then(
+        () => Promise.reject(new DependencyGuardCrossIdentityFlightError()),
+        () => Promise.reject(new DependencyGuardCrossIdentityFlightError())
+      );
+    }
+
+    const promise = Promise.resolve().then(() =>
+      this.readDependencyGuardStatus(environment, { helperPath: this.dependencyGuardHelperPath() })
+    );
+    const flight = { environmentIdentityKey, promise };
+    this.dependencyGuardStatusFlights.set(key, flight);
+    const release = (): void => {
+      if (this.dependencyGuardStatusFlights.get(key) === flight) {
+        this.dependencyGuardStatusFlights.delete(key);
+      }
+    };
+    void promise.then(release, release);
+    return promise;
+  }
+
+  private async dependencyGuardErrorForEnvironment(environment: PythonEnvironment): Promise<ErrorResponse | undefined> {
+    let status: DependencyGuardStatus;
+    try {
+      status = await this.dependencyGuardStatusForEnvironment(environment);
+    } catch (error) {
+      if (this.disposed) return this.runtimeSelectionChangedError();
+      this.markDependencyEnvironmentUncertain(environment, undefined, error);
+      return this.dependencyEnvironmentUncertainError(this.dependencyEnvironmentBlocker(environment)!);
+    }
+
+    if (status.state === "dirty") {
+      this.markDependencyEnvironmentUncertain(
+        environment,
+        status.token,
+        "A durable dependency-mutation journal requires exact validation."
+      );
+      return this.dependencyEnvironmentUncertainError(this.dependencyEnvironmentBlocker(environment)!);
+    }
+
+    this.dependencyEnvironmentUncertainty.delete(pythonEnvironmentIdentityKey(environment));
+    const retained = this.dependencyEnvironmentBlocker(environment);
+    if (retained) return this.dependencyEnvironmentUncertainError(retained);
+    return undefined;
+  }
+
+  private markDependencyEnvironmentUncertain(
+    environment: PythonEnvironment,
+    token: string | undefined,
+    reason: unknown
+  ): void {
+    const key = pythonEnvironmentIdentityKey(environment);
+    const retained = this.dependencyEnvironmentUncertainty.get(key);
+    this.dependencyEnvironmentUncertainty.delete(key);
+    this.dependencyEnvironmentUncertainty.set(key, {
+      environment: {
+        ...environment,
+        executableIdentity: { ...environment.executableIdentity },
+        packageRootIdentity: { ...environment.packageRootIdentity }
+      },
+      token: token ?? retained?.token,
+      reason: dependencyGuardFailureReason(reason),
+      guidance: dependencyGuardRecoveryGuidance(reason)
+    });
+    while (this.dependencyEnvironmentUncertainty.size > MAX_RETAINED_DEPENDENCY_UNCERTAINTIES) {
+      const oldest = this.dependencyEnvironmentUncertainty.keys().next().value;
+      if (oldest === undefined) break;
+      this.dependencyEnvironmentUncertainty.delete(oldest);
+    }
+  }
+
+  private clearDependencyEnvironmentUncertainty(environment: PythonEnvironment, token: string): void {
+    const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
+    for (const [key, retained] of this.dependencyEnvironmentUncertainty) {
+      if (retained.token === token && pythonPackageEnvironmentKey(retained.environment) === packageEnvironmentKey) {
+        this.dependencyEnvironmentUncertainty.delete(key);
+      }
+    }
+  }
+
+  private dependencyEnvironmentBlocker(environment: PythonEnvironment): DependencyEnvironmentUncertainty | undefined {
+    const exactKey = pythonEnvironmentIdentityKey(environment);
+    const exact = this.dependencyEnvironmentUncertainty.get(exactKey);
+    if (exact?.token) {
+      this.dependencyEnvironmentUncertainty.delete(exactKey);
+      this.dependencyEnvironmentUncertainty.set(exactKey, exact);
+      return exact;
+    }
+    const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
+    const packageEntry = [...this.dependencyEnvironmentUncertainty.entries()].find(
+      ([, uncertainty]) =>
+        uncertainty.token !== undefined &&
+        pythonPackageEnvironmentKey(uncertainty.environment) === packageEnvironmentKey
+    );
+    if (packageEntry) {
+      const [key, uncertainty] = packageEntry;
+      this.dependencyEnvironmentUncertainty.delete(key);
+      this.dependencyEnvironmentUncertainty.set(key, uncertainty);
+      return uncertainty;
+    }
+    if (exact) {
+      this.dependencyEnvironmentUncertainty.delete(exactKey);
+      this.dependencyEnvironmentUncertainty.set(exactKey, exact);
+    }
+    return exact;
+  }
+
+  private dependencyEnvironmentUncertainError(uncertainty: DependencyEnvironmentUncertainty): ErrorResponse {
+    return {
+      kind: "error",
+      code: "dependency_environment_uncertain",
+      message: `Open Wrangler cannot use ${uncertainty.environment.executable} because its dependency state is uncertain.`,
+      detail: uncertainty.guidance,
+      recoverable: true
+    };
+  }
+
   private assertDependencyEnvironmentAvailable(environment: PythonEnvironment): void {
-    if (!this.dependencyMutations.has(pythonPackageEnvironmentKey(environment))) return;
+    const key = pythonPackageEnvironmentKey(environment);
+    if (!this.dependencyMutations.has(key) && !this.dependencyEnvironmentBlocker(environment)) return;
     throw new Error(
-      `Open Wrangler cannot start or reuse ${environment.executable} while its Python dependencies are being changed.`
+      `Open Wrangler cannot start or reuse ${environment.executable} while its Python dependencies are being changed or their state is uncertain.`
     );
   }
 
@@ -2072,17 +2315,29 @@ function pythonPackageEnvironmentKey(environment: Pick<PythonEnvironment, "packa
 }
 
 function pythonEnvironmentIdentityKey(
-  environment: Pick<PythonEnvironment, "executable" | "packageRootIdentity" | "version">
+  environment: Pick<
+    PythonEnvironment,
+    "executable" | "executableIdentity" | "packageRoot" | "packageRootIdentity" | "version"
+  >
 ): string {
   return JSON.stringify([
     pythonPackageEnvironmentKey(environment),
     pythonExecutableKey(environment.executable),
-    environment.version
+    path.normalize(environment.packageRoot),
+    environment.version,
+    environment.executableIdentity.device,
+    environment.executableIdentity.inode,
+    environment.executableIdentity.size,
+    environment.executableIdentity.mtimeNs,
+    environment.executableIdentity.ctimeNs
   ]);
 }
 
 function dependencyProbeKey(
-  environment: Pick<PythonEnvironment, "executable" | "packageRootIdentity" | "version">,
+  environment: Pick<
+    PythonEnvironment,
+    "executable" | "executableIdentity" | "packageRoot" | "packageRootIdentity" | "version"
+  >,
   dependencies: readonly PythonDependency[]
 ): string {
   if (!isFullyQualifiedPythonPath(environment.executable)) {
@@ -2096,12 +2351,69 @@ function dependencyProbeKey(
     dependency.minimumVersion ?? null,
     dependency.maximumVersionExclusive ?? null
   ]);
-  const probeIdentity = JSON.stringify([
-    pythonExecutableKey(environment.executable),
-    environment.version,
-    descriptorKey
-  ]);
+  const probeIdentity = JSON.stringify([pythonEnvironmentIdentityKey(environment), descriptorKey]);
   return `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${probeIdentity}`;
+}
+
+function pythonDependenciesEqual(left: readonly PythonDependency[], right: readonly PythonDependency[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((dependency, index) => {
+      const candidate = right[index];
+      return (
+        candidate !== undefined &&
+        dependency.importModule === candidate.importModule &&
+        dependency.distribution === candidate.distribution &&
+        dependency.installSpec === candidate.installSpec &&
+        dependency.minimumVersion === candidate.minimumVersion &&
+        dependency.maximumVersionExclusive === candidate.maximumVersionExclusive
+      );
+    })
+  );
+}
+
+function dependencyGuardFailureReason(reason: unknown): string {
+  return reason instanceof Error
+    ? reason.message
+    : typeof reason === "string"
+      ? reason
+      : "Unknown dependency guard failure.";
+}
+
+function dependencyGuardRecoveryGuidance(reason: unknown): string {
+  if (reason instanceof DependencyGuardCommandError) {
+    switch (reason.code) {
+      case "busy":
+        return "Another dependency guard currently owns this environment. Wait for it to finish, then retry.";
+      case "malformed_state":
+      case "invalid_request":
+      case "internal_error":
+        return "The dependency recovery journal could not be verified. Inspect or restore the exact environment before retrying.";
+      case "validation_failed":
+      case "pip_failed":
+        return "The selected environment did not satisfy the guarded dependency validation. Repair it, then retry.";
+      case "environment_changed":
+        return "The executable or package environment changed since the dependency operation began. Select the intended runtime again.";
+      case "stale_or_missing_marker":
+        return "The dependency recovery marker changed before validation. Retry so Open Wrangler can inspect the exact environment again.";
+    }
+  }
+  if (reason instanceof DependencyGuardProtocolError || reason instanceof DependencyGuardCommandTimeoutError) {
+    return "The dependency guard response could not be verified. Wait for any environment changes to finish, then retry.";
+  }
+  if (
+    typeof reason === "string" &&
+    (reason.includes("durable dependency-mutation journal") || reason.includes("has not been validated"))
+  ) {
+    return (
+      "Open Wrangler found an unfinished dependency change. Run " +
+      "Open Wrangler: Revalidate Runtime Dependencies before using the exact environment."
+    );
+  }
+  if (reason instanceof DependencyGuardCrossIdentityFlightError) {
+    return "Another executable identity in this package environment is being checked. Retry after that check settles.";
+  }
+  return "The exact Python environment must be recovered and validated before Open Wrangler can use it.";
 }
 
 function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {
