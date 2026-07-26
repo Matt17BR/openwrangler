@@ -16,6 +16,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
+const LINUX_ONLY = { skip: process.platform !== "linux" };
+
 function testFixture() {
   const root = mkdtempSync(join(tmpdir(), "openwrangler-xvfb-bootstrap-"));
   chmodSync(root, 0o700);
@@ -54,7 +56,7 @@ function testFixture() {
   };
 }
 
-test("prepares one pinned repository-local Xvfb and reuses the validated cache", async (context) => {
+test("prepares one pinned repository-local Xvfb and reuses the validated cache", LINUX_ONLY, async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
   let downloads = 0;
@@ -88,7 +90,7 @@ test("prepares one pinned repository-local Xvfb and reuses the validated cache",
   assert.equal(first.startsWith(fixture.cacheRoot), true);
 });
 
-test("fails unsupported hosts before dependency, network, or extraction work", async (context) => {
+test("fails unsupported hosts before dependency, network, or extraction work", LINUX_ONLY, async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
   let called = false;
@@ -143,7 +145,7 @@ test("fails a non-Linux platform before dependency, network, or extraction work"
   assert.equal(existsSync(fixture.cacheRoot), false);
 });
 
-test("fails a host dependency version mismatch before downloading", async (context) => {
+test("fails a host dependency version mismatch before downloading", LINUX_ONLY, async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
   let downloaded = false;
@@ -166,7 +168,7 @@ test("fails a host dependency version mismatch before downloading", async (conte
   assert.equal(existsSync(fixture.cacheRoot), false);
 });
 
-test("never publishes a package whose pinned digest does not match", async (context) => {
+test("never publishes a package whose pinned digest does not match", LINUX_ONLY, async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
 
@@ -190,7 +192,7 @@ test("never publishes a package whose pinned digest does not match", async (cont
   );
 });
 
-test("rejects a symbolic-link executable extracted from the archive", async (context) => {
+test("rejects a symbolic-link executable extracted from the archive", LINUX_ONLY, async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
   const outside = join(fixture.root, "outside-Xvfb");
@@ -218,7 +220,7 @@ test("rejects a symbolic-link executable extracted from the archive", async (con
   assert.equal(existsSync(join(fixture.cacheRoot, fixture.manifest.packages["ubuntu:99.99:x64"].cacheKey)), false);
 });
 
-test("concurrent preparation publishes one complete cache entry", async (context) => {
+test("concurrent preparation publishes one complete cache entry", LINUX_ONLY, async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
   let downloads = 0;
