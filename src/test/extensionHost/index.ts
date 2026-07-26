@@ -21,6 +21,7 @@ import * as path from "node:path";
 import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
 import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
+import type { Jupyter, KernelStatus } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
@@ -377,14 +378,18 @@ export async function run(): Promise<void> {
     ),
     "The argument-only Jupyter viewer command must stay out of the Command Palette."
   );
-  const notebookVariableWhen = "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook";
-  for (const menu of ["notebook/title", "notebook/toolbar"]) {
+  const notebookVariableWhen =
+    "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook && isWorkspaceTrusted && jupyter.ispythonnotebook && jupyter.kernel.isjupyter";
+  const notebookVariableWhenCompact =
+    "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook && isWorkspaceTrusted && config.notebook.globalToolbar != true && jupyter.ispythonnotebook && jupyter.kernel.isjupyter";
+  for (const [menu, when] of [
+    ["editor/title", notebookVariableWhenCompact],
+    ["notebook/toolbar", notebookVariableWhen]
+  ] as const) {
     assert.ok(
       contributions.menus?.[menu]?.some(
         (item) =>
-          item.command === "openWrangler.openNotebookVariable" &&
-          item.when === notebookVariableWhen &&
-          item.group === "navigation@50"
+          item.command === "openWrangler.openNotebookVariable" && item.when === when && item.group === "navigation@50"
       ),
       `${menu} must expose the manual Open Wrangler variable action for a real Jupyter kernel.`
     );
@@ -642,6 +647,11 @@ async function exerciseReleasedJupyterExtension(
       "The released Jupyter kernel must use the runner-selected private Python environment."
     );
     assert.equal(initialKernel.setup, setupMarker);
+    assert.equal(
+      initialKernel.runtime,
+      false,
+      "The private released-Jupyter kernel must not inherit an installed Open Wrangler runtime before bootstrap."
+    );
 
     const workbench = await connectToEditorWorkbench();
     assertExactOpenNotebookDocument(notebook, "before opening the real Jupyter Variables view");
@@ -661,6 +671,8 @@ async function exerciseReleasedJupyterExtension(
       await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
       await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
       assert.equal(testing.diagnostics().sessionCount, 0);
+      await closeReleasedJupyterSessionTabs();
+      assert.equal(testing.diagnostics().sessionCount, 0);
 
       recordAcceptanceProgress("jupyter-deny:persisted-denial");
       assertExactOpenNotebookDocument(notebook, "before retrying the denied released Jupyter permission");
@@ -674,6 +686,8 @@ async function exerciseReleasedJupyterExtension(
         "the persisted released-Jupyter denial retry"
       );
       assertExactOpenNotebookDocument(notebook, "after retrying the denied released Jupyter permission");
+      const denialError = await waitForReleasedJupyterTerminalPanelError(workbench);
+      assert.ok(denialError.length > 0, "The persisted Jupyter denial must publish a terminal panel error.");
       await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
       assert.equal(
         await visibleReleasedJupyterConsentCount(workbench),
@@ -836,6 +850,7 @@ async function exerciseReleasedJupyterExtension(
 
 function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string): void {
   const setup = [
+    "import importlib.util",
     "import json",
     "import os",
     "import sys",
@@ -847,7 +862,9 @@ function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string)
     "polars_series = pl.Series('series_value', [7, 8])",
     `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
     `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
-      "'executable': sys.executable, 'pid': os.getpid(), 'setup': openwrangler_restart_marker" +
+      "'executable': sys.executable, 'pid': os.getpid(), " +
+      "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
+      "'setup': openwrangler_restart_marker" +
       "}, sort_keys=True))"
   ];
   writeFileSync(
@@ -881,9 +898,11 @@ function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string)
           metadata: {},
           outputs: [],
           source: [
-            "import json, os\n",
+            "import importlib.util, json, os\n",
             `print(${JSON.stringify(RELEASED_JUPYTER_RESTART_RESULT)} + json.dumps({` +
-              "'pid': os.getpid(), 'setup': globals().get('openwrangler_restart_marker')" +
+              "'pid': os.getpid(), " +
+              "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
+              "'setup': globals().get('openwrangler_restart_marker')" +
               "}, sort_keys=True))\n"
           ]
         }
@@ -925,25 +944,37 @@ async function executeReleasedNotebookCell(
   assertExactOpenNotebookDocument(notebook, `before executing cell ${index}`);
   assert.ok(index >= 0 && index < notebook.cellCount, `Released-Jupyter cell ${index} must exist.`);
   const cell = notebook.cellAt(index);
-  await vscode.commands.executeCommand("notebook.cell.execute", {
-    ranges: [{ start: index, end: index + 1 }],
-    document: notebook.uri
+  let observedFreshExecutionSummary = false;
+  const executionListener = vscode.workspace.onDidChangeNotebookDocument((event) => {
+    if (event.notebook !== notebook) return;
+    if (event.cellChanges.some((change) => change.cell === cell && change.executionSummary !== undefined)) {
+      observedFreshExecutionSummary = true;
+    }
   });
-  assertExactOpenNotebookDocument(notebook, `after dispatching cell ${index}`);
-  const deadline = Date.now() + 90_000;
-  do {
-    assertExactOpenNotebookDocument(notebook, `while waiting for cell ${index}`);
-    if (cell.executionSummary?.success === true) {
-      if (expectedText === undefined || notebookCellOutputText(cell).includes(expectedText)) return;
-    }
-    if (cell.executionSummary?.success === false) {
-      throw new Error(`Released-Jupyter cell ${index} failed: ${notebookCellOutputText(cell)}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  } while (Date.now() < deadline);
-  throw new Error(
-    `Timed out waiting for released-Jupyter cell ${index}. Output: ${JSON.stringify(notebookCellOutputText(cell))}`
-  );
+  try {
+    await vscode.commands.executeCommand("notebook.cell.execute", {
+      ranges: [{ start: index, end: index + 1 }],
+      document: notebook.uri
+    });
+    assertExactOpenNotebookDocument(notebook, `after dispatching cell ${index}`);
+    const deadline = Date.now() + 90_000;
+    do {
+      assertExactOpenNotebookDocument(notebook, `while waiting for cell ${index}`);
+      if (observedFreshExecutionSummary && cell.executionSummary?.success === true) {
+        if (expectedText === undefined || notebookCellOutputText(cell).includes(expectedText)) return;
+      }
+      if (observedFreshExecutionSummary && cell.executionSummary?.success === false) {
+        throw new Error(`Released-Jupyter cell ${index} failed: ${notebookCellOutputText(cell)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    throw new Error(
+      `Timed out waiting for a fresh released-Jupyter execution of cell ${index}. ` +
+        `Output: ${JSON.stringify(notebookCellOutputText(cell))}`
+    );
+  } finally {
+    executionListener.dispose();
+  }
 }
 
 function notebookCellOutputText(cell: vscode.NotebookCell): string {
@@ -1057,6 +1088,25 @@ async function visibleReleasedJupyterConsentCount(workbench: Page): Promise<numb
       .catch(() => 0);
   }
   return count;
+}
+
+async function waitForReleasedJupyterTerminalPanelError(workbench: Page): Promise<string> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      if (!classifyRendererUrl(frame.url()).isOpenWranglerWebview) continue;
+      const alert = frame.getByRole("alert").first();
+      try {
+        if ((await alert.count()) === 0 || !(await alert.isVisible())) continue;
+        const message = (await alert.innerText()).trim();
+        if (message.length > 0) return message;
+      } catch {
+        // The denied panel can be replaced while its bridge error is published.
+      }
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error("Timed out waiting for the persisted released-Jupyter denial to reach a terminal panel error.");
 }
 
 async function waitForStableReleasedJupyterSessionCount(
@@ -1313,20 +1363,19 @@ async function exerciseReleasedJupyterRestartReplay(
   priorPid: number,
   setupMarker: string
 ): Promise<void> {
-  assertExactOpenNotebookDocument(notebook, "before restarting its released Jupyter kernel");
-  await vscode.commands.executeCommand("jupyter.restartkernel", notebook.uri);
-  assertExactOpenNotebookDocument(notebook, "after dispatching the released Jupyter kernel restart");
+  await restartReleasedJupyterKernelAndWait(notebook);
 
-  // The restart command resolves before the new process is necessarily idle.
-  // Executing through the real notebook surface is queued behind that restart,
-  // and avoids creating a second stable-API permission identity for the
-  // acceptance harness itself.
   recordAcceptanceProgress("jupyter-allow:restart-probe");
   await showExactReleasedNotebook(notebook);
   await executeReleasedNotebookCell(notebook, 3, RELEASED_JUPYTER_RESTART_RESULT);
   const replacement = releasedNotebookJsonResult(notebook.cellAt(3), RELEASED_JUPYTER_RESTART_RESULT, "restart probe");
   assert.notEqual(Number(replacement.pid), priorPid, "A released-Jupyter restart must replace the kernel process.");
   assert.equal(replacement.setup, null, "The replacement kernel must not retain the prior setup marker.");
+  assert.equal(
+    replacement.runtime,
+    false,
+    "The replacement kernel must require Open Wrangler to transfer its runtime bundle again."
+  );
 
   recordAcceptanceProgress("jupyter-allow:restart-setup");
   await executeReleasedNotebookCell(notebook, 0, setupMarker);
@@ -1370,6 +1419,53 @@ async function exerciseReleasedJupyterRestartReplay(
   if (pandasReplayed.kind !== "page") throw new Error("Released-Jupyter Pandas restart replay did not return a page.");
   assert.deepEqual(gridColumnDisplays(pandasReplayed.page, pandasReplayed.metadata.schema[0]?.id ?? ""), ["1", "2"]);
   assert.equal(pandasReplayed.metadata.backend, "pandas");
+}
+
+async function restartReleasedJupyterKernelAndWait(notebook: vscode.NotebookDocument): Promise<void> {
+  const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  assert.ok(extension, "The released Jupyter extension must remain installed for restart acceptance.");
+  assertExactOpenNotebookDocument(notebook, "before acquiring its released Jupyter kernel for restart");
+  const api = await extension.activate();
+  assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for restart observation");
+  const originalKernel = await api.kernels.getKernel(notebook.uri);
+  assertExactOpenNotebookDocument(notebook, "after acquiring its released Jupyter kernel for restart");
+  assert.ok(originalKernel, "The released Jupyter kernel must remain available before restart.");
+
+  let restartDispatched = false;
+  let observedRestart = false;
+  const statuses = new Set<KernelStatus>();
+  const recordStatus = (status: KernelStatus): void => {
+    statuses.add(status);
+    if (restartDispatched && status !== "idle") observedRestart = true;
+  };
+  recordStatus(originalKernel.status);
+  const statusListener = originalKernel.onDidChangeStatus(recordStatus);
+  try {
+    restartDispatched = true;
+    await vscode.commands.executeCommand("jupyter.restartkernel", notebook.uri);
+    assertExactOpenNotebookDocument(notebook, "after dispatching the released Jupyter kernel restart");
+
+    const deadline = Date.now() + 90_000;
+    do {
+      assertExactOpenNotebookDocument(notebook, "while waiting for its released Jupyter kernel restart");
+      const currentKernel = await api.kernels.getKernel(notebook.uri);
+      assertExactOpenNotebookDocument(notebook, "after polling its released Jupyter kernel restart");
+      if (!currentKernel) {
+        observedRestart = true;
+      } else {
+        recordStatus(currentKernel.status);
+        if (currentKernel !== originalKernel) observedRestart = true;
+        if (observedRestart && currentKernel.status === "idle") return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } while (Date.now() < deadline);
+    throw new Error(
+      `Timed out waiting for the released Jupyter kernel to restart and return idle. ` +
+        `Observed statuses: ${JSON.stringify([...statuses])}`
+    );
+  } finally {
+    statusListener.dispose();
+  }
 }
 
 async function closeReleasedJupyterSessionTabs(): Promise<void> {

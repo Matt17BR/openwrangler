@@ -1,14 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  appendFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createVSIX } from "@vscode/vsce";
@@ -27,7 +18,6 @@ import {
   resolveDownloadedEditorCliPath,
   resolveJupyterExtensionAcceptanceInstallTarget,
   resolvePythonExtensionAcceptanceInstallTarget,
-  runBoundedEditorCommand,
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
   startIsolatedEditorDisplay,
@@ -56,6 +46,11 @@ import {
   runPackagedEditorOrchestration,
   runWithRetainedFailure
 } from "./packaged-editor-orchestration.mjs";
+import {
+  acceptancePythonForPhase,
+  createJupyterAcceptanceKernelPython,
+  writeJupyterAcceptanceEnvironment
+} from "./jupyter-acceptance-environment.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localEvidenceArtifactBase = resolve(root, "tmp", "editor-acceptance-artifacts");
@@ -210,31 +205,45 @@ try {
             process.platform === "win32"
               ? resolve(root, ".venv", "Scripts", "python.exe")
               : resolve(root, ".venv", "bin", "python");
-          process.env.OPEN_WRANGLER_TEST_PYTHON ??=
-            hostedPython && existsSync(hostedPython)
+          const testPython =
+            process.env.OPEN_WRANGLER_TEST_PYTHON ??
+            (hostedPython && existsSync(hostedPython)
               ? hostedPython
               : existsSync(localPython)
                 ? localPython
                 : process.platform === "win32"
                   ? "python"
-                  : "python3";
+                  : "python3");
           process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
-          if (
-            jupyterExtensionInstallTarget &&
-            (!isAbsolute(process.env.OPEN_WRANGLER_TEST_PYTHON) || !existsSync(process.env.OPEN_WRANGLER_TEST_PYTHON))
-          ) {
+          if (jupyterExtensionInstallTarget && (!isAbsolute(testPython) || !existsSync(testPython))) {
             throw new Error(
               "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter."
             );
           }
+          let jupyterKernelPython;
           if (jupyterExtensionInstallTarget) {
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
               "setup",
-              "setup:probe-jupyter-python"
+              "setup:create-jupyter-kernel-environment"
             );
-            await probeJupyterAcceptancePython(process.env.OPEN_WRANGLER_TEST_PYTHON);
+            try {
+              jupyterKernelPython = await createJupyterAcceptanceKernelPython(
+                resolve(temporaryRoot, "jv"),
+                testPython,
+                { containedBy: temporaryRoot }
+              );
+            } catch (error) {
+              latchPrivateRootIdentityLoss(error);
+              throw error;
+            }
+            writeCorrelatedProgress(
+              orchestrationProgressPath,
+              orchestrationRunId,
+              "setup",
+              "setup:jupyter-kernel-environment-ready"
+            );
           }
 
           writeCorrelatedProgress(
@@ -342,17 +351,18 @@ try {
                 if (jupyterExtensionInstallTarget) {
                   jupyterAllowEnvironment = writeJupyterAcceptanceEnvironment(
                     resolve(profile, "ka"),
-                    process.env.OPEN_WRANGLER_TEST_PYTHON
+                    jupyterKernelPython
                   );
                   jupyterDenyEnvironment = writeJupyterAcceptanceEnvironment(
                     resolve(profile, "kd"),
-                    process.env.OPEN_WRANGLER_TEST_PYTHON
+                    jupyterKernelPython
                   );
                   for (const jupyterUserData of [jupyterAllowUserData, jupyterDenyUserData]) {
                     writeEditorSettings(jupyterUserData, {
                       "window.dialogStyle": "custom",
                       "window.menuStyle": "custom",
                       "files.simpleDialog.enable": true,
+                      "notebook.globalToolbar": true,
                       "jupyter.askForKernelRestart": false
                     });
                   }
@@ -575,7 +585,7 @@ try {
                   extensions,
                   developmentPaths: [],
                   testModule: resolve(root, "dist-test", "test", "extensionHost", "restricted.js"),
-                  python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                  python: acceptancePythonForPhase("restricted", testPython, jupyterKernelPython),
                   phase: "restricted",
                   workspaceTrust: "restricted",
                   resultPath: resultPaths.restricted,
@@ -593,7 +603,7 @@ try {
                     extensions,
                     developmentPaths: [fakeJupyter],
                     testModule,
-                    python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                    python: acceptancePythonForPhase("python-environment", testPython, jupyterKernelPython),
                     phase: "python-environment",
                     resultPath: resultPaths["python-environment"],
                     runId: runIds["python-environment"],
@@ -610,7 +620,7 @@ try {
                       extensions: jupyterExtensions,
                       developmentPaths: [],
                       testModule,
-                      python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                      python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
                       phase,
                       resultPath: resultPaths[phase],
                       runId: runIds[phase],
@@ -629,7 +639,7 @@ try {
                     extensions,
                     developmentPaths: [fakeJupyter],
                     testModule,
-                    python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                    python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
                     phase,
                     resultPath: resultPaths[phase],
                     runId: runIds[phase],
@@ -958,79 +968,6 @@ function editorEvidenceArtifactBase() {
     throw new Error("GitHub Actions editor evidence requires one absolute RUNNER_TEMP path.");
   }
   return resolve(runnerTemp, "openwrangler-editor-acceptance-artifacts");
-}
-
-function writeJupyterAcceptanceEnvironment(directory, python) {
-  if (
-    typeof directory !== "string" ||
-    !isAbsolute(directory) ||
-    /[\0\r\n]/u.test(directory) ||
-    typeof python !== "string" ||
-    !isAbsolute(python) ||
-    /[\0\r\n]/u.test(python) ||
-    !existsSync(python)
-  ) {
-    throw new Error("Released-Jupyter acceptance requires absolute private directories and an existing interpreter.");
-  }
-  const dataDir = resolve(directory, "d");
-  const runtimeDir = resolve(directory, "r");
-  const configDir = resolve(directory, "c");
-  const pathDir = resolve(directory, "p");
-  const ipythonDir = resolve(directory, "i");
-  const kernelDirectory = resolve(dataDir, "kernels", "openwrangler-acceptance");
-  for (const path of [dataDir, runtimeDir, configDir, pathDir, ipythonDir, kernelDirectory]) {
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-  }
-  writeFileSync(
-    resolve(kernelDirectory, "kernel.json"),
-    `${JSON.stringify(
-      {
-        argv: [python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-        display_name: "Open Wrangler Acceptance",
-        language: "python",
-        metadata: { debugger: false },
-        env: { IPYTHONDIR: ipythonDir }
-      },
-      null,
-      2
-    )}\n`,
-    { encoding: "utf8", flag: "wx", mode: 0o600 }
-  );
-  return { dataDir, runtimeDir, configDir, path: pathDir };
-}
-
-async function probeJupyterAcceptancePython(python) {
-  const probe = [
-    "import json",
-    "import ipykernel",
-    "import pandas",
-    "import polars",
-    "print(json.dumps({",
-    '  "ipykernel": ipykernel.__version__,',
-    '  "pandas": pandas.__version__,',
-    '  "polars": polars.__version__,',
-    "}, sort_keys=True))"
-  ].join("\n");
-  const { stdout } = await runBoundedEditorCommand(
-    {
-      executable: python,
-      args: ["-I", "-c", probe],
-      environment: createEditorAcceptanceEnvironment(),
-      label: "Released-Jupyter Python dependency probe"
-    },
-    { timeoutMs: 30_000 }
-  );
-  let versions;
-  try {
-    versions = JSON.parse(stdout.trim());
-  } catch {
-    throw new Error("Released-Jupyter Python dependency probe did not return its bounded JSON version report.");
-  }
-  for (const dependency of ["ipykernel", "pandas", "polars"]) {
-    if (typeof versions?.[dependency] !== "string" || versions[dependency].length === 0) {
-      throw new Error(`Released-Jupyter Python dependency probe did not report ${dependency}.`);
-    }
-  }
 }
 
 async function readEditorVersion(editor, userData, extensions, sandboxArgs, environment) {

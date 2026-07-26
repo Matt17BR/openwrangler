@@ -75,7 +75,7 @@
     "watch:extension": "tsc -w -p tsconfig.extension.json",
     "watch:webview": "vite build --watch",
     "test": "npm run test:scripts && npm run test:ts && npm run test:python",
-    "test:scripts": "node --test scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/packaged-editor-orchestration.test.mjs",
+    "test:scripts": "node --test scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/packaged-editor-orchestration.test.mjs",
     "test:ts": "vitest run",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
@@ -426,6 +426,11 @@
           "command": "openWrangler.changeImportOptions",
           "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
           "group": "navigation@2"
+        },
+        {
+          "command": "openWrangler.openNotebookVariable",
+          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook && isWorkspaceTrusted && config.notebook.globalToolbar != true && jupyter.ispythonnotebook && jupyter.kernel.isjupyter",
+          "group": "navigation@50"
         }
       ],
       "editor/title/context": [
@@ -446,17 +451,10 @@
           "when": "false"
         }
       ],
-      "notebook/title": [
-        {
-          "command": "openWrangler.openNotebookVariable",
-          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
-          "group": "navigation@50"
-        }
-      ],
       "notebook/toolbar": [
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
+          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook && isWorkspaceTrusted && jupyter.ispythonnotebook && jupyter.kernel.isjupyter",
           "group": "navigation@50"
         }
       ],
