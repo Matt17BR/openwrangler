@@ -1,6 +1,13 @@
 name: Released Jupyter acceptance
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/released-jupyter.yml"
+      - "scripts/remote-jupyter/**"
+      - "scripts/remote-jupyter-acceptance.mjs"
+      - "scripts/run-packaged-editor-tests.mjs"
+      - "src/test/extensionHost/**"
   workflow_dispatch:
   schedule:
     - cron: "23 4 * * 1"
