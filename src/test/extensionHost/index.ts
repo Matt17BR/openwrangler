@@ -729,11 +729,7 @@ async function exerciseReleasedJupyterExtension(
     assertExactOpenNotebookDocument(notebook, "before opening the real Jupyter Variables view");
     await vscode.commands.executeCommand("jupyter.openVariableView");
     assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
-    const viewerAction = await waitForReleasedJupyterVariableAction(
-      workbench,
-      "pandas_frame",
-      `${phase}:variables`
-    );
+    const viewerAction = await waitForReleasedJupyterVariableAction(workbench, "pandas_frame", `${phase}:variables`);
     assertExactOpenNotebookDocument(notebook, "after resolving the pandas_frame action from Jupyter Variables");
 
     recordAcceptanceProgress(`${phase}:variables-action`);
