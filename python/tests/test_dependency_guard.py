@@ -327,15 +327,17 @@ def _arm(
     return process
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX mode bits cannot establish the read-only-prefix precondition on Windows.",
+)
 def test_status_reports_clean_without_creating_journal_in_read_only_prefix(guard_fixture: GuardFixture) -> None:
     original_mode = stat.S_IMODE(guard_fixture.root.stat().st_mode)
-    if os.name != "nt":
-        guard_fixture.root.chmod(0o555)
+    guard_fixture.root.chmod(0o555)
     try:
         code, frames, stderr = _run(guard_fixture, "status", _status_request(guard_fixture))
     finally:
-        if os.name != "nt":
-            guard_fixture.root.chmod(original_mode)
+        guard_fixture.root.chmod(original_mode)
     assert code == 0
     assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
     assert stderr == b""

@@ -437,9 +437,29 @@ def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
+def _same_leaf_descriptor_snapshot(leaf: os.stat_result, descriptor: os.stat_result) -> bool:
+    # CPython's Windows path stat preserves the legacy creation-time value in
+    # st_ctime_ns while fstat exposes the handle's change time.  Comparing that
+    # field across the two APIs therefore rejects an unchanged file.  The two
+    # handle snapshots taken around every read still compare change time below.
+    return (
+        _same_file_identity(leaf, descriptor)
+        and leaf.st_size == descriptor.st_size
+        and leaf.st_mtime_ns == descriptor.st_mtime_ns
+        and (os.name == "nt" or leaf.st_ctime_ns == descriptor.st_ctime_ns)
+    )
+
+
 def _assert_leaf_matches(path: Path, expected: os.stat_result, *, code: str) -> os.stat_result:
     observed = _lstat_private_file(path, code=code)
     if not _same_file_snapshot(observed, expected):
+        _fail(code)
+    return observed
+
+
+def _assert_leaf_matches_descriptor(path: Path, expected: os.stat_result, *, code: str) -> os.stat_result:
+    observed = _lstat_private_file(path, code=code)
+    if not _same_leaf_descriptor_snapshot(observed, expected):
         _fail(code)
     return observed
 
@@ -765,6 +785,27 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         offset += written
 
 
+def _settled_written_snapshot(
+    path: Path,
+    descriptor_snapshot: os.stat_result,
+    expected_size: int,
+    *,
+    code: str,
+) -> os.stat_result:
+    if descriptor_snapshot.st_size != expected_size:
+        _fail(code)
+    if os.name != "nt":
+        return _assert_leaf_matches_descriptor(path, descriptor_snapshot, code=code)
+
+    # Windows finalizes a file's last-write metadata only after every writing
+    # handle is closed.  Establish the canonical snapshot from the leaf after
+    # close, while still binding it to the opened file's identity and size.
+    settled = _lstat_private_file(path, code=code)
+    if not _same_file_identity(settled, descriptor_snapshot) or settled.st_size != expected_size:
+        _fail(code)
+    return _assert_leaf_matches(path, settled, code=code)
+
+
 def _durable_replace(source: Path, destination: Path) -> None:
     if os.name != "nt":
         os.replace(source, destination)
@@ -816,11 +857,16 @@ def _publish_marker(
         os.set_inheritable(descriptor, False)
         _write_all(descriptor, payload)
         os.fsync(descriptor)
-        written = os.fstat(descriptor)
-        _validate_private_file(written, code="malformed_state")
+        descriptor_snapshot = os.fstat(descriptor)
+        _validate_private_file(descriptor_snapshot, code="malformed_state")
         os.close(descriptor)
         descriptor = -1
-        _assert_leaf_matches(temporary, written, code="malformed_state")
+        written = _settled_written_snapshot(
+            temporary,
+            descriptor_snapshot,
+            len(payload),
+            code="malformed_state",
+        )
         _assert_leaf_absent(destination, code="malformed_state")
         _durable_replace(temporary, destination)
         _fsync_directory(journal)
@@ -858,7 +904,7 @@ def _read_marker(path: Path, *, code: str) -> tuple[dict[str, Any], bytes, tuple
         try:
             before = os.fstat(descriptor)
             _validate_private_file(before, code=code)
-            if not _same_file_snapshot(leaf_before, before):
+            if not _same_leaf_descriptor_snapshot(leaf_before, before):
                 _fail(code)
             if not 1 <= before.st_size <= MAX_MARKER_BYTES:
                 _fail(code)
@@ -884,7 +930,7 @@ def _read_marker(path: Path, *, code: str) -> tuple[dict[str, Any], bytes, tuple
         or before.st_ctime_ns != after.st_ctime_ns
     ):
         _fail(code)
-    _assert_leaf_matches(path, after, code=code)
+    _assert_leaf_matches_descriptor(path, after, code=code)
     try:
         decoded = json.loads(
             payload.decode("utf-8"),
