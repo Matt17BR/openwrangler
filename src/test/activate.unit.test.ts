@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const lifecycle = vi.hoisted(() => ({
   bridge: {
     shutdown: vi.fn(),
-    reportDiagnostic: vi.fn()
+    reportDiagnostic: vi.fn(),
+    declineRuntimeDependencyRevalidationForTesting: vi.fn()
   },
   coordinator: {
     shutdown: vi.fn(),
@@ -42,6 +43,7 @@ describe("extension deactivation", () => {
     delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
     lifecycle.bridge.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.bridge.reportDiagnostic.mockReset();
+    lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting.mockReset().mockResolvedValue(false);
     lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
     lifecycle.coordinator.createBridge.mockReset().mockReturnValue({ request: vi.fn() });
     activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
@@ -110,6 +112,25 @@ describe("extension deactivation", () => {
     await expect(api?.testing?.shutdownRuntimeBridgeForTesting()).resolves.toBeUndefined();
 
     expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("exposes only a decline path for dependency revalidation through the environment-gated test API", async () => {
+    await deactivate();
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+
+    const api = activate({
+      subscriptions: [],
+      workspaceState: {}
+    } as unknown as vscode.ExtensionContext);
+
+    await expect(api?.testing?.declineRuntimeDependencyRevalidation()).resolves.toBe(false);
+    expect(lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting).toHaveBeenCalledOnce();
+
+    const testingApi = api?.testing as unknown as Record<string, unknown>;
+    expect(testingApi.authorizeRuntimeDependencyRevalidation).toBeUndefined();
+    expect(testingApi.runtimeDependencyRevalidationToken).toBeUndefined();
+    expect(testingApi.runtimeDependencyRevalidationTarget).toBeUndefined();
+    expect(testingApi.clearRuntimeDependencyMarker).toBeUndefined();
   });
 });
 

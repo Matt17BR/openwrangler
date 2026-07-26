@@ -19,6 +19,7 @@ import type { CancellationTokenLike } from "../extension/dataBridge";
 import {
   DEPENDENCY_GUARD_PROTOCOL,
   DependencyGuardCommandError,
+  DependencyGuardCommandTimeoutError,
   DependencyInstallExitUnconfirmedError,
   getDependencyGuardStatus,
   type OwnedDependencyInstall,
@@ -1376,6 +1377,7 @@ describe("PythonBridge dependency installation", () => {
         version: "3.12.4",
         source: "configuration" as const
       },
+      dependencies: [{ importModule: "polars", distribution: "polars", installSpec: "polars" }],
       requirements: ["polars"],
       selection: missingDependencies().selection,
       selectionEpoch: 0
@@ -1958,6 +1960,7 @@ describe("PythonBridge dependency installation", () => {
         version: "3.12.4",
         source: "configuration"
       },
+      dependencies: [{ importModule: "polars", distribution: "polars", installSpec: "polars" }],
       requirements: ["polars"],
       selection: missingDependencies().selection,
       selectionEpoch: 0
@@ -1985,6 +1988,7 @@ describe("PythonBridge dependency installation", () => {
         version: "3.13.1",
         source: "configuration" as const
       },
+      dependencies: [{ importModule: "polars", distribution: "polars", installSpec: "polars" }],
       requirements: ["polars"],
       selection: testEnvironmentSelection(
         "<workspace-default>",
@@ -2041,6 +2045,7 @@ describe("PythonBridge dependency installation", () => {
     raw.environmentSelections.set(newerSelection.key, newerSelection);
     const newerTarget: TestMissingDependencies = {
       environment: newerEnvironment,
+      dependencies: [{ importModule: "polars", distribution: "polars", installSpec: "polars" }],
       requirements: ["polars"],
       selection: newerSelection,
       selectionEpoch: 1
@@ -2404,6 +2409,492 @@ describe("PythonBridge dependency guard recovery", () => {
     expect(retainedExecutables).toContain(environments[0]!.executable);
     expect(retainedExecutables).not.toContain(environments[1]!.executable);
     expect(retainedExecutables).not.toContain(environments[2]!.executable);
+  });
+});
+
+describe("PythonBridge dependency recovery command", () => {
+  const originalExtensionTests = process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+
+  beforeEach(() => {
+    delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    setWorkspaceTrust(true);
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+    vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+    vi.mocked(getDependencyGuardStatus).mockClear();
+    vi.mocked(validateDependencyGuard).mockClear();
+  });
+
+  afterEach(() => {
+    if (originalExtensionTests === undefined) delete process.env.OPEN_WRANGLER_EXTENSION_TESTS;
+    else process.env.OPEN_WRANGLER_EXTENSION_TESTS = originalExtensionTests;
+    setWorkspaceTrust(true);
+    vi.restoreAllMocks();
+  });
+
+  it("does not run a helper or show a modal without an exact retained target", async () => {
+    const { bridge } = createDependencyHarness();
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+    const warning = vi.spyOn(vscode.window, "showWarningMessage");
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+    expect(information).toHaveBeenCalledWith(
+      "Open Wrangler has no exact dependency recovery target. Reopen the affected source and try again."
+    );
+    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("deterministically revalidates the most recently confirmed current blocked source", async () => {
+    const { bridge, raw, target } = createRecoveryHarness();
+    const secondEnvironment: TestPythonEnvironment = {
+      ...target.environment,
+      executable: testPythonExecutablePath("/second/bin/python"),
+      executableIdentity: testExecutableIdentity("/second/bin/python"),
+      packageRoot: "/second",
+      packageRootIdentity: testPackageRootIdentity("/second")
+    };
+    const secondSelection = testEnvironmentSelection("second", secondEnvironment, {
+      resource: vscode.Uri.parse("vscode-remote://ssh-remote+test/second/data.csv", true)
+    });
+    const secondToken = "44444444-4444-4444-8444-444444444444";
+    raw.environmentSelections.set(secondSelection.key, secondSelection);
+    raw.markDependencyEnvironmentUncertain(
+      secondEnvironment,
+      secondToken,
+      new Error("newer blocked source"),
+      secondSelection
+    );
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockImplementation(async (_context, resource) =>
+      resource === secondSelection.resource ? secondEnvironment : target.environment
+    );
+    vi.mocked(getDependencyGuardStatus).mockImplementation(async (environment) => ({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "status",
+      state: "dirty",
+      token: environment.executable === secondEnvironment.executable ? secondToken : TEST_DEPENDENCY_TOKEN
+    }));
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
+
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining(secondEnvironment.executable),
+      expect.anything(),
+      "Revalidate"
+    );
+    expect(validateDependencyGuard).toHaveBeenCalledWith(secondEnvironment, secondToken, expect.anything());
+    expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
+      expect.objectContaining({ environment: target.environment, token: TEST_DEPENDENCY_TOKEN })
+    ]);
+  });
+
+  it("checks trust before status, resolution, or confirmation", async () => {
+    const { bridge } = createRecoveryHarness();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage");
+    const error = vi.spyOn(vscode.window, "showErrorMessage");
+    setWorkspaceTrust(false);
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+    expect(error).toHaveBeenCalledWith("Trust this workspace before revalidating Python dependencies.");
+    expect(pythonEnvironment.resolvePythonEnvironment).not.toHaveBeenCalled();
+    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("exposes only a decline-only test helper and preserves its exact target", async () => {
+    const { bridge, raw } = createRecoveryHarness();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage");
+
+    await expect(bridge.declineRuntimeDependencyRevalidationForTesting()).rejects.toThrow(
+      "available only to the Open Wrangler test harness"
+    );
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    await expect(bridge.declineRuntimeDependencyRevalidationForTesting()).resolves.toBe(false);
+
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("joins concurrent calls to one status check and one modal", async () => {
+    const { bridge } = createRecoveryHarness();
+    const modal = deferred<"Revalidate" | undefined>();
+    const warning = vi
+      .spyOn(vscode.window, "showWarningMessage")
+      .mockReturnValue(modal.promise as unknown as Thenable<never>);
+
+    const first = bridge.revalidateRuntimeDependencies();
+    const second = bridge.revalidateRuntimeDependencies();
+    expect(second).toBe(first);
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledOnce());
+    modal.resolve(undefined);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([false, false]);
+    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+  });
+
+  it("is mutually exclusive with dependency installation in either order", async () => {
+    const installFirst = createRecoveryHarness();
+    const installBlock = deferred<boolean>();
+    installFirst.raw.dependencyInstallOperation = {
+      phase: "confirming",
+      promise: installBlock.promise
+    };
+    await expect(installFirst.bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+    expect(getDependencyGuardStatus).not.toHaveBeenCalled();
+    installBlock.resolve(false);
+
+    vi.mocked(getDependencyGuardStatus).mockClear();
+    const recoveryFirst = createRecoveryHarness();
+    const modal = deferred<"Revalidate" | undefined>();
+    vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
+    const recovery = recoveryFirst.bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
+
+    await expect(recoveryFirst.bridge.installMissingDependencies()).resolves.toBe(false);
+    expect(recoveryFirst.launchDependencyInstall).not.toHaveBeenCalled();
+    modal.resolve(undefined);
+    await expect(recovery).resolves.toBe(false);
+  });
+
+  it("uses the exact warning and clears only after exact-token validation", async () => {
+    const { bridge, raw, target } = createRecoveryHarness();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
+
+    expect(warning).toHaveBeenCalledWith(
+      `Revalidate runtime dependencies in ${target.environment.executable}?`,
+      {
+        modal: true,
+        detail:
+          "Open Wrangler found an interrupted dependency change. Revalidation waits for any package writer to exit, imports and version-checks the recorded dependencies, and clears the retained recovery marker only if every check succeeds. It does not install, remove, or overwrite packages."
+      },
+      "Revalidate"
+    );
+    expect(getDependencyGuardStatus).toHaveBeenCalledTimes(2);
+    expect(validateDependencyGuard).toHaveBeenCalledWith(target.environment, TEST_DEPENDENCY_TOKEN, {
+      helperPath: join("/extension", "python", "openwrangler_runtime", "dependency_guard.py")
+    });
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
+    expect(raw.dependencyMutations.size).toBe(0);
+    await vi.waitFor(() => expect(raw.dependencyRecoveryOperation).toBeUndefined());
+    expect(information).toHaveBeenCalledWith("Open Wrangler runtime dependencies were revalidated.");
+  });
+
+  it("quiesces the package-root runtime before the second status and validation", async () => {
+    const { bridge, raw, target } = createRecoveryHarness();
+    const runtime = raw.runtimeSlots.get(target.selection.key)!;
+    const process = new LifecycleChildProcess();
+    runtime.process = process as unknown as ChildProcessWithoutNullStreams;
+    runtime.processSelection = { selection: target.selection, environment: target.environment };
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+
+    const recovery = bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(process.stdin.end).toHaveBeenCalledOnce());
+    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    process.emit("exit", 0, null);
+
+    await expect(recovery).resolves.toBe(true);
+    expect(getDependencyGuardStatus).toHaveBeenCalledTimes(2);
+    expect(validateDependencyGuard).toHaveBeenCalledOnce();
+    expect(process.kill).not.toHaveBeenCalled();
+  });
+
+  it("rejects selection replacement while the modal is open", async () => {
+    const { bridge, raw, target } = createRecoveryHarness();
+    const modal = deferred<"Revalidate" | undefined>();
+    vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
+    const recovery = bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
+    raw.environmentSelections.set(
+      target.selection.key,
+      testEnvironmentSelection(target.selection.key, target.environment, {
+        epoch: target.selection.epoch + 1
+      })
+    );
+    modal.resolve("Revalidate");
+
+    await expect(recovery).resolves.toBe(false);
+    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+  });
+
+  it("rechecks trust after the modal before quiescence or another helper", async () => {
+    const { bridge, raw } = createRecoveryHarness();
+    const modal = deferred<"Revalidate" | undefined>();
+    vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
+    const recovery = bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
+    setWorkspaceTrust(false);
+    modal.resolve("Revalidate");
+
+    await expect(recovery).resolves.toBe(false);
+    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+  });
+
+  it("rejects full environment identity drift after confirmation", async () => {
+    const { bridge, target } = createRecoveryHarness();
+    const changed = {
+      ...target.environment,
+      executableIdentity: {
+        ...target.environment.executableIdentity,
+        ctimeNs: String(BigInt(target.environment.executableIdentity.ctimeNs) + 1n)
+      }
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+      .mockResolvedValueOnce(target.environment as pythonEnvironment.PythonEnvironment)
+      .mockResolvedValueOnce(changed as pythonEnvironment.PythonEnvironment);
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+  });
+
+  it("requires a new invocation and modal for a newly observed token", async () => {
+    const nextToken = "22222222-2222-4222-8222-222222222222";
+    const { bridge, raw } = createRecoveryHarness();
+    const warning = vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "status",
+      state: "dirty",
+      token: nextToken
+    });
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+    expect(warning).not.toHaveBeenCalled();
+    expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([expect.objectContaining({ token: nextToken })]);
+
+    vi.mocked(getDependencyGuardStatus).mockResolvedValue({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "status",
+      state: "dirty",
+      token: nextToken
+    });
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).toHaveBeenCalledWith(expect.anything(), nextToken, expect.anything());
+  });
+
+  it("retains a changed post-modal token and permits a direct confirmed retry", async () => {
+    const nextToken = "33333333-3333-4333-8333-333333333333";
+    const { bridge, raw } = createRecoveryHarness();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(getDependencyGuardStatus)
+      .mockResolvedValueOnce({
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "status",
+        state: "dirty",
+        token: TEST_DEPENDENCY_TOKEN
+      })
+      .mockResolvedValueOnce({
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "status",
+        state: "dirty",
+        token: nextToken
+      });
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
+      expect.objectContaining({ token: nextToken, selectionDetached: true })
+    ]);
+
+    vi.mocked(getDependencyGuardStatus).mockResolvedValue({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "status",
+      state: "dirty",
+      token: nextToken
+    });
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
+    expect(validateDependencyGuard).toHaveBeenCalledWith(expect.anything(), nextToken, expect.anything());
+  });
+
+  it.each(["before confirmation", "after confirmation"] as const)(
+    "clears an exact clean blocker %s but never reports validation success",
+    async (phase) => {
+      const { bridge, raw } = createRecoveryHarness();
+      const clean = {
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "status",
+        state: "clean",
+        token: null
+      } as const;
+      if (phase === "before confirmation") {
+        vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce(clean);
+      } else {
+        vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce({
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          kind: "status",
+          state: "dirty",
+          token: TEST_DEPENDENCY_TOKEN
+        });
+        vi.mocked(getDependencyGuardStatus).mockResolvedValueOnce(clean);
+        vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+      }
+
+      await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+      expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
+      expect(raw.dependencyMutations.size).toBe(0);
+      expect(validateDependencyGuard).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    new DependencyGuardCommandError("status", "busy", testPythonExecutablePath("/env/bin/python")),
+    new DependencyGuardCommandError("status", "malformed_state", testPythonExecutablePath("/env/bin/python")),
+    new DependencyGuardCommandTimeoutError("status", testPythonExecutablePath("/env/bin/python"), 30_000)
+  ])("retains the target when a status helper fails safely: $name", async (failure) => {
+    const { bridge, raw } = createRecoveryHarness();
+    vi.mocked(getDependencyGuardStatus).mockRejectedValueOnce(failure);
+    const warning = vi.spyOn(vscode.window, "showWarningMessage");
+    const error = vi.spyOn(vscode.window, "showErrorMessage");
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect(warning).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    expect(JSON.stringify(error.mock.calls)).not.toContain(TEST_DEPENDENCY_TOKEN);
+  });
+
+  it.each([
+    new DependencyGuardCommandError("status", "busy", testPythonExecutablePath("/env/bin/python")),
+    new DependencyGuardCommandError("status", "malformed_state", testPythonExecutablePath("/env/bin/python")),
+    new DependencyGuardCommandTimeoutError("status", testPythonExecutablePath("/env/bin/python"), 30_000)
+  ])("releases the mutation barrier when the post-modal status fails: $name", async (failure) => {
+    const { bridge, raw } = createRecoveryHarness();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(getDependencyGuardStatus)
+      .mockResolvedValueOnce({
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "status",
+        state: "dirty",
+        token: TEST_DEPENDENCY_TOKEN
+      })
+      .mockRejectedValueOnce(failure);
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new DependencyGuardCommandError("validate", "busy", testPythonExecutablePath("/env/bin/python")),
+    new DependencyGuardCommandError("validate", "malformed_state", testPythonExecutablePath("/env/bin/python")),
+    new DependencyGuardCommandTimeoutError("validate", testPythonExecutablePath("/env/bin/python"), 30_000)
+  ])("retains the exact target when validator recovery fails: $name", async (failure) => {
+    const { bridge, raw } = createRecoveryHarness();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(validateDependencyGuard).mockRejectedValueOnce(failure);
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
+      expect.objectContaining({ token: TEST_DEPENDENCY_TOKEN, selectionDetached: true })
+    ]);
+  });
+
+  it("retains failed validation, releases its barrier, and permits direct retry", async () => {
+    const { bridge, raw } = createRecoveryHarness();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(validateDependencyGuard).mockRejectedValueOnce(
+      new DependencyGuardCommandError("validate", "validation_failed", testPythonExecutablePath("/env/bin/python"))
+    );
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(false);
+    expect(raw.dependencyMutations.size).toBe(0);
+    expect([...raw.dependencyEnvironmentUncertainty.values()]).toEqual([
+      expect.objectContaining({ token: TEST_DEPENDENCY_TOKEN, selectionDetached: true })
+    ]);
+
+    await expect(bridge.revalidateRuntimeDependencies()).resolves.toBe(true);
+    expect(validateDependencyGuard).toHaveBeenCalledTimes(2);
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(0);
+  });
+
+  it("lets shutdown win an open modal without status-after-modal, validation, or success", async () => {
+    const { bridge, raw } = createRecoveryHarness();
+    const modal = deferred<"Revalidate" | undefined>();
+    vi.spyOn(vscode.window, "showWarningMessage").mockReturnValue(modal.promise as unknown as Thenable<never>);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const recovery = bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce());
+    await expect(bridge.shutdown()).resolves.toBeUndefined();
+    modal.resolve("Revalidate");
+
+    await expect(recovery).resolves.toBe(false);
+    expect(getDependencyGuardStatus).toHaveBeenCalledOnce();
+    expect(validateDependencyGuard).not.toHaveBeenCalled();
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect(information).not.toHaveBeenCalledWith("Open Wrangler runtime dependencies were revalidated.");
+  });
+
+  it("ignores a successful validation completion that arrives after shutdown", async () => {
+    const validation = deferred<Awaited<ReturnType<typeof validateDependencyGuard>>>();
+    const { bridge, raw } = createRecoveryHarness();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(validateDependencyGuard).mockReturnValue(validation.promise);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const recovery = bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(validateDependencyGuard).toHaveBeenCalledOnce());
+    await expect(bridge.shutdown()).resolves.toBeUndefined();
+    validation.resolve({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "validated",
+      token: TEST_DEPENDENCY_TOKEN
+    });
+
+    await expect(recovery).resolves.toBe(false);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect(information).not.toHaveBeenCalledWith("Open Wrangler runtime dependencies were revalidated.");
+  });
+
+  it("ignores exact validation that completes after the authorized selection changes", async () => {
+    const validation = deferred<Awaited<ReturnType<typeof validateDependencyGuard>>>();
+    const { bridge, raw } = createRecoveryHarness();
+    vi.spyOn(vscode.window, "showWarningMessage").mockResolvedValue("Revalidate" as never);
+    vi.mocked(validateDependencyGuard).mockReturnValue(validation.promise);
+    const information = vi.spyOn(vscode.window, "showInformationMessage");
+
+    const recovery = bridge.revalidateRuntimeDependencies();
+    await vi.waitFor(() => expect(validateDependencyGuard).toHaveBeenCalledOnce());
+    bridge.clearRuntimeSelection();
+    validation.resolve({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "validated",
+      token: TEST_DEPENDENCY_TOKEN
+    });
+
+    await expect(recovery).resolves.toBe(false);
+    await vi.waitFor(() => expect(raw.dependencyMutations.size).toBe(0));
+    expect(raw.dependencyEnvironmentUncertainty.size).toBe(1);
+    expect(information).not.toHaveBeenCalledWith("Open Wrangler runtime dependencies were revalidated.");
   });
 });
 
@@ -3825,6 +4316,14 @@ interface RawBridgeInternals {
         uncertainty?: unknown;
       }
     | undefined;
+  dependencyRecoveryOperation:
+    | {
+        phase: string;
+        promise?: Promise<boolean>;
+        target?: unknown;
+        mutation?: { phase: string };
+      }
+    | undefined;
   lastMissingDependencies: TestMissingDependencies | undefined;
   pending: Map<string, unknown>;
   cancellationTargets: Map<string, unknown>;
@@ -3842,7 +4341,8 @@ interface RawBridgeInternals {
   markDependencyEnvironmentUncertain(
     environment: TestPythonEnvironment,
     token: string | undefined,
-    reason: unknown
+    reason: unknown,
+    selection?: TestEnvironmentSelection
   ): void;
   invalidateDependencyProbeKey(key: string): void;
   invalidateDependencyProbesForPackageEnvironment(packageEnvironmentKey: string): void;
@@ -4203,6 +4703,26 @@ function createDependencyHarness(execute: () => Promise<unknown> = async () => u
     prepareRequest: (request) => raw.prepareRequest(request)
   };
   return { bridge, raw, internals, launchDependencyInstall };
+}
+
+function createRecoveryHarness(): ReturnType<typeof createDependencyHarness> & {
+  target: TestMissingDependencies;
+} {
+  const harness = createDependencyHarness();
+  const target = harness.raw.lastMissingDependencies!;
+  harness.raw.markDependencyEnvironmentUncertain(
+    target.environment,
+    TEST_DEPENDENCY_TOKEN,
+    new Error("interrupted dependency change"),
+    target.selection
+  );
+  vi.mocked(getDependencyGuardStatus).mockResolvedValue({
+    protocol: DEPENDENCY_GUARD_PROTOCOL,
+    kind: "status",
+    state: "dirty",
+    token: TEST_DEPENDENCY_TOKEN
+  });
+  return { ...harness, target };
 }
 
 function fakeOwnedDependencyInstall(execute: () => Promise<unknown>): OwnedDependencyInstall {

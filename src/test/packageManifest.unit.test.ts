@@ -158,6 +158,16 @@ describe("runtime deadline configuration", () => {
   });
 });
 
+describe("runtime dependency recovery contributions", () => {
+  it("contributes and activates the explicit dependency revalidation command", () => {
+    expect(manifest.activationEvents).toContain("onCommand:openWrangler.revalidateRuntimeDependencies");
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.revalidateRuntimeDependencies",
+      title: "Open Wrangler: Revalidate Runtime Dependencies"
+    });
+  });
+});
+
 describe("notebook renderer contribution", () => {
   it("keeps static output portable while always activating desktop messaging", () => {
     expect(manifest.activationEvents).toContain("onRenderer:openWrangler.renderer");

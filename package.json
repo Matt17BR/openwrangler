@@ -104,6 +104,7 @@
     "onCommand:openWrangler.changeRuntime",
     "onCommand:openWrangler.clearRuntime",
     "onCommand:openWrangler.installRuntimeDependencies",
+    "onCommand:openWrangler.revalidateRuntimeDependencies",
     "onCommand:openWrangler.startOperation",
     "onCommand:openWrangler.applyStep",
     "onCommand:openWrangler.discardStep",
@@ -173,6 +174,10 @@
       {
         "command": "openWrangler.installRuntimeDependencies",
         "title": "Open Wrangler: Install Runtime Dependencies"
+      },
+      {
+        "command": "openWrangler.revalidateRuntimeDependencies",
+        "title": "Open Wrangler: Revalidate Runtime Dependencies"
       },
       {
         "command": "openWrangler.startOperation",

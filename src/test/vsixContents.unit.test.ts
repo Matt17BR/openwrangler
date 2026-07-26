@@ -125,6 +125,14 @@ describe("VSIX production entry allowlist", () => {
       "extension/media/codicon.ttf"
     ]);
   });
+
+  it("requires the dependency mutation guard helper", () => {
+    const entries = requiredVsixEntries.filter(
+      (entry) => entry !== "extension/python/openwrangler_runtime/dependency_guard.py"
+    );
+
+    expect(inspectVsixEntries(entries).missing).toEqual(["extension/python/openwrangler_runtime/dependency_guard.py"]);
+  });
 });
 
 describe("VSIX prerelease metadata validation", () => {
