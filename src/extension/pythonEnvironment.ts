@@ -195,9 +195,15 @@ export class PythonEnvironmentResolutionAttempt {
   }
 
   wait<T>(work: PromiseLike<T>, additionalSignal?: AbortSignal): Promise<T> {
-    this.assertActive();
-    if (additionalSignal?.aborted) {
-      throw terminalAbortReason(additionalSignal, new PythonEnvironmentApiBrokerDisposedError());
+    const workPromise = Promise.resolve(work);
+    try {
+      this.assertActive();
+      if (additionalSignal?.aborted) {
+        throw terminalAbortReason(additionalSignal, new PythonEnvironmentApiBrokerDisposedError());
+      }
+    } catch (error) {
+      void workPromise.catch(() => undefined);
+      throw error;
     }
 
     return new Promise<T>((resolve, reject) => {
@@ -238,7 +244,7 @@ export class PythonEnvironmentResolutionAttempt {
       this.signal.addEventListener("abort", onControlAbort, { once: true });
       additionalSignal?.addEventListener("abort", onAdditionalAbort, { once: true });
       poll();
-      void Promise.resolve(work).then(
+      void workPromise.then(
         (value) => {
           try {
             this.assertActive();
@@ -293,6 +299,7 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
     attempt: PythonEnvironmentResolutionAttempt = new PythonEnvironmentResolutionAttempt({})
   ): Promise<string | undefined> {
     this.throwIfDisposed();
+    attempt.assertActive();
     const api = await attempt.wait(this.acquireApi(), this.disposalController.signal);
     this.throwIfDisposed();
     if (!api) return undefined;
@@ -301,6 +308,7 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
       attempt.assertActive();
       const selected: unknown = api.getActiveEnvironmentPath(resource);
       if (!isEnvironmentPath(selected)) return undefined;
+      attempt.assertActive();
       const resolved = await attempt.wait(api.resolveEnvironment(selected), this.disposalController.signal);
       this.throwIfDisposed();
       const executable = resolved?.executable?.uri?.fsPath;

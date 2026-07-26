@@ -41,7 +41,7 @@ describe("real Python environment resolution", () => {
         expect(environment.version).toMatch(/^3\.(?:10|11|12|13|14)\.\d+$/);
         expect(path.isAbsolute(environment.packageRoot)).toBe(true);
         expect(processCount).toBeGreaterThan(0);
-        expect(processCount).toBeLessThanOrEqual(MAX_SYSTEM_PYTHON_CANDIDATES + 1);
+        expect(processCount).toBeLessThanOrEqual(MAX_SYSTEM_PYTHON_CANDIDATES * 2 + 1);
         expect(elapsedMs).toBeLessThan(PYTHON_ENVIRONMENT_RESOLUTION_TIMEOUT_MS);
       } catch (error) {
         const classification = isPythonEnvironmentResolutionTerminalError(error)

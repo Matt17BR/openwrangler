@@ -66,6 +66,82 @@ describe("bounded Python environment resolution", () => {
     broker.dispose();
   });
 
+  it("does not begin API activation after configuration lookup makes the attempt terminal", async () => {
+    const state = { trusted: true };
+    vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+      get: <T>(_key: string, fallback: T): T => {
+        state.trusted = false;
+        return fallback;
+      }
+    } as vscode.WorkspaceConfiguration);
+    const activate = vi.fn();
+    mockExtensionLookup({ activate } as unknown as vscode.Extension<unknown>);
+
+    await expect(
+      resolvePythonEnvironment(context(), undefined, undefined, {
+        isTrusted: () => state.trusted
+      })
+    ).rejects.toBeInstanceOf(PythonEnvironmentResolutionWorkspaceTrustError);
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it("does not begin selected-environment resolution after synchronous selection makes the attempt terminal", async () => {
+    const state = { current: true };
+    const resolveEnvironment = vi.fn();
+    mockExtensionLookup({
+      isActive: true,
+      exports: {
+        environments: {
+          getActiveEnvironmentPath: vi.fn(() => {
+            state.current = false;
+            return { id: "selected", path: "/selected/python" };
+          }),
+          resolveEnvironment,
+          onDidChangeActiveEnvironmentPath: vi.fn(() => ({ dispose: vi.fn() }))
+        }
+      },
+      activate: vi.fn()
+    } as unknown as vscode.Extension<unknown>);
+
+    await expect(
+      resolvePythonEnvironment(context(), undefined, undefined, {
+        isCurrent: () => state.current
+      })
+    ).rejects.toBeInstanceOf(PythonEnvironmentResolutionSupersededError);
+    expect(resolveEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("absorbs abandoned API rejection when its synchronous call makes the attempt terminal", async () => {
+    const state = { current: true };
+    const abandonedFailure = new Error("abandoned selected-environment failure");
+    const resolveEnvironment = vi.fn(() => {
+      state.current = false;
+      return Promise.reject(abandonedFailure);
+    });
+    mockExtensionLookup({
+      isActive: true,
+      exports: {
+        environments: {
+          getActiveEnvironmentPath: vi.fn(() => ({ id: "selected", path: "/selected/python" })),
+          resolveEnvironment,
+          onDidChangeActiveEnvironmentPath: vi.fn(() => ({ dispose: vi.fn() }))
+        }
+      },
+      activate: vi.fn()
+    } as unknown as vscode.Extension<unknown>);
+    const executeProcess = vi.fn<PythonEnvironmentProcessExecutor>();
+
+    await expect(
+      resolvePythonEnvironment(context(), undefined, undefined, {
+        executeProcess,
+        isCurrent: () => state.current
+      })
+    ).rejects.toBeInstanceOf(PythonEnvironmentResolutionSupersededError);
+    await flushMicrotasks();
+    expect(resolveEnvironment).toHaveBeenCalledOnce();
+    expect(executeProcess).not.toHaveBeenCalled();
+  });
+
   it("stops after a Windows launcher consumes the aggregate deadline", async () => {
     mockExtensionLookup();
     const clock = new VirtualClock();

@@ -277,6 +277,38 @@ describe("PythonBridge cancellation", () => {
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
   });
 
+  it("does not abort or evict a confirmed environment when cancellation arrives later", async () => {
+    const token = new ManualCancellation();
+    const source = remoteSourceAt("/resolution/confirmed.csv");
+    const confirmedEnvironment: pythonEnvironment.PythonEnvironment = {
+      executable: testPythonExecutablePath("/env/bin/python"),
+      executableIdentity: TEST_EXECUTABLE_IDENTITY,
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+      version: "3.12.4",
+      source: "configuration"
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset().mockResolvedValue(confirmedEnvironment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    const bridge = new PythonBridge(testExtensionContext());
+    const raw = bridge as unknown as RawBridgeInternals;
+    const confirmed = await raw.processSelectionFor(openSessionRequest(source));
+    await vi.waitFor(() => expect(confirmed.selection.resolvedEnvironment).toEqual(confirmedEnvironment));
+
+    token.cancel();
+    await expect(bridge.request(openSessionRequest(source), { cancellation: token })).resolves.toEqual({
+      kind: "cancelled",
+      targetRequestId: "not-started"
+    });
+
+    expect(confirmed.selection.resolutionController.signal.aborted).toBe(false);
+    expect(raw.environmentSelections.get(source.uri!)).toBe(confirmed.selection);
+    expect(confirmed.selection.resolvedEnvironment).toEqual(confirmedEnvironment);
+    await bridge.shutdown();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+    vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+  });
+
   it.each<SessionBoundRequest>([
     {
       kind: "closeSession",
@@ -4144,11 +4176,15 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    const selection = internals.environmentSelections.get(source.uri!);
     internals.handlePythonEnvironmentSelectionChange({
       id: "changed",
       path: "/changed/python",
       resource: vscode.Uri.parse(source.uri!, true)
     });
+    expect(selection?.resolutionController.signal.reason).toBeInstanceOf(
+      pythonEnvironment.PythonEnvironmentResolutionSupersededError
+    );
     resolution.resolve(environment);
 
     await expect(preparation).resolves.toMatchObject({
@@ -4169,7 +4205,11 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    const selection = internals.environmentSelections.get(source.uri!);
     await bridge.shutdown();
+    expect(selection?.resolutionController.signal.reason).toBeInstanceOf(
+      pythonEnvironment.PythonEnvironmentResolutionDisposedError
+    );
     expect(internals.environmentSelections.size).toBe(0);
     expect(internals.dependencyCache.size).toBe(0);
     expect(internals.lastMissingDependencies).toBeUndefined();
