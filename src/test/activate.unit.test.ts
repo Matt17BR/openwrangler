@@ -97,6 +97,20 @@ describe("extension deactivation", () => {
       "Open Wrangler extension deactivation encountered multiple shutdown failures."
     );
   });
+
+  it("exposes exact bridge shutdown only through the environment-gated test API", async () => {
+    await deactivate();
+    lifecycle.bridge.shutdown.mockReset().mockResolvedValue(undefined);
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+
+    const api = activate({
+      subscriptions: [],
+      workspaceState: {}
+    } as unknown as vscode.ExtensionContext);
+    await expect(api?.testing?.shutdownRuntimeBridgeForTesting()).resolves.toBeUndefined();
+
+    expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+  });
 });
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

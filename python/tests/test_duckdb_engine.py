@@ -172,6 +172,8 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:
     csv_path = tmp_path / "sample.csv"
     csv_path.write_text('city;value\n"Milan";1\n"Berlin";2\n', encoding="utf-8")
+    unicode_delimiter_path = tmp_path / "unicode-delimiter.csv"
+    unicode_delimiter_path.write_text("city§value\nMilan§1\nBerlin§2\n", encoding="utf-8")
     tsv_path = tmp_path / "sample.tsv"
     tsv_path.write_text("city\tvalue\nMilan\t1\nBerlin\t2\n", encoding="utf-8")
     jsonl_path = tmp_path / "sample.jsonl"
@@ -199,6 +201,10 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     assert isinstance(csv_frame, duckdb.DuckDBPyRelation)
     assert "read_csv" in csv_frame.sql_query().lower()
     assert engine.shape(csv_frame) == {"rows": 2, "columns": 2}
+    assert engine.read_file(str(unicode_delimiter_path), {"delimiter": "§"}).fetchall() == [
+        ("Milan", 1),
+        ("Berlin", 2),
+    ]
     assert engine.read_file(str(tsv_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
     assert engine.read_file(str(jsonl_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
     assert engine.read_file(str(parquet_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]

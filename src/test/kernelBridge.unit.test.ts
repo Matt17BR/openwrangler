@@ -660,6 +660,26 @@ describe("renderer notebook provenance", () => {
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
+  it("does not acquire a kernel for cleanup of an unknown candidate", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const kernel = fakeKernel((request) => {
+      requests.push(request);
+      return initializedResponse;
+    });
+    const getExtension = mockKernel(kernel);
+    const bridge = createKernelBridge();
+
+    await expect(
+      bridge.request(closeRequest("unknown-candidate"), { startRuntimeIfNeeded: false })
+    ).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session"
+    });
+
+    expect(requests).toEqual([]);
+    expect(getExtension).not.toHaveBeenCalled();
+  });
+
   it("closes an established session on its mapped kernel after lifecycle execution failure", async () => {
     const requests: OpenWranglerRequest[] = [];
     const kernel = fakeKernel((request) => {

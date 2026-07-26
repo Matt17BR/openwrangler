@@ -67,6 +67,245 @@ def test_open_session_accepts_duckdb_and_rejects_unknown_backends() -> None:
         decode_envelope(envelope)
 
 
+def _open_session_envelope_with_import_options(
+    import_options: object,
+    file_name: str = "sample.csv",
+    *,
+    source_location: dict[str, str] | None = None,
+) -> dict[str, object]:
+    source: dict[str, object] = {
+        "kind": "file",
+        "label": file_name,
+        "importOptions": import_options,
+    }
+    if source_location is None:
+        source["path"] = f"/tmp/{file_name}"
+    else:
+        source.update(source_location)
+    return {
+        "protocolVersion": 2,
+        "requestId": "open-import-options",
+        "priority": "interactive",
+        "request": {
+            "kind": "openSession",
+            "source": source,
+            "pageSize": 200,
+            "columnOffset": 0,
+            "columnLimit": 64,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("import_options", "file_name"),
+    [
+        ({}, "sample.csv"),
+        ({"delimiter": "💠", "encoding": " utf-8 ", "quoteChar": "“", "hasHeader": True}, "sample.csv"),
+        ({"sheetName": " résumé "}, "sample.xlsx"),
+        ({"sheetIndex": 0}, "sample.xls"),
+    ],
+)
+def test_open_session_accepts_strict_import_options(import_options: object, file_name: str) -> None:
+    envelope = _open_session_envelope_with_import_options(import_options, file_name)
+
+    assert decode_envelope(envelope)[2]["source"]["importOptions"] == import_options
+
+
+def test_open_session_normalizes_integral_json_sheet_indices() -> None:
+    envelope = _open_session_envelope_with_import_options({"sheetIndex": 1.0}, "sample.xlsx")
+
+    decoded = decode_envelope(envelope)[2]["source"]["importOptions"]["sheetIndex"]
+
+    assert decoded == 1
+    assert isinstance(decoded, int)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("unexpected", True, "source contains unknown fields: unexpected"),
+        ("path", 17, "source.path must be a string"),
+        ("uri", 17, "source.uri must be a string"),
+        ("variableName", 17, "source.variableName must be a string"),
+    ],
+)
+def test_open_session_source_matches_the_exact_schema(field: str, value: object, message: str) -> None:
+    envelope = _open_session_envelope_with_import_options({"delimiter": ","})
+    request = envelope["request"]
+    assert isinstance(request, dict)
+    source = request["source"]
+    assert isinstance(source, dict)
+    source[field] = value
+
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    ("file_name", "source_location", "import_options"),
+    [
+        (
+            "fallback.parquet",
+            {"path": "/tmp/data#1.csv", "uri": "file:///tmp/fallback.xlsx?download=1"},
+            {"delimiter": ";"},
+        ),
+        (
+            "fallback.csv",
+            {"path": "/tmp/data?1.xlsx", "uri": "file:///tmp/fallback.csv?download=1"},
+            {"sheetIndex": 0},
+        ),
+        ("data#1.csv", {}, {"encoding": "utf-8"}),
+        ("data?1.xlsx", {}, {"sheetName": "Sheet1"}),
+        (
+            "fallback.xlsx",
+            {"uri": "file:///tmp/data.csv?download=1#section"},
+            {"quoteChar": '"'},
+        ),
+        (
+            "fallback.csv",
+            {"path": "", "uri": "file:///tmp/data.XLSX#section?download=1"},
+            {"sheetName": "Sheet1"},
+        ),
+    ],
+)
+def test_open_session_resolves_import_format_without_stripping_raw_path_or_label_markers(
+    file_name: str, source_location: dict[str, str], import_options: dict[str, object]
+) -> None:
+    envelope = _open_session_envelope_with_import_options(
+        import_options,
+        file_name,
+        source_location=source_location,
+    )
+
+    assert decode_envelope(envelope)[2]["source"]["importOptions"] == import_options
+
+
+@pytest.mark.parametrize(
+    ("file_name", "source_location", "import_options"),
+    [
+        (
+            "fallback.csv",
+            {"path": "/tmp/data.csv?download=1", "uri": "file:///tmp/fallback.csv"},
+            {"delimiter": ","},
+        ),
+        (
+            "fallback.csv",
+            {"uri": "file:///tmp/download?name=data.csv"},
+            {"delimiter": ","},
+        ),
+        (
+            "fallback.xlsx",
+            {"path": "/tmp/data.parquet", "uri": "file:///tmp/data.xlsx"},
+            {"sheetIndex": 0},
+        ),
+        (".csv", {}, {"delimiter": ","}),
+    ],
+)
+def test_open_session_import_format_uses_path_then_uri_then_label(
+    file_name: str, source_location: dict[str, str], import_options: dict[str, object]
+) -> None:
+    envelope = _open_session_envelope_with_import_options(
+        import_options,
+        file_name,
+        source_location=source_location,
+    )
+
+    with pytest.raises(ProtocolError, match="not supported for this file format"):
+        decode_envelope(envelope)
+
+
+def test_open_session_allows_empty_import_options_only_on_non_file_sources() -> None:
+    envelope = _open_session_envelope_with_import_options({})
+    request = envelope["request"]
+    assert isinstance(request, dict)
+    request["source"] = {
+        "kind": "notebookVariable",
+        "label": "frame.csv",
+        "variableName": "frame",
+        "importOptions": {},
+    }
+    assert decode_envelope(envelope)[2]["source"]["importOptions"] == {}
+
+    source = request["source"]
+    assert isinstance(source, dict)
+    source["importOptions"] = {"delimiter": ","}
+    with pytest.raises(ProtocolError, match="only for file sources"):
+        decode_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    ("import_options", "message"),
+    [
+        (None, "source.importOptions must be a JSON object"),
+        ([], "source.importOptions must be a JSON object"),
+        ({"delimiter": ",", "extra": True}, "contains unknown fields: extra"),
+        ({"sheet": 0}, "contains unknown fields: sheet"),
+        ({"delimiter": 1}, "delimiter must contain exactly one Unicode code point"),
+        ({"delimiter": ""}, "delimiter must contain exactly one Unicode code point"),
+        ({"delimiter": "||"}, "delimiter must contain exactly one Unicode code point"),
+        ({"delimiter": "\ud800"}, "delimiter must contain exactly one Unicode code point"),
+        ({"delimiter": "\udfff"}, "delimiter must contain exactly one Unicode code point"),
+        ({"quoteChar": 1}, "quoteChar must contain exactly one Unicode code point"),
+        ({"quoteChar": ""}, "quoteChar must contain exactly one Unicode code point"),
+        ({"quoteChar": '""'}, "quoteChar must contain exactly one Unicode code point"),
+        ({"quoteChar": "\ud800"}, "quoteChar must contain exactly one Unicode code point"),
+        ({"quoteChar": "\udfff"}, "quoteChar must contain exactly one Unicode code point"),
+        ({"encoding": 1}, "encoding must be a non-empty string"),
+        ({"encoding": " \t "}, "encoding must be a non-empty string"),
+        ({"encoding": "\ufeff"}, "encoding must be a non-empty string"),
+        ({"hasHeader": "yes"}, "hasHeader must be a boolean"),
+        ({"sheetName": 1}, "sheetName must be a non-empty string"),
+        ({"sheetName": " \n "}, "sheetName must be a non-empty string"),
+        ({"sheetName": "\ufeff"}, "sheetName must be a non-empty string"),
+        ({"sheetIndex": -1}, "sheetIndex must be a non-negative safe integer"),
+        ({"sheetIndex": 1.5}, "sheetIndex must be a non-negative safe integer"),
+        ({"sheetIndex": True}, "sheetIndex must be a non-negative safe integer"),
+        (
+            {"sheetIndex": 9_007_199_254_740_992},
+            "sheetIndex must be a non-negative safe integer",
+        ),
+        (
+            {"sheetName": "Sheet1", "sheetIndex": 0},
+            "must contain only one of sheetName or sheetIndex",
+        ),
+        (
+            {"sheetName": "Sheet1", "delimiter": ","},
+            "must not mix Excel selectors with delimited-file options",
+        ),
+        (
+            {"sheetIndex": 0, "encoding": "utf-8"},
+            "must not mix Excel selectors with delimited-file options",
+        ),
+        (
+            {"sheetName": "Sheet1", "quoteChar": '"'},
+            "must not mix Excel selectors with delimited-file options",
+        ),
+        (
+            {"sheetIndex": 0, "hasHeader": True},
+            "must not mix Excel selectors with delimited-file options",
+        ),
+    ],
+)
+def test_open_session_rejects_malformed_import_options(import_options: object, message: str) -> None:
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(_open_session_envelope_with_import_options(import_options))
+
+
+@pytest.mark.parametrize(
+    ("file_name", "import_options", "message"),
+    [
+        ("sample.csv", {"sheetName": "Sheet1"}, "Excel values for a delimited-file source"),
+        ("sample.xlsx", {"delimiter": ","}, "delimited-file values for an Excel source"),
+        ("sample.parquet", {"encoding": "utf-8"}, "not supported for this file format"),
+    ],
+)
+def test_open_session_rejects_import_values_for_the_wrong_file_format(
+    file_name: str, import_options: object, message: str
+) -> None:
+    with pytest.raises(ProtocolError, match=message):
+        decode_envelope(_open_session_envelope_with_import_options(import_options, file_name))
+
+
 @pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
 def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
     request: dict[str, object] = {

@@ -4,13 +4,14 @@ import { EventEmitter } from "node:events";
 import { linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, posix, relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   acceptancePathSnapshotShowsAtomicPublication,
   acceptanceProgressCheckpoint,
   acceptanceProgressDetail,
+  assertEditorUserDataIpcPathSafe,
   collectEditorAcceptancePrivateDiagnosticPaths,
   configureEditorAcceptanceTempRoot,
   createAcceptanceProgressEnvelope,
@@ -33,12 +34,16 @@ import {
   editorAcceptanceProgressSignalPath,
   editorProcessTreeMayBeLive,
   editorProcessGroupRunning,
+  MACOS_EDITOR_IPC_PATH_LIMIT_BYTES,
+  PINNED_PYTHON_EXTENSION_ID,
+  PINNED_PYTHON_EXTENSION_VERSION,
   prepareWindowsEditorProcessSupervisor,
   readBoundedAcceptanceText,
   readXvfbDisplayNumber,
   reserveEditorDebugPort,
   resolveDownloadedEditorCliPath,
   resolveEditorCliLaunch,
+  resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCommand,
   runBoundedEditorCliCommand,
   serializeEditorAcceptanceHarnessOutcome,
@@ -54,6 +59,10 @@ import {
 } from "./editor-acceptance.mjs";
 
 const PROGRESS_RUN_ID = "8be8c321-d21d-4de8-a890-13d18844a3c7";
+// Fake editor phases never access their profile on disk. Keep their synthetic
+// profile short and host-independent so Darwin seam tests exercise their
+// intended lifecycle behavior instead of the real macOS socket-path preflight.
+const SYNTHETIC_EDITOR_USER_DATA = "/__open_wrangler_fake_phase__/u";
 const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
   createAcceptanceProgressEnvelope(runId, phase, checkpoint);
 
@@ -95,6 +104,62 @@ test("relative editor helper overrides fail before launch without echoing their 
   } finally {
     if (previousXvfb === undefined) delete process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
     else process.env.OPEN_WRANGLER_XVFB_EXECUTABLE = previousXvfb;
+  }
+});
+
+test("real Python-extension acceptance is opt-in and pins one stable release", async () => {
+  assert.equal(PINNED_PYTHON_EXTENSION_VERSION, "2026.4.0");
+  assert.equal(PINNED_PYTHON_EXTENSION_ID, "ms-python.python@2026.4.0");
+  assert.equal(resolvePythonExtensionAcceptanceInstallTarget({}), undefined);
+  assert.equal(resolvePythonExtensionAcceptanceInstallTarget({ OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "0" }), undefined);
+  assert.equal(
+    resolvePythonExtensionAcceptanceInstallTarget({ OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1" }),
+    PINNED_PYTHON_EXTENSION_ID
+  );
+  assert.throws(
+    () => resolvePythonExtensionAcceptanceInstallTarget({ OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "true" }),
+    /literal value 1/u
+  );
+
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-python-extension-target-"));
+  const vsix = join(directory, "ms-python.python.vsix");
+  const linkedVsix = join(directory, "linked.vsix");
+  try {
+    await writeFile(vsix, "fixture");
+    assert.equal(
+      resolvePythonExtensionAcceptanceInstallTarget({
+        OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+        OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: vsix
+      }),
+      vsix
+    );
+    assert.throws(
+      () =>
+        resolvePythonExtensionAcceptanceInstallTarget({
+          OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+          OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: "relative.vsix"
+        }),
+      /absolute single-line path/u
+    );
+    assert.throws(
+      () =>
+        resolvePythonExtensionAcceptanceInstallTarget({
+          OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+          OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: join(directory, "missing.vsix")
+        }),
+      /was not found/u
+    );
+    await symlink(vsix, linkedVsix);
+    assert.throws(
+      () =>
+        resolvePythonExtensionAcceptanceInstallTarget({
+          OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
+          OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: linkedVsix
+        }),
+      /regular file and not a symbolic link/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -623,6 +688,77 @@ test("downloaded macOS editors use the official CLI resolver instead of the GUI 
     () => resolveDownloadedEditorCliPath("C:\\VSCode\\renamed.exe", "win32"),
     /unsupported product filename/u
   );
+});
+
+test("macOS editor IPC preflight accepts 102 bytes, rejects 103, and covers isolated CI layouts", () => {
+  const acceptedUserData = `/${"a".repeat(86)}`;
+  const rejectedUserData = `/${"a".repeat(87)}`;
+  const unicodeRejectedUserData = `/${"a".repeat(85)}é`;
+  const suffix = "/1.13-main.sock";
+  assert.equal(Buffer.byteLength(acceptedUserData + suffix, "utf8"), MACOS_EDITOR_IPC_PATH_LIMIT_BYTES - 1);
+  assert.equal(Buffer.byteLength(rejectedUserData + suffix, "utf8"), MACOS_EDITOR_IPC_PATH_LIMIT_BYTES);
+  assert.equal(Buffer.byteLength(unicodeRejectedUserData + suffix, "utf8"), MACOS_EDITOR_IPC_PATH_LIMIT_BYTES);
+  assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(acceptedUserData, "1.130.0", "darwin"));
+  assert.throws(
+    () => assertEditorUserDataIpcPathSafe(rejectedUserData, "1.130.0", "darwin"),
+    /shorter than 103 UTF-8 bytes/u
+  );
+  assert.throws(
+    () => assertEditorUserDataIpcPathSafe(unicodeRejectedUserData, "1.130.0", "darwin"),
+    /shorter than 103 UTF-8 bytes/u
+  );
+
+  const githubRoot = "/Users/runner/work/openwrangler/openwrangler/tmp/ow/x-ABC123";
+  const packagedProfile = posix.join(githubRoot, "p-v-ABC123");
+  const extensionHostProfile = posix.join(githubRoot, "h-ABC123");
+  for (const userData of [
+    posix.join(packagedProfile, "u"),
+    posix.join(packagedProfile, "r"),
+    posix.join(extensionHostProfile, "u1"),
+    posix.join(extensionHostProfile, "u2")
+  ]) {
+    assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(userData, "1.130.0", "darwin"));
+  }
+  assert.doesNotThrow(() => assertEditorUserDataIpcPathSafe(rejectedUserData, "not-a-version", "linux"));
+});
+
+test("editor phases reject an unsafe macOS IPC path before reserving a port or spawning", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-m-"));
+  let reserveCalls = 0;
+  let spawnCalls = 0;
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: `/${"a".repeat(87)}`,
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "verify",
+          resultPath: join(directory, "result.json")
+        },
+        {
+          platform: "darwin",
+          reserveDebugPort() {
+            reserveCalls += 1;
+            throw new Error("port reservation must not run");
+          },
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }
+      ),
+      /shorter than 103 UTF-8 bytes/u
+    );
+    assert.equal(reserveCalls, 0);
+    assert.equal(spawnCalls, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
@@ -1919,7 +2055,7 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -1960,7 +2096,7 @@ test("debugging-port reservation is bounded, releases its server, and retains ph
 });
 
 test("editor phase inactivity includes work before observation starts", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-pre-observation-inactivity-"));
+  const directory = await mkdtemp(join(tmpdir(), "ow-i-"));
   const resultPath = join(directory, "result.json");
   const child = fakeStoppableCommandChild(17341);
   let clock = 0;
@@ -1970,7 +2106,7 @@ test("editor phase inactivity includes work before observation starts", async ()
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -2012,7 +2148,7 @@ test("editor phases reject results first observed after the hard deadline", asyn
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2068,7 +2204,7 @@ test("editor phases reject results first observed after inactivity unless a new 
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2135,7 +2271,7 @@ test("expired phase deadlines override non-deadline debugging-port errors", asyn
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2189,7 +2325,7 @@ test("expired phase deadlines override synchronous spawn errors and retain unver
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2246,7 +2382,7 @@ test("editor phases pass only runner-owned test values through the environment",
       {
         editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
         workspace: directory,
-        userData: join(directory, "user-data"),
+        userData: SYNTHETIC_EDITOR_USER_DATA,
         extensions: join(directory, "extensions"),
         developmentPaths: [directory],
         testModule: expectedModule,
@@ -2295,6 +2431,11 @@ test("editor phases pass only runner-owned test values through the environment",
     ]) {
       assert.equal(launchedArguments.includes(argument), true);
     }
+    assert.equal(
+      launchedArguments.includes("--disable-workspace-trust"),
+      true,
+      "Trusted seed/verify phases must retain the existing workspace-trust-disabled profile behavior."
+    );
     assert.equal(launchedArguments.includes("--no-sandbox"), false);
     delete launchedEnvironment.OPEN_WRANGLER_EDITOR_CDP_PORT;
     assert.deepEqual(launchedEnvironment, {
@@ -2316,6 +2457,63 @@ test("editor phases pass only runner-owned test values through the environment",
       OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots")
     });
     assert.match(launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID, /^[0-9a-f-]{36}$/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restricted editor phases keep Workspace Trust enabled and reject unknown trust modes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-r-"));
+  const resultPath = join(directory, "result.json");
+  const input = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: SYNTHETIC_EDITOR_USER_DATA,
+    extensions: join(directory, "extensions"),
+    developmentPaths: [],
+    testModule: join(directory, "restricted.js"),
+    python: "python3",
+    phase: "restricted",
+    workspaceTrust: "restricted",
+    resultPath,
+    runId: PROGRESS_RUN_ID
+  };
+  let launchedArguments;
+  try {
+    await runEditorAcceptancePhase(input, {
+      platform: "darwin",
+      spawnProcess(_executable, arguments_, options) {
+        launchedArguments = arguments_;
+        return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
+      }
+    });
+    assert.equal(launchedArguments[0], directory);
+    assert.equal(
+      launchedArguments.includes("--disable-workspace-trust"),
+      false,
+      "The restricted profile must exercise the editor's real Restricted Mode."
+    );
+    assert.equal(
+      launchedArguments.some((argument) => argument.startsWith("--extensionDevelopmentPath=")),
+      false,
+      "Restricted Mode must run the installed acceptance helper instead of a development extension."
+    );
+
+    let spawnCalls = 0;
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        { ...input, workspaceTrust: "unknown", resultPath: join(directory, "invalid-result.json") },
+        {
+          platform: "darwin",
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }
+      ),
+      /workspace-trust mode must be "trusted" or "restricted"/u
+    );
+    assert.equal(spawnCalls, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2552,7 +2750,7 @@ test("Windows metadata-only heartbeats ignore mis-correlated envelope writers", 
       {
         editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
         workspace: directory,
-        userData: join(directory, "user-data"),
+        userData: SYNTHETIC_EDITOR_USER_DATA,
         extensions: join(directory, "extensions"),
         developmentPaths: [directory],
         testModule: join(directory, "tests.js"),
@@ -2725,7 +2923,7 @@ test("a synchronous editor spawn failure is not reported as an early exit", asyn
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "missing-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -2776,7 +2974,7 @@ test("a late child error cannot impersonate editor-phase exit", async () => {
       {
         editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
         workspace: directory,
-        userData: join(directory, "user-data"),
+        userData: SYNTHETIC_EDITOR_USER_DATA,
         extensions: join(directory, "extensions"),
         developmentPaths: [directory],
         testModule: join(directory, "tests.js"),
@@ -2832,7 +3030,7 @@ test("editor phase failures distinguish emitted spawn errors, early exits, malfo
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -2955,7 +3153,7 @@ test("editor phase output is captured, bounded, and redacted instead of inheriti
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -2996,6 +3194,97 @@ test("editor phase output is captured, bounded, and redacted instead of inheriti
   }
 });
 
+test("editor phase failures retain a redacted bounded startup tail", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-output-tail-"));
+  const resultPath = join(directory, "result.json");
+  const startupDetail = "macOS startup failed: injected launch diagnostic";
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: SYNTHETIC_EDITOR_USER_DATA,
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "restricted",
+          resultPath,
+          workspaceTrust: "restricted"
+        },
+        {
+          spawnProcess() {
+            const child = fakeEditorChild({ code: 17 });
+            child.stderr.write(
+              `${"ordinary editor startup noise\n".repeat(2_000)}${startupDetail} in ${process.cwd()}\n`
+            );
+            return child;
+          }
+        }
+      ),
+      (error) => {
+        assert.ok(error instanceof EditorAcceptanceFailure);
+        assert.equal(error.kind, "premature-exit");
+        assert.match(error.details.editorOutput, /<earlier editor output omitted>/u);
+        assert.match(error.details.editorOutput, new RegExp(startupDetail, "u"));
+        assert.match(error.details.editorOutput, /<repository>/u);
+        assert.doesNotMatch(
+          error.details.editorOutput,
+          new RegExp(process.cwd().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u")
+        );
+        assert.ok(Buffer.byteLength(error.details.editorOutput, "utf8") <= 8 * 1024);
+        return true;
+      }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phase output rejects private-key containers before retaining a tail", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-output-redaction-"));
+  const resultPath = join(directory, "result.json");
+  try {
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: SYNTHETIC_EDITOR_USER_DATA,
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "tests.js"),
+          python: "python3",
+          phase: "restricted",
+          resultPath,
+          workspaceTrust: "restricted"
+        },
+        {
+          spawnProcess() {
+            const child = fakeEditorChild({ code: 17 });
+            child.stderr.write(
+              `ordinary startup\n-----BEGIN PRIVATE KEY-----\n${"sensitive".repeat(
+                100
+              )}\n-----END PRIVATE KEY-----\n${"harmless trailing editor output\n".repeat(4_000)}`
+            );
+            return child;
+          }
+        }
+      ),
+      (error) => {
+        assert.ok(error instanceof EditorAcceptanceFailure);
+        assert.equal(error.kind, "premature-exit");
+        assert.equal(error.details.editorOutput, "Sensitive harness details were suppressed.");
+        assert.doesNotMatch(error.message, /BEGIN PRIVATE KEY|sensitive/u);
+        return true;
+      }
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("editor phase output remains captured through close before it can be retained", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-output-close-"));
   const resultPath = join(directory, "result.json");
@@ -3006,7 +3295,7 @@ test("editor phase output remains captured through close before it can be retain
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3060,7 +3349,7 @@ test("editor phase output is omitted within a bound when close cannot be verifie
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3253,7 +3542,7 @@ test("result reads reject oversized, symlinked, and FIFO payloads as protocol fa
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -3315,7 +3604,7 @@ test("a result replacement during editor shutdown is rejected even when its enve
         {
           editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
           workspace: directory,
-          userData: join(directory, "user-data"),
+          userData: SYNTHETIC_EDITOR_USER_DATA,
           extensions: join(directory, "extensions"),
           developmentPaths: [directory],
           testModule: join(directory, "tests.js"),
@@ -3587,7 +3876,7 @@ test("a live timed-out editor phase terminates its child and removes signal hook
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -3650,7 +3939,7 @@ test("editor shutdown failures are explicit cleanup diagnostics with their origi
   const input = {
     editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
     workspace: directory,
-    userData: join(directory, "user-data"),
+    userData: SYNTHETIC_EDITOR_USER_DATA,
     extensions: join(directory, "extensions"),
     developmentPaths: [directory],
     testModule: join(directory, "tests.js"),
@@ -3701,7 +3990,14 @@ test("the generated harness records startup before loading the acceptance module
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-harness-progress-"));
   try {
     writeEditorAcceptanceHarness(directory);
+    const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
     const source = await readFile(join(directory, "extension.js"), "utf8");
+    assert.equal(
+      manifest.capabilities?.untrustedWorkspaces?.supported,
+      true,
+      "The test harness must remain active while the installed package is blocked in Restricted Mode."
+    );
+    assert.deepEqual(manifest.files, ["extension.js"]);
     const harnessMarker = source.indexOf('recordProgress(runId, phase, phase + ":harness-start")');
     const moduleLoad = source.indexOf("require(process.env.OPEN_WRANGLER_TEST_MODULE).run()");
     assert.notEqual(harnessMarker, -1);

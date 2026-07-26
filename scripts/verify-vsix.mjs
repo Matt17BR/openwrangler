@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { inspectVsixEntries } from "./vsix-contents.mjs";
+import { inspectReadmeSourceSrcsets, inspectVsixEntries, inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const requested = process.argv[2];
@@ -15,30 +15,47 @@ if (!existsSync(vsix)) {
 }
 
 const entries = execFileSync("unzip", ["-Z1", vsix], { encoding: "utf8" }).split(/\r?\n/u).filter(Boolean);
-const { forbidden, missing } = inspectVsixEntries(entries);
-const webviewCss = execFileSync("unzip", ["-p", vsix, "extension/media/webview.css"], { encoding: "utf8" });
-const webviewPanel = execFileSync("unzip", ["-p", vsix, "extension/dist/extension/webviewPanel.js"], {
-  encoding: "utf8"
-});
-const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
-const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
+const { forbidden, missing, duplicates } = inspectVsixEntries(entries);
 
-if (forbidden.length > 0 || missing.length > 0) {
+if (forbidden.length > 0 || missing.length > 0 || duplicates.length > 0) {
   throw new Error(
     [
       `Invalid ${basename(vsix)}.`,
       forbidden.length ? `Forbidden: ${forbidden.join(", ")}` : "",
-      missing.length ? `Missing: ${missing.join(", ")}` : ""
+      missing.length ? `Missing: ${missing.join(", ")}` : "",
+      duplicates.length ? `Colliding archive paths: ${duplicates.join(", ")}` : ""
     ]
       .filter(Boolean)
       .join(" ")
   );
 }
+
+const packagedPackageJson = execFileSync("unzip", ["-p", vsix, "extension/package.json"], {
+  encoding: "utf8"
+});
+const vsixManifest = execFileSync("unzip", ["-p", vsix, "extension.vsixmanifest"], { encoding: "utf8" });
+const preReleaseProblems = inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest);
+if (preReleaseProblems.length > 0) {
+  throw new Error(`Invalid ${basename(vsix)}. ${preReleaseProblems.join(" ")}`);
+}
+
+const webviewCss = execFileSync("unzip", ["-p", vsix, "extension/media/webview.css"], { encoding: "utf8" });
+const webviewPanel = execFileSync("unzip", ["-p", vsix, "extension/dist/extension/webviewPanel.js"], {
+  encoding: "utf8"
+});
+const packagedReadme = execFileSync("unzip", ["-p", vsix, "extension/readme.md"], { encoding: "utf8" });
+const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
+const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
+const readmeSourceProblems = inspectReadmeSourceSrcsets(packagedReadme);
+
 if (!bundleRelativeCodicon.test(webviewCss)) {
   throw new Error(`Invalid ${basename(vsix)}. webview.css must load codicon.ttf from its own bundle directory.`);
 }
 if (!webviewFontPolicy.test(webviewPanel)) {
   throw new Error(`Invalid ${basename(vsix)}. The main webview CSP must allow its bundled font origin.`);
+}
+if (readmeSourceProblems.length > 0) {
+  throw new Error(`Invalid ${basename(vsix)}. ${readmeSourceProblems.join(" ")}`);
 }
 
 console.log(`Verified ${basename(vsix)} (${entries.length} archive entries).`);

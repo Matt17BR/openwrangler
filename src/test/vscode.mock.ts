@@ -74,6 +74,7 @@ export const ProgressLocation = {
 export const workspace = {
   isTrusted: true,
   getConfiguration: () => ({ get: <T>(_key: string, fallback: T): T => fallback }),
+  getWorkspaceFolder: (_uri: unknown): undefined => undefined,
   onDidChangeConfiguration(listener: (event: { affectsConfiguration(section: string): boolean }) => unknown): {
     dispose(): void;
   } {
@@ -88,6 +89,10 @@ export const workspace = {
 
 export const extensions = {
   getExtension: (_id: string): undefined => undefined
+};
+
+export const commands = {
+  executeCommand: async (): Promise<undefined> => undefined
 };
 
 export const Uri = {

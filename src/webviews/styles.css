@@ -99,7 +99,13 @@ textarea {
 }
 
 .app-error {
+  align-items: flex-start;
   padding: 24px;
+}
+
+.importOptionsStatus {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
 }
 
 .toolbar {

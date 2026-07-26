@@ -7,14 +7,15 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 > Open Wrangler is an active preview. The core viewing and editing workflows work today, but the [1.0 parity matrix](docs/feature-parity.md) still has release gates to close.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/editor-acceptance/vscode-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/editor-acceptance/vscode-light.png">
-  <img alt="Open Wrangler running in VS Code" src="docs/images/editor-acceptance/vscode-dark.png">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-light.png">
+  <img alt="Open Wrangler running in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
 </picture>
 
 ## What it does
 
 - Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor tab, editor title bar, or Command Palette.
+- Changes CSV, TSV, and Excel import options without losing the current cleaning plan or view.
 - Pages through wide and large datasets with row and column virtualization, typed values, keyboard navigation, column search, and progressive insights.
 - Keeps filters and sorts separate from cleaning steps, so exploration never silently changes exported results.
 - Previews every transformation as a data diff with editable, backend-native Python before you apply it.
@@ -49,14 +50,14 @@ Prebuilt releases are not published yet. To try the current preview from a clone
 npm install
 python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
-npm run package -- --out openwrangler.vsix
+npm run package -- --pre-release --out openwrangler.vsix
 ```
 
 On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equivalent commands.
 
 In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select `openwrangler.vsix`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu. Future preview builds will appear on [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
 
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently.
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently.
 
 Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
 

@@ -10,15 +10,22 @@ Numeric `0.<odd-minor>.x` releases are preview-channel checkpoints and keep `pac
 npm ci
 python3 -m venv .venv
 .venv/bin/python -m pip install -e "python[dev]"
-npm run package -- --out openwrangler.vsix
+npm run check
+npm test
+npm run test:extension-host
+npm run test:webview-acceptance
+npm run package -- --pre-release --out openwrangler.vsix
 npm run verify:vsix -- openwrangler.vsix
 npm run test:coverage
 npm run license:check
 npm run benchmark:runtime
+npm run test:packaged-editors -- openwrangler.vsix
 sha256sum openwrangler.vsix
 ```
 
-The VSIX may contain production extension bundles, webview assets, the Python runtime source, package metadata, README, changelog, license, and third-party notices. It must not contain source TypeScript, tests, fixtures, scripts, benchmark sources, profiles, source maps, caches, virtual environments, `.env` files, credentials, or untracked scratch files. Allowlist verification also reads packaged `webview.css` and the compiled webview host: the Codicon font URL must be bundle-relative so the checked-in font resolves beside the stylesheet, and the CSP must allow `webview.cspSource` through `font-src`. After allowlist verification, `npm run test:packaged-editors -- openwrangler.vsix` must install and exercise the artifact from isolated profiles; development-host success is not a substitute. The packaged gate uses two editor processes per product to prove backend-pinned persisted-plan replay, concurrent Pandas/Polars/DuckDB crash recovery for supported file sessions, export source safety, and final process cleanup. Notebook acceptance remains Pandas/Polars-only until DuckDB kernel ownership is implemented and separately gated.
+The package command above is the preview gate and must match `package.json.preview: true`. A stable release sets `preview` to `false` and omits `--pre-release`; `npm run verify:vsix` rejects either channel when its VSIX manifest and packaged `package.json` disagree.
+
+The VSIX may contain production extension bundles, webview assets, the Python runtime source, package metadata, README, changelog, license, and third-party notices. It must not contain source TypeScript, tests, fixtures, scripts, benchmark sources, profiles, source maps, caches, virtual environments, `.env` files, credentials, or untracked scratch files. Allowlist verification also reads packaged `webview.css`, the compiled webview host, and the packaged README: the Codicon font URL must be bundle-relative so the checked-in font resolves beside the stylesheet, the CSP must allow `webview.cspSource` through `font-src`, and every HTML `<source srcset>` candidate must be an absolute HTTPS URL because `vsce` does not rewrite it like a normal Markdown image. After allowlist verification, `npm run test:packaged-editors -- openwrangler.vsix` must install and exercise the artifact from isolated profiles; development-host success is not a substitute. The packaged gate uses three editor processes per product: an untrusted Restricted Mode phase, then trusted seed and verify phases that prove backend-pinned persisted-plan replay, concurrent Pandas/Polars/DuckDB crash recovery for supported file sessions, export source safety, and final process cleanup. Notebook acceptance remains Pandas/Polars-only until DuckDB kernel ownership is implemented and separately gated.
 
 Linux extension-host and packaged-editor release gates run on the zero-window headless Ozone platform by default, with desktop display/editor-IPC variables removed, persistent auxiliary services disabled, and private runtime, home, config, cache, and data directories. Editor CLI, workbench, and private-display processes on every platform receive only the explicit platform/isolation allowlist plus runner-owned test values; the caller's remaining environment is not inherited. CI and release workflows must not opt into the user's current display, attach commands to a live editor, touch normal editor profiles, or silently fall back to it. Cursor's required GTK session-bus address is the only retained desktop-session route and does not restore display or editor IPC access. `OPEN_WRANGLER_EDITOR_DISPLAY=current` is reserved for an intentional visible local debugging run; `OPEN_WRANGLER_EDITOR_DISPLAY=xvfb` is an explicit isolated compatibility fallback. Late child errors cannot prove exit, and uncertainty from a downloader, editor, or private display propagates to cleanup. On Windows, every editor command and workbench is created suspended by a private supervisor, assigned to a kill-on-close Job Object with an explicit inherited-handle list, and resumed only after ownership succeeds. Completion requires exactly one random supervisor attestation that is excluded from the target environment and emitted only after `ActiveProcessCount == 0`; the runner closes the private control stdin on every settled path. If any editor/display ownership remains unverified, caller-environment restoration is lexical only, no diagnostic artifact or workflow output path is published, and no inherited private runtime/root/profile/result/progress/log path may be inspected or removed. Pull-request and release matrices run stable VS Code extension-host and exact packaged-artifact acceptance natively on macOS and Windows in addition to the Linux gates. The launch contract and local controls are documented in `docs/testing.md`.
 
@@ -41,6 +48,17 @@ Marketplace and Open VSX jobs are deliberately not implemented yet. They are the
 ## Registry publication (final priority)
 
 GitHub Releases remain the guaranteed distribution channel. Open VSX and the Visual Studio Marketplace are the last release priority, after the parity matrix, cross-platform hardening, canonical-VSIX acceptance, checksum, and GitHub prerelease are green. When implemented, the registry jobs must publish the exact checksum-verified GitHub artifact rather than rebuilding it.
+
+### Current non-secret readiness
+
+The owner has confirmed the following setup without placing account identifiers or credentials in the repository:
+
+- The `Matt17BR` Visual Studio Marketplace publisher exists and the owner account has the **Owner** role.
+- The matching Open VSX account, agreement, namespace, and protected `OVSX_PAT` secret are in place. Namespace verification is still optional and does not change the package identity.
+- The personal Azure subscription and `Matt17BR` Azure DevOps organization contain the private **Open Wrangler** publishing project.
+- A user-assigned `openwrangler-marketplace-publisher` identity has only the Azure **Reader** role on the dedicated `openwrangler-publishing` resource group, and the Azure DevOps project has a workload-identity-federated Azure Resource Manager service connection for it.
+
+Microsoft automation still needs a disabled publishing pipeline to be checked in and authorized, the managed identity's Marketplace-facing resource ID to be resolved through the Azure DevOps Profile API, that identity to be added to the `Matt17BR` Marketplace publisher as a **Contributor**, and a non-publishing dry run. Open VSX still needs a non-publishing token/namespace preflight from CI. Live publication remains separately approval-gated.
 
 The project owner must complete the identity and agreement steps that an agent cannot perform:
 

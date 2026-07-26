@@ -68,7 +68,8 @@ describe("file launch contributions", () => {
 
   it("uses one canonical, compact command for every file launch surface", () => {
     expect(manifest.contributes?.configurationDefaults?.["cursor.general.pinnedTitleActions"]).toEqual([
-      "openWrangler.openFile"
+      "openWrangler.openFile",
+      "openWrangler.changeImportOptions"
     ]);
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
@@ -90,6 +91,22 @@ describe("file launch contributions", () => {
       command: "openWrangler.openFile",
       when: `${resourcePredicate} && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)`,
       group: "navigation@50"
+    });
+    expect(manifest.contributes?.commands).toContainEqual({
+      command: "openWrangler.changeImportOptions",
+      title: "Open Wrangler: Change Import Options",
+      shortTitle: "Change Import Options",
+      icon: "$(settings-gear)"
+    });
+    expect(manifest.contributes?.menus?.["editor/title"]).toContainEqual({
+      command: "openWrangler.changeImportOptions",
+      when: "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+      group: "navigation@2"
+    });
+    expect(manifest.contributes?.menus?.["editor/title/context"]).toContainEqual({
+      command: "openWrangler.changeImportOptions",
+      when: "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+      group: "navigation@51"
     });
     expect(manifest.contributes?.menus?.commandPalette).toContainEqual({
       command: "openWrangler.launchDataViewer",

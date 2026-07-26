@@ -75,4 +75,27 @@ describe("Python environment requirements", () => {
       "pandas"
     ]);
   });
+
+  it("routes multibyte CSV controls only through engines that accept them", () => {
+    const multibyteDelimiter: SessionSource = {
+      kind: "file",
+      label: "localized.csv",
+      path: "/tmp/localized.csv",
+      importOptions: { delimiter: "§" }
+    };
+    const multibyteQuote: SessionSource = {
+      kind: "file",
+      label: "quoted.tsv",
+      path: "/tmp/quoted.tsv",
+      importOptions: { quoteChar: "“" }
+    };
+    const both: SessionSource = {
+      ...multibyteDelimiter,
+      importOptions: { delimiter: "§", quoteChar: "“" }
+    };
+
+    expect(automaticBackends(multibyteDelimiter)).toEqual(["duckdb", "pandas"]);
+    expect(automaticBackends(multibyteQuote)).toEqual(["pandas"]);
+    expect(automaticBackends(both)).toEqual(["pandas"]);
+  });
 });

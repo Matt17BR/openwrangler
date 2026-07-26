@@ -399,7 +399,8 @@ export interface SessionSource {
     encoding?: string;
     quoteChar?: string;
     hasHeader?: boolean;
-    sheet?: string | number;
+    sheetName?: string;
+    sheetIndex?: number;
   };
 }
 export interface SessionRequestBase {

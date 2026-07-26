@@ -23,8 +23,17 @@ import { vscode } from "./vscodeApi";
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
 const drawerSummaryConcurrency = 4;
+const sessionSnapshotRetryDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
+
+function scheduleWebviewFocusRestoration(restore: () => void): number {
+  const webviewOwnedFocus = document.hasFocus();
+  return window.requestAnimationFrame(() => {
+    if (!webviewOwnedFocus || !document.hasFocus()) return;
+    restore();
+  });
+}
 
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
@@ -40,6 +49,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
+  const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [goToColumn, setGoToColumn] = useState("");
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
@@ -57,6 +67,10 @@ export function App() {
   const [activeViewContextId, setActiveViewContextId] = useState("");
   const [gridViewState, setGridViewState] = useState<GridViewState>(emptyGridViewState);
   const [viewStateRestoreVersion, setViewStateRestoreVersion] = useState(0);
+  const [pendingRendererSynchronization, setPendingRendererSynchronization] = useState<
+    RendererSynchronizationMessage | undefined
+  >();
+  const acknowledgedRendererSynchronizationId = useRef<string | undefined>(undefined);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
   const pageRef = useRef<GridPage | undefined>(undefined);
   const stepInspectionRef = useRef<StepInspectionResponse | undefined>(undefined);
@@ -83,6 +97,8 @@ export function App() {
   const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
   const restoreGridFocusForPage = useRef<string | undefined>(undefined);
   const mutationSnapshot = useRef<ConfirmedViewState | undefined>(undefined);
+  const importOptionsPendingRef = useRef(false);
+  const importOptionsUiBusyRef = useRef(true);
   const confirmedColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
@@ -112,7 +128,7 @@ export function App() {
     operationWasOpen.current = false;
     const returnTarget = operationReturnFocus.current;
     operationReturnFocus.current = null;
-    const frame = window.requestAnimationFrame(() => {
+    const frame = scheduleWebviewFocusRestoration(() => {
       const targetIsAvailable =
         returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
       if (targetIsAvailable) {
@@ -177,6 +193,18 @@ export function App() {
   const storeGridViewState = useCallback((next: GridViewState) => {
     gridViewStateRef.current = next;
     setGridViewState(next);
+  }, []);
+
+  const storeImportOptionsPending = useCallback((pending: boolean) => {
+    const wasPending = importOptionsPendingRef.current;
+    importOptionsPendingRef.current = pending;
+    setImportOptionsPending(pending);
+    if (pending) {
+      setOperationOpen(false);
+      setEditingStep(undefined);
+      setOperationKind(undefined);
+      setLoading(true);
+    } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
   }, []);
 
   const flushGridViewState = useCallback(() => {
@@ -336,6 +364,7 @@ export function App() {
     return Boolean(
       confirmed &&
       confirmed.viewContextId === viewContextId &&
+      !importOptionsPendingRef.current &&
       !stepInspectionTargetRef.current &&
       foregroundRequest.current !== "mutation" &&
       (!pendingPage || pendingPage.viewContextId === confirmed.viewContextId)
@@ -524,6 +553,54 @@ export function App() {
     requestStatsForConfirmedView();
   }, [requestStatsForConfirmedView, restartOwnedSummaryProfiling]);
 
+  useEffect(() => {
+    importOptionsUiBusyRef.current = loading || mutationPending || projectionLoading;
+  }, [loading, mutationPending, projectionLoading]);
+
+  const requestImportOptionsChange = useCallback(
+    (actionId?: string) => {
+      flushGridViewState();
+      cancelBackgroundRequests();
+      clearDrawerSummaryScheduling();
+      if (
+        importOptionsUiBusyRef.current ||
+        foregroundRequest.current ||
+        pendingStepInspectionRef.current?.reason === "projection" ||
+        importOptionsPendingRef.current
+      ) {
+        return;
+      }
+      storeImportOptionsPending(true);
+      vscode.postMessage({
+        kind: "changeImportOptions",
+        ...(actionId === undefined ? {} : { actionId })
+      });
+    },
+    [cancelBackgroundRequests, clearDrawerSummaryScheduling, flushGridViewState, storeImportOptionsPending]
+  );
+
+  const updateImportOptionsPending = useCallback(
+    (pending: boolean) => {
+      const wasPending = importOptionsPendingRef.current;
+      if (pending) {
+        cancelBackgroundRequests();
+        clearDrawerSummaryScheduling();
+      }
+      storeImportOptionsPending(pending);
+      if (!pending && wasPending && metadataRef.current) {
+        enqueueDrawerSummaryColumns();
+        restartProfilingForConfirmedView();
+      }
+    },
+    [
+      cancelBackgroundRequests,
+      clearDrawerSummaryScheduling,
+      enqueueDrawerSummaryColumns,
+      restartProfilingForConfirmedView,
+      storeImportOptionsPending
+    ]
+  );
+
   const captureConfirmedViewState = useCallback((): ConfirmedViewState | undefined => {
     const currentMetadata = metadataRef.current;
     const currentPage = pageRef.current;
@@ -634,6 +711,10 @@ export function App() {
   );
 
   const beginMutation = useCallback((): boolean => {
+    if (importOptionsPendingRef.current) {
+      setForegroundError("Wait for the current import-options change to finish.");
+      return false;
+    }
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before changing the cleaning plan.");
@@ -689,6 +770,10 @@ export function App() {
       event: MessageEvent<
         | OpenWranglerResponse
         | EditorActionMessage
+        | RequestImportOptionsChangeMessage
+        | RendererSynchronizationMessage
+        | ImportOptionsStateMessage
+        | SessionPresentationMessage
         | ViewStateMessage
         | StepInspectionResultMessage
         | StepInspectionClearedMessage
@@ -696,6 +781,40 @@ export function App() {
     ) => {
       if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "rendererSynchronization") {
+        const current = metadataRef.current;
+        const matchesSession =
+          response.sessionId === null && response.revision === null
+            ? current === undefined
+            : current?.sessionId === response.sessionId && current.revision === response.revision;
+        if (matchesSession) {
+          setPendingRendererSynchronization(response);
+        }
+        return;
+      }
+      if (response.kind === "requestImportOptionsChange") {
+        requestImportOptionsChange(response.actionId);
+        return;
+      }
+      if (response.kind === "importOptionsState") {
+        updateImportOptionsPending(response.busy);
+        return;
+      }
+      if (response.kind === "sessionPresentation") {
+        const current = metadataRef.current;
+        if (
+          !current ||
+          response.presentation.sessionId !== current.sessionId ||
+          response.presentation.revision !== current.revision
+        ) {
+          return;
+        }
+        setGeneratedCode(response.presentation.code);
+        setDiff(response.presentation.draft?.diff);
+        setDraftBefore(response.presentation.draft ? { schema: response.presentation.draft.beforeSchema } : undefined);
+        setDraftWarnings(response.presentation.draft?.warnings ?? []);
+        return;
+      }
       if (response.kind === "stepInspectionCleared") {
         if (stepInspectionTargetRef.current || pendingStepInspectionRef.current || stepInspectionRef.current) {
           clearStepInspection(false, response.resumeProfiling);
@@ -758,6 +877,10 @@ export function App() {
         return;
       }
       if (response.kind === "editorAction") {
+        if (importOptionsPendingRef.current) {
+          setForegroundError("Wait for the current import-options change to finish.");
+          return;
+        }
         if (response.action === "openOperation") {
           if (latestPageRequest.current?.reason === "projection") {
             setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
@@ -817,7 +940,7 @@ export function App() {
             ) {
               foregroundRequest.current = undefined;
               if (pendingPage.reason === "projection") setProjectionLoading(false);
-              else setLoading(false);
+              else setLoading(importOptionsPendingRef.current);
             }
             restoreViewAfterPageFailure(pendingPage);
             storeFailedPageRequest(pendingPage);
@@ -848,10 +971,15 @@ export function App() {
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
           setMutationPending(false);
-          setLoading(false);
+          setLoading(importOptionsPendingRef.current);
           setProjectionLoading(false);
           if (previous) restoreConfirmedViewState(previous);
+        } else if (importOptionsPendingRef.current) {
+          setForegroundError(response.message);
+          return;
         } else if (!metadataRef.current) {
+          setPendingRendererSynchronization(undefined);
+          acknowledgedRendererSynchronizationId.current = undefined;
           setLoading(false);
           setProjectionLoading(false);
         }
@@ -861,17 +989,28 @@ export function App() {
 
       if (response.kind === "cancelled") {
         if (!response.viewRequestId) {
+          if (
+            importOptionsPendingRef.current &&
+            (response.targetRequestId === "change-import-options" ||
+              response.targetRequestId.startsWith("reconfigure-import:"))
+          ) {
+            return;
+          }
           const shouldRestoreMutation = foregroundRequest.current === "mutation";
           if (shouldRestoreMutation) {
             const previous = mutationSnapshot.current;
             foregroundRequest.current = undefined;
             mutationSnapshot.current = undefined;
             setMutationPending(false);
-            setLoading(false);
+            setLoading(importOptionsPendingRef.current);
             setProjectionLoading(false);
             if (previous) restoreConfirmedViewState(previous);
             setForegroundError("The cleaning operation was cancelled.");
+          } else if (importOptionsPendingRef.current) {
+            return;
           } else if (!metadataRef.current) {
+            setPendingRendererSynchronization(undefined);
+            acknowledgedRendererSynchronizationId.current = undefined;
             setLoading(false);
             setProjectionLoading(false);
             setForegroundError("Opening the dataframe was cancelled.");
@@ -887,7 +1026,7 @@ export function App() {
           ) {
             foregroundRequest.current = undefined;
             if (pendingPage.reason === "projection") setProjectionLoading(false);
-            else setLoading(false);
+            else setLoading(importOptionsPendingRef.current);
           }
           restoreViewAfterPageFailure(pendingPage);
           storeFailedPageRequest(pendingPage);
@@ -905,6 +1044,12 @@ export function App() {
       }
 
       if (response.kind === "sessionOpened") {
+        setPendingRendererSynchronization(undefined);
+        acknowledgedRendererSynchronizationId.current = undefined;
+        storeImportOptionsPending(false);
+        setOperationOpen(false);
+        setEditingStep(undefined);
+        setOperationKind(undefined);
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
@@ -920,6 +1065,8 @@ export function App() {
         setStepInspectionError(undefined);
         setDraftBefore(undefined);
         setDiff(undefined);
+        setGeneratedCode("");
+        setDraftWarnings([]);
         resetViewProfiling();
         summaryOwnersByColumn.current.clear();
         confirmView(response.metadata, nextViewRequestId());
@@ -944,7 +1091,7 @@ export function App() {
         ) {
           foregroundRequest.current = undefined;
           if (pendingPage.reason === "projection") setProjectionLoading(false);
-          else setLoading(false);
+          else setLoading(importOptionsPendingRef.current);
         }
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
@@ -970,7 +1117,7 @@ export function App() {
         restartProfilingForConfirmedView();
         if (restoreGridFocusForPage.current === response.viewRequestId) {
           restoreGridFocusForPage.current = undefined;
-          window.requestAnimationFrame(() => {
+          scheduleWebviewFocusRestoration(() => {
             document.querySelector<HTMLElement>('[data-testid="data-grid-scroller"] [tabindex="0"]')?.focus();
           });
         }
@@ -978,12 +1125,14 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        setPendingRendererSynchronization(undefined);
+        acknowledgedRendererSynchronizationId.current = undefined;
         const previous = mutationSnapshot.current;
         latestPageRequest.current = undefined;
         foregroundRequest.current = undefined;
         mutationSnapshot.current = undefined;
         setMutationPending(false);
-        setLoading(false);
+        setLoading(importOptionsPendingRef.current);
         setProjectionLoading(false);
         setForegroundError(undefined);
         storeFailedPageRequest(undefined);
@@ -1097,6 +1246,7 @@ export function App() {
     pruneSummaryOwners,
     releaseBackgroundRequest,
     rememberOperationReturnFocus,
+    requestImportOptionsChange,
     requestStatsForConfirmedView,
     requestStepInspection,
     restartProfilingForConfirmedView,
@@ -1109,13 +1259,70 @@ export function App() {
     storeFailedPageRequest,
     storeFilterModel,
     storeGridViewState,
+    storeImportOptionsPending,
     storeMetadata,
     storePage,
     storePendingStepInspection,
     storeStepInspection,
     storeStepInspectionTarget,
-    storeSummaries
+    storeSummaries,
+    updateImportOptionsPending
   ]);
+
+  useEffect(() => {
+    const synchronization = pendingRendererSynchronization;
+    if (!synchronization || acknowledgedRendererSynchronizationId.current === synchronization.syncId) return;
+    const matchesCommittedSession =
+      synchronization.sessionId === null && synchronization.revision === null
+        ? metadata === undefined
+        : metadata?.sessionId === synchronization.sessionId && metadata.revision === synchronization.revision;
+    if (!matchesCommittedSession) return;
+    flushGridViewState();
+    vscode.postMessage({
+      kind: "rendererSynchronized",
+      syncId: synchronization.syncId,
+      sessionId: synchronization.sessionId,
+      revision: synchronization.revision
+    });
+    acknowledgedRendererSynchronizationId.current = synchronization.syncId;
+  }, [flushGridViewState, metadata, pendingRendererSynchronization]);
+
+  const rendererNeedsSnapshot = pendingRendererSynchronization === undefined;
+  useEffect(() => {
+    if (!rendererNeedsSnapshot) return;
+    let retryIndex = 0;
+    let retry: number | undefined;
+    const clearRetry = () => {
+      if (retry !== undefined) window.clearTimeout(retry);
+      retry = undefined;
+    };
+    const scheduleRetry = () => {
+      clearRetry();
+      if (document.visibilityState !== "visible" || retryIndex >= sessionSnapshotRetryDelaysMs.length) return;
+      retry = window.setTimeout(() => {
+        retry = undefined;
+        if (document.visibilityState !== "visible") return;
+        vscode.postMessage({ kind: "requestSessionSnapshot" });
+        retryIndex += 1;
+        scheduleRetry();
+      }, sessionSnapshotRetryDelaysMs[retryIndex]);
+    };
+    const restoreVisibleSnapshot = () => {
+      clearRetry();
+      retryIndex = 0;
+      if (document.visibilityState === "visible") {
+        vscode.postMessage({ kind: "requestSessionSnapshot" });
+        retryIndex = 1;
+        scheduleRetry();
+      }
+    };
+    document.addEventListener("visibilitychange", restoreVisibleSnapshot);
+    scheduleRetry();
+    return () => {
+      clearRetry();
+      document.removeEventListener("visibilitychange", restoreVisibleSnapshot);
+    };
+  }, [rendererNeedsSnapshot]);
 
   const schemaByName = useMemo(
     () => new Map(metadata?.schema.map((column) => [column.name, column]) ?? []),
@@ -1157,7 +1364,11 @@ export function App() {
     model = filterModelRef.current,
     options: PageRequestOptions = {}
   ): string | undefined => {
-    if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
+    if (
+      importOptionsPendingRef.current ||
+      foregroundRequest.current === "mutation" ||
+      stepInspectionTargetRef.current
+    ) {
       return undefined;
     }
     const currentMetadata = metadataRef.current;
@@ -1218,7 +1429,7 @@ export function App() {
   };
 
   const requestValues = (column: string, search?: string) => {
-    if (stepInspectionTargetRef.current) return;
+    if (importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
     const confirmed = confirmedView.current;
     if (!currentMetadata?.schema.some((candidate) => candidate.name === column)) return;
@@ -1253,6 +1464,7 @@ export function App() {
   };
 
   const handleVisibleColumnRange = (range: VisibleColumnRange): void => {
+    if (importOptionsPendingRef.current) return;
     if (stepInspectionTargetRef.current) {
       const currentInspection = stepInspectionRef.current;
       const currentMetadata = metadataRef.current;
@@ -1291,7 +1503,11 @@ export function App() {
   };
 
   const applyFilters = (model: FilterModel) => {
-    if (foregroundRequest.current === "mutation" || stepInspectionTargetRef.current) {
+    if (
+      importOptionsPendingRef.current ||
+      foregroundRequest.current === "mutation" ||
+      stepInspectionTargetRef.current
+    ) {
       return;
     }
     const pendingPage = latestPageRequest.current;
@@ -1357,6 +1573,10 @@ export function App() {
   };
 
   const openNewOperation = (kind?: OperationKind) => {
+    if (importOptionsPendingRef.current) {
+      setForegroundError("Wait for the current import-options change to finish.");
+      return;
+    }
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before adding a cleaning step.");
@@ -1372,6 +1592,10 @@ export function App() {
   };
 
   const editLatestStep = () => {
+    if (importOptionsPendingRef.current) {
+      setForegroundError("Wait for the current import-options change to finish.");
+      return;
+    }
     if (foregroundRequest.current) {
       if (latestPageRequest.current?.reason === "projection") {
         setForegroundError("Wait for the visible columns to finish loading before editing a cleaning step.");
@@ -1459,7 +1683,7 @@ export function App() {
         (pending.kind === "summary" && !(summaryOwnersByColumn.current.get(pending.column)?.size ?? 0))
     );
     const returnTarget = sidePanelReturnFocus.current;
-    window.requestAnimationFrame(() => {
+    scheduleWebviewFocusRestoration(() => {
       if (returnTarget?.isConnected) returnTarget.focus();
       else sidePanelToggleRef.current?.focus();
     });
@@ -1468,12 +1692,32 @@ export function App() {
   const backgroundDiagnosticMessages = [...backgroundDiagnostics.values()].map((diagnostic) => diagnostic.message);
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
+  const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
 
   if (foregroundError && !metadata) {
     return (
       <main className="app app-error">
         <h1>Open Wrangler</h1>
         <p role="alert">{foregroundError}</p>
+        {webviewConfig.canChangeImportOptions && (
+          <>
+            <button
+              type="button"
+              className="toolbarButton"
+              disabled={importOptionsDisabled}
+              aria-busy={importOptionsPending || undefined}
+              title="Change file import options"
+              onClick={() => requestImportOptionsChange()}
+            >
+              <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
+            </button>
+            {importOptionsPending && (
+              <span className="importOptionsStatus" role="status" aria-live="polite">
+                Updating import options…
+              </span>
+            )}
+          </>
+        )}
       </main>
     );
   }
@@ -1497,11 +1741,23 @@ export function App() {
           </div>
           {metadata && (
             <div className="toolbarActions">
+              {metadata.source.kind === "file" && webviewConfig.canChangeImportOptions && (
+                <button
+                  type="button"
+                  className="toolbarButton"
+                  disabled={importOptionsDisabled}
+                  aria-busy={importOptionsPending || undefined}
+                  title="Change file import options"
+                  onClick={() => requestImportOptionsChange()}
+                >
+                  <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
+                </button>
+              )}
               {metadata.mode === "editing" && (
                 <button
                   type="button"
                   data-operation-focus-fallback
-                  disabled={loading || projectionLoading || !canStartOperation(metadata)}
+                  disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}
                   aria-describedby={projectionStatusId}
                   title={
                     projectionActionTitle ??
@@ -1517,7 +1773,7 @@ export function App() {
                 type="button"
                 className="toolbarButton"
                 aria-expanded={sidePanelOpen}
-                disabled={inspectionMode}
+                disabled={inspectionMode || importOptionsPending}
                 title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
                 onClick={(event) => {
                   if (sidePanelOpenRef.current) {
@@ -1568,7 +1824,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondaryButton"
-                    disabled={loading || projectionLoading}
+                    disabled={loading || projectionLoading || importOptionsPending}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Escape"
                     title={projectionActionTitle ?? "Discard draft (Escape)"}
@@ -1579,7 +1835,7 @@ export function App() {
                   <button
                     type="button"
                     data-operation-focus-fallback
-                    disabled={loading || projectionLoading}
+                    disabled={loading || projectionLoading || importOptionsPending}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Enter Meta+Enter"
                     title={projectionActionTitle ?? "Apply draft (Ctrl/Cmd+Enter)"}
@@ -1593,7 +1849,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondaryButton"
-                    disabled={loading || projectionLoading || metadata.steps.length === 0}
+                    disabled={loading || projectionLoading || importOptionsPending || metadata.steps.length === 0}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
                     title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
@@ -1604,7 +1860,7 @@ export function App() {
                   <button
                     type="button"
                     className="secondaryButton"
-                    disabled={loading || projectionLoading || metadata.steps.length === 0}
+                    disabled={loading || projectionLoading || importOptionsPending || metadata.steps.length === 0}
                     aria-describedby={projectionStatusId}
                     aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
                     title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
@@ -1730,7 +1986,10 @@ export function App() {
                 diff={stepInspection?.diff ?? (metadata?.draftStep ? diff : undefined)}
                 beforePage={stepInspection?.inputPage ?? draftBefore?.page}
                 beforeSchema={stepInspection?.inputSchema ?? draftBefore?.schema}
-                viewControlsDisabled={inspectionMode}
+                viewControlsDisabled={inspectionMode || importOptionsPending}
+                viewControlsDisabledReason={
+                  importOptionsPending ? "View controls are unavailable while import options are changing." : undefined
+                }
                 onSortColumn={(column, direction) =>
                   inspectionMode
                     ? undefined
@@ -1753,7 +2012,7 @@ export function App() {
                 }}
                 onVisibleSummaryColumnsChange={inspectionMode ? () => undefined : updateVisibleSummaryColumns}
                 onVisibleColumnRangeChange={handleVisibleColumnRange}
-                onViewStateChange={inspectionMode ? () => undefined : publishGridViewState}
+                onViewStateChange={inspectionMode || importOptionsPending ? () => undefined : publishGridViewState}
               />
             ) : (
               <div className="emptyState">
@@ -1780,7 +2039,7 @@ export function App() {
                 values={columnValues}
                 activeColumn={filterColumn}
                 defaultAdvanced={webviewConfig.filterMode === "advanced"}
-                disabled={mutationPending}
+                disabled={mutationPending || importOptionsPending}
                 onApply={applyFilters}
                 onRequestValues={requestValues}
               />
@@ -1835,7 +2094,7 @@ export function App() {
           filterModel={filterModel}
           initialKind={operationKind}
           initialStep={editingStep}
-          busy={mutationPending || projectionLoading}
+          busy={mutationPending || projectionLoading || importOptionsPending}
           onClose={() => {
             if (foregroundRequest.current !== "mutation") setOperationOpen(false);
           }}
@@ -1851,6 +2110,37 @@ interface EditorActionMessage {
   action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
+}
+
+interface RequestImportOptionsChangeMessage {
+  kind: "requestImportOptionsChange";
+  actionId: string;
+}
+
+interface RendererSynchronizationMessage {
+  kind: "rendererSynchronization";
+  syncId: string;
+  sessionId: string | null;
+  revision: number | null;
+}
+
+interface ImportOptionsStateMessage {
+  kind: "importOptionsState";
+  busy: boolean;
+}
+
+interface SessionPresentationMessage {
+  kind: "sessionPresentation";
+  presentation: {
+    sessionId: string;
+    revision: number;
+    code: string;
+    draft?: {
+      diff: DataDiff;
+      warnings: string[];
+      beforeSchema: ColumnSchema[];
+    };
+  };
 }
 
 interface ViewStateMessage {
@@ -2047,6 +2337,7 @@ function readWebviewConfig(): {
   defaultColumnWidth: number;
   insightsOnOpen: boolean;
   filterMode: "basic" | "advanced";
+  canChangeImportOptions: boolean;
 } {
   const fetchBlockSize = Number(document.body.dataset.fetchBlockSize ?? 200);
   const fetchColumnBlockSize = Number(document.body.dataset.fetchColumnBlockSize ?? 16);
@@ -2058,6 +2349,7 @@ function readWebviewConfig(): {
       : 16,
     defaultColumnWidth: Number.isFinite(defaultColumnWidth) ? Math.max(80, Math.min(640, defaultColumnWidth)) : 190,
     insightsOnOpen: document.body.dataset.insightsOnOpen !== "false",
-    filterMode: document.body.dataset.filterMode === "advanced" ? "advanced" : "basic"
+    filterMode: document.body.dataset.filterMode === "advanced" ? "advanced" : "basic",
+    canChangeImportOptions: document.body.dataset.canChangeImportOptions === "true"
   };
 }

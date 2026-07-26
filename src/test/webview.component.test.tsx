@@ -1,8 +1,19 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import type { GridPage, SessionMetadata } from "../shared/protocol";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
+
+const webviewPostMessage = vi.hoisted(() => vi.fn());
+vi.mock("../webviews/vscodeApi", () => ({
+  vscode: {
+    postMessage: webviewPostMessage,
+    getState: () => undefined,
+    setState: () => undefined
+  }
+}));
+
+let App: (typeof import("../webviews/App"))["App"];
 
 const metadata: SessionMetadata = {
   protocolVersion: 2,
@@ -55,6 +66,8 @@ const page: GridPage = {
 };
 
 describe("DataGrid", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("renders schema headers and cell values", () => {
     render(
       <DataGrid
@@ -141,6 +154,50 @@ describe("DataGrid", () => {
     fireEvent.keyDown(city, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(sales));
     expect(screen.queryByText("Profiling…")).toBeNull();
+  });
+
+  it("does not reclaim host focus when scrolling virtualizes a remembered iframe cell", async () => {
+    const rows = Array.from({ length: 40 }, (_, rowNumber) => ({
+      id: `r:${rowNumber}`,
+      rowNumber,
+      values: page.rows[0].values
+    }));
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 40, columns: 2 }, filteredShape: { rows: 40, columns: 2 } }}
+        page={{ offset: 0, limit: 200, totalRows: 40, columnIds: page.columnIds, rows }}
+        summaries={[]}
+        pageSize={200}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    fireEvent(window, new Event("resize"));
+    const initialCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    expect(initialCell).not.toBeNull();
+    act(() => initialCell?.focus());
+    expect(document.activeElement).toBe(initialCell);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    focus.mockClear();
+
+    hasFocus.mockReturnValue(false);
+    scroller.scrollTop = 20 * 29;
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => {
+      const rovingCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+      expect(Number(rovingCell?.dataset.gridRow)).toBeGreaterThan(0);
+    });
+    expect(focus).not.toHaveBeenCalled();
+    focus.mockRestore();
+    hasFocus.mockRestore();
   });
 
   it("restores stable column widths, selection, and both viewport axes", async () => {
@@ -244,8 +301,59 @@ describe("DataGrid", () => {
     expect(onPage).not.toHaveBeenCalled();
   });
 
+  it("publishes the physical viewport when the browser clamps impossible restored offsets", () => {
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined
+    });
+    Object.defineProperty(scroller, "scrollLeft", {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined
+    });
+    onViewStateChange.mockClear();
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 35 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: { "c:1": 280 },
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    expect(props.onPage).not.toHaveBeenCalled();
+  });
+
   it("carries the scroll-requested row into the next block's roving focus", async () => {
     const onPage = vi.fn();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const scrollMetadata = {
       ...metadata,
       shape: { rows: 6, columns: 2 },
@@ -266,6 +374,9 @@ describe("DataGrid", () => {
     const { rerender } = render(<DataGrid {...props} page={scrollPage} />);
     const scroller = screen.getByTestId("data-grid-scroller");
     Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    const initialCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    expect(initialCell).not.toBeNull();
+    act(() => initialCell?.focus());
     scroller.scrollTop = 4 * 29;
     fireEvent.scroll(scroller);
     await waitFor(() => expect(onPage).toHaveBeenCalledWith(4));
@@ -281,6 +392,59 @@ describe("DataGrid", () => {
       />
     );
     await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-row", "4"));
+    hasFocus.mockRestore();
+  });
+
+  it("does not restore a requested block after the host takes focus while the page is loading", async () => {
+    const onPage = vi.fn();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const scrollMetadata = {
+      ...metadata,
+      shape: { rows: 6, columns: 2 },
+      filteredShape: { rows: 6, columns: 2 }
+    };
+    const scrollPage = { ...page, totalRows: 6 };
+    const props = {
+      metadata: scrollMetadata,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={scrollPage} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    const initialCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    expect(initialCell).not.toBeNull();
+    act(() => initialCell?.focus());
+    scroller.scrollTop = 4 * 29;
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(onPage).toHaveBeenCalledWith(4));
+
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    focus.mockClear();
+    hasFocus.mockReturnValue(false);
+    rerender(
+      <DataGrid
+        {...props}
+        page={{
+          ...scrollPage,
+          offset: 4,
+          rows: scrollPage.rows.map((row, index) => ({ ...row, id: `r:${index + 4}`, rowNumber: index + 4 }))
+        }}
+      />
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-grid-row="4"][data-grid-column="0"]')).toHaveAttribute("tabindex", "0")
+    );
+    expect(focus).not.toHaveBeenCalled();
+    focus.mockRestore();
+    hasFocus.mockRestore();
   });
 
   it("reports ownership changes when horizontal virtualization replaces visible columns", async () => {
@@ -357,6 +521,7 @@ describe("DataGrid", () => {
   });
 
   it("keeps one roving tab stop when mouse scrolling virtualizes the focused row", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const rows = Array.from({ length: 40 }, (_, rowNumber) => ({
       id: `r:${rowNumber}`,
       rowNumber,
@@ -392,6 +557,7 @@ describe("DataGrid", () => {
       expect(Number(rovingCells[0].dataset.gridRow)).toBeGreaterThan(0);
       expect(document.activeElement).toBe(rovingCells[0]);
     });
+    hasFocus.mockRestore();
   });
 
   it("keeps explicit paging focus ahead of queued scroll-focus preservation", async () => {
@@ -639,3 +805,613 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
   });
 });
+
+describe("App file import options", () => {
+  beforeAll(async () => {
+    document.body.dataset.canChangeImportOptions = "true";
+    ({ App } = await import("../webviews/App"));
+  });
+
+  beforeEach(() => {
+    webviewPostMessage.mockClear();
+  });
+
+  it("acknowledges the exact rendered snapshot only after React commits it", () => {
+    const previousImplementation = webviewPostMessage.getMockImplementation();
+    try {
+      render(<App />);
+      webviewPostMessage.mockClear();
+      webviewPostMessage.mockImplementation((message) => {
+        if (message?.kind === "rendererSynchronized") {
+          expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+        }
+      });
+
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { kind: "sessionOpened", metadata, page, summaries: [] },
+            origin: window.location.origin
+          })
+        );
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              kind: "rendererSynchronization",
+              syncId: "S".repeat(32),
+              sessionId: metadata.sessionId,
+              revision: metadata.revision
+            },
+            origin: window.location.origin
+          })
+        );
+        expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(false);
+      });
+
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "S".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+    } finally {
+      webviewPostMessage.mockImplementation(previousImplementation ?? (() => undefined));
+    }
+  });
+
+  it("flushes pending grid presentation before acknowledging renderer synchronization", () => {
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+      fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+      webviewPostMessage.mockClear();
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "F".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+
+      const synchronizationMessages = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message?.kind === "updateViewState" || message?.kind === "rendererSynchronized");
+      expect(synchronizationMessages).toHaveLength(2);
+      expect(synchronizationMessages[0]).toMatchObject({
+        kind: "updateViewState",
+        state: { columnWidths: { "c:0": 200 } }
+      });
+      expect(synchronizationMessages[1]).toEqual({
+        kind: "rendererSynchronized",
+        syncId: "F".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps bounded recovery pulls alive until the matching final marker commits", () => {
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+      webviewPostMessage.mockClear();
+      dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+
+      act(() => vi.advanceTimersByTime(250));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(1);
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "W".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision + 1
+      });
+      act(() => vi.advanceTimersByTime(500));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(2);
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "N".repeat(32),
+        sessionId: null,
+        revision: null
+      });
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(3);
+
+      dispatchAppMessage({
+        kind: "rendererSynchronization",
+        syncId: "S".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+      expect(webviewPostMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "S".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: metadata.revision
+      });
+      const recoveryPullCount = webviewPostMessage.mock.calls.filter(
+        ([message]) => message?.kind === "requestSessionSnapshot"
+      ).length;
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(recoveryPullCount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds snapshot pulls per visible period and pauses them while the renderer is hidden", () => {
+    const visibility = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    vi.useFakeTimers();
+    try {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      const { unmount } = render(<App />);
+      webviewPostMessage.mockClear();
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(0);
+
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(1);
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(6);
+
+      unmount();
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(
+        webviewPostMessage.mock.calls.filter(([message]) => message?.kind === "requestSessionSnapshot")
+      ).toHaveLength(6);
+    } finally {
+      if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the action for file sessions but not notebook sessions", async () => {
+    const { unmount } = render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    expect(await screen.findByRole("button", { name: "Import options" })).toBeEnabled();
+
+    unmount();
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        source: {
+          kind: "notebookVariable",
+          label: "frame",
+          variableName: "frame",
+          uri: "file:///tmp/example.ipynb"
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    await screen.findByText("frame");
+    expect(screen.queryByRole("button", { name: "Import options" })).toBeNull();
+  });
+
+  it("uses the initial error action to retry import configuration and clears host-driven busy state", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "error",
+      code: "invalid_import_options",
+      message: "Choose a valid delimiter.",
+      recoverable: true
+    });
+
+    const action = await screen.findByRole("button", { name: "Import options" });
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a valid delimiter.");
+    webviewPostMessage.mockClear();
+    fireEvent.click(action);
+
+    expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }]);
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Updating import options");
+
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a valid delimiter.");
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+  });
+
+  it("keeps confirmed data on reconfiguration failure and accepts a later successful replacement", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    expect(await screen.findByRole("cell", { name: "Milan" })).toBeVisible();
+
+    webviewPostMessage.mockClear();
+    const action = screen.getByRole("button", { name: "Import options" });
+    fireEvent.click(action);
+    expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }]);
+    expect(action).toBeDisabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+
+    dispatchAppMessage({
+      kind: "error",
+      code: "invalid_import_options",
+      message: "The selected encoding could not read this file.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected encoding could not read this file.");
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+
+    fireEvent.click(action);
+    expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }, { kind: "changeImportOptions" }]);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        revision: 1,
+        source: {
+          ...metadata.source,
+          importOptions: {
+            delimiter: ";",
+            encoding: "utf-8",
+            quoteChar: '"',
+            hasHeader: true
+          }
+        }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+    expect(screen.queryByText("The selected encoding could not read this file.")).toBeNull();
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+  });
+
+  it("flushes pending grid presentation state before requesting new import options", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("button", { name: "Import options" }));
+
+    const presentationAndImport = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "updateViewState" || message?.kind === "changeImportOptions");
+    expect(presentationAndImport).toHaveLength(2);
+    expect(presentationAndImport[0]).toMatchObject({
+      kind: "updateViewState",
+      state: { columnWidths: { "c:0": 200 } }
+    });
+    expect(presentationAndImport[1]).toEqual({ kind: "changeImportOptions" });
+  });
+
+  it("routes a native import request through the renderer flush, cancellation, and busy barrier", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    await waitFor(() =>
+      expect(
+        webviewPostMessage.mock.calls.some(
+          ([message]) => message?.kind === "runtimeRequest" && message.request?.kind === "getSummary"
+        )
+      ).toBe(true)
+    );
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "A".repeat(32) });
+
+    const orderedMessages = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter(
+        (message) =>
+          message?.kind === "updateViewState" ||
+          message?.kind === "cancelViewRequests" ||
+          message?.kind === "changeImportOptions"
+      );
+    expect(orderedMessages).toHaveLength(3);
+    expect(orderedMessages[0]).toMatchObject({
+      kind: "updateViewState",
+      state: { columnWidths: { "c:0": 200 } }
+    });
+    expect(orderedMessages[1]).toMatchObject({
+      kind: "cancelViewRequests",
+      viewRequestIds: expect.arrayContaining([expect.any(String)])
+    });
+    expect(orderedMessages[2]).toEqual({ kind: "changeImportOptions", actionId: "A".repeat(32) });
+    expect(screen.getByRole("button", { name: "Import options" })).toBeDisabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("flushes pending presentation state before a busy renderer leaves the native request to host fallback", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "B".repeat(32) });
+
+    expect(webviewPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "updateViewState",
+        state: expect.objectContaining({ columnWidths: { "c:0": 200 } })
+      })
+    );
+    expect(outboundImportOptionMessages()).toEqual([]);
+  });
+
+  it("keeps grid and filter view controls locked for the complete import transaction", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    expect(cityHeader).not.toBeNull();
+    const cityControls = within(cityHeader!);
+    fireEvent.click(cityControls.getByLabelText("Column actions for city"));
+
+    expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Sort ascending" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeEnabled();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+
+    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeDisabled();
+    expect(cityControls.getByRole("button", { name: "Filter…" })).toBeDisabled();
+    expect(cityControls.getByRole("button", { name: "Sort ascending" })).toBeDisabled();
+    expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Search values for city" })).toBeDisabled();
+    expect(cityControls.getByText("View controls are unavailable while import options are changing.")).toBeVisible();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
+    expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+  });
+
+  it("keeps the grid loading when a drained cleaning completion lands during import reconfiguration", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({
+      kind: "planUpdated",
+      revision: 1,
+      metadata: { ...metadata, revision: 1 },
+      page,
+      code: "frame"
+    });
+
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Import options" })).toHaveAttribute("aria-busy", "true");
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("button", { name: "Import options" })).not.toHaveAttribute("aria-busy");
+  });
+
+  it("closes operation UI and blocks host mutation actions while import reconfiguration is pending", async () => {
+    const step: TransformStep = {
+      id: "upper-city",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, steps: [step], revision: 1 },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+    dispatchAppMessage({ kind: "editorAction", action: "openOperation" });
+    expect(await screen.findByRole("dialog", { name: "Add cleaning step" })).toBeInTheDocument();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add step" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit latest" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    webviewPostMessage.mockClear();
+
+    for (const action of ["openOperation", "editLatest", "applyDraft", "discardDraft", "undoStep"] as const) {
+      dispatchAppMessage({ kind: "editorAction", action });
+    }
+
+    expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull();
+    expect(
+      webviewPostMessage.mock.calls.some(
+        ([message]) => message?.kind === "runtimeRequest" && isMutationRequestKind(message.request?.kind)
+      )
+    ).toBe(false);
+    expect(screen.getByRole("alert")).toHaveTextContent("Wait for the current import-options change to finish.");
+  });
+
+  it("restores an accepted mutation without ending the host-owned import transaction", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    const action = screen.getByRole("button", { name: "Import options" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({
+      kind: "error",
+      code: "no_draft",
+      message: "There is no draft.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("There is no draft.");
+    expect(screen.getByRole("cell", { name: "Milan" })).toBeVisible();
+
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+  });
+
+  it("does not attribute an import cancellation to an older cleaning mutation", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    const action = screen.getByRole("button", { name: "Import options" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+    expect(action).toBeDisabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("The cleaning operation was cancelled.")).toBeNull();
+
+    dispatchAppMessage({
+      kind: "error",
+      code: "no_draft",
+      message: "There is no draft.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+
+    expect(action).toBeEnabled();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByRole("alert")).toHaveTextContent("There is no draft.");
+  });
+
+  it("disables the file action during a cleaning mutation and a column projection", async () => {
+    const wideSchema = Array.from({ length: 40 }, (_, position) => ({
+      id: `c:${position}`,
+      name: `column-${position}`,
+      position,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    }));
+    const wideMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 1, columns: wideSchema.length },
+      filteredShape: { rows: 1, columns: wideSchema.length },
+      schema: wideSchema
+    };
+    const widePage: GridPage = {
+      offset: 0,
+      limit: 200,
+      totalRows: 1,
+      columnIds: wideSchema.slice(0, 16).map((column) => column.id),
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: wideSchema.slice(0, 16).map((column) => ({
+            kind: "string" as const,
+            raw: column.name,
+            display: column.name,
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: wideMetadata, page: widePage, summaries: [] });
+    await screen.findByRole("cell", { name: "column-0" });
+    const action = screen.getByRole("button", { name: "Import options" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    expect(action).toBeDisabled();
+    dispatchAppMessage({
+      kind: "error",
+      code: "no_draft",
+      message: "There is no draft.",
+      recoverable: true,
+      sessionId: metadata.sessionId
+    });
+    expect(action).toBeEnabled();
+
+    webviewPostMessage.mockClear();
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
+    scroller.scrollLeft = 20 * 190;
+    fireEvent.scroll(scroller);
+    await waitFor(() =>
+      expect(
+        webviewPostMessage.mock.calls.some(
+          ([message]) =>
+            message?.kind === "runtimeRequest" &&
+            message.request?.kind === "getPage" &&
+            message.request?.columnOffset === 16
+        )
+      ).toBe(true)
+    );
+    expect(action).toBeDisabled();
+
+    dispatchAppMessage({ kind: "importOptionsState", busy: true });
+    dispatchAppMessage({ kind: "cancelled", targetRequestId: "change-import-options" });
+    dispatchAppMessage({ kind: "importOptionsState", busy: false });
+    expect(action).toBeDisabled();
+  });
+});
+
+function dispatchAppMessage(data: unknown): void {
+  act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+}
+
+function outboundImportOptionMessages(): unknown[] {
+  return webviewPostMessage.mock.calls
+    .map(([message]) => message)
+    .filter((message) => message?.kind === "changeImportOptions");
+}
+
+function isMutationRequestKind(value: unknown): boolean {
+  return value === "previewStep" || value === "applyDraft" || value === "discardDraft" || value === "undoStep";
+}

@@ -4,6 +4,7 @@ import type { DataBackend, SessionSource } from "../../shared/protocol";
 import type { OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
+import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
 import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "./importOptions";
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
@@ -26,21 +27,39 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
       webviewPanel.dispose();
       return;
     }
-    const source = fileSource(document.uri, defaultImportOptions(document.uri));
-    const defaultBackend = getDefaultBackend();
-    new OpenWranglerPanel(webviewPanel, this.context, this.bridge, source, defaultBackend);
+    const confirmed = confirmedFileConfiguration(this.context.workspaceState, document.uri);
+    const source = fileSource(document.uri, confirmed?.importOptions ?? defaultImportOptions(document.uri));
+    const configuredBackend = getConfiguredBackend();
+    new OpenWranglerPanel(
+      webviewPanel,
+      this.context,
+      this.bridge,
+      source,
+      confirmed?.backend ?? backendPin(configuredBackend),
+      true,
+      confirmed?.backendPreference ?? configuredBackend
+    );
   }
 }
 
 export const registerFileCommands = (context: vscode.ExtensionContext, bridge: OpenWranglerBridge): void => {
   const provider = new OpenWranglerCustomEditorProvider(context, bridge);
   const providerOptions = {
-    supportsMultipleEditorsPerDocument: true,
+    supportsMultipleEditorsPerDocument: false,
     webviewOptions: {
       retainContextWhenHidden: true
     }
   };
   context.subscriptions.push(vscode.window.registerCustomEditorProvider(CUSTOM_EDITOR_ID, provider, providerOptions));
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("openWrangler.changeImportOptions", async () => {
+      if (await OpenWranglerPanel.changeActiveImportOptions()) return;
+      await vscode.window.showInformationMessage(
+        "Open a CSV, TSV, XLSX, or XLS session in Open Wrangler before changing import options."
+      );
+    })
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.openFile", async (resource?: unknown) => {
@@ -52,11 +71,13 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       if (!(await validateFileTarget(target))) return;
 
       try {
+        const configuredBackend = getConfiguredBackend();
         OpenWranglerPanel.create(
           context,
           bridge,
           fileSource(target, await promptImportOptions(target)),
-          getDefaultBackend()
+          backendPin(configuredBackend),
+          configuredBackend
         );
       } catch (error) {
         if (!(error instanceof ImportCancelledError)) throw error;
@@ -84,11 +105,13 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       if (!(await validateFileTarget(selected))) return;
 
       try {
+        const configuredBackend = getConfiguredBackend();
         OpenWranglerPanel.create(
           context,
           bridge,
           fileSource(selected, await promptImportOptions(selected)),
-          getDefaultBackend()
+          backendPin(configuredBackend),
+          configuredBackend
         );
       } catch (error) {
         if (!(error instanceof ImportCancelledError)) throw error;
@@ -105,10 +128,10 @@ const fileSource = (uri: vscode.Uri, importOptions?: SessionSource["importOption
   importOptions
 });
 
-const getDefaultBackend = (): DataBackend | undefined => {
-  const configured = getSetting<DataBackend | "auto">("defaultBackend", "auto");
-  return configured === "auto" ? undefined : configured;
-};
+const getConfiguredBackend = (): DataBackend | "auto" => getSetting<DataBackend | "auto">("defaultBackend", "auto");
+
+const backendPin = (configured: DataBackend | "auto"): DataBackend | undefined =>
+  configured === "auto" ? undefined : configured;
 
 const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as const;
 const supportedFileTypes = new Set<string>(allFileTypes);

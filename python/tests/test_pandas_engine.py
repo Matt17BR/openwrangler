@@ -77,19 +77,24 @@ def test_pandas_excel_file_session(tmp_path):
 
 
 def test_pandas_excel_reader_matches_the_format_dependency(monkeypatch):
-    calls: list[tuple[str, int, str]] = []
+    calls: list[tuple[str, str | int, str]] = []
 
-    def read_excel(path: str, *, sheet_name: int, engine: str) -> pd.DataFrame:
+    def read_excel(path: str, *, sheet_name: str | int, engine: str) -> pd.DataFrame:
         calls.append((path, sheet_name, engine))
         return pd.DataFrame({"value": [1]})
 
     monkeypatch.setattr(pd, "read_excel", read_excel)
     runtime = PandasEngine()
 
-    runtime.read_file("modern.xlsx", {"sheet": 1})
-    runtime.read_file("legacy.xls", {"sheet": 1})
+    runtime.read_file("default.xlsx")
+    runtime.read_file("modern.xlsx", {"sheetIndex": 1})
+    runtime.read_file("legacy.xls", {"sheetName": " résumé "})
 
-    assert calls == [("modern.xlsx", 1, "openpyxl"), ("legacy.xls", 1, "xlrd")]
+    assert calls == [
+        ("default.xlsx", 0, "openpyxl"),
+        ("modern.xlsx", 1, "openpyxl"),
+        ("legacy.xls", " résumé ", "xlrd"),
+    ]
 
 
 def test_pandas_csv_import_options(tmp_path):
@@ -109,6 +114,39 @@ def test_pandas_csv_import_options(tmp_path):
 
     assert opened["metadata"]["schema"][0]["name"] == "city"
     assert opened["page"]["rows"][0]["values"][0]["display"] == "München"
+
+
+def test_pandas_reads_multibyte_delimiter_and_quote_controls(tmp_path):
+    manager = SessionManager()
+    cases = [
+        (
+            "unicode-delimiter.csv",
+            'city§note\nMilan§"one§two"\n',
+            {"delimiter": "§"},
+            ["Milan", "one§two"],
+        ),
+        ("unicode-quote.csv", "city,note\nMilan,“one,two“\n", {"quoteChar": "“"}, ["Milan", "one,two"]),
+    ]
+    for file_name, contents, controls, expected in cases:
+        path = tmp_path / file_name
+        path.write_text(contents, encoding="utf-8")
+        opened = manager.open_session(
+            {
+                "kind": "file",
+                "label": path.name,
+                "path": str(path),
+                "importOptions": {
+                    **controls,
+                    "encoding": "utf-8",
+                    "hasHeader": True,
+                },
+            },
+            backend="pandas",
+        )
+
+        assert [cell["display"] for cell in opened["page"]["rows"][0]["values"]] == expected
+        manager.close_session(opened["metadata"]["sessionId"], 0)
+    assert manager.sessions == {}
 
 
 def test_pandas_utf8_lossy_is_a_replacement_policy_not_a_codec(tmp_path):

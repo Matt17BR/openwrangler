@@ -39,7 +39,7 @@ jobs:
       - run: npm run license:check
       - run: npm audit --omit=dev
       - run: python -m pip_audit
-      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run package -- --pre-release --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension
       - id: packaged_editor
@@ -148,7 +148,7 @@ jobs:
       - run: npm run test:extension-host
         env:
           VSCODE_TEST_VERSION: stable
-      - run: npm run package -- --out openwrangler.vsix
+      - run: npm run package -- --pre-release --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension
       - id: packaged_editor

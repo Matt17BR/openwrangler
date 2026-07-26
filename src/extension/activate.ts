@@ -15,11 +15,13 @@ export interface OpenWranglerTestApi {
   setActiveSession(sessionId: string | undefined): void;
   activeSession: SessionCoordinator["activeSession"];
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
+  synchronizePanel(sessionId: string): Promise<boolean>;
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
+  shutdownRuntimeBridgeForTesting(): Promise<void>;
   disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
@@ -53,11 +55,13 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         setActiveSession: (sessionId) => coordinator.setActive(sessionId),
         activeSession: () => coordinator.activeSession(),
         updateViewState: async (sessionId, state) => coordinatedBridge.updateViewState?.(sessionId, state),
+        synchronizePanel: (sessionId) => OpenWranglerPanel.synchronizePanelForSession(sessionId),
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
         declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
+        shutdownRuntimeBridgeForTesting: () => bridge.shutdown(),
         disposePanelForSession: (sessionId) => OpenWranglerPanel.disposePanelForSession(sessionId),
         setCodeForExport: (code) => nativeViews.setCodeForExport(code),
         exportCodeTo: (destination) => nativeViews.exportCodeTo(destination)

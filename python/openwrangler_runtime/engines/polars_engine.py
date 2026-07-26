@@ -26,6 +26,7 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     numeric_visualization,
+    resolve_excel_sheet_selector,
     typed_selection_value,
     validate_view_predicate_operator,
 )
@@ -98,12 +99,12 @@ class PolarsEngine(DataFrameEngine):
         if extension == ".jsonl":
             return pl.scan_ndjson(path)
         if extension in {".xlsx", ".xls"}:
-            sheet = options.get("sheet")
-            if isinstance(sheet, int):
+            sheet_selector = resolve_excel_sheet_selector(options)
+            if sheet_selector[0] == "sheetIndex":
                 # The public import option is zero-based, while fastexcel's
                 # sheet_id follows spreadsheet conventions and is one-based.
-                return pl.read_excel(path, sheet_id=sheet + 1, engine="calamine")
-            return pl.read_excel(path, sheet_name=sheet, engine="calamine")
+                return pl.read_excel(path, sheet_id=sheet_selector[1] + 1, engine="calamine")
+            return pl.read_excel(path, sheet_name=sheet_selector[1], engine="calamine")
         raise EngineError(f"Unsupported file extension for Polars backend: {extension}")
 
     def normalize(self, value: Any) -> Any:

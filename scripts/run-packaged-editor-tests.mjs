@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createVSIX } from "@vscode/vsce";
 import {
   configureEditorAcceptanceTempRoot,
   collectEditorAcceptancePrivateDiagnosticPaths,
@@ -12,7 +13,9 @@ import {
   editorDisplayLaunchArgs,
   editorAcceptanceProgressPath,
   editorProcessTreeMayBeLive,
+  PINNED_PYTHON_EXTENSION_ID,
   resolveDownloadedEditorCliPath,
+  resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
   startIsolatedEditorDisplay,
@@ -66,6 +69,7 @@ let orchestrationRunId;
 let orchestrationStartedAt = Date.now();
 const MAX_FAILURE_SUMMARY_BYTES = 8 * 1024;
 const OVERSIZED_DIAGNOSTIC_MARKER = "<diagnostic-omitted-size-budget>";
+const EXPECTED_ACCEPTANCE_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const retainedFailures = new Set();
 const cleanupFailures = new Set();
 const evidenceReceipts = [];
@@ -76,7 +80,10 @@ let privatePathsVerified = true;
 let editorDisplay;
 
 try {
-  hostHomes = collectEditorAcceptancePrivateDiagnosticPaths([resolve(root, process.argv[2] ?? "openwrangler.vsix")]);
+  hostHomes = collectEditorAcceptancePrivateDiagnosticPaths([
+    resolve(root, process.argv[2] ?? "openwrangler.vsix"),
+    process.env.OPEN_WRANGLER_PYTHON_EXTENSION_VSIX
+  ]);
   evidenceStagingReceipt = createEditorAcceptanceEvidenceStagingRoot(resolve(root, "tmp", "editor-acceptance-staging"));
   evidenceRoot = evidenceStagingReceipt.root;
   evidencePrivateRootReceipt = capturePrivateRootReceipt(evidenceRoot, dirname(evidenceRoot));
@@ -106,6 +113,7 @@ try {
           if (!existsSync(vsix)) throw new Error("The packaged extension was not found.");
           const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
           const expectedExtension = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
+          const pythonExtensionInstallTarget = resolvePythonExtensionAcceptanceInstallTarget();
 
           writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-editors");
           const requested = process.env.OPEN_WRANGLER_PACKAGED_EDITORS?.split(",")
@@ -201,18 +209,28 @@ try {
               "setup",
               `setup:editor-${editor.key}`
             );
-            const profile = mkdtempSync(join(temporaryRoot, `pkg-${editor.key}-`));
+            const profile = mkdtempSync(join(temporaryRoot, `p-${editor.key.slice(0, 1)}-`));
             const profileReceipt = capturePrivateRootReceipt(profile, temporaryRoot);
-            const userData = resolve(profile, "user-data");
+            const userData = resolve(profile, "u");
+            const pythonEnvironmentUserData = resolve(profile, "py");
+            const restrictedUserData = resolve(profile, "r");
             const extensions = resolve(profile, "extensions");
             const workspace = resolve(profile, "Open Wrangler Demo");
+            const acceptanceHarness = resolve(profile, "acceptance-harness");
+            const acceptanceHarnessVsix = resolve(profile, "openwrangler-packaged-test-harness.vsix");
             const resultPaths = {
               setup: resolve(profile, "setup-result.json"),
+              restricted: resolve(profile, "restricted-result.json"),
+              ...(pythonExtensionInstallTarget
+                ? { "python-environment": resolve(profile, "python-environment-result.json") }
+                : {}),
               seed: resolve(profile, "seed-result.json"),
               verify: resolve(profile, "verify-result.json")
             };
             const runIds = {
               setup: randomUUID(),
+              restricted: randomUUID(),
+              ...(pythonExtensionInstallTarget ? { "python-environment": randomUUID() } : {}),
               seed: randomUUID(),
               verify: randomUUID()
             };
@@ -232,11 +250,37 @@ try {
               run: async () => {
                 mkdirSync(workspace, { recursive: true });
                 cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
-                writeEditorAcceptanceHarness(profile);
+                writeEditorAcceptanceHarness(acceptanceHarness);
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:package-acceptance-harness");
+                await createVSIX({
+                  cwd: acceptanceHarness,
+                  packagePath: acceptanceHarnessVsix,
+                  dependencies: false,
+                  skipLicense: true,
+                  allowStarActivation: true,
+                  allowMissingRepository: true
+                });
                 writeEditorSettings(userData, {
                   "window.dialogStyle": "custom",
                   "window.menuStyle": "custom",
                   "files.simpleDialog.enable": true
+                });
+                if (pythonExtensionInstallTarget) {
+                  writeEditorSettings(pythonEnvironmentUserData, {
+                    "window.dialogStyle": "custom",
+                    "window.menuStyle": "custom",
+                    "files.simpleDialog.enable": true,
+                    "python.useEnvironmentsExtension": false
+                  });
+                }
+                writeEditorSettings(restrictedUserData, {
+                  "window.dialogStyle": "custom",
+                  "window.menuStyle": "custom",
+                  "files.simpleDialog.enable": true,
+                  "security.workspace.trust.enabled": true,
+                  "security.workspace.trust.startupPrompt": "never",
+                  "security.workspace.trust.banner": "never",
+                  "security.workspace.trust.emptyWindow": false
                 });
                 const fakeJupyter = resolve(profile, "fake-jupyter");
                 writeFakeJupyterExtension(fakeJupyter);
@@ -269,6 +313,46 @@ try {
                   },
                   { timeoutMs: 60_000 }
                 );
+                writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-acceptance-harness");
+                await runBoundedEditorCliCommand(
+                  {
+                    editor,
+                    args: [
+                      "--user-data-dir",
+                      userData,
+                      "--extensions-dir",
+                      extensions,
+                      "--install-extension",
+                      acceptanceHarnessVsix,
+                      "--force",
+                      ...sandboxArgs
+                    ],
+                    environment: editorEnvironment,
+                    label: `${editor.name} acceptance-harness installation`
+                  },
+                  { timeoutMs: 60_000 }
+                );
+                if (pythonExtensionInstallTarget) {
+                  writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:install-python-extension");
+                  await runBoundedEditorCliCommand(
+                    {
+                      editor,
+                      args: [
+                        "--user-data-dir",
+                        pythonEnvironmentUserData,
+                        "--extensions-dir",
+                        extensions,
+                        "--install-extension",
+                        pythonExtensionInstallTarget,
+                        "--force",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} pinned Python-extension installation`
+                    },
+                    { timeoutMs: 120_000 }
+                  );
+                }
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
                 const { stdout: installed } = await runBoundedEditorCliCommand(
                   {
@@ -292,9 +376,57 @@ try {
                     `${editor.name} did not report the installed Open Wrangler package. Output: ${installed}`
                   );
                 }
+                if (!installed.toLowerCase().includes(EXPECTED_ACCEPTANCE_HARNESS)) {
+                  throw new Error(
+                    `${editor.name} did not report the installed acceptance harness. Output: ${installed}`
+                  );
+                }
+                if (
+                  pythonExtensionInstallTarget &&
+                  !installed
+                    .split(/\r?\n/u)
+                    .map((line) => line.trim().toLowerCase())
+                    .includes(PINNED_PYTHON_EXTENSION_ID)
+                ) {
+                  throw new Error(
+                    `${editor.name} did not report the pinned ${PINNED_PYTHON_EXTENSION_ID} package. Output: ${installed}`
+                  );
+                }
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:complete");
 
+                activePhase = "restricted";
+                await runEditorAcceptancePhase({
+                  editor: identifiedEditor,
+                  workspace,
+                  userData: restrictedUserData,
+                  extensions,
+                  developmentPaths: [],
+                  testModule: resolve(root, "dist-test", "test", "extensionHost", "restricted.js"),
+                  python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                  phase: "restricted",
+                  workspaceTrust: "restricted",
+                  resultPath: resultPaths.restricted,
+                  runId: runIds.restricted,
+                  progressPath: progressPaths.restricted
+                });
+
                 const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
+                if (pythonExtensionInstallTarget) {
+                  activePhase = "python-environment";
+                  await runEditorAcceptancePhase({
+                    editor: identifiedEditor,
+                    workspace,
+                    userData: pythonEnvironmentUserData,
+                    extensions,
+                    developmentPaths: [fakeJupyter],
+                    testModule,
+                    python: process.env.OPEN_WRANGLER_TEST_PYTHON,
+                    phase: "python-environment",
+                    resultPath: resultPaths["python-environment"],
+                    runId: runIds["python-environment"],
+                    progressPath: progressPaths["python-environment"]
+                  });
+                }
                 for (const phase of ["seed", "verify"]) {
                   activePhase = phase;
                   await runEditorAcceptancePhase({
@@ -302,7 +434,7 @@ try {
                     workspace,
                     userData,
                     extensions,
-                    developmentPaths: [profile, fakeJupyter],
+                    developmentPaths: [fakeJupyter],
                     testModule,
                     python: process.env.OPEN_WRANGLER_TEST_PYTHON,
                     phase,

@@ -25,7 +25,10 @@ import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { resolveCliPathFromVSCodeExecutablePath } from "@vscode/test-electron";
-import { redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
+import {
+  EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES,
+  redactEditorAcceptanceText
+} from "./editor-acceptance-evidence.mjs";
 import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
@@ -34,8 +37,11 @@ import {
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
+const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const XVFB_STOP_TIMEOUT_MS = 5_000;
+export const PINNED_PYTHON_EXTENSION_VERSION = "2026.4.0";
+export const PINNED_PYTHON_EXTENSION_ID = `ms-python.python@${PINNED_PYTHON_EXTENSION_VERSION}`;
 export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
 export const EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const EDITOR_ACCEPTANCE_RESULT_MAX_BYTES = 1024 * 1024;
@@ -67,10 +73,14 @@ const XVFB_DISPLAY_OUTPUT_MAX_BYTES = 64;
 const XVFB_DIAGNOSTIC_MAX_BYTES = 16 * 1024;
 const EDITOR_OUTPUT_CLOSE_TIMEOUT_MS = 5_000;
 const EDITOR_DEBUG_PORT_RELEASE_GRACE_MS = 100;
+export const MACOS_EDITOR_IPC_PATH_LIMIT_BYTES = 103;
 const OVERSIZED_EDITOR_DIAGNOSTIC =
   "Diagnostic text was suppressed because its complete value exceeded the fixed safety limit.";
+const SENSITIVE_EDITOR_DIAGNOSTIC = "Sensitive harness details were suppressed.";
 const INCOMPLETE_EDITOR_OUTPUT_DIAGNOSTIC =
   "Editor output was suppressed because complete stream closure could not be verified.";
+const RETAINED_EDITOR_OUTPUT_MAX_BYTES = EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES;
+const RETAINED_EDITOR_OUTPUT_PREFIX = "<earlier editor output omitted>\n";
 const ACCEPTANCE_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const ACCEPTANCE_PHASE = /^[a-z][a-z0-9-]{0,63}$/u;
 const PRIVATE_DIAGNOSTIC_PATH_ENV_KEYS = [
@@ -80,6 +90,7 @@ const PRIVATE_DIAGNOSTIC_PATH_ENV_KEYS = [
   "OPEN_WRANGLER_CURSOR_EXECUTABLE",
   "OPEN_WRANGLER_CURSOR_CLI",
   "OPEN_WRANGLER_TEST_PYTHON",
+  PYTHON_EXTENSION_VSIX_ENV,
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS"
 ];
 
@@ -137,6 +148,30 @@ export function collectEditorAcceptancePrivateDiagnosticPaths(additionalPaths = 
   }
   for (const value of additionalPaths) add(value);
   return [...paths].sort((left, right) => right.length - left.length);
+}
+
+export function resolvePythonExtensionAcceptanceInstallTarget(environment = process.env) {
+  const enabled = environment.OPEN_WRANGLER_REAL_PYTHON_EXTENSION;
+  if (enabled === undefined || enabled === "" || enabled === "0") return undefined;
+  if (enabled !== "1") {
+    throw new Error("Real Python-extension acceptance must be explicitly enabled with the literal value 1.");
+  }
+
+  const vsix = environment[PYTHON_EXTENSION_VSIX_ENV];
+  if (vsix === undefined || vsix === "") return PINNED_PYTHON_EXTENSION_ID;
+  if (!isAbsolute(vsix) || /[\0\r\n]/u.test(vsix)) {
+    throw new Error("The real Python-extension acceptance VSIX path must be one absolute single-line path.");
+  }
+  let metadata;
+  try {
+    metadata = lstatSync(vsix, { bigint: true });
+  } catch {
+    throw new Error("The real Python-extension acceptance VSIX was not found.");
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The real Python-extension acceptance VSIX must be a regular file and not a symbolic link.");
+  }
+  return vsix;
 }
 const INCOMPLETE_XVFB_DIAGNOSTIC =
   "Xvfb stderr was suppressed because its complete stream contents were not available.";
@@ -566,6 +601,25 @@ export function editorDisplayLaunchArgs(platform = process.platform, environment
   if (mode === "headless") return ["--ozone-platform=headless", "--disable-gpu", ...ISOLATED_EDITOR_ARGS];
   if (mode === "xvfb") return ["--ozone-platform=x11", ...ISOLATED_EDITOR_ARGS];
   return [...ISOLATED_EDITOR_ARGS];
+}
+
+export function assertEditorUserDataIpcPathSafe(userData, editorVersion, platform = process.platform) {
+  if (platform !== "darwin") return;
+  if (typeof userData !== "string" || !posix.isAbsolute(userData) || /[\0\r\n]/u.test(userData)) {
+    throw new Error("macOS editor acceptance requires one absolute, single-line user-data path.");
+  }
+  if (typeof editorVersion !== "string" || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(editorVersion)) {
+    throw new Error("macOS editor acceptance requires a numeric major.minor.patch editor version.");
+  }
+  // VS Code derives its static main-process socket from --user-data-dir and
+  // truncates only the version component. Node 24 rejects rather than silently
+  // truncating an overlong sockaddr_un path, so fail before any process starts.
+  const handle = posix.join(posix.resolve(userData), `${editorVersion.slice(0, 4)}-main.sock`);
+  if (Buffer.byteLength(handle, "utf8") >= MACOS_EDITOR_IPC_PATH_LIMIT_BYTES) {
+    throw new Error(
+      `macOS editor acceptance requires its main IPC handle to be shorter than ${MACOS_EDITOR_IPC_PATH_LIMIT_BYTES} UTF-8 bytes; shorten the isolated profile layout.`
+    );
+  }
 }
 
 function editorDisplayMode(environment) {
@@ -1890,7 +1944,13 @@ export function writeEditorAcceptanceHarness(directory) {
       publisher: "openwrangler-tests",
       engines: { vscode: "^1.105.0" },
       main: "./extension.js",
+      files: ["extension.js"],
       activationEvents: ["*"],
+      capabilities: {
+        untrustedWorkspaces: {
+          supported: true
+        }
+      },
       contributes: {
         customEditors: [
           {
@@ -2230,6 +2290,7 @@ export async function runEditorAcceptancePhase(
     python,
     phase,
     resultPath,
+    workspaceTrust = "trusted",
     runId = randomUUID(),
     progressPath = editorAcceptanceProgressPath(resultPath, runId, phase)
   },
@@ -2248,6 +2309,10 @@ export async function runEditorAcceptancePhase(
     reserveDebugPort = reserveEditorDebugPort
   } = {}
 ) {
+  if (workspaceTrust !== "trusted" && workspaceTrust !== "restricted") {
+    throw new Error('An editor acceptance phase workspace-trust mode must be "trusted" or "restricted".');
+  }
+  assertEditorUserDataIpcPathSafe(userData, editor.version, platform);
   const expectedProgressPath = editorAcceptanceProgressPath(resultPath, runId, phase);
   if (progressPath !== expectedProgressPath) {
     throw new Error("An editor acceptance progress path must be the unique path derived for its run and phase.");
@@ -2425,7 +2490,7 @@ export async function runEditorAcceptancePhase(
         "--extensions-dir",
         extensions,
         ...sharedDataArgs,
-        "--disable-workspace-trust",
+        ...(workspaceTrust === "trusted" ? ["--disable-workspace-trust"] : []),
         "--skip-welcome",
         "--skip-release-notes",
         ...(editor.key === "cursor" ? ["--skip-onboarding"] : []),
@@ -2888,8 +2953,26 @@ function sanitizeHarnessFailure(value, additionalPrivatePaths = []) {
     raw = "The acceptance harness failed with an unreadable value.";
   }
   if (raw.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS) return OVERSIZED_EDITOR_DIAGNOSTIC;
+  const replacements = editorDiagnosticReplacements(additionalPrivatePaths);
+  const redacted = redactEditorAcceptanceText(raw, replacements);
+  if (redacted === undefined) return SENSITIVE_EDITOR_DIAGNOSTIC;
+  return redacted.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS ? OVERSIZED_EDITOR_DIAGNOSTIC : redacted;
+}
+
+function sanitizeEditorPhaseOutput(output) {
+  if (output.exceeded()) return OVERSIZED_EDITOR_DIAGNOSTIC;
+  const stdout = output.text("stdout").trim();
+  const stderr = output.text("stderr").trim();
+  const combined = [stdout ? `stdout:\n${stdout}` : "", stderr ? `stderr:\n${stderr}` : ""].filter(Boolean).join("\n");
+  if (!combined) return undefined;
+  const redacted = redactEditorAcceptanceText(combined, editorDiagnosticReplacements());
+  if (redacted === undefined) return SENSITIVE_EDITOR_DIAGNOSTIC;
+  return boundedUtf8Tail(redacted, RETAINED_EDITOR_OUTPUT_MAX_BYTES, RETAINED_EDITOR_OUTPUT_PREFIX);
+}
+
+function editorDiagnosticReplacements(additionalPrivatePaths = []) {
   const repository = process.cwd();
-  const replacements = [
+  return [
     [repository, "<repository>"],
     ...[process.env.HOME, process.env.USERPROFILE].filter(Boolean).map((path) => [path, "<host-home>"]),
     ...additionalPrivatePaths
@@ -2899,17 +2982,16 @@ function sanitizeHarnessFailure(value, additionalPrivatePaths = []) {
   ]
     .filter(([source], index, all) => all.findIndex(([candidate]) => candidate === source) === index)
     .sort((left, right) => right[0].length - left[0].length);
-  const redacted = redactEditorAcceptanceText(raw, replacements);
-  if (redacted === undefined) return "Sensitive harness details were suppressed.";
-  return redacted.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS ? OVERSIZED_EDITOR_DIAGNOSTIC : redacted;
 }
 
-function sanitizeEditorPhaseOutput(output) {
-  if (output.exceeded()) return OVERSIZED_EDITOR_DIAGNOSTIC;
-  const stdout = output.text("stdout").trim();
-  const stderr = output.text("stderr").trim();
-  const combined = [stdout ? `stdout:\n${stdout}` : "", stderr ? `stderr:\n${stderr}` : ""].filter(Boolean).join("\n");
-  return combined ? sanitizeHarnessFailure(combined) : undefined;
+function boundedUtf8Tail(value, maxBytes, prefix) {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.length <= maxBytes) return value;
+  const prefixBytes = Buffer.from(prefix, "utf8");
+  const retainedBytes = Math.max(0, maxBytes - prefixBytes.length);
+  let start = encoded.length - retainedBytes;
+  while (start < encoded.length && (encoded[start] & 0xc0) === 0x80) start += 1;
+  return `${prefix}${encoded.subarray(start).toString("utf8")}`;
 }
 
 function validateEditorAcceptanceOutcome(outcome, runId, phase) {

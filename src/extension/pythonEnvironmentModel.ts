@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type { DataBackend, SessionSource } from "../shared/protocol";
 
 export interface PythonDependency {
@@ -8,6 +9,12 @@ export interface PythonDependency {
   maximumVersionExclusive?: string;
 }
 
+export interface BackendImportCapabilityFailure {
+  option: "delimiter" | "quoteChar";
+  message: string;
+  detail: string;
+}
+
 export function automaticBackends(source: SessionSource): DataBackend[] {
   const extension = source.path?.split(".").pop()?.toLowerCase();
   const encoding = source.importOptions?.encoding?.toLowerCase();
@@ -15,7 +22,33 @@ export function automaticBackends(source: SessionSource): DataBackend[] {
   const nativeUtf8 = !encoding || ["utf-8", "utf8"].includes(encoding);
   if (!nativeUtf8) return ["pandas"];
   if (extension === "xlsx" || extension === "xls") return ["polars", "pandas"];
-  return ["polars", "duckdb", "pandas"];
+  return (["polars", "duckdb", "pandas"] as const).filter(
+    (backend) => backendImportCapabilityFailure(backend, source) === undefined
+  );
+}
+
+export function backendImportCapabilityFailure(
+  backend: DataBackend,
+  source: SessionSource
+): BackendImportCapabilityFailure | undefined {
+  if (!isDelimitedFile(source)) return undefined;
+  const quoteChar = source.importOptions?.quoteChar;
+  if (quoteChar && isMultibyteCodePoint(quoteChar) && backend !== "pandas") {
+    return {
+      option: "quoteChar",
+      message: `${backendLabel(backend)} cannot open CSV or TSV files with a multibyte UTF-8 quote character.`,
+      detail: `Choose the Pandas backend for quote character ${JSON.stringify(quoteChar)}, or select a one-byte quote character.`
+    };
+  }
+  const delimiter = source.importOptions?.delimiter;
+  if (delimiter && isMultibyteCodePoint(delimiter) && backend === "polars") {
+    return {
+      option: "delimiter",
+      message: "Polars cannot open CSV or TSV files with a multibyte UTF-8 delimiter.",
+      detail: `Choose the DuckDB or Pandas backend for delimiter ${JSON.stringify(delimiter)}, or select a one-byte delimiter.`
+    };
+  }
+  return undefined;
 }
 
 export function requiredDependencies(backend: DataBackend, source: SessionSource): PythonDependency[] {
@@ -67,4 +100,20 @@ export function requiredDependencies(backend: DataBackend, source: SessionSource
 
 export function isSupportedPythonVersion(major: number, minor: number): boolean {
   return major === 3 && minor >= 10 && minor <= 14;
+}
+
+function isDelimitedFile(source: SessionSource): boolean {
+  if (source.kind !== "file") return false;
+  const extension = source.path?.split(".").pop()?.toLowerCase();
+  return extension === "csv" || extension === "tsv";
+}
+
+function isMultibyteCodePoint(value: string): boolean {
+  return [...value].length === 1 && Buffer.byteLength(value, "utf8") > 1;
+}
+
+function backendLabel(backend: DataBackend): string {
+  if (backend === "duckdb") return "DuckDB";
+  if (backend === "polars") return "Polars";
+  return "Pandas";
 }

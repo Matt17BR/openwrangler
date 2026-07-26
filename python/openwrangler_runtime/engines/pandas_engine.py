@@ -30,6 +30,7 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     numeric_visualization,
+    resolve_excel_sheet_selector,
     typed_selection_value,
     validate_view_predicate_operator,
 )
@@ -70,22 +71,29 @@ class PandasEngine(DataFrameEngine):
         if extension in {".csv", ".tsv"}:
             requested_encoding = str(options.get("encoding") or "utf-8").lower()
             lossy_utf8 = requested_encoding == "utf8-lossy"
+            delimiter = options.get("delimiter", "\t" if extension == ".tsv" else ",")
+            quote_char = options.get("quoteChar", '"')
+            parser_engine: Literal["python"] | None = (
+                "python"
+                if any(isinstance(value, str) and len(value.encode("utf-8")) > 1 for value in (delimiter, quote_char))
+                else None
+            )
             return pd.read_csv(
                 path,
-                sep=options.get("delimiter", "\t" if extension == ".tsv" else ","),
+                sep=delimiter,
                 encoding="utf-8" if lossy_utf8 else requested_encoding,
                 encoding_errors="replace" if lossy_utf8 else "strict",
-                quotechar=options.get("quoteChar", '"'),
+                quotechar=quote_char,
                 header=0 if options.get("hasHeader", True) else None,
+                engine=parser_engine,
             )
         if extension == ".parquet":
             return pd.read_parquet(path)
         if extension == ".jsonl":
             return pd.read_json(path, lines=True)
-        if extension == ".xlsx":
-            return pd.read_excel(path, sheet_name=options.get("sheet", 0), engine="openpyxl")
-        if extension == ".xls":
-            return pd.read_excel(path, sheet_name=options.get("sheet", 0), engine="xlrd")
+        if extension in {".xlsx", ".xls"}:
+            _, sheet = resolve_excel_sheet_selector(options)
+            return pd.read_excel(path, sheet_name=sheet, engine="openpyxl" if extension == ".xlsx" else "xlrd")
         raise EngineError(f"Unsupported file extension for Pandas backend: {extension}")
 
     def normalize(self, value: Any) -> Any:

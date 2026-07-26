@@ -96,6 +96,7 @@
   },
   "activationEvents": [
     "onCommand:openWrangler.openFile",
+    "onCommand:openWrangler.changeImportOptions",
     "onCommand:openWrangler.openPath",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
@@ -129,7 +130,8 @@
   "contributes": {
     "configurationDefaults": {
       "cursor.general.pinnedTitleActions": [
-        "openWrangler.openFile"
+        "openWrangler.openFile",
+        "openWrangler.changeImportOptions"
       ]
     },
     "commands": [
@@ -141,6 +143,12 @@
       {
         "command": "openWrangler.openPath",
         "title": "Open Wrangler: Open File Path"
+      },
+      {
+        "command": "openWrangler.changeImportOptions",
+        "title": "Open Wrangler: Change Import Options",
+        "shortTitle": "Change Import Options",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "openWrangler.launchDataViewer",
@@ -406,6 +414,11 @@
           "command": "openWrangler.openFile",
           "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
           "group": "navigation@1"
+        },
+        {
+          "command": "openWrangler.changeImportOptions",
+          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+          "group": "navigation@2"
         }
       ],
       "editor/title/context": [
@@ -413,6 +426,11 @@
           "command": "openWrangler.openFile",
           "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
           "group": "navigation@50"
+        },
+        {
+          "command": "openWrangler.changeImportOptions",
+          "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
+          "group": "navigation@51"
         }
       ],
       "commandPalette": [
@@ -618,6 +636,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.7",
     "@vscode/jupyter-extension": "^1.1.1",
+    "@vscode/python-extension": "1.0.6",
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.9.1",
     "axe-core": "^4.12.1",
@@ -632,6 +651,7 @@
     "pngjs": "^7.0.0",
     "prettier": "^3.6.2",
     "pyright": "^1.1.405",
+    "saxes": "^6.0.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.38.0",
     "vite": "^8.0.14",

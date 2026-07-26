@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -59,7 +59,7 @@ try {
     containedBy: temporaryParent
   });
   configureEditorAcceptanceTempRoot(temporaryRoot);
-  profile = mkdtempSync(join(temporaryRoot, "host-"));
+  profile = mkdtempSync(join(temporaryRoot, "h-"));
   fakeJupyter = resolve(profile, "fake-jupyter");
   const requestedVersion = process.env.VSCODE_TEST_VERSION;
   const installedExecutable = "/usr/share/code/code";
@@ -80,11 +80,14 @@ try {
   };
   const editorVersion = await readEditorVersion(editorLaunch, editorEnvironment);
   const harness = resolve(profile, "harness");
-  const singleUserData = resolve(profile, "single-user-data");
+  const singleUserData = resolve(profile, "u1");
   const singleExtensions = resolve(profile, "single-extensions");
-  const userData = resolve(profile, "reload-user-data");
+  const userData = resolve(profile, "u2");
   const extensions = resolve(profile, "reload-extensions");
+  const workspace = resolve(profile, "Open Wrangler Demo");
   const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
+  mkdirSync(workspace, { recursive: true });
+  cpSync(resolve(root, "fixtures"), resolve(workspace, "fixtures"), { recursive: true });
   writeEditorAcceptanceHarness(harness);
   const workbenchSettings = {
     "window.dialogStyle": "custom",
@@ -104,7 +107,7 @@ try {
 
   await runEditorAcceptancePhase({
     editor,
-    workspace: root,
+    workspace,
     userData: singleUserData,
     extensions: singleExtensions,
     developmentPaths: [root, harness, fakeJupyter],
@@ -117,7 +120,7 @@ try {
   for (const phase of ["seed", "verify"]) {
     await runEditorAcceptancePhase({
       editor,
-      workspace: root,
+      workspace,
       userData,
       extensions,
       developmentPaths: [root, harness, fakeJupyter],

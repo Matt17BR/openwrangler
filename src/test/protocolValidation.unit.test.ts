@@ -51,7 +51,7 @@ const metadata: SessionMetadata = {
     kind: "file",
     label: "fixture.csv",
     path: "/tmp/fixture.csv",
-    importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true, sheet: 0 }
+    importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
   },
   capabilities,
   shape: { rows: 1, columns: 1 },
@@ -743,6 +743,232 @@ describe("protocol-v2 request validation", () => {
       })
     ).toBe(true);
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
+  });
+
+  it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {
+    const requestWithOptions = (importOptions: unknown, fileName = "fixture.csv"): unknown => ({
+      kind: "openSession",
+      source: {
+        kind: "file",
+        label: fileName,
+        path: `/tmp/${fileName}`,
+        importOptions
+      },
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+
+    expect(
+      isOpenWranglerRequest(
+        requestWithOptions({
+          delimiter: "💠",
+          encoding: " utf-8 ",
+          quoteChar: "“",
+          hasHeader: true
+        })
+      )
+    ).toBe(true);
+    expect(isOpenWranglerRequest(requestWithOptions({}))).toBe(true);
+    expect(isOpenWranglerRequest(requestWithOptions({ sheetName: " résumé " }, "fixture.xlsx"))).toBe(true);
+    expect(isOpenWranglerRequest(requestWithOptions({ sheetIndex: 0 }, "fixture.xls"))).toBe(true);
+  });
+
+  it.each([
+    [
+      "a literal fragment marker in a raw path",
+      {
+        kind: "file",
+        label: "fallback.parquet",
+        path: "/tmp/data#1.csv",
+        uri: "file:///tmp/fallback.xlsx?download=1",
+        importOptions: { delimiter: ";" }
+      }
+    ],
+    [
+      "a literal query marker in a raw path",
+      {
+        kind: "file",
+        label: "fallback.csv",
+        path: "/tmp/data?1.xlsx",
+        uri: "file:///tmp/fallback.csv?download=1",
+        importOptions: { sheetIndex: 0 }
+      }
+    ],
+    [
+      "a literal fragment marker in a raw label",
+      { kind: "file", label: "data#1.csv", importOptions: { encoding: "utf-8" } }
+    ],
+    [
+      "a literal query marker in a raw label",
+      { kind: "file", label: "data?1.xlsx", importOptions: { sheetName: "Sheet1" } }
+    ],
+    [
+      "a query and fragment after a delimited URI path",
+      {
+        kind: "file",
+        label: "fallback.xlsx",
+        uri: "file:///tmp/data.csv?download=1#section",
+        importOptions: { quoteChar: '"' }
+      }
+    ],
+    [
+      "a query and fragment after an Excel URI path",
+      {
+        kind: "file",
+        label: "fallback.csv",
+        path: "",
+        uri: "file:///tmp/data.XLSX#section?download=1",
+        importOptions: { sheetName: "Sheet1" }
+      }
+    ]
+  ])("accepts import options resolved from %s", (_description, source) => {
+    expect(
+      isOpenWranglerRequest({
+        kind: "openSession",
+        source,
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "a raw path whose apparent extension is only before a literal query marker",
+      {
+        kind: "file",
+        label: "fallback.csv",
+        path: "/tmp/data.csv?download=1",
+        uri: "file:///tmp/fallback.csv",
+        importOptions: { delimiter: "," }
+      }
+    ],
+    [
+      "a URI whose extension occurs only inside its query",
+      {
+        kind: "file",
+        label: "fallback.csv",
+        uri: "file:///tmp/download?name=data.csv",
+        importOptions: { delimiter: "," }
+      }
+    ],
+    [
+      "a lower-precedence compatible URI when the path is incompatible",
+      {
+        kind: "file",
+        label: "fallback.xlsx",
+        path: "/tmp/data.parquet",
+        uri: "file:///tmp/data.xlsx",
+        importOptions: { sheetIndex: 0 }
+      }
+    ],
+    [
+      "a hidden filename made only of an apparent extension",
+      {
+        kind: "file",
+        label: ".csv",
+        importOptions: { delimiter: "," }
+      }
+    ]
+  ])("rejects import options resolved from %s", (_description, source) => {
+    expect(
+      isOpenWranglerRequest({
+        kind: "openSession",
+        source,
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).toBe(false);
+  });
+
+  it("allows empty import options on non-file sources but rejects configured file imports there", () => {
+    const requestWithOptions = (importOptions: unknown): unknown => ({
+      kind: "openSession",
+      source: {
+        kind: "notebookVariable",
+        label: "frame.csv",
+        variableName: "frame",
+        importOptions
+      },
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+
+    expect(isOpenWranglerRequest(requestWithOptions({}))).toBe(true);
+    expect(isOpenWranglerRequest(requestWithOptions({ delimiter: "," }))).toBe(false);
+  });
+
+  it.each([
+    ["Excel selectors on a delimited source", "fixture.csv", { sheetName: "Sheet1" }],
+    ["delimited controls on an Excel source", "fixture.xlsx", { delimiter: "," }],
+    ["import values on a non-configurable source", "fixture.parquet", { encoding: "utf-8" }]
+  ])("rejects %s", (_description, fileName, importOptions) => {
+    expect(
+      isOpenWranglerRequest({
+        kind: "openSession",
+        source: {
+          kind: "file",
+          label: fileName,
+          path: `/tmp/${fileName}`,
+          importOptions
+        },
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).toBe(false);
+  });
+
+  it.each([
+    ["non-object options", null],
+    ["array options", []],
+    ["an unknown option", { delimiter: ",", extra: true }],
+    ["the legacy ambiguous sheet option", { sheet: 0 }],
+    ["a non-string delimiter", { delimiter: 1 }],
+    ["an empty delimiter", { delimiter: "" }],
+    ["a multi-code-point delimiter", { delimiter: "||" }],
+    ["a lone high-surrogate delimiter", { delimiter: "\uD800" }],
+    ["a lone low-surrogate delimiter", { delimiter: "\uDFFF" }],
+    ["a non-string quote character", { quoteChar: 1 }],
+    ["an empty quote character", { quoteChar: "" }],
+    ["a multi-code-point quote character", { quoteChar: '""' }],
+    ["a lone high-surrogate quote character", { quoteChar: "\uD800" }],
+    ["a lone low-surrogate quote character", { quoteChar: "\uDFFF" }],
+    ["a non-string encoding", { encoding: 1 }],
+    ["a blank encoding", { encoding: " \t " }],
+    ["a byte-order-mark-only encoding", { encoding: "\uFEFF" }],
+    ["a non-boolean header flag", { hasHeader: "yes" }],
+    ["a non-string sheet name", { sheetName: 1 }],
+    ["a blank sheet name", { sheetName: " \n " }],
+    ["a byte-order-mark-only sheet name", { sheetName: "\uFEFF" }],
+    ["a negative sheet index", { sheetIndex: -1 }],
+    ["a fractional sheet index", { sheetIndex: 1.5 }],
+    ["a boolean sheet index", { sheetIndex: true }],
+    ["an unsafe sheet index", { sheetIndex: Number.MAX_SAFE_INTEGER + 1 }],
+    ["both Excel selectors", { sheetName: "Sheet1", sheetIndex: 0 }],
+    ["a sheet name mixed with a delimiter", { sheetName: "Sheet1", delimiter: "," }],
+    ["a sheet index mixed with an encoding", { sheetIndex: 0, encoding: "utf-8" }],
+    ["a sheet name mixed with a quote character", { sheetName: "Sheet1", quoteChar: '"' }],
+    ["a sheet index mixed with a header flag", { sheetIndex: 0, hasHeader: true }]
+  ])("rejects import options containing %s", (_description, importOptions) => {
+    expect(
+      isOpenWranglerRequest({
+        kind: "openSession",
+        source: {
+          kind: "file",
+          label: "fixture.csv",
+          path: "/tmp/fixture.csv",
+          importOptions
+        },
+        pageSize: 200,
+        columnOffset: 0,
+        columnLimit: 16
+      })
+    ).toBe(false);
   });
 
   it.each([

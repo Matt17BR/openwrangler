@@ -1,7 +1,6 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -9,12 +8,15 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import * as path from "node:path";
+import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
-import { chromium, type Locator, type Page } from "playwright-core";
+import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
+import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import { OPEN_WRANGLER_MIME_V2, type NotebookOutputPayload } from "../../shared/notebookOutput";
@@ -33,6 +35,9 @@ import type { GridViewState, PersistedViewingState } from "../../shared/viewStat
 import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
+  pollAcceptanceCondition,
+  pressKeyboardKeyPairWithoutTransitionGap,
+  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
@@ -50,6 +55,7 @@ interface TestApi {
       }
     | undefined;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
+  synchronizePanel(sessionId: string): Promise<boolean>;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
@@ -59,6 +65,7 @@ interface TestApi {
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
+  shutdownRuntimeBridgeForTesting(): Promise<void>;
   disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
@@ -85,6 +92,16 @@ const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_
 const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
 const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
 const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+const IMPORT_FOCUS_POLL_TIMEOUT_MS = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+const IMPORT_FOCUS_POLL_INTERVAL_MS = 50;
+const IMPORT_FOCUS_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
+const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
+const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
+const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
+const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
+const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -199,7 +216,8 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
-  if (testPython) {
+  const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
+  if (testPython && phase !== "python-environment") {
     await vscode.workspace
       .getConfiguration("openWrangler")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
@@ -210,6 +228,7 @@ export async function run(): Promise<void> {
   for (const command of [
     "openWrangler.openPath",
     "openWrangler.openFile",
+    "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
     "openWrangler.checkJupyterIntegration",
@@ -263,7 +282,8 @@ export async function run(): Promise<void> {
   assert.ok(enabledFileTypes?.items?.enum?.includes("xls"));
   assert.ok(enabledFileTypes?.default?.includes("xls"));
   assert.deepEqual(contributions.configurationDefaults?.["cursor.general.pinnedTitleActions"], [
-    "openWrangler.openFile"
+    "openWrangler.openFile",
+    "openWrangler.changeImportOptions"
   ]);
   assert.deepEqual(
     contributions.commands?.find((command) => command.command === "openWrangler.openFile"),
@@ -271,6 +291,15 @@ export async function run(): Promise<void> {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
       icon: "$(open-preview)"
+    }
+  );
+  assert.deepEqual(
+    contributions.commands?.find((command) => command.command === "openWrangler.changeImportOptions"),
+    {
+      command: "openWrangler.changeImportOptions",
+      title: "Open Wrangler: Change Import Options",
+      shortTitle: "Change Import Options",
+      icon: "$(settings-gear)"
     }
   );
   const fileResourcePredicate =
@@ -295,6 +324,16 @@ export async function run(): Promise<void> {
     "Supported source editors must expose the Open Wrangler title action."
   );
   assert.ok(
+    contributions.menus?.["editor/title"]?.some(
+      (item) =>
+        item.command === "openWrangler.changeImportOptions" &&
+        item.when ===
+          "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)" &&
+        item.group === "navigation@2"
+    ),
+    "Configurable Open Wrangler file editors must expose the Change Import Options title action."
+  );
+  assert.ok(
     contributions.menus?.["editor/title/context"]?.some(
       (item) =>
         item.command === "openWrangler.openFile" &&
@@ -303,6 +342,16 @@ export async function run(): Promise<void> {
         item.group === "navigation@50"
     ),
     "Supported source tabs must expose Open in Open Wrangler in their context menu."
+  );
+  assert.ok(
+    contributions.menus?.["editor/title/context"]?.some(
+      (item) =>
+        item.command === "openWrangler.changeImportOptions" &&
+        item.when ===
+          "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)" &&
+        item.group === "navigation@51"
+    ),
+    "Configurable Open Wrangler tabs must expose Change Import Options in their context menu."
   );
   assert.ok(
     contributions.menus?.commandPalette?.some(
@@ -361,6 +410,12 @@ export async function run(): Promise<void> {
     "The extension host must activate before optional renderer messages are delivered."
   );
   assert.ok(
+    (extension.packageJSON.activationEvents as string[] | undefined)?.includes(
+      "onCommand:openWrangler.changeImportOptions"
+    ),
+    "The Change Import Options command must activate the extension host."
+  );
+  assert.ok(
     extension.packageJSON.contributes.walkthroughs?.some(
       (walkthrough: { id?: string }) => walkthrough.id === "gettingStarted"
     )
@@ -369,8 +424,15 @@ export async function run(): Promise<void> {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
-  const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
   recordAcceptanceProgress("preflight:complete");
+  if (phase === "python-environment") {
+    assert.ok(testPython, "Real Python-extension acceptance requires the runner-selected dependency environment.");
+    recordAcceptanceProgress("python-environment:start");
+    await exerciseRealPythonEnvironmentSelection(testing, workspace, fixture, testPython, extension.extensionPath);
+    recordAcceptanceProgress("python-environment:complete");
+    console.log("Open Wrangler real Python-environment selection acceptance passed.");
+    return;
+  }
   if (phase === "seed") {
     recordAcceptanceProgress("seed:start");
     await seedPersistedPlan(testing, fixture);
@@ -441,6 +503,10 @@ export async function run(): Promise<void> {
   if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
     recordAcceptanceProgress("verify:screenshots");
     await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+  }
+  if (testPython && process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    recordAcceptanceProgress("verify:dependency-install-shutdown");
+    await exerciseDependencyInstallShutdownLifecycle(testing, testPython);
   }
 
   recordAcceptanceProgress("verify:complete");
@@ -984,7 +1050,7 @@ async function acceptDefaultDelimitedImport(
     recordAcceptanceProgress(`${checkpoint}:wait`);
     const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
     recordAcceptanceProgress(`${checkpoint}:visible`);
-    const defaultOption = quickInput.getByRole("option", { name: option, exact: true }).first();
+    const defaultOption = quickInput.getByRole("option", { name: option }).first();
     await withAcceptanceOperationDeadline(
       defaultOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
       WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -999,15 +1065,7 @@ async function acceptDefaultDelimitedImport(
       /(?:^|\s)focused(?:\s|$)/u,
       `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
     );
-    assert.equal(
-      await withAcceptanceOperationDeadline(
-        quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} keyboard focus`
-      ),
-      true,
-      `${title} must own keyboard focus before accepting its default option.`
-    );
+    await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
     recordAcceptanceProgress(`${checkpoint}:accept`);
     await withAcceptanceOperationDeadline(
       page.keyboard.press("Enter"),
@@ -1047,18 +1105,10 @@ async function acceptDefaultDelimitedImport(
     ),
     '"'
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.evaluate((element) => element === element.ownerDocument.activeElement),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character keyboard focus"
-    ),
-    true,
-    "Quote character must own keyboard focus before accepting its default value."
-  );
+  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "Quote character keyboard acceptance"
   );
@@ -1093,11 +1143,80 @@ async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unkn
   }
 }
 
+type ImportFocusRelationship = "contains" | "exact";
+
+async function waitForImportNaturalKeyboardFocus(
+  target: Locator,
+  title: string,
+  relationship: ImportFocusRelationship
+): Promise<void> {
+  const focused = await withAcceptanceOperationDeadline(
+    pollAcceptanceCondition(
+      () =>
+        target.evaluate(
+          (element, expectedRelationship) => {
+            const activeElement = element.ownerDocument.activeElement;
+            return expectedRelationship === "exact" ? element === activeElement : element.contains(activeElement);
+          },
+          relationship,
+          { timeout: IMPORT_FOCUS_PROBE_TIMEOUT_MS }
+        ),
+      {
+        timeoutMs: IMPORT_FOCUS_POLL_TIMEOUT_MS,
+        intervalMs: IMPORT_FOCUS_POLL_INTERVAL_MS
+      }
+    ),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} natural keyboard focus`
+  );
+  if (focused) return;
+
+  const diagnostics = await boundedImportFocusDiagnostics(target, relationship);
+  throw new Error(
+    `${title} did not naturally receive keyboard focus within ${IMPORT_FOCUS_POLL_TIMEOUT_MS} ms. ` +
+      `Structural focus diagnostics: ${JSON.stringify(diagnostics)}`
+  );
+}
+
+async function boundedImportFocusDiagnostics(target: Locator, relationship: ImportFocusRelationship): Promise<unknown> {
+  try {
+    return await withAcceptanceOperationDeadline(
+      target.evaluate(
+        (element, expectedRelationship) => {
+          const activeElement = element.ownerDocument.activeElement;
+          return {
+            targetConnected: element.isConnected,
+            targetOwnsFocus:
+              expectedRelationship === "exact" ? element === activeElement : element.contains(activeElement),
+            activeElement:
+              activeElement === null
+                ? null
+                : {
+                    tagName: activeElement.tagName.slice(0, 32),
+                    role: activeElement.getAttribute("role")?.slice(0, 64) ?? null,
+                    classTokens: Array.from(activeElement.classList as ArrayLike<string>)
+                      .slice(0, 8)
+                      .map((token) => token.slice(0, 64))
+                  }
+          };
+        },
+        relationship,
+        { timeout: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS }
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import focus diagnostics"
+    );
+  } catch {
+    return "unavailable within the diagnostics deadline";
+  }
+}
+
 async function waitForImportQuickInput(
   page: Page,
   testing: TestApi,
   expectedSource: vscode.Uri,
-  title: string
+  title: string,
+  existingSessionId?: string
 ): Promise<Locator> {
   const quickInput = page.locator(".quick-input-widget:visible").filter({ hasText: title }).last();
   const deadline = Date.now() + 10_000;
@@ -1112,9 +1231,9 @@ async function waitForImportQuickInput(
       return quickInput;
     }
     const active = testing.activeSession();
-    if (active) {
+    if (active && active.sessionId !== existingSessionId) {
       throw new Error(
-        `The editor-title action created a dataframe session before the ${JSON.stringify(title)} import prompt appeared. ` +
+        `The import-options action created a dataframe session before the ${JSON.stringify(title)} prompt appeared. ` +
           `Expected source: ${JSON.stringify(expectedSource.fsPath)}. Actual source: ${JSON.stringify(active.metadata.source.path)}.`
       );
     }
@@ -1126,7 +1245,7 @@ async function waitForImportQuickInput(
   const hostInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   const activeSession = testing.activeSession();
   throw new Error(
-    `The ${JSON.stringify(title)} import prompt did not appear after the real editor-title action. ` +
+    `The ${JSON.stringify(title)} import prompt did not appear after the import-options action. ` +
       `Expected source: ${JSON.stringify(expectedSource.toString())}. ` +
       `Active host input: ${JSON.stringify(describeTabInput(hostInput))}. ` +
       `Active dataframe source: ${JSON.stringify(activeSession?.metadata.source.uri)}. ` +
@@ -3216,6 +3335,11 @@ async function exercisePackagedRendererProvenance(
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
     const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    assert.equal(
+      vscode.window.activeNotebookEditor?.notebook,
+      secondNotebook,
+      "Notebook B must still be the exact active document immediately before notebook A's renderer action."
+    );
     recordAcceptanceProgress("verify:notebook-renderer:click");
     await originButton.evaluate((button: unknown) => (button as { click(): void }).click());
     recordAcceptanceProgress("verify:notebook-renderer:session");
@@ -3374,59 +3498,110 @@ async function waitForNotebookRendererButton(
   label: string,
   buttonName = "Open in Open Wrangler"
 ): Promise<Locator> {
-  const deadline = Date.now() + 30_000;
-  do {
+  const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
+  discovery: do {
     const browser = workbench.context().browser();
-    if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
-    if (browser !== null && !browser.isConnected()) {
-      throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
-    }
-    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
-    for (const page of pages) {
-      if (page !== workbench && page.isClosed()) continue;
-      for (const frame of page.frames()) {
-        if (isRetiredRendererTarget(workbench, page, frame)) continue;
-        try {
-          const preview = frame.locator("section.openwrangler-notebook").filter({
-            hasText: `Open Wrangler preview: ${label}`
-          });
-          const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
-          if ((await button.count()) > 0) {
-            await button.scrollIntoViewIfNeeded();
-            if (await button.isVisible()) return button;
-          }
-        } catch (error) {
-          ignoreRetiredRendererProbeFailure(workbench, browser, page, frame, error);
+    assertNotebookRendererLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const preview = target.frame.locator("section.openwrangler-notebook").filter({
+          hasText: `Open Wrangler preview: ${label}`
+        });
+        const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break discovery;
+        const probeTimeoutMs = Math.min(NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS, remainingMs);
+        const ready = await withAcceptanceOperationDeadline(
+          probeRendererButtonReadiness(button, probeTimeoutMs),
+          probeTimeoutMs,
+          "the notebook renderer action readiness probe"
+        );
+        if (ready) return button;
+      } catch (error) {
+        const discoveryExpired = Date.now() >= deadline;
+        if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
         }
+        if (discoveryExpired) break discovery;
       }
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
   } while (Date.now() < deadline);
+
   const browser = workbench.context().browser();
+  assertNotebookRendererLifecycle(workbench, browser);
+  const diagnostics = await notebookRendererDiagnostics(workbench, browser, label, buttonName);
+  assertNotebookRendererLifecycle(workbench, browser);
+  throw new Error(`Timed out waiting for the exact notebook renderer action: ${JSON.stringify(diagnostics)}`);
+}
+
+function isNotebookRendererProbeDeadline(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith("Timed out waiting for the notebook renderer action readiness probe after ")
+  );
+}
+
+function assertNotebookRendererLifecycle(workbench: Page, browser: Browser | null): void {
   if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
   if (browser !== null && !browser.isConnected()) {
     throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
   }
-  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
-  const diagnostics = await Promise.all(
-    pages.flatMap((page) =>
-      page.frames().map(async (frame) => ({
-        page: page.url(),
-        frame: frame.url(),
-        previews: await frame
-          .locator("section.openwrangler-notebook")
-          .allInnerTexts()
-          .catch(() => []),
-        buttons: await frame
-          .getByRole("button", { name: buttonName, exact: true })
-          .count()
-          .catch(() => 0)
-      }))
-    )
-  );
-  throw new Error(
-    `Timed out waiting for the real notebook renderer button ${JSON.stringify(buttonName)} for ${JSON.stringify(label)}: ${JSON.stringify(diagnostics)}`
-  );
+}
+
+async function notebookRendererDiagnostics(
+  workbench: Page,
+  browser: Browser | null,
+  label: string,
+  buttonName: string
+): Promise<unknown> {
+  const targets = openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT);
+  try {
+    const diagnostics = await withAcceptanceOperationDeadline(
+      Promise.all(
+        targets.map(async (target) => {
+          if (isRetiredRendererTarget(workbench, target.page, target.frame)) {
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+          try {
+            const preview = target.frame.locator("section.openwrangler-notebook").filter({
+              hasText: `Open Wrangler preview: ${label}`
+            });
+            const button = preview.getByRole("button", { name: buttonName, exact: true });
+            const [previewCount, buttonCount] = await Promise.all([preview.count(), button.count()]);
+            const [firstButtonVisible, firstButtonEnabled] =
+              buttonCount > 0
+                ? await Promise.all([
+                    button.first().isVisible(),
+                    button.first().isEnabled({ timeout: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS })
+                  ])
+                : [false, false];
+            return rendererTargetDiagnostic(target, {
+              retired: false,
+              previewCount,
+              buttonCount,
+              firstButtonVisible,
+              firstButtonEnabled
+            });
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+        })
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "bounded notebook renderer diagnostics"
+    );
+    assertNotebookRendererLifecycle(workbench, browser);
+    return diagnostics;
+  } catch (error) {
+    assertNotebookRendererLifecycle(workbench, browser);
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for bounded notebook renderer")) {
+      return "unavailable within the diagnostics deadline";
+    }
+    throw error;
+  }
 }
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -3807,6 +3982,42 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       path.join(directory, "sample.csv"),
       readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.csv").fsPath)
     );
+    const sampleTsv = readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv").fsPath);
+    writeFileSync(path.join(directory, "sample-pandas.tsv"), sampleTsv);
+    writeFileSync(path.join(directory, "sample-duckdb.tsv"), sampleTsv);
+    const sampleJsonl = readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl").fsPath);
+    writeFileSync(path.join(directory, "sample-polars.jsonl"), sampleJsonl);
+    writeFileSync(path.join(directory, "sample-duckdb.jsonl"), sampleJsonl);
+    writeFileSync(path.join(directory, "configured.csv"), "name;value\nalpha;1\nbeta;2\n", "utf8");
+    writeFileSync(
+      path.join(directory, "reconfigure.csv"),
+      [
+        "name;value;category;status;amount;date;note;flag",
+        ...Array.from(
+          { length: 80 },
+          (_, index) =>
+            `row-${index};${index};group-${index % 4};${index % 2 === 0 ? "active" : "paused"};${index * 10};2026-07-${String((index % 28) + 1).padStart(2, "0")};note-${index};${index % 2 === 0}`
+        )
+      ].join("\n") + "\n",
+      "utf8"
+    );
+    writeFileSync(path.join(directory, "configured.tsv"), "name|value\nalpha|1\nbeta|2\n", "utf8");
+    writeFileSync(
+      path.join(directory, "damaged.csv"),
+      Buffer.concat([Buffer.from("name,value\nbroken-", "utf8"), Buffer.from([0xff]), Buffer.from(",1\n", "utf8")])
+    );
+    writeFileSync(path.join(directory, "damaged.jsonl"), '{"name":"broken"\n', "utf8");
+    writeFileSync(path.join(directory, "damaged.parquet"), "PAR1broken", "utf8");
+    writeFileSync(path.join(directory, "damaged.xls"), "not-an-excel-workbook", "utf8");
+    writeFileSync(
+      path.join(directory, "legacy.xls"),
+      gunzipSync(
+        Buffer.from(
+          readFileSync(vscode.Uri.joinPath(workspace, "fixtures", "legacy.xls.gz.base64").fsPath, "utf8").trim(),
+          "base64"
+        )
+      )
+    );
     execFileSync(
       python,
       [
@@ -3820,7 +4031,11 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           "pl.DataFrame({'name': ['alpha', 'beta'], 'value': [1, 2], 'active': [True, False]}).write_parquet(root / 'sample.parquet')",
           "workbook = Workbook()",
           "sheet = workbook.active",
-          "sheet.title = 'Sales'",
+          "sheet.title = 'Overview'",
+          "sheet.append(['name', 'value', 'active'])",
+          "sheet.append(['ignored-alpha', 11, True])",
+          "sheet.append(['ignored-beta', 12, False])",
+          "sheet = workbook.create_sheet('Sales')",
           "sheet.append(['name', 'value', 'active'])",
           "sheet.append(['alpha', 1, True])",
           "sheet.append(['beta', 2, False])",
@@ -3830,6 +4045,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       ],
       { encoding: "utf8" }
     );
+    writeFileSync(path.join(directory, "sample-duckdb.parquet"), readFileSync(path.join(directory, "sample.parquet")));
     const parquetLaunchUri = vscode.Uri.file(path.join(directory, "sample.parquet"));
     const parquetSource = readFileSync(parquetLaunchUri.fsPath);
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:open");
@@ -3868,24 +4084,35 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     );
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:closed");
 
+    recordAcceptanceProgress("verify:file-inputs:configured");
+    await exerciseConfiguredFileImportOptions(testing, directory);
+    recordAcceptanceProgress("verify:file-inputs:corrupt");
+    await exerciseCorruptFileFailures(testing, directory, config);
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      recordAcceptanceProgress("verify:file-inputs:configured:public-excel");
+      await exercisePublicLegacyExcelImportOptions(testing, directory, config);
+      recordAcceptanceProgress("verify:file-inputs:reconfigure");
+      await exerciseLiveImportReconfiguration(testing, directory, config);
+    }
+
     const fixtures = [
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
+        uri: vscode.Uri.file(path.join(directory, "sample-pandas.tsv")),
         backend: "pandas" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv"),
+        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.tsv")),
         backend: "duckdb" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
+        uri: vscode.Uri.file(path.join(directory, "sample-polars.jsonl")),
         backend: "polars" as const,
         shape: { rows: 4, columns: 4 }
       },
       {
-        uri: vscode.Uri.joinPath(workspace, "fixtures", "sample.jsonl"),
+        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.jsonl")),
         backend: "duckdb" as const,
         shape: { rows: 4, columns: 4 }
       },
@@ -3900,7 +4127,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         shape: { rows: 2, columns: 3 }
       },
       {
-        uri: vscode.Uri.file(path.join(directory, "sample.parquet")),
+        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.parquet")),
         backend: "duckdb" as const,
         shape: { rows: 2, columns: 3 }
       },
@@ -3954,6 +4181,1178 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
     cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+async function exerciseConfiguredFileImportOptions(testing: TestApi, directory: string): Promise<void> {
+  const csvPath = path.join(directory, "configured.csv");
+  const tsvPath = path.join(directory, "configured.tsv");
+  const excelPath = path.join(directory, "sample.xlsx");
+  const legacyExcelPath = path.join(directory, "legacy.xls");
+  const csvBytes = readFileSync(csvPath);
+  const tsvBytes = readFileSync(tsvPath);
+  const excelBytes = readFileSync(excelPath);
+  const legacyExcelBytes = readFileSync(legacyExcelPath);
+
+  const rejected = await testing.request({
+    kind: "openSession",
+    ...GRID_COLUMN_WINDOW,
+    source: {
+      kind: "file",
+      label: "configured.csv",
+      path: csvPath,
+      importOptions: { delimiter: "", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    },
+    backend: "polars",
+    pageSize: 20,
+    mode: "viewing"
+  });
+  assert.equal(rejected.kind, "error", "Malformed import options must fail before a session is retained.");
+  if (rejected.kind === "error") {
+    assert.equal(rejected.code, "invalid_request");
+    assert.match(rejected.message, /delimiter must contain exactly one Unicode code point/u);
+  }
+  assert.equal(testing.diagnostics().sessionCount, 0, "An invalid import attempt must not retain a session.");
+  await waitFor(
+    () => !testing.runtimeRunning(),
+    10_000,
+    "the invalid import attempt to release its standalone runtime"
+  );
+
+  const cases: Array<{
+    label: string;
+    source: SessionSource;
+    backend: "polars" | "pandas";
+    expectedColumns: string[];
+    expectedFirstColumn: string[];
+  }> = [
+    {
+      label: "non-default CSV delimiter",
+      source: {
+        kind: "file",
+        label: "configured.csv",
+        path: csvPath,
+        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "non-default TSV delimiter",
+      source: {
+        kind: "file",
+        label: "configured.tsv",
+        path: tsvPath,
+        importOptions: { delimiter: "|", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "Excel sheet name",
+      source: {
+        kind: "file",
+        label: "sample.xlsx",
+        path: excelPath,
+        importOptions: { sheetName: "Sales" }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "zero-based Excel sheet index",
+      source: {
+        kind: "file",
+        label: "sample.xlsx",
+        path: excelPath,
+        importOptions: { sheetIndex: 1 }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["alpha", "beta"]
+    },
+    {
+      label: "BIFF Excel sheet name in Polars",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetName: "second" }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    },
+    {
+      label: "BIFF Excel sheet index in Polars",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetIndex: 1 }
+      },
+      backend: "polars",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    },
+    {
+      label: "BIFF Excel sheet name in Pandas",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetName: "second" }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    },
+    {
+      label: "BIFF Excel sheet index in Pandas",
+      source: {
+        kind: "file",
+        label: "legacy.xls",
+        path: legacyExcelPath,
+        importOptions: { sheetIndex: 1 }
+      },
+      backend: "pandas",
+      expectedColumns: ["name", "value", "active"],
+      expectedFirstColumn: ["second", "résumé"]
+    }
+  ];
+  const openedSessions: Array<{ sessionId: string; revision: number }> = [];
+  try {
+    for (const candidate of cases) {
+      recordAcceptanceProgress(
+        `verify:file-inputs:configured:${candidate.backend}:${candidate.label.replaceAll(" ", "-")}:open`
+      );
+      const opened = await testing.request({
+        kind: "openSession",
+        ...GRID_COLUMN_WINDOW,
+        source: candidate.source,
+        backend: candidate.backend,
+        pageSize: 20,
+        mode: "viewing"
+      });
+      assert.equal(opened.kind, "sessionOpened", `${candidate.label} must open through ${candidate.backend}.`);
+      if (opened.kind !== "sessionOpened") continue;
+      openedSessions.push({
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      });
+      assert.equal(opened.metadata.backend, candidate.backend);
+      assert.deepEqual(opened.metadata.source, candidate.source);
+      assert.deepEqual(
+        opened.metadata.schema.map((column) => column.name),
+        candidate.expectedColumns
+      );
+      const firstColumn = opened.metadata.schema[0];
+      assert.ok(firstColumn, `${candidate.label} must expose its first selected column.`);
+      assert.deepEqual(gridColumnDisplays(opened.page, firstColumn.id), candidate.expectedFirstColumn);
+      recordAcceptanceProgress(
+        `verify:file-inputs:configured:${candidate.backend}:${candidate.label.replaceAll(" ", "-")}:opened`
+      );
+    }
+  } finally {
+    for (const session of openedSessions.reverse()) {
+      const closed = await testing.request({
+        kind: "closeSession",
+        sessionId: session.sessionId,
+        revision: session.revision
+      });
+      assert.equal(closed.kind, "sessionClosed");
+    }
+  }
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the configured import sessions to close without retaining a runtime"
+  );
+  assert.deepEqual(readFileSync(csvPath), csvBytes, "Configured CSV import must not modify its source.");
+  assert.deepEqual(readFileSync(tsvPath), tsvBytes, "Configured TSV import must not modify its source.");
+  assert.deepEqual(readFileSync(excelPath), excelBytes, "Excel sheet selection must not modify its workbook.");
+  assert.deepEqual(
+    readFileSync(legacyExcelPath),
+    legacyExcelBytes,
+    "BIFF Excel sheet selection must not modify its workbook."
+  );
+}
+
+async function exercisePublicLegacyExcelImportOptions(
+  testing: TestApi,
+  directory: string,
+  config: vscode.WorkspaceConfiguration
+): Promise<void> {
+  const page = await connectToEditorWorkbench();
+  const source = vscode.Uri.file(path.join(directory, "legacy.xls"));
+  const sourceBytes = readFileSync(source.fsPath);
+
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the public BIFF import scenarios to start without a retained session or runtime"
+  );
+
+  for (const scenario of [
+    {
+      backend: "polars" as const,
+      mode: "Sheet name",
+      inputTitle: "Excel sheet name",
+      value: "second",
+      importOptions: { sheetName: "second" }
+    },
+    {
+      backend: "pandas" as const,
+      mode: "Sheet index",
+      inputTitle: "Excel sheet index",
+      value: "1",
+      importOptions: { sheetIndex: 1 }
+    }
+  ] as const) {
+    const checkpoint = `verify:file-inputs:configured:public-excel:${scenario.backend}:${scenario.mode
+      .toLowerCase()
+      .replaceAll(" ", "-")}`;
+    await config.update("defaultBackend", scenario.backend, vscode.ConfigurationTarget.Global);
+    recordAcceptanceProgress(`${checkpoint}:open`);
+    const opening = vscode.commands.executeCommand("openWrangler.openFile", source);
+    await acceptExcelImportOptions(page, testing, source, scenario.mode, scenario.inputTitle, scenario.value);
+    await opening;
+
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.path === source.fsPath &&
+          active.metadata.backend === scenario.backend &&
+          active.metadata.shape.rows === 2 &&
+          active.metadata.shape.columns === 3
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `legacy.xls to open through the public ${scenario.backend} ${scenario.mode.toLowerCase()} workflow`,
+      () =>
+        packagedFileOpenDiagnostics(testing, {
+          sourceLabel: path.basename(source.fsPath),
+          backend: scenario.backend,
+          shape: { rows: 2, columns: 3 }
+        })
+    );
+
+    const active = testing.activeSession();
+    assert.ok(active, `The public ${scenario.backend} BIFF workflow must publish an active session.`);
+    assert.deepEqual(
+      active.metadata.source.importOptions,
+      scenario.importOptions,
+      `The public ${scenario.backend} BIFF workflow must preserve its explicit sheet selection.`
+    );
+    assert.deepEqual(
+      active.metadata.schema.map((column) => column.name),
+      ["name", "value", "active"],
+      `The public ${scenario.backend} BIFF workflow must expose the selected sheet schema.`
+    );
+    const firstColumn = active.metadata.schema[0];
+    assert.ok(firstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
+    const grid = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: `public-biff-${scenario.backend}-${scenario.mode.toLowerCase().replaceAll(" ", "-")}`,
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 20,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(grid.kind, "page", `The public ${scenario.backend} BIFF workflow must return a live grid page.`);
+    if (grid.kind !== "page") {
+      throw new Error(`The public ${scenario.backend} BIFF workflow did not return a page.`);
+    }
+    assert.deepEqual(
+      gridColumnDisplays(grid.page, firstColumn.id),
+      ["second", "résumé"],
+      `The public ${scenario.backend} BIFF workflow must read the selected worksheet.`
+    );
+    assert.deepEqual(
+      readFileSync(source.fsPath),
+      sourceBytes,
+      `The public ${scenario.backend} BIFF workflow must not modify its source.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:opened`);
+
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `the public ${scenario.backend} BIFF session and runtime to close`
+    );
+    assert.equal(
+      testing.activeSession(),
+      undefined,
+      `Closing the public ${scenario.backend} BIFF panel must deactivate it.`
+    );
+    assert.deepEqual(
+      readFileSync(source.fsPath),
+      sourceBytes,
+      `Closing the public ${scenario.backend} BIFF workflow must leave its source byte-identical.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:closed`);
+  }
+}
+
+async function exerciseCorruptFileFailures(
+  testing: TestApi,
+  directory: string,
+  config: vscode.WorkspaceConfiguration
+): Promise<void> {
+  await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
+  for (const name of ["damaged.csv", "damaged.jsonl", "damaged.parquet", "damaged.xls"]) {
+    const uri = vscode.Uri.file(path.join(directory, name));
+    const sourceBytes = readFileSync(uri.fsPath);
+    const generationBeforeOpen = testing.runtimeGeneration();
+    recordAcceptanceProgress(`verify:file-inputs:corrupt:${path.extname(name).slice(1)}:open`);
+    await vscode.commands.executeCommand("vscode.openWith", uri, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () =>
+        testing.runtimeGeneration() > generationBeforeOpen &&
+        testing.diagnostics().sessionCount === 0 &&
+        !testing.runtimeRunning(),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `${name} to fail without retaining a session or runtime`
+    );
+    assert.equal(testing.activeSession(), undefined, `${name} must not publish an active session.`);
+    assert.deepEqual(readFileSync(uri.fsPath), sourceBytes, `${name} must remain byte-identical after a failed open.`);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      `${name} failure panel to close without retained runtime state`
+    );
+    recordAcceptanceProgress(`verify:file-inputs:corrupt:${path.extname(name).slice(1)}:closed`);
+  }
+}
+
+function stableImportReconfigurationSnapshot(active: ReturnType<TestApi["activeSession"]>): unknown {
+  if (!active) return undefined;
+  const { stats: _progressiveStats, ...metadata } = active.metadata;
+  return {
+    sessionId: active.sessionId,
+    metadata,
+    code: active.code,
+    viewState: active.viewState,
+    stepInspection: active.stepInspection
+  };
+}
+
+function stableImportDiagnostics(diagnostics: ReturnType<TestApi["diagnostics"]>): ReturnType<TestApi["diagnostics"]> {
+  return structuredClone(diagnostics);
+}
+
+async function waitForOpenWranglerWebviewButton(
+  workbench: Page,
+  name: string,
+  requireEnabled = false
+): Promise<Locator> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  discovery: do {
+    const browser = workbench.context().browser();
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const button = target.frame.getByRole("button", { name, exact: true }).first();
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break discovery;
+        const available = await withAcceptanceOperationDeadline(
+          (async () => {
+            if ((await button.count()) === 0 || !(await button.isVisible())) return false;
+            return !requireEnabled || (await button.isEnabled());
+          })(),
+          remainingMs,
+          `the Open Wrangler ${JSON.stringify(name)} button`
+        );
+        if (available) return button;
+      } catch (error) {
+        if (Date.now() >= deadline) break discovery;
+        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
+  } while (Date.now() < deadline);
+
+  const browser = workbench.context().browser();
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  const diagnostics = await openWranglerWebviewDiagnostics(workbench, browser, name);
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  throw new Error(
+    `The Open Wrangler webview did not expose a visible${requireEnabled ? " enabled" : ""} ` +
+      `${JSON.stringify(name)} button: ${JSON.stringify(diagnostics)}`
+  );
+}
+
+async function waitForOpenWranglerWebviewButtonEnabled(page: Page, name: string): Promise<Locator> {
+  return waitForOpenWranglerWebviewButton(page, name, true);
+}
+
+interface GridViewportMeasurement {
+  scrollTop: number;
+  scrollLeft: number;
+  scrollHeight: number;
+  scrollWidth: number;
+  clientHeight: number;
+  clientWidth: number;
+}
+
+async function waitForOpenWranglerGridViewport(
+  action: Locator,
+  expected: Pick<GridViewportMeasurement, "scrollTop" | "scrollLeft">
+): Promise<GridViewportMeasurement> {
+  return withAcceptanceOperationDeadline(
+    action.evaluate(
+      (_element, target) =>
+        new Promise<GridViewportMeasurement>((resolve, reject) => {
+          const scroller = _element.ownerDocument.querySelector('[data-testid="data-grid-scroller"]');
+          if (!scroller) {
+            reject(new Error("The Open Wrangler grid scroller is unavailable."));
+            return;
+          }
+          const deadline = performance.now() + 5_000;
+          const read = (): GridViewportMeasurement => ({
+            scrollTop: scroller.scrollTop,
+            scrollLeft: scroller.scrollLeft,
+            scrollHeight: scroller.scrollHeight,
+            scrollWidth: scroller.scrollWidth,
+            clientHeight: scroller.clientHeight,
+            clientWidth: scroller.clientWidth
+          });
+          const poll = () => {
+            const current = read();
+            const overflowed = current.scrollHeight > current.clientHeight && current.scrollWidth > current.clientWidth;
+            const positioned =
+              Math.abs(current.scrollTop - target.scrollTop) <= 1 &&
+              Math.abs(current.scrollLeft - target.scrollLeft) <= 1;
+            if (overflowed && positioned) {
+              resolve(current);
+              return;
+            }
+            if (performance.now() >= deadline) {
+              resolve(current);
+              return;
+            }
+            setTimeout(poll, 25);
+          };
+          poll();
+        }),
+      expected
+    ),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the synchronized Open Wrangler grid viewport"
+  );
+}
+
+interface OpenWranglerWebviewTarget {
+  page: Page;
+  frame: Frame;
+  pageIndex: number;
+  frameIndex: number;
+  isWorkbenchPage: boolean;
+  isMainFrame: boolean;
+  protocol: string;
+  isWebview: boolean;
+  isOpenWranglerWebview: boolean;
+}
+
+function openWranglerWebviewTargets(
+  workbench: Page,
+  browser: Browser | null,
+  limit: number
+): OpenWranglerWebviewTarget[] {
+  const discovered = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+  const pages = [workbench, ...discovered.filter((candidate) => candidate !== workbench && !candidate.isClosed())];
+  const uniquePages = pages.filter((candidate, index) => pages.indexOf(candidate) === index);
+  const targets: OpenWranglerWebviewTarget[] = [];
+  for (const [pageIndex, candidate] of uniquePages.entries()) {
+    if (candidate !== workbench && candidate.isClosed()) continue;
+    const frames = candidate
+      .frames()
+      .map((frame, frameIndex) => ({ frame, frameIndex, classification: classifyRendererUrl(frame.url()) }))
+      .sort(
+        (left, right) => rendererTargetPriority(left.classification) - rendererTargetPriority(right.classification)
+      );
+    for (const { frame, frameIndex, classification } of frames) {
+      if (targets.length >= limit) return targets;
+      targets.push({
+        page: candidate,
+        frame,
+        pageIndex,
+        frameIndex,
+        isWorkbenchPage: candidate === workbench,
+        isMainFrame: frame === candidate.mainFrame(),
+        ...classification
+      });
+    }
+  }
+  return targets;
+}
+
+function classifyRendererUrl(url: string): {
+  protocol: string;
+  isWebview: boolean;
+  isOpenWranglerWebview: boolean;
+} {
+  let protocol = "other";
+  try {
+    const candidate = new URL(url).protocol.toLowerCase();
+    if (
+      candidate === "about:" ||
+      candidate === "file:" ||
+      candidate === "http:" ||
+      candidate === "https:" ||
+      candidate === "vscode-file:" ||
+      candidate === "vscode-webview:"
+    ) {
+      protocol = candidate;
+    }
+  } catch {
+    // The diagnostic retains only an allowlisted protocol classification.
+  }
+  const normalized = url.toLowerCase();
+  return {
+    protocol,
+    isWebview: protocol === "vscode-webview:" || normalized.includes("vscode-webview"),
+    isOpenWranglerWebview:
+      normalized.includes("matt17br.openwrangler") ||
+      normalized.includes("openwrangler") ||
+      normalized.includes("open-wrangler")
+  };
+}
+
+function rendererTargetPriority(classification: { isWebview: boolean; isOpenWranglerWebview: boolean }): number {
+  if (classification.isOpenWranglerWebview) return 0;
+  if (classification.isWebview) return 1;
+  return 2;
+}
+
+function assertOpenWranglerWebviewLifecycle(workbench: Page, browser: Browser | null): void {
+  if (workbench.isClosed()) throw new Error("The editor workbench closed during Open Wrangler webview discovery.");
+  if (browser !== null && !browser.isConnected()) {
+    throw new Error("The editor CDP browser disconnected during Open Wrangler webview discovery.");
+  }
+}
+
+async function openWranglerWebviewDiagnostics(
+  workbench: Page,
+  browser: Browser | null,
+  name: string
+): Promise<unknown> {
+  const targets = openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT);
+  try {
+    const diagnostics = await withAcceptanceOperationDeadline(
+      Promise.all(
+        targets.map(async (target) => {
+          if (isRetiredRendererTarget(workbench, target.page, target.frame)) {
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+          try {
+            const button = target.frame.getByRole("button", { name, exact: true });
+            const [readyState, roots, appWorkspaces, contentSecurityPolicies, scripts, buttons, firstButtonVisible] =
+              await Promise.all([
+                target.frame.locator(":root").evaluate((root) => root.ownerDocument.readyState),
+                target.frame.locator("#root").count(),
+                target.frame.locator('[data-testid="app-workspace"]').count(),
+                target.frame.locator('meta[http-equiv="Content-Security-Policy"]').count(),
+                target.frame.locator("script").count(),
+                button.count(),
+                button.first().isVisible()
+              ]);
+            return rendererTargetDiagnostic(target, {
+              readyState:
+                readyState === "loading" || readyState === "interactive" || readyState === "complete"
+                  ? readyState
+                  : "unavailable",
+              roots,
+              appWorkspaces,
+              contentSecurityPolicies,
+              scripts,
+              buttons,
+              firstButtonVisible
+            });
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+        })
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "bounded Open Wrangler webview diagnostics"
+    );
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    return diagnostics;
+  } catch (error) {
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for bounded Open Wrangler")) {
+      return "unavailable within the diagnostics deadline";
+    }
+    throw error;
+  }
+}
+
+function rendererTargetDiagnostic(
+  target: OpenWranglerWebviewTarget,
+  detail: Record<string, boolean | number | string>
+): Record<string, boolean | number | string> {
+  return {
+    pageIndex: target.pageIndex,
+    frameIndex: target.frameIndex,
+    isWorkbenchPage: target.isWorkbenchPage,
+    isMainFrame: target.isMainFrame,
+    protocol: target.protocol,
+    isWebview: target.isWebview,
+    isOpenWranglerWebview: target.isOpenWranglerWebview,
+    ...detail
+  };
+}
+
+async function exerciseLiveImportReconfiguration(
+  testing: TestApi,
+  directory: string,
+  config: vscode.WorkspaceConfiguration
+): Promise<void> {
+  const page = await connectToEditorWorkbench();
+  const configured = vscode.Uri.file(path.join(directory, "reconfigure.csv"));
+  const configuredBytes = readFileSync(configured.fsPath);
+  await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  const opening = vscode.commands.executeCommand("openWrangler.openFile", configured);
+  await acceptDelimitedImportOptions(
+    page,
+    testing,
+    configured,
+    undefined,
+    "verify:file-inputs:reconfigure:initial-options",
+    {
+      delimiter: "Comma",
+      encoding: "utf-8",
+      header: "First row contains column names",
+      quoteChar: '"'
+    }
+  );
+  await opening;
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.path === configured.fsPath &&
+        active.metadata.shape.rows === 80 &&
+        active.metadata.shape.columns === 1
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the semicolon CSV to open under its initial comma defaults"
+  );
+
+  const before = testing.activeSession();
+  assert.ok(before, "The configurable CSV must publish an active session.");
+  const stableSessionId = before.sessionId;
+  const stableSourceIdentity = fileSourceIdentity(before.metadata.source);
+  const initialDiagnostics = testing.diagnostics();
+  const initialRuntimeId = initialDiagnostics.sessions.find(
+    (session) => session.publicId === stableSessionId
+  )?.runtimeId;
+  assert.ok(initialRuntimeId, "The active configurable CSV must own a runtime session.");
+
+  const changeTitleAction = page
+    .locator(
+      '.part.editor .editor-group-container.active .editor-actions [aria-label*="Change Import Options"]:visible'
+    )
+    .first();
+  await withAcceptanceOperationDeadline(
+    changeTitleAction.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the generic Open Wrangler Change Import Options title action"
+  );
+  await withAcceptanceOperationDeadline(
+    changeTitleAction.click(),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the generic Open Wrangler Change Import Options title action click"
+  );
+  await acceptDelimitedImportOptions(
+    page,
+    testing,
+    configured,
+    stableSessionId,
+    "verify:file-inputs:reconfigure:title-options",
+    {
+      delimiter: "Semicolon",
+      encoding: "utf-8",
+      header: "First row contains column names",
+      quoteChar: '"'
+    }
+  );
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.sessionId === stableSessionId &&
+        active.metadata.source.path === configured.fsPath &&
+        active.metadata.shape.rows === 80 &&
+        active.metadata.shape.columns === 8 &&
+        active.metadata.source.importOptions?.delimiter === ";"
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the live CSV session to atomically adopt its semicolon import options"
+  );
+  // The test API can observe replacement metadata while the coordinator is
+  // still persisting it. The renderer leaves busy mode only after the
+  // reconfiguration barrier has released, which is the user-visible commit.
+  await waitForOpenWranglerWebviewButtonEnabled(page, "Import options");
+
+  const changed = testing.activeSession();
+  assert.ok(changed, "The reconfigured CSV must remain active.");
+  assert.equal(changed.sessionId, stableSessionId, "Import reconfiguration must retain the public session ID.");
+  assert.deepEqual(
+    fileSourceIdentity(changed.metadata.source),
+    stableSourceIdentity,
+    "Import reconfiguration must retain the exact source identity."
+  );
+  assert.deepEqual(changed.metadata.source.importOptions, {
+    delimiter: ";",
+    encoding: "utf-8",
+    quoteChar: '"',
+    hasHeader: true
+  });
+  assert.deepEqual(
+    readFileSync(configured.fsPath),
+    configuredBytes,
+    "Live reconfiguration must not modify its source."
+  );
+  const changedRuntimeId = testing
+    .diagnostics()
+    .sessions.find((session) => session.publicId === stableSessionId)?.runtimeId;
+  assert.ok(changedRuntimeId, "The reconfigured public session must retain one private runtime.");
+  assert.notEqual(
+    changedRuntimeId,
+    initialRuntimeId,
+    "A successful import reconfiguration must replace, not mutate, its private runtime."
+  );
+  const retainedColumn = changed.metadata.schema.find((column) => column.name === "value");
+  assert.ok(retainedColumn, "The reconfigured CSV must expose its value column for reload-state acceptance.");
+  const retainedColumnWidths = Object.fromEntries(changed.metadata.schema.map((column) => [column.id, 640]));
+  const retainedViewState = {
+    selectedColumnId: retainedColumn.id,
+    columnWidths: retainedColumnWidths,
+    viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+  };
+  assert.equal(
+    await testing.synchronizePanel(stableSessionId),
+    true,
+    "The reconfigured renderer must settle its authoritative default view before acceptance injects retained state."
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:default-synchronized");
+  await testing.updateViewState(stableSessionId, retainedViewState);
+  assert.equal(
+    await testing.synchronizePanel(stableSessionId),
+    true,
+    "The acceptance view-state injection must commit through the real renderer before native import actions."
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:retained-synchronized");
+  const synchronizedGridAction = await waitForOpenWranglerWebviewButton(page, "Import options", true);
+  const physicalViewport = await waitForOpenWranglerGridViewport(synchronizedGridAction, {
+    scrollTop: 29,
+    scrollLeft: 23
+  });
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:physical");
+  assert.ok(
+    physicalViewport.scrollHeight > physicalViewport.clientHeight,
+    "The import-reconfiguration fixture must overflow the real grid vertically."
+  );
+  assert.ok(
+    physicalViewport.scrollWidth > physicalViewport.clientWidth,
+    "The import-reconfiguration fixture must overflow the real grid horizontally."
+  );
+  assert.ok(
+    Math.abs(physicalViewport.scrollTop - 29) <= 1,
+    "The real grid must commit the injected first visible row before cancellation acceptance."
+  );
+  assert.ok(
+    Math.abs(physicalViewport.scrollLeft - 23) <= 1,
+    "The real grid must commit the injected horizontal viewport before cancellation acceptance."
+  );
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
+        changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+        active.viewState.viewport.firstVisibleRow === 1 &&
+        active.viewState.viewport.scrollLeft === 23
+      );
+    },
+    5_000,
+    "the reconfigured CSV view state to persist under its confirmed source and backend",
+    () =>
+      JSON.stringify({
+        expected: retainedViewState,
+        actual: testing.activeSession()?.viewState
+      })
+  );
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:persisted");
+
+  const activeTab = page
+    .locator(".part.editor .editor-group-container.active .tabs-container .tab.active")
+    .filter({ hasText: path.basename(configured.fsPath) })
+    .last();
+  const { action: tabImportAction } = await openEditorTabContextMenu(
+    page,
+    activeTab,
+    "Open Wrangler: Change Import Options"
+  );
+  assert.ok(tabImportAction, "The generic Open Wrangler tab must expose Change Import Options.");
+  await tabImportAction.click();
+  const delimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.selectedColumnId === retainedViewState.selectedColumnId &&
+        changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+        active.viewState.viewport.firstVisibleRow === 1 &&
+        active.viewState.viewport.scrollLeft === 23
+      );
+    },
+    5_000,
+    "the native import action to flush the physically confirmed renderer view"
+  );
+  const confirmedBeforeCancellation = stableImportReconfigurationSnapshot(testing.activeSession());
+  const diagnosticsBeforeCancellation = stableImportDiagnostics(testing.diagnostics());
+  await waitForImportNaturalKeyboardFocus(delimiterPrompt, "Delimiter", "contains");
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Escape"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the live import-options cancellation"
+  );
+  await withAcceptanceOperationDeadline(
+    delimiterPrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the cancelled live import-options prompt to close"
+  );
+  assert.deepEqual(
+    stableImportReconfigurationSnapshot(testing.activeSession()),
+    confirmedBeforeCancellation,
+    "Cancelling import reconfiguration must preserve the exact confirmed active snapshot."
+  );
+  assert.deepEqual(
+    stableImportDiagnostics(testing.diagnostics()),
+    diagnosticsBeforeCancellation,
+    "Cancelling import reconfiguration must not create, replace, or retain a runtime session."
+  );
+
+  const gridImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
+  await gridImportAction.click();
+  const gridDelimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await waitForImportNaturalKeyboardFocus(gridDelimiterPrompt, "Delimiter", "contains");
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Escape"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the live-grid import-options cancellation"
+  );
+  await withAcceptanceOperationDeadline(
+    gridDelimiterPrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the live-grid import-options prompt to close"
+  );
+  assert.deepEqual(
+    stableImportReconfigurationSnapshot(testing.activeSession()),
+    confirmedBeforeCancellation,
+    "The live-grid Import options action must preserve the confirmed session when cancelled."
+  );
+  assert.deepEqual(
+    stableImportDiagnostics(testing.diagnostics()),
+    diagnosticsBeforeCancellation,
+    "The live-grid Import options action must not create a candidate when its prompt is cancelled."
+  );
+
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the reconfigured CSV panel to close cleanly"
+  );
+  const conflictingDefaultBackend = changed.metadata.backend === "pandas" ? "polars" : "pandas";
+  await config.update("defaultBackend", conflictingDefaultBackend, vscode.ConfigurationTarget.Global);
+  try {
+    await vscode.commands.executeCommand("vscode.openWith", configured, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.path === configured.fsPath &&
+          active.metadata.backend === changed.metadata.backend &&
+          active.metadata.source.importOptions?.delimiter === ";" &&
+          active.metadata.shape.rows === 80 &&
+          active.metadata.shape.columns === 8 &&
+          active.viewState.selectedColumnId === retainedColumn.id &&
+          changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640) &&
+          active.viewState.viewport.firstVisibleRow === 1 &&
+          active.viewState.viewport.scrollLeft === 23
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the custom editor to reload the last confirmed import options, backend, and view"
+    );
+    assert.deepEqual(
+      readFileSync(configured.fsPath),
+      configuredBytes,
+      "Reloading the confirmed file configuration must not modify its source."
+    );
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      10_000,
+      "the reloaded configurable CSV custom editor to close cleanly"
+    );
+    await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
+  }
+
+  const damaged = vscode.Uri.file(path.join(directory, "damaged.csv"));
+  const damagedBytes = readFileSync(damaged.fsPath);
+  const generationBeforeFailure = testing.runtimeGeneration();
+  await vscode.commands.executeCommand("vscode.openWith", damaged, "openWrangler.viewer", vscode.ViewColumn.One);
+  await waitFor(
+    () =>
+      testing.runtimeGeneration() > generationBeforeFailure &&
+      testing.diagnostics().sessionCount === 0 &&
+      !testing.runtimeRunning(),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the strict UTF-8 open to fail without retaining a corrupt file session"
+  );
+  assert.equal(testing.activeSession(), undefined, "The corrupt initial open must not publish an active session.");
+
+  const errorImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
+  await errorImportAction.click();
+  await acceptDelimitedImportOptions(
+    page,
+    testing,
+    damaged,
+    undefined,
+    "verify:file-inputs:reconfigure:damaged-options",
+    {
+      delimiter: "Comma",
+      encoding: "utf8-lossy",
+      header: "First row contains column names",
+      quoteChar: '"'
+    }
+  );
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.path === damaged.fsPath &&
+        active.metadata.backend === "pandas" &&
+        active.metadata.shape.rows === 1 &&
+        active.metadata.shape.columns === 2
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the failed file panel to retry successfully with lossy UTF-8"
+  );
+  const recovered = testing.activeSession();
+  assert.ok(recovered, "The lossy UTF-8 retry must publish an active session.");
+  assert.deepEqual(recovered.metadata.source.importOptions, {
+    delimiter: ",",
+    encoding: "utf8-lossy",
+    quoteChar: '"',
+    hasHeader: true
+  });
+  assert.deepEqual(readFileSync(damaged.fsPath), damagedBytes, "Retrying a corrupt source must not modify it.");
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the recovered corrupt-file panel to close cleanly"
+  );
+}
+
+function fileSourceIdentity(source: SessionSource): Pick<SessionSource, "kind" | "label" | "path" | "uri"> {
+  return {
+    kind: source.kind,
+    label: source.label,
+    path: source.path,
+    uri: source.uri
+  };
+}
+
+async function acceptDelimitedImportOptions(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  existingSessionId: string | undefined,
+  checkpointPrefix: string,
+  selection: {
+    delimiter: string;
+    encoding: string;
+    header: string;
+    quoteChar: string;
+  }
+): Promise<void> {
+  for (const { key, title, option } of [
+    { key: "delimiter", title: "Delimiter", option: selection.delimiter },
+    { key: "encoding", title: "Text encoding", option: selection.encoding },
+    { key: "header", title: "Header row", option: selection.header }
+  ]) {
+    const checkpoint = `${checkpointPrefix}:${key}`;
+    recordAcceptanceProgress(`${checkpoint}:wait`);
+    const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title, existingSessionId);
+    recordAcceptanceProgress(`${checkpoint}:visible`);
+    await acceptQuickPickOptionWithKeyboard(page, quickInput, title, option, checkpoint);
+  }
+
+  const quoteCheckpoint = `${checkpointPrefix}:quote`;
+  recordAcceptanceProgress(`${quoteCheckpoint}:wait`);
+  const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character", existingSessionId);
+  recordAcceptanceProgress(`${quoteCheckpoint}:visible`);
+  const field = quoteInput.locator(".quick-input-box input").first();
+  await withAcceptanceOperationDeadline(
+    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the configured quote-character field to become visible"
+  );
+  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
+  await withAcceptanceOperationDeadline(
+    field.fill(selection.quoteChar, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the configured quote character"
+  );
+  recordAcceptanceProgress(`${quoteCheckpoint}:focused`);
+  recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
+  await withAcceptanceOperationDeadline(
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the configured quote character acceptance"
+  );
+  await withAcceptanceOperationDeadline(
+    quoteInput.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the quote-character prompt to close"
+  );
+  recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
+}
+
+async function acceptQuickPickOptionWithKeyboard(
+  page: Page,
+  quickInput: Locator,
+  title: string,
+  option: string,
+  checkpoint?: string,
+  waitForPromptToHide = true
+): Promise<void> {
+  const selected = quickInput.getByRole("option", { name: option }).first();
+  await withAcceptanceOperationDeadline(
+    selected.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} option ${JSON.stringify(option)} to become visible`
+  );
+  await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
+  const optionCount = await withAcceptanceOperationDeadline(
+    quickInput.getByRole("option").count(),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} option count`
+  );
+  assert.ok(
+    optionCount > 0 && optionCount <= 16,
+    `${title} must expose between 1 and 16 bounded options; received ${optionCount}.`
+  );
+
+  let selectedIsFocused = false;
+  for (let attempt = 0; attempt <= optionCount; attempt += 1) {
+    const className =
+      (await withAcceptanceOperationDeadline(
+        selected.getAttribute("class", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} option ${JSON.stringify(option)} focus state`
+      )) ?? "";
+    selectedIsFocused = /(?:^|\s)focused(?:\s|$)/u.test(className);
+    if (selectedIsFocused) break;
+    if (attempt === optionCount) break;
+    await withAcceptanceOperationDeadline(
+      page.keyboard.press("ArrowDown"),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `${title} keyboard navigation to ${JSON.stringify(option)}`
+    );
+  }
+
+  if (!selectedIsFocused) {
+    const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+    throw new Error(
+      `${title} did not focus requested option ${JSON.stringify(option)} within ${optionCount} keyboard steps. ` +
+        `Visible options: ${JSON.stringify(visibleOptions)}`
+    );
+  }
+  if (checkpoint) recordAcceptanceProgress(`${checkpoint}:focused`);
+  if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accept`);
+  await withAcceptanceOperationDeadline(
+    page.keyboard.press("Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} option ${JSON.stringify(option)} keyboard acceptance`
+  );
+  if (waitForPromptToHide) {
+    try {
+      await withAcceptanceOperationDeadline(
+        quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
+        WORKBENCH_OPERATION_TIMEOUT_MS,
+        `${title} prompt to advance`
+      );
+    } catch (error) {
+      const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+      throw new Error(
+        `${title} did not advance after accepting focused option ${JSON.stringify(option)} with Enter. ` +
+          `Visible options: ${JSON.stringify(visibleOptions)}`,
+        { cause: error }
+      );
+    }
+  }
+  if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accepted`);
+}
+
+async function acceptExcelImportOptions(
+  page: Page,
+  testing: TestApi,
+  expectedSource: vscode.Uri,
+  mode: "Sheet name" | "Sheet index",
+  inputTitle: "Excel sheet name" | "Excel sheet index",
+  value: string
+): Promise<void> {
+  const modePrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet");
+  // "Excel sheet" remains a substring of the next value prompt, so the
+  // following exact input-title wait is the transition proof for this step.
+  await acceptQuickPickOptionWithKeyboard(page, modePrompt, "Excel sheet", mode, undefined, false);
+
+  const valuePrompt = await waitForImportQuickInput(page, testing, expectedSource, inputTitle);
+  const field = valuePrompt.locator(".quick-input-box input").first();
+  await withAcceptanceOperationDeadline(
+    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} field to become visible`
+  );
+  await waitForImportNaturalKeyboardFocus(field, inputTitle, "exact");
+  await withAcceptanceOperationDeadline(
+    field.fill(value, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} value`
+  );
+  await withAcceptanceOperationDeadline(
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} acceptance`
+  );
+  await withAcceptanceOperationDeadline(
+    valuePrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the ${inputTitle} prompt to close`
+  );
 }
 
 function packagedFileOpenDiagnostics(
@@ -4051,7 +5450,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
         kind: "file",
         label: "legacy.xls",
         path: path.join(directory, "legacy.xls"),
-        importOptions: { sheet: 0 }
+        importOptions: { sheetIndex: 0 }
       },
       backend: "pandas",
       pageSize: 20,
@@ -4151,49 +5550,676 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
   }
 }
 
-function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
-  if (process.platform === "win32") {
-    const environment = path.join(directory, "environment");
-    execFileSync(python, ["-m", "venv", "--without-pip", environment], {
-      stdio: "pipe",
+interface DependencyInstallLifecycleFixture {
+  executable: string;
+  started: string;
+  release: string;
+  completed: string;
+}
+
+async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, python: string): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Dependency-install shutdown acceptance must start after every dataframe session closed."
+  );
+  assert.equal(
+    testing.runtimeRunning(),
+    false,
+    "Dependency-install shutdown acceptance must start without a live dataframe runtime."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-shutdown-"));
+  const lifecycle = createDependencyInstallLifecyclePython(directory, python);
+  const config = vscode.workspace.getConfiguration("openWrangler");
+  const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
+  let shutdown: Promise<void> | undefined;
+  let shutdownConfirmed = false;
+
+  try {
+    assert.equal(
+      await vscode.commands.executeCommand("openWrangler.changeRuntime", lifecycle.executable),
+      lifecycle.executable
+    );
+    const rejected = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: {
+        kind: "file",
+        label: "dependency-shutdown.xls",
+        path: path.join(directory, "dependency-shutdown.xls"),
+        importOptions: { sheetIndex: 0 }
+      },
+      backend: "pandas",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(rejected.kind, "error");
+    if (rejected.kind === "error") {
+      assert.equal(rejected.code, "missing_dependencies");
+      assert.match(rejected.message, /Missing: pandas, xlrd>=2\.0\.1/);
+      assert.doesNotMatch(rejected.message, /openpyxl/);
+    }
+    assert.equal(testing.runtimeRunning(), false, "The fake pip target must fail before runtime startup.");
+
+    const page = await connectToEditorWorkbench();
+    const pendingCommand = vscode.commands
+      .executeCommand<boolean>("openWrangler.installRuntimeDependencies", true)
+      .then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error })
+      );
+    let commandState: "pending" | "fulfilled" | "rejected" = "pending";
+    void pendingCommand.then((outcome) => {
+      commandState = outcome.status;
+    });
+    const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
+      page,
+      "Install pandas, xlrd>=2.0.1"
+    );
+    await confirmationPage.bringToFront();
+    assert.equal(
+      await confirmation.locator(".dialog-message-text").innerText(),
+      `Install pandas, xlrd>=2.0.1 into ${lifecycle.executable}?`
+    );
+    await withAcceptanceOperationDeadline(
+      confirmation.getByRole("button", { name: "Install", exact: true }).click(),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the real dependency-install confirmation"
+    );
+    await confirmation.waitFor({ state: "hidden", timeout: 10_000 });
+    await waitFor(
+      () => existsSync(lifecycle.started),
+      10_000,
+      "the disposable fake pip process to publish its start marker"
+    );
+
+    const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "pandas", "xlrd>=2.0.1"]);
+    assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
+    assert.equal(started.pipUser, "0", "The owned pip process must explicitly prohibit user-site installation.");
+    assert.equal(
+      started.pipConfigFile,
+      process.platform === "win32" ? "nul" : devNull,
+      "The owned pip process must disable every inherited pip configuration file."
+    );
+    assert.equal(started.pythonPathPresent, false, "The owned pip process must not inherit PYTHONPATH.");
+    assert.equal(started.pythonHomePresent, false, "The owned pip process must not inherit PYTHONHOME.");
+    assert.notEqual(
+      path.normalize(String(started.cwd)),
+      path.normalize(path.dirname(lifecycle.executable)),
+      "Dependency installation must not import a neighboring pip module from the interpreter directory."
+    );
+    assert.match(path.basename(String(started.cwd)), /^openwrangler-pip-/u);
+    assert.equal(existsSync(String(started.cwd)), true, "The private pip directory must remain owned until close.");
+    if (process.platform !== "win32") {
+      assert.equal(statSync(String(started.cwd)).mode & 0o077, 0, "The private pip directory must be mode 0700.");
+    }
+    assert.equal(
+      existsSync(lifecycle.completed),
+      false,
+      "The fake pip process must remain blocked until the acceptance harness releases it."
+    );
+
+    shutdown = testing.shutdownRuntimeBridgeForTesting();
+    let shutdownState: "pending" | "fulfilled" | "rejected" = "pending";
+    void shutdown.then(
+      () => {
+        shutdownState = "fulfilled";
+      },
+      () => {
+        shutdownState = "rejected";
+      }
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      shutdownState,
+      "pending",
+      "Runtime-bridge shutdown must remain pending while the exact pip child is still running."
+    );
+    assert.equal(
+      commandState,
+      "pending",
+      "The public install command must remain pending while its exact pip child is still running."
+    );
+    assert.equal(
+      existsSync(lifecycle.completed),
+      false,
+      "Runtime-bridge shutdown must not signal or kill the still-blocked pip child."
+    );
+
+    writeFileSync(lifecycle.release, "release\n", { encoding: "utf8", flag: "wx" });
+    await shutdown;
+    shutdownConfirmed = true;
+    assert.equal(
+      existsSync(lifecycle.completed),
+      true,
+      "Runtime-bridge shutdown must resolve only after the fake pip child exits naturally."
+    );
+    const completed = JSON.parse(readFileSync(lifecycle.completed, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(completed, { ...started, released: true });
+
+    const outcome = await pendingCommand;
+    if (outcome.status === "rejected") throw outcome.error;
+    assert.equal(
+      outcome.value,
+      false,
+      "An install that closes during bridge shutdown must not report post-disposal success."
+    );
+    assert.equal(testing.runtimeRunning(), false);
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    assert.equal(
+      existsSync(String(started.cwd)),
+      false,
+      "The private pip directory must be removed only after authoritative child close."
+    );
+  } finally {
+    if (existsSync(lifecycle.started)) {
+      try {
+        writeFileSync(lifecycle.release, "release\n", { encoding: "utf8", flag: "wx" });
+      } catch {
+        // A concurrently observed release is equivalent for bounded cleanup.
+      }
+    }
+    shutdown ??= testing.shutdownRuntimeBridgeForTesting();
+    if (!shutdownConfirmed) {
+      try {
+        await shutdown;
+        shutdownConfirmed = true;
+      } catch {
+        // Preserve the primary acceptance failure. The outer owned-process
+        // harness will retain the private root when shutdown is unconfirmed.
+      }
+    }
+    await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
+    if (shutdownConfirmed) cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+const PINNED_REAL_PYTHON_EXTENSION_VERSION = "2026.4.0";
+
+interface InstrumentedPythonEnvironment {
+  executable: string;
+  runtimeMarkerDirectory: string;
+}
+
+async function exerciseRealPythonEnvironmentSelection(
+  testing: TestApi,
+  workspace: vscode.Uri,
+  fixture: vscode.Uri,
+  python: string,
+  openWranglerExtensionPath: string
+): Promise<void> {
+  const pythonExtension = vscode.extensions.getExtension<PythonExtension>("ms-python.python");
+  assert.ok(pythonExtension, "The opt-in acceptance phase must install the released Python extension.");
+  assert.equal(
+    pythonExtension.packageJSON.version,
+    PINNED_REAL_PYTHON_EXTENSION_VERSION,
+    "Real environment-selection acceptance must run against the pinned stable Python extension."
+  );
+  const pythonApi = await pythonExtension.activate();
+  await pythonApi.ready;
+  assert.equal(
+    typeof pythonApi.environments.updateActiveEnvironmentPath,
+    "function",
+    "The released Python extension must expose its stable environment-selection API."
+  );
+  assert.equal(
+    typeof pythonApi.environments.onDidChangeActiveEnvironmentPath,
+    "function",
+    "The released Python extension must expose active-environment change notifications."
+  );
+
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(fixture);
+  assert.ok(workspaceFolder, "The Python-environment fixture must belong to the isolated workspace.");
+  assert.equal(workspaceFolder.uri.toString(), workspace.toString());
+  const config = vscode.workspace.getConfiguration("openWrangler", fixture);
+  await config.update("pythonPath", undefined, vscode.ConfigurationTarget.Global);
+  await config.update("pythonPath", undefined, vscode.ConfigurationTarget.Workspace);
+  assert.equal(
+    getSetting("pythonPath", "", fixture),
+    "",
+    "The real Python-extension phase must not bypass environment selection with an Open Wrangler override."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-real-python-environments-"));
+  const environmentA = createInstrumentedPythonEnvironment(path.join(directory, "environment-a"), python, "a");
+  const environmentB = createInstrumentedPythonEnvironment(path.join(directory, "environment-b"), python, "b");
+  const runtimeRoot = path.join(openWranglerExtensionPath, "python");
+  assert.equal(
+    existsSync(path.join(runtimeRoot, "openwrangler_runtime", "server.py")),
+    true,
+    "The packaged Open Wrangler runtime must exist before instrumented environment acceptance."
+  );
+  verifyInstrumentedPythonEnvironmentMarker(environmentA, runtimeRoot);
+  verifyInstrumentedPythonEnvironmentMarker(environmentB, runtimeRoot);
+  const originalSource = readFileSync(fixture.fsPath);
+  const expectedFirstRowScore = "21.0";
+  let sessionId: string | undefined;
+  let revision = 0;
+
+  try {
+    recordAcceptanceProgress("python-environment:select-a");
+    await pythonApi.environments.updateActiveEnvironmentPath(environmentA.executable, workspaceFolder);
+    await waitForSelectedPythonEnvironment(pythonApi, workspaceFolder, environmentA.executable);
+
+    recordAcceptanceProgress("python-environment:open-a");
+    const opened = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: csvSource(fixture),
+      backend: "polars",
+      pageSize: 20,
+      mode: "editing"
+    });
+    assert.equal(opened.kind, "sessionOpened", `Environment A failed to open the fixture: ${JSON.stringify(opened)}`);
+    if (opened.kind !== "sessionOpened") return;
+    sessionId = opened.metadata.sessionId;
+    revision = opened.metadata.revision;
+
+    const preview = await testing.request({
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId,
+      revision,
+      step: {
+        id: "real-python-environment-score",
+        kind: "formula",
+        params: {
+          leftColumn: columnReference(opened.metadata, "sales"),
+          operator: "multiply",
+          value: 2,
+          newColumn: "score"
+        }
+      },
+      offset: 0,
+      limit: 20
+    });
+    assert.equal(preview.kind, "stepPreview");
+    if (preview.kind !== "stepPreview") return;
+    revision = preview.revision;
+    const applied = await testing.request({
+      kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
+      sessionId,
+      revision,
+      offset: 0,
+      limit: 20
+    });
+    assert.equal(applied.kind, "planUpdated");
+    if (applied.kind !== "planUpdated") return;
+    revision = applied.revision;
+    assert.equal(applied.page.rows[0]?.values[4]?.display, expectedFirstRowScore);
+    await waitFor(
+      () => instrumentedRuntimeStarts(environmentA) >= 1,
+      10_000,
+      "environment A to launch the Open Wrangler runtime"
+    );
+    const generationA = testing.runtimeGeneration();
+    assert.ok(generationA > 0);
+
+    recordAcceptanceProgress("python-environment:switch-b");
+    await pythonApi.environments.updateActiveEnvironmentPath(environmentB.executable, workspaceFolder);
+    await waitForSelectedPythonEnvironment(pythonApi, workspaceFolder, environmentB.executable);
+    await waitFor(
+      () => !testing.runtimeRunning(),
+      30_000,
+      "the environment-A runtime to stop after the workspace selection changed"
+    );
+
+    recordAcceptanceProgress("python-environment:recover-b");
+    const recoveredB = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "real-python-environment-b",
+      sessionId,
+      revision,
+      offset: 0,
+      limit: 20,
+      filterModel: applied.metadata.filterModel
+    });
+    assert.equal(recoveredB.kind, "page", `Environment B recovery failed: ${JSON.stringify(recoveredB)}`);
+    if (recoveredB.kind !== "page") return;
+    revision = recoveredB.revision;
+    assert.deepEqual(
+      recoveredB.metadata.steps.map((step) => step.id),
+      ["real-python-environment-score"],
+      "The committed plan must replay after the selected Python environment changes."
+    );
+    assert.equal(recoveredB.page.rows[0]?.values[4]?.display, expectedFirstRowScore);
+    await waitFor(
+      () => instrumentedRuntimeStarts(environmentB) >= 1,
+      10_000,
+      "environment B to launch the recovered Open Wrangler runtime"
+    );
+    assert.equal(
+      testing.runtimeGeneration(),
+      generationA + 1,
+      "One workspace environment switch must create exactly one replacement runtime."
+    );
+
+    recordAcceptanceProgress("python-environment:switch-a");
+    await pythonApi.environments.updateActiveEnvironmentPath(environmentA.executable, workspaceFolder);
+    await waitForSelectedPythonEnvironment(pythonApi, workspaceFolder, environmentA.executable);
+    await waitFor(() => !testing.runtimeRunning(), 30_000, "the environment-B runtime to stop after switching back");
+
+    recordAcceptanceProgress("python-environment:recover-a");
+    const recoveredA = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "real-python-environment-a-return",
+      sessionId,
+      revision,
+      offset: 0,
+      limit: 20,
+      filterModel: recoveredB.metadata.filterModel
+    });
+    assert.equal(recoveredA.kind, "page", `Environment A replay failed: ${JSON.stringify(recoveredA)}`);
+    if (recoveredA.kind !== "page") return;
+    revision = recoveredA.revision;
+    assert.deepEqual(
+      recoveredA.metadata.steps.map((step) => step.id),
+      ["real-python-environment-score"]
+    );
+    assert.equal(recoveredA.page.rows[0]?.values[4]?.display, expectedFirstRowScore);
+    await waitFor(
+      () => instrumentedRuntimeStarts(environmentA) >= 2,
+      10_000,
+      "environment A to launch the second recovered runtime"
+    );
+    assert.equal(
+      testing.runtimeGeneration(),
+      generationA + 2,
+      "Switching back must create exactly one further replacement runtime."
+    );
+    assert.deepEqual(readFileSync(fixture.fsPath), originalSource, "Environment recovery must not modify the source.");
+  } finally {
+    if (sessionId) {
+      await testing
+        .request({
+          kind: "closeSession",
+          sessionId,
+          revision
+        })
+        .catch(() => undefined);
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        30_000,
+        "the real Python-environment session and runtime to close"
+      );
+    }
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+function createInstrumentedPythonEnvironment(
+  environmentRoot: string,
+  dependencyPython: string,
+  label: string
+): InstrumentedPythonEnvironment {
+  execFileSync(dependencyPython, ["-m", "venv", "--without-pip", environmentRoot], {
+    stdio: "pipe",
+    timeout: 60_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environmentRoot, "Scripts", "python.exe")
+      : path.join(environmentRoot, "bin", "python");
+  assert.equal(existsSync(executable), true, `Instrumented Python environment ${label} must be executable.`);
+  const dependencySitePackages = execFileSync(
+    dependencyPython,
+    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 30_000,
       windowsHide: true
-    });
-    const sitePackages = path.join(environment, "Lib", "site-packages");
-    const siteCustomize = path.join(sitePackages, "sitecustomize.py");
-    writeFileSync(
-      siteCustomize,
-      [
-        "import sys",
-        'sys.path[:] = [entry for entry in sys.path if entry != ""]',
-        "import os",
-        "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
-        "sys.path[:] = [",
-        "    entry",
-        "    for entry in sys.path",
-        "    if os.path.normcase(os.path.abspath(entry)) != cwd",
-        "]",
-        `with open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8") as stream:`,
-        '    stream.write("invoked\\n")',
-        ""
-      ].join("\n"),
-      { encoding: "utf8", flag: "wx" }
-    );
-    const executable = path.join(environment, "Scripts", "python.exe");
-    assert.ok(existsSync(executable), "The Windows dependency-isolated Python environment is missing python.exe.");
-    return executable;
-  }
-
-  const executable = path.join(directory, "python-without-site-packages");
-  const quotedPython = `'${python.replaceAll("'", `'\\''`)}'`;
-  const quotedInvocationLog = `'${invocationLog.replaceAll("'", `'\\''`)}'`;
-  writeFileSync(
+    }
+  ).trim();
+  const environmentSitePackages = execFileSync(
     executable,
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedInvocationLog}\nexec ${quotedPython} -I -S "$@"\n`,
+    ["-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(dependencySitePackages && environmentSitePackages);
+  const runtimeMarkerDirectory = path.join(environmentRoot, "runtime-starts");
+  mkdirSync(runtimeMarkerDirectory);
+  const runtimeMarkerImportLine = [
+    "import os, sys, uuid; ",
+    "os.path.isfile(os.path.join(os.environ.get('PYTHONPATH', '').split(os.pathsep, 1)[0], ",
+    "'openwrangler_runtime', 'server.py')) and not hasattr(sys, '_openwrangler_acceptance_runtime_marked') and ",
+    `(setattr(sys, '_openwrangler_acceptance_runtime_marked', True), open(os.path.join(${JSON.stringify(runtimeMarkerDirectory)}, `,
+    "'runtime-' + uuid.uuid4().hex + '.marker'), 'x').close())"
+  ].join("");
+  writeFileSync(
+    path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
+    `${dependencySitePackages}\n${runtimeMarkerImportLine}\n`,
+    "utf8"
+  );
+  return { executable, runtimeMarkerDirectory };
+}
+
+function verifyInstrumentedPythonEnvironmentMarker(
+  environment: InstrumentedPythonEnvironment,
+  runtimeRoot: string
+): void {
+  assert.deepEqual(instrumentedRuntimeMarkers(environment), []);
+  execFileSync(environment.executable, ["-c", "pass"], {
+    env: { ...process.env, PYTHONPATH: runtimeRoot },
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const markers = instrumentedRuntimeMarkers(environment);
+  assert.equal(markers.length, 1, "The executable .pth marker must identify one runtime-root launch.");
+  const markerPath = path.join(environment.runtimeMarkerDirectory, markers[0]!);
+  const metadata = lstatSync(markerPath);
+  assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1);
+  rmSync(markerPath);
+  assert.deepEqual(instrumentedRuntimeMarkers(environment), []);
+}
+
+async function waitForSelectedPythonEnvironment(
+  pythonApi: PythonExtension,
+  resource: vscode.WorkspaceFolder,
+  expectedExecutable: string
+): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started <= 30_000) {
+    const active = pythonApi.environments.getActiveEnvironmentPath(resource);
+    const resolved = await pythonApi.environments.resolveEnvironment(active);
+    const selectedExecutable = resolved?.executable.uri?.fsPath ?? active.path;
+    if (sameAcceptanceExecutable(selectedExecutable, expectedExecutable)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("Timed out waiting for the released Python extension to publish the selected environment.");
+}
+
+function sameAcceptanceExecutable(left: string, right: string): boolean {
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US")
+    : normalizedLeft === normalizedRight;
+}
+
+function instrumentedRuntimeStarts(environment: InstrumentedPythonEnvironment): number {
+  return instrumentedRuntimeMarkers(environment).length;
+}
+
+function instrumentedRuntimeMarkers(environment: InstrumentedPythonEnvironment): string[] {
+  const entries = readdirSync(environment.runtimeMarkerDirectory);
+  assert.ok(entries.length <= 16, "Instrumented Python runtime markers exceeded their fixed bound.");
+  return entries.filter((entry) => /^runtime-[0-9a-f]{32}\.marker$/u.test(entry));
+}
+
+function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {
+  const environment = path.join(directory, "environment");
+  execFileSync(python, ["-m", "venv", "--without-pip", environment], {
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environment, "Scripts", "python.exe")
+      : path.join(environment, "bin", "python");
+  assert.ok(existsSync(executable), "The dependency-isolated Python environment is missing its interpreter.");
+  const sitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(sitePackages), "The dependency-isolated environment returned an invalid site-packages.");
+  writeFileSync(
+    path.join(sitePackages, "openwrangler-acceptance-invocations.pth"),
+    `import builtins; builtins.open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8").write("invoked\\n")\n`,
     { encoding: "utf8", flag: "wx" }
   );
-  chmodSync(executable, 0o755);
   return executable;
+}
+
+function createDependencyInstallLifecyclePython(
+  directory: string,
+  dependencyPython: string
+): DependencyInstallLifecycleFixture {
+  const started = path.join(directory, "pip-started.json");
+  const release = path.join(directory, "release-pip");
+  const completed = path.join(directory, "pip-completed.json");
+  const fakePipSource = [
+    "import json",
+    "import os",
+    "import sys",
+    "import time",
+    "",
+    `started_path = ${JSON.stringify(started)}`,
+    `release_path = ${JSON.stringify(release)}`,
+    `completed_path = ${JSON.stringify(completed)}`,
+    "environment_keys = {key.upper() for key in os.environ}",
+    "details = {",
+    '    "args": sys.argv[1:],',
+    '    "cwd": os.getcwd(),',
+    '    "pipNoInput": os.environ.get("PIP_NO_INPUT"),',
+    '    "pipConfigFile": os.environ.get("PIP_CONFIG_FILE"),',
+    '    "pipUser": os.environ.get("PIP_USER"),',
+    '    "pythonPathPresent": "PYTHONPATH" in environment_keys,',
+    '    "pythonHomePresent": "PYTHONHOME" in environment_keys,',
+    "}",
+    "with open(started_path, 'x', encoding='utf-8') as stream:",
+    "    json.dump(details, stream, sort_keys=True)",
+    "    stream.flush()",
+    "    os.fsync(stream.fileno())",
+    "deadline = time.monotonic() + 30",
+    "while not os.path.exists(release_path):",
+    "    if time.monotonic() >= deadline:",
+    "        raise SystemExit(92)",
+    "    time.sleep(0.025)",
+    "with open(completed_path, 'x', encoding='utf-8') as stream:",
+    "    json.dump({**details, 'released': True}, stream, sort_keys=True)",
+    "    stream.flush()",
+    "    os.fsync(stream.fileno())",
+    ""
+  ].join("\n");
+
+  const environment = path.join(directory, "environment");
+  execFileSync(dependencyPython, ["-m", "venv", "--without-pip", environment], {
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environment, "Scripts", "python.exe")
+      : path.join(environment, "bin", "python");
+  assert.ok(existsSync(executable), "The lifecycle-test Python environment is missing its interpreter.");
+  const sitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(sitePackages), "The lifecycle-test environment returned invalid site-packages.");
+  writeFileSync(
+    path.join(sitePackages, "sitecustomize.py"),
+    [
+      "import os",
+      "import sys",
+      'sys.path[:] = [entry for entry in sys.path if entry != ""]',
+      "cwd = os.path.normcase(os.path.abspath(os.getcwd()))",
+      "sys.path[:] = [",
+      "    entry",
+      "    for entry in sys.path",
+      "    if os.path.normcase(os.path.abspath(entry)) != cwd",
+      "]",
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  const pipPackage = path.join(sitePackages, "pip");
+  mkdirSync(pipPackage);
+  writeFileSync(path.join(pipPackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  writeFileSync(path.join(pipPackage, "__main__.py"), fakePipSource, { encoding: "utf8", flag: "wx" });
+  const preflight = JSON.parse(
+    execFileSync(
+      executable,
+      [
+        "-I",
+        "-c",
+        [
+          "import importlib.util",
+          "import json",
+          "import pip",
+          "import sys",
+          "print(json.dumps({",
+          "    'executable': sys.executable,",
+          "    'prefix': sys.prefix,",
+          "    'pandas': importlib.util.find_spec('pandas') is not None,",
+          "    'xlrd': importlib.util.find_spec('xlrd') is not None,",
+          "    'pip': pip.__file__,",
+          "}, sort_keys=True))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as Record<string, unknown>;
+  assert.equal(
+    typeof preflight.executable === "string" && sameAcceptanceExecutable(preflight.executable, executable),
+    true,
+    "The lifecycle-test interpreter must report the exact selected virtual-environment executable."
+  );
+  assert.equal(
+    typeof preflight.prefix === "string" && sameAcceptanceExecutable(preflight.prefix, environment),
+    true,
+    "The lifecycle-test interpreter must retain its isolated virtual-environment prefix."
+  );
+  assert.equal(preflight.pandas, false, "The lifecycle-test environment must not expose pandas.");
+  assert.equal(preflight.xlrd, false, "The lifecycle-test environment must not expose xlrd.");
+  assert.equal(
+    typeof preflight.pip === "string" && sameAcceptanceExecutable(preflight.pip, path.join(pipPackage, "__init__.py")),
+    true,
+    "The lifecycle-test environment must import only its owned fake pip package."
+  );
+  return { executable, started, release, completed };
 }
 
 async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.Uri): Promise<void> {

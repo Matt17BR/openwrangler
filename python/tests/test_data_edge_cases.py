@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 
 from openwrangler_runtime.engines import EngineError, PandasEngine, PolarsEngine
-from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
+from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX, resolve_excel_sheet_selector
 from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,9 +60,15 @@ def test_delimited_jsonl_and_parquet_imports(backend: str, tmp_path) -> None:
 
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
-@pytest.mark.parametrize("sheet", ["second", 1])
+@pytest.mark.parametrize(
+    "import_options",
+    [{"sheetName": "second"}, {"sheetIndex": 1}],
+    ids=["sheet-name", "zero-based-sheet-index"],
+)
 @pytest.mark.parametrize("extension", ["xlsx", "xls"])
-def test_excel_sheet_name_and_zero_based_index(backend: str, sheet: str | int, extension: str, tmp_path: Path) -> None:
+def test_excel_sheet_name_and_zero_based_index(
+    backend: str, import_options: dict[str, str | int], extension: str, tmp_path: Path
+) -> None:
     path = tmp_path / f"sheets.{extension}"
     if extension == "xls":
         write_legacy_xls(path)
@@ -77,7 +83,7 @@ def test_excel_sheet_name_and_zero_based_index(backend: str, sheet: str | int, e
             "kind": "file",
             "label": path.name,
             "path": str(path),
-            "importOptions": {"sheet": sheet},
+            "importOptions": import_options,
         },
         backend=backend,
     )
@@ -85,6 +91,28 @@ def test_excel_sheet_name_and_zero_based_index(backend: str, sheet: str | int, e
     assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == (
         ["second", "résumé"] if extension == "xls" else ["second"]
     )
+    manager.close_session(opened["metadata"]["sessionId"], 0)
+    assert manager.sessions == {}
+
+
+def test_excel_sheet_name_is_not_trimmed() -> None:
+    assert resolve_excel_sheet_selector({"sheetName": " résumé "}) == ("sheetName", " résumé ")
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"sheet": 1}, "unsupported"),
+        ({"sheetIndex": True}, "non-negative safe integer"),
+        ({"sheetIndex": -1}, "non-negative safe integer"),
+        ({"sheetIndex": 9_007_199_254_740_992}, "non-negative safe integer"),
+        ({"sheetName": " \n\ufeff"}, "non-empty string"),
+        ({"sheetName": "Sheet1", "sheetIndex": 0}, "only one"),
+    ],
+)
+def test_excel_sheet_selector_rejects_ambiguous_or_invalid_values(options: dict[str, object], message: str) -> None:
+    with pytest.raises(EngineError, match=message):
+        resolve_excel_sheet_selector(options)
 
 
 def test_polars_nested_parquet_preserves_native_typed_values(tmp_path, monkeypatch) -> None:
