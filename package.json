@@ -157,7 +157,9 @@
       },
       {
         "command": "openWrangler.openNotebookVariable",
-        "title": "Open Wrangler: Open Notebook Variable"
+        "title": "Open Wrangler: Open Notebook Variable",
+        "shortTitle": "Open Variable",
+        "icon": "$(table)"
       },
       {
         "command": "openWrangler.checkJupyterIntegration",
@@ -445,6 +447,13 @@
         }
       ],
       "notebook/title": [
+        {
+          "command": "openWrangler.openNotebookVariable",
+          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
+          "group": "navigation@50"
+        }
+      ],
+      "notebook/toolbar": [
         {
           "command": "openWrangler.openNotebookVariable",
           "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",

@@ -104,6 +104,14 @@ const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
 const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
 const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
 const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
+const RELEASED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
+const RELEASED_JUPYTER_CONSENT_MESSAGE =
+  "Do you want to grant Kernel access to the extension Open Wrangler (matt17br.openwrangler)?";
+const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
+const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
+const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION = "Open Wrangler: Open Notebook Variable";
+const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
+const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
 const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
@@ -369,6 +377,18 @@ export async function run(): Promise<void> {
     ),
     "The argument-only Jupyter viewer command must stay out of the Command Palette."
   );
+  const notebookVariableWhen = "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook";
+  for (const menu of ["notebook/title", "notebook/toolbar"]) {
+    assert.ok(
+      contributions.menus?.[menu]?.some(
+        (item) =>
+          item.command === "openWrangler.openNotebookVariable" &&
+          item.when === notebookVariableWhen &&
+          item.group === "navigation@50"
+      ),
+      `${menu} must expose the manual Open Wrangler variable action for a real Jupyter kernel.`
+    );
+  }
   assert.deepEqual(
     contributions.keybindings?.map((binding) => ({
       command: binding.command,
@@ -435,6 +455,14 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
+  if (phase === "jupyter-deny" || phase === "jupyter-allow") {
+    assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected private Python environment.");
+    recordAcceptanceProgress(`${phase}:start`);
+    await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
+    recordAcceptanceProgress(`${phase}:complete`);
+    console.log(`Open Wrangler released Jupyter ${phase === "jupyter-deny" ? "denial" : "allow"} acceptance passed.`);
+    return;
+  }
   if (phase === "python-environment") {
     assert.ok(testPython, "Real Python-extension acceptance requires the runner-selected dependency environment.");
     recordAcceptanceProgress("python-environment:start");
@@ -544,6 +572,839 @@ function recordAcceptanceProgress(checkpoint: string): void {
     phase,
     checkpoint
   });
+}
+
+type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow";
+
+interface ReleasedVariableExpectation {
+  readonly name: string;
+  readonly type: string;
+  readonly backend: "pandas" | "polars";
+  readonly firstValue: string;
+}
+
+async function exerciseReleasedJupyterExtension(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  phase: ReleasedJupyterPhase,
+  testPython: string
+): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Released Jupyter acceptance must start without a retained Open Wrangler session."
+  );
+  assert.ok(
+    !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
+    "File-backed Open Wrangler use must not acquire a hard Jupyter extension dependency."
+  );
+
+  const jupyterExtension = vscode.extensions.getExtension("ms-toolsai.jupyter");
+  assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
+  assert.equal(jupyterExtension.packageJSON.publisher, "ms-toolsai");
+  assert.equal(jupyterExtension.packageJSON.name, "jupyter");
+  assert.equal(
+    jupyterExtension.packageJSON.version,
+    RELEASED_JUPYTER_EXTENSION_VERSION,
+    "Released-kernel acceptance must not float to an unreviewed Jupyter build."
+  );
+  assert.notEqual(
+    jupyterExtension.packageJSON.displayName,
+    "Open Wrangler stable Jupyter API acceptance double",
+    "The released-Jupyter phases must never load the local API double."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), `openwrangler-released-jupyter-${phase}-`));
+  const notebookPath = path.join(directory, `${phase}.ipynb`);
+  const notebookUri = vscode.Uri.file(notebookPath);
+  const setupMarker = `OPEN_WRANGLER_SETUP_${phase.replace("jupyter-", "").toUpperCase()}`;
+  writeReleasedJupyterNotebook(notebookPath, setupMarker);
+
+  let notebook: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress(`${phase}:notebook-open`);
+    notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    assertExactOpenNotebookDocument(notebook, "after opening the released-Jupyter fixture");
+    await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+    assertExactOpenNotebookDocument(notebook, "after showing the released-Jupyter fixture");
+
+    recordAcceptanceProgress(`${phase}:kernel-start`);
+    await executeReleasedNotebookCell(notebook, 0, setupMarker);
+    assert.equal(
+      jupyterExtension.isActive,
+      true,
+      "Executing the fixture must activate the released Jupyter extension."
+    );
+    const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
+    assert.equal(
+      canonicalAcceptancePath(String(initialKernel.executable)),
+      canonicalAcceptancePath(testPython),
+      "The released Jupyter kernel must use the runner-selected private Python environment."
+    );
+    assert.equal(initialKernel.setup, setupMarker);
+
+    const workbench = await connectToEditorWorkbench();
+    assertExactOpenNotebookDocument(notebook, "before opening the real Jupyter Variables view");
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
+    const viewerAction = await waitForReleasedJupyterVariableAction(workbench, "pandas_frame");
+    assertExactOpenNotebookDocument(notebook, "after resolving the pandas_frame action from Jupyter Variables");
+
+    recordAcceptanceProgress(`${phase}:variables-action`);
+    await viewerAction.click();
+    const consent = await waitForReleasedJupyterConsent(workbench);
+    assertExactOpenNotebookDocument(notebook, "while the released Jupyter consent belongs to the fixture notebook");
+
+    if (phase === "jupyter-deny") {
+      recordAcceptanceProgress("jupyter-deny:consent");
+      await consent.deny.click();
+      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
+      assert.equal(testing.diagnostics().sessionCount, 0);
+
+      recordAcceptanceProgress("jupyter-deny:persisted-denial");
+      assertExactOpenNotebookDocument(notebook, "before retrying the denied released Jupyter permission");
+      await withBoundedAcceptancePromise(
+        vscode.commands.executeCommand("openWrangler.launchDataViewer", {
+          name: "pandas_frame",
+          type: "DataFrame",
+          fileName: notebook.uri
+        }),
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "the persisted released-Jupyter denial retry"
+      );
+      assertExactOpenNotebookDocument(notebook, "after retrying the denied released Jupyter permission");
+      await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
+      assert.equal(
+        await visibleReleasedJupyterConsentCount(workbench),
+        0,
+        "A persisted Jupyter denial must fail without prompting again in the same isolated profile."
+      );
+      await closeReleasedJupyterSessionTabs();
+      assert.equal(testing.diagnostics().sessionCount, 0);
+      return;
+    }
+
+    recordAcceptanceProgress("jupyter-allow:consent");
+    await consent.allow.click();
+    await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    const pandasFrame = await waitForReleasedVariableSession(
+      testing,
+      notebook,
+      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
+      "the Pandas DataFrame opened from the real Jupyter Variables view"
+    );
+
+    recordAcceptanceProgress("jupyter-allow:pandas-dataframe");
+    await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
+    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame");
+
+    recordAcceptanceProgress("jupyter-allow:mime-v2");
+    await showExactReleasedNotebook(notebook);
+    await executeReleasedNotebookCell(notebook, 1);
+    const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    assert.ok(
+      pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
+      "A formatter registered through the released kernel API must emit the Open Wrangler MIME v2 payload."
+    );
+    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
+    await showExactReleasedNotebook(notebook);
+    const rendererButton = await waitForNotebookRendererButton(workbench, "DataFrame");
+    await rendererButton.click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the released-Jupyter MIME v2 renderer snapshot"
+    );
+    const snapshot = testing.activeSession();
+    assert.ok(snapshot, "The released-Jupyter renderer action must publish a snapshot session.");
+    assert.equal(snapshot.metadata.source.kind, "notebookOutput");
+    assert.equal(snapshot.metadata.source.label, "DataFrame");
+    assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
+    await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
+
+    recordAcceptanceProgress("jupyter-allow:pandas-series");
+    const pandasSeries = await openReleasedVariableSession(
+      testing,
+      notebook,
+      { name: "pandas_series", type: "Series", backend: "pandas", firstValue: "5" },
+      "the Pandas Series opened through the released viewer argument"
+    );
+    await assertReleasedSessionPage(testing, pandasSeries, "5", "released-jupyter-pandas-series");
+    await disposePackagedSessionPanel(testing, pandasSeries.sessionId, "the released-Jupyter Pandas Series");
+
+    recordAcceptanceProgress("jupyter-allow:polars-series-toolbar");
+    await showExactReleasedNotebook(notebook);
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "polars_series");
+    const polarsSeries = await waitForReleasedVariableSession(
+      testing,
+      notebook,
+      { name: "polars_series", type: "polars.series.series.Series", backend: "polars", firstValue: "7" },
+      "the Polars Series opened from the real Open Wrangler notebook toolbar"
+    );
+    await assertReleasedSessionPage(testing, polarsSeries, "7", "released-jupyter-polars-series");
+    await disposePackagedSessionPanel(testing, polarsSeries.sessionId, "the released-Jupyter Polars Series");
+
+    recordAcceptanceProgress("jupyter-allow:polars-dataframe");
+    const polarsFrame = await openReleasedVariableSession(
+      testing,
+      notebook,
+      {
+        name: "polars_frame",
+        type: "polars.dataframe.frame.DataFrame",
+        backend: "polars",
+        firstValue: "3"
+      },
+      "the Polars DataFrame opened through the released viewer argument"
+    );
+    const polarsPage = await assertReleasedSessionPage(testing, polarsFrame, "3", "released-jupyter-polars-dataframe");
+
+    recordAcceptanceProgress("jupyter-allow:polars-plan");
+    const preview = await testing.request({
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: polarsFrame.sessionId,
+      revision: polarsPage.revision,
+      step: {
+        id: "released-jupyter-double",
+        kind: "formula",
+        params: {
+          leftColumn: columnReference(polarsFrame.metadata, "value"),
+          operator: "multiply",
+          value: 2,
+          newColumn: "doubled"
+        }
+      },
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(preview.kind, "stepPreview");
+    if (preview.kind !== "stepPreview") throw new Error("The released-Jupyter Polars preview did not resolve.");
+    const applied = await testing.request({
+      kind: "applyDraft",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: polarsFrame.sessionId,
+      revision: preview.revision,
+      offset: 0,
+      limit: 10
+    });
+    assert.equal(applied.kind, "planUpdated");
+    if (applied.kind !== "planUpdated") throw new Error("The released-Jupyter Polars plan did not apply.");
+    assert.equal(applied.metadata.steps.length, 1);
+
+    recordAcceptanceProgress("jupyter-allow:pandas-recovery-session");
+    const pandasRecovery = await openReleasedVariableSession(
+      testing,
+      notebook,
+      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
+      "the concurrent Pandas DataFrame retained for released-Jupyter recovery"
+    );
+    const pandasRecoveryPage = await assertReleasedSessionPage(
+      testing,
+      pandasRecovery,
+      "1",
+      "released-jupyter-pandas-concurrent-recovery"
+    );
+    assert.equal(testing.diagnostics().sessionCount, 2, "Both engine-native sessions must remain open before restart.");
+
+    recordAcceptanceProgress("jupyter-allow:restart");
+    await exerciseReleasedJupyterRestartReplay(
+      testing,
+      notebook,
+      polarsFrame.sessionId,
+      applied,
+      {
+        sessionId: pandasRecovery.sessionId,
+        revision: pandasRecoveryPage.revision,
+        filterModel: pandasRecovery.metadata.filterModel
+      },
+      Number(initialKernel.pid),
+      setupMarker
+    );
+    await disposePackagedSessionPanel(testing, polarsFrame.sessionId, "the recovered released-Jupyter Polars session");
+    await disposePackagedSessionPanel(
+      testing,
+      pandasRecovery.sessionId,
+      "the recovered released-Jupyter Pandas session"
+    );
+    assert.equal(testing.diagnostics().sessionCount, 0);
+  } finally {
+    await bestEffortReleasedJupyterCleanup(testing, notebook);
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string): void {
+  const setup = [
+    "import json",
+    "import os",
+    "import sys",
+    "import pandas as pd",
+    "import polars as pl",
+    "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
+    "pandas_series = pd.Series([5, 6], name='series_value')",
+    "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})",
+    "polars_series = pl.Series('series_value', [7, 8])",
+    `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
+    `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
+      "'executable': sys.executable, 'pid': os.getpid(), 'setup': openwrangler_restart_marker" +
+      "}, sort_keys=True))"
+  ];
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: setup.map((line) => `${line}\n`)
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: ["pandas_frame\n"]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: ["polars_frame\n"]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "import json, os\n",
+            `print(${JSON.stringify(RELEASED_JUPYTER_RESTART_RESULT)} + json.dumps({` +
+              "'pid': os.getpid(), 'setup': globals().get('openwrangler_restart_marker')" +
+              "}, sort_keys=True))\n"
+          ]
+        }
+      ],
+      metadata: {
+        kernelspec: {
+          display_name: "Open Wrangler Acceptance",
+          language: "python",
+          name: "openwrangler-acceptance"
+        },
+        language_info: { name: "python" }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+}
+
+function assertExactOpenNotebookDocument(notebook: vscode.NotebookDocument, checkpoint: string): void {
+  const matches = vscode.workspace.notebookDocuments.filter(
+    (candidate) => !candidate.isClosed && candidate.uri.toString() === notebook.uri.toString()
+  );
+  assert.equal(matches.length, 1, `The released-Jupyter notebook URI must identify one document ${checkpoint}.`);
+  assert.equal(matches[0], notebook, `The released-Jupyter notebook object changed ${checkpoint}.`);
+  assert.equal(notebook.isClosed, false, `The released-Jupyter notebook closed ${checkpoint}.`);
+}
+
+async function showExactReleasedNotebook(notebook: vscode.NotebookDocument): Promise<void> {
+  assertExactOpenNotebookDocument(notebook, "before showing its exact editor");
+  await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+  assertExactOpenNotebookDocument(notebook, "after showing its exact editor");
+}
+
+async function executeReleasedNotebookCell(
+  notebook: vscode.NotebookDocument,
+  index: number,
+  expectedText?: string
+): Promise<void> {
+  assertExactOpenNotebookDocument(notebook, `before executing cell ${index}`);
+  assert.ok(index >= 0 && index < notebook.cellCount, `Released-Jupyter cell ${index} must exist.`);
+  const cell = notebook.cellAt(index);
+  await vscode.commands.executeCommand("notebook.cell.execute", {
+    ranges: [{ start: index, end: index + 1 }],
+    document: notebook.uri
+  });
+  assertExactOpenNotebookDocument(notebook, `after dispatching cell ${index}`);
+  const deadline = Date.now() + 90_000;
+  do {
+    assertExactOpenNotebookDocument(notebook, `while waiting for cell ${index}`);
+    if (cell.executionSummary?.success === true) {
+      if (expectedText === undefined || notebookCellOutputText(cell).includes(expectedText)) return;
+    }
+    if (cell.executionSummary?.success === false) {
+      throw new Error(`Released-Jupyter cell ${index} failed: ${notebookCellOutputText(cell)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Timed out waiting for released-Jupyter cell ${index}. Output: ${JSON.stringify(notebookCellOutputText(cell))}`
+  );
+}
+
+function notebookCellOutputText(cell: vscode.NotebookCell): string {
+  return cell.outputs
+    .flatMap((output) => output.items)
+    .map((item) => Buffer.from(item.data).toString("utf8"))
+    .join("\n");
+}
+
+function releasedNotebookSetupResult(cell: vscode.NotebookCell): Record<string, unknown> {
+  return releasedNotebookJsonResult(cell, RELEASED_JUPYTER_SETUP_RESULT, "setup");
+}
+
+function releasedNotebookJsonResult(
+  cell: vscode.NotebookCell,
+  marker: string,
+  description: string
+): Record<string, unknown> {
+  const text = notebookCellOutputText(cell);
+  const markerIndex = text.lastIndexOf(marker);
+  assert.notEqual(markerIndex, -1, `The notebook ${description} omitted its result marker: ${JSON.stringify(text)}`);
+  const serialized = text
+    .slice(markerIndex + marker.length)
+    .trim()
+    .split(/\r?\n/u)[0];
+  assert.ok(serialized, `The notebook ${description} returned an empty result.`);
+  const parsed: unknown = JSON.parse(serialized);
+  assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  return parsed as Record<string, unknown>;
+}
+
+function canonicalAcceptancePath(candidate: string): string {
+  const resolved = path.normalize(path.resolve(candidate));
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+async function waitForReleasedJupyterVariableAction(workbench: Page, variableName: string): Promise<Locator> {
+  const deadline = Date.now() + 30_000;
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      try {
+        const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
+        if ((await table.count()) === 0 || !(await table.isVisible())) continue;
+        const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
+        if ((await cell.count()) === 0 || !(await cell.isVisible())) continue;
+        const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
+        await row.hover();
+        const action = row.getByRole("button", { name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION, exact: true }).first();
+        if ((await action.count()) > 0 && (await action.isVisible()) && (await action.isEnabled())) return action;
+      } catch {
+        // The Variables view can replace a row while its real kernel refreshes.
+      }
+    }
+    await workbench.waitForTimeout(100);
+  } while (Date.now() < deadline);
+
+  const diagnostics = await releasedWorkbenchDiagnostics(workbench, variableName);
+  throw new Error(
+    `Timed out waiting for ${variableName} in the released Jupyter Variables view: ${JSON.stringify(diagnostics)}`
+  );
+}
+
+function releasedWorkbenchFrames(workbench: Page): Frame[] {
+  const browser = workbench.context().browser();
+  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+  return pages.flatMap((page) => page.frames());
+}
+
+async function releasedWorkbenchDiagnostics(workbench: Page, variableName: string): Promise<unknown> {
+  return Promise.all(
+    releasedWorkbenchFrames(workbench).map(async (frame) => ({
+      url: frame.url(),
+      variableCells: await frame
+        .locator(`[role="cell"][title=${JSON.stringify(variableName)}]`)
+        .count()
+        .catch(() => -1),
+      tables: await frame
+        .getByRole("table", { name: "Variables", exact: true })
+        .allInnerTexts()
+        .catch(() => [])
+    }))
+  );
+}
+
+async function waitForReleasedJupyterConsent(
+  workbench: Page
+): Promise<{ dialog: Locator; allow: Locator; deny: Locator }> {
+  const { dialog } = await waitForVisibleEditorDialog(workbench, RELEASED_JUPYTER_CONSENT_MESSAGE);
+  const text = await dialog.innerText();
+  assert.ok(text.includes(RELEASED_JUPYTER_CONSENT_MESSAGE), "The Jupyter consent message must name Open Wrangler.");
+  assert.ok(
+    text.includes(RELEASED_JUPYTER_CONSENT_DETAIL),
+    "The Jupyter consent must explain kernel execution access."
+  );
+  const allow = dialog.getByRole("button", { name: "Allow", exact: true });
+  const deny = dialog.getByRole("button", { name: "Deny", exact: true });
+  const learnMore = dialog.getByRole("button", { name: "Learn More", exact: true });
+  assert.equal(await allow.count(), 1, "The released Jupyter consent must expose one Allow action.");
+  assert.equal(await deny.count(), 1, "The released Jupyter consent must expose one Deny action.");
+  assert.equal(await learnMore.count(), 1, "The released Jupyter consent must expose one Learn More action.");
+  return { dialog, allow, deny };
+}
+
+async function visibleReleasedJupyterConsentCount(workbench: Page): Promise<number> {
+  let count = 0;
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    count += await frame
+      .locator(".monaco-dialog-box:visible")
+      .filter({ hasText: RELEASED_JUPYTER_CONSENT_MESSAGE })
+      .count()
+      .catch(() => 0);
+  }
+  return count;
+}
+
+async function waitForStableReleasedJupyterSessionCount(
+  testing: TestApi,
+  expected: number,
+  stableForMs: number,
+  timeoutMs: number
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let stableSince = testing.diagnostics().sessionCount === expected ? Date.now() : undefined;
+  do {
+    if (testing.diagnostics().sessionCount === expected) {
+      stableSince ??= Date.now();
+      if (Date.now() - stableSince >= stableForMs) return;
+    } else {
+      stableSince = undefined;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Timed out waiting for released-Jupyter session count ${expected}: ${JSON.stringify(testing.diagnostics())}`
+  );
+}
+
+async function withBoundedAcceptancePromise<T>(
+  promise: Thenable<T>,
+  timeoutMs: number,
+  description: string
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}.`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function waitForReleasedVariableSession(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  expected: ReleasedVariableExpectation,
+  description: string
+): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.kind === "notebookVariable" &&
+        active.metadata.source.variableName === expected.name &&
+        active.metadata.source.uri === notebook.uri.toString()
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    description,
+    () => JSON.stringify(testing.diagnostics())
+  );
+  assertExactOpenNotebookDocument(notebook, `after opening ${expected.name}`);
+  const active = testing.activeSession();
+  assert.ok(active, `${description} must publish an active session.`);
+  assert.equal(active.metadata.backend, expected.backend);
+  assert.equal(active.metadata.source.kind, "notebookVariable");
+  assert.equal(active.metadata.source.variableName, expected.name);
+  assert.equal(active.metadata.source.uri, notebook.uri.toString());
+  assert.equal(active.metadata.capabilities.notebookInsert, true);
+  return active;
+}
+
+async function openReleasedVariableSession(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  expected: ReleasedVariableExpectation,
+  description: string
+): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
+  assertExactOpenNotebookDocument(notebook, `before opening ${expected.name}`);
+  await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
+    name: expected.name,
+    type: expected.type,
+    fileName: notebook.uri
+  });
+  assertExactOpenNotebookDocument(notebook, `after dispatching ${expected.name}`);
+  return waitForReleasedVariableSession(testing, notebook, expected, description);
+}
+
+async function assertReleasedSessionPage(
+  testing: TestApi,
+  active: NonNullable<ReturnType<TestApi["activeSession"]>>,
+  firstValue: string,
+  viewRequestId: string
+): Promise<Extract<OpenWranglerResponse, { kind: "page" }>> {
+  const response = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    viewRequestId,
+    sessionId: active.sessionId,
+    revision: active.metadata.revision,
+    offset: 0,
+    limit: 10,
+    filterModel: active.metadata.filterModel
+  });
+  assert.equal(response.kind, "page");
+  if (response.kind !== "page") throw new Error(`Released-Jupyter page ${viewRequestId} did not resolve.`);
+  assert.equal(response.page.rows[0]?.values[0]?.display, firstValue);
+  return response;
+}
+
+async function assertReleasedNotebookCodeInsertion(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  active: NonNullable<ReturnType<TestApi["activeSession"]>>,
+  variableName: string
+): Promise<void> {
+  assert.equal(active.metadata.source.kind, "notebookVariable");
+  const code = `# released Jupyter exact origin ${Date.now()}\ndef clean_data(df):\n    return df\n`;
+  const before = Array.from({ length: notebook.cellCount }, (_, index) => notebook.cellAt(index).document.getText());
+  const decoyPath = path.join(path.dirname(notebook.uri.fsPath), "released-jupyter-insertion-decoy.ipynb");
+  writeFileSync(
+    decoyPath,
+    JSON.stringify({
+      cells: [
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: ["decoy_value = 99\n"]
+        }
+      ],
+      metadata: {
+        kernelspec: {
+          display_name: "Open Wrangler Acceptance",
+          language: "python",
+          name: "openwrangler-acceptance"
+        }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
+  const decoy = await vscode.workspace.openNotebookDocument(vscode.Uri.file(decoyPath));
+  try {
+    await vscode.window.showNotebookDocument(decoy, { viewColumn: vscode.ViewColumn.One });
+    assertExactOpenNotebookDocument(decoy, "after showing the insertion decoy");
+    const decoyBefore = Array.from({ length: decoy.cellCount }, (_, index) => decoy.cellAt(index).document.getText());
+
+    testing.setCodeForExport(code);
+    testing.setActiveSession(active.sessionId);
+    assertExactOpenNotebookDocument(notebook, "before released-Jupyter generated-code insertion");
+    assert.equal(await vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode"), true);
+    assertExactOpenNotebookDocument(notebook, "after released-Jupyter generated-code insertion");
+    assertExactOpenNotebookDocument(decoy, "after insertion while the decoy remained the visible notebook");
+    assert.deepEqual(
+      Array.from({ length: decoy.cellCount }, (_, index) => decoy.cellAt(index).document.getText()),
+      decoyBefore,
+      "Released-Jupyter insertion must not target a different active notebook."
+    );
+    const inserted = Array.from({ length: notebook.cellCount }, (_, index) => index).filter((index) => {
+      const cell = notebook.cellAt(index);
+      return cell.document.getText() === code && cell.metadata.openWrangler?.source === variableName;
+    });
+    assert.equal(inserted.length, 1, "Released-Jupyter insertion must add one uniquely marked cell.");
+    const insertedIndex = inserted[0];
+    assert.notEqual(insertedIndex, undefined);
+    assert.deepEqual(
+      Array.from({ length: notebook.cellCount }, (_, index) => index)
+        .filter((index) => index !== insertedIndex)
+        .map((index) => notebook.cellAt(index).document.getText()),
+      before,
+      "Released-Jupyter insertion must not rewrite any originating cell."
+    );
+  } finally {
+    const decoyTab = notebookTab(decoy.uri);
+    if (decoyTab) await vscode.window.tabGroups.close(decoyTab, true);
+  }
+}
+
+async function invokeReleasedNotebookToolbarVariable(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  variableName: string
+): Promise<void> {
+  assertExactOpenNotebookDocument(notebook, "before invoking the Open Wrangler notebook toolbar");
+  const action = await waitForReleasedNotebookToolbarAction(workbench);
+  await action.click();
+  const input = await waitForReleasedNotebookVariableInput(workbench);
+  await input.fill(variableName);
+  await input.press("Enter");
+  assertExactOpenNotebookDocument(notebook, "after submitting the Open Wrangler notebook toolbar variable");
+}
+
+async function waitForReleasedNotebookToolbarAction(workbench: Page): Promise<Locator> {
+  const deadline = Date.now() + 20_000;
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      try {
+        const direct = frame
+          .locator(".notebook-global-toolbar:visible, .notebook-toolbar:visible")
+          .getByRole("button", { name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION, exact: true })
+          .first();
+        if ((await direct.count()) > 0 && (await direct.isVisible()) && (await direct.isEnabled())) return direct;
+
+        const more = frame
+          .locator(".notebook-global-toolbar:visible, .notebook-toolbar:visible")
+          .getByRole("button", { name: /More Actions/u })
+          .first();
+        if ((await more.count()) > 0 && (await more.isVisible())) {
+          await more.click();
+          const menuItem = frame
+            .getByRole("menuitem", { name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION, exact: true })
+            .first();
+          if ((await menuItem.count()) > 0 && (await menuItem.isVisible())) return menuItem;
+          await frame
+            .locator("body")
+            .press("Escape")
+            .catch(() => {});
+        }
+      } catch {
+        // The notebook toolbar can rerender after the selected kernel changes.
+      }
+    }
+    await workbench.waitForTimeout(100);
+  } while (Date.now() < deadline);
+  throw new Error("Timed out waiting for the real Open Wrangler action in the released Jupyter notebook toolbar.");
+}
+
+async function waitForReleasedNotebookVariableInput(workbench: Page): Promise<Locator> {
+  const deadline = Date.now() + 10_000;
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      const widget = frame
+        .locator(".quick-input-widget:visible")
+        .filter({ hasText: "Open Notebook Variable in Open Wrangler" })
+        .last();
+      if ((await widget.count().catch(() => 0)) > 0) {
+        const input = widget.locator(".quick-input-box input").first();
+        if ((await input.count()) > 0 && (await input.isVisible())) return input;
+      }
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error("Timed out waiting for the Open Wrangler notebook-toolbar variable input.");
+}
+
+async function exerciseReleasedJupyterRestartReplay(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  sessionId: string,
+  applied: Extract<OpenWranglerResponse, { kind: "planUpdated" }>,
+  pandas: { sessionId: string; revision: number; filterModel: FilterModel },
+  priorPid: number,
+  setupMarker: string
+): Promise<void> {
+  assertExactOpenNotebookDocument(notebook, "before restarting its released Jupyter kernel");
+  await vscode.commands.executeCommand("jupyter.restartkernel", notebook.uri);
+  assertExactOpenNotebookDocument(notebook, "after dispatching the released Jupyter kernel restart");
+
+  // The restart command resolves before the new process is necessarily idle.
+  // Executing through the real notebook surface is queued behind that restart,
+  // and avoids creating a second stable-API permission identity for the
+  // acceptance harness itself.
+  recordAcceptanceProgress("jupyter-allow:restart-probe");
+  await showExactReleasedNotebook(notebook);
+  await executeReleasedNotebookCell(notebook, 3, RELEASED_JUPYTER_RESTART_RESULT);
+  const replacement = releasedNotebookJsonResult(notebook.cellAt(3), RELEASED_JUPYTER_RESTART_RESULT, "restart probe");
+  assert.notEqual(Number(replacement.pid), priorPid, "A released-Jupyter restart must replace the kernel process.");
+  assert.equal(replacement.setup, null, "The replacement kernel must not retain the prior setup marker.");
+
+  recordAcceptanceProgress("jupyter-allow:restart-setup");
+  await executeReleasedNotebookCell(notebook, 0, setupMarker);
+  const restoredSetup = releasedNotebookSetupResult(notebook.cellAt(0));
+  assert.equal(restoredSetup.setup, setupMarker);
+
+  recordAcceptanceProgress("jupyter-allow:restart-replay");
+  const [polarsReplayed, pandasReplayed] = await Promise.all([
+    testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "released-jupyter-polars-restart-replay",
+      sessionId,
+      revision: applied.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: applied.metadata.filterModel
+    }),
+    testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: "released-jupyter-pandas-restart-replay",
+      sessionId: pandas.sessionId,
+      revision: pandas.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: pandas.filterModel
+    })
+  ]);
+  assert.equal(polarsReplayed.kind, "page", "The released-Jupyter Polars plan must replay after kernel replacement.");
+  if (polarsReplayed.kind !== "page") throw new Error("Released-Jupyter Polars restart replay did not return a page.");
+  const doubled = polarsReplayed.metadata.schema.find((column) => column.name === "doubled");
+  assert.ok(doubled, "Recovered released-Jupyter metadata must retain the applied formula output.");
+  assert.deepEqual(gridColumnDisplays(polarsReplayed.page, doubled.id), ["6", "8"]);
+  assert.equal(polarsReplayed.metadata.steps.length, 1);
+  assert.equal(
+    pandasReplayed.kind,
+    "page",
+    "The concurrent released-Jupyter Pandas session must recover after kernel replacement."
+  );
+  if (pandasReplayed.kind !== "page") throw new Error("Released-Jupyter Pandas restart replay did not return a page.");
+  assert.deepEqual(gridColumnDisplays(pandasReplayed.page, pandasReplayed.metadata.schema[0]?.id ?? ""), ["1", "2"]);
+  assert.equal(pandasReplayed.metadata.backend, "pandas");
+}
+
+async function closeReleasedJupyterSessionTabs(): Promise<void> {
+  const tabs = vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .filter((tab) => tab.input instanceof vscode.TabInputWebview && tab.input.viewType === "openWrangler.session");
+  if (tabs.length > 0) await vscode.window.tabGroups.close(tabs, true);
+}
+
+async function bestEffortReleasedJupyterCleanup(
+  testing: TestApi,
+  notebook: vscode.NotebookDocument | undefined
+): Promise<void> {
+  for (const session of [...testing.diagnostics().sessions]) {
+    try {
+      await testing.disposePanelForSession(session.publicId);
+    } catch {
+      // Preserve the first released-Jupyter acceptance failure.
+    }
+  }
+  try {
+    await closeReleasedJupyterSessionTabs();
+  } catch {
+    // The isolated editor process remains the bounded final cleanup owner.
+  }
+  if (notebook) {
+    const tab = notebookTab(notebook.uri);
+    if (tab) {
+      try {
+        await vscode.window.tabGroups.close(tab, true);
+      } catch {
+        // Preserve the first released-Jupyter acceptance failure.
+      }
+    }
+  }
 }
 
 async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.Uri): Promise<void> {
