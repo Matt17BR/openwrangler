@@ -10,6 +10,7 @@ interface NotebookVariableArgument {
   variableName?: unknown;
   expression?: unknown;
   title?: unknown;
+  fileName?: unknown;
   notebookUri?: unknown;
   uri?: unknown;
   variable?: {
@@ -142,7 +143,9 @@ function variableNameFromArgs(args: unknown[]): string | undefined {
   return undefined;
 }
 
-function explicitNotebookUrisFromArgs(args: unknown[]): vscode.Uri[] {
+type ExplicitNotebookOrigins = { kind: "none" } | { kind: "invalid" } | { kind: "uris"; uris: vscode.Uri[] };
+
+function explicitNotebookOriginsFromArgs(args: unknown[]): ExplicitNotebookOrigins {
   const uris: vscode.Uri[] = [];
   for (const arg of args) {
     if (arg instanceof vscode.Uri) {
@@ -153,21 +156,30 @@ function explicitNotebookUrisFromArgs(args: unknown[]): vscode.Uri[] {
       continue;
     }
     const candidate = arg as NotebookVariableArgument;
-    if (candidate.notebookUri instanceof vscode.Uri) {
-      uris.push(candidate.notebookUri);
-    }
-    if (candidate.uri instanceof vscode.Uri) {
-      uris.push(candidate.uri);
+    for (const value of [candidate.fileName, candidate.notebookUri, candidate.uri]) {
+      if (value === undefined) {
+        continue;
+      }
+      if (!(value instanceof vscode.Uri)) {
+        return { kind: "invalid" };
+      }
+      uris.push(value);
     }
   }
-  return uris;
+  return uris.length > 0 ? { kind: "uris", uris } : { kind: "none" };
 }
 
 type NotebookResolution = { notebook: vscode.NotebookDocument; error?: never } | { notebook?: never; error: string };
 
 function resolveNotebookAtCommandReceipt(args: unknown[]): NotebookResolution {
-  const explicitUris = explicitNotebookUrisFromArgs(args);
-  if (explicitUris.length > 0) {
+  const explicitOrigins = explicitNotebookOriginsFromArgs(args);
+  if (explicitOrigins.kind === "invalid") {
+    return {
+      error: "Open Wrangler received an invalid originating notebook. Launch the variable again from its notebook."
+    };
+  }
+  if (explicitOrigins.kind === "uris") {
+    const explicitUris = explicitOrigins.uris;
     const uriKeys = new Set(explicitUris.map((uri) => uri.toString()));
     if (uriKeys.size !== 1) {
       return {

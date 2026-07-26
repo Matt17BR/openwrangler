@@ -574,6 +574,14 @@ Persistent dependency-mutation recovery, 2026-07-26:
 
 This hardens the existing **Done** runtime-selection row and completes the implementation and acceptance evidence for [issue #79](https://github.com/Matt17BR/openwrangler/issues/79). It does not close the remaining 1.0 gates or make a parity-complete claim.
 
+Released-Jupyter argument provenance slice, 2026-07-26:
+
+- The variable-viewer command now accepts the released Jupyter extension's `IJupyterVariable.fileName: vscode.Uri` origin while retaining the legacy `notebookUri` and `uri` fields for development acceptance. Every supplied origin must be an actual `vscode.Uri`, and multiple fields must agree exactly.
+- The command captures the sole open `NotebookDocument` for that URI at receipt. String lookalikes, conflicting fields, duplicate same-URI document objects, closure, and same-URI replacement all fail closed without reading or retargeting through the active notebook editor.
+- Focused provenance coverage uses the released argument shape with another notebook active, verifies exact-object handoff into kernel acquisition and session coordination, and exercises malformed, conflicting, duplicate, agreeing, and replacement cases.
+
+The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch but does not replace the remaining opt-in acceptance against the actual released Jupyter extension, its consent UI, live Variables surface, toolbar action, Pandas/Polars kernels, restart behavior, and terminal cleanup tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, DuckDB Excel/notebook/`.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. Native PySpark support is a tracked post-parity engine expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36); it remains unavailable until its distributed paging, Spark Connect, operation, recovery, and packaged-editor gates are green. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
