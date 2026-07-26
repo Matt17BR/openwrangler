@@ -752,16 +752,15 @@ function createDockerClient({ dockerExecutable, environment, runCommand, dockerT
 
 async function probeDockerEngine(docker) {
   const version = await docker.required(
-    ["version", "--format", "{{.Server.Version}}\t{{.Server.Os}}\t{{.Server.Arch}}\t{{.Server.Platform.Name}}"],
+    ["version", "--format", "{{.Server.Version}}\t{{.Server.Os}}\t{{.Server.Arch}}"],
     "Remote Jupyter Docker availability probe"
   );
   const versionFields = oneLine(version.stdout, "Docker version report").split("\t");
   if (
-    versionFields.length !== 4 ||
+    versionFields.length !== 3 ||
     !SAFE_VERSION.test(versionFields[0]) ||
     versionFields[1] !== "linux" ||
-    versionFields[2] !== "amd64" ||
-    !/^[^\0\r\n]{1,256}$/u.test(versionFields[3])
+    !["amd64", "x86_64"].includes(versionFields[2])
   ) {
     throw new Error("Remote Jupyter acceptance requires a bounded Linux Docker Engine.");
   }

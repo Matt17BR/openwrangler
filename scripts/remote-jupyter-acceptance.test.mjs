@@ -127,7 +127,7 @@ function createFakeDocker({ alterResult } = {}) {
     let result;
 
     if (command === "version") {
-      result = success("28.3.0\tlinux\tamd64\tDocker Engine - Community\n");
+      result = success("28.3.0\tlinux\tamd64\n");
     } else if (command === "context" && operation === "show") {
       result = success("default\n");
     } else if (command === "info") {
@@ -1045,6 +1045,27 @@ linuxTest("Docker availability failure happens before any mutating command", asy
     commands.map((args) => args[0]),
     ["version"]
   );
+});
+
+linuxTest("Docker availability accepts the hosted Linux x86_64 report without an optional platform label", async () => {
+  const fake = createFakeDocker({
+    alterResult({ input, result }) {
+      if (input.args[0] === "version") return success("28.3.0\tlinux\tx86_64\n");
+      return result;
+    }
+  });
+
+  const fixture = await startWithFake(fake);
+  await fixture.cleanup();
+
+  const versionProbe = fake.commands.find(({ args }) => args[0] === "version");
+  assert.deepEqual(versionProbe?.args, [
+    "version",
+    "--format",
+    "{{.Server.Version}}\t{{.Server.Os}}\t{{.Server.Arch}}"
+  ]);
+  assert.equal(fake.state.containerPresent, false);
+  assert.equal(fake.state.imagePresent, false);
 });
 
 linuxTest("an unverified Docker CLI tree prevents every subsequent Docker or cleanup command", async () => {
