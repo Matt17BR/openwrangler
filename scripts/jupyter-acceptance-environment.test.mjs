@@ -167,7 +167,7 @@ test("remote Jupyter descriptor validation rejects unredactable secrets and non-
   }
 });
 
-test("released-Jupyter installs exact base versions into a clean run-owned kernel environment", async () => {
+test("released-Jupyter installs its released compatibility versions into a clean run-owned kernel environment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-kernel-"));
   const basePython = join(directory, "base-python");
   const environmentDirectory = join(directory, "private-kernel");
@@ -188,7 +188,15 @@ test("released-Jupyter installs exact base versions into a clean run-owned kerne
           writeFileSync(join(venvDirectory, "bin", "python"), "private interpreter placeholder\n");
         }
         if (input.label === "Released-Jupyter base dependency version probe") {
-          return { stdout: JSON.stringify(dependencyReport(true)) };
+          return {
+            stdout: JSON.stringify(
+              dependencyReport(true, {
+                ipykernel: "7.3.0",
+                pandas: "3.0.5",
+                polars: "1.43.0"
+              })
+            )
+          };
         }
         if (input.label === "Released-Jupyter private kernel dependency probe") {
           return { stdout: JSON.stringify(dependencyReport(false)) };
@@ -226,6 +234,51 @@ test("released-Jupyter installs exact base versions into a clean run-owned kerne
     );
     assert.equal(kernelSpec.argv[0], kernelPython);
     assert.notEqual(kernelSpec.argv[0], basePython);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("released-Jupyter rejects a private environment that does not retain its compatibility versions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-version-mismatch-"));
+  const basePython = join(directory, "base-python");
+  const environmentDirectory = join(directory, "private-kernel");
+  try {
+    await writeFile(basePython, "test interpreter placeholder\n");
+    await assert.rejects(
+      createJupyterAcceptanceKernelPython(environmentDirectory, basePython, {
+        containedBy: directory,
+        environment: Object.freeze({}),
+        platform: "linux",
+        async runCommand(input) {
+          if (input.label === "Released-Jupyter base dependency version probe") {
+            return {
+              stdout: JSON.stringify(
+                dependencyReport(true, {
+                  ipykernel: "7.3.0",
+                  pandas: "3.0.5",
+                  polars: "1.43.0"
+                })
+              )
+            };
+          }
+          if (input.label === "Released-Jupyter private kernel environment creation") {
+            const venvDirectory = input.args.at(-1);
+            mkdirSync(join(venvDirectory, "bin"), { recursive: true });
+            writeFileSync(join(venvDirectory, "bin", "python"), "private interpreter placeholder\n");
+            return { stdout: "" };
+          }
+          if (input.label === "Released-Jupyter private kernel dependency installation") {
+            return { stdout: "" };
+          }
+          if (input.label === "Released-Jupyter private kernel dependency probe") {
+            return { stdout: JSON.stringify(dependencyReport(false, { ipykernel: "7.3.0" })) };
+          }
+          assert.fail(`Unexpected released-Jupyter command: ${input.label}`);
+        }
+      }),
+      /did not retain the ipykernel compatibility version/u
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

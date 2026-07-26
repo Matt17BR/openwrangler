@@ -20,6 +20,11 @@ import {
 } from "./packaged-editor-orchestration.mjs";
 
 const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars"]);
+const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
+  ipykernel: "6.30.1",
+  pandas: "2.3.3",
+  polars: "1.35.2"
+});
 const BOUNDED_PYTHON_VERSION =
   /^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:(?:\.post|\.dev)[0-9]+)*(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/iu;
 const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
@@ -85,7 +90,7 @@ export async function createJupyterAcceptanceKernelPython(
     );
   }
 
-  const versions = await probeJupyterAcceptancePython(basePython, {
+  await probeJupyterAcceptancePython(basePython, {
     environment,
     label: "Released-Jupyter base dependency version probe",
     requireRuntimeAbsent: false,
@@ -122,7 +127,7 @@ export async function createJupyterAcceptanceKernelPython(
         "--no-input",
         "--no-warn-script-location",
         "--only-binary=:all:",
-        ...DEPENDENCIES.map((dependency) => `${dependency}==${versions[dependency]}`)
+        ...DEPENDENCIES.map((dependency) => `${dependency}==${RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]}`)
       ],
       environment,
       label: "Released-Jupyter private kernel dependency installation"
@@ -130,12 +135,17 @@ export async function createJupyterAcceptanceKernelPython(
     { timeoutMs: 240_000 }
   );
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
-  await probeJupyterAcceptancePython(kernelPython, {
+  const installedVersions = await probeJupyterAcceptancePython(kernelPython, {
     environment,
     label: "Released-Jupyter private kernel dependency probe",
     requireRuntimeAbsent: true,
     runCommand
   });
+  for (const dependency of DEPENDENCIES) {
+    if (installedVersions[dependency] !== RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]) {
+      throw new Error(`Released-Jupyter private kernel did not retain the ${dependency} compatibility version.`);
+    }
+  }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
   return kernelPython;
 }

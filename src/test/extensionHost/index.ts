@@ -710,8 +710,38 @@ async function exerciseReleasedJupyterExtension(
     await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     recordAcceptanceProgress(`${phase}:kernel-selected`);
 
+    const variableNotebookEditor = await showExactReleasedNotebook(notebook);
     recordAcceptanceProgress(`${phase}:kernel-start`);
-    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`);
+    await executeReleasedNotebookCell(
+      notebook,
+      3,
+      RELEASED_JUPYTER_RESTART_RESULT,
+      `${phase}:kernel-warmup-cell`,
+      variableNotebookEditor
+    );
+    const warmKernel = releasedNotebookJsonResult(notebook.cellAt(3), RELEASED_JUPYTER_RESTART_RESULT, "kernel warmup");
+    assert.equal(warmKernel.runtime, false, "The private kernel must not inherit Open Wrangler before bootstrap.");
+    assert.equal(warmKernel.setup, null, "The private kernel warmup must run before the dataframe setup cell.");
+    if (kernelTarget.remote) {
+      assert.equal(warmKernel.remoteRunId, kernelTarget.remote.runId);
+      assert.equal(warmKernel.hostname, kernelTarget.remote.hostname);
+      assert.equal(warmKernel.hostExtensionVisible, false);
+    }
+
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      variableNotebookEditor,
+      "immediately before opening the real Jupyter Variables view"
+    );
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      variableNotebookEditor,
+      "after opening the real Jupyter Variables view"
+    );
+
+    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
     assert.equal(
       jupyterExtension.isActive,
       true,
@@ -719,6 +749,7 @@ async function exerciseReleasedJupyterExtension(
     );
     const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
     assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
+    assert.equal(initialKernel.pid, warmKernel.pid, "The Variables refresh must remain on the exact warmed kernel.");
     assert.equal(initialKernel.setup, setupMarker);
     assert.equal(
       initialKernel.runtime,
@@ -726,9 +757,6 @@ async function exerciseReleasedJupyterExtension(
       "The private released-Jupyter kernel must not inherit an installed Open Wrangler runtime before bootstrap."
     );
 
-    assertExactOpenNotebookDocument(notebook, "before opening the real Jupyter Variables view");
-    await vscode.commands.executeCommand("jupyter.openVariableView");
-    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
     const viewerAction = await waitForReleasedJupyterVariableAction(workbench, "pandas_frame", `${phase}:variables`);
     assertExactOpenNotebookDocument(notebook, "after resolving the pandas_frame action from Jupyter Variables");
 
@@ -819,6 +847,7 @@ async function exerciseReleasedJupyterExtension(
     await consent.allow.click();
     await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
     const pandasFrame = await waitForReleasedVariableSession(
+      workbench,
       testing,
       notebook,
       { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
@@ -908,6 +937,7 @@ async function exerciseReleasedJupyterExtension(
 
     recordAcceptanceProgress(`${phase}:pandas-series`);
     const pandasSeries = await openReleasedVariableSession(
+      workbench,
       testing,
       notebook,
       { name: "pandas_series", type: "Series", backend: "pandas", firstValue: "5" },
@@ -920,6 +950,7 @@ async function exerciseReleasedJupyterExtension(
     await showExactReleasedNotebook(notebook);
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "polars_series");
     const polarsSeries = await waitForReleasedVariableSession(
+      workbench,
       testing,
       notebook,
       { name: "polars_series", type: "polars.series.series.Series", backend: "polars", firstValue: "7" },
@@ -932,6 +963,7 @@ async function exerciseReleasedJupyterExtension(
     recordAcceptanceProgress(`${phase}:polars-dataframe`);
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     const polarsFrame = await openReleasedVariableSession(
+      workbench,
       testing,
       notebook,
       {
@@ -988,6 +1020,7 @@ async function exerciseReleasedJupyterExtension(
 
     recordAcceptanceProgress(`${phase}:pandas-recovery-session`);
     const pandasRecovery = await openReleasedVariableSession(
+      workbench,
       testing,
       notebook,
       { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
@@ -1963,24 +1996,37 @@ async function withBoundedAcceptancePromise<T>(
 }
 
 async function waitForReleasedVariableSession(
+  workbench: Page,
   testing: TestApi,
   notebook: vscode.NotebookDocument,
   expected: ReleasedVariableExpectation,
   description: string
 ): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
-  await waitFor(
-    () => {
-      const active = testing.activeSession();
-      return (
-        active?.metadata.source.kind === "notebookVariable" &&
-        active.metadata.source.variableName === expected.name &&
-        active.metadata.source.uri === notebook.uri.toString()
-      );
-    },
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    description,
-    () => JSON.stringify(testing.diagnostics())
-  );
+  try {
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.kind === "notebookVariable" &&
+          active.metadata.source.variableName === expected.name &&
+          active.metadata.source.uri === notebook.uri.toString()
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      description,
+      () => JSON.stringify(testing.diagnostics())
+    );
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} ` +
+        `Released-Jupyter panel state: ${JSON.stringify({
+          alert: await visibleOpenWranglerPanelAlert(workbench),
+          sessionTabs: releasedJupyterSessionTabs().map((tab) => tab.label),
+          coordinator: testing.diagnostics(),
+          ui: await boundedImportPromptDiagnostics(workbench)
+        })}`
+    );
+  }
   assertExactOpenNotebookDocument(notebook, `after opening ${expected.name}`);
   const active = testing.activeSession();
   assert.ok(active, `${description} must publish an active session.`);
@@ -1993,19 +2039,22 @@ async function waitForReleasedVariableSession(
 }
 
 async function openReleasedVariableSession(
+  workbench: Page,
   testing: TestApi,
   notebook: vscode.NotebookDocument,
   expected: ReleasedVariableExpectation,
   description: string
 ): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
   assertExactOpenNotebookDocument(notebook, `before opening ${expected.name}`);
+  const notebookEditor = await showExactReleasedNotebook(notebook);
+  assertExactVisibleReleasedNotebookEditor(notebook, notebookEditor, `immediately before dispatching ${expected.name}`);
   await vscode.commands.executeCommand("openWrangler.launchDataViewer", {
     name: expected.name,
     type: expected.type,
     fileName: notebook.uri
   });
   assertExactOpenNotebookDocument(notebook, `after dispatching ${expected.name}`);
-  return waitForReleasedVariableSession(testing, notebook, expected, description);
+  return waitForReleasedVariableSession(workbench, testing, notebook, expected, description);
 }
 
 async function assertReleasedSessionPage(
