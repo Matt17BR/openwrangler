@@ -407,11 +407,98 @@ def _assert_windows_namespace_replace_blocked(
 
 
 def _load_dependency_guard() -> Any:
-    specification = importlib.util.spec_from_file_location("openwrangler_dependency_guard_test", HELPER)
+    specification = importlib.util.spec_from_file_location(
+        "openwrangler_runtime.dependency_guard",
+        HELPER,
+    )
     assert specification is not None and specification.loader is not None
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
+
+
+def test_in_process_request_normalization_covers_every_protocol_mode() -> None:
+    guard = _load_dependency_guard()
+    environment = guard._actual_environment()
+    dependency = {
+        "importModule": "example.module",
+        "distribution": "Example_Package",
+        "installSpec": "example-package>=1.2,<2.0",
+        "minimumVersion": "1.2",
+        "maximumVersionExclusive": "2.0",
+    }
+    token = str(uuid.uuid4())
+
+    install = {
+        "protocol": PROTOCOL,
+        "kind": "install",
+        "token": token,
+        "environment": environment,
+        "dependencies": [dependency],
+    }
+    status = {
+        "protocol": PROTOCOL,
+        "kind": "status",
+        "environment": environment,
+    }
+    validate = {
+        "protocol": PROTOCOL,
+        "kind": "validate",
+        "environment": environment,
+        "expectedToken": token,
+    }
+
+    assert guard._normalize_request("install", install) == install
+    assert guard._normalize_request("status", status) == status
+    assert guard._normalize_request("validate", validate) == validate
+
+
+def test_in_process_request_normalization_rejects_noncanonical_inputs() -> None:
+    guard = _load_dependency_guard()
+    environment = guard._actual_environment()
+    dependency = {
+        "importModule": "example.module",
+        "distribution": "example-package",
+        "installSpec": "example-package>=1.2,<2.0",
+        "minimumVersion": "1.2",
+        "maximumVersionExclusive": "2.0",
+    }
+    token = str(uuid.uuid4())
+
+    with pytest.raises(guard.GuardError, match="invalid_request"):
+        guard._normalize_request("unknown", {})
+
+    wrong_protocol = {
+        "protocol": "wrong",
+        "kind": "status",
+        "environment": environment,
+    }
+    with pytest.raises(guard.GuardError, match="invalid_request"):
+        guard._normalize_request("status", wrong_protocol)
+
+    relative_environment = json.loads(json.dumps(environment))
+    relative_environment["packageRoot"] = "relative"
+    with pytest.raises(guard.GuardError, match="invalid_request"):
+        guard._normalize_environment(
+            relative_environment,
+            compare_actual=False,
+            code="invalid_request",
+        )
+
+    duplicate_dependencies = {
+        "protocol": PROTOCOL,
+        "kind": "install",
+        "token": token,
+        "environment": environment,
+        "dependencies": [dependency, dependency],
+    }
+    with pytest.raises(guard.GuardError, match="invalid_request"):
+        guard._normalize_request("install", duplicate_dependencies)
+
+    mismatched_dependency = dict(dependency)
+    mismatched_dependency["installSpec"] = "different-package>=1"
+    with pytest.raises(guard.GuardError, match="invalid_request"):
+        guard._normalize_dependency(mismatched_dependency, code="invalid_request")
 
 
 def _arm(
