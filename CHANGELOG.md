@@ -22,6 +22,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Changed
 
 - Clarified editor support tiers: VS Code and Cursor remain first-class release targets, other VS Code-based desktop IDEs are experimental, and browser-hosted `vscode.dev` remains outside the local-runtime scope.
+- Made the retained-evidence path-swap regression deterministic by replacing the source at the descriptor read boundary, then requiring exact race rejection and proving replacement content never survives.
 - Stabilized the native dependency-install acceptance around VS Code's transient confirmation control. The harness now verifies one visible, enabled **Install** action, dispatches it once with Playwright's cancellable native timeout and no post-click navigation wait, then requires the modal, fake-pip start, sanitized launch, and natural-shutdown checkpoints in order.
 - Gave the released-Jupyter Variables view a load-tolerant 120-second readiness bound inside the unchanged 180-second inactivity and 300-second phase deadlines, so a cold hosted kernel can finish listing variables without turning an indefinitely loading view into a pass.
 - Kept the Xvfb bootstrap suite portable by running its Linux filesystem, ELF, mode, and publication fixtures only on Linux while retaining an always-run regression that production rejects non-Linux hosts before dependency, network, cache, or extraction work.
