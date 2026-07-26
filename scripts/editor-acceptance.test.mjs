@@ -34,15 +34,20 @@ import {
   editorAcceptanceProgressSignalPath,
   editorProcessTreeMayBeLive,
   editorProcessGroupRunning,
+  JUPYTER_EXTENSION_VSIX_ENV,
   MACOS_EDITOR_IPC_PATH_LIMIT_BYTES,
+  PINNED_JUPYTER_EXTENSION_ID,
+  PINNED_JUPYTER_EXTENSION_VERSION,
   PINNED_PYTHON_EXTENSION_ID,
   PINNED_PYTHON_EXTENSION_VERSION,
   prepareWindowsEditorProcessSupervisor,
   readBoundedAcceptanceText,
   readXvfbDisplayNumber,
+  REAL_JUPYTER_EXTENSION_ENV,
   reserveEditorDebugPort,
   resolveDownloadedEditorCliPath,
   resolveEditorCliLaunch,
+  resolveJupyterExtensionAcceptanceInstallTarget,
   resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCommand,
   runBoundedEditorCliCommand,
@@ -69,11 +74,14 @@ const progressEnvelope = (phase, checkpoint, runId = PROGRESS_RUN_ID) =>
 test("private diagnostic paths include hosted Python and external editor helpers", () => {
   const previousPythonLocation = process.env.pythonLocation;
   const previousXvfb = process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
+  const previousJupyterVsix = process.env[JUPYTER_EXTENSION_VSIX_ENV];
   const pythonLocation = resolve(tmpdir(), "private-python-location");
   const xvfb = resolve(tmpdir(), "private-xvfb");
+  const jupyterVsix = resolve(tmpdir(), "private-jupyter-extension.vsix");
   try {
     process.env.pythonLocation = pythonLocation;
     process.env.OPEN_WRANGLER_XVFB_EXECUTABLE = xvfb;
+    process.env[JUPYTER_EXTENSION_VSIX_ENV] = jupyterVsix;
     const paths = collectEditorAcceptancePrivateDiagnosticPaths();
     assert.equal(paths.includes(pythonLocation), true);
     assert.equal(
@@ -83,27 +91,40 @@ test("private diagnostic paths include hosted Python and external editor helpers
       true
     );
     assert.equal(paths.includes(xvfb), true);
+    assert.equal(paths.includes(jupyterVsix), true);
   } finally {
     if (previousPythonLocation === undefined) delete process.env.pythonLocation;
     else process.env.pythonLocation = previousPythonLocation;
     if (previousXvfb === undefined) delete process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
     else process.env.OPEN_WRANGLER_XVFB_EXECUTABLE = previousXvfb;
+    if (previousJupyterVsix === undefined) delete process.env[JUPYTER_EXTENSION_VSIX_ENV];
+    else process.env[JUPYTER_EXTENSION_VSIX_ENV] = previousJupyterVsix;
   }
 });
 
 test("relative editor helper overrides fail before launch without echoing their value", () => {
   const previousXvfb = process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
-  const sentinel = "RAW_RELATIVE_XVFB_SENTINEL/xvfb";
+  const previousJupyterVsix = process.env[JUPYTER_EXTENSION_VSIX_ENV];
+  const sentinels = [
+    ["OPEN_WRANGLER_XVFB_EXECUTABLE", "RAW_RELATIVE_XVFB_SENTINEL/xvfb"],
+    [JUPYTER_EXTENSION_VSIX_ENV, "RAW_RELATIVE_JUPYTER_SENTINEL/jupyter.vsix"]
+  ];
   try {
-    process.env.OPEN_WRANGLER_XVFB_EXECUTABLE = sentinel;
-    assert.throws(validateEditorAcceptancePrivatePathOverrides, (error) => {
-      assert.match(error.message, /must be absolute paths/u);
-      assert.doesNotMatch(error.message, new RegExp(sentinel, "u"));
-      return true;
-    });
+    for (const [key, sentinel] of sentinels) {
+      delete process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
+      delete process.env[JUPYTER_EXTENSION_VSIX_ENV];
+      process.env[key] = sentinel;
+      assert.throws(validateEditorAcceptancePrivatePathOverrides, (error) => {
+        assert.match(error.message, /must be absolute paths/u);
+        assert.doesNotMatch(error.message, new RegExp(sentinel, "u"));
+        return true;
+      });
+    }
   } finally {
     if (previousXvfb === undefined) delete process.env.OPEN_WRANGLER_XVFB_EXECUTABLE;
     else process.env.OPEN_WRANGLER_XVFB_EXECUTABLE = previousXvfb;
+    if (previousJupyterVsix === undefined) delete process.env[JUPYTER_EXTENSION_VSIX_ENV];
+    else process.env[JUPYTER_EXTENSION_VSIX_ENV] = previousJupyterVsix;
   }
 });
 
@@ -155,6 +176,75 @@ test("real Python-extension acceptance is opt-in and pins one stable release", a
         resolvePythonExtensionAcceptanceInstallTarget({
           OPEN_WRANGLER_REAL_PYTHON_EXTENSION: "1",
           OPEN_WRANGLER_PYTHON_EXTENSION_VSIX: linkedVsix
+        }),
+      /regular file and not a symbolic link/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("real Jupyter-extension acceptance is opt-in and pins one stable release", async () => {
+  assert.equal(REAL_JUPYTER_EXTENSION_ENV, "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION");
+  assert.equal(JUPYTER_EXTENSION_VSIX_ENV, "OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX");
+  assert.equal(PINNED_JUPYTER_EXTENSION_VERSION, "2025.9.1");
+  assert.equal(PINNED_JUPYTER_EXTENSION_ID, "ms-toolsai.jupyter@2025.9.1");
+  assert.equal(resolveJupyterExtensionAcceptanceInstallTarget({}), undefined);
+  assert.equal(resolveJupyterExtensionAcceptanceInstallTarget({ [REAL_JUPYTER_EXTENSION_ENV]: "" }), undefined);
+  assert.equal(resolveJupyterExtensionAcceptanceInstallTarget({ [REAL_JUPYTER_EXTENSION_ENV]: "0" }), undefined);
+  assert.equal(
+    resolveJupyterExtensionAcceptanceInstallTarget({ [REAL_JUPYTER_EXTENSION_ENV]: "1" }),
+    PINNED_JUPYTER_EXTENSION_ID
+  );
+  assert.throws(
+    () => resolveJupyterExtensionAcceptanceInstallTarget({ [REAL_JUPYTER_EXTENSION_ENV]: "true" }),
+    /literal value 1/u
+  );
+
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-jupyter-extension-target-"));
+  const vsix = join(directory, "ms-toolsai.jupyter.vsix");
+  const linkedVsix = join(directory, "linked.vsix");
+  try {
+    await writeFile(vsix, "fixture");
+    assert.equal(
+      resolveJupyterExtensionAcceptanceInstallTarget({
+        [REAL_JUPYTER_EXTENSION_ENV]: "1",
+        [JUPYTER_EXTENSION_VSIX_ENV]: vsix
+      }),
+      vsix
+    );
+    for (const invalidPath of ["relative.vsix", `${vsix}\nignored`, `${vsix}\0ignored`]) {
+      assert.throws(
+        () =>
+          resolveJupyterExtensionAcceptanceInstallTarget({
+            [REAL_JUPYTER_EXTENSION_ENV]: "1",
+            [JUPYTER_EXTENSION_VSIX_ENV]: invalidPath
+          }),
+        /absolute single-line path/u
+      );
+    }
+    assert.throws(
+      () =>
+        resolveJupyterExtensionAcceptanceInstallTarget({
+          [REAL_JUPYTER_EXTENSION_ENV]: "1",
+          [JUPYTER_EXTENSION_VSIX_ENV]: join(directory, "missing.vsix")
+        }),
+      /was not found/u
+    );
+    assert.throws(
+      () =>
+        resolveJupyterExtensionAcceptanceInstallTarget({
+          [REAL_JUPYTER_EXTENSION_ENV]: "1",
+          [JUPYTER_EXTENSION_VSIX_ENV]: directory
+        }),
+      /regular file and not a symbolic link/u
+    );
+    await symlink(vsix, linkedVsix);
+    assert.throws(
+      () =>
+        resolveJupyterExtensionAcceptanceInstallTarget({
+          [REAL_JUPYTER_EXTENSION_ENV]: "1",
+          [JUPYTER_EXTENSION_VSIX_ENV]: linkedVsix
         }),
       /regular file and not a symbolic link/u
     );
@@ -2427,7 +2517,8 @@ test("editor phases pass only runner-owned test values through the environment",
       "--disable-telemetry",
       "--use-inmemory-secretstorage",
       "--password-store=basic",
-      "--skip-add-to-recently-opened"
+      "--skip-add-to-recently-opened",
+      "--locale=en"
     ]) {
       assert.equal(launchedArguments.includes(argument), true);
     }
@@ -2457,6 +2548,216 @@ test("editor phases pass only runner-owned test values through the environment",
       OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: join(directory, "screenshots")
     });
     assert.match(launchedEnvironment.OPEN_WRANGLER_TEST_RUN_ID, /^[0-9a-f-]{36}$/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phases reserve workbench CDP only when the phase explicitly needs it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-cdp-"));
+  const baseInput = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: SYNTHETIC_EDITOR_USER_DATA,
+    extensions: join(directory, "extensions"),
+    developmentPaths: [directory],
+    testModule: join(directory, "acceptance.js"),
+    python: join(directory, "python")
+  };
+  const cases = [
+    { phase: "seed", requiresWorkbenchCdp: false, expectedReservation: false },
+    { phase: "jupyter-consent", requiresWorkbenchCdp: true, expectedReservation: true },
+    { phase: "verify", requiresWorkbenchCdp: false, expectedReservation: true }
+  ];
+  try {
+    for (const [index, testCase] of cases.entries()) {
+      const resultPath = join(directory, `result-${index}.json`);
+      let reserveCalls = 0;
+      let launchedArguments;
+      let launchedEnvironment;
+      await runEditorAcceptancePhase(
+        {
+          ...baseInput,
+          phase: testCase.phase,
+          requiresWorkbenchCdp: testCase.requiresWorkbenchCdp,
+          resultPath
+        },
+        {
+          platform: "darwin",
+          reserveDebugPort() {
+            reserveCalls += 1;
+            return 41_731 + index;
+          },
+          spawnProcess(_executable, arguments_, options) {
+            launchedArguments = arguments_;
+            launchedEnvironment = options.env;
+            return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
+          }
+        }
+      );
+      assert.equal(reserveCalls, testCase.expectedReservation ? 1 : 0);
+      assert.equal(
+        launchedArguments.some((argument) => argument.startsWith("--remote-debugging-port=")),
+        testCase.expectedReservation
+      );
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(launchedEnvironment, "OPEN_WRANGLER_EDITOR_CDP_PORT"),
+        testCase.expectedReservation
+      );
+    }
+
+    let reserveCalls = 0;
+    let spawnCalls = 0;
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          ...baseInput,
+          phase: "jupyter-consent",
+          requiresWorkbenchCdp: "yes",
+          resultPath: join(directory, "invalid-result.json")
+        },
+        {
+          platform: "darwin",
+          reserveDebugPort() {
+            reserveCalls += 1;
+          },
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }
+      ),
+      /requiresWorkbenchCdp value must be a boolean/u
+    );
+    assert.equal(reserveCalls, 0);
+    assert.equal(spawnCalls, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phases forward only a complete runner-owned Jupyter environment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-jupyter-environment-"));
+  const resultPath = join(directory, "result.json");
+  const jupyterEnvironment = {
+    dataDir: join(directory, "jupyter", "data"),
+    runtimeDir: join(directory, "jupyter", "runtime"),
+    configDir: join(directory, "jupyter", "config"),
+    path: join(directory, "jupyter", "kernels")
+  };
+  let launchedEnvironment;
+  try {
+    for (const path of Object.values(jupyterEnvironment)) await mkdir(path, { recursive: true });
+    await runEditorAcceptancePhase(
+      {
+        editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+        workspace: directory,
+        userData: SYNTHETIC_EDITOR_USER_DATA,
+        extensions: join(directory, "extensions"),
+        developmentPaths: [directory],
+        testModule: join(directory, "acceptance.js"),
+        python: join(directory, "python"),
+        phase: "jupyter-consent",
+        resultPath,
+        jupyterEnvironment
+      },
+      {
+        platform: "darwin",
+        environment: {
+          PATH: "/safe/bin",
+          OPEN_WRANGLER_EDITOR_TEMP_ROOT: directory,
+          JUPYTER_DATA_DIR: "/attacker/data",
+          JUPYTER_RUNTIME_DIR: "/attacker/runtime",
+          JUPYTER_CONFIG_DIR: "/attacker/config",
+          JUPYTER_PATH: "/attacker/path",
+          JUPYTER_CONFIG_PATH: "/attacker/config-path",
+          JUPYTER_TOKEN: "attacker-token",
+          PYTHONPATH: "/attacker/python-hook"
+        },
+        spawnProcess(_executable, _arguments, options) {
+          launchedEnvironment = options.env;
+          return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
+        }
+      }
+    );
+
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(launchedEnvironment).filter(([key]) => key.startsWith("JUPYTER_"))),
+      {
+        JUPYTER_DATA_DIR: jupyterEnvironment.dataDir,
+        JUPYTER_RUNTIME_DIR: jupyterEnvironment.runtimeDir,
+        JUPYTER_CONFIG_DIR: jupyterEnvironment.configDir,
+        JUPYTER_PATH: jupyterEnvironment.path
+      }
+    );
+    assert.equal("PYTHONPATH" in launchedEnvironment, false);
+    assert.throws(
+      () => createEditorAcceptanceEnvironment({ PATH: "/safe/bin" }, { JUPYTER_DATA_DIR: jupyterEnvironment.dataDir }),
+      /does not allow the "JUPYTER_DATA_DIR" environment override/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor phases reject partial or invalid Jupyter environments before launch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-invalid-jupyter-environment-"));
+  const privateRoot = join(directory, "private");
+  const outsideDirectory = join(directory, "outside");
+  const linkedDirectory = join(privateRoot, "linked-kernels");
+  const baseJupyterEnvironment = {
+    dataDir: join(privateRoot, "data"),
+    runtimeDir: join(privateRoot, "runtime"),
+    configDir: join(privateRoot, "config"),
+    path: join(privateRoot, "kernels")
+  };
+  const baseInput = {
+    editor: { name: "VS Code", key: "vscode", version: "1.129.0", executable: "fake-editor" },
+    workspace: directory,
+    userData: SYNTHETIC_EDITOR_USER_DATA,
+    extensions: join(directory, "extensions"),
+    developmentPaths: [],
+    testModule: join(directory, "acceptance.js"),
+    python: join(directory, "python"),
+    phase: "jupyter-consent"
+  };
+  const { path: _omittedPath, ...partialJupyterEnvironment } = baseJupyterEnvironment;
+  const invalidEnvironments = [
+    partialJupyterEnvironment,
+    { ...baseJupyterEnvironment, runtimeDir: "relative/runtime" },
+    { ...baseJupyterEnvironment, configDir: `${baseJupyterEnvironment.configDir}\nignored` },
+    { ...baseJupyterEnvironment, path: outsideDirectory },
+    { ...baseJupyterEnvironment, path: linkedDirectory },
+    { ...baseJupyterEnvironment, unexpected: join(directory, "unexpected") },
+    null,
+    []
+  ];
+  let spawnCalls = 0;
+  try {
+    for (const path of [privateRoot, outsideDirectory, ...Object.values(baseJupyterEnvironment)]) {
+      await mkdir(path, { recursive: true });
+    }
+    await symlink(outsideDirectory, linkedDirectory);
+    for (const [index, jupyterEnvironment] of invalidEnvironments.entries()) {
+      const resultPath = join(directory, `result-${index}.json`);
+      await writeFile(resultPath, "preserve");
+      await assert.rejects(
+        runEditorAcceptancePhase(
+          { ...baseInput, resultPath, jupyterEnvironment },
+          {
+            platform: "darwin",
+            environment: { OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot },
+            spawnProcess() {
+              spawnCalls += 1;
+              return fakeEditorChild();
+            }
+          }
+        ),
+        /Jupyter environment/u
+      );
+      assert.equal(await readFile(resultPath, "utf8"), "preserve");
+    }
+    assert.equal(spawnCalls, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
