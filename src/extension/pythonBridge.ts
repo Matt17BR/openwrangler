@@ -22,11 +22,13 @@ import {
   DependencyGuardCommandError,
   DependencyGuardCommandTimeoutError,
   DependencyGuardProtocolError,
-  getDependencyGuardStatus,
   type DependencyGuardStatus,
+  type DependencyGuardValidation,
+  type OwnedDependencyGuardCommand,
   type OwnedDependencyInstall,
+  startDependencyGuardStatus,
+  startDependencyGuardValidation,
   startDependencyInstall,
-  validateDependencyGuard,
   waitForDependencyInstallExit
 } from "./dependencyInstaller";
 import {
@@ -217,8 +219,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private readonly spawnProcess = spawn;
   private readonly launchDependencyInstall = startDependencyInstall;
-  private readonly readDependencyGuardStatus = getDependencyGuardStatus;
-  private readonly validateDependencyInstall = validateDependencyGuard;
+  private readonly launchDependencyGuardStatus = startDependencyGuardStatus;
+  private readonly launchDependencyGuardValidation = startDependencyGuardValidation;
   private readonly waitForDependencyInstallExit = waitForDependencyInstallExit;
   private readonly configurationSubscription: vscode.Disposable;
   private readonly environmentApiBroker: PythonEnvironmentApiBroker;
@@ -234,6 +236,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly dependencyProbes = new Map<string, DependencyProbeFlight>();
   private readonly dependencyProbeOwners = new Map<string, DependencyProbeFlight>();
   private readonly dependencyGuardStatusFlights = new Map<string, DependencyGuardStatusFlight>();
+  private activeDependencyGuardCommands:
+    Set<OwnedDependencyGuardCommand<DependencyGuardStatus | DependencyGuardValidation>> | undefined = new Set();
   private readonly dependencyEnvironmentUncertainty = new Map<string, DependencyEnvironmentUncertainty>();
   private lastMissingDependencies: MissingDependencies | undefined;
   private dependencyInstallOperation: DependencyInstallOperation | undefined;
@@ -682,7 +686,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       throw new Error("Dependency-revalidation decline is available only to the Open Wrangler test harness.");
     }
     if (!vscode.workspace.isTrusted) {
-      await vscode.window.showErrorMessage("Trust this workspace before revalidating Python dependencies.");
+      void vscode.window.showErrorMessage("Trust this workspace before revalidating Python dependencies.");
     }
     return false;
   }
@@ -693,11 +697,11 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     }
     const missing = this.lastMissingDependencies;
     if (!missing || missing.requirements.length === 0) {
-      await vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
+      void vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
       return false;
     }
     if (!vscode.workspace.isTrusted) {
-      await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
+      void vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
     }
     return false;
   }
@@ -705,14 +709,14 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private async revalidateRuntimeDependenciesWithDecision(operation: DependencyRecoveryOperation): Promise<boolean> {
     if (!vscode.workspace.isTrusted) {
       if (!this.disposed) {
-        await vscode.window.showErrorMessage("Trust this workspace before revalidating Python dependencies.");
+        void vscode.window.showErrorMessage("Trust this workspace before revalidating Python dependencies.");
       }
       return false;
     }
     const target = this.exactDependencyRecoveryTarget();
     if (!target) {
       if (!this.disposed) {
-        await vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           "Open Wrangler has no exact dependency recovery target. Reopen the affected source and try again."
         );
       }
@@ -759,7 +763,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       mutation.uncertainty = error;
       operation.phase = "uncertain";
       this.retainDependencyRecoveryFailure(operation, error);
-      if (!this.disposed) await vscode.window.showErrorMessage(dependencyGuardRecoveryGuidance(error));
+      if (!this.disposed) void vscode.window.showErrorMessage(dependencyGuardRecoveryGuidance(error));
       return false;
     }
 
@@ -778,15 +782,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     mutation.phase = "validating";
     let validation;
     try {
-      validation = await this.validateDependencyInstall(target.environment, target.token, {
-        helperPath: this.dependencyGuardHelperPath()
-      });
+      validation = await this.runDependencyGuardValidation(target.environment, target.token);
     } catch (error) {
       operation.phase = "uncertain";
       const report = this.isAuthorizedDependencyRecoveryOperation(operation, target.environment);
       this.retainDependencyRecoveryFailure(operation, error);
       if (!this.disposed && report) {
-        await vscode.window.showErrorMessage(dependencyGuardRecoveryGuidance(error));
+        void vscode.window.showErrorMessage(dependencyGuardRecoveryGuidance(error));
       }
       return false;
     }
@@ -917,7 +919,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           : this.isAuthorizedDependencyRecoveryOperation(operation, environment);
       if (report) this.retainDependencyRecoveryFailure(operation, error);
       if (report && !this.disposed) {
-        await vscode.window.showErrorMessage(dependencyGuardRecoveryGuidance(error));
+        void vscode.window.showErrorMessage(dependencyGuardRecoveryGuidance(error));
       }
       return undefined;
     }
@@ -1016,13 +1018,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const missing = this.lastMissingDependencies;
     if (!missing || missing.requirements.length === 0) {
       if (!this.disposed) {
-        await vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
+        void vscode.window.showInformationMessage("Open Wrangler has no unresolved runtime dependencies.");
       }
       return false;
     }
     if (!vscode.workspace.isTrusted) {
       if (!this.disposed) {
-        await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
+        void vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
       }
       return false;
     }
@@ -1036,7 +1038,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     operation.dependencies = dependencies;
     operation.requirements = requirements;
     if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
-      await this.reportInvalidDependencyInstallTarget();
+      this.reportInvalidDependencyInstallTarget();
       return false;
     }
     const choice = await vscode.window.showWarningMessage(
@@ -1046,7 +1048,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     );
     if (choice !== "Install") return false;
     if (!this.isCurrentDependencyInstallTarget(missing, executable, requirements)) {
-      await this.reportInvalidDependencyInstallTarget();
+      this.reportInvalidDependencyInstallTarget();
       return false;
     }
 
@@ -1143,9 +1145,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         );
         if (this.disposed) return false;
         try {
-          const validation = await this.validateDependencyInstall(missing.environment, process.token, {
-            helperPath: this.dependencyGuardHelperPath()
-          });
+          const validation = await this.runDependencyGuardValidation(missing.environment, process.token);
           if (validation.token !== process.token) {
             throw new Error("The dependency guard validation token did not match its owned install operation.");
           }
@@ -1160,7 +1160,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       }
     );
     if (!installationStarted) {
-      await this.reportInvalidDependencyInstallTarget();
+      this.reportInvalidDependencyInstallTarget();
       return false;
     }
     if (!completed || this.disposed) return false;
@@ -1337,13 +1337,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     );
   }
 
-  private async reportInvalidDependencyInstallTarget(): Promise<void> {
+  private reportInvalidDependencyInstallTarget(): void {
     if (this.disposed) return;
     if (!vscode.workspace.isTrusted) {
-      await vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
+      void vscode.window.showErrorMessage("Trust this workspace before installing Python dependencies.");
       return;
     }
-    await vscode.window.showInformationMessage(
+    void vscode.window.showInformationMessage(
       "The selected Python runtime or its missing dependencies changed before installation. Run Install Runtime Dependencies again."
     );
   }
@@ -1360,6 +1360,15 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private async shutdownBridge(): Promise<void> {
     this.disposed = true;
     const dependencyInstall = this.dependencyInstallOperation;
+    const failures: unknown[] = [];
+    const dependencyGuardCommands = [...(this.activeDependencyGuardCommands ?? [])];
+    for (const command of dependencyGuardCommands) {
+      try {
+        command.unref();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
     const selectionKeys = new Set([
       ...this.environmentSelections.keys(),
       ...(this.lastMissingDependencies ? [this.lastMissingDependencies.selection.key] : [])
@@ -1374,7 +1383,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     this.invalidateAllDependencyProbes();
     this.lastMissingDependencies = undefined;
 
-    const failures: unknown[] = [];
     try {
       this.configurationSubscription.dispose();
     } catch (error) {
@@ -2446,6 +2454,44 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     return this.context.asAbsolutePath(path.join("python", "openwrangler_runtime", "dependency_guard.py"));
   }
 
+  private activeDependencyGuardCommandSet(): Set<
+    OwnedDependencyGuardCommand<DependencyGuardStatus | DependencyGuardValidation>
+  > {
+    return (this.activeDependencyGuardCommands ??= new Set());
+  }
+
+  private runOwnedDependencyGuardCommand<Result extends DependencyGuardStatus | DependencyGuardValidation>(
+    launch: () => OwnedDependencyGuardCommand<Result>
+  ): Promise<Result> {
+    if (this.disposed) {
+      return Promise.reject(new Error("Open Wrangler cannot launch a dependency guard after its bridge disposed."));
+    }
+    let command: OwnedDependencyGuardCommand<Result>;
+    try {
+      command = launch();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const active = this.activeDependencyGuardCommandSet();
+    active.add(command);
+    const release = (): void => {
+      active.delete(command);
+    };
+    void command.ownershipReleased.then(release);
+    return command.completion;
+  }
+
+  private runDependencyGuardValidation(
+    environment: PythonEnvironment,
+    expectedToken: string
+  ): Promise<DependencyGuardValidation> {
+    return this.runOwnedDependencyGuardCommand(() =>
+      this.launchDependencyGuardValidation(environment, expectedToken, {
+        helperPath: this.dependencyGuardHelperPath()
+      })
+    );
+  }
+
   private dependencyGuardStatusForEnvironment(environment: PythonEnvironment): Promise<DependencyGuardStatus> {
     const key = pythonPackageEnvironmentKey(environment);
     const environmentIdentityKey = pythonEnvironmentIdentityKey(environment);
@@ -2458,8 +2504,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       );
     }
 
-    const promise = Promise.resolve().then(() =>
-      this.readDependencyGuardStatus(environment, { helperPath: this.dependencyGuardHelperPath() })
+    const promise = this.runOwnedDependencyGuardCommand(() =>
+      this.launchDependencyGuardStatus(environment, { helperPath: this.dependencyGuardHelperPath() })
     );
     const flight = { environmentIdentityKey, promise };
     this.dependencyGuardStatusFlights.set(key, flight);

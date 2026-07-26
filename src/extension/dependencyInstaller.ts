@@ -88,6 +88,17 @@ export interface OwnedDependencyInstall {
   unref(): void;
 }
 
+export interface OwnedDependencyGuardCommand<Result> {
+  readonly child: ChildProcess;
+  readonly mode: "status" | "validate";
+  readonly executable: string;
+  readonly completion: Promise<Result>;
+  readonly ownershipReleased: Promise<void>;
+  didSpawn(): boolean;
+  didClose(): boolean;
+  unref(): void;
+}
+
 export interface DependencyGuardClientOptions {
   readonly helperPath: string;
   readonly environment?: NodeJS.ProcessEnv;
@@ -234,13 +245,20 @@ export function getDependencyGuardStatus(
   environment: PythonEnvironment,
   options: DependencyGuardClientOptions
 ): Promise<DependencyGuardStatus> {
+  return startDependencyGuardStatus(environment, options).completion;
+}
+
+export function startDependencyGuardStatus(
+  environment: PythonEnvironment,
+  options: DependencyGuardClientOptions
+): OwnedDependencyGuardCommand<DependencyGuardStatus> {
   validateGuardTarget(environment, options.helperPath);
   const requestFrame = encodeDependencyGuardFrame({
     protocol: DEPENDENCY_GUARD_PROTOCOL,
     kind: "status",
     environment: dependencyGuardEnvironmentWire(environment)
   });
-  return runDependencyGuardCommand(
+  return startDependencyGuardCommand(
     "status",
     environment.executable,
     options,
@@ -254,6 +272,14 @@ export function validateDependencyGuard(
   expectedToken: string,
   options: DependencyGuardClientOptions
 ): Promise<DependencyGuardValidation> {
+  return startDependencyGuardValidation(environment, expectedToken, options).completion;
+}
+
+export function startDependencyGuardValidation(
+  environment: PythonEnvironment,
+  expectedToken: string,
+  options: DependencyGuardClientOptions
+): OwnedDependencyGuardCommand<DependencyGuardValidation> {
   validateGuardTarget(environment, options.helperPath);
   if (!isCanonicalUuid(expectedToken)) {
     throw new Error("Dependency validation requires a canonical lowercase UUID.");
@@ -264,7 +290,7 @@ export function validateDependencyGuard(
     environment: dependencyGuardEnvironmentWire(environment),
     expectedToken
   });
-  return runDependencyGuardCommand("validate", environment.executable, options, requestFrame, (frame) =>
+  return startDependencyGuardCommand("validate", environment.executable, options, requestFrame, (frame) =>
     decodeDependencyGuardValidation(frame, expectedToken)
   );
 }
@@ -613,13 +639,13 @@ function dependencyInstallCloseFailure(state: DependencyInstallCloseState): Erro
   );
 }
 
-function runDependencyGuardCommand<Result>(
+function startDependencyGuardCommand<Result>(
   mode: "status" | "validate",
   executable: string,
   options: DependencyGuardClientOptions,
   requestFrame: Buffer,
   decodeSuccess: (frame: Record<string, unknown>) => Result
-): Promise<Result> {
+): OwnedDependencyGuardCommand<Result> {
   const timeoutMs = options.timeoutMs ?? DEPENDENCY_GUARD_COMMAND_TIMEOUT_MS;
   validateTimeout(timeoutMs, "Dependency guard timeout");
   const processEnvironment = dependencyGuardProcessEnvironment(options.environment ?? process.env);
@@ -651,14 +677,24 @@ function runDependencyGuardCommand<Result>(
   let result: Result | undefined;
   let resultReceived = false;
   let completionSettled = false;
+  let ownershipSettled = false;
   let resolveCompletion!: (value: Result) => void;
   let rejectCompletion!: (error: Error) => void;
+  let resolveOwnershipReleased!: () => void;
 
   const completion = new Promise<Result>((resolve, reject) => {
     resolveCompletion = resolve;
     rejectCompletion = reject;
   });
+  const ownershipReleased = new Promise<void>((resolve) => {
+    resolveOwnershipReleased = resolve;
+  });
   void completion.catch(() => undefined);
+  const settleOwnership = (): void => {
+    if (ownershipSettled) return;
+    ownershipSettled = true;
+    resolveOwnershipReleased();
+  };
   const settleCompletion = (value: Result | Error): void => {
     if (completionSettled) return;
     completionSettled = true;
@@ -722,7 +758,9 @@ function runDependencyGuardCommand<Result>(
     const failure = new Error(
       `Open Wrangler could not start dependency guard ${mode} with ${executable}: ${error.message}`
     );
-    settleCompletion(combineCleanupFailure(failure, workingDirectory.cleanup()) ?? failure);
+    const combined = combineCleanupFailure(failure, workingDirectory.cleanup()) ?? failure;
+    settleOwnership();
+    settleCompletion(combined);
   });
   child.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
     closed = true;
@@ -739,6 +777,7 @@ function runDependencyGuardCommand<Result>(
       signal
     });
     const combined = combineCleanupFailure(failure, cleanupError);
+    settleOwnership();
     if (combined) {
       settleCompletion(combined);
       return;
@@ -750,15 +789,18 @@ function runDependencyGuardCommand<Result>(
     settleCompletion(result as Result);
   });
 
+  const unrefCommand = (): void => {
+    if (unreferenced) return;
+    unrefDependencyGuardProcess(child, guardStdio);
+    unreferenced = true;
+  };
+
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const uncertainty = new DependencyGuardCommandTimeoutError(mode, executable, timeoutMs);
       try {
-        if (!closed && !unreferenced) {
-          unreferenced = true;
-          unrefDependencyGuardProcess(child, guardStdio);
-        }
+        if (!closed) unrefCommand();
         reject(uncertainty);
       } catch (error) {
         reject(
@@ -771,9 +813,19 @@ function runDependencyGuardCommand<Result>(
     }, timeoutMs);
     timer.unref();
   });
-  return Promise.race([completion, timeout]).finally(() => {
+  const ownedCompletion = Promise.race([completion, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+  return {
+    child,
+    mode,
+    executable,
+    completion: ownedCompletion,
+    ownershipReleased,
+    didSpawn: () => spawned,
+    didClose: () => closed,
+    unref: unrefCommand
+  };
 }
 
 interface DependencyGuardCommandCloseState {

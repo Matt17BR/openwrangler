@@ -14,6 +14,8 @@ import {
   DependencyInstallExitUnconfirmedError,
   DependencyInstallReadyTimeoutError,
   getDependencyGuardStatus,
+  startDependencyGuardStatus,
+  startDependencyGuardValidation,
   startDependencyInstall,
   validateDependencyGuard,
   waitForDependencyInstallExit,
@@ -590,6 +592,66 @@ describe("owned dependency installation", () => {
 });
 
 describe("dependency guard status and validation", () => {
+  it.each([
+    {
+      mode: "status",
+      start: (options: DependencyGuardClientOptions) => startDependencyGuardStatus(TEST_ENVIRONMENT, options),
+      result: {
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "status",
+        state: "clean",
+        token: null
+      }
+    },
+    {
+      mode: "validate",
+      start: (options: DependencyGuardClientOptions) =>
+        startDependencyGuardValidation(TEST_ENVIRONMENT, TEST_TOKEN, options),
+      result: {
+        protocol: DEPENDENCY_GUARD_PROTOCOL,
+        kind: "validated",
+        token: TEST_TOKEN
+      }
+    }
+  ])("exposes an idempotently detachable owned $mode command through exact close", async ({ start, result }) => {
+    const child = new DependencyChildProcess();
+    let privateCwd: string | undefined;
+    const command = start({
+      helperPath: TEST_HELPER_PATH,
+      spawnProcess: (_executable, _args, options) => {
+        privateCwd = options.cwd as string;
+        return child as unknown as ChildProcess;
+      }
+    });
+    expect(command.child).toBe(child);
+    expect(command.didSpawn()).toBe(false);
+    expect(command.didClose()).toBe(false);
+    expect(existsSync(privateCwd!)).toBe(true);
+    let ownershipReleased = false;
+    void command.ownershipReleased.then(() => {
+      ownershipReleased = true;
+    });
+
+    child.emit("spawn");
+    expect(command.didSpawn()).toBe(true);
+    command.unref();
+    command.unref();
+    expect(child.unref).toHaveBeenCalledOnce();
+    expectPipeDetached(child.stdin);
+    expect(child.stdout.unref).toHaveBeenCalledOnce();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(ownershipReleased).toBe(false);
+
+    emitFrame(child, result);
+    child.emit("close", 0, null);
+    await expect(command.completion).resolves.toEqual(result);
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
+    expect(ownershipReleased).toBe(true);
+    expect(command.didClose()).toBe(true);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(existsSync(privateCwd!)).toBe(false);
+  });
+
   it("parses an exact clean status only after exact close and sends the selected environment", async () => {
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
@@ -797,21 +859,28 @@ describe("dependency guard status and validation", () => {
 
   it("waits for close after a post-spawn error but resolves a proven pre-spawn error immediately", async () => {
     const lateChild = new DependencyChildProcess();
-    const late = getDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(lateChild));
+    const late = startDependencyGuardStatus(TEST_ENVIRONMENT, guardOptions(lateChild));
     lateChild.emit("spawn");
     lateChild.emit("error", new Error("late error"));
     let lateSettled = false;
-    void late.catch(() => {
+    let lateOwnershipReleased = false;
+    void late.completion.catch(() => {
       lateSettled = true;
+    });
+    void late.ownershipReleased.then(() => {
+      lateOwnershipReleased = true;
     });
     await Promise.resolve();
     expect(lateSettled).toBe(false);
+    expect(lateOwnershipReleased).toBe(false);
     lateChild.emit("close", 17, null);
-    await expect(late).rejects.toThrow("late error");
+    await expect(late.completion).rejects.toThrow("late error");
+    await expect(late.ownershipReleased).resolves.toBeUndefined();
+    expect(lateOwnershipReleased).toBe(true);
 
     const earlyChild = new DependencyChildProcess();
     let privateCwd: string | undefined;
-    const early = getDependencyGuardStatus(TEST_ENVIRONMENT, {
+    const early = startDependencyGuardStatus(TEST_ENVIRONMENT, {
       helperPath: TEST_HELPER_PATH,
       spawnProcess: (_executable, _args, options) => {
         privateCwd = options.cwd as string;
@@ -819,7 +888,8 @@ describe("dependency guard status and validation", () => {
       }
     });
     earlyChild.emit("error", new Error("ENOENT"));
-    await expect(early).rejects.toThrow("ENOENT");
+    await expect(early.completion).rejects.toThrow("ENOENT");
+    await expect(early.ownershipReleased).resolves.toBeUndefined();
     expect(existsSync(privateCwd!)).toBe(false);
   });
 
@@ -827,7 +897,7 @@ describe("dependency guard status and validation", () => {
     vi.useFakeTimers();
     const child = new DependencyChildProcess();
     let privateCwd: string | undefined;
-    const status = getDependencyGuardStatus(TEST_ENVIRONMENT, {
+    const command = startDependencyGuardStatus(TEST_ENVIRONMENT, {
       helperPath: TEST_HELPER_PATH,
       timeoutMs: 25,
       spawnProcess: (_executable, _args, options) => {
@@ -836,8 +906,12 @@ describe("dependency guard status and validation", () => {
       }
     });
     child.emit("spawn");
+    let ownershipReleased = false;
+    void command.ownershipReleased.then(() => {
+      ownershipReleased = true;
+    });
 
-    const rejected = expect(status).rejects.toBeInstanceOf(DependencyGuardCommandTimeoutError);
+    const rejected = expect(command.completion).rejects.toBeInstanceOf(DependencyGuardCommandTimeoutError);
     await vi.advanceTimersByTimeAsync(25);
     await rejected;
     expect(child.unref).toHaveBeenCalledOnce();
@@ -845,9 +919,64 @@ describe("dependency guard status and validation", () => {
     expect(child.stdout.unref).toHaveBeenCalledOnce();
     expect(child.kill).not.toHaveBeenCalled();
     expect(existsSync(privateCwd!)).toBe(true);
+    expect(ownershipReleased).toBe(false);
 
     child.emit("close", 17, null);
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
+    expect(ownershipReleased).toBe(true);
     expect(existsSync(privateCwd!)).toBe(false);
+  });
+
+  it("does not detach an owned command twice when its timeout follows an explicit unref", async () => {
+    vi.useFakeTimers();
+    const child = new DependencyChildProcess();
+    const command = startDependencyGuardStatus(TEST_ENVIRONMENT, {
+      helperPath: TEST_HELPER_PATH,
+      timeoutMs: 25,
+      spawnProcess: () => child as unknown as ChildProcess
+    });
+    child.emit("spawn");
+    command.unref();
+
+    const rejected = expect(command.completion).rejects.toBeInstanceOf(DependencyGuardCommandTimeoutError);
+    await vi.advanceTimersByTimeAsync(25);
+    await rejected;
+    expect(child.unref).toHaveBeenCalledOnce();
+    expectPipeDetached(child.stdin);
+    expect(child.stdout.unref).toHaveBeenCalledOnce();
+    expect(child.kill).not.toHaveBeenCalled();
+
+    child.emit("close", 17, null);
+  });
+
+  it("retries a partial timeout detach and marks ownership unreferenced only after every handle succeeds", async () => {
+    vi.useFakeTimers();
+    const child = new DependencyChildProcess();
+    const detachFailure = new Error("stdout unref failed");
+    child.stdout.unref.mockImplementationOnce(() => {
+      throw detachFailure;
+    });
+    const command = startDependencyGuardStatus(TEST_ENVIRONMENT, {
+      helperPath: TEST_HELPER_PATH,
+      timeoutMs: 25,
+      spawnProcess: () => child as unknown as ChildProcess
+    });
+    child.emit("spawn");
+
+    const timedOut = command.completion.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(collectErrors(await timedOut)).toContain(detachFailure);
+    expect(child.stdout.unref).toHaveBeenCalledOnce();
+    expect(child.kill).not.toHaveBeenCalled();
+
+    expect(() => command.unref()).not.toThrow();
+    expect(child.stdout.unref).toHaveBeenCalledTimes(2);
+    command.unref();
+    expect(child.stdout.unref).toHaveBeenCalledTimes(2);
+    expect(child.kill).not.toHaveBeenCalled();
+
+    child.emit("close", 17, null);
+    await expect(command.ownershipReleased).resolves.toBeUndefined();
   });
 
   it("validates timeout and request bounds before spawning a one-shot helper", () => {
