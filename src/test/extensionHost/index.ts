@@ -630,8 +630,21 @@ async function exerciseReleasedJupyterExtension(
     recordAcceptanceProgress(`${phase}:notebook-open`);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
     assertExactOpenNotebookDocument(notebook, "after opening the released-Jupyter fixture");
-    await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+    assert.equal(
+      notebookEditor.notebook,
+      notebook,
+      "The released-Jupyter fixture must retain its exact visible editor."
+    );
     assertExactOpenNotebookDocument(notebook, "after showing the released-Jupyter fixture");
+
+    const workbench = await connectToEditorWorkbench();
+    recordAcceptanceProgress(`${phase}:kernel-discovery`);
+    await jupyterExtension.activate();
+    assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for kernel discovery");
+    recordAcceptanceProgress(`${phase}:kernel-select`);
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase);
+    recordAcceptanceProgress(`${phase}:kernel-selected`);
 
     recordAcceptanceProgress(`${phase}:kernel-start`);
     await executeReleasedNotebookCell(notebook, 0, setupMarker);
@@ -653,7 +666,6 @@ async function exerciseReleasedJupyterExtension(
       "The private released-Jupyter kernel must not inherit an installed Open Wrangler runtime before bootstrap."
     );
 
-    const workbench = await connectToEditorWorkbench();
     assertExactOpenNotebookDocument(notebook, "before opening the real Jupyter Variables view");
     await vscode.commands.executeCommand("jupyter.openVariableView");
     assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
@@ -936,6 +948,205 @@ async function showExactReleasedNotebook(notebook: vscode.NotebookDocument): Pro
   assertExactOpenNotebookDocument(notebook, "after showing its exact editor");
 }
 
+async function selectReleasedJupyterKernel(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  phase: ReleasedJupyterPhase
+): Promise<void> {
+  assertExactOpenNotebookDocument(notebook, "before selecting its released Jupyter kernel");
+  assert.equal(notebookEditor.notebook, notebook, "The released-Jupyter kernel picker must keep its captured editor.");
+  const selection = vscode.commands.executeCommand("notebook.selectKernel", {
+    notebookEditor
+  });
+  type SelectionState = { kind: "pending" } | { kind: "fulfilled" } | { kind: "rejected"; error: unknown };
+  let selectionState: SelectionState = { kind: "pending" };
+  const readSelectionState = (): SelectionState => selectionState;
+  const observedSelection = Promise.resolve(selection).then(
+    () => {
+      selectionState = { kind: "fulfilled" };
+      return selectionState;
+    },
+    (error: unknown) => {
+      selectionState = { kind: "rejected", error };
+      return selectionState;
+    }
+  );
+  const deadline = Date.now() + 30_000;
+  const traversed = new Set<string>();
+  let filterForTarget = false;
+  try {
+    do {
+      assertExactOpenNotebookDocument(notebook, "while selecting its released Jupyter kernel");
+      const currentSelectionState = readSelectionState();
+      if (currentSelectionState.kind === "rejected") throw currentSelectionState.error;
+      const quickInput = await visibleReleasedJupyterQuickInput(workbench);
+      if (!quickInput) {
+        if (currentSelectionState.kind === "fulfilled") {
+          throw new Error("The released-Jupyter kernel picker closed before the private kernel was selected.");
+        }
+        await workbench.waitForTimeout(50);
+        continue;
+      }
+      const target = await releasedJupyterQuickPickRow(quickInput, "Open Wrangler Acceptance");
+      if (target) {
+        recordAcceptanceProgress(`${phase}:kernel-picker-target`);
+        await target.click();
+        const outcome = await withBoundedAcceptancePromise(
+          observedSelection,
+          60_000,
+          "the released-Jupyter kernel selection"
+        );
+        if (outcome.kind === "rejected") throw outcome.error;
+        assertExactOpenNotebookDocument(notebook, "after selecting its released Jupyter kernel");
+        assert.equal(notebookEditor.notebook, notebook, "The released-Jupyter kernel selection changed its editor.");
+        await waitForReleasedJupyterKernelLabel(workbench);
+        return;
+      }
+
+      if (filterForTarget) {
+        const stillOnRoutePicker = await releasedJupyterRouteLabel(quickInput);
+        if (!stillOnRoutePicker) {
+          const input = quickInput.locator(".quick-input-box input:visible").first();
+          if ((await input.count()) > 0) {
+            await input.fill("Open Wrangler Acceptance");
+            filterForTarget = false;
+            await workbench.waitForTimeout(100);
+            continue;
+          }
+        }
+      }
+
+      let advanced = false;
+      for (const label of ["Select Another Kernel...", "Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]) {
+        if (traversed.has(label)) continue;
+        const row = await releasedJupyterQuickPickRow(quickInput, label);
+        if (!row) continue;
+        traversed.add(label);
+        recordAcceptanceProgress(
+          `${phase}:kernel-picker-${label
+            .toLowerCase()
+            .replaceAll(/[^a-z]+/gu, "-")
+            .replaceAll(/^-|-$/gu, "")}`
+        );
+        await row.click();
+        filterForTarget = label === "Jupyter Kernel..." || label === "Jupyter" || label === "Local Kernel Specs...";
+        await workbench.waitForTimeout(100);
+        advanced = true;
+        break;
+      }
+      if (!advanced) await workbench.waitForTimeout(100);
+    } while (Date.now() < deadline);
+
+    const diagnostics = await releasedJupyterQuickInputDiagnostics(workbench);
+    throw new Error(
+      `Timed out selecting the private released-Jupyter kernel. Quick-input labels: ${JSON.stringify(diagnostics)}`
+    );
+  } catch (error) {
+    await dismissReleasedJupyterKernelPicker(workbench, observedSelection);
+    throw error;
+  }
+}
+
+async function releasedJupyterRouteLabel(quickInput: Locator): Promise<string | undefined> {
+  for (const label of ["Select Another Kernel...", "Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]) {
+    if (await releasedJupyterQuickPickRow(quickInput, label)) return label;
+  }
+  return undefined;
+}
+
+async function dismissReleasedJupyterKernelPicker(
+  workbench: Page,
+  selection: Promise<{ kind: "fulfilled" } | { kind: "rejected"; error: unknown }>
+): Promise<void> {
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    const quickInputs = frame.locator(".quick-input-widget:visible");
+    const count = Math.min(await quickInputs.count().catch(() => 0), 8);
+    for (let index = 0; index < count; index += 1) {
+      const quickInput = quickInputs.nth(index);
+      const input = quickInput.locator(".quick-input-box input:visible").first();
+      if ((await input.count().catch(() => 0)) > 0) {
+        await input.press("Escape").catch(() => {});
+      } else {
+        await quickInput.press("Escape").catch(() => {});
+      }
+    }
+  }
+  await Promise.race([selection, workbench.waitForTimeout(2_000)]).catch(() => {});
+}
+
+async function waitForReleasedJupyterKernelLabel(workbench: Page): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  do {
+    let exactMatches = 0;
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      const labels = frame.locator(".kernel-action-view-item .kernel-label:visible");
+      const count = Math.min(await labels.count().catch(() => 0), 16);
+      for (let index = 0; index < count; index += 1) {
+        if (
+          (
+            await labels
+              .nth(index)
+              .innerText()
+              .catch(() => "")
+          ).trim() === "Open Wrangler Acceptance"
+        )
+          exactMatches += 1;
+      }
+    }
+    if (exactMatches === 1) return;
+    assert.ok(exactMatches < 2, "The workbench exposed duplicate Open Wrangler Acceptance kernel labels.");
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error("The workbench did not confirm the selected Open Wrangler Acceptance kernel.");
+}
+
+async function visibleReleasedJupyterQuickInput(workbench: Page): Promise<Locator | undefined> {
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    const quickInput = frame.locator(".quick-input-widget:visible").last();
+    if ((await quickInput.count().catch(() => 0)) > 0 && (await quickInput.isVisible().catch(() => false))) {
+      return quickInput;
+    }
+  }
+  return undefined;
+}
+
+async function releasedJupyterQuickPickRow(quickInput: Locator, label: string): Promise<Locator | undefined> {
+  const labels = quickInput.locator(".quick-input-list [role='option'] .label-name:visible");
+  const count = await labels.count();
+  assert.ok(count <= 256, "The released-Jupyter kernel picker exceeded its bounded visible option count.");
+  const matches: Locator[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const candidate = labels.nth(index);
+    if ((await candidate.innerText()).trim() === label) {
+      matches.push(candidate.locator("xpath=ancestor::*[@role='option'][1]"));
+    }
+  }
+  assert.ok(matches.length < 2, `The released-Jupyter kernel picker exposed duplicate ${JSON.stringify(label)} rows.`);
+  return matches[0];
+}
+
+async function releasedJupyterQuickInputDiagnostics(workbench: Page): Promise<string[]> {
+  const diagnostics: string[] = [];
+  for (const frame of releasedWorkbenchFrames(workbench)) {
+    const labels = frame.locator(".quick-input-widget:visible [role='option'] .label-name:visible");
+    const count = Math.min(await labels.count().catch(() => 0), 64);
+    for (let index = 0; index < count; index += 1) {
+      diagnostics.push(
+        (
+          await labels
+            .nth(index)
+            .innerText()
+            .catch(() => "")
+        )
+          .trim()
+          .slice(0, 256)
+      );
+    }
+  }
+  return diagnostics;
+}
+
 async function executeReleasedNotebookCell(
   notebook: vscode.NotebookDocument,
   index: number,
@@ -952,12 +1163,16 @@ async function executeReleasedNotebookCell(
     }
   });
   try {
-    await vscode.commands.executeCommand("notebook.cell.execute", {
-      ranges: [{ start: index, end: index + 1 }],
-      document: notebook.uri
-    });
+    const deadline = Date.now() + 120_000;
+    await withBoundedAcceptancePromise(
+      vscode.commands.executeCommand("notebook.cell.execute", {
+        ranges: [{ start: index, end: index + 1 }],
+        document: notebook.uri
+      }),
+      Math.max(1, deadline - Date.now()),
+      `released-Jupyter cell ${index} dispatch`
+    );
     assertExactOpenNotebookDocument(notebook, `after dispatching cell ${index}`);
-    const deadline = Date.now() + 90_000;
     do {
       assertExactOpenNotebookDocument(notebook, `while waiting for cell ${index}`);
       if (observedFreshExecutionSummary && cell.executionSummary?.success === true) {
