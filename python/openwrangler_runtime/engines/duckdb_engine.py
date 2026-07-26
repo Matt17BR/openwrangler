@@ -17,6 +17,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SummaryColumnProjection,
     bound_column_name,
     categorical_visualization,
     coerce_typed_view_value,
@@ -26,6 +27,7 @@ from .base import (
     infer_semantic_type,
     normalize_cell,
     normalize_page_projection,
+    normalize_summary_projection,
     numeric_visualization,
     typed_selection_value,
     validate_view_predicate_operator,
@@ -252,13 +254,15 @@ class DuckDBEngine(DataFrameEngine):
             "rows": rows,
         }
 
-    def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
         frame = self.normalize(frame)
         visible = self._visible_columns(frame)
-        selected = [str(column) for column in columns] if columns is not None else visible
-        unknown = [column for column in selected if column not in visible]
-        if unknown:
-            raise EngineError(f"Unknown DuckDB column: {unknown[0]}")
+        projection = normalize_summary_projection(len(visible), column_projection)
+        selected = [(visible[position], column_id) for position, column_id in projection]
         if not selected:
             return []
 
@@ -266,7 +270,7 @@ class DuckDBEngine(DataFrameEngine):
         summaries: list[dict[str, Any]] = []
         with self._terminal_connection(frame) as (connection, source_sql):
             total_count = int(_execute_scalar(connection, source_sql, "SELECT count(*) FROM ow") or 0)
-            for column in selected:
+            for column, column_id in selected:
                 identifier = _quote_ident(column)
                 raw_type = types[column]
                 semantic_type = _semantic_type(raw_type)
@@ -293,6 +297,7 @@ class DuckDBEngine(DataFrameEngine):
                     {"value": normalize_cell(value)["display"], "count": int(count)} for value, count in top_rows
                 ]
                 summary: dict[str, Any] = {
+                    "columnId": column_id,
                     "column": column,
                     "type": semantic_type,
                     "rawType": raw_type,
@@ -326,7 +331,6 @@ class DuckDBEngine(DataFrameEngine):
                     valid_count = total_count - null_count - nan_count
                     if valid_count > SUMMARY_VISUALIZATION_SAMPLE_LIMIT:
                         visualization["sampled"] = True
-                        summary["sampled"] = True
                     summary["visualization"] = visualization
                 elif semantic_type == "boolean":
                     counts = _execute_rows(

@@ -501,15 +501,11 @@ describe("DataGrid", () => {
     const scroller = screen.getByTestId("data-grid-scroller");
     Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 180 });
     fireEvent(window, new Event("resize"));
-    await waitFor(() =>
-      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["column-0", "column-1", "column-2", "column-3"])
-    );
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1", "c:2", "c:3"]));
 
     scroller.scrollLeft = 700;
     fireEvent.scroll(scroller);
-    await waitFor(() =>
-      expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["column-4", "column-5", "column-6", "column-7"])
-    );
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:4", "c:5", "c:6", "c:7"]));
     expect(onVisibleColumnRangeChange).toHaveBeenLastCalledWith({ start: 4, end: 8 });
     expect(document.querySelector('th[data-column="column-4"]')).toHaveAttribute("aria-colindex", "6");
     expect(document.querySelector('th[data-column="column-7"]')).toHaveAttribute("aria-colindex", "9");
@@ -658,12 +654,12 @@ describe("DataGrid", () => {
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
     onVisibleSummaryColumnsChange.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["city", "sales"]));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
 
     fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
     fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
-    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["city", "sales"]));
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
     expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(3);
   });
 
@@ -739,7 +735,7 @@ describe("DataGrid", () => {
     );
 
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(2));
-    expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["city", "sales"]);
+    expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
   });
 
   it("resizes columns from the keyboard and labels an empty grid", () => {

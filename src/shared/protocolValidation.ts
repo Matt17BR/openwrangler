@@ -1,6 +1,7 @@
 import type {
   ColumnReference,
   ColumnSchema,
+  ColumnSummary,
   FilterModel,
   OpenWranglerRequest,
   OpenWranglerResponse,
@@ -178,13 +179,13 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
       const candidate = exactRecord(
         value,
         ["kind", "sessionId", "revision", "viewRequestId", "filterModel"],
-        ["columns"]
+        ["columnIds"]
       );
       return (
         isSessionRequest(candidate, "getSummary") &&
         isNonEmptyString(candidate.viewRequestId) &&
         isFilterModel(candidate.filterModel) &&
-        optional(candidate, "columns", (columns) => isArrayOf(columns, isNonEmptyString))
+        optional(candidate, "columnIds", (columnIds) => isUniqueNonEmptyStringArray(columnIds) && columnIds.length > 0)
       );
     }
     case "getDatasetStats": {
@@ -354,7 +355,7 @@ function isSessionOpenedResponse(value: unknown): boolean {
     candidate.kind === "sessionOpened" &&
     isSessionMetadata(candidate.metadata) &&
     isGridPage(candidate.page, candidate.metadata.schema) &&
-    isArrayOf(candidate.summaries, isColumnSummary)
+    isColumnSummaryArray(candidate.summaries, candidate.metadata.schema)
   );
 }
 
@@ -377,7 +378,7 @@ function isSummaryResponse(value: unknown): boolean {
     candidate.kind === "summary" &&
     isNonNegativeInteger(candidate.revision) &&
     isNonEmptyString(candidate.viewRequestId) &&
-    isArrayOf(candidate.summaries, isColumnSummary)
+    isColumnSummaryArray(candidate.summaries)
   );
 }
 
@@ -1283,11 +1284,12 @@ function isCellValue(value: unknown): boolean {
 function isColumnSummary(value: unknown): boolean {
   const candidate = exactRecord(
     value,
-    ["column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
-    ["distinctCount", "numeric", "visualization", "sampled"]
+    ["columnId", "column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
+    ["distinctCount", "numeric", "visualization"]
   );
   return (
     candidate !== undefined &&
+    isNonEmptyString(candidate.columnId) &&
     isString(candidate.column) &&
     isEnumMember(candidate.type, COLUMN_TYPES) &&
     isString(candidate.rawType) &&
@@ -1297,9 +1299,26 @@ function isColumnSummary(value: unknown): boolean {
     optional(candidate, "distinctCount", isNonNegativeInteger) &&
     optional(candidate, "numeric", isNumericSummary) &&
     optional(candidate, "visualization", isColumnVisualization) &&
-    isArrayOf(candidate.topValues, isValueCount) &&
-    optional(candidate, "sampled", isBoolean)
+    isArrayOf(candidate.topValues, isValueCount)
   );
+}
+
+function isColumnSummaryArray(value: unknown, schema?: readonly ColumnSchema[]): value is ColumnSummary[] {
+  if (!Array.isArray(value) || !value.every(isColumnSummary)) return false;
+  const summaries = value as ColumnSummary[];
+  const columnIds = summaries.map((summary) => summary.columnId);
+  if (new Set(columnIds).size !== columnIds.length) return false;
+  if (!schema) return true;
+  const schemaById = new Map(schema.map((column) => [column.id, column]));
+  return summaries.every((summary) => {
+    const column = schemaById.get(summary.columnId);
+    return (
+      column !== undefined &&
+      column.name === summary.column &&
+      column.type === summary.type &&
+      column.rawType === summary.rawType
+    );
+  });
 }
 
 function isNumericSummary(value: unknown): boolean {

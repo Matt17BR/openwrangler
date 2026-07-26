@@ -377,8 +377,9 @@
     "ColumnSummary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
+      "required": ["columnId", "column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
       "properties": {
+        "columnId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
         "type": { "$ref": "#/definitions/ColumnType" },
         "rawType": { "type": "string" },
@@ -388,8 +389,7 @@
         "distinctCount": { "type": "integer", "minimum": 0 },
         "numeric": { "$ref": "#/definitions/NumericSummary" },
         "visualization": { "$ref": "#/definitions/ColumnVisualization" },
-        "topValues": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } },
-        "sampled": { "type": "boolean" }
+        "topValues": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } }
       }
     },
     "DatasetStats": {
@@ -1415,7 +1415,12 @@
         "revision": { "type": "integer", "minimum": 0 },
         "viewRequestId": { "type": "string", "minLength": 1 },
         "filterModel": { "$ref": "#/definitions/FilterModel" },
-        "columns": { "type": "array", "items": { "type": "string" } }
+        "columnIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
       }
     },
     "DatasetStatsRequest": {

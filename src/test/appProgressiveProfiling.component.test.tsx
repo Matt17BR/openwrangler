@@ -39,6 +39,7 @@ const metadata: SessionMetadata = {
 const page = pageWithCity("Berlin");
 
 const citySummary: ColumnSummary = {
+  columnId: "c:0",
   column: "city",
   type: "string",
   rawType: "String",
@@ -73,7 +74,7 @@ describe("App progressive profiling and view correlation", () => {
 
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
     const summaries = requestsOfKind("getSummary");
-    expect(summaries.map((request) => request.columns)).toEqual([["city"], ["sales"]]);
+    expect(summaries.map((request) => request.columnIds)).toEqual([["c:0"], ["c:1"]]);
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
     expect(viewSequence(summaries[1]) > viewSequence(summaries[0])).toBe(true);
 
@@ -94,14 +95,25 @@ describe("App progressive profiling and view correlation", () => {
     expect(messagesOfKind("ready")).toHaveLength(1);
 
     for (const request of requestsOfKind("getSummary")) {
-      const column = request.columns?.[0];
-      if (!column) throw new Error("Expected a column-scoped summary request.");
+      const columnId = request.columnIds?.[0];
+      if (!columnId) throw new Error("Expected a column-scoped summary request.");
+      const column = metadata.schema.find((candidate) => candidate.id === columnId);
+      if (!column) throw new Error("Expected a known summary column identity.");
       dispatch({
         kind: "summary",
         revision: metadata.revision,
         viewRequestId: viewId(request),
         summaries: [
-          column === "city" ? citySummary : { ...citySummary, column, type: "float", rawType: "Float64", topValues: [] }
+          columnId === "c:0"
+            ? citySummary
+            : {
+                ...citySummary,
+                columnId,
+                column: column.name,
+                type: "float",
+                rawType: "Float64",
+                topValues: []
+              }
         ]
       });
     }
@@ -313,7 +325,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const firstCity = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const firstCity = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!firstCity) throw new Error("Expected the initial city summary request.");
 
     dispatch({
@@ -325,10 +337,10 @@ describe("App progressive profiling and view correlation", () => {
     });
 
     await waitFor(() => {
-      const cityRequests = requestsOfKind("getSummary").filter((request) => request.columns?.[0] === "city");
+      const cityRequests = requestsOfKind("getSummary").filter((request) => request.columnIds?.[0] === "c:0");
       expect(cityRequests).toHaveLength(2);
     });
-    const retry = requestsOfKind("getSummary").filter((request) => request.columns?.[0] === "city")[1];
+    const retry = requestsOfKind("getSummary").filter((request) => request.columnIds?.[0] === "c:0")[1];
     expect(viewSequence(retry) > viewSequence(firstCity)).toBe(true);
 
     dispatch({
@@ -344,7 +356,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const cityRequest = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const cityRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityRequest) throw new Error("Expected the city summary request.");
     dispatch({
       kind: "summary",
@@ -383,7 +395,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.getByText("Distinct 100%")).toBeInTheDocument();
     expect(screen.getByText("The mutation failed")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
-    expect(onlyRequest("getSummary").columns).toEqual(["sales"]);
+    expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe(confirmedContext);
 
@@ -396,7 +408,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.getByText("Distinct 100%")).toBeInTheDocument();
     expect(screen.getByText("The cleaning operation was cancelled.")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
-    expect(onlyRequest("getSummary").columns).toEqual(["sales"]);
+    expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
   });
 
@@ -485,7 +497,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const cityProfile = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const cityProfile = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityProfile) throw new Error("Expected a city summary request.");
 
     postMessage.mockClear();
@@ -516,7 +528,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const cityProfile = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const cityProfile = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityProfile) throw new Error("Expected a city summary request.");
 
     fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
@@ -617,16 +629,18 @@ describe("App progressive profiling and view correlation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(4));
     const firstBatch = requestsOfKind("getSummary");
-    expect(firstBatch.map((request) => request.columns?.[0])).toEqual(["column-0", "column-1", "column-2", "column-3"]);
+    expect(firstBatch.map((request) => request.columnIds?.[0])).toEqual(["c:0", "c:1", "c:2", "c:3"]);
 
     const completed = firstBatch[0];
-    const completedColumn = completed.columns?.[0];
-    if (!completedColumn) throw new Error("Expected a queued summary column.");
+    const completedColumnId = completed.columnIds?.[0];
+    if (!completedColumnId) throw new Error("Expected a queued summary column.");
+    const completedColumn = wideMetadata.schema.find((column) => column.id === completedColumnId);
+    if (!completedColumn) throw new Error("Expected the queued summary identity in the schema.");
     dispatch({
       kind: "summary",
       revision: wideMetadata.revision,
       viewRequestId: viewId(completed),
-      summaries: [{ ...citySummary, column: completedColumn }]
+      summaries: [{ ...citySummary, columnId: completedColumnId, column: completedColumn.name }]
     });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(5));
     const activeSummaryIds = requestsOfKind("getSummary").slice(1).map(viewId);
@@ -677,9 +691,9 @@ describe("App progressive profiling and view correlation", () => {
         revision: metadata.revision,
         viewRequestId: viewId(request),
         summaries:
-          request.columns?.[0] === "city"
+          request.columnIds?.[0] === "c:0"
             ? [citySummary]
-            : [{ ...citySummary, column: "sales", type: "float", rawType: "Float64" }]
+            : [{ ...citySummary, columnId: "c:1", column: "sales", type: "float", rawType: "Float64" }]
       });
     }
     fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
@@ -1016,7 +1030,7 @@ interface StepInspectionClearedMessage {
 interface RuntimeRequest {
   kind: string;
   viewRequestId?: string;
-  columns?: string[];
+  columnIds?: string[];
   filterModel?: unknown;
   [key: string]: unknown;
 }

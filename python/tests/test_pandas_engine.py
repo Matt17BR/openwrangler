@@ -37,7 +37,7 @@ def test_pandas_file_session_matches_protocol():
         opened["metadata"]["sessionId"],
         0,
         {"filters": [], "sort": []},
-        ["city"],
+        ["c:source:0"],
     )["summaries"]
     assert summaries[0]["visualization"]["kind"] == "categorical"
 
@@ -176,7 +176,12 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
     schema = engine.schema(frame)
     assert [column["name"] for column in schema] == ["duplicate", "duplicate", "7"]
     assert [column["id"] for column in schema] == ["c:0", "c:1", "c:2"]
-    assert [summary["column"] for summary in engine.summaries(frame)] == ["duplicate", "duplicate", "7"]
+    summaries = engine.summaries(frame)
+    assert [summary["columnId"] for summary in summaries] == ["c:0", "c:1", "c:2"]
+    assert [summary["column"] for summary in summaries] == ["duplicate", "duplicate", "7"]
+    assert engine.summaries(frame, [(1, "stable-second-duplicate")])[0] == summaries[1] | {
+        "columnId": "stable-second-duplicate"
+    }
     assert [cell["display"] for cell in engine.page(frame, 0, 1)["rows"][0]["values"]] == ["1", "NaN", "3"]
     stats = engine.header_stats(frame)
     assert stats["missingCells"] == 1

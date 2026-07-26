@@ -3035,12 +3035,13 @@ async function exercisePackagedSavedSnapshot(
       revision: projected.revision,
       viewRequestId: "saved-snapshot-summary",
       filterModel: filteredModel,
-      columns: ["score"]
+      columnIds: ["c:score"]
     });
     assert.equal(summary.kind, "summary");
     if (summary.kind !== "summary") throw new Error("The saved snapshot summary did not resolve.");
     assert.deepEqual(summary.summaries, [
       {
+        columnId: "c:score",
         column: "score",
         type: "integer",
         rawType: "Int64",

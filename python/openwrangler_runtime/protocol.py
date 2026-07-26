@@ -62,7 +62,7 @@ REQUEST_ALLOWED_FIELDS: dict[str, set[str]] = {
         "columnLimit",
         "filterModel",
     },
-    "getSummary": {"kind", "sessionId", "revision", "viewRequestId", "filterModel", "columns"},
+    "getSummary": {"kind", "sessionId", "revision", "viewRequestId", "filterModel", "columnIds"},
     "getDatasetStats": {"kind", "sessionId", "revision", "viewRequestId", "filterModel"},
     "getColumnValues": {
         "kind",
@@ -149,6 +149,15 @@ def decode_request(value: Any) -> dict[str, Any]:
         model = _mapping(request["filterModel"], "filterModel")
         if not isinstance(model.get("filters"), list) or not isinstance(model.get("sort"), list):
             raise ProtocolError("filterModel must contain filters and sort arrays.")
+    if kind == "getSummary" and "columnIds" in request:
+        column_ids = request["columnIds"]
+        if (
+            not isinstance(column_ids, list)
+            or not column_ids
+            or any(not isinstance(column_id, str) or not column_id for column_id in column_ids)
+            or len(set(column_ids)) != len(column_ids)
+        ):
+            raise ProtocolError("columnIds must be a non-empty array of unique non-empty strings.")
     if kind == "openSession":
         source = _mapping(request["source"], "source")
         unexpected_source_fields = set(source) - SOURCE_ALLOWED_FIELDS

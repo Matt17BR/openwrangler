@@ -533,6 +533,7 @@ describe("FilterPanel", () => {
 describe("SummaryPanel", () => {
   const summaries: ColumnSummary[] = [
     {
+      columnId: "c:1",
       column: "sales",
       type: "float",
       rawType: "float",
@@ -549,7 +550,7 @@ describe("SummaryPanel", () => {
   ];
 
   it("renders loading, empty, missing, numeric, and top-value summaries", () => {
-    const { rerender } = render(<SummaryPanel metadata={undefined} summaries={[]} schemaByName={new Map()} />);
+    const { rerender } = render(<SummaryPanel metadata={undefined} summaries={[]} schemaById={new Map()} />);
     expect(screen.getByText("Loading")).toBeInTheDocument();
     expect(screen.getByText("Profiling exact missing values…")).toBeInTheDocument();
     expect(screen.getByText("No summary data yet.")).toBeInTheDocument();
@@ -558,7 +559,7 @@ describe("SummaryPanel", () => {
       <SummaryPanel
         metadata={metadata}
         summaries={summaries}
-        schemaByName={new Map(metadata.schema.map((column) => [column.name, column]))}
+        schemaById={new Map(metadata.schema.map((column) => [column.id, column]))}
       />
     );
     expect(screen.getByText("4 rows x 2 columns")).toBeInTheDocument();

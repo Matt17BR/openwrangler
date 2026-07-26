@@ -17,6 +17,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SummaryColumnProjection,
     boolean_visualization,
     bound_column_name,
     bound_column_position,
@@ -29,6 +30,7 @@ from .base import (
     is_internal_row_id_label,
     normalize_cell,
     normalize_page_projection,
+    normalize_summary_projection,
     numeric_visualization,
     resolve_excel_sheet_selector,
     typed_selection_value,
@@ -244,17 +246,19 @@ class PandasEngine(DataFrameEngine):
             "rows": rows,
         }
 
-    def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
         df = self.normalize(frame)
-        positions = (
-            self._resolve_visible_positions(df, [str(column) for column in columns])
-            if columns is not None
-            else self._visible_positions(df)
-        )
+        visible_positions = self._visible_positions(df)
+        projection = normalize_summary_projection(len(visible_positions), column_projection)
         summaries = []
-        for position in positions:
-            column = df.columns[position]
-            series = df.iloc[:, position]
+        for visible_position, column_id in projection:
+            frame_position = visible_positions[visible_position]
+            column = df.columns[frame_position]
+            series = df.iloc[:, frame_position]
             raw_type = str(series.dtype)
             semantic_type = _pandas_semantic_type(series)
             null_count, nan_count = _missing_value_counts(series, raw_type)
@@ -263,6 +267,7 @@ class PandasEngine(DataFrameEngine):
                 for index, value in series.value_counts(dropna=True).head(10).items()
             ]
             summary: dict[str, Any] = {
+                "columnId": column_id,
                 "column": str(column),
                 "type": semantic_type,
                 "rawType": raw_type,

@@ -36,7 +36,7 @@ interface DataGridProps {
   onSortColumn(column: string, direction: SortDirection): void;
   onOpenFilter(column: string): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
-  onVisibleSummaryColumnsChange(columns: string[]): void;
+  onVisibleSummaryColumnsChange(columnIds: string[]): void;
   onViewStateChange?(state: GridViewState): void;
 }
 
@@ -86,7 +86,10 @@ export function DataGrid({
   onVisibleSummaryColumnsChange,
   onViewStateChange = ignoreViewStateChange
 }: DataGridProps) {
-  const summaryByColumn = useMemo(() => new Map(summaries.map((summary) => [summary.column, summary])), [summaries]);
+  const summaryByColumnId = useMemo(
+    () => new Map(summaries.map((summary) => [summary.columnId, summary])),
+    [summaries]
+  );
   const diffPresentation = useMemo(
     () => buildDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
     [beforePage, beforeSchema, diff, metadata.schema, page]
@@ -294,7 +297,7 @@ export function DataGrid({
   }, [rovingColumn, rovingRow]);
 
   useEffect(() => {
-    onVisibleSummaryColumnsChange(showInsights ? visibleColumns.map((column) => column.name) : []);
+    onVisibleSummaryColumnsChange(showInsights ? visibleColumns.map((column) => column.id) : []);
   }, [onVisibleSummaryColumnsChange, showInsights, viewScope, visibleColumns]);
 
   useEffect(() => {
@@ -443,7 +446,7 @@ export function DataGrid({
                   selected={viewState.selectedColumnId === column.id}
                   added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
                   showInsights={showInsights}
-                  summary={summaryByColumn.get(column.name)}
+                  summary={summaryByColumnId.get(column.id)}
                   viewControlsDisabled={viewControlsDisabled}
                   viewControlsDisabledReason={viewControlsDisabledReason}
                   onOpenFilter={(name) => {
@@ -883,7 +886,7 @@ function ColumnHeader({
           <div className="columnInsight">
             <span>Missing {formatPercent(summary.nullCount + summary.nanCount, summary.totalCount)}</span>
             <span>Distinct {formatPercent(summary.distinctCount ?? 0, summary.totalCount)}</span>
-            {summary.sampled && <span className="sampledLabel">Sampled</span>}
+            {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
             <MiniChart visualization={summary.visualization} />
           </div>
         ) : (

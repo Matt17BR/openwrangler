@@ -539,7 +539,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
         }
         if (message.kind === "runtimeRequest" && message.request.kind === "getSummary") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columns?.includes(summary.column)) },
+            data: { kind: "summary", revision: sessionPayload.metadata.revision, viewRequestId: message.request.viewRequestId, summaries: profileSummaries.filter(summary => message.request.columnIds?.includes(summary.columnId)) },
             origin: window.location.origin
           })), 20);
         }

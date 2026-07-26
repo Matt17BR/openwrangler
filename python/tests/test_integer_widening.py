@@ -69,7 +69,7 @@ def assert_integer_surface(engine: Any, frame: Any, column: str) -> None:
     schema = engine.schema(frame)
     selected = next(item for item in schema if item["name"] == column)
     assert selected["type"] == "integer"
-    assert engine.summaries(frame, [column])[0]["type"] == "integer"
+    assert engine.summaries(frame, [(selected["position"], selected["id"])])[0]["type"] == "integer"
     page = engine.page(frame, 0, 10, column_projection=[(selected["position"], selected["id"])])
     assert all(row["values"][0]["kind"] == "integer" for row in page["rows"])
 

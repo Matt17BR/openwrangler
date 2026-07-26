@@ -457,7 +457,10 @@ export interface SummaryRequest {
   revision: number;
   viewRequestId: string;
   filterModel: FilterModel;
-  columns?: string[];
+  /**
+   * @minItems 1
+   */
+  columnIds?: [string, ...string[]];
 }
 export interface DatasetStatsRequest {
   kind: "getDatasetStats";
@@ -1034,6 +1037,7 @@ export interface CellValue {
   sign?: -1 | 1;
 }
 export interface ColumnSummary {
+  columnId: string;
   column: string;
   type: ColumnType;
   rawType: string;
@@ -1044,7 +1048,6 @@ export interface ColumnSummary {
   numeric?: NumericSummary;
   visualization?: ColumnVisualization;
   topValues: ValueCount[];
-  sampled?: boolean;
 }
 export interface NumericSummary {
   min?: number;

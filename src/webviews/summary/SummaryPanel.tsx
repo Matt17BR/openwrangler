@@ -3,10 +3,10 @@ import type { ColumnSchema, ColumnSummary, SessionMetadata } from "../../shared/
 interface SummaryPanelProps {
   metadata: SessionMetadata | undefined;
   summaries: ColumnSummary[];
-  schemaByName: Map<string, ColumnSchema>;
+  schemaById: Map<string, ColumnSchema>;
 }
 
-export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanelProps) {
+export function SummaryPanel({ metadata, summaries, schemaById }: SummaryPanelProps) {
   const missingByColumn = metadata?.stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
 
   return (
@@ -38,8 +38,8 @@ export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanel
           <p className="mutedText">No missing values.</p>
         ) : (
           <div className="missingList">
-            {missingByColumn.map((item) => (
-              <div key={item.column} className="barRow">
+            {missingByColumn.map((item, index) => (
+              <div key={`${item.column}-${index}`} className="barRow">
                 <span>{item.column}</span>
                 <meter min={0} max={metadata?.filteredShape.rows ?? 1} value={item.count} />
                 <small>{item.count.toLocaleString()}</small>
@@ -52,9 +52,9 @@ export function SummaryPanel({ metadata, summaries, schemaByName }: SummaryPanel
       <h3>Column Summary</h3>
       {summaries.length === 0 && <p>No summary data yet.</p>}
       {summaries.map((summary) => {
-        const schema = schemaByName.get(summary.column);
+        const schema = schemaById.get(summary.columnId);
         return (
-          <details key={summary.column} className="summaryGroup" open={summaries.length <= 6}>
+          <details key={summary.columnId} className="summaryGroup" open={summaries.length <= 6}>
             <summary>
               <span>{summary.column}</span>
               <small>{schema?.rawType ?? summary.rawType}</small>

@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, default_engine_registry
-from .engines.base import PageColumnProjection
+from .engines.base import PageColumnProjection, SummaryColumnProjection
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 from .protocol import MAX_COLUMN_LIMIT
@@ -379,14 +379,18 @@ class SessionManager:
         session_id: str,
         revision: int,
         filter_model: Mapping[str, Any],
-        columns: list[str] | None = None,
+        column_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         with self._profile_view(session, revision, filter_model) as filtered:
+            schema = self._active_schema(session)
+            projection = self._summary_projection(schema, column_ids)
+            summaries = session.engine.summaries(filtered, projection)
+            self._validate_summary_projection(summaries, schema, projection)
             return {
                 "kind": "summary",
                 "revision": revision,
-                "summaries": session.engine.summaries(filtered, columns),
+                "summaries": summaries,
             }
 
     def get_column_values(
@@ -977,6 +981,50 @@ class SessionManager:
             (int(column["position"]), str(column["id"]))
             for column in schema[column_offset : column_offset + column_limit]
         ]
+
+    @staticmethod
+    def _summary_projection(
+        schema: list[dict[str, Any]],
+        column_ids: list[str] | None,
+    ) -> list[tuple[int, str]]:
+        if column_ids is None:
+            selected = schema
+        else:
+            if (
+                not column_ids
+                or any(not isinstance(column_id, str) or not column_id for column_id in column_ids)
+                or len(set(column_ids)) != len(column_ids)
+            ):
+                raise EngineError("Summary column identities must be a non-empty unique list.")
+            schema_by_id = {str(column["id"]): column for column in schema}
+            unknown = [column_id for column_id in column_ids if column_id not in schema_by_id]
+            if unknown:
+                raise EngineError(f"Unknown summary column identity: {unknown[0]}")
+            selected = [schema_by_id[column_id] for column_id in column_ids]
+        return [(int(column["position"]), str(column["id"])) for column in selected]
+
+    @staticmethod
+    def _validate_summary_projection(
+        summaries: Any,
+        schema: list[dict[str, Any]],
+        projection: SummaryColumnProjection,
+    ) -> None:
+        if not isinstance(summaries, list) or len(summaries) != len(projection):
+            raise EngineError("The dataframe engine returned summaries for the wrong column projection.")
+        schema_by_id = {str(column["id"]): column for column in schema}
+        expected_ids = [identifier for _position, identifier in projection]
+        returned_ids = [summary.get("columnId") if isinstance(summary, Mapping) else None for summary in summaries]
+        if returned_ids != expected_ids or len(set(returned_ids)) != len(returned_ids):
+            raise EngineError("The dataframe engine returned summaries for the wrong column projection.")
+        for summary in summaries:
+            column = schema_by_id.get(str(summary["columnId"]))
+            if (
+                column is None
+                or summary.get("column") != column["name"]
+                or summary.get("type") != column["type"]
+                or summary.get("rawType") != column["rawType"]
+            ):
+                raise EngineError("The dataframe engine returned a summary that does not match the active schema.")
 
     @staticmethod
     def _validate_page_projection(

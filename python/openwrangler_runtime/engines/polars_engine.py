@@ -15,6 +15,7 @@ from .base import (
     EngineCapabilities,
     EngineError,
     PageColumnProjection,
+    SummaryColumnProjection,
     boolean_visualization,
     bound_column_name,
     categorical_visualization,
@@ -25,6 +26,7 @@ from .base import (
     infer_semantic_type,
     normalize_cell,
     normalize_page_projection,
+    normalize_summary_projection,
     numeric_visualization,
     resolve_excel_sheet_selector,
     typed_selection_value,
@@ -318,30 +320,41 @@ class PolarsEngine(DataFrameEngine):
             "rows": rows,
         }
 
-    def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
         import polars as pl
 
+        visible_columns = self._visible_columns(frame)
+        projection = normalize_summary_projection(len(visible_columns), column_projection)
+        selected = [(visible_columns[position], column_id) for position, column_id in projection]
         if isinstance(frame, pl.LazyFrame):
-            selected = list(columns) if columns is not None else self._visible_columns(frame)
             return self._lazy_summaries(frame, selected)
 
         df = self.normalize(frame)
-        selected = list(columns) if columns is not None else self._visible_columns(df)
         if not selected:
             return []
-        null_counts = df.select([pl.col(column).null_count().alias(column) for column in selected]).to_dicts()[0]
+        null_counts = df.select(
+            [
+                pl.col(column).null_count().alias(f"__open_wrangler_null_{index}")
+                for index, (column, _) in enumerate(selected)
+            ]
+        ).to_dicts()[0]
         summaries = []
-        for column in selected:
+        for index, (column, column_id) in enumerate(selected):
             series = df[column]
             raw_type = str(series.dtype)
             semantic_type = infer_semantic_type(raw_type)
             top_values, distinct_count = self._summary_counts(series, column, semantic_type)
             summary: dict[str, Any] = {
+                "columnId": column_id,
                 "column": column,
                 "type": semantic_type,
                 "rawType": raw_type,
                 "totalCount": int(df.height),
-                "nullCount": int(null_counts.get(column, 0)),
+                "nullCount": int(null_counts.get(f"__open_wrangler_null_{index}", 0)),
                 "nanCount": self._nan_count(series),
                 "distinctCount": distinct_count,
                 "topValues": top_values,
@@ -366,12 +379,13 @@ class PolarsEngine(DataFrameEngine):
                 summary["visualization"] = datetime_visualization(series.min(), series.max())
             else:
                 summary["visualization"] = categorical_visualization(
-                    summary["topValues"], int(df.height) - int(null_counts.get(column, 0)) - summary["nanCount"]
+                    summary["topValues"],
+                    int(df.height) - int(null_counts.get(f"__open_wrangler_null_{index}", 0)) - summary["nanCount"],
                 )
             summaries.append(summary)
         return summaries
 
-    def _lazy_summaries(self, frame: Any, selected: list[str]) -> list[dict[str, Any]]:
+    def _lazy_summaries(self, frame: Any, selected: list[tuple[str, str]]) -> list[dict[str, Any]]:
         import polars as pl
 
         if not selected:
@@ -381,7 +395,7 @@ class PolarsEngine(DataFrameEngine):
         definitions = []
         metric_expressions = [pl.len().alias("__open_wrangler_total")]
         top_queries = []
-        for index, column in enumerate(selected):
+        for index, (column, column_id) in enumerate(selected):
             raw_type = str(schema[column])
             semantic_type = infer_semantic_type(raw_type)
             prefix = f"__open_wrangler_{index}_"
@@ -431,7 +445,7 @@ class PolarsEngine(DataFrameEngine):
                     ]
                 )
             )
-            definitions.append((column, raw_type, semantic_type, prefix, count_name))
+            definitions.append((column, column_id, raw_type, semantic_type, prefix, count_name))
 
         metrics = frame.select(metric_expressions).collect(engine="streaming").row(0, named=True)
         top_results = self._collect_lazy_top_results(definitions, top_queries)
@@ -440,7 +454,7 @@ class PolarsEngine(DataFrameEngine):
         numeric_sample_queries = []
         numeric_sample_columns = []
         numeric_sampled: dict[str, bool] = {}
-        for column, _, semantic_type, prefix, _ in definitions:
+        for column, _, _, semantic_type, prefix, _ in definitions:
             if semantic_type not in {"integer", "float", "decimal"}:
                 continue
             valid_count = total_count - int(metrics[f"{prefix}null"]) - int(metrics[f"{prefix}nan"])
@@ -467,11 +481,12 @@ class PolarsEngine(DataFrameEngine):
         }
 
         summaries = []
-        for index, (column, raw_type, semantic_type, prefix, _) in enumerate(definitions):
+        for index, (column, column_id, raw_type, semantic_type, prefix, _) in enumerate(definitions):
             top_values, distinct_count = top_results[index]
             null_count = int(metrics[f"{prefix}null"])
             nan_count = int(metrics[f"{prefix}nan"])
             summary: dict[str, Any] = {
+                "columnId": column_id,
                 "column": column,
                 "type": semantic_type,
                 "rawType": raw_type,
@@ -496,7 +511,6 @@ class PolarsEngine(DataFrameEngine):
                 visualization = numeric_visualization(numeric_sample.get_column(column))
                 if numeric_sampled[column]:
                     visualization["sampled"] = True
-                    summary["sampled"] = True
                 summary["visualization"] = visualization
             elif semantic_type == "boolean":
                 summary["visualization"] = {
@@ -513,7 +527,7 @@ class PolarsEngine(DataFrameEngine):
 
     def _collect_lazy_top_results(
         self,
-        definitions: list[tuple[str, str, str, str, str]],
+        definitions: list[tuple[str, str, str, str, str, str]],
         queries: list[Any],
     ) -> list[tuple[list[dict[str, Any]], int]]:
         import polars as pl
@@ -532,7 +546,7 @@ class PolarsEngine(DataFrameEngine):
 
         collected = []
         for definition, result in zip(definitions, results, strict=True):
-            column, _, semantic_type, _, count_name = definition
+            column, _, _, semantic_type, _, count_name = definition
             row = result.row(0, named=True)
             top_values = [
                 {

@@ -677,7 +677,7 @@ def measure_fixture(path: Path, spec: FixtureSpec, backend: Backend = "polars") 
         raise AssertionError(f"{backend.title()} file session became eager in {eager_names} for {path.name}.")
 
     schema = opened["metadata"]["schema"]
-    profiled_columns = [column["name"] for column in schema[:VISIBLE_PROFILE_COLUMNS]]
+    profiled_columns = [column["id"] for column in schema[:VISIBLE_PROFILE_COLUMNS]]
     profile_started = perf_counter()
     profile = manager.get_summary(session_id, 0, EMPTY_FILTER, profiled_columns)
     first_visible_profile_ms = (perf_counter() - profile_started) * 1_000

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +10,7 @@ import pytest
 
 import openwrangler_runtime.session as session_runtime
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines.base import SummaryColumnProjection
 from openwrangler_runtime.session import PAGE_CACHE_LIMIT, SessionManager
 
 
@@ -53,9 +54,42 @@ class CountingPandasEngine(PandasEngine):
             column_projection=column_projection,
         )
 
-    def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
         self.summary_calls += 1
-        return super().summaries(frame, columns)
+        return super().summaries(frame, column_projection)
+
+
+class CorruptSummaryPandasEngine(PandasEngine):
+    def __init__(self, corruption: str) -> None:
+        self.corruption = corruption
+
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
+        summaries = super().summaries(frame, column_projection)
+        if self.corruption == "reverse":
+            summaries.reverse()
+        elif self.corruption == "missing":
+            summaries.pop()
+        elif self.corruption == "duplicate":
+            summaries[1]["columnId"] = summaries[0]["columnId"]
+        elif self.corruption == "unknown":
+            summaries[0]["columnId"] = "c:unknown"
+        elif self.corruption == "name":
+            summaries[0]["column"] = "renamed"
+        elif self.corruption == "type":
+            summaries[0]["type"] = "string"
+        elif self.corruption == "rawType":
+            summaries[0]["rawType"] = "String"
+        else:
+            raise AssertionError(f"Unknown summary corruption: {self.corruption}")
+        return summaries
 
 
 def counting_manager() -> tuple[SessionManager, list[CountingPandasEngine]]:
@@ -149,11 +183,56 @@ def test_open_defers_summaries_and_reuses_exact_metadata_for_the_first_page(tmp_
     assert cached["page"]["totalRows"] == 3
     assert engine.page_calls == [(0, 2, 3)]
 
-    summary = manager.get_summary(session_id, 0, {"logic": "and", "filters": [], "sort": []}, ["value"])
+    summary = manager.get_summary(
+        session_id,
+        0,
+        {"logic": "and", "filters": [], "sort": []},
+        ["c:source:1"],
+    )
     assert summary["summaries"][0]["totalCount"] == 3
     assert engine.summary_calls == 1
     assert engine.shape_calls == 1
     assert engine.schema_calls == 1
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["reverse", "missing", "duplicate", "unknown", "name", "type", "rawType"],
+)
+def test_summary_results_must_match_the_exact_stable_id_projection(tmp_path, corruption) -> None:
+    manager = SessionManager(EngineRegistry((("pandas", lambda: CorruptSummaryPandasEngine(corruption)),)))
+    opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas")
+    schema = opened["metadata"]["schema"]
+
+    with pytest.raises(EngineError, match="summary|summaries"):
+        manager.get_summary(
+            opened["metadata"]["sessionId"],
+            0,
+            {"filters": [], "sort": []},
+            [schema[1]["id"], schema[0]["id"]],
+        )
+
+
+@pytest.mark.parametrize(
+    ("column_ids", "message"),
+    [
+        ([], "non-empty unique list"),
+        (["c:source:0", "c:source:0"], "non-empty unique list"),
+        (["c:missing"], "Unknown summary column identity"),
+    ],
+)
+def test_summary_requests_reject_invalid_stable_id_projections(tmp_path, column_ids, message) -> None:
+    manager, created = counting_manager()
+    opened = manager.open_session(source(write_values(tmp_path, 3)), backend="pandas")
+
+    with pytest.raises(EngineError, match=message):
+        manager.get_summary(
+            opened["metadata"]["sessionId"],
+            0,
+            {"filters": [], "sort": []},
+            column_ids,
+        )
+    assert created[0].summary_calls == 0
 
 
 def test_page_cache_is_bounded_lru_and_never_shared_between_sessions(tmp_path) -> None:
@@ -410,7 +489,7 @@ def test_view_queries_cannot_replace_the_confirmed_page_filter_before_preview(tm
     generation = session.view_generation
     cache_items = list(session.page_cache.items())
 
-    summary = manager.get_summary(session_id, 0, old_profile_filter, ["value"])
+    summary = manager.get_summary(session_id, 0, old_profile_filter, ["c:source:1"])
     values = manager.get_column_values(session_id, 0, "value", old_profile_filter)
     stats = manager.get_dataset_stats(session_id, 0, old_profile_filter)
 
@@ -455,7 +534,7 @@ def test_draft_plan_and_close_invalidate_cache_without_rebuilding_an_unchanged_d
     filtered_identity = session.filtered
     page_calls = len(engine.page_calls)
     manager.get_page(session_id, 1, 0, 2, model)
-    manager.get_summary(session_id, 1, model, ["doubled"])
+    manager.get_summary(session_id, 1, model, ["c:step:double:0"])
     assert session.filtered is filtered_identity
     assert engine.filter_calls == 2
     assert len(engine.page_calls) == page_calls
@@ -550,7 +629,7 @@ def test_lazy_file_missing_after_open_is_recoverable_and_does_not_block_close(tm
     path.unlink()
 
     with pytest.raises(EngineError, match=r"no longer available.*Reopen"):
-        manager.get_summary(session_id, 0, {"filters": [], "sort": []}, ["value"])
+        manager.get_summary(session_id, 0, {"filters": [], "sort": []}, ["c:source:1"])
     manager.close_session(session_id, 0)
 
 
@@ -587,7 +666,7 @@ def test_every_lazy_data_request_validates_the_source_fingerprint(tmp_path, requ
         if request_kind == "page":
             return manager.get_page(session_id, revision, 0, 2, empty_filter)
         if request_kind == "summary":
-            return manager.get_summary(session_id, revision, empty_filter, ["value"])
+            return manager.get_summary(session_id, revision, empty_filter, ["c:source:1"])
         if request_kind == "columnValues":
             return manager.get_column_values(session_id, revision, "value", empty_filter)
         if request_kind == "datasetStats":

@@ -52,6 +52,7 @@ const page: GridPage = {
 };
 
 const summary: ColumnSummary = {
+  columnId: "c:0",
   column: "city",
   type: "string",
   rawType: "String",
@@ -912,7 +913,7 @@ describe("OpenWranglerPanel retained view state", () => {
         kind: "getSummary",
         viewRequestId: "summary-a",
         filterModel: metadata.filterModel,
-        columns: ["city"]
+        columnIds: ["c:0"]
       }
     });
     const staleStats = harness.send({
@@ -995,7 +996,7 @@ describe("OpenWranglerPanel retained view state", () => {
         kind: "getSummary",
         viewRequestId: "current-summary",
         filterModel: metadata.filterModel,
-        columns: ["city"]
+        columnIds: ["c:0"]
       }
     });
     await harness.send({

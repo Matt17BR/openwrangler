@@ -264,7 +264,7 @@ export class SnapshotBridge implements OpenWranglerBridge {
     const summaries = snapshotSummaries(
       this.metadataFor(request.filterModel, filteredRows.length),
       filteredRows,
-      request.columns
+      request.columnIds
     );
     return {
       kind: "summary",

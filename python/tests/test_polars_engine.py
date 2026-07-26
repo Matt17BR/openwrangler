@@ -85,7 +85,8 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
     assert page["metadata"]["filteredShape"]["rows"] == 3
     assert [row["values"][0]["display"] for row in page["page"]["rows"]] == ["Berlin", "Milan", "Paris"]
 
-    summary = manager.get_summary(opened["metadata"]["sessionId"], 0, filter_model, ["sales"])
+    sales_id = next(column["id"] for column in opened["metadata"]["schema"] if column["name"] == "sales")
+    summary = manager.get_summary(opened["metadata"]["sessionId"], 0, filter_model, [sales_id])
     assert summary["summaries"][0]["numeric"]["max"] == 12.0
     assert summary["summaries"][0]["visualization"]["kind"] == "numeric"
     assert summary["summaries"][0]["visualization"]["bins"]
@@ -258,7 +259,7 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
 
     monkeypatch.setattr(pl.Series, "to_list", bounded_to_list)
 
-    summary = PolarsEngine().summaries(frame, ["value"])[0]
+    summary = PolarsEngine().summaries(frame, [(0, "c:value")])[0]
 
     assert collected_heights
     assert max(collected_heights) <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
@@ -274,7 +275,7 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
         "median": pytest.approx(eager.median()),
         "std": pytest.approx(eager.std()),
     }
-    assert summary["sampled"] is True
+    assert "sampled" not in summary
     assert summary["visualization"]["sampled"] is True
     assert sum(bin_["count"] for bin_ in summary["visualization"]["bins"]) <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
 
@@ -295,8 +296,8 @@ def test_polars_numeric_histogram_samples_valid_values_after_nulls(lazy: bool):
     frame = pl.DataFrame({"value": values})
     source = frame.lazy() if lazy else frame
 
-    first = PolarsEngine().summaries(source, ["value"])[0]
-    second = PolarsEngine().summaries(source, ["value"])[0]
+    first = PolarsEngine().summaries(source, [(0, "c:value")])[0]
+    second = PolarsEngine().summaries(source, [(0, "c:value")])[0]
 
     assert first["numeric"]["min"] == 1.0
     assert first["numeric"]["max"] == float(row_count - 1)
@@ -306,7 +307,7 @@ def test_polars_numeric_histogram_samples_valid_values_after_nulls(lazy: bool):
     histogram_count = sum(bin_["count"] for bin_ in first["visualization"]["bins"])
     assert histogram_count == (SUMMARY_VISUALIZATION_SAMPLE_LIMIT if lazy else row_count // 2)
     if lazy:
-        assert first["sampled"] is True
+        assert "sampled" not in first
         assert first["visualization"]["sampled"] is True
 
 
@@ -347,7 +348,7 @@ def test_polars_summary_excludes_null_and_nan_from_values_and_numeric_metrics(la
     frame = pl.DataFrame({"value": [1.0, None, float("nan"), 1.0]})
     source = frame.lazy() if lazy else frame
 
-    summary = PolarsEngine().summaries(source, ["value"])[0]
+    summary = PolarsEngine().summaries(source, [(0, "c:value")])[0]
 
     assert summary["nullCount"] == 1
     assert summary["nanCount"] == 1
