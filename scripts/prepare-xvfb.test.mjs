@@ -60,6 +60,7 @@ test("prepares one pinned repository-local Xvfb and reuses the validated cache",
   let downloads = 0;
   let extractions = 0;
   const options = {
+    platform: "linux",
     architecture: "x64",
     osReleaseText: fixture.osReleaseText,
     manifest: fixture.manifest,
@@ -94,6 +95,7 @@ test("fails unsupported hosts before dependency, network, or extraction work", a
 
   await assert.rejects(
     prepareRepositoryLocalXvfb({
+      platform: "linux",
       architecture: "arm64",
       osReleaseText: fixture.osReleaseText,
       manifest: fixture.manifest,
@@ -114,6 +116,33 @@ test("fails unsupported hosts before dependency, network, or extraction work", a
   assert.equal(existsSync(fixture.cacheRoot), false);
 });
 
+test("fails a non-Linux platform before dependency, network, or extraction work", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  let called = false;
+
+  await assert.rejects(
+    prepareRepositoryLocalXvfb({
+      platform: "win32",
+      architecture: "x64",
+      manifest: fixture.manifest,
+      cacheRoot: fixture.cacheRoot,
+      queryPackage: async () => {
+        called = true;
+      },
+      downloadPackage: async () => {
+        called = true;
+      },
+      extractPackage: async () => {
+        called = true;
+      }
+    }),
+    /supported only on Linux/u
+  );
+  assert.equal(called, false);
+  assert.equal(existsSync(fixture.cacheRoot), false);
+});
+
 test("fails a host dependency version mismatch before downloading", async (context) => {
   const fixture = testFixture();
   context.after(() => removeTestRoot(fixture.root));
@@ -121,6 +150,7 @@ test("fails a host dependency version mismatch before downloading", async (conte
 
   await assert.rejects(
     prepareRepositoryLocalXvfb({
+      platform: "linux",
       architecture: "x64",
       osReleaseText: fixture.osReleaseText,
       manifest: fixture.manifest,
@@ -142,6 +172,7 @@ test("never publishes a package whose pinned digest does not match", async (cont
 
   await assert.rejects(
     prepareRepositoryLocalXvfb({
+      platform: "linux",
       architecture: "x64",
       osReleaseText: fixture.osReleaseText,
       manifest: fixture.manifest,
@@ -167,6 +198,7 @@ test("rejects a symbolic-link executable extracted from the archive", async (con
 
   await assert.rejects(
     prepareRepositoryLocalXvfb({
+      platform: "linux",
       architecture: "x64",
       osReleaseText: fixture.osReleaseText,
       manifest: fixture.manifest,
@@ -192,6 +224,7 @@ test("concurrent preparation publishes one complete cache entry", async (context
   let downloads = 0;
   let extractions = 0;
   const options = {
+    platform: "linux",
     architecture: "x64",
     osReleaseText: fixture.osReleaseText,
     manifest: fixture.manifest,
