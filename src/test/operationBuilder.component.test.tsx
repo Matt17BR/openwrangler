@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
 import { operationCatalog } from "../shared/operations";
 import { OperationBuilder } from "../webviews/operations/OperationBuilder";
@@ -31,6 +31,8 @@ const metadata: SessionMetadata = {
 };
 
 describe("OperationBuilder", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("exposes the complete deterministic operation catalog", () => {
     render(
       <OperationBuilder
@@ -99,6 +101,30 @@ describe("OperationBuilder", () => {
     fireEvent.submit(screen.getByRole("button", { name: "Preview changes" }).closest("form") as HTMLFormElement);
     expect(onClose).not.toHaveBeenCalled();
     expect(onPreview).not.toHaveBeenCalled();
+  });
+
+  it("does not reclaim host focus when a pending preview disables the active control", () => {
+    const props = {
+      metadata,
+      filterModel: { filters: [], sort: [] },
+      initialKind: "renameColumn" as const,
+      busy: false,
+      onClose: () => undefined,
+      onPreview: () => undefined
+    };
+    const { rerender } = render(<OperationBuilder {...props} />);
+    const name = screen.getByLabelText("New name");
+    name.focus();
+    expect(name).toHaveFocus();
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    focus.mockClear();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    rerender(<OperationBuilder {...props} busy={true} />);
+
+    expect(focus).not.toHaveBeenCalled();
+    focus.mockRestore();
+    hasFocus.mockRestore();
   });
 
   it("contains keyboard focus within the modal operation picker", () => {

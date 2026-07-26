@@ -741,14 +741,97 @@ describe("App progressive profiling and view correlation", () => {
     expect(viewId(retry.request)).not.toBe(viewId(first.request));
     expect(retry.viewContextId).toBe(first.viewContextId);
 
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      dispatch({
+        kind: "page",
+        revision: metadata.revision,
+        viewRequestId: viewId(retry.request),
+        metadata,
+        page: { ...page, offset: 200, rows: [{ ...page.rows[0], rowNumber: 200, id: "r:200" }] }
+      });
+      await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-row", "200"));
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("does not restore retry focus after the host takes focus before the page response commits", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    postMessage.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    const first = onlyRuntimeEnvelope("getPage");
     dispatch({
-      kind: "page",
-      revision: metadata.revision,
-      viewRequestId: viewId(retry.request),
-      metadata,
-      page: { ...page, offset: 200, rows: [{ ...page.rows[0], rowNumber: 200, id: "r:200" }] }
+      kind: "error",
+      code: "page_failed",
+      message: "Block failed",
+      recoverable: true,
+      viewRequestId: viewId(first.request)
     });
-    await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-row", "200"));
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Retry page" }));
+    const retry = onlyRuntimeEnvelope("getPage");
+
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    try {
+      dispatch({
+        kind: "page",
+        revision: metadata.revision,
+        viewRequestId: viewId(retry.request),
+        metadata,
+        page: { ...page, offset: 200, rows: [{ ...page.rows[0], rowNumber: 200, id: "r:200" }] }
+      });
+      expect(frames).toHaveLength(1);
+      focus.mockClear();
+      hasFocus.mockReturnValue(false);
+      act(() => {
+        for (const frame of frames) frame(performance.now());
+      });
+      expect(focus).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("does not restore drawer focus after the host takes focus before the close frame runs", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    expect(screen.getByRole("complementary", { name: "Insights and filters" })).toBeInTheDocument();
+
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+      expect(frames).toHaveLength(1);
+      focus.mockClear();
+      hasFocus.mockReturnValue(false);
+      act(() => {
+        for (const frame of frames) frame(performance.now());
+      });
+      expect(focus).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
   });
 
   it("uses a new opaque view context for A to B to A even when filters and revisions match again", async () => {
