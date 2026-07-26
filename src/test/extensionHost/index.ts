@@ -5027,6 +5027,7 @@ async function exerciseLiveImportReconfiguration(
   );
   const confirmedBeforeCancellation = stableImportReconfigurationSnapshot(testing.activeSession());
   const diagnosticsBeforeCancellation = stableImportDiagnostics(testing.diagnostics());
+  await waitForImportNaturalKeyboardFocus(delimiterPrompt, "Delimiter", "contains");
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Escape"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -5051,6 +5052,7 @@ async function exerciseLiveImportReconfiguration(
   const gridImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
   await gridImportAction.click();
   const gridDelimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await waitForImportNaturalKeyboardFocus(gridDelimiterPrompt, "Delimiter", "contains");
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Escape"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
