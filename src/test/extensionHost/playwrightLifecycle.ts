@@ -11,6 +11,13 @@ interface PageLifecycle {
   mainFrame(): FrameLifecycle;
 }
 
+interface AcceptancePollOptions {
+  readonly timeoutMs: number;
+  readonly intervalMs: number;
+  readonly now?: () => number;
+  readonly wait?: (durationMs: number) => Promise<void>;
+}
+
 export async function withAcceptanceOperationDeadline<T>(
   operation: PromiseLike<T>,
   timeoutMs: number,
@@ -26,6 +33,26 @@ export async function withAcceptanceOperationDeadline<T>(
     return await Promise.race([operation, timeout]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+export async function pollAcceptanceCondition(
+  probe: () => Promise<boolean>,
+  { timeoutMs, intervalMs, now = Date.now, wait = waitForPollInterval }: AcceptancePollOptions
+): Promise<boolean> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Acceptance polling requires a positive safe-integer timeout.");
+  }
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 1) {
+    throw new Error("Acceptance polling requires a positive safe-integer interval.");
+  }
+
+  const deadline = now() + timeoutMs;
+  while (true) {
+    if (await probe()) return true;
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) return false;
+    await wait(Math.min(intervalMs, remainingMs));
   }
 }
 
@@ -47,4 +74,8 @@ export function ignoreRetiredRendererProbeFailure(
   ) {
     throw error;
   }
+}
+
+function waitForPollInterval(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
 }

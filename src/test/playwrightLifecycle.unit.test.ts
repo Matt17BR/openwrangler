@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
+  pollAcceptanceCondition,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
 
@@ -56,6 +57,40 @@ describe("extension-host Playwright lifecycle", () => {
   it("preserves an operation's own failure", async () => {
     const error = new Error("locator failed");
     await expect(withAcceptanceOperationDeadline(Promise.reject(error), 10_000, "the prompt")).rejects.toBe(error);
+  });
+
+  it("polls a naturally transferred focus state without assigning focus", async () => {
+    const probe = vi
+      .fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const wait = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    await expect(pollAcceptanceCondition(probe, { timeoutMs: 500, intervalMs: 50, wait })).resolves.toBe(true);
+    expect(probe).toHaveBeenCalledTimes(3);
+    expect(wait).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenNthCalledWith(1, 50);
+    expect(wait).toHaveBeenNthCalledWith(2, 50);
+  });
+
+  it("stops natural-focus polling at its exact deadline", async () => {
+    const probe = vi.fn<() => Promise<boolean>>().mockResolvedValue(false);
+    let currentTime = 0;
+    const wait = vi.fn<(durationMs: number) => Promise<void>>(async (durationMs) => {
+      currentTime += durationMs;
+    });
+
+    await expect(
+      pollAcceptanceCondition(probe, {
+        timeoutMs: 100,
+        intervalMs: 25,
+        now: () => currentTime,
+        wait
+      })
+    ).resolves.toBe(false);
+    expect(probe).toHaveBeenCalledTimes(5);
+    expect(wait).toHaveBeenCalledTimes(4);
   });
 
   it("retires a closed auxiliary page without treating the workbench as closed", () => {

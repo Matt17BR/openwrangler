@@ -35,6 +35,7 @@ import type { GridViewState, PersistedViewingState } from "../../shared/viewStat
 import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
+  pollAcceptanceCondition,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
@@ -89,6 +90,9 @@ const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_
 const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
 const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
 const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+const IMPORT_FOCUS_POLL_TIMEOUT_MS = 3_000;
+const IMPORT_FOCUS_POLL_INTERVAL_MS = 50;
+const IMPORT_FOCUS_PROBE_TIMEOUT_MS = 1_000;
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
 const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
@@ -1055,15 +1059,7 @@ async function acceptDefaultDelimitedImport(
       /(?:^|\s)focused(?:\s|$)/u,
       `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
     );
-    assert.equal(
-      await withAcceptanceOperationDeadline(
-        quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} keyboard focus`
-      ),
-      true,
-      `${title} must own keyboard focus before accepting its default option.`
-    );
+    await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
     recordAcceptanceProgress(`${checkpoint}:accept`);
     await withAcceptanceOperationDeadline(
       page.keyboard.press("Enter"),
@@ -1103,15 +1099,7 @@ async function acceptDefaultDelimitedImport(
     ),
     '"'
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.evaluate((element) => element === element.ownerDocument.activeElement),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character keyboard focus"
-    ),
-    true,
-    "Quote character must own keyboard focus before accepting its default value."
-  );
+  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Enter"),
@@ -1143,6 +1131,74 @@ async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unkn
       ),
       WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
       "import-option diagnostics"
+    );
+  } catch {
+    return "unavailable within the diagnostics deadline";
+  }
+}
+
+type ImportFocusRelationship = "contains" | "exact";
+
+async function waitForImportNaturalKeyboardFocus(
+  target: Locator,
+  title: string,
+  relationship: ImportFocusRelationship
+): Promise<void> {
+  const focused = await withAcceptanceOperationDeadline(
+    pollAcceptanceCondition(
+      () =>
+        target.evaluate(
+          (element, expectedRelationship) => {
+            const activeElement = element.ownerDocument.activeElement;
+            return expectedRelationship === "exact" ? element === activeElement : element.contains(activeElement);
+          },
+          relationship,
+          { timeout: IMPORT_FOCUS_PROBE_TIMEOUT_MS }
+        ),
+      {
+        timeoutMs: IMPORT_FOCUS_POLL_TIMEOUT_MS,
+        intervalMs: IMPORT_FOCUS_POLL_INTERVAL_MS
+      }
+    ),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} natural keyboard focus`
+  );
+  if (focused) return;
+
+  const diagnostics = await boundedImportFocusDiagnostics(target, relationship);
+  throw new Error(
+    `${title} did not naturally receive keyboard focus within ${IMPORT_FOCUS_POLL_TIMEOUT_MS} ms. ` +
+      `Structural focus diagnostics: ${JSON.stringify(diagnostics)}`
+  );
+}
+
+async function boundedImportFocusDiagnostics(target: Locator, relationship: ImportFocusRelationship): Promise<unknown> {
+  try {
+    return await withAcceptanceOperationDeadline(
+      target.evaluate(
+        (element, expectedRelationship) => {
+          const activeElement = element.ownerDocument.activeElement;
+          return {
+            targetConnected: element.isConnected,
+            targetOwnsFocus:
+              expectedRelationship === "exact" ? element === activeElement : element.contains(activeElement),
+            activeElement:
+              activeElement === null
+                ? null
+                : {
+                    tagName: activeElement.tagName.slice(0, 32),
+                    role: activeElement.getAttribute("role")?.slice(0, 64) ?? null,
+                    classTokens: Array.from(activeElement.classList)
+                      .slice(0, 8)
+                      .map((token) => token.slice(0, 64))
+                  }
+          };
+        },
+        relationship,
+        { timeout: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS }
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import focus diagnostics"
     );
   } catch {
     return "unavailable within the diagnostics deadline";
@@ -5100,19 +5156,11 @@ async function acceptDelimitedImportOptions(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote-character field to become visible"
   );
+  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
   await withAcceptanceOperationDeadline(
     field.fill(selection.quoteChar, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote character"
-  );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.evaluate((element) => element === element.ownerDocument.activeElement),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "the configured quote-character keyboard focus"
-    ),
-    true,
-    "The configured quote-character field must own keyboard focus before it is accepted."
   );
   recordAcceptanceProgress(`${quoteCheckpoint}:focused`);
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
@@ -5143,15 +5191,7 @@ async function acceptQuickPickOptionWithKeyboard(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `${title} option ${JSON.stringify(option)} to become visible`
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} keyboard focus`
-    ),
-    true,
-    `${title} must own keyboard focus before selecting ${JSON.stringify(option)}.`
-  );
+  await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
   const optionCount = await withAcceptanceOperationDeadline(
     quickInput.getByRole("option").count(),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -5233,6 +5273,7 @@ async function acceptExcelImportOptions(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `the ${inputTitle} field to become visible`
   );
+  await waitForImportNaturalKeyboardFocus(field, inputTitle, "exact");
   await withAcceptanceOperationDeadline(
     field.fill(value, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
