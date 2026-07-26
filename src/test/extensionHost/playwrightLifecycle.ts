@@ -77,14 +77,17 @@ export async function probeRendererButtonReadiness(
 }
 
 export async function pressKeyboardKeyPairWithoutTransitionGap(keyboard: KeyboardKeyPair, key: string): Promise<void> {
-  // Playwright's press() awaits key-down before it queues key-up. A final
-  // QuickInput can replace the active editor during that acknowledgement, so
+  // Playwright's press() awaits key-down before it queues key-up. A transitioning
+  // QuickInput can close and show its successor during that acknowledgement, so
   // queue both genuine keyboard events first and then await both responses.
   const keyDown = keyboard.down(key);
   const keyUp = keyboard.up(key);
   const [keyDownResult, keyUpResult] = await Promise.allSettled([keyDown, keyUp]);
   if (keyDownResult.status === "rejected" && keyUpResult.status === "rejected") {
-    throw new AggregateError([keyDownResult.reason, keyUpResult.reason], "Both final-prompt keyboard events failed.");
+    throw new AggregateError(
+      [keyDownResult.reason, keyUpResult.reason],
+      "Both transitioning-QuickInput keyboard events failed."
+    );
   }
   if (keyDownResult.status === "rejected") throw keyDownResult.reason;
   if (keyUpResult.status === "rejected") throw keyUpResult.reason;

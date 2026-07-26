@@ -3464,7 +3464,7 @@ async function acceptDefaultDelimitedImport(
     await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
     recordAcceptanceProgress(`${checkpoint}:accept`);
     await withAcceptanceOperationDeadline(
-      page.keyboard.press("Enter"),
+      pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
       WORKBENCH_OPERATION_TIMEOUT_MS,
       `${title} default option keyboard acceptance`
     );
@@ -8067,7 +8067,7 @@ async function acceptQuickPickOptionWithKeyboard(
   if (checkpoint) recordAcceptanceProgress(`${checkpoint}:focused`);
   if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accept`);
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `${title} option ${JSON.stringify(option)} keyboard acceptance`
   );

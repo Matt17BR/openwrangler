@@ -95,7 +95,7 @@ describe("extension-host Playwright lifecycle", () => {
     expect(wait).toHaveBeenCalledTimes(4);
   });
 
-  it("queues key-up before a final-prompt key-down acknowledgement and awaits key-down completion", async () => {
+  it("queues key-up before a transitioning-QuickInput key-down acknowledgement and awaits key-down", async () => {
     let resolveKeyDown!: () => void;
     const keyDown = new Promise<void>((resolve) => {
       resolveKeyDown = resolve;
@@ -125,7 +125,7 @@ describe("extension-host Playwright lifecycle", () => {
     await expect(outcome).resolves.toBeUndefined();
   });
 
-  it("awaits final-prompt key-up completion after key-down settles", async () => {
+  it("awaits transitioning-QuickInput key-up completion after key-down settles", async () => {
     let resolveKeyUp!: () => void;
     const keyUp = new Promise<void>((resolve) => {
       resolveKeyUp = resolve;
@@ -153,7 +153,7 @@ describe("extension-host Playwright lifecycle", () => {
     await expect(outcome).resolves.toBeUndefined();
   });
 
-  it.each(["down", "up"] as const)("propagates a final-prompt key-%s failure", async (failedEvent) => {
+  it.each(["down", "up"] as const)("propagates a transitioning-QuickInput key-%s failure", async (failedEvent) => {
     const error = new Error(`${failedEvent} failed`);
     const keyboard = {
       down: vi.fn().mockImplementation(async () => {
@@ -169,7 +169,7 @@ describe("extension-host Playwright lifecycle", () => {
     expect(keyboard.up).toHaveBeenCalledWith("Enter");
   });
 
-  it("awaits the peer keyboard event before propagating an early final-prompt failure", async () => {
+  it("awaits the peer keyboard event before propagating an early transitioning-QuickInput failure", async () => {
     const error = new Error("key-down failed");
     let resolveKeyUp!: () => void;
     const keyUp = new Promise<void>((resolve) => {
@@ -197,7 +197,7 @@ describe("extension-host Playwright lifecycle", () => {
     await expect(outcome).rejects.toBe(error);
   });
 
-  it("retains both failures when both final-prompt keyboard events reject", async () => {
+  it("retains both failures when both transitioning-QuickInput keyboard events reject", async () => {
     const keyDownError = new Error("key-down failed");
     const keyUpError = new Error("key-up failed");
     const keyboard = {
@@ -207,7 +207,7 @@ describe("extension-host Playwright lifecycle", () => {
 
     const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
     await expect(outcome).rejects.toMatchObject({
-      message: "Both final-prompt keyboard events failed.",
+      message: "Both transitioning-QuickInput keyboard events failed.",
       errors: [keyDownError, keyUpError]
     });
   });
