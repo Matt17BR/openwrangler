@@ -2157,7 +2157,7 @@ async function probeReleasedNotebookToolbarOverflow(workbench: Page): Promise<Re
         : moreByLabel.first();
     if (!(await more.isVisible())) continue;
     await more.click({ timeout: 2_000 });
-    const visibleMenus = frame.locator(".context-view .monaco-menu-container:visible");
+    const visibleMenus = frame.locator(".context-view.monaco-menu-container:visible");
     const menuContainer = visibleMenus.first();
     let openedMenu: ElementHandle<unknown> | undefined;
     let closed = false;
