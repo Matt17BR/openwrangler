@@ -5779,7 +5779,9 @@ async function exerciseDependencyMutationRecovery(
         blockedOpenInvocations.every(
           (arguments_) =>
             (arguments_.length === 1 && arguments_[0] === "-c") ||
-            (arguments_.length === 2 && arguments_[0] === recovery.helperPath && arguments_[1] === "status")
+            (arguments_.length === 2 &&
+              sameAcceptanceExecutable(arguments_[0], recovery.helperPath) &&
+              arguments_[1] === "status")
         ),
       `Blocked-open Python work was not limited to environment/status checks: ${JSON.stringify(blockedOpenInvocations)}`
     );
@@ -7136,7 +7138,7 @@ function readDependencyGuardProbeInvocations(fixture: DependencyGuardRecoveryFix
   });
 }
 
-function readDependencyGuardAcceptanceInvocations(fixture: DependencyGuardRecoveryFixture): unknown[][] {
+function readDependencyGuardAcceptanceInvocations(fixture: DependencyGuardRecoveryFixture): string[][] {
   const payload = readFileSync(fixture.invocationLog);
   assert.ok(payload.byteLength <= 65_536, "Dependency-recovery invocation evidence exceeded 64 KiB.");
   const lines = payload.toString("utf8").split("\n");
