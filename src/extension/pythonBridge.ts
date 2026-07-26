@@ -32,7 +32,7 @@ import {
   type PythonEnvironment,
   type PythonEnvironmentSelectionChangeEvent
 } from "./pythonEnvironment";
-import { backendImportCapabilityFailure } from "./pythonEnvironmentModel";
+import { backendImportCapabilityFailure, type PythonDependency } from "./pythonEnvironmentModel";
 import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
@@ -121,12 +121,32 @@ interface DependencyInstallOperation {
   uncertainty?: unknown;
 }
 
+interface DependencyProbeFlight {
+  readonly key: string;
+  readonly packageEnvironmentKey: string;
+  detached: boolean;
+  promise: Promise<DependencyProbeOutcome>;
+}
+
+interface DependencyProbeOutcome {
+  readonly missing: string[];
+  readonly flight?: DependencyProbeFlight;
+}
+
+class DetachedDependencyProbeError extends Error {
+  constructor() {
+    super("The Python dependency probe was invalidated before it completed.");
+    this.name = "DetachedDependencyProbeError";
+  }
+}
+
 const PROCESS_SHUTDOWN_AGGREGATE_MESSAGE = "Open Wrangler encountered multiple Python runtime shutdown failures.";
 // Inactive scopes are retained as a small LRU so repeated external-file opens can
 // reuse dependency/environment work without allowing arbitrary resource URIs to
 // grow the bridge maps forever. Live or explicitly leased scopes may temporarily
 // exceed this bound; the next ownership release trims back to it.
 const MAX_RETAINED_INACTIVE_SCOPES = 128;
+const MAX_COMPLETED_DEPENDENCY_PROBES = 128;
 
 async function joinProcessStops(previous: Promise<void>, current: Promise<void>): Promise<void> {
   const results = await Promise.allSettled([previous, current]);
@@ -163,6 +183,8 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private disposed = false;
   private readonly environmentSelections = new Map<string, EnvironmentSelection>();
   private readonly dependencyCache = new Map<string, string[]>();
+  private readonly dependencyProbes = new Map<string, DependencyProbeFlight>();
+  private readonly dependencyProbeOwners = new Map<string, DependencyProbeFlight>();
   private lastMissingDependencies: MissingDependencies | undefined;
   private dependencyInstallOperation: DependencyInstallOperation | undefined;
   private readonly dependencyMutations = new Map<string, DependencyInstallOperation>();
@@ -415,11 +437,124 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       ...this.runtimeSlots.keys(),
       ...(this.lastMissingDependencies ? [this.lastMissingDependencies.selection.key] : [])
     ]);
-    if (!force && keys.size === 0 && this.dependencyCache.size === 0 && !this.lastMissingDependencies) {
+    if (
+      !force &&
+      keys.size === 0 &&
+      this.dependencyCache.size === 0 &&
+      this.dependencyProbes.size === 0 &&
+      this.dependencyProbeOwners.size === 0 &&
+      !this.lastMissingDependencies
+    ) {
       return;
     }
-    this.dependencyCache.clear();
+    this.invalidateAllDependencyProbes();
     this.invalidateSelectionScopes(keys, reason, force);
+  }
+
+  private invalidateAllDependencyProbes(): void {
+    for (const flight of this.dependencyProbes.values()) flight.detached = true;
+    for (const flight of this.dependencyProbeOwners.values()) flight.detached = true;
+    this.dependencyCache.clear();
+    this.dependencyProbes.clear();
+    this.dependencyProbeOwners.clear();
+  }
+
+  private invalidateDependencyProbeKey(key: string): void {
+    const inFlight = this.dependencyProbes.get(key);
+    if (inFlight) inFlight.detached = true;
+    const completed = this.dependencyProbeOwners.get(key);
+    if (completed) completed.detached = true;
+    this.dependencyCache.delete(key);
+    this.dependencyProbes.delete(key);
+    this.dependencyProbeOwners.delete(key);
+  }
+
+  private invalidateDependencyProbesForPackageEnvironment(packageEnvironmentKey: string): void {
+    const prefix = pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey);
+    const keys = new Set([
+      ...this.dependencyCache.keys(),
+      ...this.dependencyProbes.keys(),
+      ...this.dependencyProbeOwners.keys()
+    ]);
+    for (const key of keys) if (key.startsWith(prefix)) this.invalidateDependencyProbeKey(key);
+  }
+
+  private getCompletedDependencyProbe(key: string): DependencyProbeOutcome | undefined {
+    const missing = this.dependencyCache.get(key);
+    if (missing === undefined) return undefined;
+    this.dependencyCache.delete(key);
+    this.dependencyCache.set(key, missing);
+    return { missing, flight: this.dependencyProbeOwners.get(key) };
+  }
+
+  private publishCompletedDependencyProbe(
+    key: string,
+    missing: readonly string[],
+    flight: DependencyProbeFlight
+  ): DependencyProbeOutcome {
+    const retained = [...missing];
+    this.dependencyCache.delete(key);
+    this.dependencyCache.set(key, retained);
+    this.dependencyProbeOwners.set(key, flight);
+    while (this.dependencyCache.size > MAX_COMPLETED_DEPENDENCY_PROBES) {
+      const oldest = this.dependencyCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.dependencyCache.delete(oldest);
+      this.dependencyProbeOwners.delete(oldest);
+    }
+    return { missing: retained, flight };
+  }
+
+  private probeDependenciesForEnvironment(
+    environment: PythonEnvironment,
+    dependencies: readonly PythonDependency[]
+  ): DependencyProbeOutcome | Promise<DependencyProbeOutcome> {
+    const key = dependencyProbeKey(environment, dependencies);
+    const completed = this.getCompletedDependencyProbe(key);
+    if (completed !== undefined) return completed;
+    return this.probeDependenciesSingleFlight(key, pythonPackageEnvironmentKey(environment), environment, dependencies);
+  }
+
+  private probeDependenciesSingleFlight(
+    key: string,
+    packageEnvironmentKey: string,
+    environment: PythonEnvironment,
+    dependencies: readonly PythonDependency[]
+  ): Promise<DependencyProbeOutcome> {
+    const existing = this.dependencyProbes.get(key);
+    if (existing) return existing.promise;
+
+    const flight = {
+      key,
+      packageEnvironmentKey,
+      detached: false
+    } as DependencyProbeFlight;
+    const detached = (): boolean =>
+      flight.detached ||
+      this.dependencyProbes.get(flight.key) !== flight ||
+      this.disposed ||
+      this.dependencyMutations.has(flight.packageEnvironmentKey);
+    const promise = Promise.resolve()
+      .then(() => {
+        if (detached()) throw new DetachedDependencyProbeError();
+        return probeDependencies(environment.executable, dependencies);
+      })
+      .then(
+        (result) => {
+          const missing = [...result.missing];
+          if (detached()) throw new DetachedDependencyProbeError();
+          this.dependencyProbes.delete(flight.key);
+          return this.publishCompletedDependencyProbe(flight.key, missing, flight);
+        },
+        (error: unknown) => {
+          if (detached()) throw new DetachedDependencyProbeError();
+          this.dependencyProbes.delete(flight.key);
+          throw error;
+        }
+      );
+    flight.promise = promise;
+    this.dependencyProbes.set(key, flight);
+    return promise;
   }
 
   private invalidateSelectionScopes(keys: ReadonlySet<string>, reason: string, force = false): void {
@@ -441,7 +576,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       const hadActiveMissingTarget = this.lastMissingDependencies?.selection === selection;
       if (selection) {
         this.environmentSelections.delete(key);
-        for (const dependencyKey of selection.dependencyKeys) this.dependencyCache.delete(dependencyKey);
+        for (const dependencyKey of selection.dependencyKeys) {
+          this.invalidateDependencyProbeKey(dependencyKey);
+        }
       }
       if (this.lastMissingDependencies?.selection.key === key) this.lastMissingDependencies = undefined;
       const runtime = this.runtimeSlots.get(key);
@@ -628,10 +765,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     reason: string
   ): StoppingRuntimeProcess[] {
     const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
-    const dependencyPrefix = pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey);
-    for (const key of this.dependencyCache.keys()) {
-      if (key.startsWith(dependencyPrefix)) this.dependencyCache.delete(key);
-    }
+    this.invalidateDependencyProbesForPackageEnvironment(packageEnvironmentKey);
     const affected = new Set(
       [...this.environmentSelections.values()]
         .filter(
@@ -787,7 +921,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       }
     }
     this.environmentSelections.clear();
-    this.dependencyCache.clear();
+    this.invalidateAllDependencyProbes();
     this.lastMissingDependencies = undefined;
 
     const failures: unknown[] = [];
@@ -930,7 +1064,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (!this.runtimeSlots.delete(runtime.key)) return false;
     if (selection && this.environmentSelections.get(runtime.key) === selection) {
       this.environmentSelections.delete(runtime.key);
-      this.clearUnreferencedDependencyKeys(selection.dependencyKeys);
     }
     if (this.selectionEpochs.get(runtime.key) === selectionEpoch) {
       this.selectionEpochs.delete(runtime.key);
@@ -943,14 +1076,6 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     runtime.processSelection = undefined;
     runtime.processStartSelection = undefined;
     return true;
-  }
-
-  private clearUnreferencedDependencyKeys(keys: ReadonlySet<string>): void {
-    for (const key of keys) {
-      const retained = [...this.environmentSelections.values()].some((selection) => selection.dependencyKeys.has(key));
-      if (retained || this.lastMissingDependencies?.selection.dependencyKeys.has(key)) continue;
-      this.dependencyCache.delete(key);
-    }
   }
 
   private evictOrphanedScope(key: string): boolean {
@@ -1789,22 +1914,24 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
       const dependencies = requiredDependencies(backend, request.source);
       const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
-      const environmentIdentityKey = pythonEnvironmentIdentityKey(environment);
-      const key = `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${environmentIdentityKey.length}:${environmentIdentityKey}:${JSON.stringify(
-        dependencies.map((dependency) => dependency.installSpec)
-      )}`;
+      const key = dependencyProbeKey(environment, dependencies);
       selection.dependencyKeys.add(key);
-      let missing = this.dependencyCache.get(key);
-      if (!missing) {
-        const result = await probeDependencies(environment.executable, dependencies);
-        if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
-        if (this.dependencyMutations.has(packageEnvironmentKey)) {
+      let missing: string[];
+      try {
+        const completedOrProbe = this.probeDependenciesForEnvironment(environment, dependencies);
+        const outcome = completedOrProbe instanceof Promise ? await completedOrProbe : completedOrProbe;
+        if (outcome.flight?.detached) return { request: this.runtimeSelectionChangedError() };
+        missing = outcome.missing;
+      } catch (error) {
+        if (error instanceof DetachedDependencyProbeError) {
           return { request: this.runtimeSelectionChangedError() };
         }
-        missing = result.missing;
-        this.dependencyCache.set(key, missing);
+        throw error;
       }
       if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
+      if (this.dependencyMutations.has(packageEnvironmentKey)) {
+        return { request: this.runtimeSelectionChangedError() };
+      }
       if (missing.length === 0) {
         if (this.lastMissingDependencies?.selection.key === selection.key) {
           this.lastMissingDependencies = undefined;
@@ -1952,6 +2079,29 @@ function pythonEnvironmentIdentityKey(
     pythonExecutableKey(environment.executable),
     environment.version
   ]);
+}
+
+function dependencyProbeKey(
+  environment: Pick<PythonEnvironment, "executable" | "packageRootIdentity" | "version">,
+  dependencies: readonly PythonDependency[]
+): string {
+  if (!isFullyQualifiedPythonPath(environment.executable)) {
+    throw new Error("Python dependency probing requires an absolute executable path.");
+  }
+  const packageEnvironmentKey = pythonPackageEnvironmentKey(environment);
+  const descriptorKey = dependencies.map((dependency) => [
+    dependency.importModule,
+    dependency.distribution,
+    dependency.installSpec,
+    dependency.minimumVersion ?? null,
+    dependency.maximumVersionExclusive ?? null
+  ]);
+  const probeIdentity = JSON.stringify([
+    pythonExecutableKey(environment.executable),
+    environment.version,
+    descriptorKey
+  ]);
+  return `${pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey)}${probeIdentity}`;
 }
 
 function pythonPackageEnvironmentDependencyPrefix(packageEnvironmentKey: string): string {

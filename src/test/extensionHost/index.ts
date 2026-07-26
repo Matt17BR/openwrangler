@@ -35,6 +35,9 @@ import type { GridViewState, PersistedViewingState } from "../../shared/viewStat
 import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
+  pollAcceptanceCondition,
+  pressKeyboardKeyPairWithoutTransitionGap,
+  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
@@ -89,6 +92,13 @@ const SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS = DEFAULT_SESSION_OPEN_TIMEOUT_MS + 15_
 const WORKBENCH_PLAYWRIGHT_TIMEOUT_MS = 10_000;
 const WORKBENCH_OPERATION_TIMEOUT_MS = 12_000;
 const WORKBENCH_DIAGNOSTIC_TIMEOUT_MS = 5_000;
+const IMPORT_FOCUS_POLL_TIMEOUT_MS = WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+const IMPORT_FOCUS_POLL_INTERVAL_MS = 50;
+const IMPORT_FOCUS_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
+const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
+const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
+const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
 const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
@@ -1055,15 +1065,7 @@ async function acceptDefaultDelimitedImport(
       /(?:^|\s)focused(?:\s|$)/u,
       `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
     );
-    assert.equal(
-      await withAcceptanceOperationDeadline(
-        quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} keyboard focus`
-      ),
-      true,
-      `${title} must own keyboard focus before accepting its default option.`
-    );
+    await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
     recordAcceptanceProgress(`${checkpoint}:accept`);
     await withAcceptanceOperationDeadline(
       page.keyboard.press("Enter"),
@@ -1103,18 +1105,10 @@ async function acceptDefaultDelimitedImport(
     ),
     '"'
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.evaluate((element) => element === element.ownerDocument.activeElement),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character keyboard focus"
-    ),
-    true,
-    "Quote character must own keyboard focus before accepting its default value."
-  );
+  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "Quote character keyboard acceptance"
   );
@@ -1143,6 +1137,74 @@ async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unkn
       ),
       WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
       "import-option diagnostics"
+    );
+  } catch {
+    return "unavailable within the diagnostics deadline";
+  }
+}
+
+type ImportFocusRelationship = "contains" | "exact";
+
+async function waitForImportNaturalKeyboardFocus(
+  target: Locator,
+  title: string,
+  relationship: ImportFocusRelationship
+): Promise<void> {
+  const focused = await withAcceptanceOperationDeadline(
+    pollAcceptanceCondition(
+      () =>
+        target.evaluate(
+          (element, expectedRelationship) => {
+            const activeElement = element.ownerDocument.activeElement;
+            return expectedRelationship === "exact" ? element === activeElement : element.contains(activeElement);
+          },
+          relationship,
+          { timeout: IMPORT_FOCUS_PROBE_TIMEOUT_MS }
+        ),
+      {
+        timeoutMs: IMPORT_FOCUS_POLL_TIMEOUT_MS,
+        intervalMs: IMPORT_FOCUS_POLL_INTERVAL_MS
+      }
+    ),
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${title} natural keyboard focus`
+  );
+  if (focused) return;
+
+  const diagnostics = await boundedImportFocusDiagnostics(target, relationship);
+  throw new Error(
+    `${title} did not naturally receive keyboard focus within ${IMPORT_FOCUS_POLL_TIMEOUT_MS} ms. ` +
+      `Structural focus diagnostics: ${JSON.stringify(diagnostics)}`
+  );
+}
+
+async function boundedImportFocusDiagnostics(target: Locator, relationship: ImportFocusRelationship): Promise<unknown> {
+  try {
+    return await withAcceptanceOperationDeadline(
+      target.evaluate(
+        (element, expectedRelationship) => {
+          const activeElement = element.ownerDocument.activeElement;
+          return {
+            targetConnected: element.isConnected,
+            targetOwnsFocus:
+              expectedRelationship === "exact" ? element === activeElement : element.contains(activeElement),
+            activeElement:
+              activeElement === null
+                ? null
+                : {
+                    tagName: activeElement.tagName.slice(0, 32),
+                    role: activeElement.getAttribute("role")?.slice(0, 64) ?? null,
+                    classTokens: Array.from(activeElement.classList as ArrayLike<string>)
+                      .slice(0, 8)
+                      .map((token) => token.slice(0, 64))
+                  }
+          };
+        },
+        relationship,
+        { timeout: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS }
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "import focus diagnostics"
     );
   } catch {
     return "unavailable within the diagnostics deadline";
@@ -3273,6 +3335,11 @@ async function exercisePackagedRendererProvenance(
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
     const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    assert.equal(
+      vscode.window.activeNotebookEditor?.notebook,
+      secondNotebook,
+      "Notebook B must still be the exact active document immediately before notebook A's renderer action."
+    );
     recordAcceptanceProgress("verify:notebook-renderer:click");
     await originButton.evaluate((button: unknown) => (button as { click(): void }).click());
     recordAcceptanceProgress("verify:notebook-renderer:session");
@@ -3431,59 +3498,110 @@ async function waitForNotebookRendererButton(
   label: string,
   buttonName = "Open in Open Wrangler"
 ): Promise<Locator> {
-  const deadline = Date.now() + 30_000;
-  do {
+  const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
+  discovery: do {
     const browser = workbench.context().browser();
-    if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
-    if (browser !== null && !browser.isConnected()) {
-      throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
-    }
-    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
-    for (const page of pages) {
-      if (page !== workbench && page.isClosed()) continue;
-      for (const frame of page.frames()) {
-        if (isRetiredRendererTarget(workbench, page, frame)) continue;
-        try {
-          const preview = frame.locator("section.openwrangler-notebook").filter({
-            hasText: `Open Wrangler preview: ${label}`
-          });
-          const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
-          if ((await button.count()) > 0) {
-            await button.scrollIntoViewIfNeeded();
-            if (await button.isVisible()) return button;
-          }
-        } catch (error) {
-          ignoreRetiredRendererProbeFailure(workbench, browser, page, frame, error);
+    assertNotebookRendererLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const preview = target.frame.locator("section.openwrangler-notebook").filter({
+          hasText: `Open Wrangler preview: ${label}`
+        });
+        const button = preview.getByRole("button", { name: buttonName, exact: true }).first();
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break discovery;
+        const probeTimeoutMs = Math.min(NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS, remainingMs);
+        const ready = await withAcceptanceOperationDeadline(
+          probeRendererButtonReadiness(button, probeTimeoutMs),
+          probeTimeoutMs,
+          "the notebook renderer action readiness probe"
+        );
+        if (ready) return button;
+      } catch (error) {
+        const discoveryExpired = Date.now() >= deadline;
+        if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
+          ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
         }
+        if (discoveryExpired) break discovery;
       }
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
   } while (Date.now() < deadline);
+
   const browser = workbench.context().browser();
+  assertNotebookRendererLifecycle(workbench, browser);
+  const diagnostics = await notebookRendererDiagnostics(workbench, browser, label, buttonName);
+  assertNotebookRendererLifecycle(workbench, browser);
+  throw new Error(`Timed out waiting for the exact notebook renderer action: ${JSON.stringify(diagnostics)}`);
+}
+
+function isNotebookRendererProbeDeadline(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.startsWith("Timed out waiting for the notebook renderer action readiness probe after ")
+  );
+}
+
+function assertNotebookRendererLifecycle(workbench: Page, browser: Browser | null): void {
   if (workbench.isClosed()) throw new Error("The editor workbench closed during notebook renderer discovery.");
   if (browser !== null && !browser.isConnected()) {
     throw new Error("The editor CDP browser disconnected during notebook renderer discovery.");
   }
-  const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
-  const diagnostics = await Promise.all(
-    pages.flatMap((page) =>
-      page.frames().map(async (frame) => ({
-        page: page.url(),
-        frame: frame.url(),
-        previews: await frame
-          .locator("section.openwrangler-notebook")
-          .allInnerTexts()
-          .catch(() => []),
-        buttons: await frame
-          .getByRole("button", { name: buttonName, exact: true })
-          .count()
-          .catch(() => 0)
-      }))
-    )
-  );
-  throw new Error(
-    `Timed out waiting for the real notebook renderer button ${JSON.stringify(buttonName)} for ${JSON.stringify(label)}: ${JSON.stringify(diagnostics)}`
-  );
+}
+
+async function notebookRendererDiagnostics(
+  workbench: Page,
+  browser: Browser | null,
+  label: string,
+  buttonName: string
+): Promise<unknown> {
+  const targets = openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT);
+  try {
+    const diagnostics = await withAcceptanceOperationDeadline(
+      Promise.all(
+        targets.map(async (target) => {
+          if (isRetiredRendererTarget(workbench, target.page, target.frame)) {
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+          try {
+            const preview = target.frame.locator("section.openwrangler-notebook").filter({
+              hasText: `Open Wrangler preview: ${label}`
+            });
+            const button = preview.getByRole("button", { name: buttonName, exact: true });
+            const [previewCount, buttonCount] = await Promise.all([preview.count(), button.count()]);
+            const [firstButtonVisible, firstButtonEnabled] =
+              buttonCount > 0
+                ? await Promise.all([
+                    button.first().isVisible(),
+                    button.first().isEnabled({ timeout: WORKBENCH_DIAGNOSTIC_TIMEOUT_MS })
+                  ])
+                : [false, false];
+            return rendererTargetDiagnostic(target, {
+              retired: false,
+              previewCount,
+              buttonCount,
+              firstButtonVisible,
+              firstButtonEnabled
+            });
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+            return rendererTargetDiagnostic(target, { retired: true });
+          }
+        })
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "bounded notebook renderer diagnostics"
+    );
+    assertNotebookRendererLifecycle(workbench, browser);
+    return diagnostics;
+  } catch (error) {
+    assertNotebookRendererLifecycle(workbench, browser);
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for bounded notebook renderer")) {
+      return "unavailable within the diagnostics deadline";
+    }
+    throw error;
+  }
 }
 
 async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise<void> {
@@ -4909,6 +5027,7 @@ async function exerciseLiveImportReconfiguration(
   );
   const confirmedBeforeCancellation = stableImportReconfigurationSnapshot(testing.activeSession());
   const diagnosticsBeforeCancellation = stableImportDiagnostics(testing.diagnostics());
+  await waitForImportNaturalKeyboardFocus(delimiterPrompt, "Delimiter", "contains");
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Escape"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -4933,6 +5052,7 @@ async function exerciseLiveImportReconfiguration(
   const gridImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
   await gridImportAction.click();
   const gridDelimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
+  await waitForImportNaturalKeyboardFocus(gridDelimiterPrompt, "Delimiter", "contains");
   await withAcceptanceOperationDeadline(
     page.keyboard.press("Escape"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -5100,24 +5220,16 @@ async function acceptDelimitedImportOptions(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote-character field to become visible"
   );
+  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
   await withAcceptanceOperationDeadline(
     field.fill(selection.quoteChar, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote character"
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.evaluate((element) => element === element.ownerDocument.activeElement),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "the configured quote-character keyboard focus"
-    ),
-    true,
-    "The configured quote-character field must own keyboard focus before it is accepted."
-  );
   recordAcceptanceProgress(`${quoteCheckpoint}:focused`);
   recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     "the configured quote character acceptance"
   );
@@ -5143,15 +5255,7 @@ async function acceptQuickPickOptionWithKeyboard(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `${title} option ${JSON.stringify(option)} to become visible`
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      quickInput.evaluate((element) => element.contains(element.ownerDocument.activeElement)),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} keyboard focus`
-    ),
-    true,
-    `${title} must own keyboard focus before selecting ${JSON.stringify(option)}.`
-  );
+  await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
   const optionCount = await withAcceptanceOperationDeadline(
     quickInput.getByRole("option").count(),
     WORKBENCH_OPERATION_TIMEOUT_MS,
@@ -5233,13 +5337,14 @@ async function acceptExcelImportOptions(
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `the ${inputTitle} field to become visible`
   );
+  await waitForImportNaturalKeyboardFocus(field, inputTitle, "exact");
   await withAcceptanceOperationDeadline(
     field.fill(value, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `the ${inputTitle} value`
   );
   await withAcceptanceOperationDeadline(
-    page.keyboard.press("Enter"),
+    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `the ${inputTitle} acceptance`
   );

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
@@ -66,6 +66,8 @@ const page: GridPage = {
 };
 
 describe("DataGrid", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("renders schema headers and cell values", () => {
     render(
       <DataGrid
@@ -152,6 +154,50 @@ describe("DataGrid", () => {
     fireEvent.keyDown(city, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(sales));
     expect(screen.queryByText("Profiling…")).toBeNull();
+  });
+
+  it("does not reclaim host focus when scrolling virtualizes a remembered iframe cell", async () => {
+    const rows = Array.from({ length: 40 }, (_, rowNumber) => ({
+      id: `r:${rowNumber}`,
+      rowNumber,
+      values: page.rows[0].values
+    }));
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 40, columns: 2 }, filteredShape: { rows: 40, columns: 2 } }}
+        page={{ offset: 0, limit: 200, totalRows: 40, columnIds: page.columnIds, rows }}
+        summaries={[]}
+        pageSize={200}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    fireEvent(window, new Event("resize"));
+    const initialCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    expect(initialCell).not.toBeNull();
+    act(() => initialCell?.focus());
+    expect(document.activeElement).toBe(initialCell);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    focus.mockClear();
+
+    hasFocus.mockReturnValue(false);
+    scroller.scrollTop = 20 * 29;
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => {
+      const rovingCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+      expect(Number(rovingCell?.dataset.gridRow)).toBeGreaterThan(0);
+    });
+    expect(focus).not.toHaveBeenCalled();
+    focus.mockRestore();
+    hasFocus.mockRestore();
   });
 
   it("restores stable column widths, selection, and both viewport axes", async () => {
@@ -307,6 +353,7 @@ describe("DataGrid", () => {
 
   it("carries the scroll-requested row into the next block's roving focus", async () => {
     const onPage = vi.fn();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const scrollMetadata = {
       ...metadata,
       shape: { rows: 6, columns: 2 },
@@ -327,6 +374,9 @@ describe("DataGrid", () => {
     const { rerender } = render(<DataGrid {...props} page={scrollPage} />);
     const scroller = screen.getByTestId("data-grid-scroller");
     Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    const initialCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    expect(initialCell).not.toBeNull();
+    act(() => initialCell?.focus());
     scroller.scrollTop = 4 * 29;
     fireEvent.scroll(scroller);
     await waitFor(() => expect(onPage).toHaveBeenCalledWith(4));
@@ -342,6 +392,59 @@ describe("DataGrid", () => {
       />
     );
     await waitFor(() => expect(document.activeElement).toHaveAttribute("data-grid-row", "4"));
+    hasFocus.mockRestore();
+  });
+
+  it("does not restore a requested block after the host takes focus while the page is loading", async () => {
+    const onPage = vi.fn();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const scrollMetadata = {
+      ...metadata,
+      shape: { rows: 6, columns: 2 },
+      filteredShape: { rows: 6, columns: 2 }
+    };
+    const scrollPage = { ...page, totalRows: 6 };
+    const props = {
+      metadata: scrollMetadata,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={scrollPage} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 58 });
+    const initialCell = document.querySelector<HTMLTableCellElement>('td[tabindex="0"]');
+    expect(initialCell).not.toBeNull();
+    act(() => initialCell?.focus());
+    scroller.scrollTop = 4 * 29;
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(onPage).toHaveBeenCalledWith(4));
+
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    focus.mockClear();
+    hasFocus.mockReturnValue(false);
+    rerender(
+      <DataGrid
+        {...props}
+        page={{
+          ...scrollPage,
+          offset: 4,
+          rows: scrollPage.rows.map((row, index) => ({ ...row, id: `r:${index + 4}`, rowNumber: index + 4 }))
+        }}
+      />
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-grid-row="4"][data-grid-column="0"]')).toHaveAttribute("tabindex", "0")
+    );
+    expect(focus).not.toHaveBeenCalled();
+    focus.mockRestore();
+    hasFocus.mockRestore();
   });
 
   it("reports ownership changes when horizontal virtualization replaces visible columns", async () => {
@@ -418,6 +521,7 @@ describe("DataGrid", () => {
   });
 
   it("keeps one roving tab stop when mouse scrolling virtualizes the focused row", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     const rows = Array.from({ length: 40 }, (_, rowNumber) => ({
       id: `r:${rowNumber}`,
       rowNumber,
@@ -453,6 +557,7 @@ describe("DataGrid", () => {
       expect(Number(rovingCells[0].dataset.gridRow)).toBeGreaterThan(0);
       expect(document.activeElement).toBe(rovingCells[0]);
     });
+    hasFocus.mockRestore();
   });
 
   it("keeps explicit paging focus ahead of queued scroll-focus preservation", async () => {
