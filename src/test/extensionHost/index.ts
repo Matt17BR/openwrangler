@@ -131,6 +131,7 @@ const NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS = 30_000;
 const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
 const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
 const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
+const RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS = 120_000;
 const RELEASED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
 const RELEASED_JUPYTER_CONSENT_MESSAGE =
   "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?";
@@ -728,7 +729,11 @@ async function exerciseReleasedJupyterExtension(
     assertExactOpenNotebookDocument(notebook, "before opening the real Jupyter Variables view");
     await vscode.commands.executeCommand("jupyter.openVariableView");
     assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
-    const viewerAction = await waitForReleasedJupyterVariableAction(workbench, "pandas_frame");
+    const viewerAction = await waitForReleasedJupyterVariableAction(
+      workbench,
+      "pandas_frame",
+      `${phase}:variables`
+    );
     assertExactOpenNotebookDocument(notebook, "after resolving the pandas_frame action from Jupyter Variables");
 
     recordAcceptanceProgress(`${phase}:variables-action`);
@@ -1726,8 +1731,13 @@ function canonicalAcceptancePath(candidate: string): string {
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
-async function waitForReleasedJupyterVariableAction(workbench: Page, variableName: string): Promise<Locator> {
-  const deadline = Date.now() + 30_000;
+async function waitForReleasedJupyterVariableAction(
+  workbench: Page,
+  variableName: string,
+  checkpoint: string
+): Promise<Locator> {
+  recordAcceptanceProgress(`${checkpoint}:wait`);
+  const deadline = Date.now() + RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS;
   do {
     for (const frame of releasedWorkbenchFrames(workbench)) {
       try {
@@ -1743,7 +1753,10 @@ async function waitForReleasedJupyterVariableAction(workbench: Page, variableNam
         });
         if ((await actions.count()) !== 1) continue;
         const action = actions.first();
-        if ((await action.isVisible()) && (await action.isEnabled())) return action;
+        if ((await action.isVisible()) && (await action.isEnabled())) {
+          recordAcceptanceProgress(`${checkpoint}:ready`);
+          return action;
+        }
       } catch {
         // The Variables view can replace a row while its real kernel refreshes.
       }
