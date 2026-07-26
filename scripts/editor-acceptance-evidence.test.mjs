@@ -229,6 +229,12 @@ test("CLI options, fully encoded credential URLs, and PuTTY private-key containe
   );
 });
 
+test("container-isolated remote Jupyter tokens are redacted even without a field label", () => {
+  const token = `owr_${"A".repeat(39)}`;
+  const redacted = redactEditorAcceptanceText(`remote connection failed for ${token}`);
+  assert.equal(redacted, "remote connection failed for <redacted>");
+});
+
 test("text redaction covers basic auth, whitespace credentials, PAT aliases, and encoded delimiters", () => {
   const secrets = {
     basic: "dXNlcjpzdXBlcnNlY3JldA==",
