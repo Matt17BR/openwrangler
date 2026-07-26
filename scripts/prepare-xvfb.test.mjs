@@ -90,33 +90,37 @@ test("prepares one pinned repository-local Xvfb and reuses the validated cache",
   assert.equal(first.startsWith(fixture.cacheRoot), true);
 });
 
-test("fails unsupported hosts before dependency, network, or extraction work", LINUX_ONLY, async (context) => {
-  const fixture = testFixture();
-  context.after(() => removeTestRoot(fixture.root));
-  let called = false;
+test(
+  "fails unsupported Linux architectures before dependency, network, or extraction work",
+  LINUX_ONLY,
+  async (context) => {
+    const fixture = testFixture();
+    context.after(() => removeTestRoot(fixture.root));
+    let called = false;
 
-  await assert.rejects(
-    prepareRepositoryLocalXvfb({
-      platform: "linux",
-      architecture: "arm64",
-      osReleaseText: fixture.osReleaseText,
-      manifest: fixture.manifest,
-      cacheRoot: fixture.cacheRoot,
-      queryPackage: async () => {
-        called = true;
-      },
-      downloadPackage: async () => {
-        called = true;
-      },
-      extractPackage: async () => {
-        called = true;
-      }
-    }),
-    /No pinned Xvfb package is available/u
-  );
-  assert.equal(called, false);
-  assert.equal(existsSync(fixture.cacheRoot), false);
-});
+    await assert.rejects(
+      prepareRepositoryLocalXvfb({
+        platform: "linux",
+        architecture: "arm64",
+        osReleaseText: fixture.osReleaseText,
+        manifest: fixture.manifest,
+        cacheRoot: fixture.cacheRoot,
+        queryPackage: async () => {
+          called = true;
+        },
+        downloadPackage: async () => {
+          called = true;
+        },
+        extractPackage: async () => {
+          called = true;
+        }
+      }),
+      /No pinned Xvfb package is available/u
+    );
+    assert.equal(called, false);
+    assert.equal(existsSync(fixture.cacheRoot), false);
+  }
+);
 
 test("fails a non-Linux platform before dependency, network, or extraction work", async (context) => {
   const fixture = testFixture();
