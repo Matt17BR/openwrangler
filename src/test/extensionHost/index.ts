@@ -110,6 +110,7 @@ const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
 const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
 const DEPENDENCY_GUARD_ACCEPTANCE_TOKEN = "22222222-2222-4222-8222-222222222222";
 const DEPENDENCY_GUARD_HOSTILE_TOKEN = "33333333-3333-4333-8333-333333333333";
+const DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE = 197;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -5611,6 +5612,7 @@ interface DependencyGuardRecoveryFixture {
   parentScript: string;
   parentState: string;
   parentAuthorized: string;
+  parentCrashFrame: string;
   invocationLog: string;
   dependencyProbeLog: string;
 }
@@ -5624,6 +5626,7 @@ interface AcceptanceGuardProcess {
     stderr: string;
   }>;
   closed: boolean;
+  parentPid?: number;
 }
 
 type DependencyGuardCleanupLeg = "guard" | "parent";
@@ -5679,7 +5682,7 @@ async function exerciseDependencyMutationRecovery(
       "the disposable dependency-guard parent to publish exact process ownership"
     );
     const parentState = readDependencyGuardParentState(recovery.parentState);
-    assert.equal(parentState.parentPid, guardParent.child.pid);
+    guardParent.parentPid = parentState.parentPid;
     orphanedGuardPid = parentState.guardPid;
     assert.notEqual(orphanedGuardPid, parentState.parentPid);
     assert.equal(acceptanceProcessIsAlive(parentState.parentPid), true);
@@ -5713,20 +5716,20 @@ async function exerciseDependencyMutationRecovery(
     }
     const pipStarted = JSON.parse(readFileSync(recovery.pipStarted, "utf8")) as Record<string, unknown>;
     assert.deepEqual(pipStarted.args, ["install", "--no-input", "--no-user", "--", recovery.dependency.installSpec]);
-    // Kill only the disposable parent after exact GO. Its guarded writer is a
-    // distinct process and must remain alive, modelling an extension-host-like
-    // parent loss without claiming that this editor restarted or power failed.
+    // Crash only the disposable Python parent after exact GO. Its guarded
+    // writer is a distinct process and must remain alive, modelling an
+    // extension-host-like parent loss without claiming that this editor
+    // restarted or power failed.
+    const parentExit = await crashAcceptanceGuardParent(
+      guardParent,
+      recovery.parentCrashFrame,
+      "the abruptly terminated dependency-guard parent"
+    );
     assert.equal(
-      guardParent.child.kill("SIGKILL"),
-      true,
-      "The acceptance harness must terminate the exact disposable guard parent."
+      parentExit.code,
+      DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE,
+      "The exact disposable Python parent must acknowledge the crash frame with os._exit()."
     );
-    const parentExit = await withAcceptanceOperationDeadline(
-      guardParent.exit,
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "the abruptly terminated dependency-guard parent to close"
-    );
-    assert.notEqual(parentExit.code, 0, "Abrupt dependency-guard parent loss must not look like a normal parent exit.");
     assert.equal(acceptanceProcessIsAlive(orphanedGuardPid), true, "The guarded writer must outlive its parent.");
     assert.equal(existsSync(recovery.marker), true, "Guard-parent loss after GO must retain the exact durable marker.");
 
@@ -5960,9 +5963,11 @@ async function exerciseDependencyMutationRecovery(
     operationFailed = true;
     operationFailure = error;
   } finally {
-    if (orphanedGuardPid === undefined && existsSync(recovery.parentState)) {
+    if ((orphanedGuardPid === undefined || guardParent?.parentPid === undefined) && existsSync(recovery.parentState)) {
       try {
-        orphanedGuardPid = readDependencyGuardParentState(recovery.parentState).guardPid;
+        const parentState = readDependencyGuardParentState(recovery.parentState);
+        orphanedGuardPid = parentState.guardPid;
+        if (guardParent) guardParent.parentPid = parentState.parentPid;
       } catch (error) {
         cleanupFailures.push(error);
       }
@@ -5974,7 +5979,7 @@ async function exerciseDependencyMutationRecovery(
         assert.deepEqual(readDependencyGuardParentAuthorization(recovery.parentAuthorized), {
           guardPid: orphanedGuardPid,
           kind: "authorized",
-          parentPid: guardParent.child.pid,
+          parentPid: guardParent.parentPid,
           protocol: DEPENDENCY_GUARD_PROTOCOL,
           token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
         });
@@ -6002,7 +6007,11 @@ async function exerciseDependencyMutationRecovery(
     const terminateParent = async (): Promise<void> => {
       if (!guardParent || guardParent.closed) return;
       try {
-        await terminateAcceptanceGuardProcess(guardParent, "the disposable dependency-guard parent");
+        await crashAcceptanceGuardParent(
+          guardParent,
+          recovery.parentCrashFrame,
+          "the disposable dependency-guard parent"
+        );
       } catch (error) {
         processOwnershipConfirmed = false;
         cleanupFailures.push(error);
@@ -6803,6 +6812,11 @@ function createDependencyGuardRecoveryFixture(
     kind: "go",
     token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
   })}\n`;
+  const parentCrashFrame = `${JSON.stringify({
+    protocol: DEPENDENCY_GUARD_PROTOCOL,
+    kind: "crash",
+    token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
+  })}\n`;
   writeFileSync(
     parentScript,
     [
@@ -6810,7 +6824,6 @@ function createDependencyGuardRecoveryFixture(
       "import os",
       "import subprocess",
       "import sys",
-      "import time",
       "",
       `helper_path = ${JSON.stringify(helperPath)}`,
       `working_directory = ${JSON.stringify(directory)}`,
@@ -6819,8 +6832,10 @@ function createDependencyGuardRecoveryFixture(
       `release_path = ${JSON.stringify(pipRelease)}`,
       `install_frame = ${JSON.stringify(installFrame)}.encode('ascii')`,
       `go_frame = ${JSON.stringify(goFrame)}.encode('ascii')`,
+      `crash_frame = ${JSON.stringify(parentCrashFrame)}.encode('ascii')`,
       `expected_token = ${JSON.stringify(DEPENDENCY_GUARD_ACCEPTANCE_TOKEN)}`,
       `protocol = ${JSON.stringify(DEPENDENCY_GUARD_PROTOCOL)}`,
+      `crash_exit_code = ${DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE}`,
       "",
       "def publish(path, payload):",
       "    with open(path, 'x', encoding='utf-8') as stream:",
@@ -6864,8 +6879,10 @@ function createDependencyGuardRecoveryFixture(
       "        'protocol': protocol,",
       "        'token': expected_token,",
       "    })",
-      "    while True:",
-      "        time.sleep(1)",
+      "    crash_request = sys.stdin.buffer.read(len(crash_frame) + 1)",
+      "    if crash_request != crash_frame:",
+      "        raise RuntimeError('parent crash frame did not match')",
+      "    os._exit(crash_exit_code)",
       "except BaseException:",
       "    if guard is not None and guard.poll() is None:",
       "        if authorized:",
@@ -6904,6 +6921,7 @@ function createDependencyGuardRecoveryFixture(
     parentScript,
     parentState,
     parentAuthorized,
+    parentCrashFrame,
     invocationLog,
     dependencyProbeLog
   };
@@ -7268,10 +7286,40 @@ async function waitForAcceptanceGuardRelease(
   return releasedStatus;
 }
 
-async function terminateAcceptanceGuardProcess(process: AcceptanceGuardProcess, description: string): Promise<void> {
-  if (process.closed) return;
-  process.child.kill("SIGKILL");
-  await withAcceptanceOperationDeadline(process.exit, WORKBENCH_OPERATION_TIMEOUT_MS, `${description} to close`);
+async function crashAcceptanceGuardParent(
+  process: AcceptanceGuardProcess,
+  crashFrame: string,
+  description: string
+): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}> {
+  if (!process.closed) {
+    assert.ok(
+      process.parentPid !== undefined && process.parentPid > 0,
+      `${description} cannot be crashed before its exact Python PID is published.`
+    );
+    assert.ok(
+      !process.child.stdin.destroyed && process.child.stdin.writable,
+      `${description} no longer owns a writable crash channel.`
+    );
+    process.child.stdin.end(Buffer.from(crashFrame, "ascii"));
+  }
+  const result = await withAcceptanceOperationDeadline(
+    process.exit,
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${description} to close`
+  );
+  const failureDetail = result.stderr.trim() ? ` stderr=${JSON.stringify(result.stderr.trim())}` : "";
+  assert.equal(
+    result.code,
+    DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE,
+    `${description} did not exit through its exact crash frame.${failureDetail}`
+  );
+  assert.equal(result.signal, null, `${description} was terminated by an unexpected signal.`);
+  return result;
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {

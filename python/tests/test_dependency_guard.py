@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import importlib.util
 import json
 import os
 import queue
@@ -314,6 +316,14 @@ def _create_manual_journal(fixture: GuardFixture) -> None:
         lock.chmod(0o600)
 
 
+def _load_dependency_guard() -> Any:
+    specification = importlib.util.spec_from_file_location("openwrangler_dependency_guard_test", HELPER)
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
 def _arm(
     fixture: GuardFixture,
     token: str,
@@ -486,6 +496,107 @@ def test_install_publishes_before_ready_waits_for_go_and_suppresses_pip_output(
         guard_fixture.dependency["installSpec"],
     ]
     assert _marker_paths(guard_fixture) == markers
+
+
+def test_marker_publication_rejects_same_size_post_close_tamper(guard_fixture: GuardFixture) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    journal_identity = guard._validate_private_directory(guard_fixture.journal)
+    token = str(uuid.uuid4())
+
+    def tamper(temporary: Path) -> None:
+        original = temporary.read_bytes()
+        before = temporary.stat()
+        replacement = bytes([original[0] ^ 1]) + original[1:]
+        assert len(replacement) == len(original)
+        with temporary.open("r+b") as stream:
+            stream.write(replacement)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.utime(temporary, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert temporary.stat().st_size == before.st_size
+
+    with pytest.raises(guard.GuardError) as raised:
+        guard._publish_marker(
+            guard_fixture.journal,
+            journal_identity,
+            token,
+            guard_fixture.environment,
+            [guard_fixture.dependency],
+            _after_writer_close_for_test=tamper,
+        )
+    assert raised.value.code == "malformed_state"
+    assert _marker_paths(guard_fixture) == []
+    assert list(guard_fixture.journal.glob(".pending-*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Requires native Windows CreateFile sharing semantics.")
+def test_windows_marker_reader_denies_same_size_concurrent_writer(guard_fixture: GuardFixture) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    token = str(uuid.uuid4())
+    expected_marker = {
+        "dependencies": [guard_fixture.dependency],
+        "environment": guard_fixture.environment,
+        "protocol": PROTOCOL,
+        "token": token,
+    }
+    payload = guard._marker_bytes(expected_marker)
+    replacement = bytes([payload[0] ^ 1]) + payload[1:]
+    marker_path = guard_fixture.journal / f"mutation-{token}.json"
+    marker_path.write_bytes(payload)
+
+    attacker = "\n".join(
+        [
+            "import errno,json,os,sys",
+            "path=sys.argv[1]",
+            "replacement=bytes.fromhex(sys.argv[2])",
+            "before=os.stat(path)",
+            "try:",
+            "    descriptor=os.open(path,os.O_WRONLY|getattr(os,'O_BINARY',0))",
+            "except OSError as error:",
+            "    print(json.dumps({'errno':error.errno,'winerror':getattr(error,'winerror',None)}))",
+            "    raise SystemExit(0)",
+            "try:",
+            "    offset=0",
+            "    while offset < len(replacement):",
+            "        offset += os.write(descriptor,replacement[offset:])",
+            "    os.fsync(descriptor)",
+            "finally:",
+            "    os.close(descriptor)",
+            "os.utime(path,ns=(before.st_atime_ns,before.st_mtime_ns))",
+            "raise SystemExit(1)",
+        ]
+    )
+
+    def attempt_same_size_write(_path: Path) -> None:
+        result = subprocess.run(
+            [
+                str(guard_fixture.executable),
+                "-I",
+                "-c",
+                attacker,
+                str(marker_path),
+                replacement.hex(),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=PROCESS_TIMEOUT_SECONDS,
+        )
+        assert result.returncode == 0, result.stderr
+        failure = json.loads(result.stdout)
+        assert failure["errno"] in {errno.EACCES, errno.EPERM}
+        assert failure["winerror"] in {None, 5, 32}
+        assert result.stderr == ""
+
+    marker, observed_payload, _identity = guard._read_marker(
+        marker_path,
+        code="malformed_state",
+        _after_open_for_test=attempt_same_size_write,
+    )
+    assert marker == expected_marker
+    assert observed_payload == payload
+    assert marker_path.read_bytes() == payload
 
 
 def test_eof_before_go_removes_only_own_marker_without_running_pip(guard_fixture: GuardFixture) -> None:

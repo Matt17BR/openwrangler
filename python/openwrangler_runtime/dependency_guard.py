@@ -20,9 +20,9 @@ import runpy
 import stat
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 PROTOCOL = "openwrangler-dependency-guard-v1"
 JOURNAL_NAME = ".openwrangler-dependency-journal-v1"
@@ -423,38 +423,22 @@ def _lstat_private_file(path: Path, *, code: str) -> os.stat_result:
     return result
 
 
-def _same_file_snapshot(left: os.stat_result, right: os.stat_result) -> bool:
-    return (
-        left.st_dev == right.st_dev
-        and left.st_ino == right.st_ino
-        and left.st_size == right.st_size
-        and left.st_mtime_ns == right.st_mtime_ns
-        and left.st_ctime_ns == right.st_ctime_ns
-    )
-
-
 def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
 def _same_leaf_descriptor_snapshot(leaf: os.stat_result, descriptor: os.stat_result) -> bool:
     # CPython's Windows path stat preserves the legacy creation-time value in
-    # st_ctime_ns while fstat exposes the handle's change time.  Comparing that
-    # field across the two APIs therefore rejects an unchanged file.  The two
-    # handle snapshots taken around every read still compare change time below.
+    # st_ctime_ns while newer fstat implementations expose the handle's change
+    # time.  Python 3.10 and 3.11 do not expose that change time at all.  Marker
+    # readers therefore use a native Windows handle that excludes writers and
+    # compare only metadata that is consistent across supported Python versions.
     return (
         _same_file_identity(leaf, descriptor)
         and leaf.st_size == descriptor.st_size
         and leaf.st_mtime_ns == descriptor.st_mtime_ns
         and (os.name == "nt" or leaf.st_ctime_ns == descriptor.st_ctime_ns)
     )
-
-
-def _assert_leaf_matches(path: Path, expected: os.stat_result, *, code: str) -> os.stat_result:
-    observed = _lstat_private_file(path, code=code)
-    if not _same_file_snapshot(observed, expected):
-        _fail(code)
-    return observed
 
 
 def _assert_leaf_matches_descriptor(path: Path, expected: os.stat_result, *, code: str) -> os.stat_result:
@@ -785,25 +769,187 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         offset += written
 
 
-def _settled_written_snapshot(
+def _open_windows_private_reader(path: Path, *, allow_delete: bool, code: str) -> int:
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = _windows_kernel32()
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    # FILE_SHARE_READ permits other validators to inspect the marker.  Omitting
+    # FILE_SHARE_WRITE excludes an existing or new writer for this handle's
+    # lifetime.  Ordinary reads also omit FILE_SHARE_DELETE so the exact leaf
+    # cannot be renamed or deleted.  Publication temporarily allows delete
+    # sharing so MoveFileEx can rename the already-verified file while this
+    # no-write handle remains open.
+    share_mode = 0x00000001 | (0x00000004 if allow_delete else 0)
+    handle_value = create_file(
+        str(path),
+        0x80000000,
+        share_mode,
+        None,
+        3,
+        0x00200000,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle_value is None or handle_value == invalid_handle:
+        _fail(code)
+
+    open_osfhandle_candidate = getattr(msvcrt, "open_osfhandle", None)
+    if not callable(open_osfhandle_candidate):
+        with contextlib.suppress(AttributeError, OSError):
+            close_handle(wintypes.HANDLE(handle_value))
+        _fail(code)
+    open_osfhandle = cast(Callable[[int, int], int], open_osfhandle_candidate)
+    try:
+        descriptor = open_osfhandle(
+            handle_value,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0),
+        )
+    except (OSError, ValueError):
+        with contextlib.suppress(AttributeError, OSError):
+            close_handle(wintypes.HANDLE(handle_value))
+        _fail(code)
+    if descriptor < 0:
+        with contextlib.suppress(AttributeError, OSError):
+            close_handle(wintypes.HANDLE(handle_value))
+        _fail(code)
+    try:
+        os.set_inheritable(descriptor, False)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        _fail(code)
+    return descriptor
+
+
+def _open_private_reader(path: Path, *, allow_delete: bool, code: str) -> tuple[int, os.stat_result]:
+    descriptor = -1
+    try:
+        leaf_before: os.stat_result | None = None
+        if os.name == "nt":
+            descriptor = _open_windows_private_reader(path, allow_delete=allow_delete, code=code)
+        else:
+            leaf_before = _lstat_private_file(path, code=code)
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            os.set_inheritable(descriptor, False)
+        opened = os.fstat(descriptor)
+        _validate_private_file(opened, code=code)
+        if leaf_before is not None and not _same_leaf_descriptor_snapshot(leaf_before, opened):
+            _fail(code)
+        _assert_leaf_matches_descriptor(path, opened, code=code)
+        return descriptor, opened
+    except GuardError:
+        if descriptor >= 0:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        raise
+    except OSError:
+        if descriptor >= 0:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        _fail(code)
+
+
+@contextlib.contextmanager
+def _private_reader(
     path: Path,
-    descriptor_snapshot: os.stat_result,
-    expected_size: int,
+    *,
+    allow_delete: bool = False,
+    code: str,
+) -> Iterator[tuple[int, os.stat_result]]:
+    descriptor = -1
+    try:
+        descriptor, opened = _open_private_reader(path, allow_delete=allow_delete, code=code)
+        yield descriptor, opened
+    except BaseException:
+        if descriptor >= 0:
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+        raise
+    else:
+        closing = descriptor
+        descriptor = -1
+        try:
+            os.close(closing)
+        except OSError:
+            _fail(code)
+
+
+def _read_open_private_file(
+    path: Path,
+    descriptor: int,
+    opened: os.stat_result,
     *,
     code: str,
-) -> os.stat_result:
-    if descriptor_snapshot.st_size != expected_size:
+    expected_payload: bytes | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    _after_open_for_test: Callable[[Path], None] | None = None,
+) -> tuple[bytes, os.stat_result]:
+    if expected_identity is not None and (opened.st_dev, opened.st_ino) != expected_identity:
         _fail(code)
-    if os.name != "nt":
-        return _assert_leaf_matches_descriptor(path, descriptor_snapshot, code=code)
+    if not 1 <= opened.st_size <= MAX_MARKER_BYTES:
+        _fail(code)
+    if expected_payload is not None and opened.st_size != len(expected_payload):
+        _fail(code)
+    if _after_open_for_test is not None:
+        _after_open_for_test(path)
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        total = 0
+        while total <= MAX_MARKER_BYTES:
+            chunk = os.read(descriptor, min(8192, MAX_MARKER_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+    except OSError:
+        _fail(code)
+    _validate_private_file(after, code=code)
+    if len(payload) != opened.st_size or not _same_leaf_descriptor_snapshot(opened, after):
+        _fail(code)
+    _assert_leaf_matches_descriptor(path, after, code=code)
+    if expected_payload is not None and payload != expected_payload:
+        _fail(code)
+    return payload, after
 
-    # Windows finalizes a file's last-write metadata only after every writing
-    # handle is closed.  Establish the canonical snapshot from the leaf after
-    # close, while still binding it to the opened file's identity and size.
-    settled = _lstat_private_file(path, code=code)
-    if not _same_file_identity(settled, descriptor_snapshot) or settled.st_size != expected_size:
-        _fail(code)
-    return _assert_leaf_matches(path, settled, code=code)
+
+def _read_private_file(
+    path: Path,
+    *,
+    code: str,
+    expected_payload: bytes | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    _after_open_for_test: Callable[[Path], None] | None = None,
+) -> tuple[bytes, os.stat_result]:
+    with _private_reader(path, code=code) as (descriptor, opened):
+        return _read_open_private_file(
+            path,
+            descriptor,
+            opened,
+            code=code,
+            expected_payload=expected_payload,
+            expected_identity=expected_identity,
+            _after_open_for_test=_after_open_for_test,
+        )
 
 
 def _durable_replace(source: Path, destination: Path) -> None:
@@ -833,6 +979,8 @@ def _publish_marker(
     token: str,
     environment: dict[str, Any],
     dependencies: list[dict[str, Any]],
+    *,
+    _after_writer_close_for_test: Callable[[Path], None] | None = None,
 ) -> tuple[Path, bytes, tuple[int, int]]:
     _validate_private_directory(journal, journal_identity)
     markers = _scan_markers(journal, journal_identity, clean_temps=True)
@@ -859,30 +1007,52 @@ def _publish_marker(
         os.fsync(descriptor)
         descriptor_snapshot = os.fstat(descriptor)
         _validate_private_file(descriptor_snapshot, code="malformed_state")
-        os.close(descriptor)
+        closing = descriptor
         descriptor = -1
-        written = _settled_written_snapshot(
-            temporary,
-            descriptor_snapshot,
-            len(payload),
-            code="malformed_state",
-        )
-        _assert_leaf_absent(destination, code="malformed_state")
-        _durable_replace(temporary, destination)
-        _fsync_directory(journal)
-        _validate_private_directory(journal, journal_identity)
-        result = _lstat_private_file(destination, code="malformed_state")
-        if not _same_file_identity(result, written) or result.st_size != len(payload):
-            _fail("malformed_state")
+        os.close(closing)
+        if _after_writer_close_for_test is not None:
+            _after_writer_close_for_test(temporary)
+        writer_identity = (descriptor_snapshot.st_dev, descriptor_snapshot.st_ino)
+        with _private_reader(temporary, allow_delete=True, code="malformed_state") as (
+            verification_descriptor,
+            written,
+        ):
+            _read_open_private_file(
+                temporary,
+                verification_descriptor,
+                written,
+                code="malformed_state",
+                expected_payload=payload,
+                expected_identity=writer_identity,
+            )
+            _assert_leaf_absent(destination, code="malformed_state")
+            _durable_replace(temporary, destination)
+            _fsync_directory(journal)
+            _validate_private_directory(journal, journal_identity)
+            with _private_reader(destination, code="malformed_state") as (
+                destination_descriptor,
+                result,
+            ):
+                _read_open_private_file(
+                    destination,
+                    destination_descriptor,
+                    result,
+                    code="malformed_state",
+                    expected_payload=payload,
+                    expected_identity=writer_identity,
+                )
+                _validate_private_directory(journal, journal_identity)
         return destination, payload, (result.st_dev, result.st_ino)
     except GuardError:
         if descriptor >= 0:
-            os.close(descriptor)
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
         _safe_remove_temporary(temporary)
         raise
     except OSError:
         if descriptor >= 0:
-            os.close(descriptor)
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
         _safe_remove_temporary(temporary)
         _fail("malformed_state")
 
@@ -896,41 +1066,17 @@ def _safe_remove_temporary(path: Path) -> None:
         path.unlink()
 
 
-def _read_marker(path: Path, *, code: str) -> tuple[dict[str, Any], bytes, tuple[int, int]]:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        leaf_before = _lstat_private_file(path, code=code)
-        descriptor = os.open(path, flags)
-        try:
-            before = os.fstat(descriptor)
-            _validate_private_file(before, code=code)
-            if not _same_leaf_descriptor_snapshot(leaf_before, before):
-                _fail(code)
-            if not 1 <= before.st_size <= MAX_MARKER_BYTES:
-                _fail(code)
-            payload = b""
-            while len(payload) <= MAX_MARKER_BYTES:
-                chunk = os.read(descriptor, min(8192, MAX_MARKER_BYTES + 1 - len(payload)))
-                if not chunk:
-                    break
-                payload += chunk
-            after = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-    except GuardError:
-        raise
-    except OSError:
-        _fail(code)
-    if (
-        len(payload) != before.st_size
-        or before.st_dev != after.st_dev
-        or before.st_ino != after.st_ino
-        or before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or before.st_ctime_ns != after.st_ctime_ns
-    ):
-        _fail(code)
-    _assert_leaf_matches_descriptor(path, after, code=code)
+def _read_marker(
+    path: Path,
+    *,
+    code: str,
+    _after_open_for_test: Callable[[Path], None] | None = None,
+) -> tuple[dict[str, Any], bytes, tuple[int, int]]:
+    payload, before = _read_private_file(
+        path,
+        code=code,
+        _after_open_for_test=_after_open_for_test,
+    )
     try:
         decoded = json.loads(
             payload.decode("utf-8"),
