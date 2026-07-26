@@ -1,12 +1,17 @@
 import * as assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync
@@ -102,6 +107,10 @@ const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
 const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
+const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
+const DEPENDENCY_GUARD_ACCEPTANCE_TOKEN = "22222222-2222-4222-8222-222222222222";
+const DEPENDENCY_GUARD_HOSTILE_TOKEN = "33333333-3333-4333-8333-333333333333";
+const DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE = 197;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -235,6 +244,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeRuntime",
     "openWrangler.clearRuntime",
     "openWrangler.installRuntimeDependencies",
+    "openWrangler.revalidateRuntimeDependencies",
     "openWrangler.startOperation",
     "openWrangler.applyStep",
     "openWrangler.discardStep",
@@ -505,6 +515,13 @@ export async function run(): Promise<void> {
     await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
   if (testPython && process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    recordAcceptanceProgress("verify:dependency-recovery");
+    await exerciseDependencyMutationRecovery(
+      testing,
+      fixture,
+      testPython,
+      path.join(extension.extensionPath, "python", "openwrangler_runtime", "dependency_guard.py")
+    );
     recordAcceptanceProgress("verify:dependency-install-shutdown");
     await exerciseDependencyInstallShutdownLifecycle(testing, testPython);
   }
@@ -5557,6 +5574,513 @@ interface DependencyInstallLifecycleFixture {
   completed: string;
 }
 
+interface DependencyGuardAcceptanceEnvironment {
+  executable: string;
+  executableIdentity: {
+    device: string;
+    inode: string;
+    size: string;
+    mtimeNs: string;
+    ctimeNs: string;
+  };
+  packageRoot: string;
+  packageRootIdentity: {
+    device: string;
+    inode: string;
+  };
+  pythonVersion: string;
+}
+
+interface DependencyGuardAcceptanceDependency {
+  importModule: string;
+  distribution: string;
+  installSpec: string;
+  minimumVersion: string | null;
+  maximumVersionExclusive: string | null;
+}
+
+interface DependencyGuardRecoveryFixture {
+  directory: string;
+  executable: string;
+  helperPath: string;
+  environment: DependencyGuardAcceptanceEnvironment;
+  dependency: DependencyGuardAcceptanceDependency;
+  marker: string;
+  pipStarted: string;
+  pipRelease: string;
+  pipCompleted: string;
+  parentScript: string;
+  parentState: string;
+  parentAuthorized: string;
+  parentCrashFrame: string;
+  invocationLog: string;
+  dependencyProbeLog: string;
+}
+
+interface AcceptanceGuardProcess {
+  child: ChildProcessWithoutNullStreams;
+  exit: Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+  }>;
+  closed: boolean;
+  parentPid?: number;
+}
+
+type DependencyGuardCleanupLeg = "guard" | "parent";
+
+function dependencyGuardCleanupOrder(authorized: boolean): readonly DependencyGuardCleanupLeg[] {
+  return authorized ? ["guard", "parent"] : ["parent", "guard"];
+}
+
+async function exerciseDependencyMutationRecovery(
+  testing: TestApi,
+  fixture: vscode.Uri,
+  python: string,
+  helperPath: string
+): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Dependency-recovery acceptance must start after every dataframe session closed."
+  );
+  assert.equal(
+    testing.runtimeRunning(),
+    false,
+    "Dependency-recovery acceptance must start without a live dataframe runtime."
+  );
+  assert.deepEqual(
+    dependencyGuardCleanupOrder(false),
+    ["parent", "guard"],
+    "A pre-authorization guard must lose its exact owned parent before release is status-proved."
+  );
+  assert.deepEqual(
+    dependencyGuardCleanupOrder(true),
+    ["guard", "parent"],
+    "An authorized writer must be released and status-proved before its looping parent is terminated."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-dependency-recovery-"));
+  const recovery = createDependencyGuardRecoveryFixture(directory, python, helperPath);
+  const config = vscode.workspace.getConfiguration("openWrangler");
+  const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
+  let guardParent: AcceptanceGuardProcess | undefined;
+  let orphanedGuardPid: number | undefined;
+  let sessionId: string | undefined;
+  let sessionRevision = 0;
+  let operationFailed = false;
+  let operationFailure: unknown;
+  const cleanupFailures: unknown[] = [];
+
+  try {
+    guardParent = launchAcceptanceGuardParent(recovery);
+    await waitFor(
+      () => existsSync(recovery.parentState),
+      10_000,
+      "the disposable dependency-guard parent to publish exact process ownership"
+    );
+    const parentState = readDependencyGuardParentState(recovery.parentState);
+    guardParent.parentPid = parentState.parentPid;
+    orphanedGuardPid = parentState.guardPid;
+    assert.notEqual(orphanedGuardPid, parentState.parentPid);
+    assert.equal(acceptanceProcessIsAlive(parentState.parentPid), true);
+    assert.equal(acceptanceProcessIsAlive(orphanedGuardPid), true);
+    await waitFor(
+      () => existsSync(recovery.parentAuthorized),
+      10_000,
+      "the disposable dependency-guard parent to publish exact READY and GO evidence"
+    );
+    assert.deepEqual(readDependencyGuardParentAuthorization(recovery.parentAuthorized), {
+      guardPid: orphanedGuardPid,
+      kind: "authorized",
+      parentPid: parentState.parentPid,
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
+    });
+    await waitFor(
+      () => existsSync(recovery.pipStarted),
+      10_000,
+      "the guarded fake pip writer to begin after exact GO authorization"
+    );
+    assert.equal(
+      existsSync(recovery.marker),
+      true,
+      "The durable recovery marker must exist before simulating abrupt guard-parent termination."
+    );
+    const markerMetadata = lstatSync(recovery.marker);
+    assert.ok(markerMetadata.isFile() && !markerMetadata.isSymbolicLink() && markerMetadata.nlink === 1);
+    if (process.platform !== "win32") {
+      assert.equal(markerMetadata.mode & 0o077, 0, "The durable dependency marker must remain mode 0600.");
+    }
+    const pipStarted = JSON.parse(readFileSync(recovery.pipStarted, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(pipStarted.args, ["install", "--no-input", "--no-user", "--", recovery.dependency.installSpec]);
+    // Crash only the disposable Python parent after exact GO. Its guarded
+    // writer is a distinct process and must remain alive, modelling an
+    // extension-host-like parent loss without claiming that this editor
+    // restarted or power failed.
+    const parentExit = await crashAcceptanceGuardParent(
+      guardParent,
+      recovery.parentCrashFrame,
+      "the abruptly terminated dependency-guard parent"
+    );
+    assert.equal(
+      parentExit.code,
+      DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE,
+      "The exact disposable Python parent must acknowledge the crash frame with os._exit()."
+    );
+    assert.equal(acceptanceProcessIsAlive(orphanedGuardPid), true, "The guarded writer must outlive its parent.");
+    assert.equal(existsSync(recovery.marker), true, "Guard-parent loss after GO must retain the exact durable marker.");
+
+    assert.equal(
+      await vscode.commands.executeCommand("openWrangler.changeRuntime", recovery.executable),
+      recovery.executable
+    );
+    const invocationsBeforeBlockedOpen = readDependencyGuardAcceptanceInvocations(recovery);
+    const dependencyProbesBeforeBlockedOpen = readDependencyGuardProbeInvocations(recovery);
+    const generationBeforeBlockedOpen = testing.runtimeGeneration();
+    const blocked = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: csvSource(fixture),
+      backend: "polars",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(
+      blocked.kind,
+      "error",
+      `A retained dependency marker must block a fresh open: ${JSON.stringify(blocked)}`
+    );
+    if (blocked.kind === "error") {
+      assert.equal(blocked.code, "dependency_environment_uncertain");
+      assert.match(blocked.message, /dependency state is uncertain/iu);
+      assert.match(
+        blocked.detail ?? "",
+        /Another dependency guard currently owns this environment/iu,
+        "A live guarded writer must report the busy state without offering concurrent validation."
+      );
+      assert.doesNotMatch(
+        `${blocked.message}\n${blocked.detail ?? ""}`,
+        new RegExp(`${DEPENDENCY_GUARD_ACCEPTANCE_TOKEN}|${DEPENDENCY_GUARD_HOSTILE_TOKEN}`, "u"),
+        "Recovery diagnostics must never expose a dependency-guard token."
+      );
+    }
+    assert.equal(testing.runtimeGeneration(), generationBeforeBlockedOpen);
+    assert.equal(testing.runtimeRunning(), false, "A dirty guard must block before runtime startup.");
+    assert.equal(testing.diagnostics().sessionCount, 0, "A dirty guard must not retain a failed session.");
+    const blockedOpenInvocations = readDependencyGuardAcceptanceInvocations(recovery).slice(
+      invocationsBeforeBlockedOpen.length
+    );
+    assert.ok(
+      blockedOpenInvocations.length >= 2 &&
+        blockedOpenInvocations.length <= 4 &&
+        blockedOpenInvocations.every(
+          (arguments_) =>
+            (arguments_.length === 1 && arguments_[0] === "-c") ||
+            (arguments_.length === 2 &&
+              sameAcceptanceExecutable(arguments_[0], recovery.helperPath) &&
+              arguments_[1] === "status")
+        ),
+      `Blocked-open Python work was not limited to environment/status checks: ${JSON.stringify(blockedOpenInvocations)}`
+    );
+    assert.deepEqual(
+      readDependencyGuardProbeInvocations(recovery),
+      dependencyProbesBeforeBlockedOpen,
+      "A bridge fresh to the interrupted marker must stop before the ordinary importlib dependency probe."
+    );
+
+    assert.equal(
+      acceptanceProcessIsAlive(orphanedGuardPid),
+      true,
+      "The same orphaned guarded writer must still own the journal before public recovery."
+    );
+    assert.equal(
+      await vscode.commands.executeCommand(
+        "openWrangler.revalidateRuntimeDependencies",
+        true,
+        DEPENDENCY_GUARD_HOSTILE_TOKEN,
+        recovery.environment
+      ),
+      false,
+      "A live dependency guard lock must make public recovery fail closed."
+    );
+    assert.equal(existsSync(recovery.marker), true, "Busy recovery must retain the exact marker.");
+
+    writeFileSync(recovery.pipRelease, "release\n", { encoding: "utf8", flag: "wx" });
+    await waitFor(
+      () => existsSync(recovery.pipCompleted),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the orphaned guarded writer to finish its no-network pip fixture"
+    );
+    const releasedStatus = await waitForAcceptanceGuardRelease(
+      recovery,
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the orphaned dependency guard to release its exact environment after its writer completed"
+    );
+    assert.equal(existsSync(recovery.marker), true, "Writer completion must not clear an unvalidated marker.");
+    assert.deepEqual(releasedStatus, {
+      kind: "status",
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      state: "dirty",
+      token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
+    });
+
+    // The first open observed the journal while its exact writer still held
+    // the lock, so it could only fail closed as busy. Ask the production
+    // bridge to discover the retained marker once the writer has exited. This
+    // binds recovery to the environment and token discovered from disk; the
+    // later public command arguments remain deliberately hostile.
+    const dependencyProbesBeforeMarkerDiscovery = readDependencyGuardProbeInvocations(recovery);
+    const generationBeforeMarkerDiscovery = testing.runtimeGeneration();
+    const discovered = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: csvSource(fixture),
+      backend: "polars",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(
+      discovered.kind,
+      "error",
+      `A retained exact dependency marker must block until explicit validation: ${JSON.stringify(discovered)}`
+    );
+    if (discovered.kind === "error") {
+      assert.equal(discovered.code, "dependency_environment_uncertain");
+      assert.match(discovered.message, /dependency state is uncertain/iu);
+      assert.match(discovered.detail ?? "", /Revalidate Runtime Dependencies/iu);
+      assert.doesNotMatch(
+        `${discovered.message}\n${discovered.detail ?? ""}`,
+        new RegExp(`${DEPENDENCY_GUARD_ACCEPTANCE_TOKEN}|${DEPENDENCY_GUARD_HOSTILE_TOKEN}`, "u"),
+        "Exact marker discovery diagnostics must never expose a dependency-guard token."
+      );
+    }
+    assert.equal(testing.runtimeGeneration(), generationBeforeMarkerDiscovery);
+    assert.equal(testing.runtimeRunning(), false, "Marker discovery must stop before runtime startup.");
+    assert.equal(testing.diagnostics().sessionCount, 0, "Marker discovery must not retain a failed session.");
+    assert.deepEqual(
+      readDependencyGuardProbeInvocations(recovery),
+      dependencyProbesBeforeMarkerDiscovery,
+      "Exact marker discovery must stop before the ordinary importlib dependency probe."
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const page = await connectToEditorWorkbench();
+    const declinedCommand = vscode.commands
+      .executeCommand<boolean>(
+        "openWrangler.revalidateRuntimeDependencies",
+        true,
+        DEPENDENCY_GUARD_HOSTILE_TOKEN,
+        recovery.environment
+      )
+      .then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error })
+      );
+    const earlyDecline = await Promise.race([
+      declinedCommand.then((outcome) => ({ kind: "settled" as const, outcome })),
+      new Promise<{ kind: "pending" }>((resolve) => setTimeout(() => resolve({ kind: "pending" }), 500))
+    ]);
+    assert.equal(
+      earlyDecline.kind,
+      "pending",
+      `Hostile recovery arguments must not settle the command without its real modal: ${JSON.stringify(earlyDecline)}`
+    );
+    const { page: declinePage, dialog: declineDialog } = await waitForVisibleEditorDialog(
+      page,
+      "Revalidate runtime dependencies"
+    );
+    try {
+      await assertDependencyRecoveryDialog(declineDialog, recovery.executable);
+      await declinePage.bringToFront();
+      await declinePage.keyboard.press("Escape");
+      await declineDialog.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      const declined = await declinedCommand;
+      if (declined.status === "rejected") throw declined.error;
+      assert.equal(declined.value, false);
+    } finally {
+      if (await declineDialog.isVisible().catch(() => false)) {
+        await declinePage.bringToFront();
+        await declinePage.keyboard.press("Escape");
+        await declineDialog.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+      }
+    }
+    assert.equal(existsSync(recovery.marker), true, "Escaping the real recovery modal must retain the marker.");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const recoveryCommand = vscode.commands
+      .executeCommand<boolean>(
+        "openWrangler.revalidateRuntimeDependencies",
+        DEPENDENCY_GUARD_HOSTILE_TOKEN,
+        recovery.environment
+      )
+      .then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error })
+      );
+    const { page: recoveryPage, dialog: recoveryDialog } = await waitForVisibleEditorDialog(
+      page,
+      "Revalidate runtime dependencies"
+    );
+    await assertDependencyRecoveryDialog(recoveryDialog, recovery.executable);
+    await recoveryPage.bringToFront();
+    await withAcceptanceOperationDeadline(
+      recoveryDialog.getByRole("button", { name: "Revalidate", exact: true }).click(),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the exact dependency-revalidation confirmation"
+    );
+    await recoveryDialog.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    const recovered = await recoveryCommand;
+    if (recovered.status === "rejected") throw recovered.error;
+    assert.equal(recovered.value, true, "Exact dependency validation must report success.");
+    assert.equal(existsSync(recovery.marker), false, "Successful exact validation must clear only its marker.");
+    assert.deepEqual(readAcceptanceGuardStatus(recovery), {
+      kind: "status",
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      state: "clean",
+      token: null
+    });
+
+    const opened = await testing.request({
+      kind: "openSession",
+      ...GRID_COLUMN_WINDOW,
+      source: csvSource(fixture),
+      backend: "polars",
+      pageSize: 20,
+      mode: "viewing"
+    });
+    assert.equal(
+      opened.kind,
+      "sessionOpened",
+      `Validated dependency recovery did not unblock: ${JSON.stringify(opened)}`
+    );
+    if (opened.kind === "sessionOpened") {
+      sessionId = opened.metadata.sessionId;
+      sessionRevision = opened.metadata.revision;
+      assert.equal(opened.metadata.backend, "polars");
+    }
+  } catch (error) {
+    operationFailed = true;
+    operationFailure = error;
+  } finally {
+    if ((orphanedGuardPid === undefined || guardParent?.parentPid === undefined) && existsSync(recovery.parentState)) {
+      try {
+        const parentState = readDependencyGuardParentState(recovery.parentState);
+        orphanedGuardPid = parentState.guardPid;
+        if (guardParent) guardParent.parentPid = parentState.parentPid;
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+    let processOwnershipConfirmed = orphanedGuardPid !== undefined || guardParent === undefined;
+    let exactAuthorizationConfirmed = false;
+    if (orphanedGuardPid !== undefined && guardParent && existsSync(recovery.parentAuthorized)) {
+      try {
+        assert.deepEqual(readDependencyGuardParentAuthorization(recovery.parentAuthorized), {
+          guardPid: orphanedGuardPid,
+          kind: "authorized",
+          parentPid: guardParent.parentPid,
+          protocol: DEPENDENCY_GUARD_PROTOCOL,
+          token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
+        });
+        exactAuthorizationConfirmed = true;
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+    if (orphanedGuardPid === undefined && guardParent) {
+      processOwnershipConfirmed = false;
+      cleanupFailures.push(
+        new Error("Dependency-recovery cleanup could not recover the exact guarded-writer identity.")
+      );
+    }
+
+    const settleGuard = async (): Promise<void> => {
+      if (orphanedGuardPid === undefined) return;
+      try {
+        await settleOrphanedAcceptanceGuard(recovery, orphanedGuardPid);
+      } catch (error) {
+        processOwnershipConfirmed = false;
+        cleanupFailures.push(error);
+      }
+    };
+    const terminateParent = async (): Promise<void> => {
+      if (!guardParent || guardParent.closed) return;
+      try {
+        await crashAcceptanceGuardParent(
+          guardParent,
+          recovery.parentCrashFrame,
+          "the disposable dependency-guard parent"
+        );
+      } catch (error) {
+        processOwnershipConfirmed = false;
+        cleanupFailures.push(error);
+      }
+    };
+    for (const cleanupLeg of dependencyGuardCleanupOrder(exactAuthorizationConfirmed)) {
+      if (cleanupLeg === "parent") await terminateParent();
+      else await settleGuard();
+    }
+    if (sessionId) {
+      try {
+        await testing.request({
+          kind: "closeSession",
+          sessionId,
+          revision: sessionRevision
+        });
+      } catch (error) {
+        processOwnershipConfirmed = false;
+        cleanupFailures.push(error);
+      }
+    }
+    try {
+      await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        30_000,
+        "dependency-recovery acceptance sessions and runtime to close"
+      );
+    } catch (error) {
+      processOwnershipConfirmed = false;
+      cleanupFailures.push(error);
+    }
+    if (processOwnershipConfirmed) {
+      try {
+        cleanupAcceptanceTemporaryDirectory(directory);
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+  }
+  const failures = operationFailed ? [operationFailure, ...cleanupFailures] : cleanupFailures;
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Dependency-recovery acceptance and cleanup reported multiple failures.");
+  }
+}
+
+async function assertDependencyRecoveryDialog(dialog: Locator, executable: string): Promise<void> {
+  assert.equal(
+    await dialog.locator(".dialog-message-text").innerText(),
+    `Revalidate runtime dependencies in ${executable}?`
+  );
+  assert.equal(
+    await dialog.locator(".dialog-message-detail").innerText(),
+    "Open Wrangler found an interrupted dependency change. Revalidation waits for any package writer to exit, imports and version-checks the recorded dependencies, and clears the retained recovery marker only if every check succeeds. It does not install, remove, or overwrite packages."
+  );
+  assert.equal(
+    await dialog.getByRole("button", { name: "Revalidate", exact: true }).count(),
+    1,
+    "The dependency-recovery modal must expose exactly one affirmative Revalidate action."
+  );
+}
+
 async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, python: string): Promise<void> {
   assert.equal(
     testing.diagnostics().sessionCount,
@@ -5635,7 +6159,7 @@ async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, pyth
     );
 
     const started = JSON.parse(readFileSync(lifecycle.started, "utf8")) as Record<string, unknown>;
-    assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "pandas", "xlrd>=2.0.1"]);
+    assert.deepEqual(started.args, ["install", "--no-input", "--no-user", "--", "pandas", "xlrd>=2.0.1"]);
     assert.equal(started.pipNoInput, "1", "The owned pip process must receive non-interactive mode.");
     assert.equal(started.pipUser, "0", "The owned pip process must explicitly prohibit user-site installation.");
     assert.equal(
@@ -6057,6 +6581,747 @@ function instrumentedRuntimeMarkers(environment: InstrumentedPythonEnvironment):
   const entries = readdirSync(environment.runtimeMarkerDirectory);
   assert.ok(entries.length <= 16, "Instrumented Python runtime markers exceeded their fixed bound.");
   return entries.filter((entry) => /^runtime-[0-9a-f]{32}\.marker$/u.test(entry));
+}
+
+function createDependencyGuardRecoveryFixture(
+  directory: string,
+  dependencyPython: string,
+  helperPath: string
+): DependencyGuardRecoveryFixture {
+  assert.equal(existsSync(helperPath), true, "The bundled dependency guard must exist in the installed extension.");
+  const environmentRoot = path.join(directory, "environment");
+  execFileSync(dependencyPython, ["-m", "venv", "--without-pip", environmentRoot], {
+    stdio: "pipe",
+    timeout: 60_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environmentRoot, "Scripts", "python.exe")
+      : path.join(environmentRoot, "bin", "python");
+  assert.equal(existsSync(executable), true, "The dependency-recovery environment is missing its interpreter.");
+
+  const dependencySitePackages = execFileSync(
+    dependencyPython,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  const environmentSitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(dependencySitePackages) && path.isAbsolute(environmentSitePackages));
+  assert.doesNotMatch(dependencySitePackages, /[\r\n]/u);
+  writeFileSync(
+    path.join(environmentSitePackages, "openwrangler-acceptance-dependencies.pth"),
+    `${dependencySitePackages}\n`,
+    { encoding: "utf8", flag: "wx" }
+  );
+  const invocationLog = path.join(directory, "python-invocations.jsonl");
+  writeFileSync(
+    path.join(environmentSitePackages, "openwrangler-acceptance-invocations.pth"),
+    [
+      "import json, os, sys; ",
+      `stream = open(${JSON.stringify(invocationLog)}, "a", encoding="utf-8"); `,
+      "stream.write(json.dumps(sys.argv, separators=(',', ':')) + '\\n'); ",
+      "stream.flush(); os.fsync(stream.fileno()); stream.close()"
+    ].join(""),
+    { encoding: "utf8", flag: "wx" }
+  );
+  const dependencyProbeLog = path.join(directory, "dependency-probes.jsonl");
+  writeFileSync(
+    path.join(environmentSitePackages, "openwrangler_acceptance_probe_recorder.py"),
+    [
+      "import importlib.util",
+      "import json",
+      "import os",
+      "",
+      `_log_path = ${JSON.stringify(dependencyProbeLog)}`,
+      "_original_find_spec = importlib.util.find_spec",
+      "",
+      "def _recording_find_spec(name, *args, **kwargs):",
+      "    with open(_log_path, 'a', encoding='utf-8') as stream:",
+      "        stream.write(json.dumps({'module': name}, separators=(',', ':')) + '\\n')",
+      "        stream.flush()",
+      "        os.fsync(stream.fileno())",
+      "    return _original_find_spec(name, *args, **kwargs)",
+      "",
+      "importlib.util.find_spec = _recording_find_spec",
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  writeFileSync(
+    path.join(environmentSitePackages, "openwrangler-acceptance-probe-recorder.pth"),
+    "import openwrangler_acceptance_probe_recorder\n",
+    { encoding: "utf8", flag: "wx" }
+  );
+
+  const fixturePackage = path.join(environmentSitePackages, "openwrangler_guard_fixture");
+  mkdirSync(fixturePackage);
+  writeFileSync(path.join(fixturePackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  const fixtureMetadata = path.join(environmentSitePackages, "openwrangler_guard_fixture-1.0.0.dist-info");
+  mkdirSync(fixtureMetadata);
+  writeFileSync(
+    path.join(fixtureMetadata, "METADATA"),
+    ["Metadata-Version: 2.1", "Name: openwrangler-guard-fixture", "Version: 1.0.0", ""].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+
+  const pipStarted = path.join(directory, "guarded-pip-started.json");
+  const pipRelease = path.join(directory, "release-guarded-pip");
+  const pipCompleted = path.join(directory, "guarded-pip-completed");
+  const pipPackage = path.join(environmentSitePackages, "pip");
+  mkdirSync(pipPackage);
+  writeFileSync(path.join(pipPackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  writeFileSync(
+    path.join(pipPackage, "__main__.py"),
+    [
+      "import json",
+      "import os",
+      "import sys",
+      "import time",
+      "",
+      `started_path = ${JSON.stringify(pipStarted)}`,
+      `release_path = ${JSON.stringify(pipRelease)}`,
+      `completed_path = ${JSON.stringify(pipCompleted)}`,
+      "with open(started_path, 'x', encoding='utf-8') as stream:",
+      "    json.dump({'args': sys.argv[1:]}, stream, sort_keys=True)",
+      "    stream.flush()",
+      "    os.fsync(stream.fileno())",
+      "deadline = time.monotonic() + 60",
+      "while not os.path.exists(release_path):",
+      "    if time.monotonic() >= deadline:",
+      "        raise SystemExit(91)",
+      "    time.sleep(0.025)",
+      "with open(completed_path, 'x', encoding='utf-8') as stream:",
+      "    stream.write('completed\\n')",
+      "    stream.flush()",
+      "    os.fsync(stream.fileno())",
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+
+  const preflight = JSON.parse(
+    execFileSync(
+      executable,
+      [
+        "-I",
+        "-c",
+        [
+          "import importlib.metadata",
+          "import json",
+          "import openwrangler_guard_fixture",
+          "import pip",
+          "import polars",
+          "print(json.dumps({",
+          "    'fixtureVersion': importlib.metadata.version('openwrangler-guard-fixture'),",
+          "    'pip': pip.__file__,",
+          "    'polarsVersion': polars.__version__,",
+          "}, sort_keys=True))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as Record<string, unknown>;
+  assert.equal(preflight.fixtureVersion, "1.0.0");
+  assert.equal(typeof preflight.polarsVersion, "string");
+  assert.equal(
+    typeof preflight.pip === "string" && sameAcceptanceExecutable(preflight.pip, path.join(pipPackage, "__init__.py")),
+    true,
+    "The dependency-recovery fixture must resolve only its local no-network pip implementation."
+  );
+
+  const environment = JSON.parse(
+    execFileSync(
+      executable,
+      [
+        "-I",
+        "-c",
+        [
+          "import json",
+          "import os",
+          "import sys",
+          "executable = os.path.abspath(sys.executable)",
+          "executable_stat = os.stat(executable)",
+          "package_root = os.path.realpath(os.path.abspath(sys.prefix))",
+          "package_root_stat = os.stat(package_root)",
+          "print(json.dumps({",
+          "    'executable': executable,",
+          "    'executableIdentity': {",
+          "        'device': str(executable_stat.st_dev),",
+          "        'inode': str(executable_stat.st_ino),",
+          "        'size': str(executable_stat.st_size),",
+          "        'mtimeNs': str(executable_stat.st_mtime_ns),",
+          "        'ctimeNs': str(executable_stat.st_ctime_ns),",
+          "    },",
+          "    'packageRoot': package_root,",
+          "    'packageRootIdentity': {",
+          "        'device': str(package_root_stat.st_dev),",
+          "        'inode': str(package_root_stat.st_ino),",
+          "    },",
+          "    'pythonVersion': '.'.join(str(part) for part in sys.version_info[:3]),",
+          "}, separators=(',', ':')))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as DependencyGuardAcceptanceEnvironment;
+  assert.equal(sameAcceptanceExecutable(environment.executable, executable), true);
+  assert.equal(sameAcceptanceExecutable(environment.packageRoot, environmentRoot), true);
+
+  const dependency: DependencyGuardAcceptanceDependency = {
+    importModule: "openwrangler_guard_fixture",
+    distribution: "openwrangler-guard-fixture",
+    installSpec: "openwrangler-guard-fixture>=1.0.0,<2.0.0",
+    minimumVersion: "1.0.0",
+    maximumVersionExclusive: "2.0.0"
+  };
+  const parentState = path.join(directory, "guard-parent-state.json");
+  const parentAuthorized = path.join(directory, "guard-parent-authorized.json");
+  const parentScript = path.join(directory, "guard_parent.py");
+  const installFrame = `${JSON.stringify({
+    protocol: DEPENDENCY_GUARD_PROTOCOL,
+    kind: "install",
+    token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN,
+    environment,
+    dependencies: [dependency]
+  })}\n`;
+  const goFrame = `${JSON.stringify({
+    protocol: DEPENDENCY_GUARD_PROTOCOL,
+    kind: "go",
+    token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
+  })}\n`;
+  const parentCrashFrame = `${JSON.stringify({
+    protocol: DEPENDENCY_GUARD_PROTOCOL,
+    kind: "crash",
+    token: DEPENDENCY_GUARD_ACCEPTANCE_TOKEN
+  })}\n`;
+  writeFileSync(
+    parentScript,
+    [
+      "import json",
+      "import os",
+      "import subprocess",
+      "import sys",
+      "",
+      `helper_path = ${JSON.stringify(helperPath)}`,
+      `working_directory = ${JSON.stringify(directory)}`,
+      `state_path = ${JSON.stringify(parentState)}`,
+      `authorized_path = ${JSON.stringify(parentAuthorized)}`,
+      `release_path = ${JSON.stringify(pipRelease)}`,
+      `install_frame = ${JSON.stringify(installFrame)}.encode('ascii')`,
+      `go_frame = ${JSON.stringify(goFrame)}.encode('ascii')`,
+      `crash_frame = ${JSON.stringify(parentCrashFrame)}.encode('ascii')`,
+      `expected_token = ${JSON.stringify(DEPENDENCY_GUARD_ACCEPTANCE_TOKEN)}`,
+      `protocol = ${JSON.stringify(DEPENDENCY_GUARD_PROTOCOL)}`,
+      `crash_exit_code = ${DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE}`,
+      "",
+      "def publish(path, payload):",
+      "    with open(path, 'x', encoding='utf-8') as stream:",
+      "        json.dump(payload, stream, separators=(',', ':'), sort_keys=True)",
+      "        stream.flush()",
+      "        os.fsync(stream.fileno())",
+      "",
+      "guard = None",
+      "authorized = False",
+      "try:",
+      "    creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)",
+      "    guard = subprocess.Popen(",
+      "        [sys.executable, '-I', helper_path, 'install'],",
+      "        cwd=working_directory,",
+      "        env=os.environ.copy(),",
+      "        stdin=subprocess.PIPE,",
+      "        stdout=subprocess.PIPE,",
+      "        stderr=subprocess.DEVNULL,",
+      "        close_fds=True,",
+      "        creationflags=creationflags,",
+      "    )",
+      "    publish(state_path, {'guardPid': guard.pid, 'parentPid': os.getpid()})",
+      "    if guard.stdin is None or guard.stdout is None:",
+      "        raise RuntimeError('guard pipes were unavailable')",
+      "    guard.stdin.write(install_frame)",
+      "    guard.stdin.flush()",
+      "    ready_raw = guard.stdout.readline(65537)",
+      "    if not ready_raw or len(ready_raw) > 65536 or not ready_raw.endswith(b'\\n') or ready_raw.endswith(b'\\r\\n'):",
+      "        raise RuntimeError('guard READY frame was not exact')",
+      "    ready = json.loads(ready_raw[:-1].decode('ascii'))",
+      "    if ready != {'kind': 'ready', 'protocol': protocol, 'token': expected_token}:",
+      "        raise RuntimeError('guard READY frame did not match')",
+      "    guard.stdin.write(go_frame)",
+      "    guard.stdin.flush()",
+      "    guard.stdin.close()",
+      "    authorized = True",
+      "    publish(authorized_path, {",
+      "        'guardPid': guard.pid,",
+      "        'kind': 'authorized',",
+      "        'parentPid': os.getpid(),",
+      "        'protocol': protocol,",
+      "        'token': expected_token,",
+      "    })",
+      "    crash_request = sys.stdin.buffer.read(len(crash_frame) + 1)",
+      "    if crash_request != crash_frame:",
+      "        raise RuntimeError('parent crash frame did not match')",
+      "    os._exit(crash_exit_code)",
+      "except BaseException:",
+      "    if guard is not None and guard.poll() is None:",
+      "        if authorized:",
+      "            try:",
+      "                with open(release_path, 'x', encoding='utf-8') as stream:",
+      "                    stream.write('release\\n')",
+      "            except FileExistsError:",
+      "                pass",
+      "        elif guard.stdin is not None:",
+      "            guard.stdin.close()",
+      "        try:",
+      "            guard.wait(timeout=10)",
+      "        except subprocess.TimeoutExpired:",
+      "            guard.kill()",
+      "            guard.wait(timeout=10)",
+      "    raise",
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  const marker = path.join(
+    environment.packageRoot,
+    ".openwrangler-dependency-journal-v1",
+    `mutation-${DEPENDENCY_GUARD_ACCEPTANCE_TOKEN}.json`
+  );
+  return {
+    directory,
+    executable,
+    helperPath,
+    environment,
+    dependency,
+    marker,
+    pipStarted,
+    pipRelease,
+    pipCompleted,
+    parentScript,
+    parentState,
+    parentAuthorized,
+    parentCrashFrame,
+    invocationLog,
+    dependencyProbeLog
+  };
+}
+
+function launchAcceptanceGuardParent(fixture: DependencyGuardRecoveryFixture): AcceptanceGuardProcess {
+  const child = spawn(fixture.executable, ["-I", fixture.parentScript], {
+    cwd: fixture.directory,
+    env: dependencyGuardAcceptanceProcessEnvironment(),
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true
+  });
+  const handle: AcceptanceGuardProcess = {
+    child,
+    exit: Promise.resolve({
+      code: null,
+      signal: null,
+      stdout: "",
+      stderr: ""
+    }),
+    closed: false
+  };
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let outputOverflow = false;
+  let processError: Error | undefined;
+  const capture = (chunks: Buffer[], chunk: Buffer, stream: "stdout" | "stderr"): void => {
+    if (stream === "stdout") stdoutBytes += chunk.byteLength;
+    else stderrBytes += chunk.byteLength;
+    if (stdoutBytes > 65_536 || stderrBytes > 65_536) {
+      outputOverflow = true;
+      return;
+    }
+    chunks.push(Buffer.from(chunk));
+  };
+  child.stdout.on("data", (chunk: Buffer) => capture(stdout, chunk, "stdout"));
+  child.stderr.on("data", (chunk: Buffer) => capture(stderr, chunk, "stderr"));
+  child.once("error", (error) => {
+    processError = error;
+  });
+  handle.exit = new Promise((resolve, reject) => {
+    child.once("close", (code, signal) => {
+      handle.closed = true;
+      if (processError) {
+        reject(processError);
+        return;
+      }
+      if (outputOverflow) {
+        reject(new Error("Dependency-guard acceptance output exceeded its fixed 64 KiB bound."));
+        return;
+      }
+      resolve({
+        code,
+        signal,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8")
+      });
+    });
+  });
+  return handle;
+}
+
+function parseAcceptanceGuardFrames(stdout: string): Record<string, unknown>[] {
+  assert.ok(Buffer.byteLength(stdout, "utf8") <= 65_536);
+  assert.ok(stdout.endsWith("\n") && !stdout.endsWith("\r\n"));
+  return stdout
+    .slice(0, -1)
+    .split("\n")
+    .map((frame) => {
+      const decoded = JSON.parse(frame) as unknown;
+      assert.ok(decoded && typeof decoded === "object" && !Array.isArray(decoded));
+      return decoded as Record<string, unknown>;
+    });
+}
+
+function readDependencyGuardParentState(file: string): { parentPid: number; guardPid: number } {
+  const decoded = readBoundedAcceptanceJson(file);
+  assert.deepEqual(Object.keys(decoded).sort(), ["guardPid", "parentPid"]);
+  assert.ok(Number.isSafeInteger(decoded.parentPid) && (decoded.parentPid as number) > 0);
+  assert.ok(Number.isSafeInteger(decoded.guardPid) && (decoded.guardPid as number) > 0);
+  return {
+    parentPid: decoded.parentPid as number,
+    guardPid: decoded.guardPid as number
+  };
+}
+
+function readDependencyGuardParentAuthorization(file: string): Record<string, unknown> {
+  const decoded = readBoundedAcceptanceJson(file);
+  assert.deepEqual(Object.keys(decoded).sort(), ["guardPid", "kind", "parentPid", "protocol", "token"]);
+  return decoded;
+}
+
+function readBoundedAcceptanceJson(file: string): Record<string, unknown> {
+  let descriptor: number | undefined;
+  let payload: Buffer | undefined;
+  let operationError: unknown;
+  try {
+    descriptor = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    assert.ok(opened.isFile() && opened.nlink === 1n);
+    assert.ok(opened.size > 0n && opened.size <= 4_096n);
+
+    const boundedPayload = Buffer.alloc(4_097);
+    let offset = 0;
+    while (offset < boundedPayload.byteLength) {
+      const count = readSync(descriptor, boundedPayload, offset, boundedPayload.byteLength - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    assert.ok(offset > 0 && offset <= 4_096);
+
+    const completed = fstatSync(descriptor, { bigint: true });
+    assert.ok(
+      completed.isFile() &&
+        completed.nlink === 1n &&
+        completed.dev === opened.dev &&
+        completed.ino === opened.ino &&
+        completed.size === opened.size &&
+        completed.size === BigInt(offset) &&
+        completed.mtimeNs === opened.mtimeNs &&
+        completed.ctimeNs === opened.ctimeNs,
+      "Bounded acceptance evidence must not change while its owned descriptor is read."
+    );
+    const pathIdentity = lstatSync(file, { bigint: true });
+    assert.ok(
+      pathIdentity.isFile() &&
+        !pathIdentity.isSymbolicLink() &&
+        pathIdentity.nlink === 1n &&
+        pathIdentity.dev === completed.dev &&
+        pathIdentity.ino === completed.ino,
+      "Bounded acceptance evidence must retain its opened file identity."
+    );
+    payload = Buffer.from(boundedPayload.subarray(0, offset));
+  } catch (error) {
+    operationError = error;
+  }
+
+  let closeError: unknown;
+  if (descriptor !== undefined) {
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      closeError = error;
+    }
+  }
+  if (operationError && closeError) {
+    throw new AggregateError(
+      [operationError, closeError],
+      "Bounded acceptance evidence read and descriptor close both failed."
+    );
+  }
+  if (operationError) throw operationError;
+  if (closeError) throw closeError;
+  assert.ok(payload);
+
+  const decoded = JSON.parse(payload.toString("utf8")) as unknown;
+  assert.ok(decoded && typeof decoded === "object" && !Array.isArray(decoded));
+  return decoded as Record<string, unknown>;
+}
+
+function acceptanceProcessIsAlive(pid: number): boolean {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0);
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
+}
+
+function readAcceptanceGuardStatus(fixture: DependencyGuardRecoveryFixture): Record<string, unknown> {
+  const stdout = execFileSync(fixture.executable, ["-I", fixture.helperPath, "status"], {
+    cwd: fixture.directory,
+    env: dependencyGuardAcceptanceProcessEnvironment(),
+    input: `${JSON.stringify({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "status",
+      environment: fixture.environment
+    })}\n`,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const frames = parseAcceptanceGuardFrames(stdout);
+  assert.equal(frames.length, 1);
+  return frames[0]!;
+}
+
+function readDependencyGuardProbeInvocations(fixture: DependencyGuardRecoveryFixture): Record<string, unknown>[] {
+  if (!existsSync(fixture.dependencyProbeLog)) return [];
+  const payload = readFileSync(fixture.dependencyProbeLog);
+  assert.ok(payload.byteLength <= 65_536, "Dependency-probe invocation evidence exceeded 64 KiB.");
+  const lines = payload.toString("utf8").split("\n");
+  assert.equal(lines.pop(), "");
+  assert.ok(lines.length <= 64, "Dependency-probe invocation evidence exceeded 64 calls.");
+  return lines.map((line) => {
+    const decoded = JSON.parse(line) as unknown;
+    assert.ok(
+      decoded &&
+        typeof decoded === "object" &&
+        !Array.isArray(decoded) &&
+        typeof (decoded as Record<string, unknown>).module === "string"
+    );
+    return decoded as Record<string, unknown>;
+  });
+}
+
+function readDependencyGuardAcceptanceInvocations(fixture: DependencyGuardRecoveryFixture): string[][] {
+  const payload = readFileSync(fixture.invocationLog);
+  assert.ok(payload.byteLength <= 65_536, "Dependency-recovery invocation evidence exceeded 64 KiB.");
+  const lines = payload.toString("utf8").split("\n");
+  assert.equal(lines.pop(), "");
+  assert.ok(lines.length <= 64, "Dependency-recovery invocation evidence exceeded 64 processes.");
+  return lines.map((line) => {
+    const decoded = JSON.parse(line) as unknown;
+    assert.ok(Array.isArray(decoded) && decoded.every((argument) => typeof argument === "string"));
+    return decoded as string[];
+  });
+}
+
+function dependencyGuardAcceptanceProcessEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  const allowedKeys = new Set([
+    "APPDATA",
+    "COMSPEC",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "TZ",
+    "USERPROFILE",
+    "WINDIR"
+  ]);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && allowedKeys.has(key.toLocaleUpperCase("en-US"))) {
+      environment[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) environment[key] = value;
+  }
+  return environment;
+}
+
+async function settleOrphanedAcceptanceGuard(fixture: DependencyGuardRecoveryFixture, pid: number): Promise<void> {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0);
+  createAcceptanceSignalExclusively(fixture.pipRelease, "release\n");
+  if (existsSync(fixture.pipStarted) && !existsSync(fixture.pipCompleted)) {
+    await waitFor(
+      () => existsSync(fixture.pipCompleted),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      `the exact orphaned dependency guard ${pid} to finish its guarded writer during cleanup`
+    );
+  }
+  await waitForAcceptanceGuardRelease(
+    fixture,
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `the exact orphaned dependency guard ${pid} to release its environment during cleanup`
+  );
+}
+
+function createAcceptanceSignalExclusively(file: string, content: string): void {
+  let descriptor: number;
+  try {
+    descriptor = openSync(
+      file,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      // Another cleanup observer already published the one-shot release signal.
+      return;
+    }
+    throw error;
+  }
+
+  let operationError: unknown;
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assert.ok(
+      opened.isFile() && opened.nlink === 1n,
+      "An acceptance cleanup signal must be one exclusively owned regular file."
+    );
+    writeFileSync(descriptor, content, "utf8");
+    const completed = fstatSync(descriptor, { bigint: true });
+    assert.ok(
+      completed.isFile() &&
+        completed.nlink === 1n &&
+        completed.dev === opened.dev &&
+        completed.ino === opened.ino &&
+        completed.size === BigInt(Buffer.byteLength(content, "utf8")),
+      "An acceptance cleanup signal must retain its exclusive file identity while written."
+    );
+    const pathIdentity = lstatSync(file, { bigint: true });
+    assert.ok(
+      pathIdentity.isFile() &&
+        !pathIdentity.isSymbolicLink() &&
+        pathIdentity.nlink === 1n &&
+        pathIdentity.dev === completed.dev &&
+        pathIdentity.ino === completed.ino,
+      "An acceptance cleanup signal path must retain its exclusive file identity."
+    );
+  } catch (error) {
+    operationError = error;
+  }
+
+  let closeError: unknown;
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    closeError = error;
+  }
+  if (operationError && closeError) {
+    throw new AggregateError(
+      [operationError, closeError],
+      "Acceptance cleanup signal publication and descriptor close both failed."
+    );
+  }
+  if (operationError) throw operationError;
+  if (closeError) throw closeError;
+}
+
+async function waitForAcceptanceGuardRelease(
+  fixture: DependencyGuardRecoveryFixture,
+  timeoutMs: number,
+  expectation: string
+): Promise<Record<string, unknown>> {
+  let releasedStatus: Record<string, unknown> | undefined;
+  await waitFor(
+    () => {
+      try {
+        const status = readAcceptanceGuardStatus(fixture);
+        const released =
+          status.protocol === DEPENDENCY_GUARD_PROTOCOL &&
+          status.kind === "status" &&
+          ((status.state === "dirty" && status.token === DEPENDENCY_GUARD_ACCEPTANCE_TOKEN) ||
+            (status.state === "clean" && status.token === null));
+        if (released) releasedStatus = status;
+        return released;
+      } catch {
+        return false;
+      }
+    },
+    timeoutMs,
+    expectation
+  );
+  assert.ok(releasedStatus, "Dependency-guard release polling completed without an exact status.");
+  return releasedStatus;
+}
+
+async function crashAcceptanceGuardParent(
+  process: AcceptanceGuardProcess,
+  crashFrame: string,
+  description: string
+): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}> {
+  if (!process.closed) {
+    assert.ok(
+      process.parentPid !== undefined && process.parentPid > 0,
+      `${description} cannot be crashed before its exact Python PID is published.`
+    );
+    assert.ok(
+      !process.child.stdin.destroyed && process.child.stdin.writable,
+      `${description} no longer owns a writable crash channel.`
+    );
+    process.child.stdin.end(Buffer.from(crashFrame, "ascii"));
+  }
+  const result = await withAcceptanceOperationDeadline(
+    process.exit,
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    `${description} to close`
+  );
+  const failureDetail = result.stderr.trim() ? ` stderr=${JSON.stringify(result.stderr.trim())}` : "";
+  assert.equal(
+    result.code,
+    DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE,
+    `${description} did not exit through its exact crash frame.${failureDetail}`
+  );
+  assert.equal(result.signal, null, `${description} was terminated by an unexpected signal.`);
+  return result;
 }
 
 function createDependencyIsolatedPython(directory: string, python: string, invocationLog: string): string {

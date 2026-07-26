@@ -7,6 +7,7 @@ type CommandHandler = (...args: unknown[]) => unknown;
 const runtimeMocks = vi.hoisted(() => ({
   commands: new Map<string, CommandHandler>(),
   installMissingDependencies: vi.fn(async () => false),
+  revalidateRuntimeDependencies: vi.fn(async () => false),
   clearRuntimeSelection: vi.fn(),
   updateSetting: vi.fn(async () => undefined)
 }));
@@ -37,6 +38,8 @@ describe("runtime dependency command", () => {
     runtimeMocks.commands.clear();
     runtimeMocks.installMissingDependencies.mockClear();
     runtimeMocks.installMissingDependencies.mockResolvedValue(false);
+    runtimeMocks.revalidateRuntimeDependencies.mockClear();
+    runtimeMocks.revalidateRuntimeDependencies.mockResolvedValue(false);
     runtimeMocks.clearRuntimeSelection.mockClear();
     runtimeMocks.updateSetting.mockClear();
   });
@@ -61,6 +64,18 @@ describe("runtime dependency command", () => {
     expect(runtimeMocks.installMissingDependencies.mock.calls[0]).toEqual([]);
   });
 
+  it("ignores arbitrary caller arguments and invokes dependency revalidation without arguments", async () => {
+    register();
+
+    const result = await command("openWrangler.revalidateRuntimeDependencies")("environment", "token", {
+      confirmed: true
+    });
+
+    expect(result).toBe(false);
+    expect(runtimeMocks.revalidateRuntimeDependencies).toHaveBeenCalledOnce();
+    expect(runtimeMocks.revalidateRuntimeDependencies.mock.calls[0]).toEqual([]);
+  });
+
   it("explicitly invalidates a changed runtime even if the configuration update emits no event", async () => {
     register();
 
@@ -83,7 +98,8 @@ describe("runtime dependency command", () => {
 function register(): void {
   const bridge = {
     clearRuntimeSelection: runtimeMocks.clearRuntimeSelection,
-    installMissingDependencies: runtimeMocks.installMissingDependencies
+    installMissingDependencies: runtimeMocks.installMissingDependencies,
+    revalidateRuntimeDependencies: runtimeMocks.revalidateRuntimeDependencies
   } as unknown as PythonBridge;
   const context = { subscriptions: [] } as unknown as ExtensionContext;
   registerRuntimeCommands(context, bridge);

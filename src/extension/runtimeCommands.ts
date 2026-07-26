@@ -32,6 +32,9 @@ export function registerRuntimeCommands(context: vscode.ExtensionContext, bridge
     }),
     vscode.commands.registerCommand("openWrangler.installRuntimeDependencies", () =>
       bridge.installMissingDependencies()
+    ),
+    vscode.commands.registerCommand("openWrangler.revalidateRuntimeDependencies", () =>
+      bridge.revalidateRuntimeDependencies()
     )
   );
 }

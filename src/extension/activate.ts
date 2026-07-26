@@ -21,6 +21,7 @@ export interface OpenWranglerTestApi {
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
+  declineRuntimeDependencyRevalidation(): Promise<boolean>;
   shutdownRuntimeBridgeForTesting(): Promise<void>;
   disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
@@ -61,6 +62,7 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
         declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
+        declineRuntimeDependencyRevalidation: () => bridge.declineRuntimeDependencyRevalidationForTesting(),
         shutdownRuntimeBridgeForTesting: () => bridge.shutdown(),
         disposePanelForSession: (sessionId) => OpenWranglerPanel.disposePanelForSession(sessionId),
         setCodeForExport: (code) => nativeViews.setCodeForExport(code),
