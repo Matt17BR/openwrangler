@@ -1188,7 +1188,7 @@ async function boundedImportFocusDiagnostics(target: Locator, relationship: Impo
                 : {
                     tagName: activeElement.tagName.slice(0, 32),
                     role: activeElement.getAttribute("role")?.slice(0, 64) ?? null,
-                    classTokens: Array.from(activeElement.classList as unknown as ArrayLike<string>)
+                    classTokens: Array.from(activeElement.classList as ArrayLike<string>)
                       .slice(0, 8)
                       .map((token) => token.slice(0, 64))
                   }
