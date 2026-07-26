@@ -21,16 +21,101 @@ const notebookMocks = vi.hoisted(() => ({
 
 vi.mock("vscode", () => {
   class Uri {
-    private constructor(readonly value: string) {}
+    readonly scheme: string;
+    readonly authority: string;
+    readonly path: string;
+    readonly query: string;
+    readonly fragment: string;
+    private readonly filesystemPath: string;
+    private formatted = false;
+    private filesystemPathRead = false;
+
+    private constructor(
+      readonly value: string,
+      components?: {
+        scheme: string;
+        authority?: string;
+        path?: string;
+        query?: string;
+        fragment?: string;
+      }
+    ) {
+      const parsed = components ?? uriComponents(value);
+      this.scheme = parsed.scheme;
+      this.authority = parsed.authority ?? "";
+      this.path = parsed.path ?? "";
+      this.query = parsed.query ?? "";
+      this.fragment = parsed.fragment ?? "";
+      this.filesystemPath = this.path;
+    }
     static parse(value: string): Uri {
       return new Uri(value);
     }
     static file(path: string): Uri {
       return new Uri(`file://${path}`);
     }
+    static from(components: {
+      scheme: string;
+      authority?: string;
+      path?: string;
+      query?: string;
+      fragment?: string;
+    }): Uri {
+      return new Uri(uriString(components), components);
+    }
+    get fsPath(): string {
+      this.filesystemPathRead = true;
+      return this.filesystemPath;
+    }
     toString(): string {
+      this.formatted = true;
       return this.value;
     }
+    toJSON(): Record<string, unknown> {
+      return {
+        $mid: 1,
+        ...(this.filesystemPathRead
+          ? {
+              fsPath: this.filesystemPath,
+              ...(process.platform === "win32" ? { _sep: 1 } : {})
+            }
+          : {}),
+        ...(this.formatted ? { external: this.value } : {}),
+        ...(this.path ? { path: this.path } : {}),
+        ...(this.scheme ? { scheme: this.scheme } : {}),
+        ...(this.authority ? { authority: this.authority } : {}),
+        ...(this.query ? { query: this.query } : {}),
+        ...(this.fragment ? { fragment: this.fragment } : {})
+      };
+    }
+  }
+  function uriComponents(value: string): {
+    scheme: string;
+    authority?: string;
+    path?: string;
+    query?: string;
+    fragment?: string;
+  } {
+    const parsed = new URL(value);
+    return {
+      scheme: parsed.protocol.slice(0, -1),
+      authority: parsed.host || undefined,
+      path: parsed.pathname,
+      query: parsed.search.slice(1) || undefined,
+      fragment: parsed.hash.slice(1) || undefined
+    };
+  }
+  function uriString(components: {
+    scheme: string;
+    authority?: string;
+    path?: string;
+    query?: string;
+    fragment?: string;
+  }): string {
+    const authority = components.authority ? `//${components.authority}` : components.scheme === "file" ? "//" : "";
+    const query = components.query ? `?${components.query}` : "";
+    const fragment = components.fragment ? `#${components.fragment}` : "";
+    return `${components.scheme}:${authority}${components.path ?? ""}${query}${fragment}`;
   }
   return {
     Uri,
@@ -117,6 +202,84 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.activeEditorReads).toBe(0);
   });
 
+  it("revives released Jupyter's canonical serialized fileName URI", async () => {
+    const notebookA = notebook("file:///workspace/a.ipynb");
+    const notebookB = notebook("file:///workspace/b.ipynb");
+    notebookMocks.notebookDocuments.push(notebookA, notebookB);
+    notebookMocks.activeNotebookEditor = editor(notebookB);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame_a",
+      type: "DataFrame",
+      fileName: serializedFileUri("/workspace/a.ipynb")
+    });
+
+    expect(notebookMocks.kernelOrigins).toEqual([{ uri: notebookA.uri.toString(), document: notebookA }]);
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(notebookA);
+    expect(notebookMocks.activeEditorReads).toBe(0);
+  });
+
+  it("accepts matching canonical cached fields in a serialized released-Jupyter fileName", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame",
+      fileName: {
+        ...serializedFileUri("/workspace/shared.ipynb"),
+        external: "file:///workspace/shared.ipynb",
+        fsPath: "/workspace/shared.ipynb",
+        ...(process.platform === "win32" ? { _sep: 1 } : {})
+      }
+    });
+
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it.each([
+    ["external", { external: "file:///workspace/shared.ipynb" }],
+    [
+      "filesystem",
+      {
+        fsPath: "/workspace/shared.ipynb",
+        ...(process.platform === "win32" ? { _sep: 1 } : {})
+      }
+    ]
+  ])("accepts a canonical serialized fileName with only its %s cache", async (_label, cache) => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame",
+      fileName: { ...serializedFileUri("/workspace/shared.ipynb"), ...cache }
+    });
+
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
+  it("revives a remote serialized fileName without dropping authority, query, or fragment", async () => {
+    const original = notebook("vscode-remote://ssh-remote+host/workspace/shared.ipynb?kernel=remote#cell");
+    notebookMocks.notebookDocuments.push(original);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame",
+      fileName: {
+        $mid: 1,
+        scheme: "vscode-remote",
+        authority: "ssh-remote+host",
+        path: "/workspace/shared.ipynb",
+        query: "kernel=remote",
+        fragment: "cell"
+      }
+    });
+
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+  });
+
   it("binds a variable-viewer URI to its exact open document instead of the active notebook", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
@@ -160,6 +323,23 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.activeEditorReads).toBe(0);
   });
 
+  it("accepts an agreeing serialized released origin and real legacy origin", async () => {
+    const original = notebook("file:///workspace/shared.ipynb");
+    const active = notebook("file:///workspace/active.ipynb");
+    notebookMocks.notebookDocuments.push(original, active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame",
+      fileName: serializedFileUri("/workspace/shared.ipynb"),
+      notebookUri: vscode.Uri.parse(original.uri.toString())
+    });
+
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    expect(notebookMocks.activeEditorReads).toBe(0);
+  });
+
   it.each(["fileName", "notebookUri", "uri"] as const)(
     "rejects a string %s without falling back to the active notebook",
     async (field) => {
@@ -182,6 +362,155 @@ describe("notebook command provenance", () => {
       );
     }
   );
+
+  it.each(["notebookUri", "uri"] as const)(
+    "rejects a serialized %s legacy field without falling back to the active notebook",
+    async (field) => {
+      const active = notebook("file:///workspace/active.ipynb");
+      notebookMocks.notebookDocuments.push(active);
+      notebookMocks.activeNotebookEditor = editor(active);
+      const { coordinator } = register();
+
+      await command("openWrangler.launchDataViewer")({
+        name: "frame",
+        [field]: serializedFileUri("/workspace/active.ipynb")
+      });
+
+      expect(coordinator.createBridge).not.toHaveBeenCalled();
+      expect(notebookMocks.activeEditorReads).toBe(0);
+      expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+        "Open Wrangler received an invalid originating notebook. Launch the variable again from its notebook."
+      );
+    }
+  );
+
+  it.each([
+    ["missing marker", { scheme: "file", path: "/workspace/a.ipynb" }],
+    ["wrong marker", { $mid: 2, scheme: "file", path: "/workspace/a.ipynb" }],
+    ["missing scheme", { $mid: 1, path: "/workspace/a.ipynb" }],
+    ["empty path", { $mid: 1, scheme: "file", path: "" }],
+    ["unknown key", { $mid: 1, scheme: "file", path: "/workspace/a.ipynb", surprise: true }],
+    ["wrong component type", { $mid: 1, scheme: "file", path: 42 }],
+    ["explicit undefined component", { $mid: 1, scheme: "file", path: "/workspace/a.ipynb", query: undefined }],
+    ["control character", { $mid: 1, scheme: "file", path: "/workspace/\n.ipynb" }],
+    ["malformed high surrogate", { $mid: 1, scheme: "file", path: "/workspace/\ud800.ipynb" }],
+    ["malformed low surrogate", { $mid: 1, scheme: "file", path: "/workspace/\udc00.ipynb" }],
+    ["multibyte overflow", { $mid: 1, scheme: "file", path: `/${"😀".repeat(2_048)}` }],
+    [
+      "mismatched external cache",
+      {
+        $mid: 1,
+        scheme: "file",
+        path: "/workspace/a.ipynb",
+        external: "file:///workspace/b.ipynb"
+      }
+    ],
+    [
+      "mismatched filesystem cache",
+      { $mid: 1, scheme: "file", path: "/workspace/a.ipynb", fsPath: "/workspace/b.ipynb" }
+    ],
+    ["separator without filesystem cache", { $mid: 1, scheme: "file", path: "/workspace/a.ipynb", _sep: 1 }]
+  ])("rejects a serialized fileName with %s", async (_label, fileName) => {
+    const active = notebook("file:///workspace/a.ipynb");
+    notebookMocks.notebookDocuments.push(active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({ name: "frame", fileName });
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.activeEditorReads).toBe(0);
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler received an invalid originating notebook. Launch the variable again from its notebook."
+    );
+  });
+
+  it("rejects an oversized serialized fileName before consulting the active notebook", async () => {
+    const active = notebook("file:///workspace/a.ipynb");
+    notebookMocks.notebookDocuments.push(active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame",
+      fileName: serializedFileUri(`/${"a".repeat(32 * 1024)}`)
+    });
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.activeEditorReads).toBe(0);
+  });
+
+  it("rejects a top-level serialized URI instead of treating it as missing provenance", async () => {
+    const active = notebook("file:///workspace/a.ipynb");
+    notebookMocks.notebookDocuments.push(active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")(serializedFileUri("/workspace/a.ipynb"), {
+      name: "frame"
+    });
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.activeEditorReads).toBe(0);
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler received an invalid originating notebook. Launch the variable again from its notebook."
+    );
+  });
+
+  it("rejects an accessor-bearing serialized fileName without invoking the accessor", async () => {
+    const active = notebook("file:///workspace/a.ipynb");
+    notebookMocks.notebookDocuments.push(active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+    const fileName = serializedFileUri("/workspace/a.ipynb");
+    const schemeGetter = vi.fn(() => "file");
+    Object.defineProperty(fileName, "scheme", { enumerable: true, get: schemeGetter });
+
+    await command("openWrangler.launchDataViewer")({ name: "frame", fileName });
+
+    expect(schemeGetter).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.activeEditorReads).toBe(0);
+  });
+
+  it.each([
+    [
+      "null prototype",
+      Object.assign(Object.create(null) as Record<string, unknown>, serializedFileUri("/workspace/a.ipynb"))
+    ],
+    [
+      "custom prototype",
+      Object.assign(
+        Object.create({ inherited: true }) as Record<string, unknown>,
+        serializedFileUri("/workspace/a.ipynb")
+      )
+    ],
+    ["frozen properties", Object.freeze(serializedFileUri("/workspace/a.ipynb"))]
+  ])("rejects a serialized fileName with %s", async (_label, fileName) => {
+    const active = notebook("file:///workspace/a.ipynb");
+    notebookMocks.notebookDocuments.push(active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+
+    await command("openWrangler.launchDataViewer")({ name: "frame", fileName });
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.activeEditorReads).toBe(0);
+  });
+
+  it("rejects a symbol-bearing serialized fileName", async () => {
+    const active = notebook("file:///workspace/a.ipynb");
+    notebookMocks.notebookDocuments.push(active);
+    notebookMocks.activeNotebookEditor = editor(active);
+    const { coordinator } = register();
+    const fileName = serializedFileUri("/workspace/a.ipynb");
+    Object.defineProperty(fileName, Symbol("hidden"), { enumerable: true, value: true });
+
+    await command("openWrangler.launchDataViewer")({ name: "frame", fileName });
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.activeEditorReads).toBe(0);
+  });
 
   it("rejects conflicting released and legacy origin fields", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
@@ -411,4 +740,8 @@ function closeNotebook(document: NotebookDocument): void {
 
 function editor(document: NotebookDocument): NotebookEditor {
   return { notebook: document } as NotebookEditor;
+}
+
+function serializedFileUri(path: string): Record<string, unknown> {
+  return { $mid: 1, scheme: "file", path };
 }

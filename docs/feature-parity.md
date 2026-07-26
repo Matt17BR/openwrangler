@@ -576,11 +576,11 @@ This hardens the existing **Done** runtime-selection row and completes the imple
 
 Released-Jupyter argument provenance slice, 2026-07-26:
 
-- The variable-viewer command now accepts the released Jupyter extension's `IJupyterVariable.fileName: vscode.Uri` origin while retaining the legacy `notebookUri` and `uri` fields for development acceptance. Every supplied origin must be an actual `vscode.Uri`, and multiple fields must agree exactly.
+- The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.
 - The command captures the sole open `NotebookDocument` for that URI at receipt. String lookalikes, conflicting fields, duplicate same-URI document objects, closure, and same-URI replacement all fail closed without reading or retargeting through the active notebook editor.
 - Focused provenance coverage uses the released argument shape with another notebook active, verifies exact-object handoff into kernel acquisition and session coordination, and exercises malformed, conflicting, duplicate, agreeing, and replacement cases.
 
-The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch but does not replace the remaining opt-in acceptance against the actual released Jupyter extension, its consent UI, live Variables surface, toolbar action, Pandas/Polars kernels, restart behavior, and terminal cleanup tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch but does not replace the remaining opt-in acceptance against the actual released Jupyter extension, its renderer action, toolbar action, Pandas/Polars kernels, restart behavior, and terminal cleanup tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
 
 Released-Jupyter packaged acceptance harness, 2026-07-26:
 
@@ -591,6 +591,12 @@ Released-Jupyter packaged acceptance harness, 2026-07-26:
 - `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
 
 The notebook-variable row remains **Partial** until a real local or hosted released-Jupyter run is recorded green and the remaining Cursor/release-platform evidence is attached to [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). Adding the harness and non-required workflow alone is not acceptance evidence.
+
+Local released-Jupyter evidence, 2026-07-26:
+
+- A packaged preview VSIX ran against `ms-toolsai.jupyter@2025.9.1` in a private Xvfb VS Code profile. The real persisted consent-deny flow reached its terminal Open Wrangler diagnostic, and the allow flow selected the private kernel and clicked Jupyter's actual Variables-table action for a Pandas dataframe.
+- That action delivered the serialized `fileName` envelope used by the released Variables webview and opened the exact originating notebook in Open Wrangler, validating the decoder against the real extension rather than only a test double. Generated-code insertion and MIME-v2 formatter registration also advanced through their real integration paths.
+- The fresh output selected Open Wrangler's MIME type and produced a visible, nonzero custom-output placeholder, but its renderer document/action was not exposed through the workbench Playwright pages or frames. The packaged allow phase therefore remains red while guest-target discovery and the real action click are completed. This evidence narrows the remaining blocker; it does not turn the notebook-variable row green.
 
 ## Explicitly deferred from 1.0
 

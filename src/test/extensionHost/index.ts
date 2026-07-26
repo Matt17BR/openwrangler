@@ -705,18 +705,44 @@ async function exerciseReleasedJupyterExtension(
       true,
       "The released Jupyter Variables action must accept keyboard focus."
     );
+    await viewerAction.evaluate((element) => {
+      const root = element.ownerDocument.documentElement;
+      root.dataset.openWranglerAcceptanceClick = "pending";
+      element.addEventListener(
+        "click",
+        () => {
+          root.dataset.openWranglerAcceptanceClick = "seen";
+        },
+        { capture: true, once: true }
+      );
+    });
     await withBoundedAcceptancePromise(
       viewerAction.click(),
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the real released-Jupyter Variables action"
     );
-    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
-    await waitFor(
-      () => releasedJupyterSessionTabs().length === 1,
-      10_000,
-      "the released Jupyter viewer delegation to create exactly one Open Wrangler panel",
-      () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length, coordinator: testing.diagnostics() })
+    assert.equal(
+      await viewerAction.evaluate(
+        (element) => element.ownerDocument.documentElement.dataset.openWranglerAcceptanceClick
+      ),
+      "seen",
+      "The real released-Jupyter Variables action must receive its browser click event."
     );
+    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
+    try {
+      await waitFor(
+        () => releasedJupyterSessionTabs().length === 1,
+        10_000,
+        "the released Jupyter viewer delegation to create exactly one Open Wrangler panel",
+        () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length, coordinator: testing.diagnostics() })
+      );
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} Workbench: ${JSON.stringify(
+          await boundedImportPromptDiagnostics(workbench)
+        )}`
+      );
+    }
     recordAcceptanceProgress(`${phase}:variables-panel-created`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
     assertExactOpenNotebookDocument(notebook, "while the released Jupyter consent belongs to the fixture notebook");
@@ -781,7 +807,7 @@ async function exerciseReleasedJupyterExtension(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the released-Jupyter MIME cell to become visible before execution"
     );
-    await executeReleasedNotebookCell(notebook, 1, undefined, "jupyter-allow:mime-cell");
+    await executeReleasedNotebookCell(notebook, 1, undefined, "jupyter-allow:mime-cell", executionEditor);
     const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
@@ -810,6 +836,11 @@ async function exerciseReleasedJupyterExtension(
     rendererEditor.selection = renderedCell;
     rendererEditor.selections = [renderedCell];
     rendererEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      rendererEditor,
+      "after revealing the released-Jupyter MIME renderer"
+    );
     recordAcceptanceProgress("jupyter-allow:mime-renderer-revealed");
     let rendererButton: Locator;
     try {
@@ -1037,7 +1068,26 @@ async function showExactReleasedNotebook(notebook: vscode.NotebookDocument): Pro
   });
   assert.equal(editor.notebook, notebook, "Showing a released-Jupyter notebook must retain its exact editor.");
   assertExactOpenNotebookDocument(notebook, "after showing its exact editor");
+  assertExactVisibleReleasedNotebookEditor(notebook, editor, "after showing its exact editor");
   return editor;
+}
+
+function assertExactVisibleReleasedNotebookEditor(
+  notebook: vscode.NotebookDocument,
+  editor: vscode.NotebookEditor,
+  checkpoint: string
+): void {
+  const sameUriEditors = vscode.window.visibleNotebookEditors.filter(
+    (candidate) => candidate.notebook.uri.toString() === notebook.uri.toString()
+  );
+  assert.equal(sameUriEditors.length, 1, `The released-Jupyter notebook must have one visible editor ${checkpoint}.`);
+  assert.equal(sameUriEditors[0], editor, `The released-Jupyter visible editor changed ${checkpoint}.`);
+  assert.equal(editor.notebook, notebook, `The released-Jupyter visible editor changed document ${checkpoint}.`);
+  assert.equal(
+    vscode.window.activeNotebookEditor,
+    editor,
+    `The released-Jupyter notebook was not active ${checkpoint}.`
+  );
 }
 
 async function selectReleasedJupyterKernel(
@@ -1243,21 +1293,41 @@ async function executeReleasedNotebookCell(
   notebook: vscode.NotebookDocument,
   index: number,
   expectedText: string | undefined,
-  checkpoint: string
+  checkpoint: string,
+  expectedEditor?: vscode.NotebookEditor
 ): Promise<void> {
   assertExactOpenNotebookDocument(notebook, `before executing cell ${index}`);
+  if (expectedEditor) {
+    assertExactVisibleReleasedNotebookEditor(notebook, expectedEditor, `before executing cell ${index}`);
+  }
   assert.ok(index >= 0 && index < notebook.cellCount, `Released-Jupyter cell ${index} must exist.`);
   const cell = notebook.cellAt(index);
   let observedFreshExecutionSummary = false;
+  let outputAttachmentFailure: string | undefined;
   const executionListener = vscode.workspace.onDidChangeNotebookDocument((event) => {
     if (event.notebook !== notebook) return;
-    if (event.cellChanges.some((change) => change.cell === cell && change.executionSummary !== undefined)) {
-      observedFreshExecutionSummary = true;
+    for (const change of event.cellChanges) {
+      if (change.cell !== cell) continue;
+      if (change.executionSummary !== undefined) observedFreshExecutionSummary = true;
+      if (change.outputs !== undefined && expectedEditor) {
+        try {
+          assertExactVisibleReleasedNotebookEditor(notebook, expectedEditor, `while cell ${index} published output`);
+        } catch (error) {
+          outputAttachmentFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
     }
   });
   try {
     const deadline = Date.now() + 120_000;
     recordAcceptanceProgress(`${checkpoint}:dispatch`);
+    if (expectedEditor) {
+      assertExactVisibleReleasedNotebookEditor(
+        notebook,
+        expectedEditor,
+        `immediately before dispatching cell ${index}`
+      );
+    }
     const command = Promise.resolve(
       vscode.commands.executeCommand("notebook.cell.execute", {
         ranges: [{ start: index, end: index + 1 }],
@@ -1279,6 +1349,10 @@ async function executeReleasedNotebookCell(
     let publishedExecutionObservation = false;
     do {
       assertExactOpenNotebookDocument(notebook, `while waiting for cell ${index}`);
+      if (expectedEditor) {
+        assertExactVisibleReleasedNotebookEditor(notebook, expectedEditor, `while waiting for cell ${index}`);
+      }
+      assert.equal(outputAttachmentFailure, undefined, outputAttachmentFailure);
       const currentCommandState = readCommandState();
       if (currentCommandState.kind === "rejected") {
         recordAcceptanceProgress(`${checkpoint}:command-rejected`);
@@ -1292,6 +1366,9 @@ async function executeReleasedNotebookCell(
         if (expectedText === undefined || notebookCellOutputText(cell).includes(expectedText)) {
           recordAcceptanceProgress(`${checkpoint}:output-complete`);
           await withBoundedAcceptancePromise(command, 10_000, `released-Jupyter cell ${index} command completion`);
+          if (expectedEditor) {
+            assertExactVisibleReleasedNotebookEditor(notebook, expectedEditor, `after completing cell ${index}`);
+          }
           recordAcceptanceProgress(`${checkpoint}:complete`);
           return;
         }
@@ -5125,7 +5202,13 @@ async function notebookRendererDiagnostics(
               tables,
               preformatted,
               moduleScripts,
-              selectedOutputMimes
+              selectedOutputMimes,
+              notebookBacklayerContainers,
+              notebookBacklayerCells,
+              notebookBacklayerOutputs,
+              notebookBacklayerRenderedOutputs,
+              notebookBacklayerRendererErrors,
+              selectedOutputGeometry
             ] = await Promise.all([
               preview.count(),
               button.count(),
@@ -5141,6 +5224,28 @@ async function notebookRendererDiagnostics(
                   .slice(0, 16)
                   .map((element) => element.getAttribute("output-mime-type"))
                   .filter((mime): mime is string => typeof mime === "string")
+              ),
+              target.frame.locator("#container").count(),
+              target.frame.locator(".cell_container").count(),
+              target.frame.locator(".output_container").count(),
+              target.frame.locator(".output").count(),
+              target.frame.locator(".no-renderer-error").count(),
+              target.frame.locator(".output-inner-container[output-mime-type]").evaluateAll((elements) =>
+                elements.slice(0, 16).map((element) => {
+                  const rect = element.getBoundingClientRect();
+                  const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+                  const mime = element.getAttribute("output-mime-type") ?? "missing";
+                  return [
+                    mime,
+                    Math.round(rect.width),
+                    Math.round(rect.height),
+                    Math.round(rect.left),
+                    Math.round(rect.top),
+                    style?.display ?? "unknown",
+                    style?.visibility ?? "unknown",
+                    element.isConnected ? "connected" : "detached"
+                  ].join(":");
+                })
               )
             ]);
             const [firstButtonVisible, firstButtonEnabled] =
@@ -5165,6 +5270,12 @@ async function notebookRendererDiagnostics(
               preformatted,
               moduleScripts,
               selectedOutputMimes: selectedOutputMimes.join(","),
+              notebookBacklayerContainers,
+              notebookBacklayerCells,
+              notebookBacklayerOutputs,
+              notebookBacklayerRenderedOutputs,
+              notebookBacklayerRendererErrors,
+              selectedOutputGeometry: selectedOutputGeometry.join(","),
               firstButtonVisible,
               firstButtonEnabled
             });
