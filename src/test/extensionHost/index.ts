@@ -1,12 +1,17 @@
 import * as assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync
@@ -6995,10 +7000,69 @@ function readDependencyGuardParentAuthorization(file: string): Record<string, un
 }
 
 function readBoundedAcceptanceJson(file: string): Record<string, unknown> {
-  const metadata = lstatSync(file);
-  assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1);
-  assert.ok(metadata.size > 0 && metadata.size <= 4_096);
-  const decoded = JSON.parse(readFileSync(file, "utf8")) as unknown;
+  let descriptor: number | undefined;
+  let payload: Buffer | undefined;
+  let operationError: unknown;
+  try {
+    descriptor = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    assert.ok(opened.isFile() && opened.nlink === 1n);
+    assert.ok(opened.size > 0n && opened.size <= 4_096n);
+
+    const boundedPayload = Buffer.alloc(4_097);
+    let offset = 0;
+    while (offset < boundedPayload.byteLength) {
+      const count = readSync(descriptor, boundedPayload, offset, boundedPayload.byteLength - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    assert.ok(offset > 0 && offset <= 4_096);
+
+    const completed = fstatSync(descriptor, { bigint: true });
+    assert.ok(
+      completed.isFile() &&
+        completed.nlink === 1n &&
+        completed.dev === opened.dev &&
+        completed.ino === opened.ino &&
+        completed.size === opened.size &&
+        completed.size === BigInt(offset) &&
+        completed.mtimeNs === opened.mtimeNs &&
+        completed.ctimeNs === opened.ctimeNs,
+      "Bounded acceptance evidence must not change while its owned descriptor is read."
+    );
+    const pathIdentity = lstatSync(file, { bigint: true });
+    assert.ok(
+      pathIdentity.isFile() &&
+        !pathIdentity.isSymbolicLink() &&
+        pathIdentity.nlink === 1n &&
+        pathIdentity.dev === completed.dev &&
+        pathIdentity.ino === completed.ino,
+      "Bounded acceptance evidence must retain its opened file identity."
+    );
+    payload = Buffer.from(boundedPayload.subarray(0, offset));
+  } catch (error) {
+    operationError = error;
+  }
+
+  let closeError: unknown;
+  if (descriptor !== undefined) {
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      closeError = error;
+    }
+  }
+  if (operationError && closeError) {
+    throw new AggregateError(
+      [operationError, closeError],
+      "Bounded acceptance evidence read and descriptor close both failed."
+    );
+  }
+  if (operationError) throw operationError;
+  if (closeError) throw closeError;
+  assert.ok(payload);
+
+  const decoded = JSON.parse(payload.toString("utf8")) as unknown;
   assert.ok(decoded && typeof decoded === "object" && !Array.isArray(decoded));
   return decoded as Record<string, unknown>;
 }
@@ -7099,13 +7163,7 @@ function dependencyGuardAcceptanceProcessEnvironment(overrides: NodeJS.ProcessEn
 
 async function settleOrphanedAcceptanceGuard(fixture: DependencyGuardRecoveryFixture, pid: number): Promise<void> {
   assert.ok(Number.isSafeInteger(pid) && pid > 0);
-  if (!existsSync(fixture.pipRelease)) {
-    try {
-      writeFileSync(fixture.pipRelease, "release\n", { encoding: "utf8", flag: "wx" });
-    } catch {
-      // A concurrently observed release is equivalent for bounded cleanup.
-    }
-  }
+  createAcceptanceSignalExclusively(fixture.pipRelease, "release\n");
   if (existsSync(fixture.pipStarted) && !existsSync(fixture.pipCompleted)) {
     await waitFor(
       () => existsSync(fixture.pipCompleted),
@@ -7118,6 +7176,68 @@ async function settleOrphanedAcceptanceGuard(fixture: DependencyGuardRecoveryFix
     WORKBENCH_OPERATION_TIMEOUT_MS,
     `the exact orphaned dependency guard ${pid} to release its environment during cleanup`
   );
+}
+
+function createAcceptanceSignalExclusively(file: string, content: string): void {
+  let descriptor: number;
+  try {
+    descriptor = openSync(
+      file,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o600
+    );
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "EEXIST") {
+      // Another cleanup observer already published the one-shot release signal.
+      return;
+    }
+    throw error;
+  }
+
+  let operationError: unknown;
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    assert.ok(
+      opened.isFile() && opened.nlink === 1n,
+      "An acceptance cleanup signal must be one exclusively owned regular file."
+    );
+    writeFileSync(descriptor, content, "utf8");
+    const completed = fstatSync(descriptor, { bigint: true });
+    assert.ok(
+      completed.isFile() &&
+        completed.nlink === 1n &&
+        completed.dev === opened.dev &&
+        completed.ino === opened.ino &&
+        completed.size === BigInt(Buffer.byteLength(content, "utf8")),
+      "An acceptance cleanup signal must retain its exclusive file identity while written."
+    );
+    const pathIdentity = lstatSync(file, { bigint: true });
+    assert.ok(
+      pathIdentity.isFile() &&
+        !pathIdentity.isSymbolicLink() &&
+        pathIdentity.nlink === 1n &&
+        pathIdentity.dev === completed.dev &&
+        pathIdentity.ino === completed.ino,
+      "An acceptance cleanup signal path must retain its exclusive file identity."
+    );
+  } catch (error) {
+    operationError = error;
+  }
+
+  let closeError: unknown;
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    closeError = error;
+  }
+  if (operationError && closeError) {
+    throw new AggregateError(
+      [operationError, closeError],
+      "Acceptance cleanup signal publication and descriptor close both failed."
+    );
+  }
+  if (operationError) throw operationError;
+  if (closeError) throw closeError;
 }
 
 async function waitForAcceptanceGuardRelease(
