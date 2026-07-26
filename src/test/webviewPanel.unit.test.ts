@@ -193,7 +193,7 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(executeCommand).toHaveBeenLastCalledWith("setContext", "openWrangler.canChangeImportOptions", false);
   });
 
-  it("routes the native import command through the active renderer once its readiness handshake completes", async () => {
+  it("coalesces native import commands and keeps them pending through the renderer-prepared transaction", async () => {
     const source: SessionSource = {
       kind: "file",
       label: "records.csv",
@@ -202,7 +202,8 @@ describe("OpenWranglerPanel retained view state", () => {
       importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
     };
     const opened = responseForSource(source);
-    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => opened);
+    const reconfiguration = deferred<OpenWranglerResponse>();
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => reconfiguration.promise);
     const harness = createPanelHarness(
       {
         request: vi.fn(async () => opened),
@@ -213,23 +214,53 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     await harness.receive({ kind: "ready" });
     await acknowledgeLatestRendererSynchronization(harness);
-    configureDelimitedPrompts({
-      delimiter: ",",
-      encoding: "utf-8",
-      quoteChar: '"',
-      hasHeader: true
+    const delimiterPrompt = deferred<unknown>();
+    let delimiterChoices: PromptPick[] = [];
+    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
+      const choices = items as PromptPick[];
+      if (options?.title === "Delimiter") {
+        delimiterChoices = choices;
+        return delimiterPrompt.promise;
+      }
+      if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
+      if (options?.title === "Header row") return choices.find(({ value }) => value === true);
+      return choices[0];
     });
+    panelPromptMocks.showInputBox.mockImplementation(async (options) =>
+      options?.title === "Quote character" ? '"' : options?.value
+    );
     harness.posted.length = 0;
 
     const command = OpenWranglerPanel.changeActiveImportOptions();
+    const concurrentCommand = OpenWranglerPanel.changeActiveImportOptions();
+    expect(concurrentCommand).toBe(command);
     await vi.waitFor(() => expect(harness.posted.some((message) => isRendererImportRequest(message))).toBe(true));
+    expect(harness.posted.filter(isRendererImportRequest)).toHaveLength(1);
     const rendererRequest = harness.posted.find(isRendererImportRequest);
     if (!rendererRequest) throw new Error("The panel did not publish a renderer import request.");
     const rendererResponse = harness.receive({
       kind: "changeImportOptions",
       actionId: rendererRequest.actionId
     });
-    await expect(command).resolves.toBe(true);
+    await vi.waitFor(() => expect(delimiterChoices.length).toBeGreaterThan(0));
+    let commandSettled = false;
+    void command.then(
+      () => {
+        commandSettled = true;
+      },
+      () => {
+        commandSettled = true;
+      }
+    );
+    await Promise.resolve();
+    expect(commandSettled).toBe(false);
+
+    delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ","));
+    await vi.waitFor(() => expect(reconfigureFileSession).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(commandSettled).toBe(false);
+    reconfiguration.resolve(opened);
+    await expect(Promise.all([command, concurrentCommand])).resolves.toEqual([true, true]);
     await rendererResponse;
 
     expect(rendererRequest).toEqual({
@@ -545,6 +576,132 @@ describe("OpenWranglerPanel retained view state", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("coalesces a late manual intent with the active native fallback transaction", async () => {
+    vi.useFakeTimers();
+    try {
+      const source: SessionSource = {
+        kind: "file",
+        label: "records.csv",
+        path: "/workspace/records.csv",
+        uri: "file:///workspace/records.csv",
+        importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      };
+      const opened = responseForSource(source);
+      const configured = responseForSource(
+        {
+          ...source,
+          importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+        },
+        1
+      );
+      const delimiterPrompt = deferred<unknown>();
+      let delimiterChoices: PromptPick[] = [];
+      panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
+        const choices = items as PromptPick[];
+        if (options?.title === "Delimiter") {
+          delimiterChoices = choices;
+          return delimiterPrompt.promise;
+        }
+        if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
+        if (options?.title === "Header row") return choices.find(({ value }) => value === true);
+        return choices[0];
+      });
+      panelPromptMocks.showInputBox.mockImplementation(async (options) =>
+        options?.title === "Quote character" ? '"' : options?.value
+      );
+      const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+      const harness = createPanelHarness(
+        {
+          request: vi.fn(async () => opened),
+          reconfigureFileSession
+        },
+        { source, openResponse: opened }
+      );
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      await acknowledgeLatestRendererSynchronization(harness);
+      harness.posted.length = 0;
+
+      const command = OpenWranglerPanel.changeActiveImportOptions();
+      const rendererRequest = harness.posted.find(isRendererImportRequest);
+      if (!rendererRequest) throw new Error("The panel did not publish a renderer import request.");
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.waitFor(() => expect(delimiterChoices.length).toBeGreaterThan(0));
+
+      const manualIntent = harness.receive({ kind: "changeImportOptions" });
+      await Promise.resolve();
+      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce();
+      expect(reconfigureFileSession).not.toHaveBeenCalled();
+
+      delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ";"));
+      await expect(Promise.all([command, manualIntent])).resolves.toEqual([true, undefined]);
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+      expect(panelPromptMocks.showQuickPick).toHaveBeenCalledTimes(3);
+
+      await harness.receive({ kind: "changeImportOptions", actionId: rendererRequest.actionId });
+      expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces a native command with an already active manual import transaction", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "records.csv",
+      path: "/workspace/records.csv",
+      uri: "file:///workspace/records.csv",
+      importOptions: { delimiter: ",", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+    };
+    const opened = responseForSource(source);
+    const configured = responseForSource(
+      {
+        ...source,
+        importOptions: { delimiter: ";", encoding: "utf-8", quoteChar: '"', hasHeader: true }
+      },
+      1
+    );
+    const delimiterPrompt = deferred<unknown>();
+    let delimiterChoices: PromptPick[] = [];
+    panelPromptMocks.showQuickPick.mockImplementation(async (items, options) => {
+      const choices = items as PromptPick[];
+      if (options?.title === "Delimiter") {
+        delimiterChoices = choices;
+        return delimiterPrompt.promise;
+      }
+      if (options?.title === "Text encoding") return choices.find(({ value }) => value === "utf-8");
+      if (options?.title === "Header row") return choices.find(({ value }) => value === true);
+      return choices[0];
+    });
+    panelPromptMocks.showInputBox.mockImplementation(async (options) =>
+      options?.title === "Quote character" ? '"' : options?.value
+    );
+    const reconfigureFileSession = vi.fn(async (): Promise<OpenWranglerResponse> => configured);
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => opened),
+        reconfigureFileSession
+      },
+      { source, openResponse: opened }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    harness.posted.length = 0;
+
+    const manualIntent = harness.receive({ kind: "changeImportOptions" });
+    await vi.waitFor(() => expect(delimiterChoices.length).toBeGreaterThan(0));
+    const command = OpenWranglerPanel.changeActiveImportOptions();
+    await Promise.resolve();
+    expect(harness.posted.filter(isRendererImportRequest)).toHaveLength(0);
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledOnce();
+
+    delimiterPrompt.resolve(delimiterChoices.find(({ value }) => value === ";"));
+    await expect(Promise.all([manualIntent, command])).resolves.toEqual([undefined, true]);
+    expect(reconfigureFileSession).toHaveBeenCalledOnce();
+    expect(panelPromptMocks.showQuickPick).toHaveBeenCalledTimes(3);
   });
 
   it("runs the native import command in the host before the renderer first becomes ready", async () => {

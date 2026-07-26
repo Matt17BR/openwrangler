@@ -331,6 +331,7 @@ export function OperationBuilder({
 
   useEffect(() => {
     if (!busy) return;
+    if (!document.hasFocus()) return;
     const dialog = dialogRef.current;
     const active = document.activeElement;
     if (!dialog || (active instanceof HTMLElement && dialog.contains(active) && !active.matches(":disabled"))) return;

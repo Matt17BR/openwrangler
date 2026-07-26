@@ -57,7 +57,7 @@ On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equival
 
 In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select `openwrangler.vsix`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu. Future preview builds will appear on [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
 
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently.
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently.
 
 Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
 

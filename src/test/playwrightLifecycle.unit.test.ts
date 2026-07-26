@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ignoreRetiredRendererProbeFailure,
   isRetiredRendererTarget,
+  pollAcceptanceCondition,
+  pressKeyboardKeyPairWithoutTransitionGap,
+  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./extensionHost/playwrightLifecycle";
 
@@ -56,6 +59,243 @@ describe("extension-host Playwright lifecycle", () => {
   it("preserves an operation's own failure", async () => {
     const error = new Error("locator failed");
     await expect(withAcceptanceOperationDeadline(Promise.reject(error), 10_000, "the prompt")).rejects.toBe(error);
+  });
+
+  it("polls a naturally transferred focus state without assigning focus", async () => {
+    const probe = vi
+      .fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const wait = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    await expect(pollAcceptanceCondition(probe, { timeoutMs: 500, intervalMs: 50, wait })).resolves.toBe(true);
+    expect(probe).toHaveBeenCalledTimes(3);
+    expect(wait).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenNthCalledWith(1, 50);
+    expect(wait).toHaveBeenNthCalledWith(2, 50);
+  });
+
+  it("stops natural-focus polling at its exact deadline", async () => {
+    const probe = vi.fn<() => Promise<boolean>>().mockResolvedValue(false);
+    let currentTime = 0;
+    const wait = vi.fn<(durationMs: number) => Promise<void>>(async (durationMs) => {
+      currentTime += durationMs;
+    });
+
+    await expect(
+      pollAcceptanceCondition(probe, {
+        timeoutMs: 100,
+        intervalMs: 25,
+        now: () => currentTime,
+        wait
+      })
+    ).resolves.toBe(false);
+    expect(probe).toHaveBeenCalledTimes(5);
+    expect(wait).toHaveBeenCalledTimes(4);
+  });
+
+  it("queues key-up before a final-prompt key-down acknowledgement and awaits key-down completion", async () => {
+    let resolveKeyDown!: () => void;
+    const keyDown = new Promise<void>((resolve) => {
+      resolveKeyDown = resolve;
+    });
+    const keyboard = {
+      down: vi.fn().mockReturnValue(keyDown),
+      up: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    let settled = false;
+    void outcome.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await Promise.resolve();
+
+    expect(keyboard.down).toHaveBeenCalledWith("Enter");
+    expect(keyboard.up).toHaveBeenCalledWith("Enter");
+    expect(settled).toBe(false);
+
+    resolveKeyDown();
+    await expect(outcome).resolves.toBeUndefined();
+  });
+
+  it("awaits final-prompt key-up completion after key-down settles", async () => {
+    let resolveKeyUp!: () => void;
+    const keyUp = new Promise<void>((resolve) => {
+      resolveKeyUp = resolve;
+    });
+    const keyboard = {
+      down: vi.fn().mockResolvedValue(undefined),
+      up: vi.fn().mockReturnValue(keyUp)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    let settled = false;
+    void outcome.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+
+    resolveKeyUp();
+    await expect(outcome).resolves.toBeUndefined();
+  });
+
+  it.each(["down", "up"] as const)("propagates a final-prompt key-%s failure", async (failedEvent) => {
+    const error = new Error(`${failedEvent} failed`);
+    const keyboard = {
+      down: vi.fn().mockImplementation(async () => {
+        if (failedEvent === "down") throw error;
+      }),
+      up: vi.fn().mockImplementation(async () => {
+        if (failedEvent === "up") throw error;
+      })
+    };
+
+    await expect(pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter")).rejects.toBe(error);
+    expect(keyboard.down).toHaveBeenCalledWith("Enter");
+    expect(keyboard.up).toHaveBeenCalledWith("Enter");
+  });
+
+  it("awaits the peer keyboard event before propagating an early final-prompt failure", async () => {
+    const error = new Error("key-down failed");
+    let resolveKeyUp!: () => void;
+    const keyUp = new Promise<void>((resolve) => {
+      resolveKeyUp = resolve;
+    });
+    const keyboard = {
+      down: vi.fn().mockRejectedValue(error),
+      up: vi.fn().mockReturnValue(keyUp)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    let settled = false;
+    void outcome.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveKeyUp();
+    await expect(outcome).rejects.toBe(error);
+  });
+
+  it("retains both failures when both final-prompt keyboard events reject", async () => {
+    const keyDownError = new Error("key-down failed");
+    const keyUpError = new Error("key-up failed");
+    const keyboard = {
+      down: vi.fn().mockRejectedValue(keyDownError),
+      up: vi.fn().mockRejectedValue(keyUpError)
+    };
+
+    const outcome = pressKeyboardKeyPairWithoutTransitionGap(keyboard, "Enter");
+    await expect(outcome).rejects.toMatchObject({
+      message: "Both final-prompt keyboard events failed.",
+      errors: [keyDownError, keyUpError]
+    });
+  });
+
+  it("reports an absent renderer button without probing presentation or enabled state", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(0),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(true)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).not.toHaveBeenCalled();
+    expect(button.isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("reports a hidden renderer button without probing enabled state", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(false),
+      isEnabled: vi.fn().mockResolvedValue(true)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("reports a visible disabled renderer button as unavailable", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(false)
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(false);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).toHaveBeenCalledWith({ timeout: 1_000 });
+  });
+
+  it("reports a visible enabled renderer button without scrolling, focusing, or clicking", async () => {
+    const button = {
+      count: vi.fn().mockResolvedValue(1),
+      isVisible: vi.fn().mockResolvedValue(true),
+      isEnabled: vi.fn().mockResolvedValue(true),
+      scrollIntoViewIfNeeded: vi.fn(),
+      focus: vi.fn(),
+      click: vi.fn()
+    };
+
+    await expect(probeRendererButtonReadiness(button, 1_000)).resolves.toBe(true);
+    expect(button.count).toHaveBeenCalledOnce();
+    expect(button.isVisible).toHaveBeenCalledOnce();
+    expect(button.isEnabled).toHaveBeenCalledWith({ timeout: 1_000 });
+    expect(button.scrollIntoViewIfNeeded).not.toHaveBeenCalled();
+    expect(button.focus).not.toHaveBeenCalled();
+    expect(button.click).not.toHaveBeenCalled();
+  });
+
+  it("keeps a stalled renderer readiness probe inside its explicit operation deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const button = {
+        count: vi.fn(() => new Promise<number>(() => undefined)),
+        isVisible: vi.fn().mockResolvedValue(true),
+        isEnabled: vi.fn().mockResolvedValue(true)
+      };
+      const outcome = withAcceptanceOperationDeadline(
+        probeRendererButtonReadiness(button, 1_000),
+        1_000,
+        "the renderer readiness probe"
+      );
+      const assertion = expect(outcome).rejects.toThrow(
+        "Timed out waiting for the renderer readiness probe after 1000 ms."
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+      expect(button.count).toHaveBeenCalledOnce();
+      expect(button.isVisible).not.toHaveBeenCalled();
+      expect(button.isEnabled).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retires a closed auxiliary page without treating the workbench as closed", () => {

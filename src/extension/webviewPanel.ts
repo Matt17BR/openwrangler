@@ -31,6 +31,8 @@ export class OpenWranglerPanel {
   private opening: Promise<void> | undefined;
   private openResponse: OpenWranglerResponse | undefined;
   private importChangeTail: Promise<void> = Promise.resolve();
+  private currentImportChangeTask: Promise<void> | undefined;
+  private nativeImportCommand: Promise<boolean> | undefined;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
@@ -63,7 +65,7 @@ export class OpenWranglerPanel {
     | {
         actionId: string;
         timer: ReturnType<typeof setTimeout>;
-        resolve: (accepted: boolean) => void;
+        resolve: (preparation: RendererImportPreparation | undefined) => void;
       }
     | undefined;
   private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
@@ -134,12 +136,10 @@ export class OpenWranglerPanel {
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
 
-  static async changeActiveImportOptions(): Promise<boolean> {
+  static changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
-    if (!active?.panel.active || !canChangeImportOptions(active.source)) return false;
-    if (active.hasHydratedRenderer() && (await active.requestRendererImportOptionsChange())) return true;
-    await active.enqueueImportOptionsChange();
-    return true;
+    if (!active?.panel.active || !canChangeImportOptions(active.source)) return Promise.resolve(false);
+    return active.runNativeImportOptionsCommand();
   }
 
   static create(
@@ -224,7 +224,7 @@ export class OpenWranglerPanel {
     this.importChangeCancellation?.cancel();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
-    this.settleRendererImportAction(undefined, false);
+    this.settleRendererImportAction(undefined, undefined);
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
     OpenWranglerPanel.panels.delete(this);
     this.deactivate();
@@ -308,12 +308,19 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "changeImportOptions") {
+      let task: Promise<void>;
       if (decoded.actionId !== undefined) {
-        if (!this.settleRendererImportAction(decoded.actionId, true)) return;
+        if (this.pendingRendererImportAction?.actionId !== decoded.actionId) return;
+        task = this.enqueueImportOptionsChange();
+        this.settleRendererImportAction(decoded.actionId, { task });
+      } else if (this.nativeImportCommand && this.currentImportChangeTask) {
+        task = this.currentImportChangeTask;
+        this.settleRendererImportAction(undefined, { task });
       } else {
-        this.settleRendererImportAction(undefined, true);
+        task = this.enqueueImportOptionsChange();
+        this.settleRendererImportAction(undefined, { task });
       }
-      await this.enqueueImportOptionsChange();
+      await task;
       return;
     }
 
@@ -357,7 +364,46 @@ export class OpenWranglerPanel {
     this.importChangeCancellation?.cancel();
     const task = this.importChangeTail.catch(() => undefined).then(() => this.changeImportOptions(generation));
     this.importChangeTail = task.catch(() => undefined);
+    this.currentImportChangeTask = task;
+    void task.then(
+      () => {
+        if (this.currentImportChangeTask === task) this.currentImportChangeTask = undefined;
+      },
+      () => {
+        if (this.currentImportChangeTask === task) this.currentImportChangeTask = undefined;
+      }
+    );
     return task;
+  }
+
+  private runNativeImportOptionsCommand(): Promise<boolean> {
+    if (this.nativeImportCommand) return this.nativeImportCommand;
+    const command = (async () => {
+      const current = this.currentImportChangeTask;
+      if (current) {
+        await current;
+        return true;
+      }
+      if (this.hasHydratedRenderer()) {
+        const preparation = await this.requestRendererImportOptionsChange();
+        if (preparation) {
+          await preparation.task;
+          return true;
+        }
+      }
+      await (this.currentImportChangeTask ?? this.enqueueImportOptionsChange());
+      return true;
+    })();
+    this.nativeImportCommand = command;
+    void command.then(
+      () => {
+        if (this.nativeImportCommand === command) this.nativeImportCommand = undefined;
+      },
+      () => {
+        if (this.nativeImportCommand === command) this.nativeImportCommand = undefined;
+      }
+    );
+    return command;
   }
 
   private async changeImportOptions(generation: number): Promise<void> {
@@ -697,7 +743,7 @@ export class OpenWranglerPanel {
     this.rendererSynchronizationIdentity = undefined;
     this.rendererHydratedSyncId = undefined;
     this.rendererViewStateLocked = true;
-    this.settleRendererImportAction(undefined, false);
+    this.settleRendererImportAction(undefined, undefined);
   }
 
   private waitForRendererSynchronizationAcknowledgement(syncId: string): Promise<boolean> {
@@ -725,30 +771,33 @@ export class OpenWranglerPanel {
     return true;
   }
 
-  private requestRendererImportOptionsChange(): Promise<boolean> {
-    if (!this.hasHydratedRenderer()) return Promise.resolve(false);
-    this.settleRendererImportAction(undefined, false);
+  private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
+    if (!this.hasHydratedRenderer()) return Promise.resolve(undefined);
+    this.settleRendererImportAction(undefined, undefined);
     const actionId = randomNonce();
-    return new Promise<boolean>((resolve) => {
+    return new Promise<RendererImportPreparation | undefined>((resolve) => {
       const timer = setTimeout(() => {
-        this.settleRendererImportAction(actionId, false);
+        this.settleRendererImportAction(actionId, undefined);
       }, RENDERER_IMPORT_PREPARATION_TIMEOUT_MS);
       this.pendingRendererImportAction = { actionId, timer, resolve };
       void this.panel.webview.postMessage({ kind: "requestImportOptionsChange", actionId }).then(
         (posted) => {
-          if (!posted) this.settleRendererImportAction(actionId, false);
+          if (!posted) this.settleRendererImportAction(actionId, undefined);
         },
-        () => this.settleRendererImportAction(actionId, false)
+        () => this.settleRendererImportAction(actionId, undefined)
       );
     });
   }
 
-  private settleRendererImportAction(actionId: string | undefined, accepted: boolean): boolean {
+  private settleRendererImportAction(
+    actionId: string | undefined,
+    preparation: RendererImportPreparation | undefined
+  ): boolean {
     const pending = this.pendingRendererImportAction;
     if (!pending || (actionId !== undefined && pending.actionId !== actionId)) return false;
     this.pendingRendererImportAction = undefined;
     clearTimeout(pending.timer);
-    pending.resolve(accepted);
+    pending.resolve(preparation);
     return true;
   }
 
@@ -802,7 +851,7 @@ export class OpenWranglerPanel {
           sessionId: null,
           revision: null
         };
-    this.settleRendererImportAction(undefined, false);
+    this.settleRendererImportAction(undefined, undefined);
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
     this.rendererSynchronizationIdentity = synchronization;
     this.rendererHydratedSyncId = undefined;
@@ -1076,6 +1125,10 @@ type WebviewRequest =
       request: OpenWranglerRequest;
       viewContextId?: string;
     };
+
+interface RendererImportPreparation {
+  readonly task: Promise<void>;
+}
 
 const WEBVIEW_RUNTIME_REQUEST_KINDS = new Set<OpenWranglerRequest["kind"]>([
   "getPage",

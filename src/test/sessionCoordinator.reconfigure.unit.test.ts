@@ -873,6 +873,68 @@ describe("SessionCoordinator file-session reconfiguration", () => {
     expect(coordinator.activeSession()).toEqual(before);
   });
 
+  it.each([
+    {
+      label: "structured unknown-session response with a mismatched session ID",
+      cleanupResponse: (): OpenWranglerResponse => ({
+        kind: "error",
+        code: "unknown_session",
+        message: "A different runtime session is absent.",
+        recoverable: true,
+        sessionId: "different-runtime-session"
+      }),
+      expectedDetail: "unknown_session: A different runtime session is absent."
+    },
+    {
+      label: "legacy unknown-session response with a mismatched message",
+      cleanupResponse: (candidateId: string): OpenWranglerResponse => ({
+        kind: "error",
+        code: "engine_error",
+        message: "Unknown session: different-runtime-session",
+        recoverable: true,
+        sessionId: candidateId
+      }),
+      expectedDetail: "engine_error: Unknown session: different-runtime-session"
+    }
+  ])("reports a candidate cleanup $label", async ({ cleanupResponse, expectedDetail }) => {
+    let candidateId = "";
+    const reportDiagnostic = vi.fn();
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession" && delegateRequest.mock.calls.length === 1) {
+        return openedFor(request, metadataFor({ runtimeId: "runtime-old", source: initialSource }));
+      }
+      if (request.kind === "openSession") {
+        candidateId = request.requestedSessionId ?? "";
+        return {
+          kind: "error",
+          code: "unsupported_import_options",
+          message: "The selected delimiter is unsupported.",
+          recoverable: true
+        };
+      }
+      if (request.kind === "closeSession" && request.sessionId === candidateId) {
+        return cleanupResponse(candidateId);
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest, reportDiagnostic });
+    const opened = await open(bridge, initialSource);
+    const before = clone(coordinator.activeSession());
+
+    await expect(
+      bridge.reconfigureFileSession!(opened.metadata.sessionId, opened.metadata.revision, replacementSource)
+    ).resolves.toMatchObject({ kind: "error", code: "unsupported_import_options" });
+
+    expect(candidateId).not.toBe("");
+    expect(reportDiagnostic).toHaveBeenCalledOnce();
+    expect(reportDiagnostic).toHaveBeenCalledWith(
+      `Open Wrangler could not confirm cleanup of import candidate session ${candidateId}: ${expectedDetail}`
+    );
+    expect(coordinator.activeSession()).toEqual(before);
+  });
+
   it("rolls back and closes a candidate whose restored page projection is wrong", async () => {
     let candidateId = "";
     const closeCalls: CloseRequest[] = [];

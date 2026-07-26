@@ -1789,7 +1789,7 @@ describe("SessionCoordinator", () => {
     ]);
   });
 
-  it("pins an automatically selected backend for crash replay", async () => {
+  it("pins an automatically selected backend for confirmed missing-runtime replay", async () => {
     const autoRequest = { ...openRequest, backend: undefined };
     const openedBackends: Array<string | undefined> = [];
     let openCount = 0;
@@ -1803,7 +1803,16 @@ describe("SessionCoordinator", () => {
       if (request.kind === "getPage") {
         if (request.limit === 1) return pageResponse(request, `duckdb-runtime-${openCount}`, "duckdb");
         pageAttempts += 1;
-        if (pageAttempts === 1) throw new Error("runtime crashed");
+        if (pageAttempts === 1) {
+          return {
+            kind: "error",
+            code: "unknown_session",
+            message: `Open Wrangler runtime session ${request.sessionId} is not available.`,
+            recoverable: true,
+            sessionId: request.sessionId,
+            viewRequestId: request.viewRequestId
+          };
+        }
         return pageResponse(request, `duckdb-runtime-${openCount}`, "duckdb");
       }
       if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
@@ -1827,6 +1836,73 @@ describe("SessionCoordinator", () => {
 
     expect(recovered).toMatchObject({ kind: "page", metadata: { backend: "duckdb" } });
     expect(openedBackends).toEqual([undefined, "duckdb"]);
+  });
+
+  it.each([
+    {
+      label: "local unknown-session response",
+      response: (request: Extract<OpenWranglerRequest, { kind: "getPage" }>): OpenWranglerResponse => ({
+        kind: "error",
+        code: "unknown_session",
+        message: "A different runtime session is absent.",
+        recoverable: true,
+        sessionId: "different-runtime-session",
+        viewRequestId: request.viewRequestId
+      })
+    },
+    {
+      label: "legacy engine response",
+      response: (request: Extract<OpenWranglerRequest, { kind: "getPage" }>): OpenWranglerResponse => ({
+        kind: "error",
+        code: "engine_error",
+        message: "Unknown session: different-runtime-session",
+        recoverable: true,
+        sessionId: request.sessionId,
+        viewRequestId: request.viewRequestId
+      })
+    },
+    {
+      label: "legacy response with mismatched correlation",
+      response: (request: Extract<OpenWranglerRequest, { kind: "getPage" }>): OpenWranglerResponse => ({
+        kind: "error",
+        code: "engine_error",
+        message: `Unknown session: ${request.sessionId}`,
+        recoverable: true,
+        sessionId: "different-runtime-session",
+        viewRequestId: request.viewRequestId
+      })
+    }
+  ])("does not replay a mismatched $label", async ({ response }) => {
+    let openCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        return openedResponse("expected-runtime-session");
+      }
+      if (request.kind === "getPage") {
+        if (request.limit === 1) return pageResponse(request, request.sessionId);
+        return response(request);
+      }
+      throw new Error(`Unexpected mismatched unknown-session request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the session to open.");
+
+    const result = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "mismatched-unknown-session",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+
+    expect(result).toMatchObject({ kind: "error" });
+    expect(openCount).toBe(1);
   });
 
   it("rejects and closes a recovery candidate when a same-URI notebook begins overlapping", async () => {

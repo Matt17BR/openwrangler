@@ -97,9 +97,14 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     expect(await screen.findByRole("dialog", { name: "Edit cleaning step" })).toBeInTheDocument();
     expect(screen.getByTestId("app-workspace")).toHaveAttribute("inert");
     expect(screen.getByTestId("app-workspace")).toHaveAttribute("aria-hidden", "true");
-    fireEvent.keyDown(screen.getByPlaceholderText("Search operations"), { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull());
-    await waitFor(() => expect(edit).toHaveFocus());
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      fireEvent.keyDown(screen.getByPlaceholderText("Search operations"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull());
+      await waitFor(() => expect(edit).toHaveFocus());
+    } finally {
+      hasFocus.mockRestore();
+    }
     expect(screen.getByTestId("app-workspace")).not.toHaveAttribute("inert");
     expect(screen.getByTestId("app-workspace")).not.toHaveAttribute("aria-hidden");
 
@@ -107,6 +112,39 @@ describe("App cleaning-plan keyboard shortcuts", () => {
     fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
     expect(runtimeRequestKinds().filter((kind) => kind === "undoStep")).toHaveLength(1);
     expect(undo).toBeDisabled();
+  });
+
+  it("does not restore operation focus when the host owns focus as the close frame is scheduled", async () => {
+    render(<App />);
+    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
+    dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    const edit = await screen.findByRole("button", { name: "Edit latest" });
+    edit.focus();
+    fireEvent.keyDown(edit, { key: "e", ctrlKey: true, shiftKey: true });
+    expect(await screen.findByRole("dialog", { name: "Edit cleaning step" })).toBeInTheDocument();
+
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
+    try {
+      fireEvent.keyDown(screen.getByPlaceholderText("Search operations"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit cleaning step" })).toBeNull());
+      expect(frames).toHaveLength(1);
+      focus.mockClear();
+      hasFocus.mockReturnValue(true);
+      act(() => {
+        for (const frame of frames) frame(performance.now());
+      });
+      expect(focus).not.toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
   });
 });
 

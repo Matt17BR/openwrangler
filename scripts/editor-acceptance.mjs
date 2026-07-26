@@ -37,8 +37,11 @@ import {
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
+const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const XVFB_STOP_TIMEOUT_MS = 5_000;
+export const PINNED_PYTHON_EXTENSION_VERSION = "2026.4.0";
+export const PINNED_PYTHON_EXTENSION_ID = `ms-python.python@${PINNED_PYTHON_EXTENSION_VERSION}`;
 export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
 export const EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const EDITOR_ACCEPTANCE_RESULT_MAX_BYTES = 1024 * 1024;
@@ -87,6 +90,7 @@ const PRIVATE_DIAGNOSTIC_PATH_ENV_KEYS = [
   "OPEN_WRANGLER_CURSOR_EXECUTABLE",
   "OPEN_WRANGLER_CURSOR_CLI",
   "OPEN_WRANGLER_TEST_PYTHON",
+  PYTHON_EXTENSION_VSIX_ENV,
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS"
 ];
 
@@ -144,6 +148,30 @@ export function collectEditorAcceptancePrivateDiagnosticPaths(additionalPaths = 
   }
   for (const value of additionalPaths) add(value);
   return [...paths].sort((left, right) => right.length - left.length);
+}
+
+export function resolvePythonExtensionAcceptanceInstallTarget(environment = process.env) {
+  const enabled = environment.OPEN_WRANGLER_REAL_PYTHON_EXTENSION;
+  if (enabled === undefined || enabled === "" || enabled === "0") return undefined;
+  if (enabled !== "1") {
+    throw new Error("Real Python-extension acceptance must be explicitly enabled with the literal value 1.");
+  }
+
+  const vsix = environment[PYTHON_EXTENSION_VSIX_ENV];
+  if (vsix === undefined || vsix === "") return PINNED_PYTHON_EXTENSION_ID;
+  if (!isAbsolute(vsix) || /[\0\r\n]/u.test(vsix)) {
+    throw new Error("The real Python-extension acceptance VSIX path must be one absolute single-line path.");
+  }
+  let metadata;
+  try {
+    metadata = lstatSync(vsix, { bigint: true });
+  } catch {
+    throw new Error("The real Python-extension acceptance VSIX was not found.");
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The real Python-extension acceptance VSIX must be a regular file and not a symbolic link.");
+  }
+  return vsix;
 }
 const INCOMPLETE_XVFB_DIAGNOSTIC =
   "Xvfb stderr was suppressed because its complete stream contents were not available.";
