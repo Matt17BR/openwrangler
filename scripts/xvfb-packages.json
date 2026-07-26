@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "packages": {
+    "ubuntu:24.04:x64": {
+      "cacheKey": "ubuntu-24.04-amd64-xvfb-21.1.12-1ubuntu1.6",
+      "distribution": "ubuntu",
+      "distributionVersion": "24.04",
+      "nodeArchitecture": "x64",
+      "packageArchitecture": "amd64",
+      "packageVersion": "2:21.1.12-1ubuntu1.6",
+      "snapshot": "20260720T000000Z",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1.6_amd64.deb",
+      "size": 876922,
+      "sha256": "9188c2ab6394dfe6aa53f782f6bfa22b7eb6febfe51a48e0e36af35cd2f64307",
+      "executableSize": 2064864,
+      "executableSha256": "2c7f5a9534410fed5092d782a69ca7ffd9fce80e98b81ffe4944d703dd11d3b1",
+      "requiredPackages": [
+        "libaudit1",
+        "libc6",
+        "libgcrypt20",
+        "libgl1",
+        "libpixman-1-0",
+        "libselinux1",
+        "libsystemd0",
+        "libunwind8",
+        "libxau6",
+        "libxdmcp6",
+        "libxfont2",
+        "x11-xkb-utils",
+        "xauth",
+        "xserver-common"
+      ],
+      "exactPackageVersions": {
+        "xserver-common": "2:21.1.12-1ubuntu1.6"
+      },
+      "license": "MIT/X11 and legacy BSD-like notices",
+      "source": "https://packages.ubuntu.com/noble-updates/amd64/xvfb/download"
+    },
+    "ubuntu:26.04:x64": {
+      "cacheKey": "ubuntu-26.04-amd64-xvfb-21.1.22-1ubuntu1",
+      "distribution": "ubuntu",
+      "distributionVersion": "26.04",
+      "nodeArchitecture": "x64",
+      "packageArchitecture": "amd64",
+      "packageVersion": "2:21.1.22-1ubuntu1",
+      "snapshot": "20260720T000000Z",
+      "url": "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_21.1.22-1ubuntu1_amd64.deb",
+      "size": 898476,
+      "sha256": "d430679ffd9864f0c29c7b1edd434b42aa37ad3f622a7f58a76f62cef7e86ba4",
+      "executableSize": 2142760,
+      "executableSha256": "1253e0dadfd57e1fe6784011e304fd8e36c3194858132a129c10178cabffc035",
+      "requiredPackages": [
+        "libaudit1",
+        "libc6",
+        "libgl1",
+        "libnettle8t64",
+        "libpixman-1-0",
+        "libselinux1",
+        "libsystemd0",
+        "libunwind8",
+        "libxau6",
+        "libxdmcp6",
+        "libxfont2",
+        "x11-xkb-utils",
+        "xauth",
+        "xserver-common"
+      ],
+      "exactPackageVersions": {
+        "xserver-common": "2:21.1.22-1ubuntu1"
+      },
+      "license": "MIT/X11 and legacy BSD-like notices",
+      "source": "https://packages.ubuntu.com/resolute/amd64/xvfb/download"
+    }
+  }
+}

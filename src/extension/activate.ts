@@ -5,7 +5,7 @@ import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging
 import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
-import { registerNativeViews } from "./nativeViews";
+import { registerNativeViews, type NotebookInsertionDiagnosticStatus } from "./nativeViews";
 import { OpenWranglerPanel } from "./webviewPanel";
 import type { GridViewState } from "../shared/viewState";
 import type { OpenWranglerResponse } from "../shared/protocol";
@@ -26,6 +26,7 @@ export interface OpenWranglerTestApi {
   disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
+  notebookInsertionStatus(): NotebookInsertionDiagnosticStatus | undefined;
 }
 
 export interface OpenWranglerExtensionApi {
@@ -66,7 +67,8 @@ export function activate(context: vscode.ExtensionContext): OpenWranglerExtensio
         shutdownRuntimeBridgeForTesting: () => bridge.shutdown(),
         disposePanelForSession: (sessionId) => OpenWranglerPanel.disposePanelForSession(sessionId),
         setCodeForExport: (code) => nativeViews.setCodeForExport(code),
-        exportCodeTo: (destination) => nativeViews.exportCodeTo(destination)
+        exportCodeTo: (destination) => nativeViews.exportCodeTo(destination),
+        notebookInsertionStatus: () => nativeViews.notebookInsertionStatus()
       }
     };
   }

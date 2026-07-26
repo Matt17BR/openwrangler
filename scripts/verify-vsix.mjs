@@ -1,7 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { inspectReadmeSourceSrcsets, inspectVsixEntries, inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
+import {
+  inspectNotebookRendererBundle,
+  inspectReadmeSourceSrcsets,
+  inspectVsixEntries,
+  inspectVsixPreReleaseMetadata
+} from "./vsix-contents.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const requested = process.argv[2];
@@ -43,10 +48,14 @@ const webviewCss = execFileSync("unzip", ["-p", vsix, "extension/media/webview.c
 const webviewPanel = execFileSync("unzip", ["-p", vsix, "extension/dist/extension/webviewPanel.js"], {
   encoding: "utf8"
 });
+const notebookRenderer = execFileSync("unzip", ["-p", vsix, "extension/media/notebookRenderer.js"], {
+  encoding: "utf8"
+});
 const packagedReadme = execFileSync("unzip", ["-p", vsix, "extension/readme.md"], { encoding: "utf8" });
 const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
 const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
 const readmeSourceProblems = inspectReadmeSourceSrcsets(packagedReadme);
+const notebookRendererProblems = inspectNotebookRendererBundle(notebookRenderer);
 
 if (!bundleRelativeCodicon.test(webviewCss)) {
   throw new Error(`Invalid ${basename(vsix)}. webview.css must load codicon.ttf from its own bundle directory.`);
@@ -56,6 +65,9 @@ if (!webviewFontPolicy.test(webviewPanel)) {
 }
 if (readmeSourceProblems.length > 0) {
   throw new Error(`Invalid ${basename(vsix)}. ${readmeSourceProblems.join(" ")}`);
+}
+if (notebookRendererProblems.length > 0) {
+  throw new Error(`Invalid ${basename(vsix)}. ${notebookRendererProblems.join(" ")}`);
 }
 
 console.log(`Verified ${basename(vsix)} (${entries.length} archive entries).`);
