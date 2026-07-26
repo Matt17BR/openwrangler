@@ -20,6 +20,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Clarified editor support tiers: VS Code and Cursor remain first-class release targets, other VS Code-based desktop IDEs are experimental, and browser-hosted `vscode.dev` remains outside the local-runtime scope.
 - Stabilized the native dependency-install acceptance around VS Code's transient confirmation control. The harness now verifies one visible, enabled **Install** action, dispatches it once with Playwright's cancellable native timeout and no post-click navigation wait, then requires the modal, fake-pip start, sanitized launch, and natural-shutdown checkpoints in order.
 - Kept the Xvfb bootstrap suite portable by running its Linux filesystem, ELF, mode, and publication fixtures only on Linux while retaining an always-run regression that production rejects non-Linux hosts before dependency, network, cache, or extraction work.
 - Accepted both forms of notebook origin delivered by the released Jupyter Variables surface: an actual `fileName: vscode.Uri` and its canonical serialized VS Code URI envelope after the Variables webview round trip. The serialized form is revived only for `fileName` after exact key, descriptor, component, cache, Unicode, and UTF-8-bound validation; legacy fields remain real-URI-only. Malformed, conflicting, duplicate, closed, and replaced origins fail closed without an active-editor fallback, and Jupyter remains optional.

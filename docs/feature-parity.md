@@ -6,38 +6,40 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
 
-| Surface                                             | Pandas | Polars | Status  | Required evidence                                      |
-| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Released Jupyter remote/release-platform matrix green  |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
-| Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green             |
-| Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green            |
-| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green  |
-| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green        |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green     |
-| Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green         |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates    |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green       |
-| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates   |
-| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity         |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply          |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply              |
-| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply             |
-| Custom engine-native code                           |    Yes |    Yes | Done    | Trusted custom code plus installed Restricted Mode     |
-| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation            |
-| Copy/script/notebook code export                    |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green    |
-| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green         |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Done    | Resolver, released-Python A→B→A, decline flow green    |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Record packaged UI on every release platform           |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green                |
-| Column-projected grid-block transport               |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green   |
-| Duplicate/non-string Pandas column operations       |    Yes |    N/A | Done    | All ID-backed families packaged and replayed           |
-| Restricted Mode and trust-gated execution           |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green |
-| Installed-editor first-usable-grid performance      |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings          |
-| Cross-platform VS Code/Cursor package acceptance    |    N/A |    N/A | Partial | Add Cursor on macOS/Windows and remote-host gates      |
+VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their registry path and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
+
+| Surface                                              | Pandas | Polars | Status  | Required evidence                                      |
+| ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
+| CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
+| Notebook variable viewer and toolbar                 |    Yes |    Yes | Partial | Released Jupyter remote/release-platform matrix green  |
+| Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
+| Virtual grid, column sizing, navigation              |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
+| Dataset summary and quick insights                   |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
+| Basic and advanced viewing filters                   |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green             |
+| Multi-column viewing sorts                           |    Yes |    Yes | Done    | Stable null-order engine and packaged green            |
+| Editing mode and operation catalog                   |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green  |
+| Draft preview and data diff                          |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green        |
+| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green     |
+| Generated code preview and editing                   |    Yes |    Yes | Done    | Native code plus edited packaged exports green         |
+| Sort/filter cleaning steps                           |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates    |
+| Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green       |
+| Missing/duplicate row operations                     |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates   |
+| One-hot and multi-label binarization                 |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity         |
+| Find/replace/strip/split/case transforms             |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply          |
+| Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply              |
+| Group and aggregate                                  |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply             |
+| Custom engine-native code                            |    Yes |    Yes | Done    | Trusted custom code plus installed Restricted Mode     |
+| String/datetime/new-column by example                |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation            |
+| Copy/script/notebook code export                     |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green    |
+| CSV and Parquet data export                          |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green         |
+| Runtime selection, setup, change, clear              |    Yes |    Yes | Done    | Resolver, released-Python A→B→A, decline flow green    |
+| Original icons, native views, themes, accessibility  |    N/A |    N/A | Partial | Record packaged UI on every release platform           |
+| Runtime crash/reload/session replay                  |    Yes |    Yes | Done    | Packaged injected recovery/replay green                |
+| Column-projected grid-block transport                |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green   |
+| Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done    | All ID-backed families packaged and replayed           |
+| Restricted Mode and trust-gated execution            |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green |
+| Installed-editor first-usable-grid performance       |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings          |
+| Cross-platform first-class editor package acceptance |    N/A |    N/A | Partial | Add Cursor on macOS/Windows and remote-host gates      |
 
 ## DuckDB file-backed preview matrix
 
