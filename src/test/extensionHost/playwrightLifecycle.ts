@@ -29,6 +29,47 @@ interface KeyboardKeyPair {
   up(key: string): Promise<void>;
 }
 
+interface OneShotAcceptanceAction<T> {
+  readonly click: () => Promise<void>;
+  readonly receipt: () => Promise<T>;
+  readonly naturalDismissal?: () => Promise<void>;
+  readonly description: string;
+}
+
+export class IndeterminateAcceptanceActionError extends Error {
+  constructor(description: string, cause: unknown) {
+    super(`${description} may have been dispatched, but its browser click did not settle.`, { cause });
+    this.name = "IndeterminateAcceptanceActionError";
+  }
+}
+
+export async function invokeAcceptanceActionOnce<T>({
+  click,
+  receipt,
+  naturalDismissal,
+  description
+}: OneShotAcceptanceAction<T>): Promise<T> {
+  try {
+    await click();
+  } catch (error) {
+    throw new IndeterminateAcceptanceActionError(description, error);
+  }
+
+  const receiptResult = receipt();
+  if (!naturalDismissal) return receiptResult;
+
+  const [receiptOutcome, dismissalOutcome] = await Promise.allSettled([receiptResult, naturalDismissal()]);
+  if (receiptOutcome.status === "rejected" && dismissalOutcome.status === "rejected") {
+    throw new AggregateError(
+      [receiptOutcome.reason, dismissalOutcome.reason],
+      `${description} did not publish its receipt or dismiss its launch surface naturally.`
+    );
+  }
+  if (receiptOutcome.status === "rejected") throw receiptOutcome.reason;
+  if (dismissalOutcome.status === "rejected") throw dismissalOutcome.reason;
+  return receiptOutcome.value;
+}
+
 export async function withAcceptanceOperationDeadline<T>(
   operation: PromiseLike<T>,
   timeoutMs: number,
@@ -77,14 +118,17 @@ export async function probeRendererButtonReadiness(
 }
 
 export async function pressKeyboardKeyPairWithoutTransitionGap(keyboard: KeyboardKeyPair, key: string): Promise<void> {
-  // Playwright's press() awaits key-down before it queues key-up. A final
-  // QuickInput can replace the active editor during that acknowledgement, so
+  // Playwright's press() awaits key-down before it queues key-up. A transitioning
+  // QuickInput can close and show its successor during that acknowledgement, so
   // queue both genuine keyboard events first and then await both responses.
   const keyDown = keyboard.down(key);
   const keyUp = keyboard.up(key);
   const [keyDownResult, keyUpResult] = await Promise.allSettled([keyDown, keyUp]);
   if (keyDownResult.status === "rejected" && keyUpResult.status === "rejected") {
-    throw new AggregateError([keyDownResult.reason, keyUpResult.reason], "Both final-prompt keyboard events failed.");
+    throw new AggregateError(
+      [keyDownResult.reason, keyUpResult.reason],
+      "Both transitioning-QuickInput keyboard events failed."
+    );
   }
   if (keyDownResult.status === "rejected") throw keyDownResult.reason;
   if (keyUpResult.status === "rejected") throw keyUpResult.reason;

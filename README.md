@@ -1,6 +1,6 @@
 # Open Wrangler
 
-Open Wrangler is an open-source dataframe viewer and cleaner for VS Code and Cursor. Open a file or notebook dataframe, explore it in a fast virtualized grid, build a repeatable cleaning plan, and export engine-native Python or cleaned data—all without changing the source.
+Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family desktop editors. VS Code and Cursor are first-class targets; other compatible forks are experimental. Open a file or notebook dataframe, explore it in a fast virtualized grid, build a repeatable cleaning plan, and export engine-native Python or cleaned data—all without changing the source.
 
 Polars and Pandas are first-class backends. DuckDB provides a native file-backed path for larger local datasets.
 
@@ -42,7 +42,16 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 ## Install
 
-Open Wrangler requires desktop VS Code or Cursor and Python 3.10–3.14.
+Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+
+| Editor                                          | Support      | Release coverage                                       |
+| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
+| VS Code                                         | First-class  | Full automated and release matrix                      |
+| Cursor                                          | First-class  | Full automated and release matrix                      |
+| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
+| Browser-hosted `vscode.dev`                     | Unsupported  | No local Python/runtime extension host                 |
+
+Google documents an [Open VSX-hosted extension working in Antigravity](https://developers.google.com/workspace/guides/developer-tools), but Open Wrangler has not verified Antigravity's registry or completed a functional smoke there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
 
 Prebuilt releases are not published yet. To try the current preview from a clone of this repository:
 
@@ -84,6 +93,7 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 - This is a preview, not yet a claim of complete Microsoft Data Wrangler parity. Remaining evidence is tracked in [the parity matrix](docs/feature-parity.md).
 - PySpark is planned, but not implemented. The [engine proposal](https://github.com/Matt17BR/openwrangler/issues/36) requires distributed execution with no full-frame collection or implicit local-dataframe conversion.
+- R dataframes and Quarto/R Markdown integration are a [post-1.0 architecture spike](https://github.com/Matt17BR/openwrangler/issues/87), not a Python conversion layer.
 - DuckDB currently supports file-backed sessions only; Excel files and notebook variables use Polars or Pandas.
 - Browser-hosted `vscode.dev` runtimes are outside the current scope.
 

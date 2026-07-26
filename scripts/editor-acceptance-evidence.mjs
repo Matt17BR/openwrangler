@@ -65,7 +65,7 @@ const PAT_SECRET_WHITESPACE_ASSIGNMENT =
 const CLI_SECRET_OPTION =
   /((?:^|[\s,;])--?(?:authorization|auth|cookie|password|passwd|secret|credential|api(?:[_-]|[^\S\r\n]{1,8})?key|account(?:[_-]|[^\S\r\n]{1,8})?key|private(?:[_-]|[^\S\r\n]{1,8})?key|access(?:[_-]|[^\S\r\n]{1,8})?(?:token|key(?:(?:[_-]|[^\S\r\n]{1,8})?id)?)|refresh(?:[_-]|[^\S\r\n]{1,8})?token|signing(?:[_-]|[^\S\r\n]{1,8})?key|token|pat|[a-z0-9][a-z0-9_.-]*[_.-]pat)(?:[^\S\r\n]|\\[bfnrtv]|=)+)(?:(?:"(?:[^"\\]|\\.)*")|(?:'(?:[^'\\]|\\.)*')|[^\s,;]+)/gimu;
 const TOKEN_VALUE =
-  /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|npm_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{20,}|(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}|ya29\.[A-Za-z0-9_-]{10,}|sq0(?:atp|csp)-[A-Za-z0-9_-]{10,}|(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|A3T)[A-Z0-9]{16})\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/gu;
+  /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|npm_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|owr_[A-Za-z0-9_-]{39}|AIza[A-Za-z0-9_-]{20,}|(?:sk|rk|pk)_live_[A-Za-z0-9]{16,}|ya29\.[A-Za-z0-9_-]{10,}|sq0(?:atp|csp)-[A-Za-z0-9_-]{10,}|(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|A3T)[A-Z0-9]{16})\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/gu;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]+/giu;
 const BASIC_VALUE = /\bBasic\s+[A-Za-z0-9._~+/-]{2,}={0,2}/giu;
 const URL_USER_INFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s?#@]+@/giu;

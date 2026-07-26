@@ -1,4 +1,4 @@
-import type { Jupyter, Kernel } from "@vscode/jupyter-extension";
+import type { Jupyter, Kernel, KernelStatus } from "@vscode/jupyter-extension";
 import * as vscode from "vscode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -28,6 +28,7 @@ const initializedResponse: OpenWranglerResponse = {
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   setOpenNotebookDocuments();
 });
@@ -196,6 +197,144 @@ describe("kernel retry classification", () => {
   ] as const)("never treats %s as replay-safe after dispatch", (kind) => {
     expect(isIdempotentKernelReadRequest({ kind } as OpenWranglerRequest)).toBe(false);
   });
+
+  it.each(["restarting", "autorestarting", "terminating", "dead"] as const)(
+    "bootstraps once per observed kernel generation and rebootstraps after %s",
+    async (invalidatingStatus) => {
+      const controller = controlledFakeKernel(() => initializedResponse);
+      const getExtension = mockKernel(controller.kernel);
+      const bridge = createKernelBridge();
+
+      await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+      await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+
+      expect(controller.bootstrapExecutionCount()).toBe(1);
+      expect(controller.statusListenerCount()).toBe(1);
+      expect(getExtension).toHaveBeenCalledOnce();
+
+      controller.setStatus(invalidatingStatus);
+      expect(controller.statusListenerCount()).toBe(0);
+      expect(controller.statusListenerDisposalCount()).toBe(1);
+      controller.setStatus("idle");
+
+      await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+
+      expect(controller.bootstrapExecutionCount()).toBe(2);
+      expect(controller.statusListenerCount()).toBe(1);
+      expect(getExtension).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it("does not replay a non-idempotent request when status invalidates its dispatched generation", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    let invalidateOnce = true;
+    const controller = controlledFakeKernel((request) => {
+      requests.push(request);
+      if (invalidateOnce) {
+        invalidateOnce = false;
+        controller.setStatus("restarting");
+        controller.setStatus("idle");
+      }
+      return initializedResponse;
+    });
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(initializeRequest())).rejects.toThrow("stale kernel generation");
+    expect(requests).toEqual([initializeRequest()]);
+
+    await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+    expect(requests).toEqual([initializeRequest(), initializeRequest()]);
+    expect(controller.bootstrapExecutionCount()).toBe(2);
+  });
+
+  it("does not let a late stale request invalidate a newer observation of the same kernel", async () => {
+    const firstDispatched = deferred<void>();
+    const releaseFirst = deferred<void>();
+    let initializeRequests = 0;
+    const controller = controlledFakeKernel(async (request) => {
+      if (request.kind === "initialize" && initializeRequests++ === 0) {
+        firstDispatched.resolve();
+        await releaseFirst.promise;
+      }
+      return initializedResponse;
+    });
+    const getExtension = mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+
+    const staleRequest = bridge.request(initializeRequest());
+    await firstDispatched.promise;
+    controller.setStatus("restarting");
+    controller.setStatus("idle");
+
+    await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+    releaseFirst.resolve();
+    await expect(staleRequest).rejects.toThrow("stale kernel generation");
+    await expect(bridge.request(initializeRequest())).resolves.toEqual(initializedResponse);
+
+    expect(initializeRequests).toBe(3);
+    expect(controller.bootstrapExecutionCount()).toBe(2);
+    expect(controller.statusListenerCount()).toBe(1);
+    expect(getExtension).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["timeout", "cancellation"] as const)(
+    "does not let an old generation %s invalidate a concurrently executing replacement",
+    async (abortKind) => {
+      if (abortKind === "timeout") vi.useFakeTimers();
+      const firstDispatched = deferred<void>();
+      const secondDispatched = deferred<void>();
+      const releaseFirst = deferred<void>();
+      const releaseSecond = deferred<void>();
+      let initializeRequests = 0;
+      const controller = controlledFakeKernel(async (request) => {
+        if (request.kind === "initialize") {
+          initializeRequests += 1;
+          if (initializeRequests === 1) {
+            firstDispatched.resolve();
+            await releaseFirst.promise;
+          } else if (initializeRequests === 2) {
+            secondDispatched.resolve();
+            await releaseSecond.promise;
+          }
+        }
+        return initializedResponse;
+      });
+      const getExtension = mockKernel(controller.kernel);
+      const cancellation = cancellationSource();
+      const bridge = createKernelBridge();
+
+      const staleRequest = bridge.request(initializeRequest(), {
+        timeoutMs: abortKind === "timeout" ? 30 : 60_000,
+        ...(abortKind === "cancellation" ? { cancellation: cancellation.token } : {})
+      });
+      const staleRejection = expect(staleRequest).rejects.toThrow(
+        abortKind === "timeout" ? "timed out after 30 ms" : "kernel request was cancelled"
+      );
+      await firstDispatched.promise;
+      controller.setStatus("restarting");
+      controller.setStatus("idle");
+
+      const replacementRequest = bridge.request(initializeRequest(), { timeoutMs: 60_000 });
+      await secondDispatched.promise;
+      expect(controller.statusListenerCount()).toBe(1);
+
+      if (abortKind === "timeout") await vi.advanceTimersByTimeAsync(30);
+      else cancellation.cancel();
+      await staleRejection;
+      expect(controller.statusListenerCount()).toBe(1);
+
+      releaseSecond.resolve();
+      await expect(replacementRequest).resolves.toEqual(initializedResponse);
+      releaseFirst.resolve();
+      await Promise.resolve();
+
+      expect(initializeRequests).toBe(2);
+      expect(controller.bootstrapExecutionCount()).toBe(2);
+      expect(controller.statusListenerCount()).toBe(1);
+      expect(getExtension).toHaveBeenCalledTimes(2);
+    }
+  );
 
   it.each(["error", "cancelled"] as const)(
     "closes the host-known candidate after an open returns %s",
@@ -450,22 +589,64 @@ describe("kernel retry classification", () => {
 
   it("retains exact-kernel mappings across an early onIdle for delayed terminal cleanup", async () => {
     const requests: OpenWranglerRequest[] = [];
-    const kernel = fakeKernel((request) => {
+    const controller = controlledFakeKernel((request) => {
       requests.push(request);
       if (request.kind === "openSession") return openedResponse(request.requestedSessionId!);
       if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
       return initializedResponse;
     });
-    const getExtension = mockKernel(kernel);
+    const getExtension = mockKernel(controller.kernel);
     const bridge = createKernelBridge();
     const opened = await bridge.request(openRequest("delayed-close-session"));
     if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+    expect(controller.statusListenerCount()).toBe(1);
 
     bridge.onIdle();
+    bridge.onIdle();
+    expect(controller.statusListenerCount()).toBe(0);
+    expect(controller.statusListenerDisposalCount()).toBe(1);
     await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toEqual({
       kind: "sessionClosed",
       sessionId: "delayed-close-session"
     });
+
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
+    expect(getExtension).toHaveBeenCalledOnce();
+  });
+
+  it("retires an exact-kernel mapping when close confirms the session is already absent", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const kernel = fakeKernel((request) => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse(request.requestedSessionId!);
+      if (request.kind === "closeSession") {
+        return {
+          kind: "error",
+          code: "unknown_session",
+          message: `Unknown session: ${request.sessionId}`,
+          recoverable: true,
+          sessionId: request.sessionId
+        };
+      }
+      return initializedResponse;
+    });
+    const getExtension = mockKernel(kernel);
+    const bridge = createKernelBridge();
+    const opened = await bridge.request(openRequest("already-absent-session"));
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the test session to open.");
+
+    await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session",
+      sessionId: "already-absent-session"
+    });
+    await expect(bridge.request(closeRequest(opened.metadata.sessionId))).resolves.toMatchObject({
+      kind: "error",
+      code: "unknown_session"
+    });
+    await expect(bridge.request(openRequest(opened.metadata.sessionId))).rejects.toThrow(
+      "already retired kernel session already-absent-session"
+    );
 
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
     expect(getExtension).toHaveBeenCalledOnce();
@@ -570,22 +751,19 @@ describe("renderer notebook provenance", () => {
     const bootstrapStarted = deferred<void>();
     const releaseBootstrap = deferred<void>();
     const requests: OpenWranglerRequest[] = [];
-    const kernel = {
-      language: "python",
-      executeCode: (code: string) => {
-        if (code.includes("__ow_payload =")) {
-          return kernelExecution(code, (request) => {
-            requests.push(request);
-            return initializedResponse;
-          });
-        }
-        return (async function* () {
-          bootstrapStarted.resolve();
-          await releaseBootstrap.promise;
-          yield { text: "" };
-        })();
+    const kernel = controllableKernel((code: string) => {
+      if (code.includes("__ow_payload =")) {
+        return kernelExecution(code, (request) => {
+          requests.push(request);
+          return initializedResponse;
+        });
       }
-    } as unknown as Kernel;
+      return (async function* () {
+        bootstrapStarted.resolve();
+        await releaseBootstrap.promise;
+        yield { text: "" };
+      })();
+    }).kernel;
     const getExtension = mockKernel(kernel);
     const bridge = createKernelBridge(document);
 
@@ -756,10 +934,65 @@ function mockKernel(kernel: Kernel): ReturnType<typeof vi.spyOn> {
 }
 
 function fakeKernel(respond: (request: OpenWranglerRequest, requestId: string) => unknown | Promise<unknown>): Kernel {
+  return controlledFakeKernel(respond).kernel;
+}
+
+interface ControllableKernel {
+  readonly kernel: Kernel;
+  setStatus(status: KernelStatus): void;
+  statusListenerCount(): number;
+  statusListenerDisposalCount(): number;
+}
+
+interface ControlledFakeKernel extends ControllableKernel {
+  bootstrapExecutionCount(): number;
+}
+
+function controlledFakeKernel(
+  respond: (request: OpenWranglerRequest, requestId: string) => unknown | Promise<unknown>
+): ControlledFakeKernel {
+  let bootstrapExecutions = 0;
+  const controller = controllableKernel((code) => {
+    if (!code.includes("__ow_payload =")) bootstrapExecutions += 1;
+    return kernelExecution(code, respond);
+  });
   return {
+    ...controller,
+    bootstrapExecutionCount: () => bootstrapExecutions
+  };
+}
+
+function controllableKernel(executeCode: (code: string) => AsyncIterable<unknown>): ControllableKernel {
+  let status: KernelStatus = "idle";
+  let listenerDisposals = 0;
+  const listeners = new Set<(status: KernelStatus) => unknown>();
+  const kernel = {
+    get status(): KernelStatus {
+      return status;
+    },
     language: "python",
-    executeCode: (code: string) => kernelExecution(code, respond)
+    onDidChangeStatus(listener: (nextStatus: KernelStatus) => unknown) {
+      listeners.add(listener);
+      let disposed = false;
+      return {
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          if (listeners.delete(listener)) listenerDisposals += 1;
+        }
+      };
+    },
+    executeCode
   } as unknown as Kernel;
+  return {
+    kernel,
+    setStatus(nextStatus) {
+      status = nextStatus;
+      for (const listener of [...listeners]) listener(nextStatus);
+    },
+    statusListenerCount: () => listeners.size,
+    statusListenerDisposalCount: () => listenerDisposals
+  };
 }
 
 async function* kernelExecution(

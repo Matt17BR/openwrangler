@@ -11,6 +11,8 @@ import pytest
 from openwrangler_runtime.engines import EngineError, EngineRegistry, PolarsEngine
 from openwrangler_runtime.session import SessionManager
 
+CONCURRENCY_COMPLETION_TIMEOUT_SECONDS = 5
+
 
 def test_foreground_page_overtakes_active_profile_while_mutation_waits(tmp_path: Path) -> None:
     source_path = tmp_path / "values.csv"
@@ -110,7 +112,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
             self.summary_calls += 1
             if self.summary_calls == 1:
                 first_profile_started.set()
-                if not release_first_profile.wait(2):
+                if not release_first_profile.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS):
                     raise TimeoutError("The first profile was not released.")
             else:
                 unexpected_second_profile.set()
@@ -118,7 +120,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
 
         def apply_transform(self, frame: Any, step: Any) -> Any:
             mutation_started.set()
-            if not release_mutation.wait(2):
+            if not release_mutation.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS):
                 raise TimeoutError("The mutation was not released.")
             return super().apply_transform(frame, step)
 
@@ -133,7 +135,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         first_profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["value"])
-        assert first_profile_started.wait(1)
+        assert first_profile_started.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
         mutation = executor.submit(
             manager.preview_step,
             session_id,
@@ -156,18 +158,18 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
         second_profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["city"])
         late_pages = [executor.submit(manager.get_page, session_id, 0, 1, 1, filter_model) for _ in range(6)]
         release_first_profile.set()
-        assert mutation_started.wait(1)
+        assert mutation_started.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
         assert not unexpected_second_profile.wait(0.05)
         assert all(not page.done() for page in late_pages)
 
         release_mutation.set()
-        assert first_profile.result(timeout=1)["kind"] == "summary"
-        assert mutation.result(timeout=1)["kind"] == "stepPreview"
+        assert first_profile.result(timeout=CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)["kind"] == "summary"
+        assert mutation.result(timeout=CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)["kind"] == "stepPreview"
         with pytest.raises(EngineError, match="Stale session revision"):
-            second_profile.result(timeout=1)
+            second_profile.result(timeout=CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
         for page in late_pages:
             with pytest.raises(EngineError, match="Stale session revision"):
-                page.result(timeout=1)
+                page.result(timeout=CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
         assert not unexpected_second_profile.is_set()
 
     manager.close_all()

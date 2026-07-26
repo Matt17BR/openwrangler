@@ -303,15 +303,39 @@ def register_formatters(shell: Any | None = None) -> bool:
     active_shell: Any = shell if shell is not None else get_ipython()
     if active_shell is None:
         return False
-    formatter = active_shell.display_formatter.mimebundle_formatter
+    display_formatter = active_shell.display_formatter
+    formatter = display_formatter.mimebundle_formatter
+    formatters = getattr(display_formatter, "formatters", {})
+    html_formatter = formatters.get("text/html") if hasattr(formatters, "get") else None
     registered = False
     for dataframe_type in _available_dataframe_types():
         formatter.for_type(
             dataframe_type,
             lambda value: {MIME_TYPE_V2: build_payload(value, label=type(value).__name__)},
         )
+        _suppress_default_html_formatter(html_formatter, dataframe_type)
         registered = True
     return registered
+
+
+def _suppress_default_html_formatter(html_formatter: Any, dataframe_type: type[Any]) -> None:
+    if html_formatter is None:
+        return
+    type_printers = getattr(html_formatter, "type_printers", {})
+    existing = type_printers.get(dataframe_type) if hasattr(type_printers, "get") else None
+    if existing is not None and existing is not _no_html_representation:
+        # An explicit per-type formatter is a user choice. Keep it instead of
+        # silently replacing it merely because Open Wrangler acquired a kernel.
+        return
+    html_formatter.for_type(dataframe_type, _no_html_representation)
+
+
+def _no_html_representation(_value: Any) -> None:
+    # VS Code's released Jupyter extension prefers text/html over extension
+    # MIME renderers. Retaining text/plain while suppressing only the default
+    # dataframe HTML representation makes the validated Open Wrangler MIME the
+    # rich inline view and still leaves a portable fallback.
+    return None
 
 
 def _available_dataframe_types() -> list[type[Any]]:

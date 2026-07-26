@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!requirements.txt
+!requirements.in
+!inject-token.py
+!server.py

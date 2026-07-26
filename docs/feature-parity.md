@@ -6,38 +6,40 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
 
-| Surface                                             | Pandas | Polars | Status  | Required evidence                                      |
-| --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
-| CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Test against the released Jupyter extension            |
-| Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
-| Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
-| Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
-| Basic and advanced viewing filters                  |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green             |
-| Multi-column viewing sorts                          |    Yes |    Yes | Done    | Stable null-order engine and packaged green            |
-| Editing mode and operation catalog                  |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green  |
-| Draft preview and data diff                         |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green        |
-| Cleaning-step history, edit, discard, undo          |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green     |
-| Generated code preview and editing                  |    Yes |    Yes | Done    | Native code plus edited packaged exports green         |
-| Sort/filter cleaning steps                          |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates    |
-| Select/drop/rename/clone/cast/formula/length        |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green       |
-| Missing/duplicate row operations                    |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates   |
-| One-hot and multi-label binarization                |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity         |
-| Find/replace/strip/split/case transforms            |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply          |
-| Scale/round/floor/ceiling/datetime format           |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply              |
-| Group and aggregate                                 |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply             |
-| Custom engine-native code                           |    Yes |    Yes | Done    | Trusted custom code plus installed Restricted Mode     |
-| String/datetime/new-column by example               |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation            |
-| Copy/script/notebook code export                    |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green    |
-| CSV and Parquet data export                         |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green         |
-| Runtime selection, setup, change, clear             |    Yes |    Yes | Done    | Resolver, released-Python A→B→A, decline flow green    |
-| Original icons, native views, themes, accessibility |    N/A |    N/A | Partial | Record packaged UI on every release platform           |
-| Runtime crash/reload/session replay                 |    Yes |    Yes | Done    | Packaged injected recovery/replay green                |
-| Column-projected grid-block transport               |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green   |
-| Duplicate/non-string Pandas column operations       |    Yes |    N/A | Done    | All ID-backed families packaged and replayed           |
-| Restricted Mode and trust-gated execution           |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green |
-| Installed-editor first-usable-grid performance      |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings          |
-| Cross-platform VS Code/Cursor package acceptance    |    N/A |    N/A | Partial | Add Cursor on macOS/Windows and remote-host gates      |
+VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their registry path and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
+
+| Surface                                              | Pandas | Polars | Status  | Required evidence                                      |
+| ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
+| CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
+| Notebook variable viewer and toolbar                 |    Yes |    Yes | Partial | Released Jupyter remote/release-platform matrix green  |
+| Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
+| Virtual grid, column sizing, navigation              |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
+| Dataset summary and quick insights                   |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
+| Basic and advanced viewing filters                   |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green             |
+| Multi-column viewing sorts                           |    Yes |    Yes | Done    | Stable null-order engine and packaged green            |
+| Editing mode and operation catalog                   |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green  |
+| Draft preview and data diff                          |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green        |
+| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green     |
+| Generated code preview and editing                   |    Yes |    Yes | Done    | Native code plus edited packaged exports green         |
+| Sort/filter cleaning steps                           |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates    |
+| Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green       |
+| Missing/duplicate row operations                     |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates   |
+| One-hot and multi-label binarization                 |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity         |
+| Find/replace/strip/split/case transforms             |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply          |
+| Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply              |
+| Group and aggregate                                  |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply             |
+| Custom engine-native code                            |    Yes |    Yes | Done    | Trusted custom code plus installed Restricted Mode     |
+| String/datetime/new-column by example                |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation            |
+| Copy/script/notebook code export                     |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green    |
+| CSV and Parquet data export                          |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green         |
+| Runtime selection, setup, change, clear              |    Yes |    Yes | Done    | Resolver, released-Python A→B→A, decline flow green    |
+| Original icons, native views, themes, accessibility  |    N/A |    N/A | Partial | Record packaged UI on every release platform           |
+| Runtime crash/reload/session replay                  |    Yes |    Yes | Done    | Packaged injected recovery/replay green                |
+| Column-projected grid-block transport                |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green   |
+| Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done    | All ID-backed families packaged and replayed           |
+| Restricted Mode and trust-gated execution            |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green |
+| Installed-editor first-usable-grid performance       |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings          |
+| Cross-platform first-class editor package acceptance |    N/A |    N/A | Partial | Add Cursor on macOS/Windows and remote-host gates      |
 
 ## DuckDB file-backed preview matrix
 
@@ -573,6 +575,38 @@ Persistent dependency-mutation recovery, 2026-07-26:
 - [Hosted CI run 30199788071](https://github.com/Matt17BR/openwrangler/actions/runs/30199788071) is green for validation, coverage, Python 3.10 and 3.14, minimum/current VS Code extension hosts, and native macOS/Windows packaged-editor acceptance. [Cross-platform run 30199788072](https://github.com/Matt17BR/openwrangler/actions/runs/30199788072) is green for native Windows dependency guards on Python 3.10, 3.12, and 3.14 plus Linux, macOS, and Windows runtime suites; [CodeQL run 30199788065](https://github.com/Matt17BR/openwrangler/actions/runs/30199788065) is green for TypeScript and Python.
 
 This hardens the existing **Done** runtime-selection row and completes the implementation and acceptance evidence for [issue #79](https://github.com/Matt17BR/openwrangler/issues/79). It does not close the remaining 1.0 gates or make a parity-complete claim.
+
+Released-Jupyter argument provenance slice, 2026-07-26:
+
+- The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.
+- The command captures the sole open `NotebookDocument` for that URI at receipt. String lookalikes, conflicting fields, duplicate same-URI document objects, closure, and same-URI replacement all fail closed without reading or retargeting through the active notebook editor.
+- Focused provenance coverage uses the released argument shape with another notebook active, verifies exact-object handoff into kernel acquisition and session coordination, and exercises malformed, conflicting, duplicate, agreeing, and replacement cases.
+
+The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch, and the local packaged run recorded below closes the released-Jupyter functional gate for VS Code 1.130.0 and Cursor 3.13.10. Real remote-kernel and remaining release-platform evidence are still tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+
+Released-Jupyter packaged acceptance harness, 2026-07-26:
+
+- The opt-in packaged harness pins and verifies `ms-toolsai.jupyter@2025.9.1`; optional extension-pack members are not treated as the compatibility gate. It uses separate private allow/deny profiles, workspaces, kernelspecs, and Jupyter/IPython roots. Both phases keep the real workbench on the zero-window CDP path.
+- The runner derives exact `ipykernel`, Pandas, and Polars versions from the selected interpreter, installs their binary wheels into a disposable private kernel environment, and fails if that environment can already resolve `openwrangler_runtime`. Ordinary packaged-editor phases continue using the selected project interpreter.
+- The acceptance contract drives Jupyter's actual consent dialog and Variables action plus Open Wrangler's notebook toolbar, covering Pandas and Polars DataFrame/Series values, automatic MIME v2 rendering and expansion, exact-origin generated-code insertion, restart/replay, and terminal session/kernel cleanup.
+- Every notebook cell result must follow a fresh execution-summary event. Restart recovery observes the released stable API's real kernel status transition back to idle, proves the process changed, and proves the replacement kernel again lacks the runtime before Open Wrangler retransfers and replays it. A persisted denial must reach a new terminal panel error without another consent prompt.
+- `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
+
+The notebook-variable row remains **Partial** pending the real remote-kernel and remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local combined run below closes the released-Jupyter functional gate for both supported Linux desktop editors.
+
+Real remote-Jupyter acceptance harness, 2026-07-26:
+
+- The opt-in Linux phase uses the same packaged VSIX and pinned released Jupyter extension against a real Jupyter Server in an unprivileged, read-only, resource-bounded Docker container. The image is digest-pinned, every Python wheel is hash-locked, the exact kernelspec is proven through the authenticated server API, and no checkout/runtime path is mounted into the container.
+- A run-derived hostname and public correlation ID prove remote identity. The private token has one redaction-friendly fixed shape, enters through bounded stdin and atomic private-file publication, and reaches the editor only through an owned mode-0400 descriptor under its isolated root. It is absent from Docker metadata, phase envelopes, logs, and workflow configuration.
+- The remote phase follows the released server-collection and workbench kernel-picker path, then runs the existing Pandas/Polars DataFrame/Series, MIME-v2 renderer, exact-origin insertion, runtime-transfer, kernel-restart, plan-replay, and zero-session contract. Cleanup reattests the Docker engine and exact labelled container/image; ambiguous completion or disappearance suppresses evidence and preserves the private root.
+- `.github/workflows/released-jupyter.yml` enables this phase weekly, on manual dispatch, and for pull requests that change the remote-Jupyter harness or its extension-host contract. It is not a general required pull-request check. No real Docker daemon was invoked while implementing the harness, so the notebook-variable row remains **Partial** until a green exact-artifact workflow result is recorded here and in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+
+Local released-Jupyter evidence, 2026-07-26:
+
+- The 70-entry, 592,787-byte packaged preview VSIX built from product commit `3b9c000` has SHA-256 `295183cee93dce7843a7470ddab47b2014e231b585e8b7bceb3e3bbdb96f359a`. Those exact bytes ran against VS Code 1.130.0 and Cursor 3.13.10 with `ms-toolsai.jupyter@2025.9.1`; the corrected exact-overflow acceptance harness is commit `23895f8`.
+- Both editors passed the independent released-Jupyter deny and allow profiles on private Xvfb displays. The persisted consent-deny flow reached its terminal Open Wrangler diagnostic, while the allow flow selected the private kernel and used Jupyter's actual Variables action to open the exact Pandas notebook through the serialized `fileName` envelope. Neither editor used a normal profile, opened on the user's desktop, or retained its private run root.
+- The allow flow passed exact-origin code insertion, freshly emitted MIME-v2 output, the nested packaged renderer action and snapshot expansion, Open Wrangler's notebook-toolbar input, Pandas and Polars DataFrame/Series sessions, the documented viewing-to-editing mode change, engine-native Polars preview/apply, kernel restart with plan replay, and terminal cleanup with zero retained sessions or kernel descendants.
+- The renderer proof came from the same-origin nested guest's 716×107 preview and enabled 157×23 action. The outer custom-output host element measured 732×0 and was explicitly not used as renderer evidence. Each invocation then passed the ordinary packaged Restricted Mode, persistence seed, three-engine recovery/export, workbench, and final cleanup phases. The row remains **Partial** only for the separately required real remote-kernel and remaining release-platform evidence above.
 
 ## Explicitly deferred from 1.0
 

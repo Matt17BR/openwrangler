@@ -4,11 +4,18 @@ import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel } from "./webviewPanel";
-import { insertGeneratedNotebookCell } from "./notebooks/notebookInsertion";
+import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
 import { getSetting } from "./configuration";
 import { exportFileSafely } from "./files/safeFileExport";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
+export type NotebookInsertionDiagnosticStatus =
+  | NotebookInsertionResult["status"]
+  | "untrusted"
+  | "missing-code"
+  | "unsupported-source"
+  | "missing-notebook"
+  | "dispatching";
 
 class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<ViewNode | undefined>();
@@ -153,6 +160,7 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 export interface NativeViewsTestController {
   setCodeForExport(code: string): void;
   exportCodeTo(destination: vscode.Uri): Promise<void>;
+  notebookInsertionStatus(): NotebookInsertionDiagnosticStatus | undefined;
 }
 
 export function registerNativeViews(
@@ -177,13 +185,14 @@ export function registerNativeViews(
     context.subscriptions.push(provider, vscode.window.registerTreeDataProvider(id, provider));
   }
   const codePreview = new CodePreviewViewProvider(context, coordinator);
+  let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
   context.subscriptions.push(
     contextSubscription,
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
       if (snapshot && !canStartOperation(snapshot.metadata)) {
-        await vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           snapshot.metadata.draftStep
             ? "Apply or discard the current draft before adding another cleaning step."
             : "Open an editable dataframe before adding a cleaning step."
@@ -196,7 +205,7 @@ export function registerNativeViews(
           ...(kind === undefined ? {} : { operationKind: kind })
         })
       ) {
-        await vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
+        void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before adding a cleaning step.");
       }
     }),
     vscode.commands.registerCommand("openWrangler.applyStep", () =>
@@ -208,7 +217,7 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.editLatestStep", async () => {
       const snapshot = coordinator.activeSession();
       if (!canEditLatestStep(snapshot?.metadata)) {
-        await vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           snapshot?.metadata.draftStep
             ? "Apply or discard the current draft before editing the latest step."
             : "Apply a cleaning step before editing the latest step."
@@ -216,7 +225,7 @@ export function registerNativeViews(
         return;
       }
       if (!OpenWranglerPanel.sendEditorAction({ action: "editLatest" })) {
-        await vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           "Open the active dataframe editor before editing the latest cleaning step."
         );
       }
@@ -224,7 +233,7 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.selectStep", async (stepId?: unknown) => {
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
-        await vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           "Open a dataframe in Open Wrangler before selecting a cleaning step."
         );
         return;
@@ -233,14 +242,12 @@ export function registerNativeViews(
         stepId !== undefined &&
         (typeof stepId !== "string" || !snapshot.metadata.steps.some((step) => step.id === stepId))
       ) {
-        await vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
+        void vscode.window.showWarningMessage("That cleaning step is no longer available in the active dataframe.");
         return;
       }
       if (stepId === undefined) coordinator.clearActiveStepInspection();
       if (!OpenWranglerPanel.sendEditorAction({ action: "selectStep", ...(stepId ? { stepId } : {}) })) {
-        await vscode.window.showInformationMessage(
-          "Open the active dataframe editor before selecting a cleaning step."
-        );
+        void vscode.window.showInformationMessage("Open the active dataframe editor before selecting a cleaning step.");
       }
     }),
     vscode.commands.registerCommand("openWrangler.undoStep", () =>
@@ -249,7 +256,7 @@ export function registerNativeViews(
     vscode.commands.registerCommand("openWrangler.copyCode", async () => {
       const code = codePreview.codeForExport();
       if (!code) {
-        await vscode.window.showInformationMessage("Add a cleaning step before copying generated code.");
+        void vscode.window.showInformationMessage("Add a cleaning step before copying generated code.");
         return;
       }
       await vscode.env.clipboard.writeText(code);
@@ -261,7 +268,7 @@ export function registerNativeViews(
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
       if (!snapshot || !code) {
-        await vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
+        void vscode.window.showInformationMessage("Add a cleaning step before exporting generated code.");
         return;
       }
       const destination = await vscode.window.showSaveDialog({
@@ -278,31 +285,39 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage(`Exported Open Wrangler code to ${destinationLabel}.`);
         return true;
       } catch (error) {
-        await vscode.window.showErrorMessage(
+        void vscode.window.showErrorMessage(
           `Could not export Open Wrangler code: ${error instanceof Error ? error.message : String(error)}`
         );
         return false;
       }
     }),
     vscode.commands.registerCommand("openWrangler.insertNotebookCode", async () => {
-      if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) return false;
+      lastNotebookInsertionStatus = undefined;
+      if (!(await requireTrustedWorkspace("insert generated code into a notebook"))) {
+        lastNotebookInsertionStatus = "untrusted";
+        return false;
+      }
       const snapshot = coordinator.activeSession();
       const code = codePreview.codeForExport();
       if (!snapshot || !code) {
-        await vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
+        lastNotebookInsertionStatus = "missing-code";
+        void vscode.window.showInformationMessage("Add a cleaning step before inserting generated code.");
         return false;
       }
       if (!snapshot.metadata.capabilities.notebookInsert || snapshot.metadata.source.kind !== "notebookVariable") {
-        await vscode.window.showWarningMessage(
+        lastNotebookInsertionStatus = "unsupported-source";
+        void vscode.window.showWarningMessage(
           "The active Open Wrangler session did not originate from a notebook variable."
         );
         return false;
       }
       const notebook = coordinator.activeNotebookDocument();
       if (!notebook || notebook.isClosed || !vscode.workspace.notebookDocuments.includes(notebook)) {
-        await vscode.window.showWarningMessage("Reopen the originating notebook before inserting generated code.");
+        lastNotebookInsertionStatus = "missing-notebook";
+        void vscode.window.showWarningMessage("Reopen the originating notebook before inserting generated code.");
         return false;
       }
+      lastNotebookInsertionStatus = "dispatching";
       const activeEditor = vscode.window.activeNotebookEditor;
       const insertionIndex =
         activeEditor?.notebook === notebook
@@ -312,20 +327,21 @@ export function registerNativeViews(
         source: snapshot.metadata.source.label,
         backend: snapshot.metadata.backend
       });
+      lastNotebookInsertionStatus = insertion.status;
       if (insertion.status === "stale") {
-        await vscode.window.showWarningMessage(
+        void vscode.window.showWarningMessage(
           "The originating notebook changed or was replaced before Open Wrangler could insert the generated function. Reopen it and try again."
         );
         return false;
       }
       if (insertion.status === "indeterminate") {
-        await vscode.window.showWarningMessage(
+        void vscode.window.showWarningMessage(
           "VS Code accepted the notebook edit, but Open Wrangler could not confirm it was applied to the originating notebook. Inspect the notebook before retrying."
         );
         return false;
       }
       if (insertion.status === "rejected") {
-        await vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler function.");
+        void vscode.window.showErrorMessage("VS Code could not insert the generated Open Wrangler function.");
         return false;
       }
       void vscode.window.showInformationMessage("Inserted the generated cleaning function into its notebook.");
@@ -335,11 +351,11 @@ export function registerNativeViews(
       if (!(await requireTrustedWorkspace("export cleaned data"))) return;
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
-        await vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before exporting cleaned data.");
+        void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before exporting cleaned data.");
         return;
       }
       if (snapshot.metadata.draftStep) {
-        await vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+        void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
         return;
       }
       const choices = [
@@ -351,7 +367,7 @@ export function registerNativeViews(
           : undefined
       ].filter((choice): choice is NonNullable<typeof choice> => Boolean(choice));
       if (!choices.length) {
-        await vscode.window.showWarningMessage("The active dataframe does not support cleaned-data export.");
+        void vscode.window.showWarningMessage("The active dataframe does not support cleaned-data export.");
         return;
       }
       const selected = await vscode.window.showQuickPick(choices, {
@@ -368,7 +384,7 @@ export function registerNativeViews(
       });
       if (!destination) return;
       if (destination.scheme !== "file") {
-        await vscode.window.showErrorMessage("Cleaned-data export currently requires a file-system destination.");
+        void vscode.window.showErrorMessage("Cleaned-data export currently requires a file-system destination.");
         return;
       }
       try {
@@ -376,11 +392,11 @@ export function registerNativeViews(
           { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
           () => coordinator.exportActiveData(destination.fsPath, selected.format)
         );
-        await vscode.window.showInformationMessage(
+        void vscode.window.showInformationMessage(
           `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`
         );
       } catch (error) {
-        await vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+        void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
       }
     }),
     codePreview,
@@ -416,6 +432,7 @@ export function registerNativeViews(
 
   return {
     setCodeForExport: (code) => codePreview.setCodeForExportForTests(code),
+    notebookInsertionStatus: () => lastNotebookInsertionStatus,
     exportCodeTo: async (destination) => {
       if (!vscode.workspace.isTrusted) throw new Error("Trust this workspace before Open Wrangler can export code.");
       const snapshot = coordinator.activeSession();
@@ -626,7 +643,7 @@ function sourceUris(snapshot: ActiveSessionSnapshot): vscode.Uri[] {
 
 async function requireTrustedWorkspace(action: string): Promise<boolean> {
   if (vscode.workspace.isTrusted) return true;
-  await vscode.window.showWarningMessage(`Trust this workspace before Open Wrangler can ${action}.`);
+  void vscode.window.showWarningMessage(`Trust this workspace before Open Wrangler can ${action}.`);
   return false;
 }
 

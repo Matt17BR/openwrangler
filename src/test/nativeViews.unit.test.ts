@@ -194,6 +194,7 @@ describe("native operation commands", () => {
 
   it("does not forward editLatestStep while a draft is active", async () => {
     register(snapshotWithDraft());
+    nativeMocks.showInformationMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));
 
     await command("openWrangler.editLatestStep")();
 
@@ -324,6 +325,7 @@ describe("native operation commands", () => {
       nativeMocks.workspaceTrusted = false;
       return vscodeUri("/workspace/clean.py");
     });
+    nativeMocks.showWarningMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));
 
     await expect(command("openWrangler.exportCode")()).resolves.toBe(false);
 
@@ -442,11 +444,29 @@ describe("native operation commands", () => {
     );
   });
 
+  it("does not wait for an actionless missing-code notification", async () => {
+    const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
+    const active = notebookVariableSnapshot();
+    active.code = "";
+    nativeMocks.notebookDocuments.push(origin);
+    nativeMocks.showInformationMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const registered = register(active, origin);
+
+    await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
+
+    expect(registered.notebookInsertionStatus()).toBe("missing-code");
+    expect(nativeMocks.showInformationMessage).toHaveBeenCalledWith(
+      "Add a cleaning step before inserting generated code."
+    );
+    expect(nativeMocks.insertGeneratedNotebookCell).not.toHaveBeenCalled();
+  });
+
   it("rejects a same-URI replacement instead of retargeting notebook insertion", async () => {
     const origin = notebookDocument("file:///workspace/shared.ipynb", 3, true);
     const replacement = notebookDocument("file:///workspace/shared.ipynb", 4);
     nativeMocks.notebookDocuments.push(replacement);
     nativeMocks.activeNotebookEditor = { notebook: replacement, selections: [{ end: 2 }] };
+    nativeMocks.showWarningMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));
     register(notebookVariableSnapshot(), origin);
 
     await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
@@ -477,11 +497,13 @@ describe("native operation commands", () => {
     const origin = notebookDocument("file:///workspace/origin.ipynb", 3);
     nativeMocks.notebookDocuments.push(origin);
     nativeMocks.insertGeneratedNotebookCell.mockResolvedValueOnce({ status });
-    register(notebookVariableSnapshot(), origin);
+    const registered = register(notebookVariableSnapshot(), origin);
+    const messageMock = channel === "warning" ? nativeMocks.showWarningMessage : nativeMocks.showErrorMessage;
+    messageMock.mockImplementationOnce(() => new Promise<never>(() => undefined));
 
     await expect(command("openWrangler.insertNotebookCode")()).resolves.toBe(false);
 
-    const messageMock = channel === "warning" ? nativeMocks.showWarningMessage : nativeMocks.showErrorMessage;
+    expect(registered.notebookInsertionStatus()).toBe(status);
     expect(messageMock).toHaveBeenCalledWith(expect.stringContaining(message));
     expect(nativeMocks.showInformationMessage).not.toHaveBeenCalledWith(
       "Inserted the generated cleaning function into its notebook."
@@ -493,7 +515,20 @@ describe("native operation commands", () => {
 function register(
   snapshot: ActiveSessionSnapshot,
   notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number }
-): { setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void } {
+): {
+  setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
+  notebookInsertionStatus():
+    | "applied"
+    | "stale"
+    | "indeterminate"
+    | "rejected"
+    | "untrusted"
+    | "missing-code"
+    | "unsupported-source"
+    | "missing-notebook"
+    | "dispatching"
+    | undefined;
+} {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
   const activeSessionListeners = new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>();
   const coordinator = {
@@ -508,12 +543,13 @@ function register(
     extensionPath: "/tmp/openwrangler",
     subscriptions: []
   } as unknown as ExtensionContext;
-  registerNativeViews(context, coordinator);
+  const nativeViews = registerNativeViews(context, coordinator);
   return {
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;
       for (const listener of activeSessionListeners) listener(nextSnapshot);
-    }
+    },
+    notebookInsertionStatus: () => nativeViews.notebookInsertionStatus()
   };
 }
 

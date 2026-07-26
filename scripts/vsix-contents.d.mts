@@ -5,5 +5,6 @@ export function inspectVsixEntries(entries: readonly string[]): {
   missing: string[];
   duplicates: string[];
 };
+export function inspectNotebookRendererBundle(bundle: unknown): string[];
 export function inspectVsixPreReleaseMetadata(packageJson: string, vsixManifest: string): string[];
 export function inspectReadmeSourceSrcsets(readme: string): string[];
