@@ -1027,7 +1027,10 @@ def _windows_open_private_directory(
 ) -> tuple[int, os.stat_result]:
     descriptor = _windows_open_validated_descriptor(
         path,
-        desired_access=_WINDOWS_READ_CONTROL | _WINDOWS_FILE_READ_ATTRIBUTES,
+        # Metadata-only directory opens do not reliably participate in delete
+        # sharing on Windows. GENERIC_READ includes FILE_LIST_DIRECTORY and
+        # SYNCHRONIZE, so omitting FILE_SHARE_DELETE pins the directory name.
+        desired_access=_WINDOWS_GENERIC_READ,
         share_mode=_WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
         creation_disposition=_WINDOWS_OPEN_EXISTING,
         descriptor_flags=os.O_RDONLY,
