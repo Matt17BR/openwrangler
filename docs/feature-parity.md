@@ -9,7 +9,7 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 | Surface                                             | Pandas | Polars | Status  | Required evidence                                      |
 | --------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
 | CSV/TSV/Parquet/Excel/JSONL entry points            |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
-| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Test against the released Jupyter extension            |
+| Notebook variable viewer and toolbar                |    Yes |    Yes | Partial | Released Jupyter on Cursor/release platforms green     |
 | Inline notebook renderer and full-view expansion    |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
 | Virtual grid, column sizing, navigation             |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
 | Dataset summary and quick insights                  |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
@@ -580,7 +580,7 @@ Released-Jupyter argument provenance slice, 2026-07-26:
 - The command captures the sole open `NotebookDocument` for that URI at receipt. String lookalikes, conflicting fields, duplicate same-URI document objects, closure, and same-URI replacement all fail closed without reading or retargeting through the active notebook editor.
 - Focused provenance coverage uses the released argument shape with another notebook active, verifies exact-object handoff into kernel acquisition and session coordination, and exercises malformed, conflicting, duplicate, agreeing, and replacement cases.
 
-The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch but does not replace the remaining opt-in acceptance against the actual released Jupyter extension, its renderer action, toolbar action, Pandas/Polars kernels, restart behavior, and terminal cleanup tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
+The notebook-variable row remains **Partial**. This slice closes the released command-argument mismatch, and the local packaged run recorded below closes the released-Jupyter functional gate for VS Code 1.130.0. Cursor and the remaining release-platform evidence are still tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52).
 
 Released-Jupyter packaged acceptance harness, 2026-07-26:
 
@@ -590,13 +590,13 @@ Released-Jupyter packaged acceptance harness, 2026-07-26:
 - Every notebook cell result must follow a fresh execution-summary event. Restart recovery observes the released stable API's real kernel status transition back to idle, proves the process changed, and proves the replacement kernel again lacks the runtime before Open Wrangler retransfers and replays it. A persisted denial must reach a new terminal panel error without another consent prompt.
 - `.github/workflows/released-jupyter.yml` makes the VS Code phase manually dispatchable and weekly without adding it to required pull-request CI. Failures use the hardened exact-path sanitized-evidence handoff.
 
-The notebook-variable row remains **Partial** until a real local or hosted released-Jupyter run is recorded green and the remaining Cursor/release-platform evidence is attached to [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). Adding the harness and non-required workflow alone is not acceptance evidence.
+The notebook-variable row remains **Partial** pending Cursor and the remaining release-platform evidence tracked in [issue #52](https://github.com/Matt17BR/openwrangler/issues/52). The local VS Code run below closes the released-Jupyter functional gate for that editor only.
 
 Local released-Jupyter evidence, 2026-07-26:
 
-- A packaged preview VSIX ran against `ms-toolsai.jupyter@2025.9.1` in a private Xvfb VS Code profile. The real persisted consent-deny flow reached its terminal Open Wrangler diagnostic, and the allow flow selected the private kernel and clicked Jupyter's actual Variables-table action for a Pandas dataframe.
-- That action delivered the serialized `fileName` envelope used by the released Variables webview and opened the exact originating notebook in Open Wrangler, validating the decoder against the real extension rather than only a test double. Generated-code insertion and MIME-v2 formatter registration also advanced through their real integration paths.
-- The fresh output selected Open Wrangler's MIME type and produced a visible, nonzero custom-output placeholder, but its renderer document/action was not exposed through the workbench Playwright pages or frames. The packaged allow phase therefore remains red while guest-target discovery and the real action click are completed. This evidence narrows the remaining blocker; it does not turn the notebook-variable row green.
+- A packaged preview VSIX ran against VS Code 1.130.0 and `ms-toolsai.jupyter@2025.9.1` in a private Xvfb profile. Both released-Jupyter phases passed: the persisted consent-deny flow reached its terminal Open Wrangler diagnostic, while the allow flow selected the private kernel and used Jupyter's actual Variables action to open the exact Pandas notebook through the serialized `fileName` envelope.
+- The allow flow passed exact-origin code insertion, freshly emitted MIME-v2 output, the nested packaged renderer action and snapshot expansion, Open Wrangler's notebook-toolbar input, Pandas and Polars DataFrame/Series sessions, the documented viewing-to-editing mode change, engine-native Polars preview/apply, kernel restart with plan replay, and terminal cleanup with zero retained sessions or kernel descendants.
+- The renderer proof came from the same-origin nested guest's 716×107 preview and enabled 157×23 action. The outer custom-output host element measured 732×0 and was explicitly not used as renderer evidence. The same invocation then passed the ordinary packaged Restricted Mode, persistence seed, three-engine recovery/export, workbench, and final cleanup phases. The row remains Partial only for the Cursor and remaining release-platform evidence above.
 
 ## Explicitly deferred from 1.0
 
