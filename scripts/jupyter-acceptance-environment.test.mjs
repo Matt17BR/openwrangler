@@ -8,7 +8,8 @@ import {
   acceptancePythonForPhase,
   createJupyterAcceptanceKernelPython,
   probeJupyterAcceptancePython,
-  writeJupyterAcceptanceEnvironment
+  writeJupyterAcceptanceEnvironment,
+  writeRemoteJupyterAcceptanceEnvironment
 } from "./jupyter-acceptance-environment.mjs";
 
 const dependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
@@ -29,10 +30,25 @@ test("released-Jupyter phases alone receive the dedicated kernel interpreter", (
   assert.equal(acceptancePythonForPhase("verify", normalPython, kernelPython), normalPython);
   assert.equal(acceptancePythonForPhase("jupyter-deny", normalPython, kernelPython), kernelPython);
   assert.equal(acceptancePythonForPhase("jupyter-allow", normalPython, kernelPython), kernelPython);
+  assert.equal(acceptancePythonForPhase("jupyter-remote", normalPython, kernelPython), normalPython);
   assert.throws(
     () => acceptancePythonForPhase("jupyter-allow", normalPython, undefined),
     /dedicated private kernel interpreter/u
   );
+});
+
+test("remote Jupyter phases receive empty private client roots without a host kernelspec", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-remote-jupyter-environment-"));
+  try {
+    const environment = writeRemoteJupyterAcceptanceEnvironment(join(directory, "client"));
+    assert.deepEqual(Object.keys(environment).sort(), ["configDir", "dataDir", "path", "runtimeDir"]);
+    for (const candidate of Object.values(environment)) {
+      assert.equal(await readFile(join(candidate, "kernel.json"), "utf8").catch(() => undefined), undefined);
+    }
+    assert.throws(() => writeRemoteJupyterAcceptanceEnvironment("relative"), /absolute private environment directory/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("released-Jupyter installs exact base versions into a clean run-owned kernel environment", async () => {

@@ -147,6 +147,20 @@ export function writeJupyterAcceptanceEnvironment(directory, python) {
   return { dataDir, runtimeDir, configDir, path: pathDir };
 }
 
+export function writeRemoteJupyterAcceptanceEnvironment(directory) {
+  if (typeof directory !== "string" || !isAbsolute(directory) || /[\0\r\n]/u.test(directory)) {
+    throw new Error("Remote Jupyter acceptance requires one absolute private environment directory.");
+  }
+  const dataDir = resolve(directory, "d");
+  const runtimeDir = resolve(directory, "r");
+  const configDir = resolve(directory, "c");
+  const pathDir = resolve(directory, "p");
+  for (const path of [dataDir, runtimeDir, configDir, pathDir]) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  return { dataDir, runtimeDir, configDir, path: pathDir };
+}
+
 export async function probeJupyterAcceptancePython(
   python,
   {

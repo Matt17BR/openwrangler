@@ -703,6 +703,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_TEST_PHASE",
   "OPEN_WRANGLER_TEST_PROGRESS",
   "OPEN_WRANGLER_TEST_PYTHON",
+  "OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR",
   "OPEN_WRANGLER_TEST_RUN_ID",
   "OPEN_WRANGLER_TEST_RESULT"
 ]);
@@ -2800,6 +2801,56 @@ function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRo
   return environment;
 }
 
+function resolveEditorAcceptanceRemoteJupyterDescriptor(descriptorPath, privateRoot, platform) {
+  if (descriptorPath === undefined) return undefined;
+  if (platform !== "linux") {
+    throw new Error("Container-isolated remote Jupyter acceptance is supported only on Linux.");
+  }
+  if (
+    typeof descriptorPath !== "string" ||
+    descriptorPath.length === 0 ||
+    !isAbsolute(descriptorPath) ||
+    /[\0\r\n]/u.test(descriptorPath) ||
+    typeof privateRoot !== "string" ||
+    !isAbsolute(privateRoot) ||
+    /[\0\r\n]/u.test(privateRoot)
+  ) {
+    throw new Error("Remote Jupyter acceptance requires one absolute private descriptor path and runner root.");
+  }
+  let canonicalRoot;
+  let canonicalDescriptor;
+  try {
+    const rootMetadata = lstatSync(privateRoot, { bigint: true });
+    const descriptorMetadata = lstatSync(descriptorPath, { bigint: true });
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error("invalid root");
+    if (
+      !descriptorMetadata.isFile() ||
+      descriptorMetadata.isSymbolicLink() ||
+      descriptorMetadata.nlink !== 1n ||
+      descriptorMetadata.size <= 0n ||
+      descriptorMetadata.size > 2_048n ||
+      (descriptorMetadata.mode & 0o777n) !== 0o400n ||
+      (typeof process.getuid === "function" && descriptorMetadata.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("invalid descriptor");
+    }
+    canonicalRoot = realpathSync(privateRoot);
+    canonicalDescriptor = realpathSync(descriptorPath);
+  } catch {
+    throw new Error("Remote Jupyter acceptance requires one owned mode-0400 single-link bounded descriptor.");
+  }
+  const containedPath = relative(canonicalRoot, canonicalDescriptor);
+  if (
+    containedPath.length === 0 ||
+    containedPath === ".." ||
+    containedPath.startsWith(`..${sep}`) ||
+    isAbsolute(containedPath)
+  ) {
+    throw new Error("The remote Jupyter descriptor must stay inside its private runner root.");
+  }
+  return descriptorPath;
+}
+
 export async function runEditorAcceptancePhase(
   {
     editor,
@@ -2814,6 +2865,7 @@ export async function runEditorAcceptancePhase(
     workspaceTrust = "trusted",
     requiresWorkbenchCdp = false,
     jupyterEnvironment,
+    remoteJupyterDescriptorPath,
     runId = randomUUID(),
     progressPath = editorAcceptanceProgressPath(resultPath, runId, phase)
   },
@@ -2841,6 +2893,11 @@ export async function runEditorAcceptancePhase(
   const jupyterEnvironmentOverrides = resolveEditorAcceptanceJupyterEnvironment(
     jupyterEnvironment,
     environment[TEMP_ROOT_ENV]
+  );
+  const remoteJupyterDescriptor = resolveEditorAcceptanceRemoteJupyterDescriptor(
+    remoteJupyterDescriptorPath,
+    environment[TEMP_ROOT_ENV],
+    platform
   );
   assertEditorUserDataIpcPathSafe(userData, editor.version, platform);
   const expectedProgressPath = editorAcceptanceProgressPath(resultPath, runId, phase);
@@ -3023,6 +3080,7 @@ export async function runEditorAcceptancePhase(
         OPEN_WRANGLER_TEST_RESULT: resultPath,
         OPEN_WRANGLER_TEST_PROGRESS: progressPath,
         OPEN_WRANGLER_TEST_RUN_ID: runId,
+        OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR: remoteJupyterDescriptor,
         OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
       },
       platform

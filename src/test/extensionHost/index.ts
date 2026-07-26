@@ -31,7 +31,7 @@ import {
   type Request,
   type Response
 } from "playwright-core";
-import type { Jupyter, KernelStatus } from "@vscode/jupyter-extension";
+import type { Jupyter, JupyterServerCollection, KernelStatus } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
@@ -143,6 +143,13 @@ const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE = "Open Notebook Variable in Open Wrangler";
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
+const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
+const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Open Wrangler Acceptance";
+const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
+const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
+const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
+const RELEASED_JUPYTER_REMOTE_KERNEL_NAME = "openwrangler-remote-acceptance";
+const RELEASED_JUPYTER_REMOTE_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS = 30_000;
 const OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT = 64;
 const OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT = 24;
@@ -490,12 +497,16 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
-  if (phase === "jupyter-deny" || phase === "jupyter-allow") {
-    assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected private Python environment.");
+  if (phase === "jupyter-deny" || phase === "jupyter-allow" || phase === "jupyter-remote") {
+    assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
     recordAcceptanceProgress(`${phase}:start`);
     await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
     recordAcceptanceProgress(`${phase}:complete`);
-    console.log(`Open Wrangler released Jupyter ${phase === "jupyter-deny" ? "denial" : "allow"} acceptance passed.`);
+    console.log(
+      `Open Wrangler released Jupyter ${
+        phase === "jupyter-deny" ? "denial" : phase === "jupyter-remote" ? "remote" : "allow"
+      } acceptance passed.`
+    );
     return;
   }
   if (phase === "python-environment") {
@@ -609,7 +620,19 @@ function recordAcceptanceProgress(checkpoint: string): void {
   });
 }
 
-type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow";
+type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow" | "jupyter-remote";
+
+interface ReleasedJupyterKernelTarget {
+  readonly label: string;
+  readonly name: string;
+  readonly routeLabels: readonly string[];
+  readonly remote?: {
+    readonly baseUrl: vscode.Uri;
+    readonly token: string;
+    readonly runId: string;
+    readonly hostname: string;
+  };
+}
 
 interface ReleasedVariableExpectation {
   readonly name: string;
@@ -634,7 +657,7 @@ async function exerciseReleasedJupyterExtension(
     "File-backed Open Wrangler use must not acquire a hard Jupyter extension dependency."
   );
 
-  const jupyterExtension = vscode.extensions.getExtension("ms-toolsai.jupyter");
+  const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
   assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
   assert.equal(jupyterExtension.packageJSON.publisher, "ms-toolsai");
   assert.equal(jupyterExtension.packageJSON.name, "jupyter");
@@ -649,16 +672,18 @@ async function exerciseReleasedJupyterExtension(
     "The released-Jupyter phases must never load the local API double."
   );
 
+  const kernelTarget = releasedJupyterKernelTarget(phase);
   const directory = mkdtempSync(path.join(tmpdir(), `openwrangler-released-jupyter-${phase}-`));
   const notebookPath = path.join(directory, `${phase}.ipynb`);
   const notebookUri = vscode.Uri.file(notebookPath);
   const setupMarker = `OPEN_WRANGLER_SETUP_${phase.replace("jupyter-", "").toUpperCase()}`;
-  writeReleasedJupyterNotebook(notebookPath, setupMarker);
+  writeReleasedJupyterNotebook(notebookPath, setupMarker, kernelTarget, extension.extensionPath);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalNotebookStartMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
 
   let notebook: vscode.NotebookDocument | undefined;
   let rendererLoadObserver: NotebookRendererLoadObserver | undefined;
+  let remoteServerCollection: JupyterServerCollection | undefined;
   try {
     recordAcceptanceProgress(`${phase}:notebook-open`);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
@@ -674,10 +699,13 @@ async function exerciseReleasedJupyterExtension(
     const workbench = await connectToEditorWorkbench();
     rendererLoadObserver = observeNotebookRendererLoad(workbench);
     recordAcceptanceProgress(`${phase}:kernel-discovery`);
-    await jupyterExtension.activate();
+    const jupyterApi = await jupyterExtension.activate();
     assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for kernel discovery");
+    if (kernelTarget.remote) {
+      remoteServerCollection = registerReleasedRemoteJupyterServer(jupyterApi, kernelTarget);
+    }
     recordAcceptanceProgress(`${phase}:kernel-select`);
-    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase);
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
     recordAcceptanceProgress(`${phase}:kernel-selected`);
 
     recordAcceptanceProgress(`${phase}:kernel-start`);
@@ -688,11 +716,7 @@ async function exerciseReleasedJupyterExtension(
       "Executing the fixture must activate the released Jupyter extension."
     );
     const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
-    assert.equal(
-      canonicalAcceptancePath(String(initialKernel.executable)),
-      canonicalAcceptancePath(testPython),
-      "The released Jupyter kernel must use the runner-selected private Python environment."
-    );
+    assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
     assert.equal(initialKernel.setup, setupMarker);
     assert.equal(
       initialKernel.runtime,
@@ -789,7 +813,7 @@ async function exerciseReleasedJupyterExtension(
       return;
     }
 
-    recordAcceptanceProgress("jupyter-allow:consent");
+    recordAcceptanceProgress(`${phase}:consent`);
     await consent.allow.click();
     await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
     const pandasFrame = await waitForReleasedVariableSession(
@@ -799,12 +823,15 @@ async function exerciseReleasedJupyterExtension(
       "the Pandas DataFrame opened from the real Jupyter Variables view"
     );
 
-    recordAcceptanceProgress("jupyter-allow:pandas-dataframe");
+    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
     await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
-    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame");
+    if (kernelTarget.remote) {
+      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
+    }
+    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
     await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
 
-    recordAcceptanceProgress("jupyter-allow:mime-v2");
+    recordAcceptanceProgress(`${phase}:mime-v2`);
     const renderedCell = new vscode.NotebookRange(1, 2);
     const executionEditor = await showExactReleasedNotebook(notebook);
     executionEditor.selection = renderedCell;
@@ -815,7 +842,7 @@ async function exerciseReleasedJupyterExtension(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the released-Jupyter MIME cell to become visible before execution"
     );
-    await executeReleasedNotebookCell(notebook, 1, undefined, "jupyter-allow:mime-cell", executionEditor);
+    await executeReleasedNotebookCell(notebook, 1, undefined, `${phase}:mime-cell`, executionEditor);
     const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
@@ -849,7 +876,7 @@ async function exerciseReleasedJupyterExtension(
       rendererEditor,
       "after revealing the released-Jupyter MIME renderer"
     );
-    recordAcceptanceProgress("jupyter-allow:mime-renderer-revealed");
+    recordAcceptanceProgress(`${phase}:mime-renderer-revealed`);
     let rendererButton: NotebookRendererButton;
     try {
       rendererButton = await waitForNotebookRendererButton(workbench, "DataFrame");
@@ -877,7 +904,7 @@ async function exerciseReleasedJupyterExtension(
     assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
     await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
 
-    recordAcceptanceProgress("jupyter-allow:pandas-series");
+    recordAcceptanceProgress(`${phase}:pandas-series`);
     const pandasSeries = await openReleasedVariableSession(
       testing,
       notebook,
@@ -887,7 +914,7 @@ async function exerciseReleasedJupyterExtension(
     await assertReleasedSessionPage(testing, pandasSeries, "5", "released-jupyter-pandas-series");
     await disposePackagedSessionPanel(testing, pandasSeries.sessionId, "the released-Jupyter Pandas Series");
 
-    recordAcceptanceProgress("jupyter-allow:polars-series-toolbar");
+    recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
     await showExactReleasedNotebook(notebook);
     await invokeReleasedNotebookToolbarVariable(workbench, notebook, "polars_series");
     const polarsSeries = await waitForReleasedVariableSession(
@@ -900,7 +927,7 @@ async function exerciseReleasedJupyterExtension(
     assert.equal(polarsSeries.metadata.mode, "viewing", "Released notebook sessions must default to viewing mode.");
     await disposePackagedSessionPanel(testing, polarsSeries.sessionId, "the released-Jupyter Polars Series");
 
-    recordAcceptanceProgress("jupyter-allow:polars-dataframe");
+    recordAcceptanceProgress(`${phase}:polars-dataframe`);
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
     const polarsFrame = await openReleasedVariableSession(
       testing,
@@ -920,7 +947,7 @@ async function exerciseReleasedJupyterExtension(
     );
     const polarsPage = await assertReleasedSessionPage(testing, polarsFrame, "3", "released-jupyter-polars-dataframe");
 
-    recordAcceptanceProgress("jupyter-allow:polars-plan");
+    recordAcceptanceProgress(`${phase}:polars-plan`);
     const preview = await testing.request({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
@@ -957,7 +984,7 @@ async function exerciseReleasedJupyterExtension(
     if (applied.kind !== "planUpdated") throw new Error("The released-Jupyter Polars plan did not apply.");
     assert.equal(applied.metadata.steps.length, 1);
 
-    recordAcceptanceProgress("jupyter-allow:pandas-recovery-session");
+    recordAcceptanceProgress(`${phase}:pandas-recovery-session`);
     const pandasRecovery = await openReleasedVariableSession(
       testing,
       notebook,
@@ -972,7 +999,7 @@ async function exerciseReleasedJupyterExtension(
     );
     assert.equal(testing.diagnostics().sessionCount, 2, "Both engine-native sessions must remain open before restart.");
 
-    recordAcceptanceProgress("jupyter-allow:restart");
+    recordAcceptanceProgress(`${phase}:restart`);
     await exerciseReleasedJupyterRestartReplay(
       testing,
       notebook,
@@ -984,7 +1011,10 @@ async function exerciseReleasedJupyterExtension(
         filterModel: pandasRecovery.metadata.filterModel
       },
       Number(initialKernel.pid),
-      setupMarker
+      setupMarker,
+      phase,
+      kernelTarget,
+      extension.extensionPath
     );
     await disposePackagedSessionPanel(testing, polarsFrame.sessionId, "the recovered released-Jupyter Polars session");
     await disposePackagedSessionPanel(
@@ -996,16 +1026,241 @@ async function exerciseReleasedJupyterExtension(
   } finally {
     rendererLoadObserver?.dispose();
     await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+    remoteServerCollection?.dispose();
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
     cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
 
-function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string): void {
+function readReleasedRemoteJupyterDescriptor(runId: string): {
+  readonly baseUrl: string;
+  readonly token: string;
+  readonly hostname: string;
+} {
+  assert.equal(process.platform, "linux", "Container-isolated remote Jupyter acceptance is Linux-only.");
+  const descriptorPath = process.env.OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR;
+  assert.ok(
+    descriptorPath && path.isAbsolute(descriptorPath) && !/[\0\r\n]/u.test(descriptorPath),
+    "Remote Jupyter acceptance requires one absolute private descriptor path."
+  );
+  const privateTemp = path.resolve(tmpdir());
+  const resolvedDescriptor = path.resolve(descriptorPath);
+  const contained = path.relative(privateTemp, resolvedDescriptor);
+  assert.ok(
+    contained.length > 0 && contained !== ".." && !contained.startsWith(`..${path.sep}`) && !path.isAbsolute(contained),
+    "The remote Jupyter descriptor must stay inside the phase's private temporary root."
+  );
+
+  let descriptorFd: number | undefined;
+  try {
+    descriptorFd = openSync(
+      resolvedDescriptor,
+      constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0)
+    );
+    const before = fstatSync(descriptorFd, { bigint: true });
+    assert.ok(
+      before.isFile() &&
+        !before.isSymbolicLink() &&
+        before.nlink === 1n &&
+        before.size > 0n &&
+        before.size <= 2_048n &&
+        (before.mode & 0o777n) === 0o400n &&
+        (typeof process.getuid !== "function" || before.uid === BigInt(process.getuid())),
+      "The remote Jupyter descriptor must be one owned, mode-0400, single-link bounded regular file."
+    );
+    const bytes = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptorFd, bytes, offset, bytes.length - offset, offset);
+      assert.ok(count > 0, "The remote Jupyter descriptor ended before its recorded size.");
+      offset += count;
+    }
+    const after = fstatSync(descriptorFd, { bigint: true });
+    assert.deepEqual(
+      {
+        dev: after.dev,
+        ino: after.ino,
+        mode: after.mode,
+        nlink: after.nlink,
+        uid: after.uid,
+        size: after.size,
+        mtimeNs: after.mtimeNs
+      },
+      {
+        dev: before.dev,
+        ino: before.ino,
+        mode: before.mode,
+        nlink: before.nlink,
+        uid: before.uid,
+        size: before.size,
+        mtimeNs: before.mtimeNs
+      },
+      "The remote Jupyter descriptor changed while it was read."
+    );
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const parsed: unknown = JSON.parse(decoded);
+    assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+    const record = parsed as Record<string, unknown>;
+    assert.deepEqual(Object.keys(record).sort(), ["baseUrl", "hostname", "protocol", "runId", "token"]);
+    assert.equal(record.protocol, RELEASED_JUPYTER_REMOTE_DESCRIPTOR_PROTOCOL);
+    assert.equal(record.runId, runId);
+    assert.equal(record.hostname, `owr-${runId.replaceAll("-", "").slice(0, 12)}`);
+    assert.ok(
+      typeof record.token === "string" && /^[A-Za-z0-9_-]{43}$/u.test(record.token),
+      "The remote Jupyter descriptor token is malformed."
+    );
+    assert.ok(typeof record.baseUrl === "string" && record.baseUrl.length <= 64);
+    return {
+      baseUrl: record.baseUrl,
+      token: record.token,
+      hostname: String(record.hostname)
+    };
+  } catch (error) {
+    throw new Error("Remote Jupyter acceptance could not validate its private connection descriptor.", {
+      cause: error
+    });
+  } finally {
+    if (descriptorFd !== undefined) closeSync(descriptorFd);
+  }
+}
+
+function releasedJupyterKernelTarget(phase: ReleasedJupyterPhase): ReleasedJupyterKernelTarget {
+  if (phase !== "jupyter-remote") {
+    return {
+      label: RELEASED_JUPYTER_LOCAL_KERNEL_LABEL,
+      name: "openwrangler-acceptance",
+      routeLabels: ["Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]
+    };
+  }
+  const runId = process.env.OPEN_WRANGLER_TEST_RUN_ID;
+  assert.ok(
+    runId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(runId),
+    "Remote Jupyter acceptance requires its correlated UUID run ID."
+  );
+  const descriptor = readReleasedRemoteJupyterDescriptor(runId);
+  const serializedBaseUrl = descriptor.baseUrl;
+  const parsed = new URL(serializedBaseUrl);
+  assert.equal(parsed.protocol, "http:", "Remote Jupyter acceptance permits only a loopback HTTP server.");
+  assert.equal(parsed.hostname, "127.0.0.1", "Remote Jupyter acceptance permits only the IPv4 loopback host.");
+  assert.match(parsed.port, /^(?:[1-9][0-9]{0,4})$/u, "Remote Jupyter acceptance requires an explicit port.");
+  assert.ok(Number(parsed.port) <= 65_535, "Remote Jupyter acceptance port exceeds the TCP range.");
+  assert.equal(parsed.username, "");
+  assert.equal(parsed.password, "");
+  assert.equal(parsed.pathname, "/");
+  assert.equal(parsed.search, "");
+  assert.equal(parsed.hash, "");
+  assert.equal(parsed.origin, serializedBaseUrl, "The remote Jupyter base URL must be one canonical origin.");
+  return {
+    label: RELEASED_JUPYTER_REMOTE_KERNEL_LABEL,
+    name: RELEASED_JUPYTER_REMOTE_KERNEL_NAME,
+    routeLabels: [RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL, RELEASED_JUPYTER_REMOTE_SERVER_LABEL],
+    remote: {
+      baseUrl: vscode.Uri.parse(serializedBaseUrl, true),
+      token: descriptor.token,
+      runId,
+      hostname: descriptor.hostname
+    }
+  };
+}
+
+function registerReleasedRemoteJupyterServer(
+  jupyter: Jupyter,
+  target: ReleasedJupyterKernelTarget
+): JupyterServerCollection {
+  assert.ok(target.remote, "A local released-Jupyter target cannot register the remote server collection.");
+  const server = {
+    id: `container-${target.remote.runId.replaceAll("-", "")}`,
+    label: RELEASED_JUPYTER_REMOTE_SERVER_LABEL,
+    connectionInformation: {
+      baseUrl: target.remote.baseUrl,
+      token: target.remote.token
+    }
+  } as const;
+  return jupyter.createJupyterServerCollection(
+    `openwrangler.remoteAcceptance.${target.remote.runId.replaceAll("-", "")}`,
+    RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL,
+    {
+      provideJupyterServers: () => [server],
+      resolveJupyterServer: (candidate) => {
+        assert.equal(candidate.id, server.id, "Released Jupyter resolved an unknown remote acceptance server.");
+        return server;
+      }
+    }
+  );
+}
+
+function assertReleasedJupyterKernelIdentity(
+  result: Readonly<Record<string, unknown>>,
+  target: ReleasedJupyterKernelTarget,
+  hostPython: string
+): void {
+  assert.equal(result.setup === undefined, false, "The released-Jupyter setup result must include its marker.");
+  if (!target.remote) {
+    assert.equal(
+      canonicalAcceptancePath(String(result.executable)),
+      canonicalAcceptancePath(hostPython),
+      "The local released Jupyter kernel must use the runner-selected private Python environment."
+    );
+    return;
+  }
+  assert.notEqual(
+    canonicalAcceptancePath(String(result.executable)),
+    canonicalAcceptancePath(hostPython),
+    "The remote Jupyter kernel must not execute through the editor host's Python environment."
+  );
+  assert.equal(
+    result.remoteRunId,
+    target.remote.runId,
+    "The selected kernel did not originate in the owned container."
+  );
+  assert.equal(
+    result.hostname,
+    target.remote.hostname,
+    "The selected kernel reported an unexpected container hostname."
+  );
+  assert.equal(
+    result.hostExtensionVisible,
+    false,
+    "The remote kernel must not be able to read the host extension installation."
+  );
+}
+
+async function assertReleasedRemoteRuntimeTransfer(
+  notebook: vscode.NotebookDocument,
+  target: ReleasedJupyterKernelTarget,
+  hostExtensionPath: string,
+  phase: ReleasedJupyterPhase
+): Promise<void> {
+  assert.ok(target.remote, "Runtime-transfer attestation is reserved for the remote Jupyter phase.");
+  await executeReleasedNotebookCell(notebook, 4, RELEASED_JUPYTER_RUNTIME_RESULT, `${phase}:runtime-transfer-cell`);
+  const result = releasedNotebookJsonResult(notebook.cellAt(4), RELEASED_JUPYTER_RUNTIME_RESULT, "runtime transfer");
+  assert.equal(result.remoteRunId, target.remote.runId);
+  assert.equal(result.hostname, target.remote.hostname);
+  assert.equal(result.hostExtensionVisible, false);
+  const runtimeFile = String(result.runtimeFile);
+  assert.match(
+    runtimeFile,
+    /^\/tmp\/openwrangler-runtime\/[0-9a-f]{16}\/openwrangler_runtime\/__init__\.py$/u,
+    "Open Wrangler must transfer its runtime into the remote kernel's own temporary filesystem."
+  );
+  assert.equal(
+    runtimeFile.startsWith(canonicalAcceptancePath(hostExtensionPath)),
+    false,
+    "The remote runtime must not resolve from the host extension installation."
+  );
+}
+
+function writeReleasedJupyterNotebook(
+  notebookPath: string,
+  setupMarker: string,
+  target: ReleasedJupyterKernelTarget,
+  hostExtensionPath: string
+): void {
   const setup = [
     "import importlib.util",
     "import json",
     "import os",
+    "import socket",
     "import sys",
     "import pandas as pd",
     "import polars as pl",
@@ -1017,6 +1272,9 @@ function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string)
     `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
       "'executable': sys.executable, 'pid': os.getpid(), " +
       "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
+      "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
+      "'hostname': socket.gethostname(), " +
+      `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}), ` +
       "'setup': openwrangler_restart_marker" +
       "}, sort_keys=True))"
   ];
@@ -1051,20 +1309,39 @@ function writeReleasedJupyterNotebook(notebookPath: string, setupMarker: string)
           metadata: {},
           outputs: [],
           source: [
-            "import importlib.util, json, os\n",
+            "import importlib.util, json, os, socket\n",
             `print(${JSON.stringify(RELEASED_JUPYTER_RESTART_RESULT)} + json.dumps({` +
               "'pid': os.getpid(), " +
               "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
+              "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
+              "'hostname': socket.gethostname(), " +
+              `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}), ` +
               "'setup': globals().get('openwrangler_restart_marker')" +
+              "}, sort_keys=True))\n"
+          ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "import json, os, socket\n",
+            "import openwrangler_runtime\n",
+            `print(${JSON.stringify(RELEASED_JUPYTER_RUNTIME_RESULT)} + json.dumps({` +
+              "'runtimeFile': openwrangler_runtime.__file__, " +
+              "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
+              "'hostname': socket.gethostname(), " +
+              `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)})` +
               "}, sort_keys=True))\n"
           ]
         }
       ],
       metadata: {
         kernelspec: {
-          display_name: "Open Wrangler Acceptance",
+          display_name: target.label,
           language: "python",
-          name: "openwrangler-acceptance"
+          name: target.name
         },
         language_info: { name: "python" }
       },
@@ -1118,7 +1395,8 @@ async function selectReleasedJupyterKernel(
   workbench: Page,
   notebook: vscode.NotebookDocument,
   notebookEditor: vscode.NotebookEditor,
-  phase: ReleasedJupyterPhase
+  phase: ReleasedJupyterPhase,
+  targetKernel: ReleasedJupyterKernelTarget
 ): Promise<void> {
   assertExactOpenNotebookDocument(notebook, "before selecting its released Jupyter kernel");
   assert.equal(notebookEditor.notebook, notebook, "The released-Jupyter kernel picker must keep its captured editor.");
@@ -1154,7 +1432,7 @@ async function selectReleasedJupyterKernel(
         await workbench.waitForTimeout(50);
         continue;
       }
-      const target = await releasedJupyterQuickPickRow(quickInput, "Open Wrangler Acceptance");
+      const target = await releasedJupyterQuickPickRow(quickInput, targetKernel.label);
       if (target) {
         recordAcceptanceProgress(`${phase}:kernel-picker-target`);
         await target.click();
@@ -1166,16 +1444,16 @@ async function selectReleasedJupyterKernel(
         if (outcome.kind === "rejected") throw outcome.error;
         assertExactOpenNotebookDocument(notebook, "after selecting its released Jupyter kernel");
         assert.equal(notebookEditor.notebook, notebook, "The released-Jupyter kernel selection changed its editor.");
-        await waitForReleasedJupyterKernelLabel(workbench);
+        await waitForReleasedJupyterKernelLabel(workbench, targetKernel.label);
         return;
       }
 
       if (filterForTarget) {
-        const stillOnRoutePicker = await releasedJupyterRouteLabel(quickInput);
+        const stillOnRoutePicker = await releasedJupyterRouteLabel(quickInput, targetKernel.routeLabels);
         if (!stillOnRoutePicker) {
           const input = quickInput.locator(".quick-input-box input:visible").first();
           if ((await input.count()) > 0) {
-            await input.fill("Open Wrangler Acceptance");
+            await input.fill(targetKernel.label);
             filterForTarget = false;
             await workbench.waitForTimeout(100);
             continue;
@@ -1184,7 +1462,7 @@ async function selectReleasedJupyterKernel(
       }
 
       let advanced = false;
-      for (const label of ["Select Another Kernel...", "Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]) {
+      for (const label of ["Select Another Kernel...", ...targetKernel.routeLabels]) {
         if (traversed.has(label)) continue;
         const row = await releasedJupyterQuickPickRow(quickInput, label);
         if (!row) continue;
@@ -1196,7 +1474,7 @@ async function selectReleasedJupyterKernel(
             .replaceAll(/^-|-$/gu, "")}`
         );
         await row.click();
-        filterForTarget = label === "Jupyter Kernel..." || label === "Jupyter" || label === "Local Kernel Specs...";
+        filterForTarget = targetKernel.routeLabels.includes(label);
         await workbench.waitForTimeout(100);
         advanced = true;
         break;
@@ -1206,7 +1484,8 @@ async function selectReleasedJupyterKernel(
 
     const diagnostics = await releasedJupyterQuickInputDiagnostics(workbench);
     throw new Error(
-      `Timed out selecting the private released-Jupyter kernel. Quick-input labels: ${JSON.stringify(diagnostics)}`
+      `Timed out selecting released-Jupyter kernel ${JSON.stringify(targetKernel.label)}. ` +
+        `Quick-input labels: ${JSON.stringify(diagnostics)}`
     );
   } catch (error) {
     await dismissReleasedJupyterKernelPicker(workbench, observedSelection);
@@ -1214,8 +1493,11 @@ async function selectReleasedJupyterKernel(
   }
 }
 
-async function releasedJupyterRouteLabel(quickInput: Locator): Promise<string | undefined> {
-  for (const label of ["Select Another Kernel...", "Jupyter Kernel...", "Jupyter", "Local Kernel Specs..."]) {
+async function releasedJupyterRouteLabel(
+  quickInput: Locator,
+  routeLabels: readonly string[]
+): Promise<string | undefined> {
+  for (const label of ["Select Another Kernel...", ...routeLabels]) {
     if (await releasedJupyterQuickPickRow(quickInput, label)) return label;
   }
   return undefined;
@@ -1241,7 +1523,7 @@ async function dismissReleasedJupyterKernelPicker(
   await Promise.race([selection, workbench.waitForTimeout(2_000)]).catch(() => {});
 }
 
-async function waitForReleasedJupyterKernelLabel(workbench: Page): Promise<void> {
+async function waitForReleasedJupyterKernelLabel(workbench: Page, expectedLabel: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   do {
     let exactMatches = 0;
@@ -1255,16 +1537,16 @@ async function waitForReleasedJupyterKernelLabel(workbench: Page): Promise<void>
               .nth(index)
               .innerText()
               .catch(() => "")
-          ).trim() === "Open Wrangler Acceptance"
+          ).trim() === expectedLabel
         )
           exactMatches += 1;
       }
     }
     if (exactMatches === 1) return;
-    assert.ok(exactMatches < 2, "The workbench exposed duplicate Open Wrangler Acceptance kernel labels.");
+    assert.ok(exactMatches < 2, `The workbench exposed duplicate ${JSON.stringify(expectedLabel)} kernel labels.`);
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new Error("The workbench did not confirm the selected Open Wrangler Acceptance kernel.");
+  throw new Error(`The workbench did not confirm selected kernel ${JSON.stringify(expectedLabel)}.`);
 }
 
 async function visibleReleasedJupyterQuickInput(workbench: Page): Promise<Locator | undefined> {
@@ -1751,7 +2033,8 @@ async function assertReleasedNotebookCodeInsertion(
   testing: TestApi,
   notebook: vscode.NotebookDocument,
   active: NonNullable<ReturnType<TestApi["activeSession"]>>,
-  variableName: string
+  variableName: string,
+  phase: ReleasedJupyterPhase
 ): Promise<void> {
   assert.equal(active.metadata.source.kind, "notebookVariable");
   const code = `# released Jupyter exact origin ${Date.now()}\ndef clean_data(df):\n    return df\n`;
@@ -1782,14 +2065,14 @@ async function assertReleasedNotebookCodeInsertion(
   );
   const decoy = await vscode.workspace.openNotebookDocument(vscode.Uri.file(decoyPath));
   try {
-    recordAcceptanceProgress("jupyter-allow:insertion-decoy");
+    recordAcceptanceProgress(`${phase}:insertion-decoy`);
     await vscode.window.showNotebookDocument(decoy, { viewColumn: vscode.ViewColumn.One });
     assertExactOpenNotebookDocument(decoy, "after showing the insertion decoy");
     const decoyBefore = Array.from({ length: decoy.cellCount }, (_, index) => decoy.cellAt(index).document.getText());
 
     testing.setActiveSession(active.sessionId);
     testing.setCodeForExport(code);
-    recordAcceptanceProgress("jupyter-allow:insertion-decoy-active");
+    recordAcceptanceProgress(`${phase}:insertion-decoy-active`);
     assertExactOpenNotebookDocument(notebook, "before released-Jupyter generated-code insertion");
     assertExactOpenNotebookDocument(decoy, "before insertion while the decoy remained open");
     assert.equal(
@@ -1797,7 +2080,7 @@ async function assertReleasedNotebookCodeInsertion(
       decoy,
       "Released-Jupyter insertion acceptance must keep a different notebook active."
     );
-    recordAcceptanceProgress("jupyter-allow:insertion-dispatch");
+    recordAcceptanceProgress(`${phase}:insertion-dispatch`);
     let insertionResult: boolean | undefined;
     try {
       insertionResult = await withBoundedAcceptancePromise(
@@ -1821,7 +2104,7 @@ async function assertReleasedNotebookCodeInsertion(
           )}`
       );
     }
-    recordAcceptanceProgress("jupyter-allow:insertion-complete");
+    recordAcceptanceProgress(`${phase}:insertion-complete`);
     assertExactOpenNotebookDocument(notebook, "after released-Jupyter generated-code insertion");
     assertExactOpenNotebookDocument(decoy, "after insertion while the decoy remained open");
     assert.deepEqual(
@@ -2398,13 +2681,16 @@ async function exerciseReleasedJupyterRestartReplay(
   applied: Extract<OpenWranglerResponse, { kind: "planUpdated" }>,
   pandas: { sessionId: string; revision: number; filterModel: FilterModel },
   priorPid: number,
-  setupMarker: string
+  setupMarker: string,
+  phase: ReleasedJupyterPhase,
+  target: ReleasedJupyterKernelTarget,
+  hostExtensionPath: string
 ): Promise<void> {
   await restartReleasedJupyterKernelAndWait(notebook);
 
-  recordAcceptanceProgress("jupyter-allow:restart-probe");
+  recordAcceptanceProgress(`${phase}:restart-probe`);
   await showExactReleasedNotebook(notebook);
-  await executeReleasedNotebookCell(notebook, 3, RELEASED_JUPYTER_RESTART_RESULT, "jupyter-allow:restart-probe-cell");
+  await executeReleasedNotebookCell(notebook, 3, RELEASED_JUPYTER_RESTART_RESULT, `${phase}:restart-probe-cell`);
   const replacement = releasedNotebookJsonResult(notebook.cellAt(3), RELEASED_JUPYTER_RESTART_RESULT, "restart probe");
   assert.notEqual(Number(replacement.pid), priorPid, "A released-Jupyter restart must replace the kernel process.");
   assert.equal(replacement.setup, null, "The replacement kernel must not retain the prior setup marker.");
@@ -2413,13 +2699,23 @@ async function exerciseReleasedJupyterRestartReplay(
     false,
     "The replacement kernel must require Open Wrangler to transfer its runtime bundle again."
   );
+  if (target.remote) {
+    assert.equal(replacement.remoteRunId, target.remote.runId);
+    assert.equal(replacement.hostname, target.remote.hostname);
+    assert.equal(replacement.hostExtensionVisible, false);
+  }
 
-  recordAcceptanceProgress("jupyter-allow:restart-setup");
-  await executeReleasedNotebookCell(notebook, 0, setupMarker, "jupyter-allow:restart-setup-cell");
+  recordAcceptanceProgress(`${phase}:restart-setup`);
+  await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:restart-setup-cell`);
   const restoredSetup = releasedNotebookSetupResult(notebook.cellAt(0));
   assert.equal(restoredSetup.setup, setupMarker);
+  if (target.remote) {
+    assert.equal(restoredSetup.remoteRunId, target.remote.runId);
+    assert.equal(restoredSetup.hostname, target.remote.hostname);
+    assert.equal(restoredSetup.hostExtensionVisible, false);
+  }
 
-  recordAcceptanceProgress("jupyter-allow:restart-replay");
+  recordAcceptanceProgress(`${phase}:restart-replay`);
   const [polarsReplayed, pandasReplayed] = await Promise.all([
     testing.request({
       kind: "getPage",
@@ -2456,6 +2752,9 @@ async function exerciseReleasedJupyterRestartReplay(
   if (pandasReplayed.kind !== "page") throw new Error("Released-Jupyter Pandas restart replay did not return a page.");
   assert.deepEqual(gridColumnDisplays(pandasReplayed.page, pandasReplayed.metadata.schema[0]?.id ?? ""), ["1", "2"]);
   assert.equal(pandasReplayed.metadata.backend, "pandas");
+  if (target.remote) {
+    await assertReleasedRemoteRuntimeTransfer(notebook, target, hostExtensionPath, phase);
+  }
 }
 
 async function restartReleasedJupyterKernelAndWait(notebook: vscode.NotebookDocument): Promise<void> {
