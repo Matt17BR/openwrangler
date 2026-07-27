@@ -12,7 +12,11 @@ import {
   writeFileSync
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
+import {
+  createEditorAcceptanceEnvironment,
+  editorProcessTreeMayBeLive,
+  runBoundedEditorCommand
+} from "./editor-acceptance.mjs";
 import {
   PINNED_REMOTE_VSCODE_COMMIT,
   PINNED_REMOTE_VSCODE_VERSION,
@@ -128,6 +132,21 @@ const BUSYBOX_APPLETS = Object.freeze([
   "which",
   "xargs"
 ]);
+
+export function createRemoteWorkspaceCommandRunner(runCommand = runBoundedEditorCommand) {
+  let ownershipUncertain = false;
+  return Object.freeze({
+    async run(command, options) {
+      try {
+        return await runCommand(command, options);
+      } catch (error) {
+        if (editorProcessTreeMayBeLive(error)) ownershipUncertain = true;
+        throw error;
+      }
+    },
+    ownershipUncertain: () => ownershipUncertain
+  });
+}
 
 export async function assertRemoteWorkspaceHost(
   {

@@ -21,7 +21,6 @@ import { createVSIX } from "@vscode/vsce";
 import {
   createEditorAcceptanceEnvironment,
   editorProcessTreeMayBeLive,
-  runBoundedEditorCommand,
   writeEditorAcceptanceHarness,
   writeEditorSettings
 } from "./editor-acceptance.mjs";
@@ -38,6 +37,7 @@ import {
   assertRemoteWorkspaceHost,
   copyPrivatePythonEnvironment,
   createRemoteWorkspaceBwrapArguments,
+  createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceLayout,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
@@ -65,7 +65,7 @@ let layout;
 let rootReceipt;
 let hostSentinel;
 let hostSentinelReceipt;
-let namespaceMayBeLive = false;
+const commandRunner = createRemoteWorkspaceCommandRunner();
 
 try {
   if (process.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb") {
@@ -74,7 +74,7 @@ try {
     );
   }
   assertRegularCandidate(candidatePath);
-  const tools = await assertRemoteWorkspaceHost();
+  const tools = await assertRemoteWorkspaceHost({}, { runCommand: commandRunner.run });
   const preparedXvfb = await prepareRepositoryLocalXvfb();
   await verifyCandidate(candidatePath);
   const privateParent = preparePrivateParent(resolve(repositoryRoot, "tmp", "remote-workspace"));
@@ -100,7 +100,8 @@ try {
     artifactPaths: artifactOverrides(process.env)
   });
   const sshServer = await extractPinnedDropbearRuntime(acquisition.artifacts, layout.sshRuntime, {
-    dpkgDeb: tools.dpkgDeb
+    dpkgDeb: tools.dpkgDeb,
+    runCommand: commandRunner.run
   });
   writePrivateAccountDatabase(
     layout.accounts,
@@ -110,10 +111,10 @@ try {
     namespacePrivatePath(layout, sshServer.libraryPath)
   );
   const clientRoot = layout.client;
-  await extractPinnedRemoteTar(acquisition.artifacts.vscode, clientRoot);
+  await extractPinnedRemoteTar(acquisition.artifacts.vscode, clientRoot, { runCommand: commandRunner.run });
 
   const remoteServerBase = join(layout.remoteHome, ".vscode-server");
-  await extractPinnedRemoteTar(acquisition.artifacts.cli, remoteServerBase);
+  await extractPinnedRemoteTar(acquisition.artifacts.cli, remoteServerBase, { runCommand: commandRunner.run });
   const unpackedCli = join(remoteServerBase, "code");
   const committedCli = join(remoteServerBase, `code-${PINNED_REMOTE_VSCODE_COMMIT}`);
   renameSync(unpackedCli, committedCli);
@@ -121,18 +122,25 @@ try {
 
   const serverRoot = join(remoteServerBase, "cli", "servers", `Stable-${PINNED_REMOTE_VSCODE_COMMIT}`, "server");
   mkdirSync(serverRoot, { recursive: true, mode: 0o700 });
-  await extractPinnedRemoteTar(acquisition.artifacts.server, serverRoot);
-  const installation = await validatePinnedRemoteInstallations({
-    clientRoot,
-    cliPath: committedCli,
-    serverRoot
-  });
+  await extractPinnedRemoteTar(acquisition.artifacts.server, serverRoot, { runCommand: commandRunner.run });
+  const installation = await validatePinnedRemoteInstallations(
+    {
+      clientRoot,
+      cliPath: committedCli,
+      serverRoot
+    },
+    {
+      runCommand: commandRunner.run
+    }
+  );
 
   stageCandidate(candidatePath, layout.candidate);
   await verifyCandidate(layout.candidate);
   const sourcePython = resolveSourcePython(process.env);
   const systemPython = realpathSync(sourcePython);
-  const python = await copyPrivatePythonEnvironment(sourcePython, layout.python);
+  const python = await copyPrivatePythonEnvironment(sourcePython, layout.python, {
+    runCommand: commandRunner.run
+  });
   await writeRemoteFixture(layout, python.executable);
   writeWorkspaceSettings(layout, namespacePrivatePath(layout, python.executable));
 
@@ -233,8 +241,7 @@ try {
     gid: tools.gid,
     tools
   });
-  namespaceMayBeLive = true;
-  const attestation = await runBoundedEditorCommand(
+  const attestation = await commandRunner.run(
     {
       executable: tools.bwrap,
       args: bwrapArguments,
@@ -248,7 +255,6 @@ try {
       killGraceMs: 5_000
     }
   );
-  namespaceMayBeLive = false;
   validateNamespaceAttestation(attestation.stdout, runId);
   removePrivateRoot(layout.root, rootReceipt);
   removeHostSentinel(hostSentinel, hostSentinelReceipt);
@@ -258,12 +264,11 @@ try {
     `Open Wrangler Remote SSH acceptance passed with official VS Code ${installation.version} (${installation.commit}).`
   );
 } catch (error) {
-  if (namespaceMayBeLive && editorProcessTreeMayBeLive(error)) {
+  if (commandRunner.ownershipUncertain() || editorProcessTreeMayBeLive(error)) {
     throw new Error(
       "Remote SSH acceptance lost PID-namespace ownership; no private result, logs, profile, or artifact path was inspected or removed."
     );
   }
-  namespaceMayBeLive = false;
   const cleanupErrors = [];
   if (layout && rootReceipt) {
     try {
@@ -667,7 +672,7 @@ function isolatedEnvironment(home) {
 }
 
 function runSetupCommand(executable, args, environment, label) {
-  return runBoundedEditorCommand(
+  return commandRunner.run(
     { executable, args, environment, label },
     { timeoutMs: 120_000, maxOutputBytes: setupOutputLimit }
   );

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
+  createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
   REMOTE_WORKSPACE_AUTHORITY,
@@ -30,6 +31,22 @@ test("Remote workspace layout is short, private, and independently scoped", () =
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
+});
+
+test("Remote command ownership uncertainty latches permanently across later commands", async () => {
+  const ownershipError = Object.assign(new Error("ownership uncertain"), {
+    code: "EDITOR_PROCESS_TREE_UNVERIFIED"
+  });
+  let calls = 0;
+  const runner = createRemoteWorkspaceCommandRunner(async () => {
+    calls += 1;
+    if (calls === 1) throw ownershipError;
+    return { stdout: "", stderr: "" };
+  });
+  await assert.rejects(runner.run({}, {}), ownershipError);
+  assert.equal(runner.ownershipUncertain(), true);
+  await runner.run({}, {});
+  assert.equal(runner.ownershipUncertain(), true);
 });
 
 test("Remote phase descriptors cannot execute a test module outside the private run root", () => {
