@@ -97,8 +97,8 @@ linuxTest("Remote workspace layout is short, private, and independently scoped",
     assert.equal(namespace.remoteServerBase, "/ow/rh/.vscode-server");
     assert.equal(namespace.immutable, "/ow/immutable-unreachable");
     assert.equal(
-      namespaceRemoteWorkspaceImmutablePath(layout, join(layout.python, "bin", "python")),
-      "/ow/rh/python/bin/python"
+      namespaceRemoteWorkspaceImmutablePath(layout, join(layout.python, "bin", "openwrangler-python")),
+      "/ow/rh/python/bin/openwrangler-python"
     );
     assert.equal(
       namespaceRemoteWorkspaceImmutablePath(layout, join(layout.remoteServerBase, "code-test")),
@@ -296,7 +296,8 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
           ? {
               stdout: [
                 "    --bind-fd FD DEST            Bind open directory or path fd on DEST",
-                "    --ro-bind-fd FD DEST         Bind open directory or path fd read-only on DEST"
+                "    --ro-bind-fd FD DEST         Bind open directory or path fd read-only on DEST",
+                "    --perms OCTAL                Set permissions of next argument (--bind-data, --file, etc.)"
               ].join("\n"),
               stderr: ""
             }
@@ -315,15 +316,21 @@ test("Bubblewrap preflight requires descriptor-bound mutable and read-only mount
   const help = [
     "Usage:",
     "    --bind-fd FD DEST            Bind open directory or path fd on DEST",
-    "    --ro-bind-fd FD DEST         Bind open directory or path fd read-only on DEST"
+    "    --ro-bind-fd FD DEST         Bind open directory or path fd read-only on DEST",
+    "    --perms OCTAL                Set permissions of next argument (--bind-data, --file, etc.)"
   ].join("\n");
-  assert.deepEqual(validateRemoteWorkspaceBwrapHelp(help), { bindFd: true, readOnlyBindFd: true });
+  assert.deepEqual(validateRemoteWorkspaceBwrapHelp(help), {
+    bindFd: true,
+    readOnlyBindFd: true,
+    permissions: true
+  });
   for (const unsupported of [
     help.replace("--bind-fd FD DEST", "--bind SRC DEST"),
     help.replace("--ro-bind-fd FD DEST", "--ro-bind SRC DEST"),
+    help.replace("--perms OCTAL", "--dir DIR"),
     ""
   ]) {
-    assert.throws(() => validateRemoteWorkspaceBwrapHelp(unsupported), /descriptor-bound mount interface/u);
+    assert.throws(() => validateRemoteWorkspaceBwrapHelp(unsupported), /descriptor-bound mount and permissions/u);
   }
 });
 
@@ -379,6 +386,9 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     ]) {
       assert.equal(args.includes(required), true, `Expected ${required}.`);
     }
+    const namespaceRootIndex = args.indexOf("/ow");
+    assert.notEqual(namespaceRootIndex, -1);
+    assert.deepEqual(args.slice(namespaceRootIndex - 3, namespaceRootIndex + 1), ["--perms", "0700", "--dir", "/ow"]);
     assert.equal(args.includes(process.env.HOME ?? "<missing>"), false);
     const environmentNames = args
       .map((value, index) => (value === "--setenv" ? args[index + 1] : undefined))
@@ -725,7 +735,7 @@ test("Remote controller failure finalization never publishes across cleanup or i
   }
 });
 
-test("Remote controller failures publish one exclusive correlated result after owned cleanup", () => {
+linuxTest("Remote controller failures publish one exclusive correlated result after owned cleanup", () => {
   const root = privateRoot("ow-remote-controller-result-");
   const runId = "11111111-1111-4111-8111-111111111111";
   const path = join(root, "result.json");
@@ -798,7 +808,7 @@ test("Remote controller failures publish one exclusive correlated result after o
   }
 });
 
-test("Remote controller failure publication never exposes write, flush, or close faults", () => {
+linuxTest("Remote controller failure publication never exposes write, flush, or close faults", () => {
   const root = privateRoot("ow-remote-controller-fault-");
   const runId = "11111111-1111-4111-8111-111111111111";
   try {
@@ -856,7 +866,7 @@ test("Remote controller failure publication never exposes write, flush, or close
   }
 });
 
-test("Remote controller failure atomic publication never overwrites a racing result", () => {
+linuxTest("Remote controller failure atomic publication never overwrites a racing result", () => {
   const root = privateRoot("ow-remote-controller-race-");
   const runId = "11111111-1111-4111-8111-111111111111";
   const path = join(root, "result.json");
@@ -889,7 +899,7 @@ test("Remote controller failure atomic publication never overwrites a racing res
   }
 });
 
-test("Remote controller failure publication fails closed when identified temporary cleanup fails", () => {
+linuxTest("Remote controller failure publication fails closed when identified temporary cleanup fails", () => {
   const root = privateRoot("ow-remote-controller-cleanup-");
   const runId = "11111111-1111-4111-8111-111111111111";
   const path = join(root, "result.json");
@@ -1110,7 +1120,22 @@ linuxTest("copied Python accepts an absent journal only after the product guard 
     assert.equal(Object.isFrozen(resolverInput), true);
     assert.deepEqual(copied.systemRuntimeDirectories, resolveUnitSystemRuntimeDirectories(resolverInput));
     assert.equal(Object.isFrozen(copied.systemRuntimeDirectories), true);
-    assert.equal(copied.executable, join(destination, "bin", "python"));
+    assert.equal(copied.executable, join(destination, "bin", "openwrangler-python"));
+    assert.equal(lstatSync(join(source.prefix, "bin", "python")).isSymbolicLink(), true);
+    assert.equal(lstatSync(join(destination, "bin", "python")).isSymbolicLink(), true);
+    const copiedLauncher = lstatSync(copied.executable, { bigint: true });
+    assert.equal(copiedLauncher.isFile(), true);
+    assert.equal(copiedLauncher.isSymbolicLink(), false);
+    assert.equal(copiedLauncher.nlink, 1n);
+    assert.equal(Number(copiedLauncher.mode & 0o777n), 0o700);
+    assert.equal(realpathSync(copied.executable), copied.executable);
+    const copiedPrefix = spawnSync(
+      copied.executable,
+      ["-I", "-c", "import os,sys;print(os.path.realpath(sys.prefix))"],
+      { encoding: "utf8", maxBuffer: 16 * 1024 }
+    );
+    assert.equal(copiedPrefix.status, 0, copiedPrefix.stderr);
+    assert.equal(copiedPrefix.stdout.trim(), realpathSync(destination));
     assert.throws(() => lstatSync(join(source.prefix, ".openwrangler-dependency-journal-v1")), {
       code: "ENOENT"
     });
@@ -1362,7 +1387,7 @@ function namespaceProbeOutput() {
 function createTinyPythonEnvironment(root) {
   const prefix = join(root, "source");
   const bootstrap = resolveTinyPythonBootstrap();
-  const created = spawnSync(bootstrap, ["-m", "venv", "--without-pip", prefix], {
+  const created = spawnSync(bootstrap, ["-m", "venv", "--without-pip", "--symlinks", prefix], {
     encoding: "utf8",
     maxBuffer: 64 * 1024
   });
@@ -1502,7 +1527,7 @@ function remotePhaseDescriptor() {
     xvfb: "/ow/phase-runtime/Xvfb",
     displayMode: "xvfb",
     testModule: "/ow/rh/test-module/dist-test/test/extensionHost/index.js",
-    python: "/ow/rh/python/bin/python",
+    python: "/ow/rh/python/bin/openwrangler-python",
     user: "openwrangler",
     sshConfig: "/ow/rh/ssh/config",
     sshServer: "/ow/rh/ssh-runtime/runtime/bin/dropbear",
@@ -1554,7 +1579,7 @@ function createPhaseFilesystem(root) {
     [join(root, "client", "code"), "#!/bin/sh\n", 0o700],
     [join(root, "phase-runtime", "Xvfb"), "#!/bin/sh\n", 0o700],
     [join(root, "rh", "test-module", "dist-test", "test", "extensionHost", "index.js"), "export {};\n", 0o644],
-    [join(root, "rh", "python", "bin", "python"), "#!/bin/sh\n", 0o700],
+    [join(root, "rh", "python", "bin", "openwrangler-python"), "#!/bin/sh\n", 0o700],
     [join(root, "rh", "ssh", "config"), "Host ow-loopback\n", 0o600],
     [join(root, "rh", "ssh-runtime", "runtime", "bin", "dropbear"), "#!/bin/sh\n", 0o700],
     [join(root, "rh", "ssh", "host"), "private-key\n", 0o600]

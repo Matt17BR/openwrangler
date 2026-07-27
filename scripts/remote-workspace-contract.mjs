@@ -97,7 +97,7 @@ const FIXED_DESCRIPTOR_PATHS = Object.freeze({
   editor: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/client/code`,
   xvfb: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-runtime/Xvfb`,
   testModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module/dist-test/test/extensionHost/index.js`,
-  python: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/python/bin/python`,
+  python: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/python/bin/openwrangler-python`,
   sshConfig: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/config`,
   sshServer: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime/bin/dropbear`,
   sshLibraryPath: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime/lib`,
@@ -493,6 +493,9 @@ export async function finalizeRemoteWorkspaceControllerFailure({
 }
 
 export function publishRemoteWorkspaceControllerFailureResult(path, { runId, code }, testBoundary = {}) {
+  if (process.platform !== "linux") {
+    throw new Error("Remote SSH controller failure publication is supported only by the Linux acceptance runner.");
+  }
   const error = REMOTE_WORKSPACE_CONTROLLER_FAILURES.get(code);
   if (
     typeof path !== "string" ||

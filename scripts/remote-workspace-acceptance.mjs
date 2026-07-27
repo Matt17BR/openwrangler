@@ -315,11 +315,14 @@ export function validateRemoteWorkspaceBwrapHelp(output) {
     typeof output !== "string" ||
     Buffer.byteLength(output, "utf8") > HOST_COMMAND_OUTPUT_LIMIT_BYTES ||
     !/^[ \t]+--bind-fd FD DEST[ \t]+Bind open directory or path fd on DEST[ \t]*$/mu.test(output) ||
-    !/^[ \t]+--ro-bind-fd FD DEST[ \t]+Bind open directory or path fd read-only on DEST[ \t]*$/mu.test(output)
+    !/^[ \t]+--ro-bind-fd FD DEST[ \t]+Bind open directory or path fd read-only on DEST[ \t]*$/mu.test(output) ||
+    !/^[ \t]+--perms OCTAL[ \t]+Set permissions of next argument \(--bind-data, --file, etc\.\)[ \t]*$/mu.test(output)
   ) {
-    throw new Error("The installed bubblewrap does not expose the required descriptor-bound mount interface.");
+    throw new Error(
+      "The installed bubblewrap does not expose the required descriptor-bound mount and permissions interface."
+    );
   }
-  return Object.freeze({ bindFd: true, readOnlyBindFd: true });
+  return Object.freeze({ bindFd: true, readOnlyBindFd: true, permissions: true });
 }
 
 export function validateRemoteWorkspaceNamespaceProbe(output, { uid, gid }) {
@@ -517,7 +520,12 @@ export async function copyPrivatePythonEnvironment(
       throw new Error("The copied dependency journal changed while its private mode was repaired.");
     }
   }
-  const destinationPython = join(destination, "bin", "python");
+  const destinationPython = join(destination, "bin", "openwrangler-python");
+  const launcherStage = stageRemoteWorkspaceExactFile(
+    realpathSync(join(destination, "bin", "python")),
+    destinationPython,
+    0o700
+  );
   const copiedProbe = await probePython(destinationPython, runCommand);
   const sourceVersions = Object.fromEntries(
     Object.entries(sourceProbe.packages).map(([name, entry]) => [name, entry.version])
@@ -557,6 +565,7 @@ export async function copyPrivatePythonEnvironment(
   }
   let integrityFailure;
   try {
+    assertRemoteWorkspaceExactFileStage(launcherStage);
     assertRemoteWorkspaceExactFileStage(guardStage);
     assertDependencyJournalSnapshot(sourcePrefix, sourceJournal);
     const afterGuard = captureDependencyJournalSnapshot(destination);
@@ -589,6 +598,7 @@ export async function copyPrivatePythonEnvironment(
   if (!isDeepStrictEqual(resolvedSystemRuntimeDirectories, expectedSystemRuntimeDirectories)) {
     throw new Error("The Remote SSH copied-Python system-runtime resolver altered its exact required closure.");
   }
+  assertRemoteWorkspaceExactFileStage(launcherStage);
   const systemRuntimeDirectories = Object.freeze([...resolvedSystemRuntimeDirectories]);
   return Object.freeze({
     executable: destinationPython,
@@ -1004,6 +1014,8 @@ export function createRemoteWorkspaceBwrapArguments(
     "openwrangler-remote-acceptance",
     "--tmpfs",
     "/",
+    "--perms",
+    "0700",
     "--dir",
     REMOTE_WORKSPACE_NAMESPACE_ROOT
   ];
