@@ -222,8 +222,13 @@ export function DataGrid({
   const updateViewportFromScroller = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const { busy: scrollBusy, onPage: requestPage, pageSize: blockSize, reportViewState, totalRows } =
-      scrollInputsRef.current;
+    const {
+      busy: scrollBusy,
+      onPage: requestPage,
+      pageSize: blockSize,
+      reportViewState,
+      totalRows
+    } = scrollInputsRef.current;
     const gridOwnsFocus = document.hasFocus() && scroller.contains(document.activeElement);
     preserveGridFocusAfterScroll.current = !focusRequested.current && gridOwnsFocus;
     const target = programmaticViewportTarget.current;
@@ -248,14 +253,9 @@ export function DataGrid({
         ? current
         : next
     );
-    const row = targetStillQuantized
-      ? target.firstVisibleRow
-      : firstVisibleRowFromScrollTop(next.scrollTop, totalRows);
+    const row = targetStillQuantized ? target.firstVisibleRow : firstVisibleRowFromScrollTop(next.scrollTop, totalRows);
     const currentViewState = viewStateRef.current;
-    if (
-      currentViewState.viewport.firstVisibleRow !== row ||
-      currentViewState.viewport.scrollLeft !== next.scrollLeft
-    ) {
+    if (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft) {
       reportViewState({
         ...currentViewState,
         viewport: { firstVisibleRow: row, scrollLeft: next.scrollLeft }

@@ -513,14 +513,12 @@ describe("DataGrid", () => {
     const scrollListenerCalls = () =>
       addEventListener.mock.calls.filter(
         ([type], index) =>
-          type === "scroll" &&
-          (addEventListener.mock.instances[index] as HTMLDivElement | undefined) === scroller
+          type === "scroll" && (addEventListener.mock.instances[index] as HTMLDivElement | undefined) === scroller
       ).length;
     const removedScrollListenerCalls = () =>
       removeEventListener.mock.calls.filter(
         ([type], index) =>
-          type === "scroll" &&
-          (removeEventListener.mock.instances[index] as HTMLDivElement | undefined) === scroller
+          type === "scroll" && (removeEventListener.mock.instances[index] as HTMLDivElement | undefined) === scroller
       ).length;
     const installed = scrollListenerCalls();
 
