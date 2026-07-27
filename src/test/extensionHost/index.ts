@@ -3409,6 +3409,13 @@ async function exerciseRemoteWorkspace(
   assert.equal(workspace.scheme, "vscode-remote");
   assert.equal(workspace.authority, "ssh-remote+ow-loopback");
   assert.equal(extension.isActive, true);
+  for (const loaderVariable of ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_BIND_NOW", "LD_AUDIT"]) {
+    assert.equal(
+      process.env[loaderVariable],
+      undefined,
+      `The remote extension host must not inherit ${loaderVariable}.`
+    );
+  }
 
   const configuredPython = vscode.workspace.getConfiguration("openWrangler", workspace).inspect<string>("pythonPath");
   assert.equal(

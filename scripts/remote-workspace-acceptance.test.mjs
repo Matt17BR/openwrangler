@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,8 @@ import {
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+  validateRootOwnedSystemRuntimeDirectory,
+  validateRemoteWorkspaceNamespaceProbe,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-acceptance.mjs";
@@ -35,11 +37,17 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
     /only Linux x64/u
   );
   const fakeTools = {
+    bash: "/usr/bin/true",
     bwrap: "/usr/bin/true",
+    busybox: "/usr/bin/true",
+    dpkgDeb: "/usr/bin/true",
+    dynamicLoader: "/usr/bin/true",
     ip: "/usr/bin/true",
+    ldconfig: "/usr/bin/true",
+    node: "/usr/bin/true",
     ssh: "/usr/bin/true",
-    sshd: "/usr/bin/true",
-    sshKeygen: "/usr/bin/true"
+    sshKeygen: "/usr/bin/true",
+    xkbcomp: "/usr/bin/true"
   };
   await assert.rejects(
     assertRemoteWorkspaceHost(
@@ -54,6 +62,8 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
   const parent = privateRoot("ow-remote-bwrap-");
   try {
     const layout = createRemoteWorkspaceLayout(parent);
+    const hostSentinel = join(parent, "host-private-sentinel");
+    writeFileSync(hostSentinel, "private\n", { mode: 0o600 });
     const child = join(layout.root, "child.mjs");
     writeFileSync(child, "export {};\n");
     const descriptor = layout.descriptor;
@@ -62,8 +72,20 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
       root: layout.root,
       descriptor,
       childScript: child,
-      nodeExecutable: "/usr/bin/node",
-      tools: { ip: "/usr/sbin/ip", sshd: "/usr/sbin/sshd" }
+      systemPython: "/usr/bin/python3.14",
+      uid: 1001,
+      gid: 1001,
+      tools: {
+        bash: "/usr/bin/bash",
+        bwrap: "/usr/bin/bwrap",
+        busybox: "/usr/bin/busybox",
+        dynamicLoader: "/usr/lib64/ld-linux-x86-64.so.2",
+        ip: "/usr/bin/ip",
+        ldconfig: "/usr/sbin/ldconfig",
+        node: "/usr/bin/node",
+        ssh: "/usr/bin/ssh",
+        xkbcomp: "/usr/bin/xkbcomp"
+      }
     });
     for (const required of [
       "--unshare-user",
@@ -77,10 +99,96 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
       assert.equal(args.includes(required), true, `Expected ${required}.`);
     }
     assert.equal(args.includes(process.env.HOME ?? "<missing>"), false);
-    assert.equal(args.at(-3), descriptor);
+    const environmentNames = args
+      .map((value, index) => (value === "--setenv" ? args[index + 1] : undefined))
+      .filter(Boolean);
+    assert.equal(environmentNames.some((name) => name.startsWith("LD_")), false);
+    assert.equal(
+      args.some((value, index) => value === "--ro-bind" && args[index + 1] === "/" && args[index + 2] === "/"),
+      false
+    );
+    const mountSources = args
+      .map((value, index) => (value === "--bind" || value === "--ro-bind" ? args[index + 1] : undefined))
+      .filter(Boolean);
+    assert.equal(mountSources.includes("/"), false);
+    assert.equal(args.includes(hostSentinel), false);
+    const canonicalRoot = realpathSync(layout.root);
+    assert.equal(
+      mountSources
+        .filter((source) => source.startsWith(`${process.env.HOME}/`))
+        .every((source) => source === canonicalRoot || source.startsWith(`${canonicalRoot}/`)),
+      true
+    );
+    assert.equal(args.includes("--cap-drop"), true);
+    assert.equal(args.includes("/home"), true);
+    const commandSeparator = args.lastIndexOf("--");
+    assert.equal(args[commandSeparator + 3], "/ow/phase.json");
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
+});
+
+test("System runtime closure roots must be canonical, root-owned, and non-writable", () => {
+  const canonical = "/usr/lib/openwrangler-runtime";
+  const directory = (overrides = {}) => ({
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+    uid: 0,
+    mode: 0o040755,
+    ...overrides
+  });
+  assert.equal(
+    validateRootOwnedSystemRuntimeDirectory(canonical, {
+      lstat: () => directory(),
+      realpath: () => canonical
+    }),
+    canonical
+  );
+  for (const [metadata, resolved] of [
+    [directory({ uid: 1001 }), canonical],
+    [directory({ mode: 0o040775 }), canonical],
+    [directory({ isSymbolicLink: () => true }), canonical],
+    [directory(), `${canonical}-redirected`]
+  ]) {
+    assert.throws(
+      () =>
+        validateRootOwnedSystemRuntimeDirectory(canonical, {
+          lstat: () => metadata,
+          realpath: () => resolved
+        }),
+      /canonical, root-owned, and non-writable/u
+    );
+  }
+});
+
+test("Namespace probe requires one ID row and zero effective capabilities", () => {
+  assert.deepEqual(
+    validateRemoteWorkspaceNamespaceProbe(
+      [
+        "1: lo: <LOOPBACK> inet 127.0.0.1/8",
+        "UID_MAP",
+        "1001 0 1",
+        "GID_MAP",
+        "1001 0 1",
+        "CAP_EFF",
+        "CapEff:\t0000000000000000"
+      ].join("\n"),
+      { uid: 1001, gid: 1001 }
+    ),
+    {
+      uidMap: [1001, 0, 1],
+      gidMap: [1001, 0, 1],
+      capabilityEffective: 0
+    }
+  );
+  assert.throws(
+    () =>
+      validateRemoteWorkspaceNamespaceProbe(
+        "127.0.0.1\nUID_MAP\n1001 0 2\nGID_MAP\n1001 0 1\nCAP_EFF\nCapEff: 1\n",
+        { uid: 1001, gid: 1001 }
+      ),
+    /zero capabilities/u
+  );
 });
 
 test("Remote SSH log attestation proves exact offline reuse and rejects downloads", () => {

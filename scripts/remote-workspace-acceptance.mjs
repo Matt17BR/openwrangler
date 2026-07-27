@@ -13,31 +13,142 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
-import { PINNED_REMOTE_VSCODE_COMMIT, PINNED_REMOTE_VSCODE_VERSION } from "./remote-workspace-acquisition.mjs";
+import {
+  PINNED_REMOTE_VSCODE_COMMIT,
+  PINNED_REMOTE_VSCODE_VERSION,
+  readBoundedRemoteWorkspaceFile,
+  REMOTE_WORKSPACE_AUTHORITY,
+  REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+  REMOTE_WORKSPACE_NAMESPACE_ROOT,
+  REMOTE_WORKSPACE_PHASE,
+  REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+  REMOTE_WORKSPACE_PORT,
+  REMOTE_WORKSPACE_PROTOCOL,
+  validateRemoteSshLogAttestation,
+  validateRemoteWorkspacePhaseDescriptor,
+  validateRemoteWorkspaceResult
+} from "./remote-workspace-contract.mjs";
 
-export const REMOTE_WORKSPACE_PHASE = "remote-workspace";
-export const REMOTE_WORKSPACE_AUTHORITY = "ssh-remote+ow-loopback";
-export const REMOTE_WORKSPACE_PROTOCOL = 1;
-export const REMOTE_WORKSPACE_PHASE_TIMEOUT_MS = 300_000;
-export const REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS = 180_000;
-export const REMOTE_WORKSPACE_PORT = 49_321;
+export {
+  readBoundedRemoteWorkspaceFile,
+  REMOTE_WORKSPACE_AUTHORITY,
+  REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+  REMOTE_WORKSPACE_NAMESPACE_ROOT,
+  REMOTE_WORKSPACE_PHASE,
+  REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+  REMOTE_WORKSPACE_PORT,
+  REMOTE_WORKSPACE_PROTOCOL,
+  validateRemoteSshLogAttestation,
+  validateRemoteWorkspacePhaseDescriptor,
+  validateRemoteWorkspaceResult
+};
 const HOST_COMMAND_OUTPUT_LIMIT_BYTES = 32 * 1024;
 const PYTHON_PROBE_OUTPUT_LIMIT_BYTES = 16 * 1024;
 const PATH_LIMIT = 16_384;
 const REQUIRED_HOST_TOOLS = Object.freeze({
+  bash: "/usr/bin/bash",
   bwrap: "/usr/bin/bwrap",
-  ip: "/usr/sbin/ip",
+  busybox: "/usr/bin/busybox",
+  dpkgDeb: "/usr/bin/dpkg-deb",
+  dynamicLoader: "/usr/lib64/ld-linux-x86-64.so.2",
+  ip: "/usr/bin/ip",
+  ldconfig: "/usr/sbin/ldconfig",
+  node: "/usr/bin/node",
   ssh: "/usr/bin/ssh",
-  sshd: "/usr/sbin/sshd",
-  sshKeygen: "/usr/bin/ssh-keygen"
+  sshKeygen: "/usr/bin/ssh-keygen",
+  xkbcomp: "/usr/bin/xkbcomp"
 });
+// The first entry is a deliberate read-only, root-owned system-library
+// closure. Synthesizing thousands of transitive ELF mounts is more brittle
+// without providing additional isolation from user data.
+const SYSTEM_LIBRARY_CLOSURE_DIRECTORIES = Object.freeze([
+  "/usr/lib/x86_64-linux-gnu",
+  "/usr/lib/locale",
+  "/usr/lib/python3.14",
+  "/usr/libexec/glycin-loaders",
+  "/usr/share/fontconfig",
+  "/usr/share/fonts",
+  "/usr/share/glib-2.0",
+  "/usr/share/glycin-loaders",
+  "/usr/share/icons",
+  "/usr/share/mime",
+  "/usr/share/nodejs/acorn",
+  "/usr/share/nodejs/acorn-walk",
+  "/usr/share/nodejs/cjs-module-lexer",
+  "/usr/share/nodejs/minimatch",
+  "/usr/share/nodejs/undici",
+  "/usr/share/X11",
+  "/usr/share/xkeyboard-config-2",
+  "/usr/share/zoneinfo",
+  "/etc/fonts",
+  "/etc/ssl/certs"
+]);
+const BUSYBOX_APPLETS = Object.freeze([
+  "awk",
+  "basename",
+  "cat",
+  "chmod",
+  "cp",
+  "cut",
+  "date",
+  "dirname",
+  "echo",
+  "env",
+  "find",
+  "grep",
+  "head",
+  "id",
+  "kill",
+  "ln",
+  "ls",
+  "mkdir",
+  "mktemp",
+  "mv",
+  "od",
+  "printf",
+  "ps",
+  "pwd",
+  "readlink",
+  "rm",
+  "sed",
+  "sh",
+  "sleep",
+  "sort",
+  "tail",
+  "tar",
+  "tee",
+  "test",
+  "touch",
+  "tr",
+  "true",
+  "uname",
+  "wc",
+  "which",
+  "xargs"
+]);
 
 export async function assertRemoteWorkspaceHost(
-  { platform = process.platform, architecture = process.arch, tools = REQUIRED_HOST_TOOLS } = {},
+  {
+    platform = process.platform,
+    architecture = process.arch,
+    tools = REQUIRED_HOST_TOOLS,
+    uid = process.getuid?.(),
+    gid = process.getgid?.()
+  } = {},
   { runCommand = runBoundedEditorCommand } = {}
 ) {
   if (platform !== "linux" || architecture !== "x64") {
     throw new Error("Real Remote SSH acceptance supports only Linux x64 with official VS Code.");
+  }
+  if (
+    !Number.isSafeInteger(uid) ||
+    !Number.isSafeInteger(gid) ||
+    uid <= 0 ||
+    gid <= 0 ||
+    uid > 2_147_483_647 ||
+    gid > 2_147_483_647
+  ) {
+    throw new Error("Remote SSH acceptance requires one non-root invoking user and group.");
   }
   for (const [name, path] of Object.entries(tools)) {
     if (typeof path !== "string" || !isAbsolute(path)) {
@@ -61,38 +172,81 @@ export async function assertRemoteWorkspaceHost(
         args: [
           "--unshare-user",
           "--uid",
-          "0",
+          String(uid),
           "--gid",
-          "0",
+          String(gid),
           "--unshare-pid",
           "--unshare-net",
           "--die-with-parent",
           "--new-session",
+          "--cap-drop",
+          "ALL",
+          "--tmpfs",
+          "/",
+          "--dir",
+          "/usr",
+          "--dir",
+          "/usr/bin",
           "--ro-bind",
-          "/",
-          "/",
+          tools.busybox,
+          "/usr/bin/busybox",
           "--proc",
           "/proc",
-          tools.ip,
-          "address",
-          "show",
-          "lo"
+          "--dev",
+          "/dev",
+          "/usr/bin/busybox",
+          "sh",
+          "-c",
+          [
+            "/usr/bin/busybox ip address show lo",
+            "/usr/bin/busybox echo UID_MAP",
+            "/usr/bin/busybox cat /proc/self/uid_map",
+            "/usr/bin/busybox echo GID_MAP",
+            "/usr/bin/busybox cat /proc/self/gid_map",
+            "/usr/bin/busybox echo CAP_EFF",
+            "/usr/bin/busybox grep '^CapEff:' /proc/self/status"
+          ].join("; ")
         ],
         environment: createEditorAcceptanceEnvironment(),
         label: "Remote SSH bubblewrap and user-namespace preflight"
       },
       { timeoutMs: 15_000, maxOutputBytes: HOST_COMMAND_OUTPUT_LIMIT_BYTES }
     );
-    if (!probe.stdout.includes("127.0.0.1")) {
-      throw new Error("The private network namespace did not initialize loopback.");
-    }
+    validateRemoteWorkspaceNamespaceProbe(probe.stdout, { uid, gid });
   } catch (error) {
     throw new Error(
       "Remote SSH acceptance requires working bubblewrap user, PID, and network namespaces; no desktop-network fallback is allowed.",
       { cause: error }
     );
   }
-  return Object.freeze({ ...tools });
+  return Object.freeze({ ...tools, uid, gid });
+}
+
+export function validateRemoteWorkspaceNamespaceProbe(output, { uid, gid }) {
+  if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > HOST_COMMAND_OUTPUT_LIMIT_BYTES) {
+    throw new Error("The private namespace preflight returned malformed output.");
+  }
+  const uidMatch = output.match(/UID_MAP\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+GID_MAP/u);
+  const gidMatch = output.match(/GID_MAP\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+CAP_EFF/u);
+  const capabilityMatch = output.match(/CAP_EFF\s+CapEff:\s*([0-9a-fA-F]+)/u);
+  if (
+    !output.includes("127.0.0.1") ||
+    !uidMatch ||
+    !gidMatch ||
+    !capabilityMatch ||
+    Number(uidMatch[1]) !== uid ||
+    Number(gidMatch[1]) !== gid ||
+    uidMatch[3] !== "1" ||
+    gidMatch[3] !== "1" ||
+    !/^0+$/u.test(capabilityMatch[1])
+  ) {
+    throw new Error("The private namespace preflight did not prove loopback, one-ID maps, and zero capabilities.");
+  }
+  return Object.freeze({
+    uidMap: uidMatch.slice(1).map(Number),
+    gidMap: gidMatch.slice(1).map(Number),
+    capabilityEffective: 0
+  });
 }
 
 export function createRemoteWorkspaceLayout(parent) {
@@ -107,7 +261,11 @@ export function createRemoteWorkspaceLayout(parent) {
     remoteHome: join(root, "rh"),
     remoteExtensions: join(root, "rh", ".vscode-server", "extensions"),
     workspace: join(root, "rh", "workspace"),
-    ssh: join(root, "ssh"),
+    accounts: join(root, "rh", "accounts"),
+    ssh: join(root, "rh", "ssh"),
+    sshRuntime: join(root, "rh", "ssh-runtime"),
+    phaseRuntime: join(root, "phase-runtime"),
+    remoteTestModule: join(root, "rh", "test-module"),
     logs: join(root, "logs"),
     acceptanceHarness: join(root, "harness"),
     python: join(root, "rh", "python"),
@@ -124,7 +282,10 @@ export function createRemoteWorkspaceLayout(parent) {
     paths.remoteHome,
     paths.remoteExtensions,
     paths.workspace,
+    paths.accounts,
     paths.ssh,
+    paths.sshRuntime,
+    paths.phaseRuntime,
     paths.logs,
     paths.acceptanceHarness
   ]) {
@@ -186,45 +347,143 @@ export function createRemoteWorkspaceBwrapArguments({
   root,
   descriptor,
   childScript,
-  nodeExecutable = process.execPath,
+  systemPython,
+  uid,
+  gid,
   tools = REQUIRED_HOST_TOOLS
 }) {
-  for (const [label, value] of Object.entries({ root, descriptor, childScript, nodeExecutable })) {
+  for (const [label, value] of Object.entries({ root, descriptor, childScript, systemPython })) {
     if (typeof value !== "string" || !isAbsolute(value) || value.length > PATH_LIMIT) {
       throw new Error(`Remote SSH acceptance requires one bounded absolute ${label} path.`);
     }
   }
+  if (
+    !Number.isSafeInteger(uid) ||
+    !Number.isSafeInteger(gid) ||
+    uid <= 0 ||
+    gid <= 0 ||
+    uid > 2_147_483_647 ||
+    gid > 2_147_483_647
+  ) {
+    throw new Error("Remote SSH acceptance requires one bounded non-root namespace identity.");
+  }
   const canonicalRoot = realpathSync(root);
   for (const [label, value] of Object.entries({ descriptor, childScript })) {
     const canonical = realpathSync(value);
-    if (label === "descriptor" && !isContained(canonicalRoot, canonical)) {
-      throw new Error("The Remote SSH phase descriptor escaped its private root.");
-    }
+    if (!isContained(canonicalRoot, canonical)) throw new Error(`The Remote SSH ${label} escaped its private root.`);
     assertAbsoluteRegularFile(canonical, label);
   }
-  assertAbsoluteRegularFile(nodeExecutable, "Node executable");
-  return Object.freeze([
+  const canonicalPython = realpathSync(assertAbsoluteRegularFile(systemPython, "system Python executable"));
+  if (!canonicalPython.startsWith("/usr/bin/python3.")) {
+    throw new Error("Remote SSH acceptance requires one exact system Python 3 executable.");
+  }
+  for (const directory of SYSTEM_LIBRARY_CLOSURE_DIRECTORIES) {
+    validateRootOwnedSystemRuntimeDirectory(directory);
+  }
+  const args = [
     "--unshare-user",
     "--uid",
-    "0",
+    String(uid),
     "--gid",
-    "0",
+    String(gid),
     "--unshare-pid",
     "--unshare-net",
     "--unshare-ipc",
     "--unshare-uts",
+    "--cap-drop",
+    "ALL",
     "--die-with-parent",
     "--new-session",
     "--hostname",
     "openwrangler-remote-acceptance",
-    "--ro-bind",
+    "--tmpfs",
     "/",
-    "/",
+    "--dir",
+    REMOTE_WORKSPACE_NAMESPACE_ROOT,
     "--bind",
     canonicalRoot,
-    canonicalRoot,
+    REMOTE_WORKSPACE_NAMESPACE_ROOT
+  ];
+  for (const directory of [
+    "/usr",
+    "/usr/bin",
+    "/usr/lib",
+    "/usr/lib64",
+    "/usr/libexec",
+    "/usr/share",
+    "/etc",
+    "/etc/ssl",
+    "/home",
+    "/var",
+    "/var/lib",
+    "/var/lib/dbus"
+  ]) {
+    args.push("--dir", directory);
+  }
+  for (const directory of SYSTEM_LIBRARY_CLOSURE_DIRECTORIES) {
+    args.push("--dir", directory, "--ro-bind", directory, directory);
+  }
+  for (const [source, destination] of [
+    [tools.bash, "/usr/bin/bash"],
+    [tools.bwrap, "/usr/bin/bwrap"],
+    [tools.busybox, "/usr/bin/busybox"],
+    [tools.dynamicLoader, "/usr/lib64/ld-linux-x86-64.so.2"],
+    [tools.ip, "/usr/bin/ip"],
+    [tools.ldconfig, "/usr/bin/ldconfig"],
+    [tools.node, "/usr/bin/node"],
+    [tools.ssh, "/usr/bin/ssh"],
+    [tools.xkbcomp, "/usr/bin/xkbcomp"],
+    [canonicalPython, canonicalPython]
+  ]) {
+    args.push("--ro-bind", realpathSync(source), destination);
+  }
+  for (const applet of BUSYBOX_APPLETS) args.push("--symlink", "busybox", `/usr/bin/${applet}`);
+  args.push(
+    "--symlink",
+    "usr/bin",
+    "/bin",
+    "--symlink",
+    "usr/lib",
+    "/lib",
+    "--symlink",
+    "usr/lib64",
+    "/lib64",
+    "--symlink",
+    "usr/bin",
+    "/sbin",
+    "--symlink",
+    basename(canonicalPython),
+    "/usr/bin/python3"
+  );
+  for (const name of [
+    "passwd",
+    "group",
+    "shadow",
+    "nsswitch.conf",
+    "hosts",
+    "resolv.conf",
+    "os-release",
+    "machine-id"
+  ]) {
+    args.push(
+      "--ro-bind",
+      join(canonicalRoot, "rh", "accounts", name),
+      `/etc/${name}`
+    );
+  }
+  args.push(
+    "--ro-bind",
+    join(canonicalRoot, "rh", "accounts", "machine-id"),
+    "/var/lib/dbus/machine-id"
+  );
+  args.push(
+    "--symlink",
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/ld.so.cache`,
+    "/etc/ld.so.cache"
+  );
+  args.push(
     "--tmpfs",
-    "/run/sshd",
+    "/run",
     "--proc",
     "/proc",
     "--dev",
@@ -240,46 +499,66 @@ export function createRemoteWorkspaceBwrapArguments({
     "C.UTF-8",
     "--setenv",
     "HOME",
-    join(canonicalRoot, "lh"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh`,
     "--setenv",
     "USERPROFILE",
-    join(canonicalRoot, "lh"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh`,
     "--setenv",
     "TMPDIR",
-    join(canonicalRoot, "lh", "tmp"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/tmp`,
     "--setenv",
     "TMP",
-    join(canonicalRoot, "lh", "tmp"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/tmp`,
     "--setenv",
     "TEMP",
-    join(canonicalRoot, "lh", "tmp"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/tmp`,
     "--setenv",
     "XDG_RUNTIME_DIR",
-    join(canonicalRoot, "lh", "runtime"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/runtime`,
     "--setenv",
     "XDG_CONFIG_HOME",
-    join(canonicalRoot, "lh", "config"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/config`,
     "--setenv",
     "XDG_CACHE_HOME",
-    join(canonicalRoot, "lh", "cache"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/cache`,
     "--setenv",
     "XDG_DATA_HOME",
-    join(canonicalRoot, "lh", "data"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/data`,
     "--setenv",
     "XDG_STATE_HOME",
-    join(canonicalRoot, "lh", "state"),
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/state`,
     "--",
-    nodeExecutable,
-    childScript,
-    descriptor,
-    tools.ip,
-    tools.sshd
-  ]);
+    "/usr/bin/node",
+    namespacePrivatePath(canonicalRoot, childScript),
+    namespacePrivatePath(canonicalRoot, descriptor),
+    "/usr/bin/ip",
+    "/usr/bin/ssh",
+    "/usr/lib64/ld-linux-x86-64.so.2",
+    "/usr/bin/ldconfig"
+  );
+  return Object.freeze(args);
 }
 
 export function writeRemoteWorkspacePhaseDescriptor(
   path,
-  { runId = randomUUID(), layout, editor, testModule, python, user, sshConfig, sshdConfig }
+  {
+    runId = randomUUID(),
+    layout,
+    editor,
+    xvfb,
+    testModule,
+    python,
+    user,
+    sshConfig,
+    sshServer,
+    sshLibraryPath,
+    sshHostKey,
+    sshAuthorizedKeys,
+    hostHome,
+    hostSentinel,
+    uid,
+    gid
+  }
 ) {
   const descriptor = {
     protocol: REMOTE_WORKSPACE_PROTOCOL,
@@ -292,12 +571,22 @@ export function writeRemoteWorkspacePhaseDescriptor(
     commit: PINNED_REMOTE_VSCODE_COMMIT,
     hostPidNamespace: readlinkSync("/proc/self/ns/pid"),
     hostNetworkNamespace: readlinkSync("/proc/self/ns/net"),
+    hostUserNamespace: readlinkSync("/proc/self/ns/user"),
     editor,
+    xvfb,
+    displayMode: "xvfb",
     testModule,
     python,
     user,
     sshConfig,
-    sshdConfig,
+    sshServer,
+    sshLibraryPath,
+    sshHostKey,
+    sshAuthorizedKeys,
+    hostHome,
+    hostSentinel,
+    uid,
+    gid,
     paths: {
       root: layout.root,
       workspace: layout.workspace,
@@ -309,94 +598,13 @@ export function writeRemoteWorkspacePhaseDescriptor(
       progress: layout.progress
     }
   };
-  validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root);
+  validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root, { filesystem: false });
   writeFileSync(path, `${JSON.stringify(descriptor)}\n`, {
     encoding: "utf8",
     flag: "wx",
     mode: 0o600
   });
   return Object.freeze(descriptor);
-}
-
-export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot) {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    value.protocol !== REMOTE_WORKSPACE_PROTOCOL ||
-    value.phase !== REMOTE_WORKSPACE_PHASE ||
-    !/^[0-9a-f-]{36}$/u.test(value.runId) ||
-    value.timeoutMs !== REMOTE_WORKSPACE_PHASE_TIMEOUT_MS ||
-    value.inactivityTimeoutMs !== REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS ||
-    value.authority !== REMOTE_WORKSPACE_AUTHORITY ||
-    value.version !== PINNED_REMOTE_VSCODE_VERSION ||
-    value.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
-    !/^pid:\[[0-9]+\]$/u.test(value.hostPidNamespace) ||
-    !/^net:\[[0-9]+\]$/u.test(value.hostNetworkNamespace) ||
-    typeof value.user !== "string" ||
-    !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(value.user)
-  ) {
-    throw new Error("The Remote SSH phase descriptor is malformed.");
-  }
-  const root = realpathSync(privateRoot);
-  for (const candidate of [
-    value.editor,
-    value.python,
-    value.sshConfig,
-    value.sshdConfig,
-    ...Object.values(value.paths ?? {})
-  ]) {
-    if (typeof candidate !== "string" || !isAbsolute(candidate) || candidate.length > PATH_LIMIT) {
-      throw new Error("The Remote SSH phase descriptor contains an invalid path.");
-    }
-    if (!isContained(root, resolve(candidate)) && resolve(candidate) !== root) {
-      throw new Error("The Remote SSH phase descriptor escaped its private root.");
-    }
-  }
-  assertAbsoluteRegularFile(value.testModule, "remote test module");
-  return value;
-}
-
-export function validateRemoteSshLogAttestation(text) {
-  if (
-    typeof text !== "string" ||
-    Buffer.byteLength(text, "utf8") <= 0 ||
-    Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024 ||
-    !text.includes(`Using commit id "${PINNED_REMOTE_VSCODE_COMMIT}" and quality "stable" for server`) ||
-    !text.includes("Found existing installation") ||
-    !text.includes("didLocalDownload==0==") ||
-    text.includes("didLocalDownload==1==") ||
-    /Downloading VS Code server|Got request to download on client|vscode-cli-[0-9a-f]{40}\.tar\.gz/u.test(text)
-  ) {
-    throw new Error("The Remote SSH log did not prove reuse of the exact pre-provisioned offline server chain.");
-  }
-  return Object.freeze({
-    commit: PINNED_REMOTE_VSCODE_COMMIT,
-    didLocalDownload: false,
-    existingInstallation: true
-  });
-}
-
-export function validateRemoteWorkspaceResult(contents, { runId }) {
-  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 64 * 1024) {
-    throw new Error("The Remote SSH acceptance result is oversized.");
-  }
-  let result;
-  try {
-    result = JSON.parse(contents);
-  } catch (error) {
-    throw new Error("The Remote SSH acceptance result is malformed.", { cause: error });
-  }
-  if (
-    !result ||
-    result.protocol !== 1 ||
-    result.runId !== runId ||
-    result.phase !== REMOTE_WORKSPACE_PHASE ||
-    result.ok !== true ||
-    Object.keys(result).sort().join(",") !== "ok,phase,protocol,runId"
-  ) {
-    throw new Error("The Remote SSH acceptance phase did not publish one correlated success result.");
-  }
-  return result;
 }
 
 async function probePython(executable, runCommand) {
@@ -472,21 +680,36 @@ function assertAbsoluteRegularFile(path, label) {
   return resolve(path);
 }
 
+export function validateRootOwnedSystemRuntimeDirectory(
+  path,
+  { lstat = lstatSync, realpath = realpathSync } = {}
+) {
+  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || path.length > PATH_LIMIT) {
+    throw new Error("A system runtime closure root is malformed.");
+  }
+  const metadata = lstat(path);
+  const canonical = realpath(path);
+  if (
+    canonical !== path ||
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    metadata.uid !== 0 ||
+    (metadata.mode & 0o022) !== 0
+  ) {
+    throw new Error("A system runtime closure root must be canonical, root-owned, and non-writable.");
+  }
+  return path;
+}
+
 function isContained(parent, candidate) {
   const relation = relative(parent, candidate);
   return relation.length > 0 && relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation);
 }
 
-export function readBoundedRemoteWorkspaceFile(path, maximumBytes) {
-  const metadata = lstatSync(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    metadata.size > BigInt(maximumBytes)
-  ) {
-    throw new Error(`Remote SSH acceptance rejected ${basename(path)} as an unsafe bounded file.`);
+function namespacePrivatePath(root, candidate) {
+  const canonical = realpathSync(candidate);
+  if (!isContained(root, canonical)) {
+    throw new Error("A Remote SSH phase path escaped its private namespace root.");
   }
-  return readFileSync(path, "utf8");
+  return join(REMOTE_WORKSPACE_NAMESPACE_ROOT, relative(root, canonical));
 }

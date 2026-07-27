@@ -1,30 +1,45 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, opendirSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  opendirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync
+} from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   readBoundedRemoteWorkspaceFile,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
-} from "./remote-workspace-acceptance.mjs";
+} from "./remote-workspace-contract.mjs";
 
 const POLL_MS = 250;
 const STOP_GRACE_MS = 5_000;
 const OUTPUT_LIMIT_BYTES = 64 * 1024;
 const MAX_LOG_FILES = 1_000;
 const MAX_REMOTE_SSH_LOG_BYTES = 2 * 1024 * 1024;
-const [descriptorPath, ipExecutable, sshdExecutable] = process.argv.slice(2);
+const PRIVATE_DISPLAY = ":99";
+const PRIVATE_DISPLAY_DIRECTORY = "/tmp/.X11-unix";
+const PRIVATE_DISPLAY_SOCKET = `${PRIVATE_DISPLAY_DIRECTORY}/X99`;
+const PRIVATE_DISPLAY_LOCK = "/tmp/.X99-lock";
+const [descriptorPath, ipExecutable, sshExecutable, dynamicLoader, ldconfigExecutable] = process.argv.slice(2);
 let descriptor;
 
 try {
   descriptor = readDescriptor(descriptorPath);
   if (
     readlinkSync("/proc/self/ns/pid") === descriptor.hostPidNamespace ||
-    readlinkSync("/proc/self/ns/net") === descriptor.hostNetworkNamespace
+    readlinkSync("/proc/self/ns/net") === descriptor.hostNetworkNamespace ||
+    readlinkSync("/proc/self/ns/user") === descriptor.hostUserNamespace
   ) {
-    throw new Error("The Remote SSH phase did not enter private PID and network namespaces.");
+    throw new Error("The Remote SSH phase did not enter private user, PID, and network namespaces.");
   }
-  await runPhase(descriptor, ipExecutable, sshdExecutable);
+  await runPhase(descriptor, ipExecutable, sshExecutable, ldconfigExecutable);
   process.stdout.write(
     `${JSON.stringify({
       protocol: 1,
@@ -32,6 +47,8 @@ try {
       phase: descriptor.phase,
       namespaceEmpty: true,
       network: "unshared",
+      display: "xvfb",
+      displayEmpty: true,
       remoteAuthority: descriptor.authority,
       version: descriptor.version,
       commit: descriptor.commit
@@ -45,79 +62,146 @@ try {
   process.exitCode = 1;
 }
 
-async function runPhase(config, ip, sshd) {
+async function runPhase(config, ip, ssh, ldconfig) {
   assertExecutable(ip, "private-network setup");
-  assertExecutable(sshd, "private SSH daemon");
-  if (process.getuid?.() !== 0) {
-    throw new Error("The private user namespace did not map its sole owner to namespace root.");
+  assertExecutable(ssh, "private SSH client");
+  assertExecutable(dynamicLoader, "private SSH dynamic loader");
+  assertExecutable(ldconfig, "private dynamic-loader cache builder");
+  assertExecutable(config.xvfb, "private Xvfb executable");
+  const sshServer = remoteNamespacePath(config, config.sshServer);
+  const sshLibraryPath = remoteNamespacePath(config, config.sshLibraryPath);
+  const sshHostKey = remoteNamespacePath(config, config.sshHostKey);
+  const sshAuthorizedKeys = remoteNamespacePath(config, config.sshAuthorizedKeys);
+  assertExecutable(sshServer, "private SSH daemon");
+  if (process.getuid?.() !== config.uid || process.getgid?.() !== config.gid) {
+    throw new Error("The private user namespace did not map its sole non-root owner.");
   }
+  assertPrivateNamespace(config);
   const loopback = runSync(ip, ["address", "show", "lo"], "private loopback setup");
   if (!loopback.stdout.includes("127.0.0.1")) {
     throw new Error("The private loopback network was not initialized.");
   }
-
-  const sshdOutput = boundedOutput();
-  const sshdChild = spawn(sshd, ["-D", "-e", "-f", config.sshdConfig], {
-    detached: true,
-    env: { PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8" },
-    stdio: ["ignore", "ignore", "pipe"]
-  });
-  sshdChild.stderr.on("data", (chunk) => sshdOutput.append(chunk));
-  await wait(350);
-  if (sshdChild.exitCode !== null || sshdChild.signalCode !== null || sshdChild.pid === undefined) {
-    throw new Error(
-      `The private loopback SSH daemon exited before Remote SSH connected.${sshdOutput.text() ? ` ${sshdOutput.text()}` : ""}`
-    );
-  }
   runSync(
-    "/usr/bin/ssh",
-    ["-F", config.sshConfig, "ow-loopback", "printf", "%s", "$HOME"],
-    "private loopback SSH probe",
-    config.paths.remoteHome
-  );
-
-  const editorOutput = boundedOutput();
-  const editor = spawn(
-    config.editor,
+    ldconfig,
     [
-      "--remote",
-      config.authority,
-      config.paths.workspace,
-      "--user-data-dir",
-      config.paths.userData,
-      "--extensions-dir",
-      config.paths.localExtensions,
-      "--disable-workspace-trust",
-      "--disable-updates",
-      "--disable-telemetry",
-      "--skip-welcome",
-      "--skip-release-notes",
-      "--locale=en",
-      "--new-window",
-      "--wait",
-      "--no-sandbox",
-      "--ozone-platform=headless",
-      "--disable-gpu",
-      "--disable-crash-reporter"
+      "-C",
+      join(config.paths.remoteHome, "accounts", "ld.so.cache"),
+      "-f",
+      join(config.paths.remoteHome, "accounts", "ld.so.conf"),
+      "-i",
+      "-X"
+    ],
+    "private dynamic-loader cache setup"
+  );
+  runSync(sshServer, ["-V"], "private Dropbear cache probe");
+
+  const xvfbChild = await startPrivateXvfb(config);
+  const sshdOutput = boundedOutput();
+  const sshdChild = spawn(
+    dynamicLoader,
+    [
+      "--library-path",
+      sshLibraryPath,
+      sshServer,
+      "-F",
+      "-E",
+      "-s",
+      "-g",
+      "-m",
+      "-z",
+      "-p",
+      "127.0.0.1:49321",
+      "-P",
+      join(config.paths.remoteHome, "dropbear.pid"),
+      "-r",
+      sshHostKey,
+      "-D",
+      sshAuthorizedKeys
     ],
     {
       detached: true,
-      env: editorEnvironment(config.paths.localHome),
-      stdio: ["ignore", "pipe", "pipe"]
+      env: remoteServerEnvironment(config),
+      stdio: ["ignore", "ignore", "pipe"]
     }
   );
-  editor.stdout.on("data", (chunk) => editorOutput.append(chunk));
-  editor.stderr.on("data", (chunk) => editorOutput.append(chunk));
-
+  sshdChild.stderr.on("data", (chunk) => sshdOutput.append(chunk));
+  const editorOutput = boundedOutput();
+  let editor;
   let phaseError;
   try {
+    await wait(350);
+    if (sshdChild.exitCode !== null || sshdChild.signalCode !== null || sshdChild.pid === undefined) {
+      throw new Error(
+        `The private loopback SSH daemon exited before Remote SSH connected.${sshdOutput.text() ? ` ${sshdOutput.text()}` : ""}`
+      );
+    }
+    runSync(
+      ssh,
+      [
+        "-F",
+        config.sshConfig,
+        "ow-loopback",
+        "/bin/sh",
+        "-c",
+        [
+          "'test -z \"${LD_PRELOAD-}\"",
+          "&& test -z \"${LD_LIBRARY_PATH-}\"",
+          "&& test -z \"${LD_BIND_NOW-}\"",
+          "&& test -z \"${LD_AUDIT-}\"",
+          "&& printf %s \"$HOME\"'"
+        ].join(" ")
+      ],
+      "private loopback SSH probe",
+      config.paths.remoteHome
+    );
+    editor = spawn(
+      config.editor,
+      [
+        "--remote",
+        config.authority,
+        config.paths.workspace,
+        "--user-data-dir",
+        config.paths.userData,
+        "--extensions-dir",
+        config.paths.localExtensions,
+        "--disable-workspace-trust",
+        "--disable-updates",
+        "--disable-telemetry",
+        "--skip-welcome",
+        "--skip-release-notes",
+        "--locale=en",
+        "--new-window",
+        "--wait",
+        "--no-sandbox",
+        "--ozone-platform=x11",
+        "--force-disable-user-env",
+        "--disable-crash-reporter",
+        "--use-inmemory-secretstorage",
+        "--password-store=basic",
+        "--skip-add-to-recently-opened"
+      ],
+      {
+        detached: true,
+        env: editorEnvironment(config.paths.localHome, ":99"),
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    editor.stdout.on("data", (chunk) => editorOutput.append(chunk));
+    editor.stderr.on("data", (chunk) => editorOutput.append(chunk));
     await observeAcceptance(config, editor);
   } catch (error) {
-    phaseError = error;
+    const editorDiagnostic = sanitizeFailure(editorOutput.text(), config.paths.root);
+    phaseError = editorDiagnostic
+      ? new Error(
+          `${error instanceof Error ? error.message : String(error)} Editor: ${editorDiagnostic}`,
+          { cause: error }
+        )
+      : error;
   }
   let cleanupError;
   try {
-    await stopNamespaceChildren([editor, sshdChild]);
+    await stopNamespaceChildren([editor, sshdChild, xvfbChild].filter(Boolean));
+    assertPrivateDisplayEmpty();
   } catch (error) {
     cleanupError = error;
   }
@@ -125,15 +209,162 @@ async function runPhase(config, ip, sshd) {
     throw new AggregateError([phaseError, cleanupError], "The Remote SSH phase and namespace cleanup both failed.");
   }
   if (cleanupError) throw cleanupError;
-  if (phaseError) throw phaseError;
+  if (phaseError) {
+    const daemonDiagnostic = sshdOutput.text();
+    if (daemonDiagnostic) {
+      throw new Error(
+        `${phaseError instanceof Error ? phaseError.message : String(phaseError)} SSH daemon: ${daemonDiagnostic}`,
+        { cause: phaseError }
+      );
+    }
+    throw phaseError;
+  }
 
   const resultSnapshot = immutableSnapshot(config.paths.result);
   const resultContents = readBoundedRemoteWorkspaceFile(config.paths.result, 64 * 1024);
   assertSnapshotUnchanged(config.paths.result, resultSnapshot);
-  validateRemoteWorkspaceResult(resultContents, config);
+  try {
+    validateRemoteWorkspaceResult(resultContents, config);
+  } catch (error) {
+    let harnessDiagnostic = "";
+    try {
+      const decoded = JSON.parse(resultContents);
+      if (typeof decoded?.error === "string") harnessDiagnostic = sanitizeFailure(decoded.error, config.paths.root);
+    } catch {
+      // The validator retains the authoritative malformed-result error.
+    }
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${harnessDiagnostic ? ` Harness: ${harnessDiagnostic}` : ""}`,
+      { cause: error }
+    );
+  }
   const remoteSshLog = findRemoteSshLog(config.paths.userData);
   validateRemoteSshLogAttestation(readBoundedRemoteWorkspaceFile(remoteSshLog, MAX_REMOTE_SSH_LOG_BYTES));
   assertSnapshotUnchanged(config.paths.result, resultSnapshot);
+}
+
+function assertPrivateNamespace(config) {
+  const uidMap = readSingleIdMap("/proc/self/uid_map", config.uid);
+  const gidMap = readSingleIdMap("/proc/self/gid_map", config.gid);
+  if (uidMap.count !== 1 || gidMap.count !== 1) {
+    throw new Error("The private user namespace exposed more than one user or group identity.");
+  }
+  const status = readFileSync("/proc/self/status", "utf8");
+  const capability = status.match(/^CapEff:\s*([0-9a-fA-F]+)$/mu);
+  if (!capability || !/^0+$/u.test(capability[1])) {
+    throw new Error("The private Remote SSH phase retained an effective capability.");
+  }
+  const privateRoot = lstatSync(config.paths.root);
+  const systemNode = lstatSync("/usr/bin/node");
+  if (privateRoot.uid !== config.uid || systemNode.uid !== 65_534) {
+    throw new Error("The private user map did not isolate the invoking user from host root.");
+  }
+  if (
+    existsSync(config.hostHome) ||
+    existsSync(config.hostSentinel) ||
+    readdirSync("/home").length !== 0
+  ) {
+    throw new Error("The private runtime exposed a host home or host-private sentinel.");
+  }
+}
+
+function readSingleIdMap(path, expectedNamespaceId) {
+  const lines = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length !== 1) throw new Error("The private namespace ID map has an unexpected row count.");
+  const parts = lines[0].split(/\s+/u);
+  if (parts.length !== 3 || parts.some((part) => !/^[0-9]+$/u.test(part))) {
+    throw new Error("The private namespace ID map is malformed.");
+  }
+  const [namespaceId, parentId, count] = parts.map(Number);
+  if (namespaceId !== expectedNamespaceId || !Number.isSafeInteger(parentId) || count !== 1) {
+    throw new Error("The private namespace ID map did not contain its one expected identity.");
+  }
+  return { namespaceId, parentId, count };
+}
+
+async function startPrivateXvfb(config) {
+  mkdirSync(PRIVATE_DISPLAY_DIRECTORY, { mode: 0o1777 });
+  chmodSync(PRIVATE_DISPLAY_DIRECTORY, 0o1777);
+  const output = boundedOutput();
+  const child = spawn(
+    config.xvfb,
+    [PRIVATE_DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"],
+    {
+      detached: true,
+      env: privateDisplayEnvironment(config.paths.localHome),
+      stdio: ["ignore", "ignore", "pipe"]
+    }
+  );
+  child.stderr.on("data", (chunk) => output.append(chunk));
+  try {
+    const deadline = Date.now() + 10_000;
+    do {
+      if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) {
+        throw new Error(
+          `The private Xvfb exited before its display became ready.${output.text() ? ` ${output.text()}` : ""}`
+        );
+      }
+      if (existsSync(PRIVATE_DISPLAY_SOCKET) && existsSync(PRIVATE_DISPLAY_LOCK)) {
+        assertPrivateDisplayOwned(config, child.pid);
+        return child;
+      }
+      await wait(50);
+    } while (Date.now() < deadline);
+    throw new Error(`The private Xvfb display did not become ready.${output.text() ? ` ${output.text()}` : ""}`);
+  } catch (error) {
+    let cleanupError;
+    try {
+      await stopNamespaceChildren([child]);
+      assertPrivateDisplayEmpty();
+    } catch (candidate) {
+      cleanupError = candidate;
+    }
+    if (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Private Xvfb startup and cleanup both failed.");
+    }
+    throw error;
+  }
+}
+
+function assertPrivateDisplayOwned(config, expectedPid) {
+  const directory = lstatSync(PRIVATE_DISPLAY_DIRECTORY);
+  const socket = lstatSync(PRIVATE_DISPLAY_SOCKET);
+  const lock = lstatSync(PRIVATE_DISPLAY_LOCK);
+  const entries = readdirSync(PRIVATE_DISPLAY_DIRECTORY).sort();
+  const recordedPid = Number(readFileSync(PRIVATE_DISPLAY_LOCK, "utf8").trim());
+  if (
+    !directory.isDirectory() ||
+    directory.isSymbolicLink() ||
+    directory.uid !== config.uid ||
+    entries.length !== 1 ||
+    entries[0] !== "X99" ||
+    !socket.isSocket() ||
+    socket.isSymbolicLink() ||
+    socket.uid !== config.uid ||
+    !lock.isFile() ||
+    lock.isSymbolicLink() ||
+    lock.nlink !== 1 ||
+    lock.uid !== config.uid ||
+    recordedPid !== expectedPid
+  ) {
+    throw new Error("The private Xvfb display lost its isolated process, lock, or socket identity.");
+  }
+}
+
+function assertPrivateDisplayEmpty() {
+  if (existsSync(PRIVATE_DISPLAY_SOCKET) || existsSync(PRIVATE_DISPLAY_LOCK)) {
+    throw new Error("The private Xvfb display socket or lock remained after shutdown.");
+  }
+  if (existsSync(PRIVATE_DISPLAY_DIRECTORY)) {
+    const directory = lstatSync(PRIVATE_DISPLAY_DIRECTORY);
+    if (directory.isSymbolicLink() || !directory.isDirectory() || readdirSync(PRIVATE_DISPLAY_DIRECTORY).length !== 0) {
+      throw new Error("The private Xvfb socket directory was not empty after shutdown.");
+    }
+  }
 }
 
 async function observeAcceptance(config, editor) {
@@ -292,7 +523,17 @@ function runSync(executable, args, label, expectedOutput) {
     timeout: 15_000
   });
   if (result.status !== 0 || result.signal || result.error) {
-    throw new Error(`${label} failed inside the private namespace.`);
+    const detail = [result.error?.message, result.stdout, result.stderr]
+      .filter((value) => typeof value === "string" && value.trim().length > 0)
+      .join(" ")
+      .replaceAll("\r", " ")
+      .replaceAll("\n", " ")
+      .slice(-8_192);
+    throw new Error(
+      `${label} failed inside the private namespace (status ${String(result.status)}, signal ${String(result.signal)}).${
+        detail ? ` ${detail}` : ""
+      }`
+    );
   }
   if (expectedOutput !== undefined && result.stdout !== expectedOutput) {
     throw new Error(`${label} returned an unexpected private path.`);
@@ -300,7 +541,7 @@ function runSync(executable, args, label, expectedOutput) {
   return result;
 }
 
-function editorEnvironment(home) {
+function privateDisplayEnvironment(home) {
   return {
     PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     LANG: "C.UTF-8",
@@ -311,10 +552,71 @@ function editorEnvironment(home) {
     XDG_CACHE_HOME: join(home, "cache"),
     XDG_DATA_HOME: join(home, "data"),
     XDG_STATE_HOME: join(home, "state"),
+    XDG_SESSION_TYPE: "tty",
+    TMPDIR: "/tmp",
+    TMP: "/tmp",
+    TEMP: "/tmp"
+  };
+}
+
+function editorEnvironment(home, display) {
+  return {
+    PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    LANG: "C.UTF-8",
+    HOME: home,
+    USERPROFILE: home,
+    DISPLAY: display,
+    GDK_BACKEND: "x11",
+    XDG_RUNTIME_DIR: join(home, "runtime"),
+    XDG_CONFIG_HOME: join(home, "config"),
+    XDG_CACHE_HOME: join(home, "cache"),
+    XDG_DATA_HOME: join(home, "data"),
+    XDG_STATE_HOME: join(home, "state"),
+    XDG_SESSION_TYPE: "x11",
     TMPDIR: join(home, "tmp"),
     TMP: join(home, "tmp"),
     TEMP: join(home, "tmp")
   };
+}
+
+function remoteServerEnvironment(config) {
+  const home = config.paths.remoteHome;
+  return {
+    PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    LANG: "C.UTF-8",
+    HOME: home,
+    USERPROFILE: home,
+    USER: config.user,
+    LOGNAME: config.user,
+    XDG_RUNTIME_DIR: join(home, "runtime"),
+    XDG_CONFIG_HOME: join(home, "config"),
+    XDG_CACHE_HOME: join(home, "cache"),
+    XDG_DATA_HOME: join(home, "data"),
+    XDG_STATE_HOME: join(home, "state"),
+    TMPDIR: join(home, "tmp"),
+    TMP: join(home, "tmp"),
+    TEMP: join(home, "tmp"),
+    OPEN_WRANGLER_EXTENSION_TESTS: "1",
+    OPEN_WRANGLER_TEST_PHASE: config.phase,
+    OPEN_WRANGLER_TEST_EDITOR: "vscode-remote-ssh",
+    OPEN_WRANGLER_TEST_PYTHON: config.python,
+    OPEN_WRANGLER_TEST_MODULE: config.testModule,
+    OPEN_WRANGLER_TEST_RESULT: config.paths.result,
+    OPEN_WRANGLER_TEST_PROGRESS: config.paths.progress,
+    OPEN_WRANGLER_TEST_RUN_ID: config.runId
+  };
+}
+
+function remoteNamespacePath(config, hostPath) {
+  const prefix = `${config.paths.remoteHome}/`;
+  if (typeof hostPath !== "string" || !hostPath.startsWith(prefix) || hostPath.includes("\0")) {
+    throw new Error("The private SSH runtime escaped its remote-home mapping.");
+  }
+  const suffix = hostPath.slice(prefix.length);
+  if (!suffix || suffix.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("The private SSH runtime has an invalid remote-home mapping.");
+  }
+  return hostPath;
 }
 
 function boundedOutput() {
@@ -374,7 +676,7 @@ function sanitizeFailure(value, root) {
   let text = String(value).replaceAll("\0", "").replaceAll("\r", " ").replaceAll("\n", " ");
   if (root) text = text.replaceAll(root, "<private-root>");
   text = text.replace(/(?:https?|wss?):\/\/\S+/giu, "<redacted-url>");
-  return text.slice(0, 8_192);
+  return text.slice(-8_192);
 }
 
 function wait(milliseconds) {

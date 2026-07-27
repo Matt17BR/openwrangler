@@ -3,15 +3,19 @@ import {
   chmodSync,
   constants,
   copyFileSync,
+  cpSync,
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createVSIX } from "@vscode/vsce";
 import {
@@ -23,6 +27,7 @@ import {
 } from "./editor-acceptance.mjs";
 import {
   acquirePinnedRemoteWorkspaceArtifacts,
+  extractPinnedDropbearRuntime,
   extractPinnedRemoteTar,
   PINNED_REMOTE_SSH_EXTENSION_ID,
   PINNED_REMOTE_SSH_VERSION,
@@ -35,34 +40,65 @@ import {
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
   REMOTE_WORKSPACE_AUTHORITY,
+  REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   writeRemoteWorkspacePhaseDescriptor
 } from "./remote-workspace-acceptance.mjs";
+import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidatePath = resolve(repositoryRoot, process.argv[2] ?? "openwrangler.vsix");
 const childScript = resolve(repositoryRoot, "scripts", "remote-workspace-phase-child.mjs");
+const contractScript = resolve(repositoryRoot, "scripts", "remote-workspace-contract.mjs");
 const testModule = resolve(repositoryRoot, "dist-test", "test", "extensionHost", "index.js");
+const testModuleRoot = resolve(repositoryRoot, "dist-test");
 const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
 const expectedCandidate = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
 const expectedHarness = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
-const namespaceSshUser = "root";
+const namespaceSshUser = "openwrangler";
 const setupOutputLimit = 64 * 1024;
 let layout;
 let rootReceipt;
+let hostSentinel;
+let hostSentinelReceipt;
 let namespaceMayBeLive = false;
 
 try {
+  if (process.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb") {
+    throw new Error(
+      "Remote SSH acceptance requires the explicit private Xvfb compatibility mode; set OPEN_WRANGLER_EDITOR_DISPLAY=xvfb."
+    );
+  }
   assertRegularCandidate(candidatePath);
   const tools = await assertRemoteWorkspaceHost();
+  const preparedXvfb = await prepareRepositoryLocalXvfb();
   await verifyCandidate(candidatePath);
   const privateParent = preparePrivateParent(resolve(repositoryRoot, "tmp", "remote-workspace"));
   layout = createRemoteWorkspaceLayout(privateParent);
   rootReceipt = captureDirectoryReceipt(layout.root);
+  const namespaceLayout = createNamespaceLayout(layout);
+  const runId = randomUUID();
+  hostSentinel = join(privateParent, `.host-private-${runId}`);
+  writeFileSync(hostSentinel, randomUUID(), { encoding: "utf8", flag: "wx", mode: 0o600 });
+  hostSentinelReceipt = immutableCandidateReceipt(hostSentinel);
+  const stagedChild = stageExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs"));
+  stageExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs"));
+  const stagedXvfb = stageExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700);
+  const stagedTestModule = stageTestModuleTree(layout.remoteTestModule);
   const acquisition = await acquirePinnedRemoteWorkspaceArtifacts(layout.root, {
     artifactPaths: artifactOverrides(process.env)
   });
+  const sshServer = await extractPinnedDropbearRuntime(acquisition.artifacts, layout.sshRuntime, {
+    dpkgDeb: tools.dpkgDeb
+  });
+  writePrivateAccountDatabase(
+    layout.accounts,
+    tools.uid,
+    tools.gid,
+    namespaceLayout.remoteHome,
+    namespacePrivatePath(layout, sshServer.libraryPath)
+  );
   const clientRoot = layout.client;
   await extractPinnedRemoteTar(acquisition.artifacts.vscode, clientRoot);
 
@@ -85,9 +121,10 @@ try {
   stageCandidate(candidatePath, layout.candidate);
   await verifyCandidate(layout.candidate);
   const sourcePython = resolveSourcePython(process.env);
+  const systemPython = realpathSync(sourcePython);
   const python = await copyPrivatePythonEnvironment(sourcePython, layout.python);
   await writeRemoteFixture(layout, python.executable);
-  writeWorkspaceSettings(layout, python.executable);
+  writeWorkspaceSettings(layout, namespacePrivatePath(layout, python.executable));
 
   const harnessVsix = join(layout.root, "harness.vsix");
   writeEditorAcceptanceHarness(layout.acceptanceHarness);
@@ -99,9 +136,8 @@ try {
     allowStarActivation: true,
     allowMissingRepository: true
   });
-  const runId = randomUUID();
-  const ssh = await writeSshConfiguration(layout, runId, python.executable);
-  writeLocalEditorSettings(layout, ssh.clientConfig);
+  const ssh = await writeSshConfiguration(layout, namespaceLayout, sshServer, tools);
+  writeLocalEditorSettings(layout, ssh.namespaceClientConfig);
 
   const setupEnvironment = isolatedEnvironment(layout.localHome);
   await runSetupCommand(
@@ -159,27 +195,32 @@ try {
     throw new Error("The remote extension host profile does not contain exactly the candidate and test harness.");
   }
 
-  await runSetupCommand(
-    tools.sshd,
-    ["-t", "-f", ssh.serverConfig],
-    { PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8" },
-    "Private SSH daemon configuration validation"
-  );
   writeRemoteWorkspacePhaseDescriptor(layout.descriptor, {
     runId,
-    layout,
-    editor: installation.clientExecutable,
-    testModule,
-    python: python.executable,
+    layout: namespaceLayout,
+    editor: namespacePrivatePath(layout, installation.clientExecutable),
+    xvfb: namespacePrivatePath(layout, stagedXvfb),
+    testModule: namespacePrivatePath(layout, stagedTestModule),
+    python: namespacePrivatePath(layout, python.executable),
     user: namespaceSshUser,
-    sshConfig: ssh.clientConfig,
-    sshdConfig: ssh.serverConfig
+    sshConfig: ssh.namespaceClientConfig,
+    sshServer: namespacePrivatePath(layout, sshServer.executable),
+    sshLibraryPath: namespacePrivatePath(layout, sshServer.libraryPath),
+    sshHostKey: ssh.namespaceHostKey,
+    sshAuthorizedKeys: ssh.namespaceAuthorizedKeys,
+    hostHome: realpathSync(homedir()),
+    hostSentinel,
+    uid: tools.uid,
+    gid: tools.gid
   });
 
   const bwrapArguments = createRemoteWorkspaceBwrapArguments({
     root: layout.root,
     descriptor: layout.descriptor,
-    childScript,
+    childScript: stagedChild,
+    systemPython,
+    uid: tools.uid,
+    gid: tools.gid,
     tools
   });
   namespaceMayBeLive = true;
@@ -200,6 +241,9 @@ try {
   namespaceMayBeLive = false;
   validateNamespaceAttestation(attestation.stdout, runId);
   removePrivateRoot(layout.root, rootReceipt);
+  removeHostSentinel(hostSentinel, hostSentinelReceipt);
+  hostSentinel = undefined;
+  hostSentinelReceipt = undefined;
   console.log(
     `Open Wrangler Remote SSH acceptance passed with official VS Code ${installation.version} (${installation.commit}).`
   );
@@ -210,15 +254,26 @@ try {
     );
   }
   namespaceMayBeLive = false;
+  const cleanupErrors = [];
   if (layout && rootReceipt) {
     try {
       removePrivateRoot(layout.root, rootReceipt);
     } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        "Remote SSH acceptance and verified private-root cleanup failed."
-      );
+      cleanupErrors.push(cleanupError);
     }
+  }
+  if (hostSentinel && hostSentinelReceipt) {
+    try {
+      removeHostSentinel(hostSentinel, hostSentinelReceipt);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [error, ...cleanupErrors],
+      "Remote SSH acceptance and verified private cleanup failed."
+    );
   }
   throw error;
 }
@@ -228,7 +283,10 @@ function artifactOverrides(environment) {
     vscode: environment.OPEN_WRANGLER_REMOTE_VSCODE_ARCHIVE,
     cli: environment.OPEN_WRANGLER_REMOTE_CLI_ARCHIVE,
     server: environment.OPEN_WRANGLER_REMOTE_SERVER_ARCHIVE,
-    remoteSsh: environment.OPEN_WRANGLER_REMOTE_SSH_VSIX
+    remoteSsh: environment.OPEN_WRANGLER_REMOTE_SSH_VSIX,
+    dropbear: environment.OPEN_WRANGLER_REMOTE_DROPBEAR_DEB,
+    tomcrypt: environment.OPEN_WRANGLER_REMOTE_TOMCRYPT_DEB,
+    tommath: environment.OPEN_WRANGLER_REMOTE_TOMMATH_DEB
   };
   return Object.fromEntries(
     Object.entries(values)
@@ -246,6 +304,111 @@ function resolveSourcePython(environment) {
     throw new Error("Remote SSH acceptance requires an absolute pre-provisioned Python environment.");
   }
   return candidate;
+}
+
+function createNamespaceLayout(paths) {
+  const mapped = {};
+  for (const [name, value] of Object.entries(paths)) {
+    const relation = relative(paths.root, value);
+    if (
+      relation === ".." ||
+      relation.startsWith(`..${sep}`) ||
+      isAbsolute(relation)
+    ) {
+      throw new Error("A Remote SSH layout path escaped its private root.");
+    }
+    mapped[name] =
+      relation.length === 0 ? REMOTE_WORKSPACE_NAMESPACE_ROOT : join(REMOTE_WORKSPACE_NAMESPACE_ROOT, relation);
+  }
+  return Object.freeze(mapped);
+}
+
+function namespacePrivatePath(paths, value) {
+  const relation = relative(paths.root, resolve(value));
+  if (!relation || relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
+    throw new Error("A Remote SSH runtime path escaped its private root.");
+  }
+  return join(REMOTE_WORKSPACE_NAMESPACE_ROOT, relation);
+}
+
+function stageExactFile(source, destination, mode = 0o600) {
+  const before = immutableCandidateReceipt(source);
+  copyFileSync(source, destination, constants.COPYFILE_EXCL);
+  chmodSync(destination, mode);
+  const after = immutableCandidateReceipt(source);
+  const staged = immutableCandidateReceipt(destination);
+  const stagedMode = lstatSync(destination).mode & 0o777;
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.sha256 !== after.sha256 ||
+    before.size !== staged.size ||
+    before.sha256 !== staged.sha256 ||
+    stagedMode !== mode
+  ) {
+    throw new Error("A Remote SSH phase source changed while it was staged.");
+  }
+  return destination;
+}
+
+function stageTestModuleTree(destination) {
+  const before = captureTestModuleTree(testModuleRoot);
+  cpSync(testModuleRoot, destination, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    preserveTimestamps: true,
+    verbatimSymlinks: true
+  });
+  const after = captureTestModuleTree(testModuleRoot);
+  const staged = captureTestModuleTree(destination);
+  if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(before.files) !== JSON.stringify(staged.files)) {
+    throw new Error("The bounded Remote SSH test module changed while it was staged.");
+  }
+  return join(destination, relative(testModuleRoot, testModule));
+}
+
+function captureTestModuleTree(root) {
+  const files = [];
+  const queue = [root];
+  let bytes = 0;
+  while (queue.length > 0) {
+    const directory = queue.shift();
+    const metadata = lstatSync(directory, { bigint: true });
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      throw new Error("The Remote SSH test module contains an unsafe directory.");
+    }
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const entryMetadata = lstatSync(path, { bigint: true });
+      if (entryMetadata.isSymbolicLink()) {
+        throw new Error("The Remote SSH test module contains a symbolic link.");
+      }
+      if (entry.isDirectory()) {
+        queue.push(path);
+      } else if (
+        entry.isFile() &&
+        entryMetadata.nlink === 1n &&
+        entryMetadata.size >= 0n &&
+        entryMetadata.size <= 2n * 1024n * 1024n
+      ) {
+        bytes += Number(entryMetadata.size);
+        files.push({
+          path: relative(root, path),
+          size: Number(entryMetadata.size),
+          sha256: createHash("sha256").update(readFileSync(path)).digest("hex")
+        });
+      } else {
+        throw new Error("The Remote SSH test module contains an unsafe file.");
+      }
+      if (files.length > 100 || bytes > 4 * 1024 * 1024) {
+        throw new Error("The Remote SSH test module exceeded its fixed staging bounds.");
+      }
+    }
+  }
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return { bytes, files };
 }
 
 async function writeRemoteFixture(paths, python) {
@@ -280,6 +443,31 @@ function writeWorkspaceSettings(paths, python) {
   );
 }
 
+function writePrivateAccountDatabase(directory, uid, gid, home, sshLibraryPath) {
+  for (const [name, contents, mode] of [
+    ["passwd", `${namespaceSshUser}:x:${uid}:${gid}:Open Wrangler Remote:${home}:/bin/sh\n`, 0o600],
+    ["group", `${namespaceSshUser}:x:${gid}:\n`, 0o600],
+    ["shadow", `${namespaceSshUser}:NP:20500:0:99999:7:::\n`, 0o600],
+    ["nsswitch.conf", "passwd: files\ngroup: files\nshadow: files\nhosts: files\n", 0o600],
+    ["hosts", "127.0.0.1 localhost openwrangler-remote-acceptance\n::1 localhost\n", 0o600],
+    ["resolv.conf", "", 0o600],
+    ["machine-id", "6f70656e7772616e676c657274657374\n", 0o600],
+    ["ld.so.conf", `${sshLibraryPath}\n/usr/lib/x86_64-linux-gnu\n`, 0o600],
+    ["ld.so.cache", "", 0o600],
+    [
+      "os-release",
+      'NAME="Open Wrangler acceptance"\nID=openwrangler-acceptance\nVERSION_ID="1"\n',
+      0o600
+    ]
+  ]) {
+    writeFileSync(join(directory, name), contents, {
+      encoding: "utf8",
+      flag: "wx",
+      mode
+    });
+  }
+}
+
 function writeLocalEditorSettings(paths, sshConfig) {
   writeEditorSettings(paths.userData, {
     "remote.SSH.configFile": sshConfig,
@@ -303,7 +491,7 @@ function writeLocalEditorSettings(paths, sshConfig) {
   });
 }
 
-async function writeSshConfiguration(paths, runId, python) {
+async function writeSshConfiguration(paths, namespacePaths, sshServer, tools) {
   const clientKey = join(paths.ssh, "client");
   const hostKey = join(paths.ssh, "host");
   const keyEnvironment = { PATH: "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C.UTF-8" };
@@ -314,18 +502,39 @@ async function writeSshConfiguration(paths, runId, python) {
     "Private SSH client-key creation"
   );
   await runSetupCommand(
-    "/usr/bin/ssh-keygen",
-    ["-q", "-t", "ed25519", "-N", "", "-f", hostKey],
+    tools.dynamicLoader,
+    ["--library-path", sshServer.libraryPath, sshServer.keygen, "-t", "ed25519", "-f", hostKey],
     keyEnvironment,
-    "Private SSH host-key creation"
+    "Private Dropbear host-key creation"
   );
   copyFileSync(`${clientKey}.pub`, join(paths.ssh, "authorized_keys"), constants.COPYFILE_EXCL);
   chmodSync(join(paths.ssh, "authorized_keys"), 0o600);
-  const hostPublicKey = readFileSync(`${hostKey}.pub`, "utf8").trim().split(/\s+/u).slice(0, 2).join(" ");
+  const hostPublicKeyOutput = await runSetupCommand(
+    tools.dynamicLoader,
+    ["--library-path", sshServer.libraryPath, sshServer.keygen, "-y", "-f", hostKey],
+    keyEnvironment,
+    "Private Dropbear host public-key derivation"
+  );
+  const hostPublicKeyLine = hostPublicKeyOutput.stdout
+    .split("\n")
+    .map((value) => value.trim())
+    .find((value) => value.startsWith("ssh-ed25519 "));
+  const hostPublicKeyParts = hostPublicKeyLine?.split(/\s+/u);
+  if (
+    !hostPublicKeyParts ||
+    hostPublicKeyParts.length < 2 ||
+    hostPublicKeyParts[0] !== "ssh-ed25519" ||
+    !/^[A-Za-z0-9+/]+={0,2}$/u.test(hostPublicKeyParts[1])
+  ) {
+    throw new Error("The pinned Dropbear host key did not produce one canonical Ed25519 public key.");
+  }
+  const hostPublicKey = hostPublicKeyParts.slice(0, 2).join(" ");
   const knownHosts = join(paths.ssh, "known_hosts");
   writeFileSync(knownHosts, `[127.0.0.1]:49321 ${hostPublicKey}\n`, { mode: 0o600, flag: "wx" });
 
   const clientConfig = join(paths.ssh, "config");
+  const namespaceClientKey = join(namespacePaths.ssh, "client");
+  const namespaceKnownHosts = join(namespacePaths.ssh, "known_hosts");
   writeFileSync(
     clientConfig,
     [
@@ -333,11 +542,11 @@ async function writeSshConfiguration(paths, runId, python) {
       "  HostName 127.0.0.1",
       "  Port 49321",
       `  User ${namespaceSshUser}`,
-      `  IdentityFile ${clientKey}`,
+      `  IdentityFile ${namespaceClientKey}`,
       "  IdentitiesOnly yes",
       "  BatchMode yes",
       "  StrictHostKeyChecking yes",
-      `  UserKnownHostsFile ${knownHosts}`,
+      `  UserKnownHostsFile ${namespaceKnownHosts}`,
       "  GlobalKnownHostsFile /dev/null",
       "  PasswordAuthentication no",
       "  KbdInteractiveAuthentication no",
@@ -352,59 +561,14 @@ async function writeSshConfiguration(paths, runId, python) {
     { mode: 0o600, flag: "wx" }
   );
 
-  const serverConfig = join(paths.ssh, "sshd_config");
-  const remoteEnvironment = {
-    HOME: paths.remoteHome,
-    USERPROFILE: paths.remoteHome,
-    XDG_RUNTIME_DIR: join(paths.remoteHome, "runtime"),
-    XDG_CONFIG_HOME: join(paths.remoteHome, "config"),
-    XDG_CACHE_HOME: join(paths.remoteHome, "cache"),
-    XDG_DATA_HOME: join(paths.remoteHome, "data"),
-    XDG_STATE_HOME: join(paths.remoteHome, "state"),
-    TMPDIR: join(paths.remoteHome, "tmp"),
-    TMP: join(paths.remoteHome, "tmp"),
-    TEMP: join(paths.remoteHome, "tmp"),
-    OPEN_WRANGLER_EXTENSION_TESTS: "1",
-    OPEN_WRANGLER_TEST_PHASE: REMOTE_WORKSPACE_PHASE,
-    OPEN_WRANGLER_TEST_EDITOR: "vscode-remote-ssh",
-    OPEN_WRANGLER_TEST_PYTHON: python,
-    OPEN_WRANGLER_TEST_MODULE: testModule,
-    OPEN_WRANGLER_TEST_RESULT: paths.result,
-    OPEN_WRANGLER_TEST_PROGRESS: paths.progress,
-    OPEN_WRANGLER_TEST_RUN_ID: runId
-  };
-  writeFileSync(
-    serverConfig,
-    [
-      "Port 49321",
-      "ListenAddress 127.0.0.1",
-      `HostKey ${hostKey}`,
-      `PidFile ${join(paths.ssh, "sshd.pid")}`,
-      `AuthorizedKeysFile ${join(paths.ssh, "authorized_keys")}`,
-      `AllowUsers ${namespaceSshUser}`,
-      "PasswordAuthentication no",
-      "KbdInteractiveAuthentication no",
-      "ChallengeResponseAuthentication no",
-      "UsePAM no",
-      "PermitRootLogin prohibit-password",
-      "StrictModes no",
-      "AllowAgentForwarding no",
-      "AllowTcpForwarding yes",
-      "AllowStreamLocalForwarding yes",
-      "GatewayPorts no",
-      "X11Forwarding no",
-      "PermitTTY no",
-      "PrintMotd no",
-      "PrintLastLog no",
-      "PermitUserEnvironment no",
-      "UseDNS no",
-      "LogLevel VERBOSE",
-      "Subsystem sftp internal-sftp",
-      ...Object.entries(remoteEnvironment).map(([key, value]) => `SetEnv ${key}=${value}`)
-    ].join("\n") + "\n",
-    { mode: 0o600, flag: "wx" }
-  );
-  return Object.freeze({ clientConfig, serverConfig });
+  return Object.freeze({
+    clientConfig,
+    namespaceClientConfig: join(namespacePaths.ssh, "config"),
+    hostKey,
+    namespaceHostKey: join(namespacePaths.ssh, "host"),
+    authorizedKeys: paths.ssh,
+    namespaceAuthorizedKeys: namespacePaths.ssh
+  });
 }
 
 async function listExtensions(cli, extensions, userData, environment) {
@@ -488,6 +652,19 @@ function stageCandidate(source, destination) {
   }
 }
 
+function removeHostSentinel(path, receipt) {
+  const current = immutableCandidateReceipt(path);
+  if (
+    current.dev !== receipt.dev ||
+    current.ino !== receipt.ino ||
+    current.size !== receipt.size ||
+    current.sha256 !== receipt.sha256
+  ) {
+    throw new Error("The host-private isolation sentinel changed before cleanup.");
+  }
+  unlinkSync(path);
+}
+
 function immutableCandidateReceipt(path) {
   const metadata = lstatSync(path, { bigint: true });
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n || metadata.size <= 0n) {
@@ -515,6 +692,7 @@ function assertRegularCandidate(path) {
   immutableCandidateReceipt(path);
   immutableCandidateReceipt(testModule);
   immutableCandidateReceipt(childScript);
+  immutableCandidateReceipt(contractScript);
 }
 
 function preparePrivateParent(path) {
@@ -569,11 +747,14 @@ function validateNamespaceAttestation(contents, runId) {
     value.phase !== REMOTE_WORKSPACE_PHASE ||
     value.namespaceEmpty !== true ||
     value.network !== "unshared" ||
+    value.display !== "xvfb" ||
+    value.displayEmpty !== true ||
     value.remoteAuthority !== REMOTE_WORKSPACE_AUTHORITY ||
     value.version !== "1.130.0" ||
     value.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
-    Object.keys(value).sort().join(",") !== "commit,namespaceEmpty,network,phase,protocol,remoteAuthority,runId,version"
+    Object.keys(value).sort().join(",") !==
+      "commit,display,displayEmpty,namespaceEmpty,network,phase,protocol,remoteAuthority,runId,version"
   ) {
-    throw new Error("The Remote SSH PID namespace did not attest empty owned process and network state.");
+    throw new Error("The Remote SSH PID namespace did not attest empty owned process, display, and network state.");
   }
 }

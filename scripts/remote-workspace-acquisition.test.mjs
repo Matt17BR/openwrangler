@@ -13,6 +13,7 @@ import {
   downloadPinnedRemoteArtifact,
   PINNED_REMOTE_SSH_EXTENSION_ID,
   PINNED_REMOTE_SSH_VERSION,
+  PINNED_DROPBEAR_VERSION,
   PINNED_REMOTE_VSCODE_COMMIT,
   PINNED_REMOTE_VSCODE_VERSION,
   PINNED_REMOTE_WORKSPACE_TARGETS,
@@ -25,7 +26,16 @@ test("Remote SSH acceptance pins one exact official VS Code artifact chain", () 
   assert.equal(PINNED_REMOTE_VSCODE_COMMIT, "1b6a188127eeaf9194f945eb6eb89a657e93c54c");
   assert.equal(PINNED_REMOTE_SSH_EXTENSION_ID, "ms-vscode-remote.remote-ssh");
   assert.equal(PINNED_REMOTE_SSH_VERSION, "0.124.0");
-  assert.deepEqual(Object.keys(PINNED_REMOTE_WORKSPACE_TARGETS), ["vscode", "cli", "server", "remoteSsh"]);
+  assert.equal(PINNED_DROPBEAR_VERSION, "2025.89");
+  assert.deepEqual(Object.keys(PINNED_REMOTE_WORKSPACE_TARGETS), [
+    "vscode",
+    "cli",
+    "server",
+    "remoteSsh",
+    "dropbear",
+    "tomcrypt",
+    "tommath"
+  ]);
   for (const target of Object.values(PINNED_REMOTE_WORKSPACE_TARGETS)) {
     assert.equal(validatePinnedRemoteTarget(target), target);
     assert.match(target.wireSha256, /^[0-9a-f]{64}$/u);
@@ -36,6 +46,9 @@ test("Remote SSH acceptance pins one exact official VS Code artifact chain", () 
   assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.server.wireBytes, 192_198_459);
   assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.remoteSsh.wireBytes, 734_122);
   assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.remoteSsh.decodedBytes, 742_378);
+  assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.dropbear.wireBytes, 178_902);
+  assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.tomcrypt.wireBytes, 396_060);
+  assert.equal(PINNED_REMOTE_WORKSPACE_TARGETS.tommath.wireBytes, 56_448);
 });
 
 test("Remote artifact targets reject moving, credentialed, query, format, and redirect drift", () => {
