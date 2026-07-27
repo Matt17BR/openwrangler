@@ -10,10 +10,11 @@ import {
   readlinkSync,
   realpathSync
 } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import {
   parseRemoteWorkspacePhaseDescriptor,
   readBoundedRemoteWorkspaceFile,
+  validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
@@ -66,7 +67,8 @@ try {
       candidateBytes: descriptor.candidateBytes,
       remoteSshVersion: descriptor.remoteSshVersion,
       remoteSshBytes: descriptor.remoteSshBytes,
-      remoteSshSha256: descriptor.remoteSshSha256
+      remoteSshSha256: descriptor.remoteSshSha256,
+      hostIsolationSha256: descriptor.hostIsolationSha256
     })}\n`
   );
 } catch (error) {
@@ -559,20 +561,8 @@ function findRemoteSshLog(userData) {
 }
 
 function readDescriptor(path) {
-  if (typeof path !== "string" || !isAbsolute(path)) {
-    throw new Error("The Remote SSH phase requires one absolute private descriptor.");
-  }
-  const metadata = lstatSync(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    metadata.size > 64n * 1024n
-  ) {
-    throw new Error("The Remote SSH phase descriptor is not one bounded private file.");
-  }
-  return parseRemoteWorkspacePhaseDescriptor(readFileSync(path, "utf8"));
+  validateRemoteWorkspacePhaseDescriptorPath(path);
+  return parseRemoteWorkspacePhaseDescriptor(readBoundedRemoteWorkspaceFile(path, 64 * 1024));
 }
 
 function runSync(executable, args, label, expectedOutput) {

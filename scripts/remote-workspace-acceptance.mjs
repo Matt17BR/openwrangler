@@ -17,6 +17,7 @@ import {
   runBoundedEditorCommand
 } from "./editor-acceptance.mjs";
 import {
+  createRemoteWorkspaceHostIsolationDigest,
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
@@ -29,18 +30,21 @@ import {
   REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
+  REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   REMOTE_WORKSPACE_PORT,
   REMOTE_WORKSPACE_PROTOCOL,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
 
 export {
+  createRemoteWorkspaceHostIsolationDigest,
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
@@ -51,12 +55,14 @@ export {
   REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
+  REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   REMOTE_WORKSPACE_PORT,
   REMOTE_WORKSPACE_PROTOCOL,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
@@ -410,9 +416,9 @@ export function createRemoteWorkspaceBwrapArguments({
     assertAbsoluteRegularFile(canonical, label);
   }
   const canonicalPython = realpathSync(assertAbsoluteRegularFile(systemPython, "system Python executable"));
-  if (!canonicalPython.startsWith("/usr/bin/python3.")) {
-    throw new Error("Remote SSH acceptance requires one exact system Python 3 executable.");
-  }
+  // Production resolves and probes the exact system Python before entering
+  // this pure argument builder. Keeping this function path-agnostic lets its
+  // structural contract run on CI images with different installed minors.
   for (const directory of SYSTEM_LIBRARY_CLOSURE_DIRECTORIES) {
     validateRootOwnedSystemRuntimeDirectory(directory);
   }
@@ -438,7 +444,10 @@ export function createRemoteWorkspaceBwrapArguments({
     REMOTE_WORKSPACE_NAMESPACE_ROOT,
     "--bind",
     canonicalRoot,
-    REMOTE_WORKSPACE_NAMESPACE_ROOT
+    REMOTE_WORKSPACE_NAMESPACE_ROOT,
+    "--ro-bind",
+    realpathSync(descriptor),
+    REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
   ];
   for (const directory of [
     "/usr",
@@ -556,7 +565,7 @@ export function createRemoteWorkspaceBwrapArguments({
     "--",
     "/usr/bin/node",
     namespacePrivatePath(canonicalRoot, childScript),
-    namespacePrivatePath(canonicalRoot, descriptor),
+    REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
     "/usr/bin/ip",
     "/usr/bin/ssh",
     "/usr/lib64/ld-linux-x86-64.so.2",
@@ -620,6 +629,7 @@ export function writeRemoteWorkspacePhaseDescriptor(
     sshAuthorizedKeys,
     hostHome,
     hostSentinel,
+    hostIsolationSha256: createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel),
     uid,
     gid,
     paths: {

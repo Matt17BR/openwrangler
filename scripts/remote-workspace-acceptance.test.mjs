@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
+  createRemoteWorkspaceHostIsolationDigest,
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
@@ -12,13 +23,16 @@ import {
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
   parseRemoteWorkspacePhaseDescriptor,
+  readBoundedRemoteWorkspaceFile,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+  REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRootOwnedSystemRuntimeDirectory,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
   validateRemoteSshLogAttestation,
@@ -89,6 +103,19 @@ test("Remote phase descriptors cannot execute a test module outside the private 
   );
   const canonical = `${JSON.stringify(descriptor)}\n`;
   assert.deepEqual(parseRemoteWorkspacePhaseDescriptor(canonical, { filesystem: false }), descriptor);
+  const reversed = Object.fromEntries(Object.entries(descriptor).reverse());
+  assert.throws(
+    () => parseRemoteWorkspacePhaseDescriptor(`${JSON.stringify(reversed)}\n`, { filesystem: false }),
+    /canonical JSON/u
+  );
+  const reversedPaths = {
+    ...descriptor,
+    paths: Object.fromEntries(Object.entries(descriptor.paths).reverse())
+  };
+  assert.throws(
+    () => parseRemoteWorkspacePhaseDescriptor(`${JSON.stringify(reversedPaths)}\n`, { filesystem: false }),
+    /canonical JSON/u
+  );
   assert.throws(
     () =>
       parseRemoteWorkspacePhaseDescriptor(canonical.replace('"protocol":1', '"protocol":99,"protocol":1'), {
@@ -96,6 +123,89 @@ test("Remote phase descriptors cannot execute a test module outside the private 
       }),
     /canonical JSON/u
   );
+});
+
+test("Remote phase descriptor filesystem validation rejects linked leaves and precreated outputs", () => {
+  const root = privateRoot("ow-remote-descriptor-filesystem-");
+  try {
+    const descriptor = createPhaseFilesystem(root);
+    assert.equal(
+      validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: true, inspectionRoot: root }),
+      descriptor
+    );
+    const testModule = join(root, "rh", "test-module", "dist-test", "test", "extensionHost", "index.js");
+    linkSync(testModule, join(root, "linked-test-module.js"));
+    assert.throws(
+      () => validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: true, inspectionRoot: root }),
+      /single-link remote test module/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  for (const output of ["result.json", "progress.json"]) {
+    const outputRoot = privateRoot(`ow-remote-descriptor-${output}-`);
+    try {
+      const descriptor = createPhaseFilesystem(outputRoot);
+      writeFileSync(join(outputRoot, output), "{}\n", { mode: 0o600 });
+      assert.throws(
+        () => validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: true, inspectionRoot: outputRoot }),
+        /must be absent/u
+      );
+    } finally {
+      rmSync(outputRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Remote phase descriptor filesystem validation rejects a symlinked trusted leaf", () => {
+  const root = privateRoot("ow-remote-descriptor-symlink-");
+  try {
+    const descriptor = createPhaseFilesystem(root);
+    const editor = join(root, "client", "code");
+    const replacement = join(root, "client", "replacement");
+    renameSync(editor, replacement);
+    symlinkSync(replacement, editor);
+    assert.throws(
+      () => validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: true, inspectionRoot: root }),
+      /single-link private editor executable/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote bounded reads stay on one no-follow descriptor across a named-path swap", () => {
+  const root = privateRoot("ow-remote-bounded-read-");
+  try {
+    const path = join(root, "phase.json");
+    const original = join(root, "original.json");
+    const replacement = join(root, "replacement.json");
+    writeFileSync(path, '{"value":"original"}\n', { mode: 0o600 });
+    writeFileSync(replacement, '{"value":"replacement"}\n', { mode: 0o600 });
+    assert.throws(
+      () =>
+        readBoundedRemoteWorkspaceFile(path, 1_024, {
+          onDescriptorOpened: () => {
+            renameSync(path, original);
+            renameSync(replacement, path);
+          }
+        }),
+      /path identity changed/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote phase accepts only its exact read-only descriptor argument", () => {
+  assert.equal(
+    validateRemoteWorkspacePhaseDescriptorPath(REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH),
+    REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
+  );
+  for (const path of ["/ow/other.json", "/tmp/phase.json", "phase.json", undefined]) {
+    assert.throws(() => validateRemoteWorkspacePhaseDescriptorPath(path), /exact read-only private descriptor/u);
+  }
 });
 
 test("Remote host preflight is Linux-only and fails closed without user namespaces", async () => {
@@ -141,7 +251,10 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
       root: layout.root,
       descriptor,
       childScript: child,
-      systemPython: "/usr/bin/python3.14",
+      // This structural argument test never executes the phase. Use a
+      // platform-present regular executable instead of assuming one Python
+      // minor exists on every CI image.
+      systemPython: process.execPath,
       uid: 1001,
       gid: 1001,
       tools: {
@@ -199,8 +312,15 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
     assert.equal(args.includes("/home"), true);
     assert.equal(args.includes("/usr/bin/getconf"), true);
     assert.equal(args.includes("/usr/bin/ldd"), true);
+    const descriptorBind = args.findIndex(
+      (value, index) =>
+        value === "--ro-bind" &&
+        args[index + 1] === realpathSync(descriptor) &&
+        args[index + 2] === REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
+    );
+    assert.notEqual(descriptorBind, -1);
     const commandSeparator = args.lastIndexOf("--");
-    assert.equal(args[commandSeparator + 3], "/ow/phase.json");
+    assert.equal(args[commandSeparator + 3], REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
@@ -312,6 +432,7 @@ test("Remote result validation rejects authority-loss failures and mis-correlati
 test("Remote namespace attestation binds caller candidate and pinned Remote SSH receipts", () => {
   const runId = "11111111-1111-4111-8111-111111111111";
   const candidate = validateRemoteWorkspaceCandidateExpectation("a".repeat(64), "123");
+  const hostIsolationSha256 = createRemoteWorkspaceHostIsolationDigest("/host-home", "/host-sentinel");
   assert.deepEqual(candidate, { sha256: "a".repeat(64), bytes: 123 });
   for (const [sha256, bytes] of [
     ["A".repeat(64), "123"],
@@ -340,10 +461,15 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     candidateBytes: candidate.bytes,
     remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
     remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
-    remoteSshSha256: PINNED_REMOTE_SSH_SHA256
+    remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
+    hostIsolationSha256
   };
   assert.deepEqual(
-    validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(attestation)}\n`, { runId, ...candidate }),
+    validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(attestation)}\n`, {
+      runId,
+      ...candidate,
+      hostIsolationSha256
+    }),
     attestation
   );
   for (const mutation of [
@@ -352,10 +478,16 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     { ...attestation, remoteSshVersion: "0.125.0" },
     { ...attestation, remoteSshBytes: PINNED_REMOTE_SSH_BYTES + 1 },
     { ...attestation, remoteSshSha256: "b".repeat(64) },
+    { ...attestation, hostIsolationSha256: "b".repeat(64) },
     { ...attestation, extra: true }
   ]) {
     assert.throws(
-      () => validateRemoteWorkspaceNamespaceAttestation(JSON.stringify(mutation), { runId, ...candidate }),
+      () =>
+        validateRemoteWorkspaceNamespaceAttestation(JSON.stringify(mutation), {
+          runId,
+          ...candidate,
+          hostIsolationSha256
+        }),
       /exact candidate, Remote SSH artifact/u
     );
   }
@@ -380,6 +512,8 @@ function privateRoot(prefix) {
 }
 
 function remotePhaseDescriptor() {
+  const hostHome = "/host-home";
+  const hostSentinel = "/host-sentinel";
   return {
     protocol: 1,
     phase: "remote-workspace",
@@ -406,14 +540,15 @@ function remotePhaseDescriptor() {
     python: "/ow/rh/python/bin/python",
     user: "openwrangler",
     sshConfig: "/ow/rh/ssh/config",
-    sshServer: "/ow/rh/ssh-runtime/dropbear",
-    sshLibraryPath: "/ow/rh/ssh-runtime/lib",
+    sshServer: "/ow/rh/ssh-runtime/runtime/bin/dropbear",
+    sshLibraryPath: "/ow/rh/ssh-runtime/runtime/lib",
     sshHostKey: "/ow/rh/ssh/host",
     sshAuthorizedKeys: "/ow/rh/ssh",
-    hostHome: "/host-home",
-    hostSentinel: "/host-sentinel",
-    uid: 1001,
-    gid: 1001,
+    hostHome,
+    hostSentinel,
+    hostIsolationSha256: createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel),
+    uid: process.getuid?.() ?? 1001,
+    gid: process.getgid?.() ?? 1001,
     paths: {
       root: "/ow",
       workspace: "/ow/rh/workspace",
@@ -425,4 +560,41 @@ function remotePhaseDescriptor() {
       progress: "/ow/progress.json"
     }
   };
+}
+
+function createPhaseFilesystem(root) {
+  const descriptor = remotePhaseDescriptor();
+  const directories = [
+    "",
+    "client",
+    "phase-runtime",
+    "rh",
+    "rh/workspace",
+    "rh/test-module/dist-test/test/extensionHost",
+    "rh/python/bin",
+    "rh/ssh",
+    "rh/ssh-runtime/runtime/bin",
+    "rh/ssh-runtime/runtime/lib",
+    "ud",
+    "le",
+    "lh"
+  ];
+  for (const directory of directories) {
+    const path = directory.length === 0 ? root : join(root, directory);
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(path, 0o700);
+  }
+  for (const [path, contents, mode] of [
+    [join(root, "client", "code"), "#!/bin/sh\n", 0o700],
+    [join(root, "phase-runtime", "Xvfb"), "#!/bin/sh\n", 0o700],
+    [join(root, "rh", "test-module", "dist-test", "test", "extensionHost", "index.js"), "export {};\n", 0o644],
+    [join(root, "rh", "python", "bin", "python"), "#!/bin/sh\n", 0o700],
+    [join(root, "rh", "ssh", "config"), "Host ow-loopback\n", 0o600],
+    [join(root, "rh", "ssh-runtime", "runtime", "bin", "dropbear"), "#!/bin/sh\n", 0o700],
+    [join(root, "rh", "ssh", "host"), "private-key\n", 0o600]
+  ]) {
+    writeFileSync(path, contents, { mode });
+    chmodSync(path, mode);
+  }
+  return descriptor;
 }

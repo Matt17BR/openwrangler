@@ -38,6 +38,7 @@ import {
 import {
   assertRemoteWorkspaceHost,
   copyPrivatePythonEnvironment,
+  createRemoteWorkspaceHostIsolationDigest,
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceLayout,
@@ -83,6 +84,9 @@ let layout;
 let rootReceipt;
 let hostSentinel;
 let hostSentinelReceipt;
+let hostHome;
+let hostHomeReceipt;
+let descriptorReceipt;
 let candidateExpectation;
 let candidateSourceReceipt;
 let stagedCandidateReceipt;
@@ -112,6 +116,9 @@ try {
   hostSentinel = join(privateParent, `.host-private-${runId}`);
   writeFileSync(hostSentinel, randomUUID(), { encoding: "utf8", flag: "wx", mode: 0o600 });
   hostSentinelReceipt = captureRemoteWorkspaceFileReceipt(hostSentinel);
+  hostHome = realpathSync(homedir());
+  hostHomeReceipt = captureDirectoryReceipt(hostHome);
+  const hostIsolationSha256 = createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel);
   const exactStages = [
     stageRemoteWorkspaceExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs")),
     stageRemoteWorkspaceExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs")),
@@ -276,7 +283,7 @@ try {
     sshLibraryPath: namespacePrivatePath(layout, sshServer.libraryPath),
     sshHostKey: ssh.namespaceHostKey,
     sshAuthorizedKeys: ssh.namespaceAuthorizedKeys,
-    hostHome: realpathSync(homedir()),
+    hostHome,
     hostSentinel,
     uid: tools.uid,
     gid: tools.gid,
@@ -287,6 +294,7 @@ try {
       sha256: PINNED_REMOTE_SSH_SHA256
     }
   });
+  descriptorReceipt = captureRemoteWorkspaceFileReceipt(layout.descriptor);
 
   const bwrapArguments = createRemoteWorkspaceBwrapArguments({
     root: layout.root,
@@ -306,6 +314,9 @@ try {
     remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
   assertStagedRuntimeInputs(exactStages, treeStages);
+  assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
+  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
+  assertDirectoryReceipt(hostHome, hostHomeReceipt);
   const attestation = await commandRunner.run(
     {
       executable: tools.bwrap,
@@ -321,6 +332,9 @@ try {
     }
   );
   assertStagedRuntimeInputs(exactStages, treeStages);
+  assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
+  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
+  assertDirectoryReceipt(hostHome, hostHomeReceipt);
   await assertAcceptanceProvenance({
     candidatePath,
     candidateSourceReceipt,
@@ -329,7 +343,11 @@ try {
     candidateExpectation,
     remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
-  validateRemoteWorkspaceNamespaceAttestation(attestation.stdout, { runId, ...candidateExpectation });
+  validateRemoteWorkspaceNamespaceAttestation(attestation.stdout, {
+    runId,
+    ...candidateExpectation,
+    hostIsolationSha256
+  });
   removePrivateRoot(layout.root, rootReceipt);
   removeHostSentinel(hostSentinel, hostSentinelReceipt);
   hostSentinel = undefined;
@@ -735,7 +753,7 @@ function captureDirectoryReceipt(path) {
   });
 }
 
-function removePrivateRoot(path, receipt) {
+function assertDirectoryReceipt(path, receipt) {
   const metadata = lstatSync(path, { bigint: true });
   if (
     !metadata.isDirectory() ||
@@ -746,7 +764,12 @@ function removePrivateRoot(path, receipt) {
     metadata.mode !== receipt.mode ||
     metadata.birthtimeNs !== receipt.birthtimeNs
   ) {
-    throw new Error("The Remote SSH private root changed identity before cleanup.");
+    throw new Error("The Remote SSH host directory changed identity after it was pinned.");
   }
+  return receipt;
+}
+
+function removePrivateRoot(path, receipt) {
+  assertDirectoryReceipt(path, receipt);
   rmSync(path, { recursive: true, force: true });
 }
