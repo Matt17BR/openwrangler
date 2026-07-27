@@ -12,6 +12,7 @@ import pytest
 import __main__
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineCapabilities, EngineError, EngineRegistry, PandasEngine
+from openwrangler_runtime.engines.base import SummaryColumnProjection
 from openwrangler_runtime.session import SessionManager
 
 
@@ -71,9 +72,13 @@ class TrackingPandasEngine(PandasEngine):
             column_projection=column_projection,
         )
 
-    def summaries(self, frame: Any, columns=None) -> list[dict[str, Any]]:
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
         self._fail("summaries")
-        return super().summaries(frame, columns)
+        return super().summaries(frame, column_projection)
 
     def _fail(self, stage: str) -> None:
         if self.fail_at == stage:

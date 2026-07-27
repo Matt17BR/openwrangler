@@ -39,6 +39,7 @@ const metadata: SessionMetadata = {
 const page = pageWithCity("Berlin");
 
 const citySummary: ColumnSummary = {
+  columnId: "c:0",
   column: "city",
   type: "string",
   rawType: "String",
@@ -73,7 +74,7 @@ describe("App progressive profiling and view correlation", () => {
 
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
     const summaries = requestsOfKind("getSummary");
-    expect(summaries.map((request) => request.columns)).toEqual([["city"], ["sales"]]);
+    expect(summaries.map((request) => request.columnIds)).toEqual([["c:0"], ["c:1"]]);
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
     expect(viewSequence(summaries[1]) > viewSequence(summaries[0])).toBe(true);
 
@@ -85,6 +86,182 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
   });
 
+  it("keeps duplicate labels distinct through out-of-order profiles and selected-column state", async () => {
+    const duplicateMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 2 },
+      filteredShape: { rows: 2, columns: 2 },
+      schema: [
+        { id: "c:left", name: "duplicate", position: 0, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:right", name: "duplicate", position: 1, rawType: "Float64", type: "float", nullable: false }
+      ]
+    };
+    const duplicatePage: GridPage = {
+      offset: 0,
+      limit: 2,
+      totalRows: 2,
+      columnIds: ["c:left", "c:right"],
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: [
+            { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false },
+            { kind: "number", raw: 10, display: "10", isNull: false, isNaN: false }
+          ]
+        },
+        {
+          id: "r:1",
+          rowNumber: 1,
+          values: [
+            { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false },
+            { kind: "number", raw: 20, display: "20", isNull: false, isNaN: false }
+          ]
+        }
+      ]
+    };
+    const leftSummary: ColumnSummary = {
+      columnId: "c:left",
+      column: "duplicate",
+      type: "integer",
+      rawType: "Int64",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 1,
+      numeric: { min: 1, max: 1, mean: 1, median: 1, std: 0 },
+      topValues: [{ value: "1", count: 2 }]
+    };
+    const rightSummary: ColumnSummary = {
+      columnId: "c:right",
+      column: "duplicate",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      numeric: { min: 10, max: 20, mean: 15, median: 15, std: 7.0711 },
+      topValues: [
+        { value: "10", count: 1 },
+        { value: "20", count: 1 }
+      ]
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: duplicateMetadata, page: duplicatePage, summaries: [] });
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
+    const leftRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:left");
+    const rightRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:right");
+    if (!leftRequest || !rightRequest) throw new Error("Expected both duplicate-label summary requests.");
+
+    dispatch({
+      kind: "summary",
+      revision: duplicateMetadata.revision,
+      viewRequestId: viewId(rightRequest),
+      summaries: [rightSummary]
+    });
+    dispatch({
+      kind: "summary",
+      revision: duplicateMetadata.revision,
+      viewRequestId: viewId(leftRequest),
+      summaries: [leftSummary]
+    });
+
+    const headers = [...document.querySelectorAll<HTMLElement>('th[data-column="duplicate"]')];
+    expect(headers).toHaveLength(2);
+    expect(within(headers[0]!).getByText("Distinct 50%")).toBeVisible();
+    expect(within(headers[0]!).getByText("Min 1")).toBeVisible();
+    expect(within(headers[1]!).getByText("Distinct 100%")).toBeVisible();
+    expect(within(headers[1]!).getByText("Max 20")).toBeVisible();
+
+    postMessage.mockClear();
+    const secondDuplicateCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
+    if (!secondDuplicateCell) throw new Error("Expected the second duplicate-label cell.");
+    act(() => secondDuplicateCell.focus());
+    await waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "updateViewState",
+          state: expect.objectContaining({ selectedColumnId: "c:right" })
+        })
+      )
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    expect(screen.getAllByText(/duplicate \(column [12]\)/u).map((node) => node.textContent)).toEqual([
+      "duplicate (column 1)",
+      "duplicate (column 2)"
+    ]);
+  });
+
+  it.each(["mouse", "keyboard"] as const)(
+    "moves focus into the non-modal drawer on %s entry, closes on Escape, and restores its opener",
+    async (activation) => {
+      const frames: FrameRequestCallback[] = [];
+      const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      try {
+        render(<App />);
+        dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+        const toggle = await screen.findByRole("button", { name: "Insights & filters" });
+        expect(toggle).toHaveAttribute("aria-controls", "openwrangler-insights-panel");
+        if (activation === "keyboard") {
+          toggle.focus();
+          fireEvent.keyDown(toggle, { key: "Enter" });
+          fireEvent.click(toggle, { detail: 0 });
+        } else {
+          fireEvent.click(toggle, { detail: 1 });
+        }
+        const panel = screen.getByRole("complementary", { name: "Insights and filters" });
+        expect(panel).toHaveAttribute("id", "openwrangler-insights-panel");
+        expect(panel).not.toHaveAttribute("aria-modal");
+        const close = screen.getByRole("button", { name: "Close panel" });
+        act(() => frames.shift()?.(performance.now()));
+        expect(close).toHaveFocus();
+
+        fireEvent.keyDown(close, { key: "Escape" });
+        expect(screen.queryByRole("complementary", { name: "Insights and filters" })).toBeNull();
+        act(() => frames.shift()?.(performance.now()));
+        expect(toggle).toHaveFocus();
+      } finally {
+        hasFocus.mockRestore();
+        requestFrame.mockRestore();
+      }
+    }
+  );
+
+  it("returns drawer focus to the exact column-filter opener", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+      const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+      if (!cityHeader) throw new Error("Expected the city header.");
+      fireEvent.click(within(cityHeader).getByLabelText("Column actions for city"));
+      const filter = within(cityHeader).getByRole("button", { name: "Filter…" });
+      filter.focus();
+      fireEvent.click(filter);
+      const close = screen.getByRole("button", { name: "Close panel" });
+      act(() => frames.shift()?.(performance.now()));
+      expect(close).toHaveFocus();
+
+      fireEvent.keyDown(close, { key: "Escape" });
+      act(() => frames.shift()?.(performance.now()));
+      expect(filter).toHaveFocus();
+    } finally {
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
+  });
+
   it("keeps one renderer handshake while opening and accepting progressive profiles", async () => {
     render(<App />);
     expect(messagesOfKind("ready")).toHaveLength(1);
@@ -94,14 +271,25 @@ describe("App progressive profiling and view correlation", () => {
     expect(messagesOfKind("ready")).toHaveLength(1);
 
     for (const request of requestsOfKind("getSummary")) {
-      const column = request.columns?.[0];
-      if (!column) throw new Error("Expected a column-scoped summary request.");
+      const columnId = request.columnIds?.[0];
+      if (!columnId) throw new Error("Expected a column-scoped summary request.");
+      const column = metadata.schema.find((candidate) => candidate.id === columnId);
+      if (!column) throw new Error("Expected a known summary column identity.");
       dispatch({
         kind: "summary",
         revision: metadata.revision,
         viewRequestId: viewId(request),
         summaries: [
-          column === "city" ? citySummary : { ...citySummary, column, type: "float", rawType: "Float64", topValues: [] }
+          columnId === "c:0"
+            ? citySummary
+            : {
+                ...citySummary,
+                columnId,
+                column: column.name,
+                type: "float",
+                rawType: "Float64",
+                topValues: []
+              }
         ]
       });
     }
@@ -313,7 +501,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const firstCity = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const firstCity = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!firstCity) throw new Error("Expected the initial city summary request.");
 
     dispatch({
@@ -325,10 +513,10 @@ describe("App progressive profiling and view correlation", () => {
     });
 
     await waitFor(() => {
-      const cityRequests = requestsOfKind("getSummary").filter((request) => request.columns?.[0] === "city");
+      const cityRequests = requestsOfKind("getSummary").filter((request) => request.columnIds?.[0] === "c:0");
       expect(cityRequests).toHaveLength(2);
     });
-    const retry = requestsOfKind("getSummary").filter((request) => request.columns?.[0] === "city")[1];
+    const retry = requestsOfKind("getSummary").filter((request) => request.columnIds?.[0] === "c:0")[1];
     expect(viewSequence(retry) > viewSequence(firstCity)).toBe(true);
 
     dispatch({
@@ -344,7 +532,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const cityRequest = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const cityRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityRequest) throw new Error("Expected the city summary request.");
     dispatch({
       kind: "summary",
@@ -383,7 +571,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.getByText("Distinct 100%")).toBeInTheDocument();
     expect(screen.getByText("The mutation failed")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
-    expect(onlyRequest("getSummary").columns).toEqual(["sales"]);
+    expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
     expect(setViewContextMessages().at(-1)?.viewContextId).toBe(confirmedContext);
 
@@ -396,7 +584,7 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.getByText("Distinct 100%")).toBeInTheDocument();
     expect(screen.getByText("The cleaning operation was cancelled.")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
-    expect(onlyRequest("getSummary").columns).toEqual(["sales"]);
+    expect(onlyRequest("getSummary").columnIds).toEqual(["c:1"]);
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
   });
 
@@ -485,7 +673,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const cityProfile = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const cityProfile = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityProfile) throw new Error("Expected a city summary request.");
 
     postMessage.mockClear();
@@ -516,7 +704,7 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    const cityProfile = requestsOfKind("getSummary").find((request) => request.columns?.[0] === "city");
+    const cityProfile = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityProfile) throw new Error("Expected a city summary request.");
 
     fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
@@ -617,16 +805,18 @@ describe("App progressive profiling and view correlation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(4));
     const firstBatch = requestsOfKind("getSummary");
-    expect(firstBatch.map((request) => request.columns?.[0])).toEqual(["column-0", "column-1", "column-2", "column-3"]);
+    expect(firstBatch.map((request) => request.columnIds?.[0])).toEqual(["c:0", "c:1", "c:2", "c:3"]);
 
     const completed = firstBatch[0];
-    const completedColumn = completed.columns?.[0];
-    if (!completedColumn) throw new Error("Expected a queued summary column.");
+    const completedColumnId = completed.columnIds?.[0];
+    if (!completedColumnId) throw new Error("Expected a queued summary column.");
+    const completedColumn = wideMetadata.schema.find((column) => column.id === completedColumnId);
+    if (!completedColumn) throw new Error("Expected the queued summary identity in the schema.");
     dispatch({
       kind: "summary",
       revision: wideMetadata.revision,
       viewRequestId: viewId(completed),
-      summaries: [{ ...citySummary, column: completedColumn }]
+      summaries: [{ ...citySummary, columnId: completedColumnId, column: completedColumn.name }]
     });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(5));
     const activeSummaryIds = requestsOfKind("getSummary").slice(1).map(viewId);
@@ -677,9 +867,9 @@ describe("App progressive profiling and view correlation", () => {
         revision: metadata.revision,
         viewRequestId: viewId(request),
         summaries:
-          request.columns?.[0] === "city"
+          request.columnIds?.[0] === "c:0"
             ? [citySummary]
-            : [{ ...citySummary, column: "sales", type: "float", rawType: "Float64" }]
+            : [{ ...citySummary, columnId: "c:1", column: "sales", type: "float", rawType: "Float64" }]
       });
     }
     fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
@@ -1016,7 +1206,7 @@ interface StepInspectionClearedMessage {
 interface RuntimeRequest {
   kind: string;
   viewRequestId?: string;
-  columns?: string[];
+  columnIds?: string[];
   filterModel?: unknown;
   [key: string]: unknown;
 }

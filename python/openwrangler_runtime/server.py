@@ -48,7 +48,7 @@ def dispatch(manager: SessionManager, request: dict[str, Any]) -> dict[str, Any]
                 request["sessionId"],
                 int(request["revision"]),
                 request.get("filterModel", {"filters": [], "sort": []}),
-                request.get("columns"),
+                request.get("columnIds"),
             ),
             request,
         )

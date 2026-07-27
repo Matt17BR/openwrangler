@@ -549,7 +549,7 @@ def test_cancel_request_does_not_suppress_an_already_running_result(monkeypatch)
             "revision": 0,
             "viewRequestId": "running-view",
             "filterModel": {"logic": "and", "filters": [], "sort": []},
-            "columns": ["value"],
+            "columnIds": ["c:value"],
         },
     }
     cancellation = {
@@ -614,7 +614,7 @@ def test_interactive_executor_is_not_starved_by_background_profiles(monkeypatch)
                 "revision": 0,
                 "viewRequestId": f"view-profile-{index}",
                 "filterModel": {"logic": "and", "filters": [], "sort": []},
-                "columns": ["value"],
+                "columnIds": ["c:value"],
             },
         }
         for index in range(4)
@@ -676,7 +676,7 @@ def test_eof_starts_cleanup_before_active_profiles_finish_and_cancels_queued_pro
                 "revision": 0,
                 "viewRequestId": f"view-{index}",
                 "filterModel": {"logic": "and", "filters": [], "sort": []},
-                "columns": ["value"],
+                "columnIds": ["c:value"],
             },
         }
         for index in range(6)
@@ -737,7 +737,7 @@ def test_eof_wait_for_blocked_cleanup_is_bounded(monkeypatch) -> None:
             "revision": 0,
             "viewRequestId": "active-view",
             "filterModel": {"logic": "and", "filters": [], "sort": []},
-            "columns": ["value"],
+            "columnIds": ["c:value"],
         },
     }
 

@@ -68,7 +68,7 @@ try {
   });
   for (const harness of harnesses) {
     console.log(`Accessibility checking: ${harness}`);
-    const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+    const page = await browser.newPage({ viewport: { width: harness.includes("-800") ? 800 : 1280, height: 760 } });
     page.setDefaultTimeout(15_000);
     page.setDefaultNavigationTimeout(15_000);
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load", timeout: 15_000 });
@@ -102,6 +102,7 @@ try {
   await verifyCleaningKeyboardShortcuts(browser);
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
+  await verifyInsightsDrawerWorkflow(browser);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
@@ -192,6 +193,57 @@ async function verifyCodePreviewOrigin(browser) {
   }
   await page.close();
   console.log("Code-preview host origin and read-only behavior verified.");
+}
+
+async function verifyInsightsDrawerWorkflow(browser) {
+  for (const [harness, width] of [
+    ["summary-families-dark-800.html", 800],
+    ["summary-families-dark-zoom-200.html", 1280]
+  ]) {
+    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+
+    for (const name of [
+      /numeric distribution/u,
+      /boolean distribution/u,
+      /categorical distribution/u,
+      /datetime distribution/u
+    ]) {
+      await page.getByRole("img", { name }).waitFor();
+    }
+    await page.getByText("True 3", { exact: true }).waitFor();
+    await page.getByText("False 1", { exact: true }).waitFor();
+    await page.getByText("Min 1", { exact: true }).waitFor();
+    await page.getByText("Max 4", { exact: true }).waitFor();
+
+    const toggle = page.getByRole("button", { name: "Insights & filters" });
+    if ((await toggle.getAttribute("aria-controls")) !== "openwrangler-insights-panel") {
+      throw new Error(`${harness} did not connect the Insights toggle to its drawer.`);
+    }
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    const panel = page.getByRole("complementary", { name: "Insights and filters" });
+    await panel.waitFor();
+    if ((await panel.getAttribute("aria-modal")) !== null) {
+      throw new Error(`${harness} incorrectly exposed the narrow Insights drawer as modal.`);
+    }
+    const close = page.getByRole("button", { name: "Close panel" });
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Close panel");
+    await page.getByText("value (column 1)", { exact: true }).waitFor();
+    await page.getByText("value (column 2)", { exact: true }).waitFor();
+    await close.press("Escape");
+    await panel.waitFor({ state: "detached" });
+    await page.waitForFunction(
+      () =>
+        document.activeElement instanceof HTMLButtonElement &&
+        document.activeElement.textContent?.trim() === "Insights & filters"
+    );
+    if (!(await toggle.evaluate((element) => document.activeElement === element))) {
+      throw new Error(`${harness} did not restore focus to the exact Insights opener.`);
+    }
+    await page.close();
+  }
+  console.log("Insights drawer focus, duplicate labels, and summary-family semantics verified.");
 }
 
 if (failures.length > 0) {

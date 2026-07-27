@@ -541,6 +541,11 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const { metadata, viewState } = snapshot;
   const stats = metadata.stats;
   const selectedColumn = metadata.schema.find((column) => column.id === viewState.selectedColumnId);
+  const selectedColumnLabel = selectedColumn
+    ? metadata.schema.filter((column) => column.name === selectedColumn.name).length > 1
+      ? `${selectedColumn.name} (column ${selectedColumn.position + 1})`
+      : selectedColumn.name
+    : "None";
   return [
     new ViewNode(metadata.source.label, `${metadata.backend} · ${metadata.mode}`, "table"),
     new ViewNode(
@@ -549,7 +554,7 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       "symbol-array"
     ),
     new ViewNode("Columns", metadata.schema.length.toLocaleString(), "list-tree"),
-    new ViewNode("Selected column", selectedColumn?.name ?? "None", "symbol-field"),
+    new ViewNode("Selected column", selectedColumnLabel, "symbol-field"),
     new ViewNode("Missing cells", stats ? stats.missingCells.toLocaleString() : "Profiling…", "question"),
     new ViewNode("Duplicate rows", stats ? stats.duplicateRows.toLocaleString() : "Profiling…", "copy")
   ];

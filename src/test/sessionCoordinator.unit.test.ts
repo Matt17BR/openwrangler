@@ -857,9 +857,10 @@ describe("SessionCoordinator", () => {
     };
     runtimeOpened.summaries = [
       {
+        columnId: "c:sales",
         column: "sales",
-        type: "float",
-        rawType: "Float64",
+        type: "integer",
+        rawType: "Int64",
         totalCount: 1,
         nullCount: 0,
         nanCount: 0,
@@ -1459,8 +1460,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "priority-profile-active",
-      filterModel: opened.metadata.filterModel,
-      columns: ["first"]
+      filterModel: opened.metadata.filterModel
     });
     await vi.waitFor(() => expect(executionOrder).toEqual(["profile-1"]));
     const queuedProfile = bridge.request({
@@ -1468,8 +1468,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "priority-profile-queued",
-      filterModel: opened.metadata.filterModel,
-      columns: ["second"]
+      filterModel: opened.metadata.filterModel
     });
     const page = bridge.request({
       kind: "getPage",
@@ -1500,7 +1499,7 @@ describe("SessionCoordinator", () => {
         return activeProfile.promise;
       }
       if (request.kind === "getSummary") {
-        executionOrder.push(request.columns?.[0] ?? "summary");
+        executionOrder.push(request.viewRequestId.includes("promoted") ? "promoted" : "background");
         return summaryResponse(request.viewRequestId);
       }
       throw new Error(`Unexpected delegate request: ${request.kind}`);
@@ -1523,8 +1522,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "override-summary-background",
-      filterModel: opened.metadata.filterModel,
-      columns: ["background"]
+      filterModel: opened.metadata.filterModel
     });
     const promoted = bridge.request(
       {
@@ -1532,8 +1530,7 @@ describe("SessionCoordinator", () => {
         sessionId: opened.metadata.sessionId,
         revision: opened.metadata.revision,
         viewRequestId: "override-summary-promoted",
-        filterModel: opened.metadata.filterModel,
-        columns: ["promoted"]
+        filterModel: opened.metadata.filterModel
       },
       { priority: "interactive" }
     );
@@ -1549,9 +1546,9 @@ describe("SessionCoordinator", () => {
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") return openedResponse();
       if (request.kind === "getSummary") {
-        const column = request.columns?.[0] ?? "unknown";
-        executionOrder.push(column);
-        return column === "active" ? activeProfile.promise : summaryResponse(request.viewRequestId);
+        const label = request.viewRequestId.replace("cancel-", "");
+        executionOrder.push(label);
+        return label === "active" ? activeProfile.promise : summaryResponse(request.viewRequestId);
       }
       throw new Error(`Unexpected delegate request: ${request.kind}`);
     });
@@ -1560,19 +1557,18 @@ describe("SessionCoordinator", () => {
     const opened = await bridge.request(openRequest);
     if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
 
-    const requestSummary = (viewRequestId: string, column: string) =>
+    const requestSummary = (viewRequestId: string) =>
       bridge.request({
         kind: "getSummary",
         sessionId: opened.metadata.sessionId,
         revision: opened.metadata.revision,
         viewRequestId,
-        filterModel: opened.metadata.filterModel,
-        columns: [column]
+        filterModel: opened.metadata.filterModel
       });
-    const active = requestSummary("cancel-active", "active");
+    const active = requestSummary("cancel-active");
     await vi.waitFor(() => expect(executionOrder).toEqual(["active"]));
-    const obsolete = requestSummary("cancel-obsolete", "obsolete");
-    const retained = requestSummary("cancel-retained", "retained");
+    const obsolete = requestSummary("cancel-obsolete");
+    const retained = requestSummary("cancel-retained");
 
     bridge.cancelViewRequests?.(opened.metadata.sessionId, ["cancel-obsolete", "unknown"]);
     await expect(obsolete).resolves.toEqual({
@@ -2787,8 +2783,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "close-profile-active",
-      filterModel: opened.metadata.filterModel,
-      columns: ["active"]
+      filterModel: opened.metadata.filterModel
     });
     await vi.waitFor(() => expect(executionOrder).toEqual(["profile-1"]));
     const queuedProfile = bridge.request({
@@ -2796,8 +2791,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "close-profile-queued",
-      filterModel: opened.metadata.filterModel,
-      columns: ["queued"]
+      filterModel: opened.metadata.filterModel
     });
     const page = bridge.request({
       kind: "getPage",
@@ -2837,7 +2831,7 @@ describe("SessionCoordinator", () => {
     const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
       if (request.kind === "openSession") return openedResponse();
       if (request.kind === "getSummary") {
-        const label = request.columns?.[0] ?? "profile";
+        const label = request.viewRequestId.includes("active") ? "active" : "queued";
         executionOrder.push(label);
         return label === "active" ? activeProfile.promise : summaryResponse(request.viewRequestId);
       }
@@ -2861,8 +2855,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "shutdown-profile-active",
-      filterModel: opened.metadata.filterModel,
-      columns: ["active"]
+      filterModel: opened.metadata.filterModel
     });
     await vi.waitFor(() => expect(executionOrder).toEqual(["active"]));
     const queuedProfile = bridge.request({
@@ -2870,8 +2863,7 @@ describe("SessionCoordinator", () => {
       sessionId: opened.metadata.sessionId,
       revision: opened.metadata.revision,
       viewRequestId: "shutdown-profile-queued",
-      filterModel: opened.metadata.filterModel,
-      columns: ["queued"]
+      filterModel: opened.metadata.filterModel
     });
     const page = bridge.request({
       kind: "getPage",
@@ -2942,8 +2934,7 @@ describe("SessionCoordinator", () => {
         sessionId: opened.metadata.sessionId,
         revision: opened.metadata.revision,
         viewRequestId: "timeout-promoted-profile",
-        filterModel: opened.metadata.filterModel,
-        columns: ["queued"]
+        filterModel: opened.metadata.filterModel
       },
       { priority: "interactive" }
     );

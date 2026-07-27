@@ -3,6 +3,7 @@ import type { Memento } from "vscode";
 import type { OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type {
+  ColumnSummary,
   OpenWranglerRequest,
   OpenWranglerResponse,
   SessionBoundRequest,
@@ -127,6 +128,144 @@ describe("SessionCoordinator response integrity", () => {
     expect(activeChanges).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["out-of-order", ["sales-column", "other-column"]],
+    ["missing", ["other-column"]],
+    ["duplicate", ["other-column", "other-column"]],
+    ["unknown", ["unknown-column", "sales-column"]]
+  ] as const)("rejects %s summary projections before they enter session state", async (_case, returnedIds) => {
+    const schema: SessionMetadata["schema"] = [
+      {
+        id: "sales-column",
+        name: "sales",
+        position: 0,
+        rawType: "Int64",
+        type: "integer",
+        nullable: false
+      },
+      {
+        id: "other-column",
+        name: "other",
+        position: 1,
+        rawType: "String",
+        type: "string",
+        nullable: false
+      }
+    ];
+    const metadata: SessionMetadata = {
+      ...metadataFor("runtime-session"),
+      shape: { rows: 1, columns: 2 },
+      filteredShape: { rows: 1, columns: 2 },
+      schema
+    };
+    const summaryById = new Map<string, ColumnSummary>(
+      schema.map((column) => [
+        column.id,
+        {
+          columnId: column.id,
+          column: column.name,
+          type: column.type,
+          rawType: column.rawType,
+          totalCount: 1,
+          nullCount: 0,
+          nanCount: 0,
+          topValues: []
+        }
+      ])
+    );
+    const summaries = returnedIds.map(
+      (columnId) =>
+        summaryById.get(columnId) ?? {
+          ...summaryById.get("sales-column")!,
+          columnId
+        }
+    );
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        return {
+          kind: "sessionOpened",
+          metadata,
+          page: {
+            offset: 0,
+            limit: request.pageSize,
+            totalRows: 1,
+            columnIds: schema.map((column) => column.id),
+            rows: []
+          },
+          summaries: []
+        };
+      }
+      if (request.kind === "getSummary") {
+        return {
+          kind: "summary",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          summaries
+        };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: `invalid-${_case}`,
+        filterModel: opened.metadata.filterModel,
+        columnIds: ["other-column", "sales-column"]
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_runtime_response" });
+    expect(coordinator.activeSession()?.metadata.revision).toBe(0);
+  });
+
+  it.each([
+    ["name", { column: "renamed" }],
+    ["semantic type", { type: "string" as const }],
+    ["raw type", { rawType: "String" }]
+  ])("rejects summary %s mismatches against the confirmed schema", async (_case, change) => {
+    const summary: ColumnSummary = {
+      columnId: "sales-column",
+      column: "sales",
+      type: "integer",
+      rawType: "Int64",
+      totalCount: 1,
+      nullCount: 0,
+      nanCount: 0,
+      topValues: [],
+      ...change
+    };
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "getSummary") {
+        return {
+          kind: "summary",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          summaries: [summary]
+        };
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: `invalid-${_case}`,
+        filterModel: opened.metadata.filterModel,
+        columnIds: ["sales-column"]
+      })
+    ).resolves.toMatchObject({ kind: "error", code: "invalid_runtime_response" });
+  });
+
   it("returns stale errors for summaries, values, and statistics from superseded logical views", async () => {
     const pendingSummary = deferred<OpenWranglerResponse>();
     const pendingValues = deferred<OpenWranglerResponse>();
@@ -162,13 +301,30 @@ describe("SessionCoordinator response integrity", () => {
       {
         kind: "getSummary",
         ...base,
-        viewRequestId: "stale-summary"
+        viewRequestId: "stale-summary",
+        columnIds: ["sales-column"]
       },
       { viewContextId: "summary-view" }
     );
     await vi.waitFor(() => expect(dispatched).toEqual(["getSummary"]));
     bridge.setViewContext?.(base.sessionId, "after-summary-view");
-    pendingSummary.resolve({ kind: "summary", revision: 0, viewRequestId: "stale-summary", summaries: [] });
+    pendingSummary.resolve({
+      kind: "summary",
+      revision: 0,
+      viewRequestId: "stale-summary",
+      summaries: [
+        {
+          columnId: "sales-column",
+          column: "sales",
+          type: "integer",
+          rawType: "Int64",
+          totalCount: 1,
+          nullCount: 0,
+          nanCount: 0,
+          topValues: []
+        }
+      ]
+    });
     await expect(summary).resolves.toMatchObject({
       kind: "error",
       code: "stale_response",

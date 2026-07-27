@@ -290,7 +290,7 @@ describe("SnapshotBridge", () => {
         revision: 0,
         viewRequestId: "summary-berlin",
         filterModel: berlinOnly,
-        columns: ["sales"]
+        columnIds: ["c:sales"]
       })
     );
     expect(summary).toEqual({
@@ -299,6 +299,7 @@ describe("SnapshotBridge", () => {
       viewRequestId: "summary-berlin",
       summaries: [
         expect.objectContaining({
+          columnId: "c:sales",
           column: "sales",
           totalCount: 2,
           nullCount: 0,
@@ -532,7 +533,7 @@ describe("SnapshotBridge", () => {
         revision: 0,
         viewRequestId: "unknown-summary",
         filterModel: { filters: [], sort: [] },
-        columns: ["missing"]
+        columnIds: ["c:missing"]
       })
     );
     expect(unknownSummary).toMatchObject({
@@ -566,7 +567,7 @@ describe("SnapshotBridge", () => {
     expect(page.page.rows[0]?.values[1]?.display).toBe("12");
   });
 
-  it("fails closed when view queries cannot address exactly one type-compatible column", async () => {
+  it("keeps name-addressed view queries fail-closed while stable summary IDs distinguish duplicate labels", async () => {
     const duplicatePayload = savedPayload();
     duplicatePayload.metadata.schema[1] = { ...duplicatePayload.metadata.schema[1]!, name: "city" };
     const duplicateBridge = new SnapshotBridge(duplicatePayload, () => HOST_SESSION_ID);
@@ -593,17 +594,21 @@ describe("SnapshotBridge", () => {
       viewRequestId: "ambiguous-filter"
     });
 
-    const ambiguousSummary = await canonical(
+    const secondDuplicateSummary = await canonical(
       duplicateBridge.request({
         kind: "getSummary",
         sessionId: HOST_SESSION_ID,
         revision: 0,
-        viewRequestId: "ambiguous-summary",
+        viewRequestId: "second-duplicate-summary",
         filterModel: { filters: [], sort: [] },
-        columns: ["city"]
+        columnIds: ["c:sales"]
       })
     );
-    expect(ambiguousSummary).toMatchObject({ kind: "error", code: "snapshot_query_failed" });
+    expect(secondDuplicateSummary).toMatchObject({
+      kind: "summary",
+      viewRequestId: "second-duplicate-summary",
+      summaries: [{ columnId: "c:sales", column: "city", numeric: { min: 8, max: 12 } }]
+    });
 
     const uniqueSummary = await canonical(
       duplicateBridge.request({
@@ -612,13 +617,13 @@ describe("SnapshotBridge", () => {
         revision: 0,
         viewRequestId: "unique-summary",
         filterModel: { filters: [], sort: [] },
-        columns: ["tag"]
+        columnIds: ["c:tag"]
       })
     );
     expect(uniqueSummary).toMatchObject({
       kind: "summary",
       viewRequestId: "unique-summary",
-      summaries: [{ column: "tag" }]
+      summaries: [{ columnId: "c:tag", column: "tag" }]
     });
 
     const ambiguousValues = await canonical(

@@ -90,6 +90,7 @@ const metadata: SessionMetadata = {
 
 const summaries = [
   {
+    columnId: "column:0",
     column: "value",
     type: "integer" as const,
     rawType: "Int64",
@@ -99,8 +100,7 @@ const summaries = [
     distinctCount: 1,
     numeric: { min: 1, max: 1, mean: 1, median: 1, std: 0 },
     visualization: { kind: "numeric" as const, bins: [{ min: 1, max: 1, count: 1 }], sampled: false },
-    topValues: [{ value: "1", count: 1 }],
-    sampled: false
+    topValues: [{ value: "1", count: 1 }]
   }
 ];
 
@@ -443,6 +443,30 @@ describe("protocol-v2 response validation", () => {
     expect(isOpenWranglerResponse(projectedResponse(["column:0", "column:1"], 1))).toBe(false);
   });
 
+  it("requires summary identities and session-open summaries to match their schema", () => {
+    const response = { kind: "summary", revision: 3, viewRequestId: "view-1", summaries } as const;
+    const summary = summaries[0];
+    expect(isOpenWranglerResponse({ ...response, summaries: [{ ...summary, columnId: undefined }] })).toBe(false);
+    expect(isOpenWranglerResponse({ ...response, summaries: [summary, summary] })).toBe(false);
+    expect(isOpenWranglerResponse({ ...response, summaries: [{ ...summary, sampled: false }] })).toBe(false);
+
+    for (const changed of [
+      { ...summary, columnId: "unknown" },
+      { ...summary, column: "other" },
+      { ...summary, type: "string" as const },
+      { ...summary, rawType: "String" }
+    ]) {
+      expect(
+        isOpenWranglerResponse({
+          kind: "sessionOpened",
+          metadata,
+          page,
+          summaries: [changed]
+        })
+      ).toBe(false);
+    }
+  });
+
   it("binds changed-cell identities and labels to the output schema", () => {
     const preview = responses.find((response) => response.kind === "stepPreview");
     expect(preview?.kind).toBe("stepPreview");
@@ -643,7 +667,7 @@ const requests: OpenWranglerRequest[] = [
     revision: 3,
     viewRequestId: "summary-1",
     filterModel: metadata.filterModel,
-    columns: ["value"]
+    columnIds: ["column:0"]
   },
   {
     kind: "getDatasetStats",
@@ -743,6 +767,18 @@ describe("protocol-v2 request validation", () => {
       })
     ).toBe(true);
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
+  });
+
+  it("accepts only unique, non-empty stable IDs in summary projections", () => {
+    const request = requests.find((candidate) => candidate.kind === "getSummary");
+    expect(request?.kind).toBe("getSummary");
+    if (request?.kind !== "getSummary") return;
+
+    expect(isOpenWranglerRequest({ ...request, columnIds: ["column:0", "column:1"] })).toBe(true);
+    expect(isOpenWranglerRequest({ ...request, columnIds: [] })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, columnIds: ["column:0", "column:0"] })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, columnIds: [""] })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, columns: ["value"] })).toBe(false);
   });
 
   it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {

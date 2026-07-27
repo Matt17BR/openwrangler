@@ -665,9 +665,17 @@ export class OpenWranglerPanel {
         viewContextId !== undefined &&
         viewContextId === this.snapshotViewContextId
       ) {
-        const summaries = new Map(this.snapshot.summaries.map((summary) => [summary.column, summary]));
-        for (const summary of response.summaries) summaries.set(summary.column, summary);
-        this.snapshot = { ...this.snapshot, summaries: [...summaries.values()] };
+        const summaries = new Map(this.snapshot.summaries.map((summary) => [summary.columnId, summary]));
+        for (const summary of response.summaries) summaries.set(summary.columnId, summary);
+        const schemaOrder = new Map(this.snapshot.metadata.schema.map((column, index) => [column.id, index]));
+        this.snapshot = {
+          ...this.snapshot,
+          summaries: [...summaries.values()].sort(
+            (left, right) =>
+              (schemaOrder.get(left.columnId) ?? Number.MAX_SAFE_INTEGER) -
+              (schemaOrder.get(right.columnId) ?? Number.MAX_SAFE_INTEGER)
+          )
+        };
       }
       if (
         response.kind === "datasetStats" &&

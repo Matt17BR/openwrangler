@@ -1968,9 +1968,10 @@ function responseMismatch(
     case "getSummary":
       if (response.kind !== "summary") return `runtime returned ${response.kind}`;
       if (response.viewRequestId !== request.viewRequestId) return "summary correlation did not match";
-      return response.revision === request.revision
-        ? undefined
-        : `summary revision ${response.revision} did not match ${request.revision}`;
+      if (response.revision !== request.revision) {
+        return `summary revision ${response.revision} did not match ${request.revision}`;
+      }
+      return summaryProjectionMismatch(response.summaries, confirmedPageSchema, request.columnIds);
     case "getDatasetStats":
       if (response.kind !== "datasetStats") return `runtime returned ${response.kind}`;
       if (response.viewRequestId !== request.viewRequestId) return "dataset-statistics correlation did not match";
@@ -2037,6 +2038,32 @@ function responseMismatch(
         ? undefined
         : `runtime acknowledged session ${response.sessionId} instead of ${runtimeSessionId}`;
   }
+}
+
+function summaryProjectionMismatch(
+  summaries: Extract<OpenWranglerResponse, { kind: "summary" }>["summaries"],
+  schema: readonly ColumnSchema[] | undefined,
+  requestedColumnIds: readonly string[] | undefined
+): string | undefined {
+  if (!schema) return "summary validation is missing the confirmed schema";
+  const schemaById = new Map(schema.map((column) => [column.id, column]));
+  const expectedIds = requestedColumnIds ?? schema.map((column) => column.id);
+  const returnedIds = summaries.map((summary) => summary.columnId);
+  if (!isDeepStrictEqual(returnedIds, expectedIds) || new Set(returnedIds).size !== returnedIds.length) {
+    return "summary column identities did not match the requested projection";
+  }
+  for (const summary of summaries) {
+    const column = schemaById.get(summary.columnId);
+    if (
+      !column ||
+      summary.column !== column.name ||
+      summary.type !== column.type ||
+      summary.rawType !== column.rawType
+    ) {
+      return `summary for ${summary.columnId} did not match the confirmed schema`;
+    }
+  }
+  return undefined;
 }
 
 function sessionOpenedResponseMismatch(

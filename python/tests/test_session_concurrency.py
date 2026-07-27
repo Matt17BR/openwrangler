@@ -21,11 +21,11 @@ def test_foreground_page_overtakes_active_profile_while_mutation_waits(tmp_path:
     release_profile = threading.Event()
 
     class BlockingProfileEngine(PolarsEngine):
-        def summaries(self, frame: Any, columns: Any = None) -> list[dict[str, Any]]:
+        def summaries(self, frame: Any, column_projection: Any = None) -> list[dict[str, Any]]:
             profile_started.set()
             if not release_profile.wait(2):
                 raise TimeoutError("The test profile was not released.")
-            return super().summaries(frame, columns)
+            return super().summaries(frame, column_projection)
 
     manager = SessionManager(EngineRegistry((("polars", BlockingProfileEngine),)))
     opened = manager.open_session(
@@ -37,7 +37,7 @@ def test_foreground_page_overtakes_active_profile_while_mutation_waits(tmp_path:
     filter_model = {"filters": [], "sort": []}
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["value"])
+        profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["c:source:1"])
         assert profile_started.wait(1)
 
         page = executor.submit(manager.get_page, session_id, 0, 1, 1, filter_model)
@@ -74,7 +74,7 @@ def test_profile_failure_revalidates_source_and_releases_lease(tmp_path: Path) -
     source_path.write_text("city,value\nberlin,1\n", encoding="utf-8")
 
     class ReplacingProfileEngine(PolarsEngine):
-        def summaries(self, frame: Any, columns: Any = None) -> list[dict[str, Any]]:
+        def summaries(self, frame: Any, column_projection: Any = None) -> list[dict[str, Any]]:
             replacement = source_path.with_suffix(".replacement")
             replacement.write_text("city,value\nrome,2\n", encoding="utf-8")
             replacement.replace(source_path)
@@ -89,7 +89,7 @@ def test_profile_failure_revalidates_source_and_releases_lease(tmp_path: Path) -
     session_id = opened["metadata"]["sessionId"]
 
     with pytest.raises(EngineError, match=r"changed or is no longer available.*Reopen") as raised:
-        manager.get_summary(session_id, 0, {"filters": [], "sort": []}, ["value"])
+        manager.get_summary(session_id, 0, {"filters": [], "sort": []}, ["c:source:1"])
 
     assert isinstance(raised.value.__cause__, RuntimeError)
     assert manager.sessions[session_id].active_profiles == 0
@@ -108,7 +108,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
     class WriterPreferenceEngine(PolarsEngine):
         summary_calls = 0
 
-        def summaries(self, frame: Any, columns: Any = None) -> list[dict[str, Any]]:
+        def summaries(self, frame: Any, column_projection: Any = None) -> list[dict[str, Any]]:
             self.summary_calls += 1
             if self.summary_calls == 1:
                 first_profile_started.set()
@@ -116,7 +116,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
                     raise TimeoutError("The first profile was not released.")
             else:
                 unexpected_second_profile.set()
-            return super().summaries(frame, columns)
+            return super().summaries(frame, column_projection)
 
         def apply_transform(self, frame: Any, step: Any) -> Any:
             mutation_started.set()
@@ -134,7 +134,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
     filter_model = {"filters": [], "sort": []}
 
     with ThreadPoolExecutor(max_workers=10) as executor:
-        first_profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["value"])
+        first_profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["c:source:1"])
         assert first_profile_started.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)
         mutation = executor.submit(
             manager.preview_step,
@@ -155,7 +155,7 @@ def test_waiting_mutation_blocks_new_profile_admission(tmp_path: Path) -> None:
             threading.Event().wait(0.005)
         assert session.waiting_writers == 1
 
-        second_profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["city"])
+        second_profile = executor.submit(manager.get_summary, session_id, 0, filter_model, ["c:source:0"])
         late_pages = [executor.submit(manager.get_page, session_id, 0, 1, 1, filter_model) for _ in range(6)]
         release_first_profile.set()
         assert mutation_started.wait(CONCURRENCY_COMPLETION_TIMEOUT_SECONDS)

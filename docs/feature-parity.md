@@ -576,6 +576,15 @@ Persistent dependency-mutation recovery, 2026-07-26:
 
 This hardens the existing **Done** runtime-selection row and completes the implementation and acceptance evidence for [issue #79](https://github.com/Matt17BR/openwrangler/issues/79). It does not close the remaining 1.0 gates or make a parity-complete claim.
 
+Stable-ID column summaries and Insights polish, 2026-07-27:
+
+- Summary requests now address the current schema by stable column ID. The runtime resolves IDs against exact positions, validates one matching result per request in order, and rejects missing, duplicate, unknown, or reordered output before it reaches coordinator state. Pandas duplicate and non-string labels are profiled positionally; Polars and DuckDB retain their validated native names. Saved snapshots, retained panel state, native Summary views, and React consumers use the same ID association.
+- Exact scalar values are visually separated from distributions. Numeric column headers and the Summary drawer include minimum and maximum, while compact numeric, categorical, boolean, and datetime visuals expose useful visible labels and accessible names. A sampled label belongs only to a sampled distribution and never qualifies exact counts or scalar statistics. Duplicate display labels use human positional disambiguation without leaking private IDs.
+- The Insights drawer remains a nonmodal complementary landmark. Mouse and keyboard opening move focus to its deterministic Close control; Escape closes it and restores the exact connected opener when the webview still owns focus. The toolbar toggle declares the controlled region.
+- Contract, engine, snapshot, coordinator, host-retention, native-view, React, screenshot, and axe regressions cover duplicate labels, out-of-order arrival, replay, all four summary families, 800px width, 200% zoom, non-color chart meaning, and exact focus return. The packaged live-Pandas acceptance requests both duplicate-label profiles before operations and again after a real kernel replacement.
+
+This strengthens the existing **Done** dataset-summary row and the still-**Partial** release-platform visual/accessibility row for [issue #90](https://github.com/Matt17BR/openwrangler/issues/90). Broader workbench hierarchy, information-density, and interaction redesign remains explicitly post-1.0 work in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88); it does not expand this bounded release slice. This does not close unrelated 1.0 gates or make a parity-complete claim.
+
 Released-Jupyter argument provenance slice, 2026-07-26:
 
 - The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.

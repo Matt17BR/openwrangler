@@ -161,13 +161,16 @@ export function snapshotColumnValues(
 export function snapshotSummaries(
   metadata: SessionMetadata,
   rows: DataRow[],
-  columns?: readonly string[]
+  columnIds?: readonly string[]
 ): ColumnSummary[] {
   assertFullSchemaRows(metadata, rows);
+  if (columnIds !== undefined && new Set(columnIds).size !== columnIds.length) {
+    throw new Error("Snapshot summary column identities must be unique.");
+  }
   const positions =
-    columns === undefined
-      ? allSummaryPositions(metadata)
-      : columns.map((column) => resolveSnapshotColumn(metadata, column, "summary"));
+    columnIds === undefined
+      ? metadata.schema.map((column) => column.position)
+      : columnIds.map((columnId) => resolveSnapshotColumnId(metadata, columnId));
   return positions.map((index) => {
     const schema = metadata.schema[index];
     if (!schema) throw new RangeError("A snapshot summary resolved outside the captured schema.");
@@ -202,6 +205,7 @@ export function snapshotSummaries(
           });
 
     return {
+      columnId: schema.id,
       column: schema.name,
       type: schema.type,
       rawType: schema.rawType,
@@ -334,19 +338,12 @@ function resolveSnapshotColumn(
   return matchedColumn.position;
 }
 
-function allSummaryPositions(metadata: SessionMetadata): number[] {
-  const columnCounts = new Map<string, number>();
-  for (const column of metadata.schema) {
-    columnCounts.set(column.name, (columnCounts.get(column.name) ?? 0) + 1);
+function resolveSnapshotColumnId(metadata: SessionMetadata, columnId: string): number {
+  const column = metadata.schema.find((candidate) => candidate.id === columnId);
+  if (!column) {
+    throw new Error(`Snapshot summary column ID ${JSON.stringify(columnId)} is not present in the captured schema.`);
   }
-  for (const [name, count] of columnCounts) {
-    if (count > 1) {
-      throw new Error(
-        `Snapshot summaries cannot address column ${JSON.stringify(name)} because ${count} captured columns share that name.`
-      );
-    }
-  }
-  return metadata.schema.map((column) => column.position);
+  return column.position;
 }
 
 function predicateMatches(

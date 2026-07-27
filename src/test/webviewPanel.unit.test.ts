@@ -52,6 +52,7 @@ const page: GridPage = {
 };
 
 const summary: ColumnSummary = {
+  columnId: "c:0",
   column: "city",
   type: "string",
   rawType: "String",
@@ -912,7 +913,7 @@ describe("OpenWranglerPanel retained view state", () => {
         kind: "getSummary",
         viewRequestId: "summary-a",
         filterModel: metadata.filterModel,
-        columns: ["city"]
+        columnIds: ["c:0"]
       }
     });
     const staleStats = harness.send({
@@ -995,7 +996,7 @@ describe("OpenWranglerPanel retained view state", () => {
         kind: "getSummary",
         viewRequestId: "current-summary",
         filterModel: metadata.filterModel,
-        columns: ["city"]
+        columnIds: ["c:0"]
       }
     });
     await harness.send({
@@ -1017,6 +1018,86 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(retained.summaries).toEqual([summary]);
     expect(retained.metadata.stats?.missingCells).toBe(0);
     expect(retained.page.offset).toBe(200);
+  });
+
+  it("retains duplicate-label profiles by stable ID and republishes them in schema order", async () => {
+    const duplicateMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "pandas",
+      shape: { rows: 2, columns: 2 },
+      filteredShape: { rows: 2, columns: 2 },
+      schema: [
+        { id: "c:left", name: "duplicate", position: 0, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:right", name: "duplicate", position: 1, rawType: "Float64", type: "float", nullable: false }
+      ]
+    };
+    const duplicatePage: GridPage = { ...page, columnIds: ["c:left", "c:right"], rows: [] };
+    const summariesById = new Map<string, ColumnSummary>([
+      [
+        "c:left",
+        {
+          ...summary,
+          columnId: "c:left",
+          column: "duplicate",
+          type: "integer",
+          rawType: "Int64",
+          numeric: { min: 1, max: 1 }
+        }
+      ],
+      [
+        "c:right",
+        {
+          ...summary,
+          columnId: "c:right",
+          column: "duplicate",
+          type: "float",
+          rawType: "Float64",
+          numeric: { min: 10, max: 20 }
+        }
+      ]
+    ]);
+    const bridge: OpenWranglerBridge = {
+      request: vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind !== "getSummary") throw new Error(`Unexpected request ${request.kind}`);
+        const columnId = request.columnIds?.[0];
+        const columnSummary = columnId ? summariesById.get(columnId) : undefined;
+        if (!columnSummary) throw new Error("Expected a known duplicate-label summary ID.");
+        return {
+          kind: "summary",
+          revision: duplicateMetadata.revision,
+          viewRequestId: request.viewRequestId,
+          summaries: [columnSummary]
+        };
+      }),
+      setViewContext: vi.fn()
+    };
+    const harness = createPanelHarness(bridge, {
+      openResponse: { kind: "sessionOpened", metadata: duplicateMetadata, page: duplicatePage, summaries: [] }
+    });
+    await harness.open();
+    await harness.send({ kind: "setViewContext", viewContextId: "duplicate-view" });
+    for (const columnId of ["c:right", "c:left"]) {
+      await harness.send({
+        kind: "runtimeRequest",
+        viewContextId: "duplicate-view",
+        request: {
+          kind: "getSummary",
+          viewRequestId: `summary-${columnId}`,
+          filterModel: duplicateMetadata.filterModel,
+          columnIds: [columnId]
+        }
+      });
+    }
+    await harness.send({ kind: "ready" });
+
+    const retained = [...harness.posted]
+      .reverse()
+      .find((message): message is SessionOpenedResponse => isSessionOpenedResponse(message));
+    if (!retained) throw new Error("The panel did not retain duplicate-label profiles.");
+    expect(retained.summaries.map((item) => [item.columnId, item.numeric?.min])).toEqual([
+      ["c:left", 1],
+      ["c:right", 10]
+    ]);
   });
 
   it("forwards only validated queued-view cancellation messages", async () => {

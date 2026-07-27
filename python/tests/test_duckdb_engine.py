@@ -286,7 +286,8 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
         "alpha",
     ]
 
-    summary = engine.summaries(frame, ["value", "items"])
+    summary = engine.summaries(frame, [(2, "c:value"), (4, "c:items")])
+    assert [item["columnId"] for item in summary] == ["c:value", "c:items"]
     assert summary[0]["nullCount"] == 1
     assert summary[0]["nanCount"] == 1
     assert summary[0]["distinctCount"] == 1
@@ -305,7 +306,7 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
         return [row["id"] for row in engine.page(frame, 0, 4)["rows"]]
 
     def read_summary() -> int:
-        return engine.summaries(frame, ["label"])[0]["distinctCount"]
+        return engine.summaries(frame, [(1, "c:label")])[0]["distinctCount"]
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = [pool.submit(read_page if index % 2 == 0 else read_summary) for index in range(24)]
@@ -818,7 +819,7 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
         session_id,
         2,
         {"logic": "and", "filters": [], "sort": []},
-        ["score"],
+        ["c:step:duckdb-formula:0"],
     )["summaries"][0]
     assert summary["numeric"] == {
         "min": 10.0,

@@ -1029,16 +1029,16 @@ describe("saved notebook snapshot model", () => {
     }
   });
 
-  it("fails closed when summaries cannot address duplicate column names", () => {
-    expect(() => snapshotSummaries(duplicateMetadata, duplicateRows)).toThrow(
-      'Snapshot summaries cannot address column "duplicate" because 2 captured columns share that name.'
-    );
-    expect(() => snapshotSummaries(duplicateMetadata, duplicateRows, ["duplicate"])).toThrow(
-      'Snapshot summary column "duplicate" is ambiguous because 2 captured columns share that name.'
-    );
-    expect(snapshotSummaries(metadata, rows, ["sales"]).map((summary) => summary.column)).toEqual(["sales"]);
-    expect(() => snapshotSummaries(metadata, rows, ["missing"])).toThrow(
-      'Snapshot summary column "missing" is not present in the captured schema.'
+  it("addresses duplicate summary labels exclusively by stable column ID", () => {
+    const all = snapshotSummaries(duplicateMetadata, duplicateRows);
+    expect(all.map((summary) => [summary.columnId, summary.column, summary.type])).toEqual([
+      ["c:left", "duplicate", "string"],
+      ["c:right", "duplicate", "integer"]
+    ]);
+    expect(snapshotSummaries(duplicateMetadata, duplicateRows, ["c:right"])).toEqual([all[1]]);
+    expect(snapshotSummaries(metadata, rows, ["c:sales"]).map((summary) => summary.column)).toEqual(["sales"]);
+    expect(() => snapshotSummaries(metadata, rows, ["c:missing"])).toThrow(
+      'Snapshot summary column ID "c:missing" is not present in the captured schema.'
     );
   });
 

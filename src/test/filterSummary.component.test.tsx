@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
@@ -533,6 +533,7 @@ describe("FilterPanel", () => {
 describe("SummaryPanel", () => {
   const summaries: ColumnSummary[] = [
     {
+      columnId: "c:1",
       column: "sales",
       type: "float",
       rawType: "float",
@@ -549,7 +550,7 @@ describe("SummaryPanel", () => {
   ];
 
   it("renders loading, empty, missing, numeric, and top-value summaries", () => {
-    const { rerender } = render(<SummaryPanel metadata={undefined} summaries={[]} schemaByName={new Map()} />);
+    const { rerender } = render(<SummaryPanel metadata={undefined} summaries={[]} schemaById={new Map()} />);
     expect(screen.getByText("Loading")).toBeInTheDocument();
     expect(screen.getByText("Profiling exact missing values…")).toBeInTheDocument();
     expect(screen.getByText("No summary data yet.")).toBeInTheDocument();
@@ -558,14 +559,53 @@ describe("SummaryPanel", () => {
       <SummaryPanel
         metadata={metadata}
         summaries={summaries}
-        schemaByName={new Map(metadata.schema.map((column) => [column.name, column]))}
+        schemaById={new Map(metadata.schema.map((column) => [column.id, column]))}
       />
     );
     expect(screen.getByText("4 rows x 2 columns")).toBeInTheDocument();
     expect(screen.getByText("Float64")).toBeInTheDocument();
-    expect(screen.getByText("n/a")).toBeInTheDocument();
+    expect(screen.getAllByText("n/a").length).toBeGreaterThan(0);
     expect(screen.getAllByText("sales")).toHaveLength(2);
     expect(screen.getByText("Missing", { selector: "dt" }).nextElementSibling).toHaveTextContent("3");
     expect(screen.getByText("12", { selector: ".topValues span" })).toBeInTheDocument();
+  });
+
+  it("renders out-of-order duplicate-label summaries in schema order with human disambiguation", () => {
+    const duplicateMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 2 },
+      filteredShape: { rows: 4, columns: 2 },
+      schema: [
+        { id: "c:left", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:right", name: "value", position: 1, rawType: "Float64", type: "float", nullable: false }
+      ]
+    };
+    const summary = (columnId: string, rawType: string, min: number): ColumnSummary => ({
+      columnId,
+      column: "value",
+      type: rawType === "Int64" ? "integer" : "float",
+      rawType,
+      totalCount: 4,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 4,
+      numeric: { min, max: min + 3 },
+      topValues: []
+    });
+    render(
+      <SummaryPanel
+        metadata={duplicateMetadata}
+        summaries={[summary("c:right", "Float64", 10), summary("c:left", "Int64", 1)]}
+        schemaById={new Map(duplicateMetadata.schema.map((column) => [column.id, column]))}
+      />
+    );
+
+    expect(screen.getAllByText(/value \(column [12]\)/u).map((node) => node.textContent)).toEqual([
+      "value (column 1)",
+      "value (column 2)"
+    ]);
+    const groups = [...document.querySelectorAll<HTMLDetailsElement>(".summaryPanel .summaryGroup")].slice(1);
+    expect(within(groups[0]!).getByText("Min").nextElementSibling).toHaveTextContent("1");
+    expect(within(groups[1]!).getByText("Min").nextElementSibling).toHaveTextContent("10");
   });
 });

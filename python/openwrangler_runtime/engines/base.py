@@ -31,6 +31,7 @@ ColumnType = Literal[
 EngineSourceKind = Literal["file", "notebookVariable", "notebookOutput"]
 ExportFormat = Literal["csv", "parquet"]
 PageColumnProjection = Sequence[tuple[int, str]]
+SummaryColumnProjection = Sequence[tuple[int, str]]
 ExcelSheetSelector = tuple[Literal["sheetName"], str] | tuple[Literal["sheetIndex"], int]
 
 INTERNAL_ROW_ID_PREFIX = "__open_wrangler_internal_row_id_"
@@ -590,7 +591,11 @@ class DataFrameEngine(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def summaries(self, frame: Any, columns: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def summaries(
+        self,
+        frame: Any,
+        column_projection: SummaryColumnProjection | None = None,
+    ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -622,8 +627,25 @@ def normalize_page_projection(
 ) -> list[tuple[int, str]]:
     """Validate a private visible-position to public-column-ID page projection."""
 
+    return _normalize_column_projection(column_count, projection, "Page")
+
+
+def normalize_summary_projection(
+    column_count: int,
+    projection: SummaryColumnProjection | None,
+) -> list[tuple[int, str]]:
+    """Validate a private visible-position to public-column-ID summary projection."""
+
+    return _normalize_column_projection(column_count, projection, "Summary")
+
+
+def _normalize_column_projection(
+    column_count: int,
+    projection: Sequence[tuple[int, str]] | None,
+    purpose: str,
+) -> list[tuple[int, str]]:
     if not isinstance(column_count, int) or isinstance(column_count, bool) or column_count < 0:
-        raise EngineError("Page projection requires a non-negative visible column count.")
+        raise EngineError(f"{purpose} projection requires a non-negative visible column count.")
     if projection is None:
         return [(position, f"c:{position}") for position in range(column_count)]
 
@@ -632,14 +654,14 @@ def normalize_page_projection(
     identifiers: set[str] = set()
     for item in projection:
         if not isinstance(item, tuple | list) or len(item) != 2:
-            raise EngineError("Page projection entries must contain one visible position and column identity.")
+            raise EngineError(f"{purpose} projection entries must contain one visible position and column identity.")
         position, identifier = item
         if not isinstance(position, int) or isinstance(position, bool) or position < 0 or position >= column_count:
-            raise EngineError("Page projection references a column outside the dataframe schema.")
+            raise EngineError(f"{purpose} projection references a column outside the dataframe schema.")
         if not isinstance(identifier, str) or not identifier:
-            raise EngineError("Page projection column identities must be non-empty strings.")
+            raise EngineError(f"{purpose} projection column identities must be non-empty strings.")
         if position in positions or identifier in identifiers:
-            raise EngineError("Page projection positions and column identities must be unique.")
+            raise EngineError(f"{purpose} projection positions and column identities must be unique.")
         positions.add(position)
         identifiers.add(identifier)
         normalized.append((position, identifier))

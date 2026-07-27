@@ -86,8 +86,8 @@ export function App() {
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
   const foregroundRequest = useRef<"mutation" | { kind: "page"; viewRequestId: string } | undefined>(undefined);
   const pendingBackgroundRequests = useRef(new Map<string, PendingBackgroundRequest>());
-  const pendingSummaryByColumn = useRef(new Map<string, string>());
-  const summaryOwnersByColumn = useRef(new Map<string, Set<SummaryRequestOwner>>());
+  const pendingSummaryByColumnId = useRef(new Map<string, string>());
+  const summaryOwnersByColumnId = useRef(new Map<string, Set<SummaryRequestOwner>>());
   const drawerSummaryQueue = useRef<string[]>([]);
   const drawerSummaryQueued = useRef(new Set<string>());
   const drawerSummaryActive = useRef(new Set<string>());
@@ -103,6 +103,7 @@ export function App() {
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
+  const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const operationReturnFocus = useRef<HTMLElement | null>(null);
   const operationWasOpen = useRef(false);
@@ -144,6 +145,12 @@ export function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [operationOpen]);
+
+  useEffect(() => {
+    if (!sidePanelOpen) return;
+    const frame = scheduleWebviewFocusRestoration(() => sidePanelCloseRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [sidePanelOpen]);
 
   const storeMetadata = useCallback((next: SessionMetadata | undefined) => {
     metadataRef.current = next;
@@ -266,8 +273,8 @@ export function App() {
   );
 
   const releaseBackgroundRequest = useCallback((viewRequestId: string, pending: PendingBackgroundRequest): void => {
-    if (pending.kind === "summary" && pendingSummaryByColumn.current.get(pending.column) === viewRequestId) {
-      pendingSummaryByColumn.current.delete(pending.column);
+    if (pending.kind === "summary" && pendingSummaryByColumnId.current.get(pending.columnId) === viewRequestId) {
+      pendingSummaryByColumnId.current.delete(pending.columnId);
     }
     if (pending.kind === "stats" && pendingStatsRequest.current === viewRequestId) {
       pendingStatsRequest.current = undefined;
@@ -277,15 +284,15 @@ export function App() {
     }
   }, []);
 
-  const dropSummaryOwner = useCallback((column: string, owner: SummaryRequestOwner): void => {
-    const desiredOwners = summaryOwnersByColumn.current.get(column);
+  const dropSummaryOwner = useCallback((columnId: string, owner: SummaryRequestOwner): void => {
+    const desiredOwners = summaryOwnersByColumnId.current.get(columnId);
     desiredOwners?.delete(owner);
-    if (desiredOwners?.size === 0) summaryOwnersByColumn.current.delete(column);
+    if (desiredOwners?.size === 0) summaryOwnersByColumnId.current.delete(columnId);
     for (const pending of pendingBackgroundRequests.current.values()) {
-      if (pending.kind === "summary" && pending.column === column) pending.owners.delete(owner);
+      if (pending.kind === "summary" && pending.columnId === columnId) pending.owners.delete(owner);
     }
     for (const pending of retryTimers.current.values()) {
-      if (pending.kind === "summary" && pending.column === column) pending.owners.delete(owner);
+      if (pending.kind === "summary" && pending.columnId === columnId) pending.owners.delete(owner);
     }
   }, []);
 
@@ -294,7 +301,7 @@ export function App() {
     drawerSummaryQueued.current.clear();
     drawerSummaryActive.current.clear();
     drawerSummaryExhausted.current.clear();
-    for (const column of [...summaryOwnersByColumn.current.keys()]) dropSummaryOwner(column, "drawer");
+    for (const columnId of [...summaryOwnersByColumnId.current.keys()]) dropSummaryOwner(columnId, "drawer");
   }, [dropSummaryOwner]);
 
   const cancelBackgroundRequests = useCallback(
@@ -372,13 +379,13 @@ export function App() {
   }, []);
 
   const sendSummaryColumn = useCallback(
-    (column: string, attempt = 1, owner?: SummaryRequestOwner) => {
+    (columnId: string, attempt = 1, owner?: SummaryRequestOwner) => {
       if (owner) {
-        const owners = summaryOwnersByColumn.current.get(column) ?? new Set<SummaryRequestOwner>();
+        const owners = summaryOwnersByColumnId.current.get(columnId) ?? new Set<SummaryRequestOwner>();
         owners.add(owner);
-        summaryOwnersByColumn.current.set(column, owners);
+        summaryOwnersByColumnId.current.set(columnId, owners);
       }
-      const owners = summaryOwnersByColumn.current.get(column);
+      const owners = summaryOwnersByColumnId.current.get(columnId);
       if (!owners?.size) return;
       const currentMetadata = metadataRef.current;
       const confirmed = confirmedView.current;
@@ -386,23 +393,23 @@ export function App() {
         !currentMetadata ||
         !confirmed ||
         !canProfileConfirmedView(confirmed.viewContextId) ||
-        !currentMetadata.schema.some((candidate) => candidate.name === column) ||
-        summariesRef.current.some((summary) => summary.column === column)
+        !currentMetadata.schema.some((candidate) => candidate.id === columnId) ||
+        summariesRef.current.some((summary) => summary.columnId === columnId)
       ) {
         return;
       }
-      const existingRequestId = pendingSummaryByColumn.current.get(column);
+      const existingRequestId = pendingSummaryByColumnId.current.get(columnId);
       if (existingRequestId) {
         const existing = pendingBackgroundRequests.current.get(existingRequestId);
         if (existing?.kind === "summary") existing.owners = new Set(owners);
         return;
       }
       const viewRequestId = nextViewRequestId();
-      pendingSummaryByColumn.current.set(column, viewRequestId);
+      pendingSummaryByColumnId.current.set(columnId, viewRequestId);
       pendingBackgroundRequests.current.set(viewRequestId, {
         kind: "summary",
         viewContextId: confirmed.viewContextId,
-        column,
+        columnId,
         attempt,
         owners: new Set(owners)
       });
@@ -413,7 +420,7 @@ export function App() {
           kind: "getSummary",
           viewRequestId,
           filterModel: currentMetadata.filterModel,
-          columns: [column]
+          columnIds: [columnId]
         }
       });
     },
@@ -421,13 +428,13 @@ export function App() {
   );
 
   const releaseSummaryOwner = useCallback(
-    (column: string, owner: SummaryRequestOwner) => {
-      dropSummaryOwner(column, owner);
+    (columnId: string, owner: SummaryRequestOwner) => {
+      dropSummaryOwner(columnId, owner);
       cancelBackgroundRequests(
         (pending) =>
           pending.kind === "summary" &&
-          pending.column === column &&
-          !(summaryOwnersByColumn.current.get(column)?.size ?? 0)
+          pending.columnId === columnId &&
+          !(summaryOwnersByColumnId.current.get(columnId)?.size ?? 0)
       );
     },
     [cancelBackgroundRequests, dropSummaryOwner]
@@ -446,34 +453,34 @@ export function App() {
     }
 
     while (drawerSummaryActive.current.size < drawerSummaryConcurrency && drawerSummaryQueue.current.length > 0) {
-      const column = drawerSummaryQueue.current.shift();
-      if (!column) continue;
-      drawerSummaryQueued.current.delete(column);
+      const columnId = drawerSummaryQueue.current.shift();
+      if (!columnId) continue;
+      drawerSummaryQueued.current.delete(columnId);
       if (
-        !currentMetadata.schema.some((candidate) => candidate.name === column) ||
-        summariesRef.current.some((summary) => summary.column === column)
+        !currentMetadata.schema.some((candidate) => candidate.id === columnId) ||
+        summariesRef.current.some((summary) => summary.columnId === columnId)
       ) {
         continue;
       }
 
-      sendSummaryColumn(column, 1, "drawer");
-      if (pendingSummaryByColumn.current.has(column)) {
-        drawerSummaryActive.current.add(column);
+      sendSummaryColumn(columnId, 1, "drawer");
+      if (pendingSummaryByColumnId.current.has(columnId)) {
+        drawerSummaryActive.current.add(columnId);
         continue;
       }
 
-      dropSummaryOwner(column, "drawer");
-      drawerSummaryQueue.current.unshift(column);
-      drawerSummaryQueued.current.add(column);
+      dropSummaryOwner(columnId, "drawer");
+      drawerSummaryQueue.current.unshift(columnId);
+      drawerSummaryQueued.current.add(columnId);
       break;
     }
   }, [canProfileConfirmedView, dropSummaryOwner, sendSummaryColumn]);
 
   const finishDrawerSummaryColumn = useCallback(
-    (column: string, exhausted = false): void => {
-      if (!drawerSummaryActive.current.delete(column)) return;
-      if (exhausted) drawerSummaryExhausted.current.add(column);
-      dropSummaryOwner(column, "drawer");
+    (columnId: string, exhausted = false): void => {
+      if (!drawerSummaryActive.current.delete(columnId)) return;
+      if (exhausted) drawerSummaryExhausted.current.add(columnId);
+      dropSummaryOwner(columnId, "drawer");
       pumpDrawerSummaryProfiling();
     },
     [dropSummaryOwner, pumpDrawerSummaryProfiling]
@@ -482,35 +489,35 @@ export function App() {
   const enqueueDrawerSummaryColumns = useCallback((): void => {
     const currentMetadata = metadataRef.current;
     if (!sidePanelOpenRef.current || !currentMetadata) return;
-    for (const { name } of currentMetadata.schema) {
+    for (const { id } of currentMetadata.schema) {
       if (
-        summariesRef.current.some((summary) => summary.column === name) ||
-        drawerSummaryQueued.current.has(name) ||
-        drawerSummaryActive.current.has(name) ||
-        drawerSummaryExhausted.current.has(name)
+        summariesRef.current.some((summary) => summary.columnId === id) ||
+        drawerSummaryQueued.current.has(id) ||
+        drawerSummaryActive.current.has(id) ||
+        drawerSummaryExhausted.current.has(id)
       ) {
         continue;
       }
-      drawerSummaryQueue.current.push(name);
-      drawerSummaryQueued.current.add(name);
+      drawerSummaryQueue.current.push(id);
+      drawerSummaryQueued.current.add(id);
     }
     pumpDrawerSummaryProfiling();
   }, [pumpDrawerSummaryProfiling]);
 
   const updateVisibleSummaryColumns = useCallback(
-    (columns: string[]) => {
-      const next = new Set(columns);
-      for (const [column, owners] of [...summaryOwnersByColumn.current]) {
-        if (owners.has("grid") && !next.has(column)) releaseSummaryOwner(column, "grid");
+    (columnIds: string[]) => {
+      const next = new Set(columnIds);
+      for (const [columnId, owners] of [...summaryOwnersByColumnId.current]) {
+        if (owners.has("grid") && !next.has(columnId)) releaseSummaryOwner(columnId, "grid");
       }
-      for (const column of next) sendSummaryColumn(column, 1, "grid");
+      for (const columnId of next) sendSummaryColumn(columnId, 1, "grid");
     },
     [releaseSummaryOwner, sendSummaryColumn]
   );
 
   const restartOwnedSummaryProfiling = useCallback(() => {
-    for (const [column, owners] of summaryOwnersByColumn.current) {
-      if (owners.size) sendSummaryColumn(column);
+    for (const [columnId, owners] of summaryOwnersByColumnId.current) {
+      if (owners.size) sendSummaryColumn(columnId);
     }
   }, [sendSummaryColumn]);
 
@@ -746,11 +753,11 @@ export function App() {
 
   const pruneSummaryOwners = useCallback(
     (nextMetadata: SessionMetadata) => {
-      const validColumns = new Set(nextMetadata.schema.map((column) => column.name));
-      for (const column of summaryOwnersByColumn.current.keys()) {
-        if (!validColumns.has(column)) summaryOwnersByColumn.current.delete(column);
+      const validColumnIds = new Set(nextMetadata.schema.map((column) => column.id));
+      for (const columnId of summaryOwnersByColumnId.current.keys()) {
+        if (!validColumnIds.has(columnId)) summaryOwnersByColumnId.current.delete(columnId);
       }
-      cancelBackgroundRequests((pending) => pending.kind === "summary" && !validColumns.has(pending.column));
+      cancelBackgroundRequests((pending) => pending.kind === "summary" && !validColumnIds.has(pending.columnId));
     },
     [cancelBackgroundRequests]
   );
@@ -959,9 +966,9 @@ export function App() {
               return next;
             });
             const retryScheduled = scheduleBackgroundRetry(pending);
-            if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.column, true);
+            if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.columnId, true);
           } else if (pending.kind === "summary") {
-            finishDrawerSummaryColumn(pending.column, true);
+            finishDrawerSummaryColumn(pending.columnId, true);
           }
           return;
         }
@@ -1038,7 +1045,7 @@ export function App() {
           pendingBackgroundRequests.current.delete(response.viewRequestId);
           releaseBackgroundRequest(response.viewRequestId, pending);
           const retryScheduled = scheduleBackgroundRetry(pending);
-          if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.column, true);
+          if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.columnId, true);
         }
         return;
       }
@@ -1068,7 +1075,7 @@ export function App() {
         setGeneratedCode("");
         setDraftWarnings([]);
         resetViewProfiling();
-        summaryOwnersByColumn.current.clear();
+        summaryOwnersByColumnId.current.clear();
         confirmView(response.metadata, nextViewRequestId());
         storeMetadata(response.metadata);
         storeFilterModel(response.metadata.filterModel);
@@ -1174,14 +1181,21 @@ export function App() {
         pendingBackgroundRequests.current.delete(response.viewRequestId);
         releaseBackgroundRequest(response.viewRequestId, pending);
         if (!canProfileConfirmedView(pending.viewContextId) || response.revision !== confirmedView.current?.revision) {
-          finishDrawerSummaryColumn(pending.column, true);
+          finishDrawerSummaryColumn(pending.columnId, true);
           return;
         }
-        const merged = new Map(summariesRef.current.map((summary) => [summary.column, summary]));
-        for (const summary of response.summaries) merged.set(summary.column, summary);
-        storeSummaries([...merged.values()]);
+        const merged = new Map(summariesRef.current.map((summary) => [summary.columnId, summary]));
+        for (const summary of response.summaries) merged.set(summary.columnId, summary);
+        const schemaOrder = new Map(metadataRef.current?.schema.map((column, index) => [column.id, index]) ?? []);
+        storeSummaries(
+          [...merged.values()].sort(
+            (left, right) =>
+              (schemaOrder.get(left.columnId) ?? Number.MAX_SAFE_INTEGER) -
+              (schemaOrder.get(right.columnId) ?? Number.MAX_SAFE_INTEGER)
+          )
+        );
         clearBackgroundDiagnostic(pending);
-        finishDrawerSummaryColumn(pending.column);
+        finishDrawerSummaryColumn(pending.columnId);
         return;
       }
 
@@ -1229,7 +1243,7 @@ export function App() {
         return false;
       const timer = window.setTimeout(() => {
         retryTimers.current.delete(timer);
-        if (pending.kind === "summary") sendSummaryColumn(pending.column, pending.attempt + 1);
+        if (pending.kind === "summary") sendSummaryColumn(pending.columnId, pending.attempt + 1);
         else requestStatsForConfirmedView(pending.attempt + 1);
       }, 0);
       retryTimers.current.set(timer, pending);
@@ -1324,10 +1338,7 @@ export function App() {
     };
   }, [rendererNeedsSnapshot]);
 
-  const schemaByName = useMemo(
-    () => new Map(metadata?.schema.map((column) => [column.name, column]) ?? []),
-    [metadata]
-  );
+  const schemaById = useMemo(() => new Map(metadata?.schema.map((column) => [column.id, column]) ?? []), [metadata]);
   const inspectionMode = Boolean(stepInspectionTarget);
   const displayMetadata = useMemo<SessionMetadata | undefined>(() => {
     if (!metadata || !stepInspection) return metadata;
@@ -1612,6 +1623,26 @@ export function App() {
     setOperationOpen(true);
   };
 
+  const closeSidePanel = () => {
+    sidePanelOpenRef.current = false;
+    setSidePanelOpen(false);
+    clearDrawerSummaryScheduling();
+    cancelBackgroundRequests(
+      (pending) =>
+        pending.kind === "stats" ||
+        pending.kind === "values" ||
+        (pending.kind === "summary" && !(summaryOwnersByColumnId.current.get(pending.columnId)?.size ?? 0))
+    );
+    const returnTarget = sidePanelReturnFocus.current;
+    sidePanelReturnFocus.current = null;
+    scheduleWebviewFocusRestoration(() => {
+      const targetIsAvailable =
+        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
+      if (targetIsAvailable) returnTarget.focus();
+      else sidePanelToggleRef.current?.focus();
+    });
+  };
+
   const handleKeyboardShortcut = (event: ReactKeyboardEvent<HTMLElement>) => {
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
@@ -1626,6 +1657,9 @@ export function App() {
         }
       } else if (stepInspectionTargetRef.current) {
         clearStepInspection();
+        handled = true;
+      } else if (sidePanelOpenRef.current) {
+        closeSidePanel();
         handled = true;
       } else if (metadata?.draftStep) {
         if (!projectionLoading) {
@@ -1669,23 +1703,6 @@ export function App() {
       viewContextId: failed.viewContextId,
       columnWindow: failed.columnWindow,
       reason: failed.reason
-    });
-  };
-
-  const closeSidePanel = () => {
-    sidePanelOpenRef.current = false;
-    setSidePanelOpen(false);
-    clearDrawerSummaryScheduling();
-    cancelBackgroundRequests(
-      (pending) =>
-        pending.kind === "stats" ||
-        pending.kind === "values" ||
-        (pending.kind === "summary" && !(summaryOwnersByColumn.current.get(pending.column)?.size ?? 0))
-    );
-    const returnTarget = sidePanelReturnFocus.current;
-    scheduleWebviewFocusRestoration(() => {
-      if (returnTarget?.isConnected) returnTarget.focus();
-      else sidePanelToggleRef.current?.focus();
     });
   };
 
@@ -1773,6 +1790,7 @@ export function App() {
                 type="button"
                 className="toolbarButton"
                 aria-expanded={sidePanelOpen}
+                aria-controls="openwrangler-insights-panel"
                 disabled={inspectionMode || importOptionsPending}
                 title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
                 onClick={(event) => {
@@ -2021,17 +2039,18 @@ export function App() {
             )}
           </section>
           {sidePanelOpen && !inspectionMode && (
-            <aside className="sidebar" aria-label="Insights and filters">
+            <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Insights and filters">
               <div className="drawerHeader">
                 <strong>Insights & filters</strong>
                 <button
+                  ref={sidePanelCloseRef}
                   type="button"
                   className="iconButton codicon codicon-close"
                   aria-label="Close panel"
                   onClick={closeSidePanel}
                 />
               </div>
-              <SummaryPanel metadata={metadata} summaries={summaries} schemaByName={schemaByName} />
+              <SummaryPanel metadata={metadata} summaries={summaries} schemaById={schemaById} />
               <FilterPanel
                 key={filterColumn}
                 metadata={metadata}
@@ -2215,7 +2234,7 @@ type PendingBackgroundRequest =
   | {
       kind: "summary";
       viewContextId: string;
-      column: string;
+      columnId: string;
       attempt: number;
       owners: Set<SummaryRequestOwner>;
     }
@@ -2236,7 +2255,7 @@ interface PageRequestOptions {
 
 function backgroundDiagnosticKey(pending: PendingBackgroundRequest): string {
   if (pending.kind === "stats") return "stats";
-  return `${pending.kind}:${pending.column}`;
+  return `${pending.kind}:${pending.kind === "summary" ? pending.columnId : pending.column}`;
 }
 
 function cloneBackgroundDiagnostics(

@@ -144,6 +144,7 @@ def test_polars_nested_parquet_preserves_native_typed_values(tmp_path, monkeypat
         {"kind": "file", "label": path.name, "path": str(path)}, backend="polars", page_size=10
     )
     schema = {column["name"]: column["type"] for column in opened["metadata"]["schema"]}
+    schema_ids = {column["name"]: column["id"] for column in opened["metadata"]["schema"]}
     first_row = opened["page"]["rows"][0]["values"]
 
     assert schema == {
@@ -177,7 +178,7 @@ def test_polars_nested_parquet_preserves_native_typed_values(tmp_path, monkeypat
         opened["metadata"]["sessionId"],
         0,
         {"filters": [], "sort": []},
-        ["decimal", "items", "record", "floating"],
+        [schema_ids[name] for name in ["decimal", "items", "record", "floating"]],
     )["summaries"]
     assert [summary["type"] for summary in summaries] == ["decimal", "list", "struct", "float"]
     assert summaries[0]["numeric"]["min"] == 1.23
