@@ -11,7 +11,7 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Surface                                              | Pandas | Polars | Status  | Required evidence                                      |
 | ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------ |
 | CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green   |
-| Notebook variable viewer and toolbar                 |    Yes |    Yes | Partial | Released Jupyter remote/release-platform matrix green  |
+| Notebook variable viewer and toolbar                 |    Yes |    Yes | Partial | Released Jupyter desktop/remote-kernel contracts green |
 | Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green |
 | Virtual grid, column sizing, navigation              |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing          |
 | Dataset summary and quick insights                   |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green       |
