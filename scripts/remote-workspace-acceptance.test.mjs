@@ -95,7 +95,9 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
     busybox: "/usr/bin/true",
     dpkgDeb: "/usr/bin/true",
     dynamicLoader: "/usr/bin/true",
+    getconf: "/usr/bin/true",
     ip: "/usr/bin/true",
+    ldd: "/usr/bin/true",
     ldconfig: "/usr/bin/true",
     node: "/usr/bin/true",
     ssh: "/usr/bin/true",
@@ -133,7 +135,9 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
         bwrap: "/usr/bin/bwrap",
         busybox: "/usr/bin/busybox",
         dynamicLoader: "/usr/lib64/ld-linux-x86-64.so.2",
+        getconf: "/usr/bin/getconf",
         ip: "/usr/bin/ip",
+        ldd: "/usr/bin/ldd",
         ldconfig: "/usr/sbin/ldconfig",
         node: "/usr/bin/node",
         ssh: "/usr/bin/ssh",
@@ -174,6 +178,8 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
     );
     assert.equal(args.includes("--cap-drop"), true);
     assert.equal(args.includes("/home"), true);
+    assert.equal(args.includes("/usr/bin/getconf"), true);
+    assert.equal(args.includes("/usr/bin/ldd"), true);
     const commandSeparator = args.lastIndexOf("--");
     assert.equal(args[commandSeparator + 3], "/ow/phase.json");
   } finally {

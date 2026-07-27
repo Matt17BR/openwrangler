@@ -105,6 +105,7 @@ async function runPhase(config, ip, ssh, ldconfig) {
       sshServer,
       "-F",
       "-E",
+      "-e",
       "-s",
       "-g",
       "-m",
@@ -148,6 +149,8 @@ async function runPhase(config, ip, ssh, ldconfig) {
           "&& test -z \"${LD_LIBRARY_PATH-}\"",
           "&& test -z \"${LD_BIND_NOW-}\"",
           "&& test -z \"${LD_AUDIT-}\"",
+          "&& test -n \"${OPEN_WRANGLER_TEST_MODULE-}\"",
+          "&& test -n \"${OPEN_WRANGLER_TEST_RESULT-}\"",
           "&& printf %s \"$HOME\"'"
         ].join(" ")
       ],
