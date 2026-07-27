@@ -8,6 +8,13 @@ const replaceablePendingWorkflows = [
   [".github/workflows/codeql.yml", "codeql"]
 ];
 
+const requiredPullRequestWorkflows = [
+  ".github/workflows/ci.yml",
+  ".github/workflows/cross-platform.yml",
+  ".github/workflows/codeql.yml",
+  ".github/workflows/released-jupyter.yml"
+];
+
 test("PR workflows replace only superseded pending runs", () => {
   for (const [relativePath, groupPrefix] of replaceablePendingWorkflows) {
     const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
@@ -24,4 +31,92 @@ test("PR workflows replace only superseded pending runs", () => {
       `${relativePath} must never interrupt an in-progress editor or analysis run.`
     );
   }
+});
+
+test("PR evidence jobs never turn draft work into successful skipped checks", () => {
+  for (const relativePath of requiredPullRequestWorkflows) {
+    const source = readFileSync(new URL(`../${relativePath}`, import.meta.url), "utf8");
+    assert.match(source, /\non:\n {2}pull_request:/u, `${relativePath} must retain its pull-request trigger.`);
+    assert.doesNotMatch(
+      source,
+      /github\.event\.pull_request\.draft/u,
+      `${relativePath} must not skip PR evidence jobs for draft pull requests because GitHub treats skipped jobs as successful checks.`
+    );
+  }
+});
+
+test("routine Dependabot work is grouped, bounded, and staggered without grouping security updates", () => {
+  const source = readFileSync(new URL("../.github/dependabot.yml", import.meta.url), "utf8");
+  assert.equal(
+    source,
+    `version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "03:17"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 4
+    groups:
+      npm-production-minor-patch:
+        applies-to: version-updates
+        dependency-type: production
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      npm-development-minor-patch:
+        applies-to: version-updates
+        dependency-type: development
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: pip
+    directory: /python
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "03:17"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 4
+    groups:
+      python-production-minor-patch:
+        applies-to: version-updates
+        dependency-type: production
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      python-development-minor-patch:
+        applies-to: version-updates
+        dependency-type: development
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "03:17"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+`
+  );
 });
