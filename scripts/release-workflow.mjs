@@ -2,8 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
-const PREVIEW_CONDITION = "${{ steps.release_metadata.outputs.prerelease == 'true' }}";
-const STABLE_CONDITION = "${{ steps.release_metadata.outputs.prerelease != 'true' }}";
 const EVENT_SHA = "${{ github.sha }}";
 const EVENT_TAG = "${{ github.ref_name }}";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
@@ -210,12 +208,12 @@ function normalizeLines(value) {
     : [];
 }
 
-function uniqueNamedStep(steps, name, problems) {
+function uniqueNamedStep(steps, name, problems, jobName = "build") {
   const matches = steps
     .map((step, index) => ({ index, step }))
     .filter(({ step }) => isRecord(step) && step.name === name);
   if (matches.length !== 1) {
-    problems.push(`release.yml build job must contain exactly one "${name}" step; found ${matches.length}.`);
+    problems.push(`release.yml ${jobName} job must contain exactly one "${name}" step; found ${matches.length}.`);
     return undefined;
   }
   return matches[0];
@@ -339,43 +337,80 @@ export function inspectReleaseWorkflow(contents) {
   if (hasOwn(workflow, "env") || hasOwn(workflow, "defaults")) {
     problems.push("release.yml must not override workflow environment or run defaults.");
   }
+
+  const previewMetadataJob = workflow.jobs["preview-metadata"];
+  if (!isRecord(previewMetadataJob)) {
+    problems.push("release.yml must contain one preview-only metadata gate job.");
+  } else {
+    problems.push(...inspectJobExecutionControls(previewMetadataJob, "preview-metadata"));
+    if (hasOwn(previewMetadataJob, "needs") || hasOwn(previewMetadataJob, "outputs")) {
+      problems.push("release.yml preview-metadata job must run independently and publish no channel outputs.");
+    }
+    const metadataSteps = previewMetadataJob.steps;
+    if (!Array.isArray(metadataSteps) || metadataSteps.length !== 3 || metadataSteps.some((step) => !isRecord(step))) {
+      problems.push(
+        "release.yml preview-metadata job must contain exactly checkout, Node setup, and the preview-only metadata gate."
+      );
+    } else {
+      const [checkout, setupNode] = metadataSteps;
+      if (
+        checkout.uses !== CHECKOUT_ACTION ||
+        Object.keys(checkout).length !== 1 ||
+        setupNode.uses !== SETUP_NODE_ACTION ||
+        !isRecord(setupNode.with) ||
+        Object.keys(setupNode).length !== 2 ||
+        Object.keys(setupNode.with).length !== 2 ||
+        setupNode.with["node-version"] !== 22 ||
+        setupNode.with.cache !== "npm"
+      ) {
+        problems.push(
+          "release.yml preview-metadata job must begin with only canonical checkout and Node setup actions."
+        );
+      } else {
+        requireDefaultActionControls(checkout, "preview-metadata checkout", problems);
+        requireDefaultActionControls(setupNode, "preview-metadata Node setup", problems);
+      }
+      const metadata = uniqueNamedStep(
+        metadataSteps,
+        "Validate preview release tag and manifest channel",
+        problems,
+        "preview-metadata"
+      );
+      requireExactStep(
+        metadata,
+        {
+          env: { RELEASE_TAG: EVENT_TAG },
+          id: "release_metadata",
+          run: "node scripts/release-metadata.mjs --preview-only"
+        },
+        problems
+      );
+      if (metadata !== undefined && metadata.index !== 2) {
+        problems.push("release.yml preview-only metadata gate must be the final preview-metadata step.");
+      }
+    }
+  }
+
   problems.push(...inspectJobExecutionControls(workflow.jobs.build, "build"));
+  if (workflow.jobs.build.needs !== "preview-metadata" || hasOwn(workflow.jobs.build, "outputs")) {
+    problems.push(
+      "release.yml build job must depend only on the successful preview-metadata gate and publish no channel outputs."
+    );
+  }
   const steps = workflow.jobs.build.steps;
   if (!Array.isArray(steps) || steps.length === 0 || steps.length > 128) {
     return [...problems, "release.yml build job must contain a bounded non-empty steps array."];
   }
 
-  const metadata = uniqueNamedStep(steps, "Validate release tag and manifest channel", problems);
   const previewPackage = uniqueNamedStep(steps, "Package canonical preview VSIX", problems);
-  const stablePackage = uniqueNamedStep(steps, "Package stable VSIX candidate", problems);
   const sourceCheck = uniqueNamedStep(steps, "Verify exact tagged source after packaging", problems);
   const previewVerification = uniqueNamedStep(steps, "Verify canonical preview VSIX", problems);
-  const stableVerification = uniqueNamedStep(steps, "Verify stable VSIX candidate", problems);
-  const readiness = uniqueNamedStep(steps, "Enforce stable release readiness and publish immutable snapshot", problems);
   const previewChecksum = uniqueNamedStep(steps, "Create canonical preview checksum", problems);
 
   requireExactStep(
-    metadata,
-    {
-      env: { RELEASE_TAG: EVENT_TAG },
-      id: "release_metadata",
-      run: "node scripts/release-metadata.mjs"
-    },
-    problems
-  );
-  requireExactStep(
     previewPackage,
     {
-      condition: PREVIEW_CONDITION,
       run: "npm run package -- --pre-release --out openwrangler.vsix"
-    },
-    problems
-  );
-  requireExactStep(
-    stablePackage,
-    {
-      condition: STABLE_CONDITION,
-      run: "npm run package -- --out openwrangler.candidate.vsix"
     },
     problems
   );
@@ -393,56 +428,33 @@ git diff-index --quiet HEAD --`
   requireExactStep(
     previewVerification,
     {
-      condition: PREVIEW_CONDITION,
       run: "npm run verify:vsix -- openwrangler.vsix"
-    },
-    problems
-  );
-  requireExactStep(
-    stableVerification,
-    {
-      condition: STABLE_CONDITION,
-      run: "npm run verify:vsix -- openwrangler.candidate.vsix"
-    },
-    problems
-  );
-  requireExactStep(
-    readiness,
-    {
-      condition: STABLE_CONDITION,
-      env: {
-        EXPECTED_SHA: EVENT_SHA,
-        RELEASE_TAG: EVENT_TAG
-      },
-      run: "npm run release:readiness -- openwrangler.candidate.vsix --out openwrangler.vsix --checksum-out openwrangler.vsix.sha256"
     },
     problems
   );
   requireExactStep(
     previewChecksum,
     {
-      condition: PREVIEW_CONDITION,
       shell: "node {0}",
       run: PREVIEW_CHECKSUM_RUN
     },
     problems
   );
 
-  const ordered = [
-    metadata,
-    previewPackage,
-    stablePackage,
-    sourceCheck,
-    previewVerification,
-    stableVerification,
-    readiness,
-    previewChecksum
-  ];
+  const ordered = [previewPackage, sourceCheck, previewVerification, previewChecksum];
   if (
     ordered.every((entry) => entry !== undefined) &&
     ordered.some((entry, index) => index > 0 && entry.index <= ordered[index - 1].index)
   ) {
     problems.push("release.yml build release-gate steps must remain in canonical order.");
+  }
+  const forbiddenStableSteps = new Set([
+    "Package stable VSIX candidate",
+    "Verify stable VSIX candidate",
+    "Enforce stable release readiness and publish immutable snapshot"
+  ]);
+  if (steps.some((step) => isRecord(step) && forbiddenStableSteps.has(step.name))) {
+    problems.push("release.yml preview build must not contain stable packaging, verification, or readiness steps.");
   }
 
   const uploads = steps
@@ -453,9 +465,11 @@ git diff-index --quiet HEAD --`
   } else {
     const upload = uploads[0];
     requireDefaultActionControls(upload.step, "canonical upload", problems);
-    if (readiness !== undefined && previewChecksum !== undefined) {
-      if (previewChecksum.index !== readiness.index + 1 || upload.index !== previewChecksum.index + 1) {
-        problems.push("release.yml readiness, preview checksum, and canonical upload must be one exact final chain.");
+    if (previewVerification !== undefined && previewChecksum !== undefined) {
+      if (previewChecksum.index !== previewVerification.index + 1 || upload.index !== previewChecksum.index + 1) {
+        problems.push(
+          "release.yml preview verification, checksum, and canonical upload must be one exact final chain."
+        );
       }
       if (upload.index !== steps.length - 1) {
         problems.push("release.yml canonical upload must be the final build step.");
@@ -518,7 +532,7 @@ git diff-index --quiet HEAD --`
     if (
       !isRecord(options) ||
       Object.keys(options).length !== 4 ||
-      options.prerelease !== "${{ needs.build.outputs.prerelease == 'true' }}" ||
+      options.prerelease !== true ||
       options.generate_release_notes !== true ||
       options.fail_on_unmatched_files !== true ||
       normalizeLines(options.files).join("\n") !== "release/openwrangler.vsix\nrelease/openwrangler.vsix.sha256"

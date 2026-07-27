@@ -72,12 +72,44 @@ export function inspectReleaseMetadata({ releaseTag, packageJson }) {
   };
 }
 
+export function inspectPreviewReleaseMetadata(input) {
+  const result = inspectReleaseMetadata(input);
+  if (result.prerelease !== false) {
+    return result;
+  }
+  return {
+    ...result,
+    problems: [
+      ...result.problems,
+      "The tag release workflow is preview-only; stable publication must promote provenance-bound tested artifacts without rebuilding them."
+    ]
+  };
+}
+
+export function inspectWorkflowReleaseMetadata(input, mode) {
+  if (mode === undefined) {
+    return inspectReleaseMetadata(input);
+  }
+  if (mode === "--preview-only") {
+    return inspectPreviewReleaseMetadata(input);
+  }
+  throw new Error("release-metadata.mjs accepts only its stable-candidate mode or the exact --preview-only tag mode.");
+}
+
 function runCli() {
+  if (process.argv.length > 3) {
+    throw new Error(
+      "release-metadata.mjs accepts only its stable-candidate mode or the exact --preview-only tag mode."
+    );
+  }
   const root = resolve(import.meta.dirname, "..");
-  const result = inspectReleaseMetadata({
-    releaseTag: process.env.RELEASE_TAG,
-    packageJson: readFileSync(resolve(root, "package.json"), "utf8")
-  });
+  const result = inspectWorkflowReleaseMetadata(
+    {
+      releaseTag: process.env.RELEASE_TAG,
+      packageJson: readFileSync(resolve(root, "package.json"), "utf8")
+    },
+    process.argv[2]
+  );
   if (result.problems.length > 0 || result.version === undefined || result.prerelease === undefined) {
     throw new Error(`Release metadata validation failed:\n- ${result.problems.join("\n- ")}`);
   }
