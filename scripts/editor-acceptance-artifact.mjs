@@ -625,7 +625,7 @@ function assertStagingRootIdentity(receipt) {
     !receipt.snapshot ||
     typeof receipt.snapshot !== "object"
   ) {
-    throw new Error("The editor evidence staging receipt is invalid.");
+    throw stagingRootIdentityError();
   }
   let metadata;
   let canonicalRoot;
@@ -646,7 +646,15 @@ function assertStagingRootIdentity(receipt) {
 }
 
 function stagingRootIdentityError() {
-  return new Error("The editor evidence staging root no longer matches its prelaunch identity.");
+  const error = new Error("The editor evidence staging root no longer matches its prelaunch identity.");
+  error.code = "EDITOR_PRIVATE_ROOT_IDENTITY_LOST";
+  error.details = {
+    phase: "cleanup",
+    privateRootCleanup: "withheld",
+    privateRootIdentity: "lost",
+    privateRootCheckpoint: "evidence-staging-identity"
+  };
+  return error;
 }
 
 function directoryIdentitySnapshot(metadata) {
