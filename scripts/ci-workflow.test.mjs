@@ -65,6 +65,30 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.match(host?.run ?? "", /kernel\.apparmor_restrict_unprivileged_userns=0/u);
   assert.match(host?.run ?? "", /kernel\.unprivileged_userns_clone=1/u);
   assert.match(host?.run ?? "", /user\.max_user_namespaces/u);
+  assert.equal((host?.run ?? "").includes("sudo chmod go-w -- /usr/share"), true);
+  assert.equal((host?.run ?? "").includes("test ! -w /usr/share"), true);
+  assert.equal((host?.run ?? "").includes('sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"'), true);
+  assert.equal((host?.run ?? "").includes('find "$directory" -xdev'), true);
+  assert.equal((host?.run ?? "").includes("! -user root -print -quit"), true);
+  assert.equal((host?.run ?? "").includes("-perm /022 -print -quit"), true);
+  assert.equal((host?.run ?? "").includes("! -type d ! -type f ! -type l -print -quit"), true);
+  const roots = /system_runtime_roots=\(\n(?<roots>(?: {2}\/[^\n]+\n)+)\)\n/u.exec(host?.run ?? "");
+  assert.ok(roots?.groups?.roots, "Remote SSH CI must retain one explicit system-runtime root array.");
+  assert.deepEqual(
+    roots.groups.roots
+      .trim()
+      .split("\n")
+      .map((line) => line.trim()),
+    [
+      "/usr/share/fontconfig",
+      "/usr/share/fonts",
+      "/usr/share/glib-2.0",
+      "/usr/share/icons",
+      "/usr/share/mime",
+      "/usr/share/X11",
+      "/usr/share/zoneinfo"
+    ]
+  );
   assert.ok(
     steps.some((step) => step?.run === ".remote-venv/bin/python -m pip install ./python"),
     "Remote SSH CI must install one self-contained runtime environment."

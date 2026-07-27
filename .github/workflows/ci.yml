@@ -299,6 +299,37 @@ jobs:
             openssh-client \
             python3-venv \
             x11-xkb-utils
+          system_runtime_roots=(
+            /usr/share/fontconfig
+            /usr/share/fonts
+            /usr/share/glib-2.0
+            /usr/share/icons
+            /usr/share/mime
+            /usr/share/X11
+            /usr/share/zoneinfo
+          )
+          test ! -L /usr/share
+          test "$(realpath /usr/share)" = "/usr/share"
+          test "$(stat --format='%u' /usr/share)" = "0"
+          sudo chmod go-w -- /usr/share
+          test ! -w /usr/share
+          for directory in "${system_runtime_roots[@]}"; do
+            test ! -L "$directory"
+            test "$(realpath "$directory")" = "$directory"
+            test "$(stat --format='%u' "$directory")" = "0"
+          done
+          sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"
+          for directory in "${system_runtime_roots[@]}"; do
+            test ! -L "$directory"
+            test "$(realpath "$directory")" = "$directory"
+            test "$(stat --format='%u' "$directory")" = "0"
+            unsafe_owner="$(find "$directory" -xdev ! -user root -print -quit)"
+            unsafe_mode="$(find "$directory" -xdev \( -type d -o -type f \) -perm /022 -print -quit)"
+            unsafe_type="$(find "$directory" -xdev ! -type d ! -type f ! -type l -print -quit)"
+            test -z "$unsafe_owner"
+            test -z "$unsafe_mode"
+            test -z "$unsafe_type"
+          done
           sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
           sudo sysctl --write kernel.unprivileged_userns_clone=1
           test "$(sysctl --values kernel.apparmor_restrict_unprivileged_userns)" = "0"

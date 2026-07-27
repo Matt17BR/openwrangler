@@ -1284,13 +1284,14 @@ export function validateRemoteWorkspaceSystemRuntimeDirectories(
   if (typeof validateDirectory !== "function") {
     throw new Error("The Remote SSH system-runtime closure validator is malformed.");
   }
-  const validated = directories.map((directory) => {
+  const validated = directories.map((directory, index) => {
     try {
       return validateDirectory(directory);
     } catch (error) {
-      throw new Error("A required Remote SSH system-runtime closure root is unavailable or unsafe.", {
-        cause: error
-      });
+      throw new Error(
+        `Remote SSH system-runtime closure root ${index + 1} of ${directories.length} is unavailable or unsafe.`,
+        { cause: error }
+      );
     }
   });
   return Object.freeze(validated);
@@ -1339,16 +1340,21 @@ export function validateRootOwnedSystemRuntimeDirectory(path, { lstat = lstatSyn
   if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || path.length > PATH_LIMIT) {
     throw new Error("A system runtime closure root is malformed.");
   }
-  const metadata = lstat(path);
-  const canonical = realpath(path);
-  if (
-    canonical !== path ||
-    !metadata.isDirectory() ||
-    metadata.isSymbolicLink() ||
-    metadata.uid !== 0 ||
-    (metadata.mode & 0o022) !== 0
-  ) {
-    throw new Error("A system runtime closure root must be canonical, root-owned, and non-writable.");
+  for (let current = path; ; current = dirname(current)) {
+    const metadata = lstat(current);
+    const canonical = realpath(current);
+    if (
+      canonical !== current ||
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      metadata.uid !== 0 ||
+      (metadata.mode & 0o022) !== 0
+    ) {
+      throw new Error(
+        "A system runtime closure root and every ancestor must be canonical, root-owned, and non-writable."
+      );
+    }
+    if (dirname(current) === current) break;
   }
   return path;
 }

@@ -465,7 +465,7 @@ test("Bubblewrap requires an explicit available system-runtime closure", () => {
   );
   assert.throws(
     () => validateRemoteWorkspaceSystemRuntimeDirectories(["/definitely/missing/open-wrangler-runtime"]),
-    /unavailable or unsafe/u
+    /root 1 of 1 is unavailable or unsafe/u
   );
   assert.throws(
     () => validateRemoteWorkspaceSystemRuntimeDirectories(["/usr/lib", "/usr/lib"]),
@@ -473,7 +473,7 @@ test("Bubblewrap requires an explicit available system-runtime closure", () => {
   );
 });
 
-linuxTest("System runtime closure roots must be canonical, root-owned, and non-writable", () => {
+linuxTest("System runtime closure roots and ancestors must be canonical, root-owned, and non-writable", () => {
   const canonical = "/usr/lib/openwrangler-runtime";
   const directory = (overrides = {}) => ({
     isDirectory: () => true,
@@ -485,23 +485,26 @@ linuxTest("System runtime closure roots must be canonical, root-owned, and non-w
   assert.equal(
     validateRootOwnedSystemRuntimeDirectory(canonical, {
       lstat: () => directory(),
-      realpath: () => canonical
+      realpath: (path) => path
     }),
     canonical
   );
-  for (const [metadata, resolved] of [
-    [directory({ uid: 1001 }), canonical],
-    [directory({ mode: 0o040775 }), canonical],
-    [directory({ isSymbolicLink: () => true }), canonical],
-    [directory(), `${canonical}-redirected`]
+  for (const [lstat, realpath] of [
+    [(path) => (path === canonical ? directory({ uid: 1001 }) : directory()), (path) => path],
+    [(path) => (path === canonical ? directory({ mode: 0o040775 }) : directory()), (path) => path],
+    [(path) => (path === canonical ? directory({ isSymbolicLink: () => true }) : directory()), (path) => path],
+    [() => directory(), (path) => (path === canonical ? `${canonical}-redirected` : path)],
+    [(path) => (path === "/usr" ? directory({ mode: 0o040777 }) : directory()), (path) => path],
+    [(path) => (path === "/usr" ? directory({ uid: 1001 }) : directory()), (path) => path],
+    [() => directory(), (path) => (path === "/usr" ? "/redirected-usr" : path)]
   ]) {
     assert.throws(
       () =>
         validateRootOwnedSystemRuntimeDirectory(canonical, {
-          lstat: () => metadata,
-          realpath: () => resolved
+          lstat,
+          realpath
         }),
-      /canonical, root-owned, and non-writable/u
+      /every ancestor must be canonical, root-owned, and non-writable/u
     );
   }
 });
@@ -519,6 +522,24 @@ test("The system-runtime resolver constructs its complete closure before delegat
   assert.equal(directories.at(-1), "/usr/lib");
   assert.equal(directories.includes("/usr/lib/x86_64-linux-gnu"), true);
   assert.equal(directories.includes("/etc/ssl/certs"), true);
+});
+
+test("The system-runtime resolver identifies the failing root without exposing its path", () => {
+  assert.throws(
+    () =>
+      validateRemoteWorkspaceSystemRuntimeDirectories(["/first", "/private/second"], {
+        validateDirectory(directory) {
+          if (directory === "/private/second") throw new Error("unsafe");
+          return directory;
+        }
+      }),
+    (error) => {
+      assert.match(error.message, /root 2 of 2 is unavailable or unsafe/u);
+      assert.equal(error.message.includes("/private/second"), false);
+      assert.equal(error.cause?.message, "unsafe");
+      return true;
+    }
+  );
 });
 
 test("The system-runtime resolver rejects a malformed injected directory validator", () => {
