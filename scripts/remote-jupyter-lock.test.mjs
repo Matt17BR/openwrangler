@@ -11,6 +11,7 @@ import {
   REMOTE_JUPYTER_LOCK_PYTHON_VERSION,
   REMOTE_JUPYTER_LOCK_TOOL_VERSION,
   checkRemoteJupyterLockFiles,
+  isRemoteJupyterLockToolVersionOutput,
   remoteJupyterCompileArguments,
   validateRemoteJupyterLock
 } from "./remote-jupyter-lock.mjs";
@@ -57,7 +58,7 @@ test("the remote Jupyter lock rejects stale direct pins and incomplete hashes", 
 test("the lock compiler freezes its tool, target, index, and release horizon", () => {
   const output = "/tmp/openwrangler-lock-contract.txt";
   const argumentsList = remoteJupyterCompileArguments(output);
-  assert.equal(REMOTE_JUPYTER_LOCK_TOOL_VERSION, "0.7.15");
+  assert.equal(REMOTE_JUPYTER_LOCK_TOOL_VERSION, "0.11.32");
   assert.equal(REMOTE_JUPYTER_LOCK_PYTHON_VERSION, "3.12");
   assert.equal(REMOTE_JUPYTER_LOCK_PLATFORM, "x86_64-manylinux_2_28");
   assert.equal(REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER, "2026-07-27T00:00:00Z");
@@ -67,6 +68,13 @@ test("the lock compiler freezes its tool, target, index, and release horizon", (
   assert.ok(argumentsList.includes("--no-config"));
   assert.ok(argumentsList.includes("--upgrade"));
   assert.deepEqual(argumentsList.slice(-2), ["--output-file", output]);
+});
+
+test("the lock compiler accepts only the exact resolver version output", () => {
+  assert.equal(isRemoteJupyterLockToolVersionOutput("uv 0.11.32 (x86_64-unknown-linux-gnu)\n"), true);
+  assert.equal(isRemoteJupyterLockToolVersionOutput("uv 0.11.32\n"), true);
+  assert.equal(isRemoteJupyterLockToolVersionOutput("uv 0.11.31 (x86_64-unknown-linux-gnu)\n"), false);
+  assert.equal(isRemoteJupyterLockToolVersionOutput("uv 0.11.32 (x86_64-unknown-linux-gnu)\nextra\n"), false);
 });
 
 test("ordinary and released audit workflows cannot omit the fixture lock", async () => {
@@ -85,7 +93,7 @@ test("ordinary and released audit workflows cannot omit the fixture lock", async
   assert.doesNotMatch(packageJson.scripts["audit:remote-jupyter"], /--ignore-vuln/u);
   assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
   const uvBootstrap =
-    /python -m pip install --no-deps "https:\/\/files\.pythonhosted\.org\/[^"]+\/uv-0\.7\.15-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl#sha256=2f6f78e6b816b9fb2cb92f1f1857dd7725cc2008d800e4f4cdc195f64f0c96c8"/u;
+    /python -m pip install --no-deps "https:\/\/files\.pythonhosted\.org\/[^"]+\/uv-0\.11\.32-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"/u;
   assert.match(ci, uvBootstrap);
   assert.match(ci, /run: npm run lock:remote-jupyter:check/u);
   assert.match(ci, /run: npm run audit:python/u);

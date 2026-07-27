@@ -8,7 +8,7 @@ export const REMOTE_JUPYTER_INPUT_PATH = resolve(REPOSITORY_ROOT, "scripts", "re
 export const REMOTE_JUPYTER_LOCK_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.txt");
 export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-server", "pandas", "polars"]);
 export const REMOTE_JUPYTER_MINIMUM_SAFE_SERVER_VERSION = "2.20.0";
-export const REMOTE_JUPYTER_LOCK_TOOL_VERSION = "0.7.15";
+export const REMOTE_JUPYTER_LOCK_TOOL_VERSION = "0.11.32";
 export const REMOTE_JUPYTER_LOCK_PYTHON_VERSION = "3.12";
 export const REMOTE_JUPYTER_LOCK_PLATFORM = "x86_64-manylinux_2_28";
 export const REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER = "2026-07-27T00:00:00Z";
@@ -18,9 +18,14 @@ const PACKAGE_VERSION = /^[0-9]+(?:[._+-][0-9A-Za-z]+)*$/u;
 const INPUT_LINE = /^([a-z][a-z0-9-]*)==([0-9]+(?:[._+-][0-9A-Za-z]+)*)$/u;
 const LOCK_HEADER = /^([a-z][a-z0-9-]*)==([0-9]+(?:[._+-][0-9A-Za-z]+)*) \\$/u;
 const LOCK_HASH = /^ {4}--hash=sha256:([0-9a-f]{64})( \\)?$/u;
+const UV_VERSION_OUTPUT = /^uv ([0-9]+\.[0-9]+\.[0-9]+)(?: \([A-Za-z0-9_.-]+\))?\r?\n$/u;
 
 function fail(message) {
   throw new Error(`Remote Jupyter lock contract failed: ${message}`);
+}
+
+export function isRemoteJupyterLockToolVersionOutput(output) {
+  return UV_VERSION_OUTPUT.exec(output)?.[1] === REMOTE_JUPYTER_LOCK_TOOL_VERSION;
 }
 
 function canonicalLines(text, label) {

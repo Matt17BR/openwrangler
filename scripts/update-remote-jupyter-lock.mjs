@@ -8,6 +8,7 @@ import {
   REMOTE_JUPYTER_INPUT_PATH,
   REMOTE_JUPYTER_LOCK_PATH,
   REMOTE_JUPYTER_LOCK_TOOL_VERSION,
+  isRemoteJupyterLockToolVersionOutput,
   remoteJupyterCompileArguments,
   validateRemoteJupyterLock
 } from "./remote-jupyter-lock.mjs";
@@ -27,7 +28,7 @@ if (
   version.error ||
   version.status !== 0 ||
   version.signal !== null ||
-  version.stdout !== `uv ${REMOTE_JUPYTER_LOCK_TOOL_VERSION}\n` ||
+  !isRemoteJupyterLockToolVersionOutput(version.stdout) ||
   version.stderr !== ""
 ) {
   throw new Error(`Remote Jupyter lock generation requires exactly uv ${REMOTE_JUPYTER_LOCK_TOOL_VERSION}.`);
