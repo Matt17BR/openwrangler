@@ -20,7 +20,7 @@ const README_EDITOR_SUPPORT = `| Editor                                         
 | Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
 | Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
 
-Google documents [one Open VSX-hosted extension used with Antigravity](https://developers.google.com/workspace/guides/developer-tools). That establishes a distribution precedent; Open Wrangler availability requires separate publication, and compatibility requires an isolated functional smoke. Experimental editors do not inherit the VS Code/Cursor support guarantee.`;
+Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;

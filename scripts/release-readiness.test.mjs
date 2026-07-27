@@ -584,8 +584,12 @@ test("keeps the same compact editor support tiers in preview and stable README g
     assert.match(section, /\| Cursor\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
     assert.match(section, /\| Other VS Code-based IDEs, including Antigravity\s+\| Experimental\s+\|/u);
     assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
-    assert.match(section, /availability requires separate publication, and compatibility requires/u);
-    assert.match(section, /Experimental editors do not inherit the VS Code\/Cursor support guarantee/u);
+    assert.match(section, /Open VSX publication can make Open Wrangler discoverable there/u);
+    assert.match(section, /it does not certify compatibility/u);
+    assert.match(
+      section,
+      /Experimental editors receive isolated functional smokes and do not inherit the VS Code\/Cursor support guarantee/u
+    );
   }
 });
 
