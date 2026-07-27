@@ -53,7 +53,10 @@ const childScript = resolve(repositoryRoot, "scripts", "remote-workspace-phase-c
 const contractScript = resolve(repositoryRoot, "scripts", "remote-workspace-contract.mjs");
 const testModule = resolve(repositoryRoot, "dist-test", "test", "extensionHost", "index.js");
 const testModuleRoot = resolve(repositoryRoot, "dist-test");
+const playwrightCoreRoot = resolve(repositoryRoot, "node_modules", "playwright-core");
 const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
+const packageLock = JSON.parse(readFileSync(resolve(repositoryRoot, "package-lock.json"), "utf8"));
+const pinnedPlaywrightCoreVersion = packageLock.packages?.["node_modules/playwright-core"]?.version;
 const expectedCandidate = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
 const expectedHarness = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const namespaceSshUser = "openwrangler";
@@ -86,6 +89,17 @@ try {
   stageExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs"));
   const stagedXvfb = stageExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700);
   const stagedTestModule = stageTestModuleTree(layout.remoteTestModule);
+  stageTestRuntimeDependency(
+    playwrightCoreRoot,
+    join(layout.remoteTestModule, "node_modules", "playwright-core"),
+    {
+      name: "playwright-core",
+      version: pinnedPlaywrightCoreVersion,
+      maximumFiles: 256,
+      maximumBytes: 24 * 1024 * 1024,
+      maximumFileBytes: 8 * 1024 * 1024
+    }
+  );
   const acquisition = await acquirePinnedRemoteWorkspaceArtifacts(layout.root, {
     artifactPaths: artifactOverrides(process.env)
   });
@@ -353,7 +367,13 @@ function stageExactFile(source, destination, mode = 0o600) {
 }
 
 function stageTestModuleTree(destination) {
-  const before = captureTestModuleTree(testModuleRoot);
+  const bounds = {
+    label: "Remote SSH test module",
+    maximumFiles: 100,
+    maximumBytes: 4 * 1024 * 1024,
+    maximumFileBytes: 2 * 1024 * 1024
+  };
+  const before = captureBoundedTree(testModuleRoot, bounds);
   cpSync(testModuleRoot, destination, {
     recursive: true,
     errorOnExist: true,
@@ -361,15 +381,45 @@ function stageTestModuleTree(destination) {
     preserveTimestamps: true,
     verbatimSymlinks: true
   });
-  const after = captureTestModuleTree(testModuleRoot);
-  const staged = captureTestModuleTree(destination);
+  const after = captureBoundedTree(testModuleRoot, bounds);
+  const staged = captureBoundedTree(destination, bounds);
   if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(before.files) !== JSON.stringify(staged.files)) {
     throw new Error("The bounded Remote SSH test module changed while it was staged.");
   }
   return join(destination, relative(testModuleRoot, testModule));
 }
 
-function captureTestModuleTree(root) {
+function stageTestRuntimeDependency(source, destination, identity) {
+  if (
+    typeof identity?.name !== "string" ||
+    typeof identity?.version !== "string" ||
+    !identity.name ||
+    !identity.version
+  ) {
+    throw new Error("The Remote SSH test dependency is not pinned by the lockfile.");
+  }
+  const metadata = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+  if (metadata.name !== identity.name || metadata.version !== identity.version) {
+    throw new Error("The Remote SSH test dependency does not match its lockfile identity.");
+  }
+  const bounds = { ...identity, label: `Remote SSH ${identity.name} dependency` };
+  const before = captureBoundedTree(source, bounds);
+  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+  cpSync(source, destination, {
+    recursive: true,
+    errorOnExist: true,
+    force: false,
+    preserveTimestamps: true,
+    verbatimSymlinks: true
+  });
+  const after = captureBoundedTree(source, bounds);
+  const staged = captureBoundedTree(destination, bounds);
+  if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(before) !== JSON.stringify(staged)) {
+    throw new Error(`The bounded Remote SSH ${identity.name} dependency changed while it was staged.`);
+  }
+}
+
+function captureBoundedTree(root, { label, maximumFiles, maximumBytes, maximumFileBytes }) {
   const files = [];
   const queue = [root];
   let bytes = 0;
@@ -377,13 +427,13 @@ function captureTestModuleTree(root) {
     const directory = queue.shift();
     const metadata = lstatSync(directory, { bigint: true });
     if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new Error("The Remote SSH test module contains an unsafe directory.");
+      throw new Error(`${label} contains an unsafe directory.`);
     }
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       const entryMetadata = lstatSync(path, { bigint: true });
       if (entryMetadata.isSymbolicLink()) {
-        throw new Error("The Remote SSH test module contains a symbolic link.");
+        throw new Error(`${label} contains a symbolic link.`);
       }
       if (entry.isDirectory()) {
         queue.push(path);
@@ -391,7 +441,7 @@ function captureTestModuleTree(root) {
         entry.isFile() &&
         entryMetadata.nlink === 1n &&
         entryMetadata.size >= 0n &&
-        entryMetadata.size <= 2n * 1024n * 1024n
+        entryMetadata.size <= BigInt(maximumFileBytes)
       ) {
         bytes += Number(entryMetadata.size);
         files.push({
@@ -400,10 +450,10 @@ function captureTestModuleTree(root) {
           sha256: createHash("sha256").update(readFileSync(path)).digest("hex")
         });
       } else {
-        throw new Error("The Remote SSH test module contains an unsafe file.");
+        throw new Error(`${label} contains an unsafe file.`);
       }
-      if (files.length > 100 || bytes > 4 * 1024 * 1024) {
-        throw new Error("The Remote SSH test module exceeded its fixed staging bounds.");
+      if (files.length > maximumFiles || bytes > maximumBytes) {
+        throw new Error(`${label} exceeded its fixed staging bounds.`);
       }
     }
   }

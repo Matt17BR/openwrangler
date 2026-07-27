@@ -313,7 +313,14 @@ export async function run(): Promise<void> {
     assert.ok(commands.includes(command), `Expected registered command: ${command}`);
   }
 
-  const contributions = extension.packageJSON.contributes as {
+  const packagedManifestBytes = await vscode.workspace.fs.readFile(
+    vscode.Uri.joinPath(extension.extensionUri, "package.json")
+  );
+  assert.ok(packagedManifestBytes.byteLength <= 1024 * 1024, "The packaged extension manifest must remain bounded.");
+  const packagedManifest = JSON.parse(Buffer.from(packagedManifestBytes).toString("utf8")) as {
+    contributes?: unknown;
+  };
+  const contributions = packagedManifest.contributes as {
     configurationDefaults?: Record<string, unknown>;
     commands?: Array<{ command?: string; title?: string; shortTitle?: string; icon?: string }>;
     viewsContainers?: { activitybar?: Array<{ id?: string; icon?: string }> };
@@ -374,15 +381,35 @@ export async function run(): Promise<void> {
   );
   const fileResourcePredicate =
     "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i";
+  const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
-    contributions.menus?.["explorer/context"]?.some(
+    explorerContextItems.some(
       (item) =>
         item.command === "openWrangler.openFile" &&
         item.when === `!explorerResourceIsFolder && ${fileResourcePredicate}` &&
         item.group === "navigation@50"
     ),
-    "Explorer data files must expose the canonical Open in Open Wrangler action."
+    `Explorer data files must expose the canonical Open in Open Wrangler action. Loaded: ${JSON.stringify(explorerContextItems)}`
   );
+  if (vscode.env.remoteName === "ssh-remote") {
+    const loadedExplorerContextItems = (
+      extension.packageJSON.contributes as typeof contributions
+    ).menus?.["explorer/context"] ?? [];
+    const loadedRemoteAction = loadedExplorerContextItems.find(
+      (item) => item.command === "openWrangler.openFile" && item.group === "navigation@50"
+    );
+    assert.ok(loadedRemoteAction, "Remote SSH must load the Open in Open Wrangler Explorer action.");
+    assert.match(
+      loadedRemoteAction.when ?? "",
+      /resourceScheme =~ \/\^\(vscode-remote\|vscode-remote\)\$\//u,
+      "VS Code must bind both packaged file-resource alternatives to the active remote scheme."
+    );
+    assert.match(
+      loadedRemoteAction.when ?? "",
+      /resourceExtname =~ \/\\\.\(csv\|tsv\|parquet\|jsonl\|xlsx\|xls\)\$\/i/u,
+      "Remote SSH must preserve the supported data-file extension predicate."
+    );
+  }
   assert.ok(
     contributions.menus?.["editor/title"]?.some(
       (item) =>
