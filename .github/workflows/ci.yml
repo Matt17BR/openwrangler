@@ -295,10 +295,12 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             bubblewrap \
             busybox-static \
+            coreutils \
             iproute2 \
             libtomcrypt1 \
             libtommath1 \
             openssh-client \
+            procps \
             python3-venv \
             x11-xkb-utils
           system_runtime_roots=(

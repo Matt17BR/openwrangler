@@ -128,6 +128,8 @@ const REQUIRED_HOST_TOOLS = Object.freeze({
   getconf: "/usr/bin/getconf",
   ip: "/usr/bin/ip",
   ldd: "/usr/bin/ldd",
+  printenv: "/usr/bin/printenv",
+  ps: "/usr/bin/ps",
   ssh: "/usr/bin/ssh",
   sshKeygen: "/usr/bin/ssh-keygen",
   xkbcomp: "/usr/bin/xkbcomp"
@@ -175,7 +177,6 @@ const BUSYBOX_APPLETS = Object.freeze([
   "mv",
   "od",
   "printf",
-  "ps",
   "pwd",
   "readlink",
   "rm",
@@ -1079,6 +1080,8 @@ export function createRemoteWorkspaceBwrapArguments(
     [tools.getconf, "/usr/bin/getconf"],
     [tools.ip, "/usr/bin/ip"],
     [tools.ldd, "/usr/bin/ldd"],
+    [tools.printenv, "/usr/bin/printenv"],
+    [tools.ps, "/usr/bin/ps"],
     [tools.ssh, "/usr/bin/ssh"],
     [tools.xkbcomp, "/usr/bin/xkbcomp"],
     [canonicalPython, canonicalPython]

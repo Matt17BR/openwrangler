@@ -310,9 +310,21 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
     /only Linux x64/u
   );
   const fakeTools = Object.fromEntries(
-    ["bash", "bwrap", "busybox", "dpkgDeb", "dynamicLoader", "getconf", "ip", "ldd", "ssh", "sshKeygen", "xkbcomp"].map(
-      (name) => [name, process.execPath]
-    )
+    [
+      "bash",
+      "bwrap",
+      "busybox",
+      "dpkgDeb",
+      "dynamicLoader",
+      "getconf",
+      "ip",
+      "ldd",
+      "printenv",
+      "ps",
+      "ssh",
+      "sshKeygen",
+      "xkbcomp"
+    ].map((name) => [name, process.execPath])
   );
   await assert.rejects(
     assertRemoteWorkspaceHost(
@@ -399,6 +411,8 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
         getconf: process.execPath,
         ip: process.execPath,
         ldd: process.execPath,
+        printenv: process.execPath,
+        ps: process.execPath,
         ssh: process.execPath,
         xkbcomp: process.execPath
       }
@@ -472,7 +486,15 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     assert.equal(args.includes("/home"), true);
     assert.equal(args.includes("/usr/bin/getconf"), true);
     assert.equal(args.includes("/usr/bin/ldd"), true);
+    assert.equal(args.includes("/usr/bin/printenv"), true);
+    assert.equal(args.includes("/usr/bin/ps"), true);
     assert.equal(args.includes("/usr/bin/ldconfig"), false);
+    assert.equal(
+      args.some(
+        (value, index) => value === "--symlink" && args[index + 1] === "busybox" && args[index + 2] === "/usr/bin/ps"
+      ),
+      false
+    );
     const usrLibDirectory = args.findIndex((value, index) => value === "--dir" && args[index + 1] === "/usr/lib");
     assert.notEqual(usrLibDirectory, -1);
     const systemRuntimeMount = args.findIndex(

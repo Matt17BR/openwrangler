@@ -273,6 +273,12 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
           '&& test -z "${LD_AUDIT-}"',
           '&& test -n "${OPEN_WRANGLER_TEST_MODULE-}"',
           '&& test -n "${OPEN_WRANGLER_TEST_RESULT-}"',
+          '&& test "$(command -v getconf)" = /usr/bin/getconf',
+          '&& test "$(command -v printenv)" = /usr/bin/printenv',
+          '&& test "$(command -v ps)" = /usr/bin/ps',
+          '&& test "$(/usr/bin/getconf LONG_BIT)" = 64',
+          '&& test "$(/usr/bin/printenv HOME)" = "$HOME"',
+          '&& /usr/bin/ps -p "$$" -o pid= >/dev/null',
           '&& printf %s "$HOME"\''
         ].join(" ")
       ],
