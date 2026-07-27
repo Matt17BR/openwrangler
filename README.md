@@ -6,7 +6,39 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 <!-- open-wrangler-release-status:start -->
 
-> **Release status:** Active preview. Prebuilt releases are not published yet; follow the source-install instructions below while the [1.0 parity matrix](docs/feature-parity.md) remains open.
+> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](docs/feature-parity.md) remains open.
+
+## Install
+
+Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+
+| Editor                                          | Support      | Release coverage                                       |
+| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
+| VS Code                                         | First-class  | Full automated and release matrix                      |
+| Cursor                                          | First-class  | Full automated and release matrix                      |
+| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
+| Browser-hosted `vscode.dev`                     | Unsupported  | No local Python/runtime extension host                 |
+
+Google documents an [Open VSX-hosted extension working in Antigravity](https://developers.google.com/workspace/guides/developer-tools), but Open Wrangler has not verified Antigravity's registry or completed a functional smoke there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
+
+To try the current preview from a clone of this repository:
+
+```bash
+npm install
+python3 -m venv .venv
+.venv/bin/python -m pip install -e "python[dev]"
+npm run package -- --pre-release --out openwrangler.vsix
+```
+
+On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equivalent commands.
+
+In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select `openwrangler.vsix`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu.
+
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently. If an editor or machine stops during that change, the environment stays blocked until the guarded revalidation command proves it is consistent.
+
+Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
+
+Open Wrangler itself remains a preview and does not yet claim complete Microsoft Data Wrangler parity.
 
 <!-- open-wrangler-release-status:end -->
 
@@ -44,36 +76,6 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
   </tr>
 </table>
 
-## Install
-
-Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
-
-| Editor                                          | Support      | Release coverage                                       |
-| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
-| VS Code                                         | First-class  | Full automated and release matrix                      |
-| Cursor                                          | First-class  | Full automated and release matrix                      |
-| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
-| Browser-hosted `vscode.dev`                     | Unsupported  | No local Python/runtime extension host                 |
-
-Google documents an [Open VSX-hosted extension working in Antigravity](https://developers.google.com/workspace/guides/developer-tools), but Open Wrangler has not verified Antigravity's registry or completed a functional smoke there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
-
-Prebuilt releases are not published yet. To try the current preview from a clone of this repository:
-
-```bash
-npm install
-python3 -m venv .venv
-.venv/bin/python -m pip install -e "python[dev]"
-npm run package -- --pre-release --out openwrangler.vsix
-```
-
-On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equivalent commands.
-
-In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select `openwrangler.vsix`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu. Future preview builds will appear on [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
-
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently. If an editor or machine stops during that change, the environment stays blocked until the guarded revalidation command proves it is consistent.
-
-Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
-
 ## Engines and formats
 
 | Backend | File sessions                   | Notebook variables | Notes                                                            |
@@ -95,7 +97,6 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 ## Current limits
 
-- This is a preview, not yet a claim of complete Microsoft Data Wrangler parity. Remaining evidence is tracked in [the parity matrix](docs/feature-parity.md).
 - PySpark is planned, but not implemented. The [engine proposal](https://github.com/Matt17BR/openwrangler/issues/36) requires distributed execution with no full-frame collection or implicit local-dataframe conversion.
 - R dataframes and Quarto/R Markdown integration are a [post-1.0 architecture spike](https://github.com/Matt17BR/openwrangler/issues/87), not a Python conversion layer.
 - DuckDB currently supports file-backed sessions only; Excel files and notebook variables use Polars or Pandas.

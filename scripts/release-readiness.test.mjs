@@ -15,6 +15,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
 import { inspectReleaseMetadata } from "./release-metadata.mjs";
+import { inspectPreviewReadme, PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
   inspectStableReleaseReadiness,
   PRIMARY_PARITY_SCOPE,
@@ -43,7 +44,11 @@ function manifest({ id = "openwrangler", publisher = "Matt17BR", version = "1.0.
 </PackageManifest>`;
 }
 
-function parity(status = "Done", scope = PRIMARY_PARITY_SCOPE, evidence = "Exact package") {
+function parity(
+  status = "Done",
+  scope = PRIMARY_PARITY_SCOPE,
+  evidence = "Exact package acceptance; test:scripts/release-readiness.test.mjs"
+) {
   const rows = scope
     .map(([surface, pandas, polars]) => `| ${surface} | ${pandas} | ${polars} | ${status} | ${evidence} |`)
     .join("\n");
@@ -67,11 +72,16 @@ function ready(overrides = {}) {
     sourcePackageJson: JSON.stringify(stablePackage),
     pythonVersionFile: '__version__ = "1.0.0"\n',
     featureParity: parity(),
-    changelog: "# Changelog\n\n## [1.0.0] - 2026-07-27\n",
+    changelog: "# Changelog\n\n## [1.0.0] - 2026-07-27\n\n### Added\n\n- Published the verified stable package.\n",
     readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
     packagedPackageJson: JSON.stringify(stablePackage),
     packagedPythonVersionFile: '__version__ = "1.0.0"\n',
     packagedReadme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
+    trackedEvidencePaths: new Set([
+      ".github/workflows/release.yml",
+      "docs/testing.md",
+      "scripts/release-readiness.test.mjs"
+    ]),
     vsixManifest: manifest(),
     ...overrides
   };
@@ -184,7 +194,11 @@ broken
 
 test("reads exactly one active primary parity table from its top-level section", () => {
   const partialTable = parity("Partial");
-  for (const hiddenDoneTable of [`\`\`\`markdown\n${parity()}\`\`\`\n`, `<!--\n${parity()}-->\n`]) {
+  for (const hiddenDoneTable of [
+    `\`\`\`markdown\n${parity()}\`\`\`\n`,
+    `<!--\n${parity()}-->\n`,
+    `<div hidden>\n<table><tr><th>Surface</th><th>Pandas</th><th>Polars</th><th>Status</th><th>Required evidence</th></tr><tr><td>decoy</td><td>Yes</td><td>Yes</td><td>Done</td><td>decoy evidence</td></tr></table>\n</div>\n`
+  ]) {
     const problems = inspectStableReleaseReadiness(
       ready({
         featureParity: `# Feature parity matrix\n\n${hiddenDoneTable}\n${partialTable}`
@@ -193,13 +207,15 @@ test("reads exactly one active primary parity table from its top-level section",
     assert.ok(problems.includes('Parity row "CSV/TSV/Parquet/Excel/JSONL entry points" is Partial, not Done.'));
   }
 
+  const tableOnly = parity()
+    .split("\n## DuckDB file-backed preview matrix")[0]
+    .replace(/^# Feature parity matrix\n\n/u, "");
   const duplicate = inspectStableReleaseReadiness(
-    ready({ featureParity: `# Feature parity matrix\n\n${parity()}\n${parity()}` })
+    ready({ featureParity: `# Feature parity matrix\n\n${tableOnly}\n${tableOnly}` })
   );
-  assert.ok(
-    duplicate.includes(
-      "docs/feature-parity.md must contain exactly one active canonical Pandas/Polars parity table; found 2."
-    )
+  assert.equal(
+    duplicate[0],
+    "docs/feature-parity.md must contain exactly one active top-level canonical Pandas/Polars parity table; found 2."
   );
 
   const wrongSection = inspectStableReleaseReadiness(
@@ -213,16 +229,38 @@ test("reads exactly one active primary parity table from its top-level section",
 });
 
 test("requires substantive completed evidence for every Done parity row", () => {
-  for (const evidence of ["", "TODO", "Pending", "Add installed-editor timing"]) {
+  for (const evidence of [
+    "",
+    "TODO",
+    "Pending",
+    "Add installed-editor timing",
+    "Will add tests later; test:scripts/release-readiness.test.mjs",
+    "Exact acceptance; test:scripts/missing.test.mjs",
+    "Exact acceptance; test:docs/testing.md",
+    "Exact acceptance; workflow:docs/testing.md",
+    "Exact acceptance; record:scripts/release-readiness.test.mjs",
+    "Exact acceptance; test:../scripts/release-readiness.test.mjs",
+    "Exact acceptance; test:scripts/release-readiness.test.mjs and test:not tracked"
+  ]) {
     const problems = inspectStableReleaseReadiness(
       ready({ featureParity: parity("Done", PRIMARY_PARITY_SCOPE, evidence) })
     );
     assert.ok(
       problems.some(
         (problem) =>
-          problem.includes("empty required cell") ||
-          problem.includes("must record substantive completed acceptance evidence")
+          problem.includes("empty or malformed row") || problem.includes("must record human acceptance evidence")
       )
+    );
+  }
+
+  for (const evidence of [
+    "Exact script acceptance passed; test:scripts/release-readiness.test.mjs",
+    "Exact workflow acceptance passed; workflow:.github/workflows/release.yml",
+    "Recorded editor acceptance passed; record:docs/testing.md"
+  ]) {
+    assert.deepEqual(
+      inspectStableReleaseReadiness(ready({ featureParity: parity("Done", PRIMARY_PARITY_SCOPE, evidence) })),
+      []
     );
   }
 });
@@ -313,9 +351,12 @@ test("requires one real dated changelog heading for the stable version", () => {
   for (const changelog of [
     "# Changelog\n\n## [1.0.0] - Unreleased\n",
     "# Changelog\n\n## [1.0.0] - 2026-02-30\n",
+    "# Changelog\n\n## [1.0.0] - 2026-07-27\n",
+    "# Changelog\n\n## [1.0.0] - 2026-07-27\n\n### Notes\n\n- This decoy is not a release category.\n",
     "# Changelog\n\n## [1.0.0] - 2026-07-27\n## [1.0.0] - 2026-07-28\n",
     "# Changelog\n\n```\n## [1.0.0] - 2026-07-27\n```\n",
-    "# Changelog\n\n<!--\n## [1.0.0] - 2026-07-27\n-->\n"
+    "# Changelog\n\n<!--\n## [1.0.0] - 2026-07-27\n-->\n",
+    "# Changelog\n\n<div hidden><h2>[1.0.0] - 2026-07-27</h2><h3>Added</h3><ul><li>Hidden decoy change.</li></ul></div>\n"
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ changelog }));
     assert.ok(problems.some((problem) => problem.startsWith("CHANGELOG.md")));
@@ -326,21 +367,50 @@ test("requires one exact positive stable release and install section in both REA
   for (const readme of [
     "# Open Wrangler\n\nOpen Wrangler remains preview software.\n",
     "# Open Wrangler\n\nNo packaged releases are available.\n",
+    `# Open Wrangler\n\n\`\`\`markdown\n${STABLE_README_RELEASE_SECTION}\n\`\`\`\n`,
+    `# Open Wrangler\n\n<!--\n${STABLE_README_RELEASE_SECTION}\n-->\n`,
+    `# Open Wrangler\n\n<div hidden>\n${STABLE_README_RELEASE_SECTION}\n</div>\n`,
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${STABLE_README_RELEASE_SECTION}\n`,
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed VSIX", "VSIX")}\n`
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ readme }));
-    assert.ok(problems.includes("README.md must contain exactly one canonical stable release/install-status section."));
+    assert.ok(problems.some((problem) => problem.startsWith("README.md must")));
   }
+
+  for (const contradiction of [
+    "Prebuilt releases are not published.",
+    "Future preview builds will appear here.",
+    "Open Wrangler itself remains a preview.",
+    "This is a preview release for Open Wrangler.",
+    "This is not parity-complete for Open Wrangler."
+  ]) {
+    const problems = inspectStableReleaseReadiness(
+      ready({ readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${contradiction}\n` })
+    );
+    assert.ok(
+      problems.includes("README.md contains release-channel status or install material outside its generated region.")
+    );
+  }
+
+  assert.deepEqual(
+    inspectStableReleaseReadiness(
+      ready({
+        readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\nDuckDB notebook support remains a preview experiment.\n`
+      })
+    ),
+    []
+  );
 
   const packagedProblems = inspectStableReleaseReadiness(
     ready({ packagedReadme: "# Open Wrangler\n\nOpen Wrangler remains preview software.\n" })
   );
-  assert.ok(
-    packagedProblems.includes(
-      "Packaged README must contain exactly one canonical stable release/install-status section."
-    )
-  );
+  assert.ok(packagedProblems.some((problem) => problem.startsWith("Packaged README must")));
+});
+
+test("keeps the checked-in preview README release and install section generated", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  assert.deepEqual(inspectPreviewReadme(readme), []);
+  assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
 });
 
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {

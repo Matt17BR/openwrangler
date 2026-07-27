@@ -1,0 +1,401 @@
+import MarkdownIt from "markdown-it";
+import { posix as posixPath } from "node:path";
+
+const markdown = new MarkdownIt({
+  html: true,
+  linkify: false,
+  typographer: false
+});
+
+const DOCUMENT_MAX_BYTES = 2 * 1024 * 1024;
+const FEATURE_PARITY_HEADING = "Feature parity matrix";
+const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
+const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
+const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
+const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
+const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
+const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
+const EVIDENCE_REFERENCE = /\b(test|workflow|record):([A-Za-z0-9.][A-Za-z0-9._/-]*)(?:#[A-Za-z0-9._:-]+)?\b/gu;
+const EVIDENCE_REFERENCE_PREFIX = /\b(?:test|workflow|record):/gu;
+const FUTURE_EVIDENCE =
+  /\b(?:TODO|TBD|pending|planned|future|later|will (?:add|capture|record|run|test|verify)|to be (?:added|captured|recorded|run|tested|verified))\b/iu;
+
+export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
+
+> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](docs/feature-parity.md) remains open.
+
+## Install
+
+Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+
+| Editor                                          | Support      | Release coverage                                       |
+| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
+| VS Code                                         | First-class  | Full automated and release matrix                      |
+| Cursor                                          | First-class  | Full automated and release matrix                      |
+| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
+| Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
+
+Google documents an [Open VSX-hosted extension working in Antigravity](https://developers.google.com/workspace/guides/developer-tools), but Open Wrangler has not verified Antigravity's registry or completed a functional smoke there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
+
+To try the current preview from a clone of this repository:
+
+\`\`\`bash
+npm install
+python3 -m venv .venv
+.venv/bin/python -m pip install -e "python[dev]"
+npm run package -- --pre-release --out openwrangler.vsix
+\`\`\`
+
+On Windows, use \`py -m venv .venv\` and \`.venv\\Scripts\\python.exe\` in the equivalent commands.
+
+In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select \`openwrangler.vsix\`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu.
+
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running \`pip\`; it never installs packages silently. If an editor or machine stops during that change, the environment stays blocked until the guarded revalidation command proves it is consistent.
+
+Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
+
+Open Wrangler itself remains a preview and does not yet claim complete Microsoft Data Wrangler parity.
+
+${README_RELEASE_SECTION_END}`;
+
+export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
+
+> **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](${RELEASES_URL}).
+
+## Install
+
+Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+
+Download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
+
+VS Code and Cursor are first-class release targets. Other VS Code-based desktop IDEs are experimental, and browser-hosted \`vscode.dev\` is unsupported because it has no local Python/runtime extension host.
+
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
+
+Open Wrangler 1.0 satisfies every in-scope row in the checked-in [feature parity matrix](docs/feature-parity.md).
+
+${README_RELEASE_SECTION_END}`;
+
+function parseMarkdown(contents, label) {
+  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
+    return { problem: `${label} must be bounded UTF-8 Markdown.`, tokens: undefined };
+  }
+  return { problem: undefined, tokens: markdown.parse(contents.replace(/\r\n?/gu, "\n"), {}) };
+}
+
+function inlineText(tokens, index) {
+  const token = tokens[index + 1];
+  return token?.type === "inline" ? token.content.trim() : undefined;
+}
+
+function topLevelHeadings(tokens, tag) {
+  return tokens.flatMap((token, index) =>
+    token.type === "heading_open" && token.level === 0 && token.tag === tag
+      ? [{ index, map: token.map, text: inlineText(tokens, index) }]
+      : []
+  );
+}
+
+function extractTable(tokens, tableIndex) {
+  const rows = [];
+  let row;
+  for (let index = tableIndex + 1; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.type === "table_close" && token.level === 0) {
+      return rows;
+    }
+    if (token?.type === "tr_open") {
+      row = [];
+      continue;
+    }
+    if (token?.type === "tr_close") {
+      if (row !== undefined) {
+        rows.push(row);
+      }
+      row = undefined;
+      continue;
+    }
+    if ((token?.type === "th_open" || token?.type === "td_open") && row !== undefined) {
+      const value = tokens[index + 1];
+      row.push(value?.type === "inline" ? value.content.trim() : "");
+    }
+  }
+  return undefined;
+}
+
+function isPortableTrackedPath(value) {
+  return (
+    value === posixPath.normalize(value) &&
+    !value.startsWith("/") &&
+    !value.startsWith("../") &&
+    !value.includes("\\") &&
+    value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+  );
+}
+
+function validateEvidenceReference(kind, path, trackedEvidencePaths) {
+  if (!isPortableTrackedPath(path) || !trackedEvidencePaths.has(path)) {
+    return false;
+  }
+  if (kind === "workflow") {
+    return /^\.github\/workflows\/[^/]+\.ya?ml$/u.test(path);
+  }
+  if (kind === "test") {
+    return (
+      /^scripts\/[^/]+\.test\.mjs$/u.test(path) ||
+      /^src\/test\/.+\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(path) ||
+      /^python\/tests\/test_[^/]+\.py$/u.test(path)
+    );
+  }
+  return kind === "record" && /^(?:docs\/[^/]+\.md|CHANGELOG\.md)$/u.test(path);
+}
+
+function inspectEvidence(evidence, trackedEvidencePaths) {
+  const references = [...evidence.matchAll(EVIDENCE_REFERENCE)];
+  const referencePrefixes = [...evidence.matchAll(EVIDENCE_REFERENCE_PREFIX)];
+  if (references.length === 0 || references.length !== referencePrefixes.length) {
+    return false;
+  }
+  const humanText = evidence
+    .replace(EVIDENCE_REFERENCE, "")
+    .replace(/[`*_~()[\]—–:;,.]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (humanText.length < 8 || !/[\p{L}\p{N}]/u.test(humanText) || FUTURE_EVIDENCE.test(humanText)) {
+    return false;
+  }
+  return references.every((reference) => {
+    const kind = reference[1];
+    const path = reference[2];
+    return kind !== undefined && path !== undefined && validateEvidenceReference(kind, path, trackedEvidencePaths);
+  });
+}
+
+export function inspectPrimaryParityMatrix(contents, expectedScope, trackedEvidencePaths) {
+  const parsed = parseMarkdown(contents, "docs/feature-parity.md");
+  if (parsed.problem !== undefined || parsed.tokens === undefined) {
+    return [parsed.problem];
+  }
+  const tokens = parsed.tokens;
+  const problems = [];
+  const h1 = topLevelHeadings(tokens, "h1");
+  if (h1.length !== 1 || h1[0]?.index !== 0 || h1[0]?.text !== FEATURE_PARITY_HEADING) {
+    problems.push('docs/feature-parity.md must begin with one active top-level "# Feature parity matrix" heading.');
+  }
+
+  const expectedHeader = ["Surface", "Pandas", "Polars", "Status", "Required evidence"];
+  const tables = tokens.flatMap((token, index) => {
+    if (token.type !== "table_open" || token.level !== 0) {
+      return [];
+    }
+    const rows = extractTable(tokens, index);
+    return rows?.[0]?.length === expectedHeader.length &&
+      rows[0].every((cell, cellIndex) => cell === expectedHeader[cellIndex])
+      ? [{ index, rows }]
+      : [];
+  });
+  if (tables.length !== 1) {
+    return [
+      `docs/feature-parity.md must contain exactly one active top-level canonical Pandas/Polars parity table; found ${tables.length}.`
+    ];
+  }
+  const table = tables[0];
+  const firstH2 = topLevelHeadings(tokens, "h2")[0];
+  if (firstH2 !== undefined && table.index > firstH2.index) {
+    problems.push("The canonical Pandas/Polars parity table must remain in the top-level feature-parity section.");
+  }
+
+  const rows = table.rows.slice(1);
+  if (rows.length !== expectedScope.length) {
+    problems.push(
+      `The canonical Pandas/Polars parity table must contain exactly ${expectedScope.length} release rows; found ${rows.length}.`
+    );
+  }
+  const comparisonLength = Math.max(rows.length, expectedScope.length);
+  for (let index = 0; index < comparisonLength; index += 1) {
+    const actual = rows[index];
+    const expected = expectedScope[index];
+    if (expected === undefined) {
+      problems.push(`Unexpected parity row "${actual?.[0] ?? ""}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual === undefined) {
+      problems.push(`Missing parity row "${expected[0]}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual.length !== expectedHeader.length || actual.some((cell) => cell.length === 0)) {
+      problems.push(`The canonical Pandas/Polars parity table has an empty or malformed row at position ${index + 1}.`);
+      continue;
+    }
+
+    const [surface, pandas, polars, status, evidence] = actual;
+    if (status !== "Done") {
+      problems.push(`Parity row "${surface}" is ${status}, not Done.`);
+    } else if (!inspectEvidence(evidence, trackedEvidencePaths)) {
+      problems.push(
+        `Parity row "${surface}" must record human acceptance evidence plus a valid tracked test:, workflow:, or record: reference.`
+      );
+    }
+    if (surface !== expected[0] || pandas !== expected[1] || polars !== expected[2]) {
+      problems.push(
+        `Parity row ${index + 1} must be "${expected[0]}" (${expected[1]}/${expected[2]}), received "${surface}" (${pandas}/${polars}).`
+      );
+    }
+  }
+  return problems;
+}
+
+function isCalendarDate(value) {
+  if (!ISO_DATE.test(value)) {
+    return false;
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function substantiveListItem(tokens, start, end) {
+  for (let index = start; index < end; index += 1) {
+    if (tokens[index]?.type !== "list_item_open") {
+      continue;
+    }
+    let text = "";
+    for (let cursor = index + 1; cursor < end && tokens[cursor]?.type !== "list_item_close"; cursor += 1) {
+      if (tokens[cursor]?.type === "inline") {
+        text += ` ${tokens[cursor].content}`;
+      }
+    }
+    const normalized = text
+      .replace(/[`*_~]/gu, "")
+      .replace(/\s+/gu, " ")
+      .trim();
+    if (normalized.length >= 12 && /[\p{L}\p{N}]/u.test(normalized)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function inspectChangelog(contents, version) {
+  const parsed = parseMarkdown(contents, "CHANGELOG.md");
+  if (parsed.problem !== undefined || parsed.tokens === undefined) {
+    return [parsed.problem];
+  }
+  const tokens = parsed.tokens;
+  const h1 = topLevelHeadings(tokens, "h1");
+  if (h1.length !== 1 || h1[0]?.index !== 0 || h1[0]?.text !== "Changelog") {
+    return ['CHANGELOG.md must begin with one active top-level "# Changelog" heading.'];
+  }
+
+  const matching = topLevelHeadings(tokens, "h2").filter((heading) => {
+    const match = CHANGELOG_HEADING.exec(heading.text ?? "");
+    return match?.[1] === version;
+  });
+  if (matching.length !== 1) {
+    return [`CHANGELOG.md must contain exactly one active top-level heading for version ${version}.`];
+  }
+  const target = matching[0];
+  const targetMatch = CHANGELOG_HEADING.exec(target.text ?? "");
+  const date = targetMatch?.[2]?.trim() ?? "";
+  if (!isCalendarDate(date)) {
+    return [`CHANGELOG.md version ${version} must use a real YYYY-MM-DD release date instead of "${date}".`];
+  }
+
+  const nextH2 = topLevelHeadings(tokens, "h2").find((heading) => heading.index > target.index);
+  const sectionEnd = nextH2?.index ?? tokens.length;
+  const categories = topLevelHeadings(tokens.slice(target.index + 1, sectionEnd), "h3").map((heading) => ({
+    ...heading,
+    index: heading.index + target.index + 1
+  }));
+  const hasCategorizedChange = categories.some((category, categoryIndex) => {
+    if (!CHANGELOG_CATEGORIES.has(category.text ?? "")) {
+      return false;
+    }
+    const end = categories[categoryIndex + 1]?.index ?? sectionEnd;
+    return substantiveListItem(tokens, category.index + 1, end);
+  });
+  return hasCategorizedChange
+    ? []
+    : [
+        `CHANGELOG.md version ${version} must contain at least one substantive list item under Added, Changed, Fixed, Removed, or Security.`
+      ];
+}
+
+function lineRangeContains(range, token) {
+  return (
+    range !== undefined &&
+    token.map !== null &&
+    token.map !== undefined &&
+    token.map[0] >= range[0] &&
+    token.map[1] <= range[1]
+  );
+}
+
+function isProductReleaseClaim(value) {
+  const normalized = value
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return (
+    /\bprebuilt (?:Open Wrangler )?releases? (?:are|remain|will be)\b/iu.test(normalized) ||
+    /\bno (?:prebuilt|packaged|stable) (?:Open Wrangler )?releases? (?:are|remain|will be)?\b/iu.test(normalized) ||
+    /\bfuture (?:Open Wrangler )?preview builds?\b/iu.test(normalized) ||
+    /\bOpen Wrangler(?: itself)? (?:is|remains) (?:an? )?(?:preview|stable|released|published)\b/iu.test(normalized) ||
+    /\bThis is (?:an? )?preview\b.*\b(?:Open Wrangler|Data Wrangler|parity)\b/iu.test(normalized) ||
+    /\bThis is\b.*\bnot\b.*\bparity[- ]complete\b/iu.test(normalized) ||
+    /\bOpen Wrangler\b.*\b(?:has|satisfies|reaches|claims)\b.*\b(?:complete )?parity\b/iu.test(normalized) ||
+    /\bOpen Wrangler\b.*\b(?:not yet|does not yet|is not)\b.*\b(?:parity|stable|published)\b/iu.test(normalized)
+  );
+}
+
+function inspectReadmeReleaseRegion(contents, label, expectedSection, channel) {
+  const normalized = typeof contents === "string" ? contents.replace(/\r\n?/gu, "\n") : contents;
+  const parsed = parseMarkdown(normalized, label);
+  if (parsed.problem !== undefined || parsed.tokens === undefined) {
+    return [parsed.problem];
+  }
+  const tokens = parsed.tokens;
+  const marker = (value) =>
+    tokens.flatMap((token, index) =>
+      token.type === "html_block" && token.level === 0 && token.content.trim() === value
+        ? [{ index, map: token.map }]
+        : []
+    );
+  const starts = marker(README_RELEASE_SECTION_START);
+  const ends = marker(README_RELEASE_SECTION_END);
+  if (starts.length !== 1 || ends.length !== 1 || starts[0].index >= ends[0].index) {
+    return [`${label} must contain one active top-level generated ${channel} release/install region.`];
+  }
+  const range = [starts[0].map?.[0] ?? -1, ends[0].map?.[1] ?? -1];
+  const lines = normalized.split("\n");
+  const actual = lines.slice(range[0], range[1]).join("\n");
+  if (actual !== expectedSection) {
+    return [`${label} must contain the exact generated ${channel} release/install region.`];
+  }
+
+  const installHeadings = topLevelHeadings(tokens, "h2").filter((heading) => heading.text === "Install");
+  if (installHeadings.length !== 1 || !lineRangeContains(range, tokens[installHeadings[0].index])) {
+    return [`${label} must keep its only active Install section inside the generated ${channel} region.`];
+  }
+  for (const token of tokens) {
+    if (lineRangeContains(range, token)) {
+      continue;
+    }
+    const isVisibleText = token.type === "inline" || (token.type === "html_block" && !token.content.startsWith("<!--"));
+    const hasReleaseStatus = isVisibleText && /^\s*\**Release status:\**/iu.test(token.content);
+    const hasReleaseLink =
+      token.type === "inline" &&
+      token.children?.some((child) => child.type === "link_open" && child.attrGet("href") === RELEASES_URL);
+    if (hasReleaseStatus || hasReleaseLink || (isVisibleText && isProductReleaseClaim(token.content))) {
+      return [`${label} contains release-channel status or install material outside its generated region.`];
+    }
+  }
+  return [];
+}
+
+export function inspectPreviewReadme(contents, label = "README.md") {
+  return inspectReadmeReleaseRegion(contents, label, PREVIEW_README_RELEASE_SECTION, "preview");
+}
+
+export function inspectStableReadme(contents, label = "README.md") {
+  return inspectReadmeReleaseRegion(contents, label, STABLE_README_RELEASE_SECTION, "stable");
+}
