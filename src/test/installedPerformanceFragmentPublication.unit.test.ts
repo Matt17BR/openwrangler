@@ -90,6 +90,7 @@ describe("installed performance fragment publication", () => {
   it("uses a real atomic hard-link commit and retires only its temporary link", () => {
     const destination = privateDestination();
     const value = { protocol: 4, phase: "perf-csv-cold", samples: [11, 12] };
+    const expected = expectedPayload(value);
     let beforeLink: BigIntStats | undefined;
     let linkedTemporary: BigIntStats | undefined;
     let linkedDestination: BigIntStats | undefined;
@@ -110,9 +111,14 @@ describe("installed performance fragment publication", () => {
     expectStableIdentityAcrossPublication(beforeLink as BigIntStats, linkedDestination as BigIntStats);
     expect(linkedTemporary?.dev).toBe(linkedDestination?.dev);
     expect(linkedTemporary?.ino).toBe(linkedDestination?.ino);
-    expect(lstatSync(destination, { bigint: true }).nlink).toBe(1n);
-    expect(receipt.bytes).toBe(expectedPayload(value).length);
-    expect(readFileSync(destination)).toEqual(expectedPayload(value));
+    const published = lstatSync(destination, { bigint: true });
+    expectStableIdentityAcrossPublication(linkedDestination as BigIntStats, published);
+    expect(published.nlink).toBe(1n);
+    expect(receipt).toEqual({
+      protocol: INSTALLED_PERFORMANCE_ARTIFACT_RECEIPT_PROTOCOL,
+      bytes: expected.length,
+      sha256: createHash("sha256").update(expected).digest("hex")
+    });
   });
 
   it("refuses a raced destination without changing its sentinel bytes", () => {
