@@ -2076,7 +2076,7 @@ function abandonUnverifiedWindowsSupervisor(child, message) {
 }
 
 export async function runBoundedEditorCommand(
-  { executable, args = [], environment = createEditorAcceptanceEnvironment(), label = "Editor command" },
+  { executable, args = [], environment = createEditorAcceptanceEnvironment(), label = "Editor command", beforeSpawn },
   {
     platform = process.platform,
     spawnProcess,
@@ -2135,24 +2135,49 @@ export async function runBoundedEditorCommand(
     );
   }
   let child;
+  let launchPreparation;
+  let launchResourceFailure;
   try {
+    if (beforeSpawn !== undefined) {
+      if (platform === "win32" || typeof beforeSpawn !== "function") {
+        throw new Error("An editor command pre-spawn seal must be one synchronous POSIX callback.");
+      }
+      launchPreparation = normalizeEditorCommandLaunchPreparation(beforeSpawn());
+    }
     const launchProcess = spawnProcess ?? spawnOwnedEditorProcess;
     child = launchProcess(
       executable,
-      args,
+      launchPreparation?.args ?? args,
       {
         detached: platform !== "win32",
         env: environment,
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: ["ignore", "pipe", "pipe", ...(launchPreparation?.inheritedFileDescriptors ?? [])]
       },
       { platform, supervisorReceipt }
     );
   } catch (error) {
+    try {
+      launchPreparation?.release();
+    } catch (releaseError) {
+      throw editorCommandError(
+        label,
+        "could not start or release its sealed launch inputs",
+        startedAt,
+        "",
+        "",
+        new AggregateError([error, releaseError], "Editor launch preparation failed.")
+      );
+    }
     if (supervisorReceipt && editorProcessTreeMayBeLive(error)) {
       unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
     }
     throw editorCommandError(label, "could not start", startedAt, "", "", error);
+  }
+  try {
+    launchPreparation?.release();
+  } catch (error) {
+    launchResourceFailure = error;
   }
 
   const remainingObservationTimeoutMs = Math.max(0, timeoutMs - Math.max(0, now() - startedAt));
@@ -2203,8 +2228,9 @@ export async function runBoundedEditorCommand(
   let timeout;
   let observation;
   try {
-    observation =
-      remainingObservationTimeoutMs <= 0
+    observation = launchResourceFailure
+      ? { kind: "launch-resource-failure", error: launchResourceFailure }
+      : remainingObservationTimeoutMs <= 0
         ? { kind: "timeout" }
         : await Promise.race([
             close.then((state) => ({ kind: "exit", state })),
@@ -2267,6 +2293,15 @@ export async function runBoundedEditorCommand(
     );
   } else if (observation.kind === "interrupted") {
     commandFailure = editorCommandError(label, `was interrupted by ${observation.signal}`, startedAt, stdout, stderr);
+  } else if (observation.kind === "launch-resource-failure") {
+    commandFailure = editorCommandError(
+      label,
+      "could not release its sealed launch inputs after spawn",
+      startedAt,
+      stdout,
+      stderr,
+      observation.error
+    );
   } else if (observation.state?.error) {
     commandFailure = editorCommandError(
       label,
@@ -2300,6 +2335,37 @@ export async function runBoundedEditorCommand(
   }
   if (commandFailure) throw commandFailure;
   return { stdout, stderr };
+}
+
+function normalizeEditorCommandLaunchPreparation(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== "args,inheritedFileDescriptors,release" ||
+    !Array.isArray(value.args) ||
+    value.args.length > 16_384 ||
+    !value.args.every(
+      (entry) => typeof entry === "string" && Buffer.byteLength(entry, "utf8") <= 16_384 && !/[\0\r\n]/u.test(entry)
+    ) ||
+    !Array.isArray(value.inheritedFileDescriptors) ||
+    value.inheritedFileDescriptors.length > 256 ||
+    !value.inheritedFileDescriptors.every(
+      (descriptor, index, descriptors) =>
+        Number.isSafeInteger(descriptor) &&
+        descriptor >= 3 &&
+        descriptor <= 2_147_483_647 &&
+        descriptors.indexOf(descriptor) === index
+    ) ||
+    typeof value.release !== "function"
+  ) {
+    throw new Error("An editor command pre-spawn seal returned a malformed launch preparation.");
+  }
+  return Object.freeze({
+    args: Object.freeze([...value.args]),
+    inheritedFileDescriptors: Object.freeze([...value.inheritedFileDescriptors]),
+    release: value.release
+  });
 }
 
 export async function runBoundedEditorCliCommand(

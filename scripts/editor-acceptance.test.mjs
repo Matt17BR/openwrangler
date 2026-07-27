@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createWriteStream, linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  createWriteStream,
+  linkSync,
+  openSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync
+} from "node:fs";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
@@ -742,6 +752,75 @@ test(
     }
   }
 );
+
+posixTest("bounded editor commands seal inherited inputs synchronously at the spawn boundary", async () => {
+  const descriptor = openSync("/dev/null", "r");
+  const events = [];
+  let released = false;
+  const child = fakeCommandChild(7311);
+  const result = runBoundedEditorCommand(
+    {
+      executable: "/private/bwrap",
+      args: ["stale"],
+      environment: {},
+      label: "sealed editor command",
+      beforeSpawn() {
+        events.push("before");
+        return {
+          args: ["--ro-bind", "/proc/self/fd/3", "/ow/phase.json"],
+          inheritedFileDescriptors: [descriptor],
+          release() {
+            closeSync(descriptor);
+            released = true;
+            events.push("release");
+          }
+        };
+      }
+    },
+    {
+      spawnProcess(executable, args, options) {
+        events.push("spawn");
+        assert.equal(executable, "/private/bwrap");
+        assert.deepEqual(args, ["--ro-bind", "/proc/self/fd/3", "/ow/phase.json"]);
+        assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe", descriptor]);
+        assert.equal(released, false);
+        setImmediate(() => {
+          child.exitCode = 0;
+          child.stdout.end("sealed\n");
+          child.stderr.end();
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        });
+        return child;
+      }
+    }
+  );
+  assert.deepEqual(await result, { stdout: "sealed\n", stderr: "" });
+  assert.deepEqual(events, ["before", "spawn", "release"]);
+  assert.equal(released, true);
+});
+
+posixTest("bounded editor commands fail before spawn on malformed launch seals", async () => {
+  let spawned = false;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/bwrap",
+        environment: {},
+        beforeSpawn: () => Promise.resolve({})
+      },
+      {
+        spawnProcess() {
+          spawned = true;
+          return fakeCommandChild(7312);
+        }
+      }
+    ),
+    (error) =>
+      /could not start/u.test(error.message) && /malformed launch preparation/u.test(error.cause?.message ?? "")
+  );
+  assert.equal(spawned, false);
+});
 
 test("editor downloads run each retry through the bounded isolated helper protocol", async () => {
   const calls = [];
