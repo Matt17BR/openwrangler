@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { renameSync, writeFileSync } from "node:fs";
+import { chmodSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import {
   INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
+  revalidateInstalledPerformanceReport,
   summarizeInstalledDurationSamples,
   validateInstalledFixtureManifest,
   validateInstalledPerformancePhase,
@@ -143,6 +144,14 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
   const report = passingReport();
   assert.equal(report.releaseGate.passed, true);
   assert.equal(assertInstalledPerformanceReleaseGate(report), report);
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate({ ...report, protocol: "openwrangler-installed-performance-report-v4" }),
+    /installed performance report protocol/u
+  );
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate({ ...report, envelopeRevision: 2 }),
+    /missing or unknown fields/u
+  );
 
   const failed = structuredClone(report);
   failed.editors[1].results.firstGrid.parquet.cold.timing.samplesMs[9] = 5_000;
@@ -248,8 +257,14 @@ test("report publication is bounded, atomic, and refuses a symlink destination",
   try {
     const destination = join(directory, "report.json");
     const report = passingReport();
-    writeInstalledPerformanceReport(destination, report);
+    const receipt = writeInstalledPerformanceReport(destination, report);
     assert.deepEqual(JSON.parse(await readFile(destination, "utf8")), report);
+    assert.equal(receipt.path, destination);
+    assert.equal(receipt.bytes, Buffer.byteLength(await readFile(destination, "utf8"), "utf8"));
+    assert.match(receipt.sha256, /^[0-9a-f]{64}$/u);
+    assert.equal(Object.isFrozen(receipt), true);
+    assert.equal(Object.isFrozen(receipt.fileIdentity), true);
+    assert.equal(revalidateInstalledPerformanceReport(receipt), receipt);
 
     const outside = join(directory, "outside.json");
     const linked = join(directory, "linked.json");
@@ -260,6 +275,70 @@ test("report publication is bounded, atomic, and refuses a symlink destination",
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("report receipt rejects same-path replacement and in-place mutation after publication", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-report-"));
+  try {
+    const destination = join(directory, "report.json");
+    const retained = join(directory, "retained.json");
+    const report = passingReport();
+    const receipt = writeInstalledPerformanceReport(destination, report);
+    const original = await readFile(destination);
+
+    renameSync(destination, retained);
+    writeFileSync(destination, original, { flag: "wx", mode: 0o600 });
+    assert.throws(() => revalidateInstalledPerformanceReport(receipt), /changed after publication/u);
+
+    unlinkSync(destination);
+    renameSync(retained, destination);
+    chmodSync(destination, 0o600);
+    const mutated = Buffer.from(original);
+    mutated[mutated.length - 2] ^= 1;
+    writeFileSync(destination, mutated);
+    assert.throws(
+      () => revalidateInstalledPerformanceReport(receipt),
+      /changed after publication|no longer matches/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("report receipt rejects a named-path swap during descriptor revalidation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-report-"));
+  try {
+    const destination = join(directory, "report.json");
+    const retained = join(directory, "retained.json");
+    const receipt = writeInstalledPerformanceReport(destination, passingReport());
+    const original = await readFile(destination);
+
+    assert.throws(
+      () =>
+        revalidateInstalledPerformanceReport(receipt, {
+          afterOpen() {
+            renameSync(destination, retained);
+            writeFileSync(destination, original, { flag: "wx", mode: 0o600 });
+          }
+        }),
+      /changed while its descriptor snapshot was read/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("report revalidation rejects an unminted receipt", () => {
+  assert.throws(
+    () =>
+      revalidateInstalledPerformanceReport({
+        path: "/tmp/report.json",
+        bytes: 1,
+        sha256: "0".repeat(64),
+        fileIdentity: {}
+      }),
+    /minted publication receipt/u
+  );
 });
 
 test("report publication withholds cleanup when its closed temporary is substituted", async () => {

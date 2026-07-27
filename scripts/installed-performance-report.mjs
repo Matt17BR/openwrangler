@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readSync,
   renameSync,
   rmSync,
   writeSync
@@ -38,6 +39,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PYTHON_VERSION = /^3\.(?:10|11|12|13|14)(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_REPORT_BYTES = 1024 * 1024;
+const installedPerformanceReportReceipts = new WeakSet();
 
 export function summarizeInstalledDurationSamples(samples, label = "duration samples") {
   assertDurationSamples(samples, label);
@@ -302,13 +304,44 @@ export function writeInstalledPerformanceReport(destination, report, hooks = {})
       completedIdentity,
       "Installed performance report destination changed during publication."
     );
+    const snapshot = readInstalledPerformanceReportSnapshot(absolute, {
+      afterOpen: hooks.afterPublishedOpen
+    });
+    if (!snapshot.bytes.equals(bytes)) {
+      throw new Error("Installed performance report destination bytes changed during publication.");
+    }
+    const receipt = Object.freeze({
+      path: absolute,
+      bytes: snapshot.bytes.length,
+      sha256: createHash("sha256").update(snapshot.bytes).digest("hex"),
+      fileIdentity: snapshot.identity
+    });
+    installedPerformanceReportReceipts.add(receipt);
     published = true;
+    return receipt;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
     if (!published && temporaryIdentity !== undefined) {
       removeIdentifiedReportTemporary(temporary, temporaryIdentity);
     }
   }
+}
+
+export function revalidateInstalledPerformanceReport(receipt, hooks = {}) {
+  if (!installedPerformanceReportReceipts.has(receipt)) {
+    throw new Error("Installed performance report revalidation requires one minted publication receipt.");
+  }
+  const snapshot = readInstalledPerformanceReportSnapshot(receipt.path, hooks);
+  requireSameReportReceipt(
+    snapshot.identity,
+    receipt.fileIdentity,
+    "Installed performance report changed after publication."
+  );
+  const sha256 = createHash("sha256").update(snapshot.bytes).digest("hex");
+  if (snapshot.bytes.length !== receipt.bytes || sha256 !== receipt.sha256) {
+    throw new Error("Installed performance report no longer matches its publication receipt.");
+  }
+  return receipt;
 }
 
 function validateFixtureEntry(entry, format, rows, columns) {
@@ -958,6 +991,51 @@ function assertReplaceableDestination(destination) {
   }
 }
 
+function readInstalledPerformanceReportSnapshot(destination, hooks = {}) {
+  let descriptor;
+  try {
+    descriptor = openSync(destination, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    const namedBefore = lstatSync(destination, { bigint: true });
+    requireSameReportFile(
+      namedBefore,
+      opened,
+      "Installed performance report path changed before its descriptor snapshot."
+    );
+    if (opened.size <= 0n || opened.size > BigInt(MAX_REPORT_BYTES)) {
+      throw new Error("Installed performance report descriptor snapshot has an invalid byte size.");
+    }
+    hooks.afterOpen?.(destination);
+    const bytes = Buffer.alloc(Number(opened.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (count === 0) {
+        throw new Error("Installed performance report ended before its pinned byte size.");
+      }
+      offset += count;
+    }
+    const completed = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(destination, { bigint: true });
+    requireSameReportFile(
+      completed,
+      opened,
+      "Installed performance report changed while its descriptor snapshot was read."
+    );
+    requireSameReportFile(
+      namedAfter,
+      opened,
+      "Installed performance report path changed while its descriptor snapshot was read."
+    );
+    return Object.freeze({
+      bytes,
+      identity: Object.freeze(reportIdentityReceipt(completed))
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 function requireSameReportIdentity(actual, expected, message) {
   if (
     !actual.isFile() ||
@@ -967,6 +1045,28 @@ function requireSameReportIdentity(actual, expected, message) {
     actual.ino !== expected.ino
   ) {
     throw new Error(message);
+  }
+}
+
+function reportIdentityReceipt(metadata) {
+  return {
+    birthtimeNs: metadata.birthtimeNs,
+    ctimeNs: metadata.ctimeNs,
+    dev: metadata.dev,
+    gid: metadata.gid,
+    ino: metadata.ino,
+    mode: metadata.mode,
+    mtimeNs: metadata.mtimeNs,
+    size: metadata.size,
+    uid: metadata.uid
+  };
+}
+
+function requireSameReportReceipt(actual, expected, message) {
+  for (const key of ["birthtimeNs", "ctimeNs", "dev", "gid", "ino", "mode", "mtimeNs", "size", "uid"]) {
+    if (typeof expected?.[key] !== "bigint" || actual[key] !== expected[key]) {
+      throw new Error(message);
+    }
   }
 }
 
