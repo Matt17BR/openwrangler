@@ -27,6 +27,7 @@ import {
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceDropbearLoaderResolution,
+  validateRemoteWorkspaceDropbearRuntimePaths,
   validateRemoteWorkspaceLibstdcxxResolution,
   validateRemoteWorkspaceProcfsType,
   validateRemoteSshLogAttestation,
@@ -223,10 +224,12 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   assertExecutable(ssh, "private SSH client");
   assertExecutable(dynamicLoader, "private SSH dynamic loader");
   assertExecutable(config.xvfb, "private Xvfb executable");
-  const sshServer = remoteNamespacePath(config, config.sshServer);
-  const sshLibraryPath = remoteNamespacePath(config, config.sshLibraryPath);
-  const sshHostKey = remoteNamespacePath(config, config.sshHostKey);
-  const sshAuthorizedKeys = remoteNamespacePath(config, config.sshAuthorizedKeys);
+  const { sshServer, sshLibraryPath } = validateRemoteWorkspaceDropbearRuntimePaths({
+    sshServer: config.sshServer,
+    sshLibraryPath: config.sshLibraryPath
+  });
+  const sshHostKey = remoteHomeNamespacePath(config, config.sshHostKey);
+  const sshAuthorizedKeys = remoteHomeNamespacePath(config, config.sshAuthorizedKeys);
   assertExecutable(sshServer, "private SSH daemon");
   if (process.getuid?.() !== config.uid || process.getgid?.() !== config.gid) {
     throw new Error("The private user namespace did not map its sole non-root owner.");
@@ -918,7 +921,7 @@ function remoteServerEnvironment(config) {
   };
 }
 
-function remoteNamespacePath(config, hostPath) {
+function remoteHomeNamespacePath(config, hostPath) {
   const prefix = `${config.paths.remoteHome}/`;
   if (typeof hostPath !== "string" || !hostPath.startsWith(prefix) || hostPath.includes("\0")) {
     throw new Error("The private SSH runtime escaped its remote-home mapping.");

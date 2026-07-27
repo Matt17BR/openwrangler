@@ -374,6 +374,23 @@ export function validateRemoteWorkspaceProcfsType(type) {
   return REMOTE_WORKSPACE_PROCFS_MAGIC;
 }
 
+export function validateRemoteWorkspaceDropbearRuntimePaths(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== "sshLibraryPath,sshServer" ||
+    value.sshServer !== REMOTE_WORKSPACE_DROPBEAR_SERVER ||
+    value.sshLibraryPath !== REMOTE_WORKSPACE_DROPBEAR_LIBRARY_PATH
+  ) {
+    throw new Error("The Remote SSH Dropbear runtime paths escaped their fixed private mount.");
+  }
+  return Object.freeze({
+    sshServer: value.sshServer,
+    sshLibraryPath: value.sshLibraryPath
+  });
+}
+
 export function createRemoteWorkspaceDropbearLoaderArguments(value, boundary) {
   if (
     !value ||
@@ -395,6 +412,10 @@ export function createRemoteWorkspaceDropbearLoaderArguments(value, boundary) {
   ) {
     throw new Error("The Remote SSH Dropbear private-loader request is malformed.");
   }
+  validateRemoteWorkspaceDropbearRuntimePaths({
+    sshServer: value.sshServer,
+    sshLibraryPath: value.sshLibraryPath
+  });
   const argv0 = assertRemoteWorkspaceDropbearNoReexecPath(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0, boundary);
   return Object.freeze([
     "--argv0",

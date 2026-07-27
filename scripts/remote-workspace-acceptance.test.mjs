@@ -74,6 +74,7 @@ import {
   publishRemoteWorkspaceControllerFailureResult,
   REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0,
   validateRemoteWorkspaceDropbearLoaderResolution,
+  validateRemoteWorkspaceDropbearRuntimePaths,
   validateRemoteWorkspaceProcfsType
 } from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
@@ -293,9 +294,35 @@ test("Dropbear fork-only proof requires the Linux procfs filesystem identity", (
   }
 });
 
+test("Dropbear runtime paths remain on the private mount outside the mutable remote home", () => {
+  const descriptor = remotePhaseDescriptor();
+  const validated = validateRemoteWorkspaceDropbearRuntimePaths({
+    sshServer: descriptor.sshServer,
+    sshLibraryPath: descriptor.sshLibraryPath
+  });
+  assert.deepEqual(validated, {
+    sshServer: "/ow/ssh-runtime/runtime/bin/dropbear",
+    sshLibraryPath: "/ow/ssh-runtime/runtime/lib"
+  });
+  assert.equal(Object.isFrozen(validated), true);
+  assert.equal(validated.sshServer.startsWith(`${descriptor.paths.remoteHome}/`), false);
+  for (const mutation of [
+    {},
+    { ...validated, sshServer: "/ow/rh/ssh-runtime/runtime/bin/dropbear" },
+    { ...validated, sshLibraryPath: "/ow/rh/ssh-runtime/runtime/lib" },
+    { ...validated, extra: true }
+  ]) {
+    assert.throws(
+      () => validateRemoteWorkspaceDropbearRuntimePaths(mutation),
+      /runtime paths escaped their fixed private mount/u
+    );
+  }
+});
+
 test("Remote phase keeps all Dropbear executions on the shared fork-only loader contract", () => {
   const source = readFileSync(new URL("./remote-workspace-phase-child.mjs", import.meta.url), "utf8");
   assert.equal(source.match(/createRemoteWorkspaceDropbearLoaderArguments\(/gu)?.length, 3);
+  assert.equal(source.match(/validateRemoteWorkspaceDropbearRuntimePaths\(/gu)?.length, 1);
   for (const marker of [
     "private bootstrap Dropbear fork-only dynamic-loader probe",
     "private Dropbear fork-only dynamic-loader probe",
