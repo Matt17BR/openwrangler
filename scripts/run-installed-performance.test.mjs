@@ -7,15 +7,25 @@ import test from "node:test";
 import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   cleanupInstalledPerformancePrivateRoot,
+  collectInstalledPerformanceEditorRuns,
   installedPerformanceDisplayMode,
   packageInstalledPerformanceCandidate,
   parseInstalledPerformanceArguments,
   readBoundedJson,
   readInstalledPerformanceCandidate,
+  revalidateInstalledPerformanceVsix,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
   writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
+
+const fakeFileIdentity = Object.freeze({
+  dev: 1n,
+  ino: 2n,
+  size: 123n,
+  mtimeNs: 3n,
+  ctimeNs: 4n
+});
 
 test("installed performance assigns unfocused release display modes per editor", () => {
   assert.equal(installedPerformanceDisplayMode({ key: "vscode" }, {}), "headless");
@@ -113,7 +123,7 @@ test("guarded candidate packaging pins one clean source through build, package, 
     },
     snapshotCandidate(source, destination) {
       events.push(["snapshot", source, destination]);
-      return { path: destination, sha256: "b".repeat(64), bytes: 123 };
+      return { path: destination, sha256: "b".repeat(64), bytes: 123, fileIdentity: fakeFileIdentity };
     }
   });
 
@@ -121,6 +131,7 @@ test("guarded candidate packaging pins one clean source through build, package, 
     path: "/private/snapshot.vsix",
     sha256: "b".repeat(64),
     bytes: 123,
+    fileIdentity: fakeFileIdentity,
     source: clean
   });
   assert.equal(Object.isFrozen(receipt), true);
@@ -195,7 +206,12 @@ test("guarded candidate packaging rejects dirty or drifting checkout provenance"
         verifyCandidate: () => {
           verified = true;
         },
-        snapshotCandidate: () => ({ path: "/private/snapshot.vsix", sha256: "b".repeat(64), bytes: 123 })
+        snapshotCandidate: () => ({
+          path: "/private/snapshot.vsix",
+          sha256: "b".repeat(64),
+          bytes: 123,
+          fileIdentity: fakeFileIdentity
+        })
       }),
       new RegExp(`clean exact HEAD ${expectedStage}`, "u")
     );
@@ -224,7 +240,12 @@ test("guarded candidate packaging never advances after a failed build, package, 
           events.push("verify");
           if (failedStage === "verify") throw new Error("verify failed");
         },
-        snapshotCandidate: () => ({ path: "/private/snapshot.vsix", sha256: "b".repeat(64), bytes: 123 })
+        snapshotCandidate: () => ({
+          path: "/private/snapshot.vsix",
+          sha256: "b".repeat(64),
+          bytes: 123,
+          fileIdentity: fakeFileIdentity
+        })
       }),
       new RegExp(`${failedStage} failed`, "u")
     );
@@ -263,10 +284,52 @@ test("the VSIX snapshot copies and hashes one pinned regular file", async () => 
 
     assert.equal(snapshot.bytes, bytes.length);
     assert.equal(snapshot.sha256, "4fd9b5f5c728de97c6b47a9db2fa77ec840d29766f562b7cff26fe4a0a903391");
+    assert.equal(Object.isFrozen(snapshot), true);
+    assert.equal(Object.isFrozen(snapshot.fileIdentity), true);
+    assert.equal(revalidateInstalledPerformanceVsix(snapshot), snapshot);
     assert.deepEqual(await readFile(destination), bytes);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("the VSIX receipt rejects path substitution after editor installation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
+  try {
+    const source = join(directory, "candidate.vsix");
+    const destination = join(directory, "private", "candidate.vsix");
+    const retained = join(directory, "retained.vsix");
+    await writeFile(source, "deterministic candidate");
+    const receipt = stageInstalledPerformanceVsix(source, destination);
+
+    renameSync(destination, retained);
+    writeFileSync(destination, "substituted candidate");
+
+    assert.throws(() => revalidateInstalledPerformanceVsix(receipt), /VSIX (receipt|path) changed/u);
+    assert.equal(await readFile(destination, "utf8"), "substituted candidate");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor collection revalidates the exact VSIX receipt only after both editors finish", async () => {
+  const events = [];
+  const receipt = { marker: "candidate" };
+  const runs = await collectInstalledPerformanceEditorRuns({
+    editors: [{ key: "vscode" }, { key: "cursor" }],
+    candidateReceipt: receipt,
+    async runEditor(editor) {
+      events.push(`run:${editor.key}`);
+      return { editor: editor.key };
+    },
+    revalidateCandidate(candidate) {
+      assert.equal(candidate, receipt);
+      events.push("revalidate");
+    }
+  });
+
+  assert.deepEqual(runs, [{ editor: "vscode" }, { editor: "cursor" }]);
+  assert.deepEqual(events, ["run:vscode", "run:cursor", "revalidate"]);
 });
 
 test("the VSIX snapshot rejects symbolic and hard-linked candidates", async () => {

@@ -195,11 +195,12 @@ export function stageInstalledPerformanceVsix(source, destination, hooks = {}) {
     const published = lstatSync(destinationPath, { bigint: true });
     requireSameRegularFile(published, completedDestination, "The staged candidate path changed after publication.");
     complete = true;
-    return {
+    return Object.freeze({
       path: destinationPath,
       sha256: digest.digest("hex"),
-      bytes: total
-    };
+      bytes: total,
+      fileIdentity: fileIdentityReceipt(published)
+    });
   } finally {
     if (destinationDescriptor !== undefined) closeSync(destinationDescriptor);
     if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
@@ -253,11 +254,13 @@ export async function packageInstalledPerformanceCandidate({
   await verifyCandidate(destination, environment);
   requireSameSource(readSource(), before, "during candidate verification");
   const snapshot = await snapshotCandidate(destination, snapshotDestination);
+  requireVsixReceipt(snapshot);
   requireSameSource(readSource(), before, "during candidate snapshot");
   const receipt = Object.freeze({
     path: snapshot.path,
     sha256: snapshot.sha256,
     bytes: snapshot.bytes,
+    fileIdentity: snapshot.fileIdentity,
     source: Object.freeze({ ...before })
   });
   guardedCandidateReceipts.add(receipt);
@@ -311,6 +314,54 @@ export function cleanupInstalledPerformancePrivateRoot({
   if (processTreeUncertain) return false;
   removePrivateRoot(receipt);
   return true;
+}
+
+export function revalidateInstalledPerformanceVsix(receipt) {
+  requireVsixReceipt(receipt);
+  let descriptor;
+  try {
+    descriptor = openReadOnlyNoFollow(receipt.path, "The installed-performance VSIX receipt became a symlink.");
+    const opened = fstatSync(descriptor, { bigint: true });
+    requireSameRegularFile(opened, receipt.fileIdentity, "The installed-performance VSIX receipt changed.");
+    const openedPath = lstatSync(receipt.path, { bigint: true });
+    requireSameRegularFile(openedPath, receipt.fileIdentity, "The installed-performance VSIX path changed.");
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let total = 0;
+    while (true) {
+      const count = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      total += count;
+      if (total > VSIX_MAX_BYTES) throw new Error("The installed-performance VSIX receipt exceeded its byte limit.");
+      digest.update(buffer.subarray(0, count));
+    }
+    const completed = fstatSync(descriptor, { bigint: true });
+    const completedPath = lstatSync(receipt.path, { bigint: true });
+    requireSameRegularFile(completed, receipt.fileIdentity, "The installed-performance VSIX changed while read.");
+    requireSameRegularFile(
+      completedPath,
+      receipt.fileIdentity,
+      "The installed-performance VSIX path changed while read."
+    );
+    if (total !== receipt.bytes || digest.digest("hex") !== receipt.sha256) {
+      throw new Error("The installed-performance VSIX no longer matches its checksum receipt.");
+    }
+    return receipt;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+export async function collectInstalledPerformanceEditorRuns({
+  editors,
+  candidateReceipt,
+  runEditor,
+  revalidateCandidate = revalidateInstalledPerformanceVsix
+}) {
+  const runs = [];
+  for (const editor of editors) runs.push(await runEditor(editor));
+  revalidateCandidate(candidateReceipt);
+  return runs;
 }
 
 export async function runInstalledPerformance(options, environment = process.env) {
@@ -368,10 +419,11 @@ export async function runInstalledPerformance(options, environment = process.env
     const fixtureManifest = validateInstalledFixtureManifest(readBoundedJson(fixtureManifestPath, 64 * 1024));
 
     const editors = await resolveEditors(options.editors, environment);
-    const editorRuns = [];
-    for (const editor of editors) {
-      editorRuns.push(
-        await runEditorPerformanceWithIsolatedDisplay({
+    const editorRuns = await collectInstalledPerformanceEditorRuns({
+      editors,
+      candidateReceipt: guardedCandidate,
+      runEditor: (editor) =>
+        runEditorPerformanceWithIsolatedDisplay({
           editor,
           stagedVsix: guardedCandidate.path,
           candidate,
@@ -381,8 +433,7 @@ export async function runInstalledPerformance(options, environment = process.env
           fixtureManifest,
           environment
         })
-      );
-    }
+    });
     const sourceAfter = readSourceProvenance();
     requireSameSource(sourceAfter, sourceBefore, "during the editor run");
     result = options.smoke
@@ -944,6 +995,35 @@ function requireSameRegularFile(actual, expected, message) {
     actual.ctimeNs !== expected.ctimeNs
   ) {
     throw new Error(message);
+  }
+}
+
+function fileIdentityReceipt(metadata) {
+  return Object.freeze({
+    dev: metadata.dev,
+    ino: metadata.ino,
+    size: metadata.size,
+    mtimeNs: metadata.mtimeNs,
+    ctimeNs: metadata.ctimeNs
+  });
+}
+
+function requireVsixReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.path !== "string" ||
+    receipt.path.length === 0 ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256) ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    !receipt.fileIdentity ||
+    typeof receipt.fileIdentity !== "object" ||
+    !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof receipt.fileIdentity[key] === "bigint") ||
+    receipt.fileIdentity.size !== BigInt(receipt.bytes)
+  ) {
+    throw new Error("The installed-performance VSIX receipt is invalid.");
   }
 }
 
