@@ -15,7 +15,7 @@ import { dirname, resolve } from "node:path";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v4";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v5";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
@@ -34,7 +34,7 @@ export const INSTALLED_PERFORMANCE_LIMITS = Object.freeze({
 
 const SHA256 = /^[0-9a-f]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/u;
+const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PYTHON_VERSION = /^3\.(?:10|11|12|13|14)(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_REPORT_BYTES = 1024 * 1024;
 
@@ -338,13 +338,19 @@ function validateFixtureEntry(entry, format, rows, columns) {
 function validateCandidate(candidate) {
   exactKeys(
     candidate,
-    ["extensionId", "extensionVersion", "preview", "buildMethod", "sourceCommit", "vsixSha256", "vsixBytes"],
+    ["extensionId", "extensionVersion", "preview", "channel", "buildMethod", "sourceCommit", "vsixSha256", "vsixBytes"],
     [],
     "candidate provenance"
   );
   assertEqual(candidate.extensionId, "Matt17BR.openwrangler", "candidate extension ID");
   assertMatch(candidate.extensionVersion, VERSION, "candidate extension version");
   assertBoolean(candidate.preview, "candidate preview flag");
+  if (candidate.channel !== (candidate.preview ? "preview" : "stable")) {
+    throw new TypeError("Candidate release channel does not match its preview flag.");
+  }
+  if (!candidate.preview && candidate.extensionVersion.startsWith("0.")) {
+    throw new TypeError("A stable installed-performance candidate requires extension version 1.0.0 or newer.");
+  }
   assertEqual(candidate.buildMethod, "guarded-clean-head-v1", "candidate build method");
   assertMatch(candidate.sourceCommit, /^[0-9a-f]{40}$/u, "candidate source commit");
   assertMatch(candidate.vsixSha256, SHA256, "candidate VSIX SHA-256");

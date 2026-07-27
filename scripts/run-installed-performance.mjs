@@ -58,7 +58,7 @@ import {
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v4";
+const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v5";
 const INSTALLED_PERFORMANCE_PHASES = [
   "perf-csv-cold",
   "perf-csv-warm",
@@ -71,6 +71,7 @@ const VSIX_MAX_BYTES = 512 * 1024 * 1024;
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const VSIX_MAX_ENTRIES = 100_000;
 const OUTPUT_MAX_BYTES = 1024 * 1024;
+const NUMERIC_EXTENSION_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const guardedCandidateReceipts = new WeakSet();
 
 export function parseInstalledPerformanceArguments(arguments_) {
@@ -213,18 +214,15 @@ export async function readInstalledPerformanceCandidate(receipt) {
     throw new Error("Installed performance candidate metadata requires one guarded build receipt.");
   }
   const packageJson = await readVsixPackageJson(receipt.path);
-  if (
-    packageJson.publisher !== "Matt17BR" ||
-    packageJson.name !== "openwrangler" ||
-    typeof packageJson.version !== "string" ||
-    typeof packageJson.preview !== "boolean"
-  ) {
-    throw new Error("The staged VSIX does not identify one Open Wrangler candidate.");
+  const packagedManifest = validateInstalledPerformanceSourceManifest(packageJson);
+  if (JSON.stringify(packagedManifest) !== JSON.stringify(receipt.sourceManifest)) {
+    throw new Error("The staged VSIX manifest does not match its guarded source manifest.");
   }
   return {
-    extensionId: `${packageJson.publisher}.${packageJson.name}`,
-    extensionVersion: packageJson.version,
-    preview: packageJson.preview,
+    extensionId: `${packagedManifest.publisher}.${packagedManifest.name}`,
+    extensionVersion: packagedManifest.version,
+    preview: packagedManifest.preview,
+    channel: packagedManifest.channel,
     buildMethod: "guarded-clean-head-v1",
     sourceCommit: receipt.source.commit,
     vsixSha256: receipt.sha256,
@@ -232,11 +230,41 @@ export async function readInstalledPerformanceCandidate(receipt) {
   };
 }
 
+export function readInstalledPerformanceSourceManifest(file = resolve(root, "package.json")) {
+  return validateInstalledPerformanceSourceManifest(readBoundedJson(file, VSIX_PACKAGE_JSON_MAX_BYTES));
+}
+
+export function validateInstalledPerformanceSourceManifest(manifest) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new TypeError("Installed performance requires one object-valued source package manifest.");
+  }
+  if (manifest.publisher !== "Matt17BR" || manifest.name !== "openwrangler") {
+    throw new TypeError("Installed performance requires the canonical Matt17BR.openwrangler package identity.");
+  }
+  if (typeof manifest.version !== "string" || !NUMERIC_EXTENSION_VERSION.test(manifest.version)) {
+    throw new TypeError("Installed performance requires a numeric major.minor.patch package version.");
+  }
+  if (typeof manifest.preview !== "boolean") {
+    throw new TypeError("Installed performance requires an explicit boolean package preview flag.");
+  }
+  if (!manifest.preview && manifest.version.startsWith("0.")) {
+    throw new TypeError("A stable installed-performance candidate requires package version 1.0.0 or newer.");
+  }
+  return Object.freeze({
+    publisher: manifest.publisher,
+    name: manifest.name,
+    version: manifest.version,
+    preview: manifest.preview,
+    channel: manifest.preview ? "preview" : "stable"
+  });
+}
+
 export async function packageInstalledPerformanceCandidate({
   destination,
   snapshotDestination,
   environment = process.env,
   readSource = readSourceProvenance,
+  readSourceManifest = readInstalledPerformanceSourceManifest,
   build = runInstalledPerformanceBuild,
   packageCandidate = createInstalledPerformanceVsix,
   verifyCandidate = verifyInstalledPerformanceVsix,
@@ -247,9 +275,10 @@ export async function packageInstalledPerformanceCandidate({
   }
   const before = readSource();
   requireCleanSource(before, "before candidate build");
+  const sourceManifest = validateInstalledPerformanceSourceManifest(await readSourceManifest());
   await build(environment);
   requireSameSource(readSource(), before, "during candidate build");
-  await packageCandidate(destination);
+  await packageCandidate(destination, { preRelease: sourceManifest.preview });
   requireSameSource(readSource(), before, "during candidate packaging");
   await verifyCandidate(destination, environment);
   requireSameSource(readSource(), before, "during candidate verification");
@@ -261,7 +290,8 @@ export async function packageInstalledPerformanceCandidate({
     sha256: snapshot.sha256,
     bytes: snapshot.bytes,
     fileIdentity: snapshot.fileIdentity,
-    source: Object.freeze({ ...before })
+    source: Object.freeze({ ...before }),
+    sourceManifest
   });
   guardedCandidateReceipts.add(receipt);
   return receipt;
@@ -867,12 +897,15 @@ function runInstalledPerformanceBuild(environment) {
   }
 }
 
-async function createInstalledPerformanceVsix(destination) {
+async function createInstalledPerformanceVsix(destination, { preRelease }) {
+  if (typeof preRelease !== "boolean") {
+    throw new TypeError("Guarded installed-performance packaging requires an explicit release channel.");
+  }
   assertAbsent(destination, "guarded installed-performance candidate");
   await createVSIX({
     cwd: root,
     packagePath: destination,
-    preRelease: true,
+    preRelease,
     allowStarActivation: false,
     allowMissingRepository: false
   });

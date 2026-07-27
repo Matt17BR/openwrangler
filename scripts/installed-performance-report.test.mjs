@@ -163,6 +163,44 @@ test("aggregate evidence rejects a runtime that does not match the VSIX candidat
   );
 });
 
+test("candidate provenance enforces numeric versions and a matching release channel", () => {
+  const run = editorRun("vscode");
+  for (const [invalidCandidate, expectedError] of [
+    [{ ...candidate(), channel: "stable" }, /release channel does not match/u],
+    [{ ...candidate(), extensionVersion: "0.3.0-alpha.1" }, /candidate extension version/u],
+    [{ ...candidate(), extensionVersion: "0.9.0", preview: false, channel: "stable" }, /version 1\.0\.0 or newer/u]
+  ]) {
+    assert.throws(
+      () =>
+        buildInstalledPerformanceReport({
+          generatedAtUtc: "2026-07-27T00:00:00.000Z",
+          candidate: invalidCandidate,
+          source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+          fixtureManifest: fixtureManifest(),
+          editorRuns: [run]
+        }),
+      expectedError
+    );
+  }
+
+  const stableRun = editorRun("vscode");
+  stableRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
+  for (const phase of stableRun.phases) phase.runtime.openWranglerRuntimeVersion = "1.0.0";
+  const report = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: {
+      ...candidate(),
+      extensionVersion: "1.0.0",
+      preview: false,
+      channel: "stable"
+    },
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [stableRun]
+  });
+  assert.equal(report.candidate.channel, "stable");
+});
+
 test("aggregate verdicts retain dirty-source and missing-editor release failures", () => {
   const report = buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
@@ -291,6 +329,7 @@ function candidate() {
     extensionId: "Matt17BR.openwrangler",
     extensionVersion: "0.3.0",
     preview: true,
+    channel: "preview",
     buildMethod: "guarded-clean-head-v1",
     sourceCommit: "b".repeat(40),
     vsixSha256: sha("a"),
