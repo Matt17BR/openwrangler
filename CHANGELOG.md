@@ -2,7 +2,7 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
-## [0.3.0] - Unreleased
+## [1.0.0] - 2026-07-27
 
 ### Added
 

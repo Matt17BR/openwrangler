@@ -1,11 +1,11 @@
 {
   "name": "openwrangler",
   "displayName": "Open Wrangler",
-  "description": "An open-source dataframe wrangler for VS Code and Cursor with native Polars, DuckDB, and Pandas support.",
-  "version": "0.3.0",
+  "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
+  "version": "1.0.0",
   "publisher": "Matt17BR",
   "license": "MIT",
-  "preview": true,
+  "preview": false,
   "repository": {
     "type": "git",
     "url": "https://github.com/Matt17BR/openwrangler.git"
