@@ -963,7 +963,7 @@ export function createRemoteWorkspaceBwrapArguments(
     bootstrapPreflight = false,
     tools = REQUIRED_HOST_TOOLS
   },
-  { validateSystemRuntimeDirectory = validateRootOwnedSystemRuntimeDirectory } = {}
+  { validateSystemRuntimeDirectory = validateRootOwnedSystemRuntimeDirectory, pathExists = existsSync } = {}
 ) {
   for (const [label, value] of Object.entries({ root, descriptor, childScript, systemPython })) {
     if (typeof value !== "string" || !isAbsolute(value) || value.length > PATH_LIMIT) {
@@ -982,6 +982,14 @@ export function createRemoteWorkspaceBwrapArguments(
   }
   if (typeof bootstrapPreflight !== "boolean") {
     throw new Error("Remote SSH acceptance requires one explicit bootstrap-preflight policy.");
+  }
+  if (typeof pathExists !== "function") {
+    throw new Error("Remote SSH acceptance requires one library-shadow probe.");
+  }
+  for (const soname of ["libtomcrypt.so.1", "libtommath.so.1"]) {
+    if (pathExists(`/usr/lib/x86_64-linux-gnu/${soname}`)) {
+      throw new Error("A host library would shadow a pinned private Dropbear dependency.");
+    }
   }
   const canonicalRoot = realpathSync(root);
   for (const [label, value] of Object.entries({ descriptor, childScript })) {
@@ -1002,6 +1010,10 @@ export function createRemoteWorkspaceBwrapArguments(
   const mounts = validateRemoteWorkspaceImmutableMounts(immutableMounts, {
     commit: PINNED_REMOTE_VSCODE_COMMIT
   });
+  const privateMounts = mounts.filter((mount) => mount.destination.startsWith(`${REMOTE_WORKSPACE_NAMESPACE_ROOT}/`));
+  const dropbearLibraryMounts = mounts.filter((mount) =>
+    ["/usr/lib/libtomcrypt.so.1", "/usr/lib/libtommath.so.1"].includes(mount.destination)
+  );
   const args = [
     "--unshare-user",
     "--uid",
@@ -1025,7 +1037,7 @@ export function createRemoteWorkspaceBwrapArguments(
     "--dir",
     REMOTE_WORKSPACE_NAMESPACE_ROOT
   ];
-  for (const mount of mounts) {
+  for (const mount of privateMounts) {
     args.push(mount.access === "mutable" ? "--bind-fd" : "--ro-bind-fd", String(mount.descriptor), mount.destination);
   }
   for (const directory of [
@@ -1046,6 +1058,9 @@ export function createRemoteWorkspaceBwrapArguments(
   }
   for (const directory of runtimeDirectories) {
     args.push("--dir", directory, "--ro-bind", directory, directory);
+  }
+  for (const mount of dropbearLibraryMounts) {
+    args.push("--ro-bind-fd", String(mount.descriptor), mount.destination);
   }
   for (const [source, destination] of [
     [tools.bash, "/usr/bin/bash"],

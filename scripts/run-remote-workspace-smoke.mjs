@@ -330,6 +330,8 @@ try {
       remoteTestModule: layout.remoteTestModule,
       python: layout.python,
       sshRuntime: join(layout.sshRuntime, "runtime"),
+      sshTomcrypt: join(layout.sshRuntime, "runtime", "lib", "libtomcrypt.so.1"),
+      sshTommath: join(layout.sshRuntime, "runtime", "lib", "libtommath.so.1"),
       ssh: layout.ssh,
       workspace: layout.workspace,
       "account:group": join(layout.accounts, "group"),

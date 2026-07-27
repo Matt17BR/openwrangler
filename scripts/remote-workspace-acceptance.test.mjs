@@ -61,7 +61,8 @@ import {
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
 import {
   finalizeRemoteWorkspaceControllerFailure,
-  publishRemoteWorkspaceControllerFailureResult
+  publishRemoteWorkspaceControllerFailureResult,
+  validateRemoteWorkspaceDropbearLoaderResolution
 } from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
 
@@ -113,6 +114,33 @@ linuxTest("Remote workspace layout is short, private, and independently scoped",
     assert.notEqual(layout.localExtensions, layout.remoteExtensions);
   } finally {
     rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("Dropbear default-loader listings resolve only the independently pinned libraries", () => {
+  const listing = [
+    "\tlinux-vdso.so.1 (0x00007ffc00000000)",
+    "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000000)",
+    "\tlibtommath.so.1 => /lib/libtommath.so.1 (0x00007f0200000000)",
+    "\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f0300000000)",
+    "\t/usr/lib64/ld-linux-x86-64.so.2 (0x00007f0400000000)",
+    ""
+  ].join("\n");
+  assert.equal(validateRemoteWorkspaceDropbearLoaderResolution(listing), listing);
+  for (const mutation of [
+    listing.replace("/lib/libtomcrypt.so.1", "/usr/lib/x86_64-linux-gnu/glibc-hwcaps/x86-64-v3/libtomcrypt.so.1"),
+    listing.replace("/lib/libtommath.so.1", "/usr/lib/x86_64-linux-gnu/libtommath.so.1"),
+    listing.replace("\tlibtommath.so.1 => /lib/libtommath.so.1 (0x00007f0200000000)\n", ""),
+    listing.replace(
+      "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000000)",
+      [
+        "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000000)",
+        "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000001)"
+      ].join("\n")
+    ),
+    `${listing}${"x".repeat(64 * 1024)}`
+  ]) {
+    assert.throws(() => validateRemoteWorkspaceDropbearLoaderResolution(mutation), /Dropbear loader/u);
   }
 });
 
@@ -370,7 +398,8 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       }
     };
     const args = createRemoteWorkspaceBwrapArguments(builderInput, {
-      validateSystemRuntimeDirectory: (path) => path
+      validateSystemRuntimeDirectory: (path) => path,
+      pathExists: () => false
     });
     for (const required of [
       "--unshare-user",
@@ -438,6 +467,34 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     assert.equal(args.includes("/usr/bin/getconf"), true);
     assert.equal(args.includes("/usr/bin/ldd"), true);
     assert.equal(args.includes("/usr/bin/ldconfig"), false);
+    const usrLibDirectory = args.findIndex((value, index) => value === "--dir" && args[index + 1] === "/usr/lib");
+    assert.notEqual(usrLibDirectory, -1);
+    const systemRuntimeMount = args.findIndex(
+      (value, index) => value === "--ro-bind" && args[index + 1] === "/usr" && args[index + 2] === "/usr"
+    );
+    assert.notEqual(systemRuntimeMount, -1);
+    for (const [id, destination] of [
+      ["sshTomcrypt", "/usr/lib/libtomcrypt.so.1"],
+      ["sshTommath", "/usr/lib/libtommath.so.1"]
+    ]) {
+      const mount = createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
+        (entry) => entry.id === id
+      );
+      assert.ok(mount);
+      assert.equal(mount.destination, destination);
+      const mountIndex = args.findIndex(
+        (value, index) =>
+          value === "--ro-bind-fd" && args[index + 1] === String(mount.descriptor) && args[index + 2] === destination
+      );
+      assert.ok(mountIndex > usrLibDirectory);
+      assert.ok(mountIndex > systemRuntimeMount);
+    }
+    assert.notEqual(
+      args.findIndex(
+        (value, index) => value === "--symlink" && args[index + 1] === "usr/lib" && args[index + 2] === "/lib"
+      ),
+      -1
+    );
     assert.equal(
       args.some((value) => value.includes("ld.so.cache") || value.includes("ld.so.conf")),
       false
@@ -463,7 +520,7 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     assert.equal(args.includes("--bootstrap-preflight"), false);
     const bootstrapArgs = createRemoteWorkspaceBwrapArguments(
       { ...builderInput, bootstrapPreflight: true },
-      { validateSystemRuntimeDirectory: (path) => path }
+      { validateSystemRuntimeDirectory: (path) => path, pathExists: () => false }
     );
     assert.deepEqual(bootstrapArgs.slice(-6), [
       REMOTE_WORKSPACE_PHASE_CHILD_PATH,
@@ -473,6 +530,24 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       "/usr/lib64/ld-linux-x86-64.so.2",
       "--bootstrap-preflight"
     ]);
+    for (const soname of ["libtomcrypt.so.1", "libtommath.so.1"]) {
+      assert.throws(
+        () =>
+          createRemoteWorkspaceBwrapArguments(builderInput, {
+            validateSystemRuntimeDirectory: (path) => path,
+            pathExists: (path) => path.endsWith(`/${soname}`)
+          }),
+        /host library would shadow a pinned private Dropbear dependency/u
+      );
+    }
+    assert.throws(
+      () =>
+        createRemoteWorkspaceBwrapArguments(builderInput, {
+          validateSystemRuntimeDirectory: (path) => path,
+          pathExists: null
+        }),
+      /library-shadow probe/u
+    );
     assert.throws(
       () =>
         createRemoteWorkspaceBwrapArguments(

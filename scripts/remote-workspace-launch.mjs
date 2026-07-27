@@ -13,6 +13,17 @@ import { captureRemoteWorkspaceTreeManifest } from "./remote-workspace-staging.m
 const LINUX_O_PATH = 0o10000000;
 const PATH_LIMIT = 16_384;
 const MAXIMUM_MOUNTS = 32;
+const DROPBEAR_LIBRARY_MOUNTS = Object.freeze([
+  Object.freeze({
+    id: "sshTomcrypt",
+    destination: "/usr/lib/libtomcrypt.so.1"
+  }),
+  Object.freeze({
+    id: "sshTommath",
+    destination: "/usr/lib/libtommath.so.1"
+  })
+]);
+const DROPBEAR_LIBRARY_DESTINATIONS = new Set(DROPBEAR_LIBRARY_MOUNTS.map((entry) => entry.destination));
 const ACCOUNT_FILES = Object.freeze([
   "group",
   "hosts",
@@ -194,6 +205,13 @@ const REQUIRED_MOUNTS = Object.freeze([
     destination: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime`,
     bounds: TREE_BOUNDS.sshRuntime
   }),
+  ...DROPBEAR_LIBRARY_MOUNTS.map((entry) =>
+    Object.freeze({
+      ...entry,
+      kind: "file",
+      access: "immutable"
+    })
+  ),
   Object.freeze({
     id: "ssh",
     kind: "tree",
@@ -368,7 +386,8 @@ export function validateRemoteWorkspaceImmutableMounts(mounts, { commit } = {}) 
       mount.access !== expected[index].access ||
       typeof mount.destination !== "string" ||
       mount.destination !== expected[index].destination.replaceAll("__COMMIT__", commit) ||
-      !mount.destination.startsWith(`${REMOTE_WORKSPACE_NAMESPACE_ROOT}/`) ||
+      (!mount.destination.startsWith(`${REMOTE_WORKSPACE_NAMESPACE_ROOT}/`) &&
+        !DROPBEAR_LIBRARY_DESTINATIONS.has(mount.destination)) ||
       resolve(mount.destination) !== mount.destination
     ) {
       throw new Error("The Remote SSH immutable-input mount list is malformed.");

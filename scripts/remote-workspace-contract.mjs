@@ -32,6 +32,7 @@ export const REMOTE_WORKSPACE_PHASE_NODE_PATH = `${REMOTE_WORKSPACE_NAMESPACE_RO
 export const REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES = 256 * 1024 * 1024;
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
 const PATH_LIMIT = 16_384;
+const DROPBEAR_LOADER_LIST_LIMIT_BYTES = 64 * 1024;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_ERROR_LIMIT_CHARACTERS = 16_000;
@@ -74,6 +75,16 @@ const REMOTE_WORKSPACE_POST_RESULT_CONTROLLER_FAILURES = new Set([
   "phase-cleanup-failed",
   "phase-result-validation-failed"
 ]);
+const DROPBEAR_PINNED_LOADER_RESOLUTIONS = Object.freeze([
+  Object.freeze({
+    soname: "libtomcrypt.so.1",
+    reportedPath: "/lib/libtomcrypt.so.1"
+  }),
+  Object.freeze({
+    soname: "libtommath.so.1",
+    reportedPath: "/lib/libtommath.so.1"
+  })
+]);
 
 export function getRemoteWorkspaceControllerFailureMessage(code) {
   const message = REMOTE_WORKSPACE_CONTROLLER_FAILURES.get(code);
@@ -81,6 +92,28 @@ export function getRemoteWorkspaceControllerFailureMessage(code) {
     throw new Error("The Remote SSH controller failure code is malformed.");
   }
   return message;
+}
+
+export function validateRemoteWorkspaceDropbearLoaderResolution(output) {
+  if (
+    typeof output !== "string" ||
+    output.length === 0 ||
+    Buffer.byteLength(output, "utf8") > DROPBEAR_LOADER_LIST_LIMIT_BYTES ||
+    output.includes("\0")
+  ) {
+    throw new Error("The private Dropbear loader listing is malformed or unbounded.");
+  }
+  const lines = output.split("\n");
+  for (const expected of DROPBEAR_PINNED_LOADER_RESOLUTIONS) {
+    const matching = lines.filter((line) => line.includes(expected.soname));
+    const escapedSoname = expected.soname.replaceAll(".", String.raw`\.`);
+    const escapedPath = expected.reportedPath.replaceAll(".", String.raw`\.`);
+    const exact = new RegExp(String.raw`^\s*${escapedSoname}\s+=>\s+${escapedPath}\s+\(0x[0-9A-Fa-f]+\)\s*$`, "u");
+    if (matching.length !== 1 || !exact.test(matching[0])) {
+      throw new Error("The private Dropbear loader did not resolve one exact pinned dependency.");
+    }
+  }
+  return output;
 }
 
 const REMOTE_WORKSPACE_RESULT_LEASES = new WeakMap();

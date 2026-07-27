@@ -22,6 +22,7 @@ import {
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceBootstrapAttestation,
+  validateRemoteWorkspaceDropbearLoaderResolution,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
@@ -170,6 +171,10 @@ function assertBootstrapExecutables(config, ip, ssh, loader) {
     ["--library-path", config.sshLibraryPath, config.sshServer, "-V"],
     "private bootstrap Dropbear dynamic-loader probe"
   );
+  validateRemoteWorkspaceDropbearLoaderResolution(
+    runSync(loader, ["--list", config.sshServer], "private bootstrap Dropbear default-loader listing").stdout
+  );
+  runSync(config.sshServer, ["-V"], "private bootstrap Dropbear re-exec loader probe");
 }
 
 async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingResultReceipt) {
@@ -197,6 +202,10 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     throw new Error("The private loopback network was not initialized.");
   }
   runSync(dynamicLoader, ["--library-path", sshLibraryPath, sshServer, "-V"], "private Dropbear dynamic-loader probe");
+  validateRemoteWorkspaceDropbearLoaderResolution(
+    runSync(dynamicLoader, ["--list", sshServer], "private Dropbear default-loader listing").stdout
+  );
+  runSync(sshServer, ["-V"], "private Dropbear re-exec loader probe");
 
   markFailureStage("phase-display-failed");
   const xvfb = await startPrivateXvfb(config);

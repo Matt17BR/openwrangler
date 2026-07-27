@@ -240,11 +240,23 @@ linuxTest("Remote launch mount template is complete, ordered, and read-only afte
   const firstImmutable = mounts.findIndex((mount) => mount.access === "immutable");
   assert.ok(lastMutable >= 0 && firstImmutable > lastMutable);
   assert.equal(new Set(mounts.map((mount) => mount.destination)).size, mounts.length);
+  assert.deepEqual(
+    mounts
+      .filter((mount) => ["sshTomcrypt", "sshTommath"].includes(mount.id))
+      .map(({ id, destination, access }) => ({ id, destination, access })),
+    [
+      { id: "sshTomcrypt", destination: "/usr/lib/libtomcrypt.so.1", access: "immutable" },
+      { id: "sshTommath", destination: "/usr/lib/libtommath.so.1", access: "immutable" }
+    ]
+  );
   for (const mutation of [
     mounts.slice(1),
     [...mounts, mounts[0]],
     mounts.map((mount, index) => (index === 0 ? { ...mount, access: "immutable" } : mount)),
-    mounts.map((mount, index) => (index === 0 ? { ...mount, descriptor: 99 } : mount))
+    mounts.map((mount, index) => (index === 0 ? { ...mount, descriptor: 99 } : mount)),
+    mounts.map((mount) =>
+      mount.id === "sshTomcrypt" ? { ...mount, destination: "/usr/lib/unpinned-library.so" } : mount
+    )
   ]) {
     assert.throws(
       () => validateRemoteWorkspaceImmutableMounts(mutation, { commit: PINNED_REMOTE_VSCODE_COMMIT }),
@@ -260,6 +272,20 @@ for (const id of ["client", "remoteServer", "python"]) {
       const sources = createRegistrySources(root);
       const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
       writeFileSync(join(sources[id], "entry"), `${id}-changed\n`, { mode: 0o600 });
+      assert.throws(() => assertRemoteWorkspaceImmutableInputRegistry(registry), /changed after it was pinned/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const id of ["sshTomcrypt", "sshTommath"]) {
+  linuxTest(`Remote launch registry binds the exact ${id} library bytes`, () => {
+    const root = fixtureRoot(`ow-remote-launch-${id}-mutation-`);
+    try {
+      const sources = createRegistrySources(root);
+      const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
+      writeFileSync(sources[id], `${id}-changed\n`, { mode: 0o600 });
       assert.throws(() => assertRemoteWorkspaceImmutableInputRegistry(registry), /changed after it was pinned/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
