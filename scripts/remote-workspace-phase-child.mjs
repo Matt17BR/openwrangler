@@ -35,9 +35,11 @@ try {
   if (
     readlinkSync("/proc/self/ns/pid") === descriptor.hostPidNamespace ||
     readlinkSync("/proc/self/ns/net") === descriptor.hostNetworkNamespace ||
+    readlinkSync("/proc/self/ns/ipc") === descriptor.hostIpcNamespace ||
+    readlinkSync("/proc/self/ns/uts") === descriptor.hostUtsNamespace ||
     readlinkSync("/proc/self/ns/user") === descriptor.hostUserNamespace
   ) {
-    throw new Error("The Remote SSH phase did not enter private user, PID, and network namespaces.");
+    throw new Error("The Remote SSH phase did not enter private user, PID, network, IPC, and UTS namespaces.");
   }
   await runPhase(descriptor, ipExecutable, sshExecutable, ldconfigExecutable);
   process.stdout.write(
@@ -47,6 +49,9 @@ try {
       phase: descriptor.phase,
       namespaceEmpty: true,
       network: "unshared",
+      ipc: "unshared",
+      uts: "unshared",
+      hostname: "openwrangler-remote-acceptance",
       display: "xvfb",
       displayEmpty: true,
       remoteAuthority: descriptor.authority,
@@ -263,6 +268,9 @@ function assertPrivateNamespace(config) {
   }
   if (existsSync(config.hostHome) || existsSync(config.hostSentinel) || readdirSync("/home").length !== 0) {
     throw new Error("The private runtime exposed a host home or host-private sentinel.");
+  }
+  if (readFileSync("/proc/sys/kernel/hostname", "utf8").trim() !== "openwrangler-remote-acceptance") {
+    throw new Error("The private UTS namespace did not retain its exact isolated hostname.");
   }
 }
 

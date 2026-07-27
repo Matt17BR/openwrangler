@@ -27,6 +27,8 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
     value.displayMode !== "xvfb" ||
     !/^pid:\[[0-9]+\]$/u.test(value.hostPidNamespace) ||
     !/^net:\[[0-9]+\]$/u.test(value.hostNetworkNamespace) ||
+    !/^ipc:\[[0-9]+\]$/u.test(value.hostIpcNamespace) ||
+    !/^uts:\[[0-9]+\]$/u.test(value.hostUtsNamespace) ||
     !/^user:\[[0-9]+\]$/u.test(value.hostUserNamespace) ||
     typeof value.user !== "string" ||
     !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u.test(value.user) ||

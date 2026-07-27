@@ -790,13 +790,16 @@ function validateNamespaceAttestation(contents, runId) {
     value.phase !== REMOTE_WORKSPACE_PHASE ||
     value.namespaceEmpty !== true ||
     value.network !== "unshared" ||
+    value.ipc !== "unshared" ||
+    value.uts !== "unshared" ||
+    value.hostname !== "openwrangler-remote-acceptance" ||
     value.display !== "xvfb" ||
     value.displayEmpty !== true ||
     value.remoteAuthority !== REMOTE_WORKSPACE_AUTHORITY ||
     value.version !== "1.130.0" ||
     value.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
     Object.keys(value).sort().join(",") !==
-      "commit,display,displayEmpty,namespaceEmpty,network,phase,protocol,remoteAuthority,runId,version"
+      "commit,display,displayEmpty,hostname,ipc,namespaceEmpty,network,phase,protocol,remoteAuthority,runId,uts,version"
   ) {
     throw new Error("The Remote SSH PID namespace did not attest empty owned process, display, and network state.");
   }

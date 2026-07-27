@@ -582,6 +582,8 @@ export function writeRemoteWorkspacePhaseDescriptor(
     commit: PINNED_REMOTE_VSCODE_COMMIT,
     hostPidNamespace: readlinkSync("/proc/self/ns/pid"),
     hostNetworkNamespace: readlinkSync("/proc/self/ns/net"),
+    hostIpcNamespace: readlinkSync("/proc/self/ns/ipc"),
+    hostUtsNamespace: readlinkSync("/proc/self/ns/uts"),
     hostUserNamespace: readlinkSync("/proc/self/ns/user"),
     editor,
     xvfb,
