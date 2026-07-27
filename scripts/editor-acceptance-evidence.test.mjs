@@ -229,6 +229,12 @@ test("CLI options, fully encoded credential URLs, and PuTTY private-key containe
   );
 });
 
+test("container-isolated remote Jupyter tokens are redacted even without a field label", () => {
+  const token = `owr_${"A".repeat(39)}`;
+  const redacted = redactEditorAcceptanceText(`remote connection failed for ${token}`);
+  assert.equal(redacted, "remote connection failed for <redacted>");
+});
+
 test("text redaction covers basic auth, whitespace credentials, PAT aliases, and encoded delimiters", () => {
   const secrets = {
     basic: "dXNlcjpzdXBlcnNlY3JldA==",
@@ -1231,12 +1237,13 @@ test("structured BigInt diagnostics obey the per-string and final failure caps",
 });
 
 test("evidence reads remain bound to one no-follow descriptor across a path swap", async (context) => {
-  if (process.platform !== "linux") {
-    context.skip("The deterministic path-swap proof uses Linux /proc descriptor inspection.");
+  if (process.platform === "win32") {
+    context.skip("Windows does not permit the deterministic replacement of this open fixture.");
     return;
   }
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-evidence-path-swap-"));
-  let swapper;
+  const originalReadSync = fs.readSync;
+  let swapped = false;
   try {
     const fixture = await createEvidenceFixture(directory);
     const source = fixture.options.resultPath;
@@ -1245,54 +1252,31 @@ test("evidence reads remain bound to one no-follow descriptor across a path swap
     const replacementSecret = "PATH-SWAP-SECRET-MUST-NOT-SURVIVE";
     await writeFile(source, Buffer.alloc(EVIDENCE_SOURCE_LIMIT, 0x61));
     await writeFile(replacement, `${replacementSecret}\n`);
-
-    const swapScript = `
-      import { readdirSync, realpathSync, renameSync } from "node:fs";
-      const [pidText, source, replacement, backup] = process.argv.slice(1);
-      const descriptorRoot = \`/proc/\${pidText}/fd\`;
-      const sleeper = new Int32Array(new SharedArrayBuffer(4));
-      process.stdout.write("ready\\n");
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline) {
-        let descriptors = [];
-        try { descriptors = readdirSync(descriptorRoot); } catch {}
-        for (const descriptor of descriptors) {
-          try {
-            if (realpathSync(\`\${descriptorRoot}/\${descriptor}\`) !== source) continue;
-            renameSync(source, backup);
-            renameSync(replacement, source);
-            process.stdout.write("swapped\\n");
-            process.exit(0);
-          } catch {}
-        }
-        Atomics.wait(sleeper, 0, 0, 1);
+    const sourceIdentity = await stat(source, { bigint: true });
+    fs.readSync = (...args) => {
+      const opened = fs.fstatSync(args[0], { bigint: true });
+      if (!swapped && opened.dev === sourceIdentity.dev && opened.ino === sourceIdentity.ino) {
+        fs.renameSync(source, backup);
+        fs.renameSync(replacement, source);
+        swapped = true;
       }
-      process.exit(2);
-    `;
-    swapper = spawn(
-      process.execPath,
-      ["--input-type=module", "-e", swapScript, String(process.pid), source, replacement, backup],
-      {
-        stdio: ["ignore", "pipe", "pipe"]
-      }
-    );
-    const exitPromise = once(swapper, "exit");
-    const [ready] = await once(swapper.stdout, "data");
-    assert.match(String(ready), /ready/u);
+      return originalReadSync(...args);
+    };
+    syncBuiltinESMExports();
 
     const target = retainEditorAcceptanceEvidence(fixture.options);
-    const [exitCode, signal] = await exitPromise;
-    assert.equal(signal, null);
-    assert.equal(exitCode, 0);
+    assert.equal(swapped, true);
     const evidence = await readEvidenceTree(target);
     assert.equal(evidence.includes(replacementSecret), false);
     const failure = JSON.parse(await readFile(join(target, "failure.json"), "utf8"));
     assert.equal(
-      failure.skippedFiles.some((entry) => entry.reason === "path-race"),
+      failure.skippedFiles.some((entry) => entry.path === "verify-result.json" && entry.reason === "path-race"),
       true
     );
+    assert.equal(failure.copiedFiles.includes("phases/verify/result.json"), false);
   } finally {
-    swapper?.kill("SIGKILL");
+    fs.readSync = originalReadSync;
+    syncBuiltinESMExports();
     await rm(directory, { recursive: true, force: true });
   }
 });

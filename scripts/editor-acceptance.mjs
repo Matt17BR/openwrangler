@@ -6,6 +6,7 @@ import {
   constants,
   existsSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -15,16 +16,19 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  writeSync,
   writeFileSync
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
+import { isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { Transform } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { resolveCliPathFromVSCodeExecutablePath } from "@vscode/test-electron";
+import { SaxesParser } from "saxes";
+import { open as openZip } from "yauzl";
 import {
   EDITOR_ACCEPTANCE_FAILURE_STRING_MAX_BYTES,
   redactEditorAcceptanceText
@@ -38,10 +42,31 @@ const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
 const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
+export const REAL_JUPYTER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION";
+export const JUPYTER_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const XVFB_STOP_TIMEOUT_MS = 5_000;
 export const PINNED_PYTHON_EXTENSION_VERSION = "2026.4.0";
 export const PINNED_PYTHON_EXTENSION_ID = `ms-python.python@${PINNED_PYTHON_EXTENSION_VERSION}`;
+export const PINNED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
+export const PINNED_JUPYTER_EXTENSION_ID = `ms-toolsai.jupyter@${PINNED_JUPYTER_EXTENSION_VERSION}`;
+const JUPYTER_VSIX_MANIFEST_ENTRY = "extension.vsixmanifest";
+const JUPYTER_VSIX_MANIFEST_MAX_BYTES = 256 * 1024;
+const JUPYTER_VSIX_MAX_ENTRIES = 100_000;
+const JUPYTER_VSIX_MAX_NATIVE_PAYLOADS = 1_024;
+const JUPYTER_VSIX_NATIVE_PAYLOAD_MAX_BYTES = 32 * 1024 * 1024;
+const JUPYTER_VSIX_NATIVE_PAYLOAD_TOTAL_MAX_BYTES = 128 * 1024 * 1024;
+const JUPYTER_VSIX_NATIVE_HEADER_MAX_BYTES = 4 * 1024;
+const JUPYTER_VSIX_MAX_BYTES = 512 * 1024 * 1024;
+const JUPYTER_VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
+const JUPYTER_ZEROMQ_PREBUILD =
+  /^extension\/dist\/node_modules\/(zeromq|zeromqold)\/prebuilds\/([^/]+)\/([^/]+\.node)$/u;
+const INVALID_JUPYTER_VSIX = "The real Jupyter-extension VSIX could not be validated as a bounded VSIX archive.";
+const INCOMPATIBLE_JUPYTER_VSIX_TARGET =
+  "The real Jupyter-extension VSIX target platform is incompatible with this acceptance host.";
+const INCOMPATIBLE_JUPYTER_ZEROMQ =
+  "The real Jupyter-extension VSIX does not contain a compatible native ZeroMQ payload for this acceptance host.";
+const JUPYTER_VSIX_SNAPSHOT_RECEIPT = Symbol("openWranglerJupyterVsixSnapshotReceipt");
 export const EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS = 300_000;
 export const EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const EDITOR_ACCEPTANCE_RESULT_MAX_BYTES = 1024 * 1024;
@@ -91,6 +116,7 @@ const PRIVATE_DIAGNOSTIC_PATH_ENV_KEYS = [
   "OPEN_WRANGLER_CURSOR_CLI",
   "OPEN_WRANGLER_TEST_PYTHON",
   PYTHON_EXTENSION_VSIX_ENV,
+  JUPYTER_EXTENSION_VSIX_ENV,
   "OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS"
 ];
 
@@ -173,6 +199,429 @@ export function resolvePythonExtensionAcceptanceInstallTarget(environment = proc
   }
   return vsix;
 }
+
+export function resolveJupyterExtensionAcceptanceInstallTarget(environment = process.env) {
+  const enabled = environment[REAL_JUPYTER_EXTENSION_ENV];
+  if (enabled === undefined || enabled === "" || enabled === "0") return undefined;
+  if (enabled !== "1") {
+    throw new Error("Real Jupyter-extension acceptance must be explicitly enabled with the literal value 1.");
+  }
+
+  const vsix = environment[JUPYTER_EXTENSION_VSIX_ENV];
+  if (vsix === undefined || vsix === "") return PINNED_JUPYTER_EXTENSION_ID;
+  if (!isAbsolute(vsix) || /[\0\r\n]/u.test(vsix)) {
+    throw new Error("The real Jupyter-extension acceptance VSIX path must be one absolute single-line path.");
+  }
+  let metadata;
+  try {
+    metadata = lstatSync(vsix, { bigint: true });
+  } catch {
+    throw new Error("The real Jupyter-extension acceptance VSIX was not found.");
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The real Jupyter-extension acceptance VSIX must be a regular file and not a symbolic link.");
+  }
+  return vsix;
+}
+
+export function stageJupyterExtensionAcceptanceVsix(source, destination) {
+  let sourceDescriptor;
+  let destinationDescriptor;
+  let destinationCreated = false;
+  let staged = false;
+  try {
+    sourceDescriptor = openSync(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const sourceOpened = fstatSync(sourceDescriptor, { bigint: true });
+    if (
+      !sourceOpened.isFile() ||
+      sourceOpened.isSymbolicLink() ||
+      sourceOpened.size <= 0n ||
+      sourceOpened.size > BigInt(JUPYTER_VSIX_MAX_BYTES)
+    ) {
+      throw new Error(INVALID_JUPYTER_VSIX);
+    }
+
+    destinationDescriptor = openSync(
+      destination,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o400
+    );
+    destinationCreated = true;
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let copied = 0n;
+    while (copied < sourceOpened.size) {
+      const remaining = sourceOpened.size - copied;
+      const requested = Number(remaining < BigInt(buffer.length) ? remaining : BigInt(buffer.length));
+      const bytesRead = readSync(sourceDescriptor, buffer, 0, requested, null);
+      if (bytesRead === 0) {
+        throw new Error(INVALID_JUPYTER_VSIX);
+      }
+      let written = 0;
+      while (written < bytesRead) {
+        const bytesWritten = writeSync(destinationDescriptor, buffer, written, bytesRead - written);
+        if (bytesWritten === 0) {
+          throw new Error(INVALID_JUPYTER_VSIX);
+        }
+        written += bytesWritten;
+      }
+      copied += BigInt(bytesRead);
+    }
+    fsyncSync(destinationDescriptor);
+    const sourceCompleted = fstatSync(sourceDescriptor, { bigint: true });
+    const destinationCompleted = fstatSync(destinationDescriptor, { bigint: true });
+    if (
+      !sameImmutablePathSnapshot(sourceCompleted, sourceOpened) ||
+      !destinationCompleted.isFile() ||
+      destinationCompleted.isSymbolicLink() ||
+      destinationCompleted.size !== sourceOpened.size ||
+      destinationCompleted.nlink !== 1n
+    ) {
+      throw new Error(INVALID_JUPYTER_VSIX);
+    }
+    staged = true;
+    return Object.freeze({
+      [JUPYTER_VSIX_SNAPSHOT_RECEIPT]: true,
+      path: destination,
+      metadata: destinationCompleted
+    });
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  } finally {
+    if (destinationDescriptor !== undefined) closeSync(destinationDescriptor);
+    if (sourceDescriptor !== undefined) closeSync(sourceDescriptor);
+    if (destinationCreated && !staged) {
+      rmSync(destination, { force: true });
+    }
+  }
+}
+
+export function assertJupyterExtensionAcceptanceVsixSnapshot(receipt) {
+  if (
+    receipt?.[JUPYTER_VSIX_SNAPSHOT_RECEIPT] !== true ||
+    typeof receipt.path !== "string" ||
+    receipt.metadata === undefined
+  ) {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  let current;
+  try {
+    current = lstatSync(receipt.path, { bigint: true });
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  if (current.isSymbolicLink() || !current.isFile() || !sameImmutablePathSnapshot(current, receipt.metadata)) {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  return receipt.path;
+}
+
+function currentJupyterVsixHost() {
+  const architecture = process.arch === "arm" ? "armhf" : process.arch;
+  if (!["x64", "arm64", "armhf"].includes(architecture)) {
+    throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+  }
+  if (process.platform !== "linux") {
+    return { platform: process.platform, architecture };
+  }
+
+  let report;
+  try {
+    report = process.report?.getReport();
+  } catch {
+    // A disabled diagnostic report is handled by the fixed fail-closed error below.
+  }
+  const glibcVersion = report?.header?.glibcVersionRuntime;
+  if (typeof glibcVersion === "string" && glibcVersion.length > 0) {
+    return { platform: "linux", architecture, libc: "glibc" };
+  }
+  if (
+    existsSync("/etc/alpine-release") ||
+    report?.sharedObjects?.some((entry) => typeof entry === "string" && entry.toLowerCase().includes("musl"))
+  ) {
+    return { platform: "linux", architecture, libc: "musl" };
+  }
+  throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+}
+
+function expectedJupyterVsixTarget(host) {
+  if (host.platform === "linux") {
+    if (!["glibc", "musl"].includes(host.libc)) {
+      throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+    }
+    return `${host.libc === "musl" ? "alpine" : "linux"}-${host.architecture}`;
+  }
+  if (!["darwin", "win32"].includes(host.platform)) {
+    throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+  }
+  return `${host.platform}-${host.architecture}`;
+}
+
+function parseJupyterVsixTargetPlatform(manifest) {
+  const elementPath = [];
+  const parser = new SaxesParser({ xmlns: true });
+  let identityCount = 0;
+  let targetPlatform;
+
+  parser.on("doctype", () => {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  });
+  parser.on("opentag", (tag) => {
+    elementPath.push({ name: tag.name, uri: tag.uri });
+    if (
+      elementPath.length !== 3 ||
+      elementPath[0]?.name !== "PackageManifest" ||
+      elementPath[0]?.uri !== JUPYTER_VSIX_MANIFEST_NAMESPACE ||
+      elementPath[1]?.name !== "Metadata" ||
+      elementPath[1]?.uri !== JUPYTER_VSIX_MANIFEST_NAMESPACE ||
+      tag.name !== "Identity" ||
+      tag.uri !== JUPYTER_VSIX_MANIFEST_NAMESPACE
+    ) {
+      return;
+    }
+    identityCount += 1;
+    const attribute = Object.values(tag.attributes).find(
+      (candidate) =>
+        typeof candidate === "object" &&
+        candidate.name === "TargetPlatform" &&
+        candidate.prefix === "" &&
+        candidate.local === "TargetPlatform" &&
+        candidate.uri === ""
+    );
+    if (attribute !== undefined) {
+      if (typeof attribute.value !== "string" || attribute.value.trim() !== attribute.value) {
+        throw new Error(INVALID_JUPYTER_VSIX);
+      }
+      targetPlatform = attribute.value.toLowerCase();
+    }
+  });
+  parser.on("closetag", () => {
+    elementPath.pop();
+  });
+  try {
+    parser.write(manifest).close();
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  if (identityCount !== 1) {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  return targetPlatform;
+}
+
+function openJupyterVsix(vsix) {
+  return new Promise((resolveZip, rejectZip) => {
+    openZip(vsix, { autoClose: true, lazyEntries: true, validateEntrySizes: true }, (error, archive) => {
+      if (error || archive === undefined) {
+        rejectZip(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      resolveZip(archive);
+    });
+  });
+}
+
+function readBoundedJupyterVsixManifest(archive, entry) {
+  if (entry.uncompressedSize > JUPYTER_VSIX_MANIFEST_MAX_BYTES) {
+    return Promise.reject(new Error(INVALID_JUPYTER_VSIX));
+  }
+  return new Promise((resolveManifest, rejectManifest) => {
+    archive.openReadStream(entry, (openError, stream) => {
+      if (openError || stream === undefined) {
+        rejectManifest(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      const chunks = [];
+      let total = 0;
+      stream.on("data", (chunk) => {
+        total += chunk.length;
+        if (total > JUPYTER_VSIX_MANIFEST_MAX_BYTES) {
+          stream.destroy(new Error(INVALID_JUPYTER_VSIX));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      stream.once("error", () => rejectManifest(new Error(INVALID_JUPYTER_VSIX)));
+      stream.once("end", () => resolveManifest(Buffer.concat(chunks, total).toString("utf8")));
+    });
+  });
+}
+
+function readBoundedJupyterNativeHeader(archive, entry) {
+  if (
+    entry.uncompressedSize <= 0 ||
+    entry.uncompressedSize > JUPYTER_VSIX_NATIVE_PAYLOAD_MAX_BYTES ||
+    entry.fileName.endsWith("/")
+  ) {
+    return Promise.reject(new Error(INVALID_JUPYTER_VSIX));
+  }
+  return new Promise((resolveHeader, rejectHeader) => {
+    archive.openReadStream(entry, (openError, stream) => {
+      if (openError || stream === undefined) {
+        rejectHeader(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      const header = Buffer.alloc(Math.min(entry.uncompressedSize, JUPYTER_VSIX_NATIVE_HEADER_MAX_BYTES));
+      let headerBytes = 0;
+      let total = 0;
+      stream.on("data", (chunk) => {
+        total += chunk.length;
+        if (total > JUPYTER_VSIX_NATIVE_PAYLOAD_MAX_BYTES) {
+          stream.destroy(new Error(INVALID_JUPYTER_VSIX));
+          return;
+        }
+        if (headerBytes < header.length) {
+          headerBytes += chunk.copy(header, headerBytes, 0, header.length - headerBytes);
+        }
+      });
+      stream.once("error", () => rejectHeader(new Error(INVALID_JUPYTER_VSIX)));
+      stream.once("end", () => {
+        if (total !== entry.uncompressedSize || headerBytes === 0) {
+          rejectHeader(new Error(INVALID_JUPYTER_VSIX));
+          return;
+        }
+        resolveHeader(header.subarray(0, headerBytes));
+      });
+    });
+  });
+}
+
+async function inspectJupyterExtensionVsix(vsix) {
+  const archive = await openJupyterVsix(vsix);
+  return new Promise((resolveInspection, rejectInspection) => {
+    let settled = false;
+    let entryCount = 0;
+    let manifest;
+    let nativePayloadBytes = 0;
+    const nativePayloads = [];
+    const rejectInvalid = () => {
+      if (settled) return;
+      settled = true;
+      archive.close();
+      rejectInspection(new Error(INVALID_JUPYTER_VSIX));
+    };
+
+    archive.once("error", rejectInvalid);
+    archive.on("entry", (entry) => {
+      entryCount += 1;
+      if (entryCount > JUPYTER_VSIX_MAX_ENTRIES) {
+        rejectInvalid();
+        return;
+      }
+      const nativePayload = JUPYTER_ZEROMQ_PREBUILD.exec(entry.fileName);
+      if (nativePayload?.[1] === "zeromq") {
+        nativePayloadBytes += entry.uncompressedSize;
+        if (nativePayloads.length >= JUPYTER_VSIX_MAX_NATIVE_PAYLOADS) {
+          rejectInvalid();
+          return;
+        }
+        if (nativePayloadBytes > JUPYTER_VSIX_NATIVE_PAYLOAD_TOTAL_MAX_BYTES) {
+          rejectInvalid();
+          return;
+        }
+        void readBoundedJupyterNativeHeader(archive, entry).then((header) => {
+          if (settled) return;
+          nativePayloads.push({
+            packageName: nativePayload[1],
+            platform: nativePayload[2],
+            filename: nativePayload[3],
+            header
+          });
+          archive.readEntry();
+        }, rejectInvalid);
+        return;
+      }
+      if (entry.fileName !== JUPYTER_VSIX_MANIFEST_ENTRY) {
+        archive.readEntry();
+        return;
+      }
+      if (manifest !== undefined || entry.fileName.endsWith("/")) {
+        rejectInvalid();
+        return;
+      }
+      manifest = null;
+      void readBoundedJupyterVsixManifest(archive, entry).then((contents) => {
+        if (settled) return;
+        manifest = contents;
+        archive.readEntry();
+      }, rejectInvalid);
+    });
+    archive.once("end", () => {
+      if (settled) return;
+      settled = true;
+      if (typeof manifest !== "string") {
+        rejectInspection(new Error(INVALID_JUPYTER_VSIX));
+        return;
+      }
+      resolveInspection({ manifest, nativePayloads });
+    });
+    archive.readEntry();
+  });
+}
+
+function jupyterZeroMqPayloadMatchesHost(payload, host) {
+  const nativePlatform = host.platform === "linux" ? "linux" : host.platform;
+  if (payload.platform !== `${nativePlatform}-${host.architecture}`) {
+    return false;
+  }
+  if (host.platform !== "linux") {
+    return jupyterNativeHeaderMatchesHost(payload.header, host);
+  }
+  const requiredSuffix = host.libc === "musl" ? ".musl.node" : ".glibc.node";
+  return payload.filename.endsWith(requiredSuffix) && jupyterNativeHeaderMatchesHost(payload.header, host);
+}
+
+function jupyterNativeHeaderMatchesHost(header, host) {
+  if (host.platform === "linux") {
+    if (header.length < 20 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) || header[5] !== 1) {
+      return false;
+    }
+    const expectedClass = host.architecture === "armhf" ? 1 : 2;
+    const expectedMachine = { x64: 62, arm64: 183, armhf: 40 }[host.architecture];
+    return header[4] === expectedClass && header.readUInt16LE(18) === expectedMachine;
+  }
+  if (host.platform === "win32") {
+    if (header.length < 64 || header[0] !== 0x4d || header[1] !== 0x5a) {
+      return false;
+    }
+    const peOffset = header.readUInt32LE(60);
+    if (peOffset + 6 > header.length || header.readUInt32LE(peOffset) !== 0x00004550) {
+      return false;
+    }
+    const expectedMachine = { x64: 0x8664, arm64: 0xaa64, armhf: 0x01c4 }[host.architecture];
+    return header.readUInt16LE(peOffset + 4) === expectedMachine;
+  }
+  if (host.platform === "darwin") {
+    if (header.length < 8 || header.readUInt32LE(0) !== 0xfeedfacf) {
+      return false;
+    }
+    const expectedCpu = { x64: 0x01000007, arm64: 0x0100000c, armhf: 12 }[host.architecture];
+    return header.readUInt32LE(4) === expectedCpu;
+  }
+  return false;
+}
+
+export async function validateJupyterExtensionAcceptanceVsix(vsix, host = currentJupyterVsixHost()) {
+  let inspection;
+  try {
+    inspection = await inspectJupyterExtensionVsix(vsix);
+  } catch {
+    throw new Error(INVALID_JUPYTER_VSIX);
+  }
+  const targetPlatform = parseJupyterVsixTargetPlatform(inspection.manifest);
+  const expectedTarget = expectedJupyterVsixTarget(host);
+  const portableTargets =
+    host.platform === "darwin"
+      ? new Set([undefined, "universal", "darwin-universal"])
+      : new Set([undefined, "universal"]);
+  if (targetPlatform !== expectedTarget && !portableTargets.has(targetPlatform)) {
+    throw new Error(INCOMPATIBLE_JUPYTER_VSIX_TARGET);
+  }
+
+  const modernPayloads = inspection.nativePayloads.filter((payload) => payload.packageName === "zeromq");
+  if (!modernPayloads.some((payload) => jupyterZeroMqPayloadMatchesHost(payload, host))) {
+    throw new Error(INCOMPATIBLE_JUPYTER_ZEROMQ);
+  }
+}
 const INCOMPLETE_XVFB_DIAGNOSTIC =
   "Xvfb stderr was suppressed because its complete stream contents were not available.";
 const UNREADABLE_EDITOR_DIAGNOSTIC = "Unreadable acceptance failure";
@@ -254,6 +703,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_TEST_PHASE",
   "OPEN_WRANGLER_TEST_PROGRESS",
   "OPEN_WRANGLER_TEST_PYTHON",
+  "OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR",
   "OPEN_WRANGLER_TEST_RUN_ID",
   "OPEN_WRANGLER_TEST_RESULT"
 ]);
@@ -2279,6 +2729,128 @@ export function editorAcceptanceProgressSignalPath(progressPath, runId, phase) {
   return `${progressPath}.${runId.replaceAll("-", "")}.${phase}.heartbeat`;
 }
 
+function resolveEditorAcceptanceJupyterEnvironment(jupyterEnvironment, privateRoot) {
+  if (jupyterEnvironment === undefined) return {};
+  if (jupyterEnvironment === null || typeof jupyterEnvironment !== "object" || Array.isArray(jupyterEnvironment)) {
+    throw new Error("An editor acceptance Jupyter environment must be an object.");
+  }
+  if (
+    typeof privateRoot !== "string" ||
+    privateRoot.length === 0 ||
+    !isAbsolute(privateRoot) ||
+    /[\0\r\n]/u.test(privateRoot)
+  ) {
+    throw new Error("An editor acceptance Jupyter environment requires one absolute private runner root.");
+  }
+  let canonicalRoot;
+  try {
+    const rootMetadata = lstatSync(privateRoot, { bigint: true });
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error("invalid root");
+    canonicalRoot = realpathSync(privateRoot);
+  } catch {
+    throw new Error("An editor acceptance Jupyter environment requires an existing non-symbolic-link private root.");
+  }
+  const fields = [
+    ["dataDir", "JUPYTER_DATA_DIR"],
+    ["runtimeDir", "JUPYTER_RUNTIME_DIR"],
+    ["configDir", "JUPYTER_CONFIG_DIR"],
+    ["path", "JUPYTER_PATH"]
+  ];
+  const ownKeys = Reflect.ownKeys(jupyterEnvironment);
+  if (
+    ownKeys.length !== fields.length ||
+    fields.some(([field]) => !Object.prototype.hasOwnProperty.call(jupyterEnvironment, field))
+  ) {
+    throw new Error(
+      "An editor acceptance Jupyter environment must define exactly dataDir, runtimeDir, configDir, and path."
+    );
+  }
+  const environment = {};
+  for (const [field, key] of fields) {
+    const value = jupyterEnvironment[field];
+    if (
+      typeof value !== "string" ||
+      value.length === 0 ||
+      !isAbsolute(value) ||
+      /[\0\r\n]/u.test(value) ||
+      isSensitiveEditorEnvironmentValue(value)
+    ) {
+      throw new Error(`An editor acceptance Jupyter environment ${field} must be one safe absolute single-line path.`);
+    }
+    let canonicalPath;
+    try {
+      const metadata = lstatSync(value, { bigint: true });
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("invalid directory");
+      canonicalPath = realpathSync(value);
+    } catch {
+      throw new Error(
+        `An editor acceptance Jupyter environment ${field} must be an existing non-symbolic-link directory.`
+      );
+    }
+    const containedPath = relative(canonicalRoot, canonicalPath);
+    if (
+      containedPath.length === 0 ||
+      containedPath === ".." ||
+      containedPath.startsWith(`..${sep}`) ||
+      isAbsolute(containedPath)
+    ) {
+      throw new Error(`An editor acceptance Jupyter environment ${field} must stay inside its private runner root.`);
+    }
+    environment[key] = value;
+  }
+  return environment;
+}
+
+function resolveEditorAcceptanceRemoteJupyterDescriptor(descriptorPath, privateRoot, platform) {
+  if (descriptorPath === undefined) return undefined;
+  if (platform !== "linux") {
+    throw new Error("Container-isolated remote Jupyter acceptance is supported only on Linux.");
+  }
+  if (
+    typeof descriptorPath !== "string" ||
+    descriptorPath.length === 0 ||
+    !isAbsolute(descriptorPath) ||
+    /[\0\r\n]/u.test(descriptorPath) ||
+    typeof privateRoot !== "string" ||
+    !isAbsolute(privateRoot) ||
+    /[\0\r\n]/u.test(privateRoot)
+  ) {
+    throw new Error("Remote Jupyter acceptance requires one absolute private descriptor path and runner root.");
+  }
+  let canonicalRoot;
+  let canonicalDescriptor;
+  try {
+    const rootMetadata = lstatSync(privateRoot, { bigint: true });
+    const descriptorMetadata = lstatSync(descriptorPath, { bigint: true });
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) throw new Error("invalid root");
+    if (
+      !descriptorMetadata.isFile() ||
+      descriptorMetadata.isSymbolicLink() ||
+      descriptorMetadata.nlink !== 1n ||
+      descriptorMetadata.size <= 0n ||
+      descriptorMetadata.size > 2_048n ||
+      (descriptorMetadata.mode & 0o777n) !== 0o400n ||
+      (typeof process.getuid === "function" && descriptorMetadata.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("invalid descriptor");
+    }
+    canonicalRoot = realpathSync(privateRoot);
+    canonicalDescriptor = realpathSync(descriptorPath);
+  } catch {
+    throw new Error("Remote Jupyter acceptance requires one owned mode-0400 single-link bounded descriptor.");
+  }
+  const containedPath = relative(canonicalRoot, canonicalDescriptor);
+  if (
+    containedPath.length === 0 ||
+    containedPath === ".." ||
+    containedPath.startsWith(`..${sep}`) ||
+    isAbsolute(containedPath)
+  ) {
+    throw new Error("The remote Jupyter descriptor must stay inside its private runner root.");
+  }
+  return descriptorPath;
+}
+
 export async function runEditorAcceptancePhase(
   {
     editor,
@@ -2291,6 +2863,9 @@ export async function runEditorAcceptancePhase(
     phase,
     resultPath,
     workspaceTrust = "trusted",
+    requiresWorkbenchCdp = false,
+    jupyterEnvironment,
+    remoteJupyterDescriptorPath,
     runId = randomUUID(),
     progressPath = editorAcceptanceProgressPath(resultPath, runId, phase)
   },
@@ -2312,6 +2887,18 @@ export async function runEditorAcceptancePhase(
   if (workspaceTrust !== "trusted" && workspaceTrust !== "restricted") {
     throw new Error('An editor acceptance phase workspace-trust mode must be "trusted" or "restricted".');
   }
+  if (typeof requiresWorkbenchCdp !== "boolean") {
+    throw new Error("An editor acceptance phase requiresWorkbenchCdp value must be a boolean.");
+  }
+  const jupyterEnvironmentOverrides = resolveEditorAcceptanceJupyterEnvironment(
+    jupyterEnvironment,
+    environment[TEMP_ROOT_ENV]
+  );
+  const remoteJupyterDescriptor = resolveEditorAcceptanceRemoteJupyterDescriptor(
+    remoteJupyterDescriptorPath,
+    environment[TEMP_ROOT_ENV],
+    platform
+  );
   assertEditorUserDataIpcPathSafe(userData, editor.version, platform);
   const expectedProgressPath = editorAcceptanceProgressPath(resultPath, runId, phase);
   if (progressPath !== expectedProgressPath) {
@@ -2407,7 +2994,7 @@ export async function runEditorAcceptancePhase(
     );
   }
   let cdpPort;
-  if (phase === "verify" || environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+  if (phase === "verify" || requiresWorkbenchCdp || environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
     const portDeadline = deadlineState();
     if (portDeadline.expired) {
       throw createEditorAcceptanceFailure(
@@ -2481,6 +3068,24 @@ export async function runEditorAcceptancePhase(
   let child;
   try {
     const launchProcess = spawnProcess ?? spawnOwnedEditorProcess;
+    const phaseEnvironment = createEditorAcceptanceEnvironmentForPlatform(
+      environment,
+      {
+        OPEN_WRANGLER_EXTENSION_TESTS: "1",
+        OPEN_WRANGLER_TEST_PHASE: phase,
+        OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
+        ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
+        OPEN_WRANGLER_TEST_PYTHON: python,
+        OPEN_WRANGLER_TEST_MODULE: testModule,
+        OPEN_WRANGLER_TEST_RESULT: resultPath,
+        OPEN_WRANGLER_TEST_PROGRESS: progressPath,
+        OPEN_WRANGLER_TEST_RUN_ID: runId,
+        OPEN_WRANGLER_TEST_REMOTE_JUPYTER_DESCRIPTOR: remoteJupyterDescriptor,
+        OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+      },
+      platform
+    );
+    Object.assign(phaseEnvironment, jupyterEnvironmentOverrides);
     child = launchProcess(
       editor.executable,
       [
@@ -2493,6 +3098,7 @@ export async function runEditorAcceptancePhase(
         ...(workspaceTrust === "trusted" ? ["--disable-workspace-trust"] : []),
         "--skip-welcome",
         "--skip-release-notes",
+        "--locale=en",
         ...(editor.key === "cursor" ? ["--skip-onboarding"] : []),
         "--new-window",
         "--wait",
@@ -2502,22 +3108,7 @@ export async function runEditorAcceptancePhase(
       ],
       {
         detached: platform !== "win32",
-        env: createEditorAcceptanceEnvironmentForPlatform(
-          environment,
-          {
-            OPEN_WRANGLER_EXTENSION_TESTS: "1",
-            OPEN_WRANGLER_TEST_PHASE: phase,
-            OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
-            ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
-            OPEN_WRANGLER_TEST_PYTHON: python,
-            OPEN_WRANGLER_TEST_MODULE: testModule,
-            OPEN_WRANGLER_TEST_RESULT: resultPath,
-            OPEN_WRANGLER_TEST_PROGRESS: progressPath,
-            OPEN_WRANGLER_TEST_RUN_ID: runId,
-            OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS: environment.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
-          },
-          platform
-        ),
+        env: phaseEnvironment,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"]
       },

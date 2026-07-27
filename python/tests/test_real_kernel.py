@@ -89,6 +89,10 @@ __ow_notebook.register_formatters()
     mime_type = "application/vnd.openwrangler.viewer.v2+json"
     assert pandas_mime[mime_type]["metadata"]["backend"] == "pandas"
     assert polars_mime[mime_type]["metadata"]["backend"] == "polars"
+    assert "text/plain" in pandas_mime
+    assert "text/plain" in polars_mime
+    assert "text/html" not in pandas_mime
+    assert "text/html" not in polars_mime
     pandas_opened = _dispatch(
         client,
         "pandas",

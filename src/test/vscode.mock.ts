@@ -91,6 +91,10 @@ export const extensions = {
   getExtension: (_id: string): undefined => undefined
 };
 
+export const env = {
+  appName: "Visual Studio Code"
+};
+
 export const commands = {
   executeCommand: async (): Promise<undefined> => undefined
 };

@@ -1,4 +1,5 @@
 import { SaxesParser } from "saxes";
+import ts from "typescript";
 
 export const allowedVsixEntryPatterns = [
   /^\[Content_Types\]\.xml$/u,
@@ -9,7 +10,7 @@ export const allowedVsixEntryPatterns = [
   /^extension\/dist\/(extension|shared)\/$/u,
   /^extension\/dist\/(extension|shared)\/.+\.js$/u,
   /^extension\/media\/$/u,
-  /^extension\/media\/(activity-icon\.svg|codicon\.ttf|icon(-128)?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|protocolValidation\.js|webview\.(css|js))$/u,
+  /^extension\/media\/(activity-icon\.svg|codicon\.ttf|icon(-128)?\.png|icon\.svg|codePreview\.js|notebookRenderer\.js|webview\.(css|js))$/u,
   /^extension\/python\/$/u,
   /^extension\/python\/openwrangler_runtime\/$/u,
   /^extension\/python\/openwrangler_runtime\/[^/]+\.py$/u,
@@ -24,7 +25,7 @@ export const requiredVsixEntries = [
   "extension/media/webview.js",
   "extension/media/webview.css",
   "extension/media/codicon.ttf",
-  "extension/media/protocolValidation.js",
+  "extension/media/notebookRenderer.js",
   "extension/media/icon.png",
   "extension/python/openwrangler_runtime/dependency_guard.py",
   "extension/python/openwrangler_runtime/server.py",
@@ -124,6 +125,70 @@ export function inspectVsixEntries(entries) {
     missing: requiredVsixEntries.filter((entry) => !entries.includes(entry)),
     duplicates
   };
+}
+
+export function inspectNotebookRendererBundle(bundle) {
+  if (typeof bundle !== "string" || bundle.trim().length === 0) {
+    return ["The notebook renderer bundle must be non-empty JavaScript."];
+  }
+
+  const sourceFile = ts.createSourceFile("notebookRenderer.js", bundle, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  if (sourceFile.parseDiagnostics.length > 0) {
+    return ["The notebook renderer bundle must contain valid JavaScript."];
+  }
+
+  const problems = [];
+  let hasDependencyImport = false;
+  let exportsActivate = false;
+
+  const hasExportModifier = (node) =>
+    ts.canHaveModifiers(node) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+  const hasDefaultModifier = (node) =>
+    ts.canHaveModifiers(node) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword);
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement) || ts.isImportEqualsDeclaration(statement)) {
+      hasDependencyImport = true;
+    }
+
+    if (ts.isExportDeclaration(statement)) {
+      hasDependencyImport ||= statement.moduleSpecifier !== undefined;
+      exportsActivate ||=
+        statement.moduleSpecifier === undefined &&
+        statement.exportClause !== undefined &&
+        ts.isNamedExports(statement.exportClause) &&
+        statement.exportClause.elements.some((element) => element.name.text === "activate");
+    } else if (
+      hasExportModifier(statement) &&
+      !hasDefaultModifier(statement) &&
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+      statement.name?.text === "activate"
+    ) {
+      exportsActivate = true;
+    } else if (hasExportModifier(statement) && ts.isVariableStatement(statement)) {
+      exportsActivate ||= statement.declarationList.declarations.some(
+        (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "activate"
+      );
+    }
+  }
+
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      hasDependencyImport = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  if (hasDependencyImport) {
+    problems.push("The notebook renderer entrypoint must be one self-contained module without imports.");
+  }
+  if (!exportsActivate) {
+    problems.push("The notebook renderer entrypoint must export activate.");
+  }
+  return problems;
 }
 
 function parsePreReleaseProperties(vsixManifest) {

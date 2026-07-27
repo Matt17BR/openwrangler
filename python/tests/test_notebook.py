@@ -301,6 +301,12 @@ class FakeFormatter:
         self.registered[value_type] = formatter
 
 
+class FakeHtmlFormatter(FakeFormatter):
+    @property
+    def type_printers(self):
+        return self.registered
+
+
 def test_formatter_registration_emits_v2_for_both_engines():
     formatter = FakeFormatter()
     shell = type(
@@ -314,6 +320,36 @@ def test_formatter_registration_emits_v2_for_both_engines():
     polars_bundle = formatter.registered[pl.DataFrame](pl.DataFrame({"value": [1]}))
     assert pandas_bundle[notebook.MIME_TYPE_V2]["mimeVersion"] == 2
     assert polars_bundle[notebook.MIME_TYPE_V2]["mimeVersion"] == 2
+
+
+def test_formatter_registration_prefers_open_wrangler_without_overriding_explicit_html():
+    formatter = FakeFormatter()
+    html_formatter = FakeHtmlFormatter()
+
+    def explicit_series_html(_value):
+        return "<strong>user formatter</strong>"
+
+    html_formatter.for_type(pd.Series, explicit_series_html)
+    shell = type(
+        "FakeShell",
+        (),
+        {
+            "display_formatter": type(
+                "DisplayFormatter",
+                (),
+                {
+                    "mimebundle_formatter": formatter,
+                    "formatters": {"text/html": html_formatter},
+                },
+            )()
+        },
+    )()
+
+    assert notebook.register_formatters(shell) is True
+
+    assert html_formatter.registered[pd.DataFrame](pd.DataFrame({"value": [1]})) is None
+    assert html_formatter.registered[pd.Series] is explicit_series_html
+    assert html_formatter.registered[pd.Series](pd.Series([1])) == "<strong>user formatter</strong>"
 
 
 def test_formatter_reduces_wide_capture_rows_to_the_cell_budget():

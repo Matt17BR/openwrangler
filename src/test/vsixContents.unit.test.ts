@@ -1,18 +1,60 @@
 import { describe, expect, it } from "vitest";
 import {
+  inspectNotebookRendererBundle,
   inspectReadmeSourceSrcsets,
   inspectVsixEntries,
   inspectVsixPreReleaseMetadata,
   requiredVsixEntries
 } from "../../scripts/vsix-contents.mjs";
 
+describe("notebook renderer bundle validation", () => {
+  it("accepts one self-contained activation module", () => {
+    for (const bundle of [
+      "const activate=()=>({});export{activate};",
+      "const internal=()=>({});export{internal as activate};",
+      "export function activate(){return {};}",
+      "export const activate=()=>({});",
+      'const note="import(\\"./not-a-chunk.js\\")";/* import "./also-not-a-chunk.js" */export{note as activate};'
+    ]) {
+      expect(inspectNotebookRendererBundle(bundle)).toEqual([]);
+    }
+  });
+
+  it.each([
+    'import{validate}from"./protocolValidation.js";export{validate as activate};',
+    'import"./side-effect.js";const activate=()=>({});export{activate};',
+    'const dependency=import("./chunk.js");export{dependency as activate};',
+    'const activate=()=>({});export{activate}from"./chunk.js";',
+    'export*from"./chunk.js";'
+  ])("rejects imported renderer dependencies (%s)", (bundle) => {
+    expect(inspectNotebookRendererBundle(bundle)).toContain(
+      "The notebook renderer entrypoint must be one self-contained module without imports."
+    );
+  });
+
+  it("rejects empty and invalid JavaScript", () => {
+    expect(inspectNotebookRendererBundle(" \n ")).toEqual([
+      "The notebook renderer bundle must be non-empty JavaScript."
+    ]);
+    expect(inspectNotebookRendererBundle("export {")).toEqual([
+      "The notebook renderer bundle must contain valid JavaScript."
+    ]);
+  });
+
+  it.each(["const render=()=>({});export{render};", "export default function activate(){}"])(
+    "requires a named renderer activation export (%s)",
+    (bundle) => {
+      expect(inspectNotebookRendererBundle(bundle)).toEqual(["The notebook renderer entrypoint must export activate."]);
+    }
+  );
+});
+
 describe("VSIX production entry allowlist", () => {
-  it("requires and narrowly permits the generated protocol-validation module", () => {
+  it("requires and narrowly permits the production webview assets", () => {
     const result = inspectVsixEntries([
       ...requiredVsixEntries,
       "[Content_Types].xml",
       "extension.vsixmanifest",
-      "extension/media/notebookRenderer.js",
       "extension/media/codePreview.js"
     ]);
 
@@ -115,14 +157,18 @@ describe("VSIX production entry allowlist", () => {
     expect(result.duplicates).toEqual([]);
   });
 
-  it("requires the compiled webview host and bundled Codicon font", () => {
+  it("requires the compiled webview host, notebook renderer, and bundled Codicon font", () => {
     const entries = requiredVsixEntries.filter(
-      (entry) => entry !== "extension/dist/extension/webviewPanel.js" && entry !== "extension/media/codicon.ttf"
+      (entry) =>
+        entry !== "extension/dist/extension/webviewPanel.js" &&
+        entry !== "extension/media/notebookRenderer.js" &&
+        entry !== "extension/media/codicon.ttf"
     );
 
     expect(inspectVsixEntries(entries).missing).toEqual([
       "extension/dist/extension/webviewPanel.js",
-      "extension/media/codicon.ttf"
+      "extension/media/codicon.ttf",
+      "extension/media/notebookRenderer.js"
     ]);
   });
 

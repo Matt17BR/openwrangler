@@ -59,7 +59,7 @@
     "build": "npm run build:extension && npm run build:webview",
     "build:extension": "tsc -p tsconfig.extension.json",
     "build:test-extension": "tsc -p tsconfig.extension-test.json",
-    "build:webview": "vite build",
+    "build:webview": "node scripts/build-webviews.mjs",
     "typecheck": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "lint": "eslint .",
     "lint:python": "node scripts/run-python.mjs -m ruff check python && node scripts/run-python.mjs -m ruff format --check python && node scripts/run-pyright.mjs python",
@@ -73,14 +73,17 @@
     "check": "npm run format:check && npm run lint && npm run lint:python && npm run protocol:check && npm run reference:check && npm run typecheck && npm run docs:check && npm run license:check",
     "watch": "npm-run-all --parallel watch:extension watch:webview",
     "watch:extension": "tsc -w -p tsconfig.extension.json",
-    "watch:webview": "vite build --watch",
+    "watch:webview": "npm-run-all --parallel watch:webview:main watch:webview:renderer",
+    "watch:webview:main": "vite build --watch --mode production",
+    "watch:webview:renderer": "vite build --watch --mode notebook-renderer",
     "test": "npm run test:scripts && npm run test:ts && npm run test:python",
-    "test:scripts": "node --test scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/packaged-editor-orchestration.test.mjs",
+    "test:scripts": "node --test scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/packaged-editor-orchestration.test.mjs scripts/prepare-xvfb.test.mjs scripts/remote-jupyter-acceptance.test.mjs",
     "test:ts": "vitest run",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
     "test:packaged-editors": "npm run build:test-extension && npm run test:packaged-editors:run",
     "test:packaged-editors:run": "node scripts/run-packaged-editor-tests.mjs",
+    "prepare:xvfb": "node scripts/prepare-xvfb.mjs --print-path",
     "test:coverage": "npm run test:coverage:ts && npm run test:coverage:python",
     "test:coverage:ts": "vitest run --coverage",
     "test:coverage:python": "node scripts/run-python.mjs -m pytest python/tests -q --cov=openwrangler_runtime --cov-report=term --cov-report=xml:tmp/coverage/python.xml --cov-fail-under=78",
@@ -132,7 +135,8 @@
     "configurationDefaults": {
       "cursor.general.pinnedTitleActions": [
         "openWrangler.openFile",
-        "openWrangler.changeImportOptions"
+        "openWrangler.changeImportOptions",
+        "openWrangler.openNotebookVariable"
       ]
     },
     "commands": [
@@ -157,7 +161,9 @@
       },
       {
         "command": "openWrangler.openNotebookVariable",
-        "title": "Open Wrangler: Open Notebook Variable"
+        "title": "Open Wrangler: Open Notebook Variable",
+        "shortTitle": "Open Variable",
+        "icon": "$(table)"
       },
       {
         "command": "openWrangler.checkJupyterIntegration",
@@ -424,6 +430,11 @@
           "command": "openWrangler.changeImportOptions",
           "when": "openWrangler.canChangeImportOptions && (activeWebviewPanelId == openWrangler.session || activeCustomEditorId == openWrangler.viewer)",
           "group": "navigation@2"
+        },
+        {
+          "command": "openWrangler.openNotebookVariable",
+          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)",
+          "group": "navigation@50"
         }
       ],
       "editor/title/context": [
@@ -444,10 +455,10 @@
           "when": "false"
         }
       ],
-      "notebook/title": [
+      "notebook/toolbar": [
         {
           "command": "openWrangler.openNotebookVariable",
-          "when": "notebookKernel =~ /^ms-toolsai.jupyter\\// && notebookType == jupyter-notebook",
+          "when": "notebookType == 'jupyter-notebook' && isWorkspaceTrusted",
           "group": "navigation@50"
         }
       ],
@@ -660,6 +671,8 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.38.0",
     "vite": "^8.0.14",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.7",
+    "yauzl": "^3.3.1",
+    "yazl": "^2.5.1"
   }
 }

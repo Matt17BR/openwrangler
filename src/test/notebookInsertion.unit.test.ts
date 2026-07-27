@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NotebookDocument } from "vscode";
 
 interface CapturedCellData {
@@ -30,6 +30,9 @@ interface FakeNotebook {
 
 const insertionMocks = vi.hoisted(() => ({
   notebookDocuments: [] as unknown[],
+  notebookChangeListeners: new Set<(event: { notebook: unknown }) => void>(),
+  notebookOpenListeners: new Set<(notebook: unknown) => void>(),
+  notebookCloseListeners: new Set<(notebook: unknown) => void>(),
   applyEdit: vi.fn<() => Promise<boolean>>(),
   onSet: undefined as (() => void) | undefined,
   capturedEdit: undefined as CapturedCellEdit | undefined
@@ -63,6 +66,18 @@ vi.mock("vscode", () => {
       get notebookDocuments() {
         return insertionMocks.notebookDocuments;
       },
+      onDidChangeNotebookDocument: (listener: (event: { notebook: unknown }) => void) => {
+        insertionMocks.notebookChangeListeners.add(listener);
+        return { dispose: () => insertionMocks.notebookChangeListeners.delete(listener) };
+      },
+      onDidOpenNotebookDocument: (listener: (notebook: unknown) => void) => {
+        insertionMocks.notebookOpenListeners.add(listener);
+        return { dispose: () => insertionMocks.notebookOpenListeners.delete(listener) };
+      },
+      onDidCloseNotebookDocument: (listener: (notebook: unknown) => void) => {
+        insertionMocks.notebookCloseListeners.add(listener);
+        return { dispose: () => insertionMocks.notebookCloseListeners.delete(listener) };
+      },
       applyEdit: insertionMocks.applyEdit
     }
   };
@@ -73,9 +88,16 @@ import { insertGeneratedNotebookCell } from "../extension/notebooks/notebookInse
 describe("generated notebook insertion", () => {
   beforeEach(() => {
     insertionMocks.notebookDocuments.length = 0;
+    insertionMocks.notebookChangeListeners.clear();
+    insertionMocks.notebookOpenListeners.clear();
+    insertionMocks.notebookCloseListeners.clear();
     insertionMocks.applyEdit.mockReset();
     insertionMocks.onSet = undefined;
     insertionMocks.capturedEdit = undefined;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("reports applied only after the exact document contains the marked generated cell", async () => {
@@ -96,6 +118,90 @@ describe("generated notebook insertion", () => {
       generated: true,
       insertionId: expect.any(String)
     });
+  });
+
+  it("proves an exact insertion even when applyEdit itself never settles", async () => {
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockImplementationOnce(() => {
+      applyCapturedEdit(notebook);
+      fireNotebookChange(notebook);
+      return new Promise<boolean>(() => undefined);
+    });
+
+    await expect(insert(notebook)).resolves.toEqual({ status: "applied" });
+
+    expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
+    expect(insertionMocks.notebookChangeListeners.size).toBe(0);
+    expect(insertionMocks.notebookOpenListeners.size).toBe(0);
+    expect(insertionMocks.notebookCloseListeners.size).toBe(0);
+  });
+
+  it("bounds a never-settling edit without retrying or reporting success", async () => {
+    vi.useFakeTimers();
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockImplementationOnce(() => new Promise<boolean>(() => undefined));
+
+    const pending = insert(notebook);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toEqual({ status: "indeterminate" });
+    expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
+    expect(notebook.cellCount).toBe(0);
+    expect(insertionMocks.notebookChangeListeners.size).toBe(0);
+  });
+
+  it("does not dispatch a queued duplicate after the first edit becomes indeterminate", async () => {
+    vi.useFakeTimers();
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockImplementationOnce(() => new Promise<boolean>(() => undefined));
+
+    const first = insert(notebook);
+    const queued = insert(notebook);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(first).resolves.toEqual({ status: "indeterminate" });
+    await expect(queued).resolves.toEqual({ status: "indeterminate" });
+    expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
+  });
+
+  it("bounds an accepted edit that never publishes exact-document proof", async () => {
+    vi.useFakeTimers();
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockResolvedValueOnce(true);
+
+    const pending = insert(notebook);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toEqual({ status: "indeterminate" });
+    expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
+    expect(notebook.cellCount).toBe(0);
+  });
+
+  it("does not accept duplicate UUID markers as exact-document proof", async () => {
+    vi.useFakeTimers();
+    const notebook = fakeNotebook("file:///workspace/origin.ipynb");
+    insertionMocks.notebookDocuments.push(notebook);
+    insertionMocks.applyEdit.mockImplementationOnce(async () => {
+      applyCapturedEdit(notebook);
+      applyCapturedEdit(notebook);
+      fireNotebookChange(notebook);
+      return true;
+    });
+
+    const pending = insert(notebook);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toEqual({ status: "indeterminate" });
+    expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
+    expect(notebook.cellCount).toBe(2);
   });
 
   it("fails stale when the exact document is replaced while the edit is being built", async () => {
@@ -125,16 +231,18 @@ describe("generated notebook insertion", () => {
     expect(duplicate.cellCount).toBe(0);
   });
 
-  it("reports a false or failed VS Code edit as rejected", async () => {
+  it("reports an explicit false VS Code edit as rejected", async () => {
     const rejected = fakeNotebook("file:///workspace/rejected.ipynb");
     insertionMocks.notebookDocuments.push(rejected);
     insertionMocks.applyEdit.mockResolvedValueOnce(false);
     await expect(insert(rejected)).resolves.toEqual({ status: "rejected" });
+  });
 
+  it("reports an asynchronous applyEdit failure as indeterminate", async () => {
     const failed = fakeNotebook("file:///workspace/failed.ipynb");
-    insertionMocks.notebookDocuments.splice(0, 1, failed);
+    insertionMocks.notebookDocuments.push(failed);
     insertionMocks.applyEdit.mockRejectedValueOnce(new Error("transport failed"));
-    await expect(insert(failed)).resolves.toEqual({ status: "rejected" });
+    await expect(insert(failed)).resolves.toEqual({ status: "indeterminate" });
   });
 
   it("reports indeterminate without retry or rollback when URI resolution reaches a replacement", async () => {
@@ -144,7 +252,10 @@ describe("generated notebook insertion", () => {
     insertionMocks.applyEdit.mockImplementationOnce(async () => {
       origin.isClosed = true;
       insertionMocks.notebookDocuments.splice(0, 1, replacement);
+      fireNotebookClose(origin);
+      fireNotebookOpen(replacement);
       applyCapturedEdit(replacement);
+      fireNotebookChange(replacement);
       return true;
     });
 
@@ -156,16 +267,18 @@ describe("generated notebook insertion", () => {
     expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
   });
 
-  it("reports indeterminate when the original version changes beyond the accepted insertion", async () => {
+  it("uses the unique marker as proof across a concurrent notebook metadata change", async () => {
     const notebook = fakeNotebook("file:///workspace/origin.ipynb");
     insertionMocks.notebookDocuments.push(notebook);
     insertionMocks.applyEdit.mockImplementationOnce(async () => {
-      applyCapturedEdit(notebook);
       notebook.version += 1;
+      fireNotebookChange(notebook);
+      applyCapturedEdit(notebook);
+      fireNotebookChange(notebook);
       return true;
     });
 
-    await expect(insert(notebook)).resolves.toEqual({ status: "indeterminate" });
+    await expect(insert(notebook)).resolves.toEqual({ status: "applied" });
 
     expect(insertionMocks.applyEdit).toHaveBeenCalledOnce();
   });
@@ -227,4 +340,16 @@ function applyCapturedEdit(notebook: FakeNotebook): void {
   }));
   notebook.cells.splice(edit.index, 0, ...cells);
   notebook.version += 1;
+}
+
+function fireNotebookChange(notebook: FakeNotebook): void {
+  for (const listener of insertionMocks.notebookChangeListeners) listener({ notebook });
+}
+
+function fireNotebookOpen(notebook: FakeNotebook): void {
+  for (const listener of insertionMocks.notebookOpenListeners) listener(notebook);
+}
+
+function fireNotebookClose(notebook: FakeNotebook): void {
+  for (const listener of insertionMocks.notebookCloseListeners) listener(notebook);
 }

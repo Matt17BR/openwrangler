@@ -1,0 +1,88 @@
+name: Released Jupyter acceptance
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/released-jupyter.yml"
+      - "scripts/remote-jupyter/**"
+      - "scripts/remote-jupyter-acceptance.mjs"
+      - "scripts/run-packaged-editor-tests.mjs"
+      - "src/test/extensionHost/**"
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: released-jupyter-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  vscode:
+    name: VS Code with released Jupyter
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: npm run build
+      - run: npm run package -- --pre-release --out openwrangler.vsix
+      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: npm run build:test-extension
+      - id: prepare_xvfb
+        name: Prepare pinned private Xvfb
+        shell: node {0}
+        run: |
+          const { execFileSync } = require("node:child_process");
+          const { X_OK } = require("node:constants");
+          const { accessSync, appendFileSync, lstatSync } = require("node:fs");
+          const { isAbsolute } = require("node:path");
+
+          const output = execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"], {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "inherit"]
+          });
+          if (!/^[^\0\r\n]+\n?$/u.test(output)) {
+            throw new Error("The Xvfb preparer must print exactly one path.");
+          }
+          const executable = output.endsWith("\n") ? output.slice(0, -1) : output;
+          if (!isAbsolute(executable)) throw new Error("The prepared Xvfb path must be absolute.");
+          const stat = lstatSync(executable);
+          if (!stat.isFile() || stat.isSymbolicLink()) {
+            throw new Error("The prepared Xvfb path must be a regular, non-symlink file.");
+          }
+          accessSync(executable, X_OK);
+          appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
+      - id: packaged_editor
+        name: Test released Jupyter in packaged VS Code
+        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_xvfb.outputs.executable }}
+          OPEN_WRANGLER_REAL_JUPYTER_EXTENSION: "1"
+          OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"
+          VSCODE_TEST_VERSION: stable
+      - name: Upload packaged-editor failure diagnostics
+        if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: released-jupyter-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
