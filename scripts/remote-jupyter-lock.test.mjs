@@ -84,13 +84,15 @@ test("ordinary and released audit workflows cannot omit the fixture lock", async
   assert.match(packageJson.scripts["audit:remote-jupyter"], /--strict/u);
   assert.doesNotMatch(packageJson.scripts["audit:remote-jupyter"], /--ignore-vuln/u);
   assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
-  assert.match(ci, /python -m pip install uv==0\.7\.15/u);
+  const uvBootstrap =
+    /python -m pip install --no-deps "https:\/\/files\.pythonhosted\.org\/[^"]+\/uv-0\.7\.15-py3-none-manylinux_2_17_x86_64\.manylinux2014_x86_64\.whl#sha256=2f6f78e6b816b9fb2cb92f1f1857dd7725cc2008d800e4f4cdc195f64f0c96c8"/u;
+  assert.match(ci, uvBootstrap);
   assert.match(ci, /run: npm run lock:remote-jupyter:check/u);
   assert.match(ci, /run: npm run audit:python/u);
-  assert.match(release, /python -m pip install uv==0\.7\.15/u);
+  assert.match(release, uvBootstrap);
   assert.match(release, /run: npm run lock:remote-jupyter:check/u);
   assert.match(release, /run: npm run audit:python/u);
-  assert.match(releasedJupyter, /python -m pip install uv==0\.7\.15/u);
+  assert.match(releasedJupyter, uvBootstrap);
   assert.match(releasedJupyter, /run: npm run lock:remote-jupyter:check/u);
   assert.match(releasedJupyter, /run: npm run audit:remote-jupyter/u);
   assert.match(vscodeIgnore, /^scripts\/\*\*$/mu);
