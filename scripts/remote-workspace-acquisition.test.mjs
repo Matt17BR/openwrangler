@@ -7,6 +7,7 @@ import {
   linkSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -83,6 +84,7 @@ test("Remote artifact targets reject moving, credentialed, query, format, and re
 test("Remote acquisition root receipts retain identity while owned children change", () => {
   const root = privateRoot("openwrangler-remote-root-");
   try {
+    assert.equal(root, realpathSync(root));
     const receipt = createRemoteAcquisitionRootReceipt(root);
     assert.doesNotThrow(() => assertRemoteAcquisitionRootReceipt(receipt));
   } finally {
@@ -307,7 +309,7 @@ test("Remote SSH installation must suppress its exact optional dependency pack",
 });
 
 function privateRoot(prefix) {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   chmodSync(root, 0o700);
   return root;
 }
