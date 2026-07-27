@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
@@ -750,6 +750,41 @@ test("Remote acceptance deadlines stay bounded and match native-editor ownership
   assert.equal(REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS, 180_000);
 });
 
+test("tiny Python fixtures resolve explicit, setup-python, and platform-local interpreters absolutely", () => {
+  const root = privateRoot("ow-remote-python-bootstrap-");
+  try {
+    const explicit = join(root, "explicit-python");
+    const hosted = join(root, "hosted");
+    const hostedPosix = join(hosted, "bin", "python");
+    const hostedWindows = join(hosted, "python.exe");
+    const localPosix = join(root, ".venv", "bin", "python");
+    for (const path of [explicit, hostedPosix, hostedWindows, localPosix]) {
+      mkdirSync(resolve(path, ".."), { recursive: true, mode: 0o700 });
+      writeFileSync(path, "", { mode: 0o700 });
+    }
+    assert.equal(
+      resolveTinyPythonBootstrap(
+        { OPEN_WRANGLER_PYTHON: explicit, pythonLocation: hosted },
+        { workingDirectory: root }
+      ),
+      explicit
+    );
+    assert.equal(resolveTinyPythonBootstrap({ pythonLocation: hosted }, { platform: "linux" }), hostedPosix);
+    assert.equal(resolveTinyPythonBootstrap({ pythonLocation: hosted }, { platform: "win32" }), hostedWindows);
+    assert.equal(resolveTinyPythonBootstrap({}, { platform: "linux", workingDirectory: root }), localPosix);
+    assert.throws(
+      () => resolveTinyPythonBootstrap({ pythonLocation: join(root, "missing") }, { platform: "linux" }),
+      /existing regular file/u
+    );
+    assert.throws(
+      () => resolveTinyPythonBootstrap({ OPEN_WRANGLER_PYTHON: "relative-python" }),
+      /bounded absolute path/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function privateRoot(prefix) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   chmodSync(root, 0o700);
@@ -758,15 +793,23 @@ function privateRoot(prefix) {
 
 function createTinyPythonEnvironment(root) {
   const prefix = join(root, "source");
-  const bootstrap = process.env.OPEN_WRANGLER_PYTHON ?? resolve(".venv", "bin", "python");
+  const bootstrap = resolveTinyPythonBootstrap();
   const created = spawnSync(bootstrap, ["-m", "venv", "--without-pip", prefix], {
     encoding: "utf8",
     maxBuffer: 64 * 1024
   });
+  const creationDiagnostic = [
+    created.error?.message,
+    created.signal ? `signal=${created.signal}` : undefined,
+    created.stderr,
+    created.stdout
+  ]
+    .filter((value) => typeof value === "string" && value.trim().length > 0)
+    .join(" ");
   assert.equal(
     created.status,
     0,
-    `Could not create the tiny private Python fixture: ${created.stderr || created.stdout}`
+    `Could not create the tiny private Python fixture: ${creationDiagnostic || "no subprocess diagnostic"}`
   );
   const executable = join(prefix, "bin", "python");
   const versionResult = spawnSync(
@@ -785,6 +828,41 @@ function createTinyPythonEnvironment(root) {
     });
   }
   return Object.freeze({ executable, prefix, version });
+}
+
+function resolveTinyPythonBootstrap(
+  environment = process.env,
+  { platform = process.platform, workingDirectory = process.cwd(), inspect = statSync } = {}
+) {
+  const configured =
+    environment.OPEN_WRANGLER_PYTHON ??
+    (environment.pythonLocation
+      ? join(environment.pythonLocation, platform === "win32" ? "python.exe" : join("bin", "python"))
+      : resolve(
+          workingDirectory,
+          ".venv",
+          platform === "win32" ? join("Scripts", "python.exe") : join("bin", "python")
+        ));
+  if (
+    typeof configured !== "string" ||
+    !isAbsolute(configured) ||
+    resolve(configured) !== configured ||
+    configured.length <= 0 ||
+    configured.length > 16_384 ||
+    /[\0\r\n]/u.test(configured)
+  ) {
+    throw new Error("A tiny Python fixture bootstrap requires one bounded absolute path.");
+  }
+  let metadata;
+  try {
+    metadata = inspect(configured);
+  } catch (error) {
+    throw new Error("The tiny Python fixture bootstrap is not an existing regular file.", { cause: error });
+  }
+  if (!metadata.isFile()) {
+    throw new Error("The tiny Python fixture bootstrap is not an existing regular file.");
+  }
+  return configured;
 }
 
 function dependencyGuardTestEnvironment({ executable, prefix, version }) {

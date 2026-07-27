@@ -168,12 +168,17 @@ export async function downloadPinnedCursorArtifact(
       signal: controller.signal,
       version: target.version
     });
-    if (response?.statusCode !== 200 || !response.body) {
-      throw new Error("The pinned Cursor artifact endpoint did not return one successful bounded body.");
-    }
-    const contentLength = cursorHeaderValue(response.headers, "content-length");
-    if (contentLength !== undefined && contentLength !== String(target.bytes)) {
-      throw new Error("The pinned Cursor artifact endpoint returned an unexpected content length.");
+    try {
+      if (response?.statusCode !== 200 || !response.body || typeof response.body[Symbol.asyncIterator] !== "function") {
+        throw new Error("The pinned Cursor artifact endpoint did not return one successful bounded body.");
+      }
+      const contentLength = cursorHeaderValue(response.headers, "content-length");
+      if (contentLength !== undefined && contentLength !== String(target.bytes)) {
+        throw new Error("The pinned Cursor artifact endpoint returned an unexpected content length.");
+      }
+    } catch (error) {
+      disposeRejectedCursorResponseBody(response?.body);
+      throw error;
     }
     const received = await writePinnedCursorResponse(response.body, descriptor, target);
     if (received.bytes !== target.bytes || received.digest.digest("hex") !== target.sha256) {
@@ -259,9 +264,29 @@ async function writePinnedCursorResponse(body, descriptor, target) {
 }
 
 function cursorHeaderValue(headers, name) {
-  const value = headers?.[name] ?? headers?.[name.toLowerCase()];
-  if (Array.isArray(value)) return value.length === 1 ? value[0] : undefined;
-  return value;
+  if (headers === undefined) return undefined;
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    throw new Error("The pinned Cursor artifact endpoint returned malformed headers.");
+  }
+  const matches = Object.entries(headers).filter(([header]) => header.toLowerCase() === name.toLowerCase());
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1 || typeof matches[0][1] !== "string") {
+    throw new Error("The pinned Cursor artifact endpoint returned an ambiguous content length.");
+  }
+  return matches[0][1];
+}
+
+function disposeRejectedCursorResponseBody(body) {
+  if (!body) return;
+  if (typeof body.destroy === "function") {
+    body.destroy();
+    return;
+  }
+  if (typeof body.resume === "function") {
+    body.resume();
+    return;
+  }
+  throw new Error("The rejected pinned Cursor response body could not be disposed.");
 }
 
 export function validatePinnedCursorInstallation(rawTarget, installationRoot) {

@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -145,6 +146,54 @@ test("Cursor artifact download fails closed on truncated or altered content", as
   }
 });
 
+test("Cursor artifact download rejects ambiguous responses and disposes every rejected body", async () => {
+  const payload = Buffer.from("pinned-cursor-test-body", "utf8");
+  const target = testTarget(payload);
+  for (const [label, responseFactory, expected] of [
+    [
+      "status",
+      (body) => ({ statusCode: 302, headers: { "content-length": String(payload.length) }, body }),
+      /successful bounded body/u
+    ],
+    [
+      "array-header",
+      (body) => ({ statusCode: 200, headers: { "content-length": [String(payload.length)] }, body }),
+      /ambiguous content length/u
+    ],
+    [
+      "duplicate-header",
+      (body) => ({
+        statusCode: 200,
+        headers: { "Content-Length": String(payload.length), "content-length": String(payload.length) },
+        body
+      }),
+      /ambiguous content length/u
+    ],
+    [
+      "malformed-body",
+      (body) => ({ statusCode: 200, headers: { "content-length": String(payload.length) }, body }),
+      /successful bounded body/u
+    ]
+  ]) {
+    const directory = mkdtempSync(join(tmpdir(), `openwrangler-cursor-response-${label}-`));
+    chmodSync(directory, 0o700);
+    try {
+      const tracked = trackedResponseBody(payload, { iterable: label !== "malformed-body" });
+      await assert.rejects(
+        downloadPinnedCursorArtifact(target, createCursorAcquisitionRootReceipt(directory), {
+          openResponse: async () => responseFactory(tracked.body),
+          timeoutMs: 1_000
+        }),
+        expected
+      );
+      assert.equal(tracked.destructions(), 1);
+      assert.deepEqual(readdirSync(directory), []);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("Cursor artifact download stays bound to its no-follow descriptor across a path swap", async () => {
   const directory = mkdtempSync(join(tmpdir(), "openwrangler-cursor-download-race-"));
   chmodSync(directory, 0o700);
@@ -262,4 +311,25 @@ function cursorResponse(body, headers = {}) {
     },
     body: Readable.from([body])
   };
+}
+
+function trackedResponseBody(payload, { iterable }) {
+  let destructions = 0;
+  if (!iterable) {
+    return {
+      body: {
+        destroy() {
+          destructions += 1;
+        }
+      },
+      destructions: () => destructions
+    };
+  }
+  const body = Readable.from([payload]);
+  const destroy = body.destroy.bind(body);
+  body.destroy = (...args) => {
+    destructions += 1;
+    return destroy(...args);
+  };
+  return { body, destructions: () => destructions };
 }
