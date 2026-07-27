@@ -40,6 +40,7 @@ import {
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
   REMOTE_WORKSPACE_PHASE_CHILD_PATH,
   REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
+  REMOTE_WORKSPACE_PHASE_NODE_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   resolveRemoteWorkspaceSystemRuntimeDirectories,
   validateRootOwnedSystemRuntimeDirectory,
@@ -274,7 +275,6 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
       "ip",
       "ldd",
       "ldconfig",
-      "node",
       "ssh",
       "sshKeygen",
       "xkbcomp"
@@ -344,9 +344,9 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
         descriptor,
         childScript: child,
         // This structural argument test never executes the phase. Use a
-        // platform-present regular executable instead of assuming one Python
-        // minor exists on every CI image.
-        systemPython: process.execPath,
+        // platform-present regular executable that stays distinct from the
+        // staged phase-Node destination on system-Node layouts.
+        systemPython: realpathSync("/usr/bin/true"),
         systemRuntimeDirectories: ["/usr"],
         immutableMounts: createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT),
         uid: 1001,
@@ -360,7 +360,6 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
           ip: process.execPath,
           ldd: process.execPath,
           ldconfig: process.execPath,
-          node: process.execPath,
           ssh: process.execPath,
           xkbcomp: process.execPath
         }
@@ -394,6 +393,26 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       args.some((value, index) => value === "--ro-bind" && args[index + 1] === "/" && args[index + 2] === "/"),
       false
     );
+    const phaseNodeMount = createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
+      (mount) => mount.id === "phaseNode"
+    );
+    assert.ok(phaseNodeMount);
+    assert.equal(
+      args.some(
+        (value, index) =>
+          value === "--ro-bind-fd" &&
+          args[index + 1] === String(phaseNodeMount.descriptor) &&
+          args[index + 2] === REMOTE_WORKSPACE_PHASE_NODE_PATH
+      ),
+      true
+    );
+    assert.equal(
+      args.some((value, index) => value === "--ro-bind" && args[index + 2] === "/usr/bin/node"),
+      false
+    );
+    const phaseCommand = args.lastIndexOf("--");
+    assert.notEqual(phaseCommand, -1);
+    assert.equal(args[phaseCommand + 1], REMOTE_WORKSPACE_PHASE_NODE_PATH);
     const mountSources = args
       .map((value, index) => (value === "--bind" || value === "--ro-bind" ? args[index + 1] : undefined))
       .filter(Boolean);

@@ -17,17 +17,18 @@ const MAXIMUM_TREE_BYTES = 4 * 1024 * 1024 * 1024;
 const MAXIMUM_TREE_FILES = 100_000;
 const RECEIPT_PERMISSIONS = 0o777n;
 
-export function stageRemoteWorkspaceExactFile(source, destination, mode = 0o600) {
+export function stageRemoteWorkspaceExactFile(source, destination, mode = 0o600, rawReceiptPolicy = {}) {
   const sourcePath = canonicalRegularPath(source, "source");
   const stagedPath = boundedAbsolutePath(destination, "staged");
   if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
     throw new Error("Remote SSH exact-file staging requires one bounded permissions mode.");
   }
-  const sourceReceipt = captureRemoteWorkspaceFileReceipt(sourcePath);
+  const receiptPolicy = normalizeExactFileReceiptPolicy(rawReceiptPolicy);
+  const sourceReceipt = captureRemoteWorkspaceFileReceipt(sourcePath, receiptPolicy);
   copyFileSync(sourcePath, stagedPath, constants.COPYFILE_EXCL);
   chmodSync(stagedPath, mode);
-  assertRemoteWorkspaceFileReceipt(sourcePath, sourceReceipt);
-  const stagedReceipt = captureRemoteWorkspaceFileReceipt(stagedPath);
+  assertRemoteWorkspaceFileReceipt(sourcePath, sourceReceipt, receiptPolicy);
+  const stagedReceipt = captureRemoteWorkspaceFileReceipt(stagedPath, receiptPolicy);
   if (
     sourceReceipt.size !== stagedReceipt.size ||
     sourceReceipt.sha256 !== stagedReceipt.sha256 ||
@@ -35,7 +36,7 @@ export function stageRemoteWorkspaceExactFile(source, destination, mode = 0o600)
   ) {
     throw new Error("A Remote SSH exact-file stage did not preserve its pinned source bytes and mode.");
   }
-  return Object.freeze({ sourcePath, sourceReceipt, stagedPath, stagedReceipt, mode });
+  return Object.freeze({ sourcePath, sourceReceipt, stagedPath, stagedReceipt, mode, receiptPolicy });
 }
 
 export function assertRemoteWorkspaceExactFileStage(stage) {
@@ -44,12 +45,15 @@ export function assertRemoteWorkspaceExactFileStage(stage) {
     typeof stage !== "object" ||
     typeof stage.sourcePath !== "string" ||
     typeof stage.stagedPath !== "string" ||
-    !Number.isInteger(stage.mode)
+    !Number.isInteger(stage.mode) ||
+    !stage.receiptPolicy ||
+    typeof stage.receiptPolicy !== "object"
   ) {
     throw new Error("The Remote SSH exact-file stage receipt is malformed.");
   }
-  const sourceReceipt = assertRemoteWorkspaceFileReceipt(stage.sourcePath, stage.sourceReceipt);
-  const stagedReceipt = assertRemoteWorkspaceFileReceipt(stage.stagedPath, stage.stagedReceipt);
+  const receiptPolicy = normalizeExactFileReceiptPolicy(stage.receiptPolicy);
+  const sourceReceipt = assertRemoteWorkspaceFileReceipt(stage.sourcePath, stage.sourceReceipt, receiptPolicy);
+  const stagedReceipt = assertRemoteWorkspaceFileReceipt(stage.stagedPath, stage.stagedReceipt, receiptPolicy);
   if (
     sourceReceipt.size !== stagedReceipt.size ||
     sourceReceipt.sha256 !== stagedReceipt.sha256 ||
@@ -58,6 +62,19 @@ export function assertRemoteWorkspaceExactFileStage(stage) {
     throw new Error("A Remote SSH exact-file stage changed after its provenance was pinned.");
   }
   return stage;
+}
+
+function normalizeExactFileReceiptPolicy(raw) {
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    Array.isArray(raw) ||
+    !Object.keys(raw).every((key) => key === "maximumBytes") ||
+    (raw.maximumBytes !== undefined && (!Number.isSafeInteger(raw.maximumBytes) || raw.maximumBytes <= 0))
+  ) {
+    throw new Error("Remote SSH exact-file staging requires one bounded receipt policy.");
+  }
+  return raw.maximumBytes === undefined ? Object.freeze({}) : Object.freeze({ maximumBytes: raw.maximumBytes });
 }
 
 export function stageRemoteWorkspaceTree(source, destination, rawBounds) {

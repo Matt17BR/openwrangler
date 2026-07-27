@@ -308,8 +308,8 @@ function assertPrivateNamespace(config) {
   const status = readFileSync("/proc/self/status", "utf8");
   validateRemoteWorkspaceZeroCapabilities(status);
   const privateRoot = lstatSync(config.paths.root);
-  const systemNode = lstatSync("/usr/bin/node");
-  if (privateRoot.uid !== config.uid || systemNode.uid !== 65_534) {
+  const hostRootExecutable = lstatSync("/usr/bin/bash");
+  if (privateRoot.uid !== config.uid || hostRootExecutable.uid !== 65_534) {
     throw new Error("The private user map did not isolate the invoking user from host root.");
   }
   if (existsSync(config.hostHome) || existsSync(config.hostSentinel) || readdirSync("/home").length !== 0) {

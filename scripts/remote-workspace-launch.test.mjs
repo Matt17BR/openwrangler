@@ -8,6 +8,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   unlinkSync,
   writeFileSync
 } from "node:fs";
@@ -15,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
+import { REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES } from "./remote-workspace-contract.mjs";
 import {
   assertRemoteWorkspaceImmutableInputRegistry,
   createRemoteWorkspaceImmutableInputRegistry,
@@ -82,6 +84,31 @@ linuxTest("Remote launch registry rejects immutable add, remove, symlink, and ha
     } finally {
       rmSync(linkedRoot, { recursive: true, force: true });
     }
+  }
+});
+
+linuxTest("Remote launch registry binds the staged phase Node bytes and mode", () => {
+  const root = fixtureRoot("ow-remote-launch-phase-node-");
+  try {
+    const sources = createRegistrySources(root);
+    chmodSync(sources.phaseNode, 0o700);
+    const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
+    writeFileSync(sources.phaseNode, "changed phase node\n", { mode: 0o700 });
+    assert.throws(() => assertRemoteWorkspaceImmutableInputRegistry(registry), /changed after it was pinned/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  const oversizedRoot = fixtureRoot("ow-remote-launch-phase-node-oversized-");
+  try {
+    const sources = createRegistrySources(oversizedRoot);
+    truncateSync(sources.phaseNode, REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES + 1);
+    assert.throws(
+      () => createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions()),
+      /bounded no-follow regular receipt file/u
+    );
+  } finally {
+    rmSync(oversizedRoot, { recursive: true, force: true });
   }
 });
 

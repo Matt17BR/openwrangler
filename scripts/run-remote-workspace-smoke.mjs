@@ -42,6 +42,7 @@ import {
   createRemoteWorkspaceLayout,
   createRemoteWorkspaceNamespaceLayout,
   namespaceRemoteWorkspaceImmutablePath,
+  REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
@@ -60,7 +61,12 @@ import {
   createRemoteWorkspaceImmutableInputRegistry,
   openRemoteWorkspaceImmutableInputLeases
 } from "./remote-workspace-launch.mjs";
-import { assertRemoteWorkspaceTreeStage, stageRemoteWorkspaceTree } from "./remote-workspace-staging.mjs";
+import {
+  assertRemoteWorkspaceExactFileStage,
+  assertRemoteWorkspaceTreeStage,
+  stageRemoteWorkspaceExactFile,
+  stageRemoteWorkspaceTree
+} from "./remote-workspace-staging.mjs";
 import {
   assertRemoteWorkspacePhaseLoaderStage,
   stageRemoteWorkspacePhaseLoader
@@ -124,6 +130,12 @@ try {
   const privateParent = preparePrivateParent(resolve(repositoryRoot, "tmp", "remote-workspace"));
   layout = createRemoteWorkspaceLayout(privateParent);
   rootReceipt = createEditorAcceptancePrivateRootReceipt(layout.root, { containedBy: privateParent });
+  const phaseNodeStage = stageRemoteWorkspaceExactFile(
+    realpathSync(process.execPath),
+    join(layout.immutable, "phase-node"),
+    0o700,
+    { maximumBytes: REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES }
+  );
   const namespaceLayout = createRemoteWorkspaceNamespaceLayout(layout);
   const runId = randomUUID();
   hostSentinel = join(privateParent, `.host-private-${runId}`);
@@ -312,6 +324,7 @@ try {
       remoteHome: layout.remoteHome,
       output: layout.output,
       descriptor: layout.descriptor,
+      phaseNode: phaseNodeStage.stagedPath,
       phaseRuntime: layout.phaseRuntime,
       client: layout.client,
       localExtensions: layout.localExtensions,
@@ -347,7 +360,7 @@ try {
     candidateExpectation,
     remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
-  assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
+  assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
   assertEditorAcceptancePrivateRootReceipt(rootReceipt);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
   assertRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinelReceipt);
@@ -360,7 +373,7 @@ try {
       environment: createEditorAcceptanceEnvironment(),
       label: "Official VS Code Remote SSH packaged acceptance",
       beforeSpawn() {
-        assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
+        assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
         const leases = openRemoteWorkspaceImmutableInputLeases(immutableInputs);
         try {
           const args = createRemoteWorkspaceBwrapArguments({
@@ -402,7 +415,7 @@ try {
       hostIsolationSha256
     },
     async revalidate() {
-      assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
+      assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
       assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
       assertEditorAcceptancePrivateRootReceipt(rootReceipt);
       assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
@@ -553,7 +566,8 @@ function stageTestRuntimeDependency(source, destination, identity) {
   return stage;
 }
 
-function assertStagedRuntimeInputs(phaseLoaderStage, treeStages) {
+function assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages) {
+  assertRemoteWorkspaceExactFileStage(phaseNodeStage);
   assertRemoteWorkspacePhaseLoaderStage(phaseLoaderStage);
   for (const stage of treeStages) assertRemoteWorkspaceTreeStage(stage);
 }

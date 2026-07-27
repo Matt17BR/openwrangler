@@ -3,7 +3,9 @@ import { isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
-  REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
+  REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
+  REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES,
+  REMOTE_WORKSPACE_PHASE_NODE_PATH
 } from "./remote-workspace-contract.mjs";
 import { captureRemoteWorkspaceFileReceipt } from "./remote-workspace-provenance.mjs";
 import { captureRemoteWorkspaceTreeManifest } from "./remote-workspace-staging.mjs";
@@ -119,6 +121,12 @@ const REQUIRED_MOUNTS = Object.freeze([
     kind: "file",
     access: "immutable",
     destination: REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
+  }),
+  Object.freeze({
+    id: "phaseNode",
+    kind: "file",
+    access: "immutable",
+    destination: REMOTE_WORKSPACE_PHASE_NODE_PATH
   }),
   Object.freeze({
     id: "phaseRuntime",
@@ -394,7 +402,7 @@ function captureImmutableEntry(definition, source, uid, gid) {
   assertPrivateOwner(snapshot, uid, gid, definition.id);
   const receipt =
     definition.kind === "file"
-      ? captureRemoteWorkspaceFileReceipt(canonical, { allowEmpty: definition.allowEmpty === true })
+      ? captureRemoteWorkspaceFileReceipt(canonical, fileReceiptPolicy(definition))
       : definition.kind === "tree"
         ? captureRemoteWorkspaceTreeManifest(canonical, definition.bounds)
         : undefined;
@@ -430,7 +438,7 @@ function assertImmutableEntry(entry, uid, gid) {
   }
   const current =
     entry.kind === "file"
-      ? captureRemoteWorkspaceFileReceipt(canonical, { allowEmpty: entry.allowEmpty === true })
+      ? captureRemoteWorkspaceFileReceipt(canonical, fileReceiptPolicy(entry))
       : entry.kind === "tree"
         ? captureRemoteWorkspaceTreeManifest(canonical, entry.bounds)
         : undefined;
@@ -441,6 +449,15 @@ function assertImmutableEntry(entry, uid, gid) {
   ) {
     throw new Error(`The Remote SSH immutable ${entry.id} input changed after it was pinned.`);
   }
+}
+
+function fileReceiptPolicy(entry) {
+  return entry.id === "phaseNode"
+    ? Object.freeze({
+        allowEmpty: false,
+        maximumBytes: REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES
+      })
+    : Object.freeze({ allowEmpty: entry.allowEmpty === true });
 }
 
 function assertPrivateTreeManifest(manifest, uid, gid, id) {
