@@ -399,12 +399,16 @@ test("Cursor Windows extraction binds the artifact path inside the encoded Authe
       timeoutMs: 1_000
     });
     const commands = [];
+    let signatureOptions;
     const environment = { SYSTEMROOT: "C:\\Windows" };
     const extraction = await extractPinnedCursorTarget(target, artifact, rootReceipt, {
       environment,
-      async runCommand(command) {
+      async runCommand(command, options) {
         command.beforeSpawnCheck?.();
         commands.push(command);
+        if (command.label === "Pinned Cursor Authenticode verification") {
+          signatureOptions = options;
+        }
         if (command.label === "Pinned Cursor private installation") {
           writeFileSync(join(directory, "installation", "unins000.exe"), "uninstaller");
         }
@@ -427,6 +431,7 @@ test("Cursor Windows extraction binds the artifact path inside the encoded Authe
     assert.doesNotMatch(decodedCommand, /\$args/u);
     assert.equal(signature.args.includes(artifact.path), false);
     assert.deepEqual(signature.environment, environment);
+    assert.deepEqual(signatureOptions, { timeoutMs: 120_000, maxOutputBytes: 16 * 1024 });
     assert.deepEqual(
       commands.map((command) => command.label),
       ["Pinned Cursor Authenticode verification", "Pinned Cursor private installation"]

@@ -24,6 +24,7 @@ export const PINNED_CURSOR_PRODUCT_COMMIT = "4f02290ccd9304f0e6bf8ee85f6e9106f02
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
 const EXTRACTION_TIMEOUT_MS = 5 * 60_000;
 const DOWNLOAD_OUTPUT_LIMIT_BYTES = 16 * 1024;
+const WINDOWS_AUTHENTICODE_TIMEOUT_MS = 2 * 60_000;
 const CURSOR_MACOS_TEAM_IDENTIFIER = "VDXQ22DGB9";
 const CURSOR_WINDOWS_SIGNER = "CN=Anysphere, Inc.";
 const TARGET_KEYS = new Set([
@@ -538,7 +539,7 @@ async function extractWindowsTarget(
       environment,
       label: "Pinned Cursor Authenticode verification"
     },
-    { timeoutMs: 60_000, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
+    { timeoutMs: WINDOWS_AUTHENTICODE_TIMEOUT_MS, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
   );
   await runCommand(
     {
