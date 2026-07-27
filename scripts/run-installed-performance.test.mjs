@@ -1090,6 +1090,7 @@ test("canonical provenance intake rejects malformed, linked, and changing receip
       JSON.stringify({ ...value, unexpected: true }),
       JSON.stringify(Object.fromEntries(Object.entries(value).filter(([key]) => key !== "releaseTag"))),
       JSON.stringify({ ...value, preview: true }),
+      JSON.stringify({ ...value, extensionVersion: "0.2.0", releaseTag: "v0.2.0" }),
       JSON.stringify({ ...value, sourceCommit: "A".repeat(40) }),
       JSON.stringify({ ...value, vsixSha256: "B".repeat(64) }),
       JSON.stringify({ ...value, vsixBytes: 0 })

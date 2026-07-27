@@ -1,0 +1,136 @@
+name: Stable candidate evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Intended stable tag matching package.json, for example v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-candidate-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.candidate_artifact.outputs.artifact-id }}
+    steps:
+      - name: Require protected main source
+        env:
+          EVENT_REF: ${{ github.ref }}
+          EVENT_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          test "$EVENT_REF" = "refs/heads/main"
+          test "$EVENT_REF_PROTECTED" = "true"
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - id: release_metadata
+        name: Validate intended stable metadata
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/release-metadata.mjs
+      - name: Reject preview metadata
+        if: ${{ steps.release_metadata.outputs.prerelease != 'false' }}
+        run: exit 1
+      - name: Prepare exact local intended tag
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/prepare-stable-candidate-tag.mjs
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
+      - name: Package stable candidate once
+        run: npm run package -- --out openwrangler.candidate.vsix
+      - run: npm run verify:vsix -- openwrangler.candidate.vsix
+      - name: Publish canonical candidate set
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/create-canonical-release-artifact.mjs
+          openwrangler.candidate.vsix
+          --out-dir canonical-release
+      - id: candidate_artifact
+        name: Upload canonical candidate set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openwrangler-stable-candidate
+          path: |
+            canonical-release/openwrangler.vsix
+            canonical-release/openwrangler.vsix.sha256
+            canonical-release/openwrangler.vsix.provenance.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          include-hidden-files: false
+
+  installed-performance:
+    needs: package
+    runs-on: [self-hosted, linux, x64, openwrangler-performance]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - name: Prepare exact local intended tag
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/prepare-stable-candidate-tag.mjs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact-id }}
+          path: canonical-release
+          merge-multiple: true
+      - id: installed_performance
+        name: Test exact canonical candidate in VS Code and Cursor
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: >-
+          npm run benchmark:installed --
+          --candidate-in canonical-release/openwrangler.vsix
+          --candidate-checksum canonical-release/openwrangler.vsix.sha256
+          --candidate-provenance canonical-release/openwrangler.vsix.provenance.json
+          --out ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json
+      - name: Upload installed-performance evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openwrangler-installed-performance
+          path: ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
+          include-hidden-files: false

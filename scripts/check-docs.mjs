@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inspectPreviewReadme, inspectStableReadme } from "./release-documents.mjs";
-import { inspectReleaseWorkflow } from "./release-workflow.mjs";
+import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -33,6 +33,12 @@ const releaseWorkflowProblems = inspectReleaseWorkflow(
 );
 if (releaseWorkflowProblems.length > 0) {
   throw new Error(`Release workflow contract is stale:\n- ${releaseWorkflowProblems.join("\n- ")}`);
+}
+const stableCandidateWorkflowProblems = inspectStableCandidateWorkflow(
+  readFileSync(resolve(root, ".github/workflows/stable-candidate.yml"), "utf8")
+);
+if (stableCandidateWorkflowProblems.length > 0) {
+  throw new Error(`Stable candidate workflow contract is stale:\n- ${stableCandidateWorkflowProblems.join("\n- ")}`);
 }
 const changelog = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${packageJson.version}]`)) {

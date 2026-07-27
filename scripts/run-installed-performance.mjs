@@ -86,7 +86,7 @@ const EXPECTED_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const INSTALLED_CHECKSUM_MAX_BYTES = 512;
 const INSTALLED_PROVENANCE_MAX_BYTES = 4096;
-const INSTALLED_PROVENANCE_PROTOCOL = "openwrangler-canonical-release-artifact-v1";
+export const CANONICAL_RELEASE_ARTIFACT_PROTOCOL = "openwrangler-canonical-release-artifact-v1";
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
@@ -469,10 +469,11 @@ export function validateInstalledPerformanceProvenance(value) {
     throw new Error("The installed-performance provenance must contain exactly the canonical artifact fields.");
   }
   if (
-    value.protocol !== INSTALLED_PROVENANCE_PROTOCOL ||
+    value.protocol !== CANONICAL_RELEASE_ARTIFACT_PROTOCOL ||
     value.extensionId !== "Matt17BR.openwrangler" ||
     typeof value.extensionVersion !== "string" ||
     classifyNumericReleaseVersion(value.extensionVersion)?.channel !== "stable" ||
+    value.extensionVersion.startsWith("0.") ||
     value.preview !== false ||
     value.releaseTag !== `v${value.extensionVersion}` ||
     typeof value.sourceCommit !== "string" ||
@@ -2143,7 +2144,7 @@ function requireProvenanceReceipt(receipt) {
     typeof receipt !== "object" ||
     typeof receipt.path !== "string" ||
     receipt.path.length === 0 ||
-    receipt.protocol !== INSTALLED_PROVENANCE_PROTOCOL ||
+    receipt.protocol !== CANONICAL_RELEASE_ARTIFACT_PROTOCOL ||
     receipt.extensionId !== "Matt17BR.openwrangler" ||
     typeof receipt.extensionVersion !== "string" ||
     classifyNumericReleaseVersion(receipt.extensionVersion)?.channel !== "stable" ||
