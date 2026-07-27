@@ -1060,27 +1060,27 @@ function expectedGeneratedPackageFiles(trackedFiles) {
   return generated;
 }
 
-function readGeneratedPackageSourceReceipt(file) {
+function readPackageSourceReceipt(file, { sourceKind, requireNonEmpty }) {
   const identity = packagePathIdentity(file);
   if (identity === undefined) {
-    throw new Error("Installed performance could not bind one generated package source path.");
+    throw new Error(`Installed performance could not bind one ${sourceKind} package source path.`);
   }
   const absolute = resolve(root, identity);
   let descriptor;
   try {
     descriptor = openReadOnlyNoFollow(
       absolute,
-      "Installed performance generated package output must not be a symbolic link."
+      `Installed performance ${sourceKind} package source must not be a symbolic link.`
     );
     const before = fstatSync(descriptor, { bigint: true });
     const namedBefore = lstatSync(absolute, { bigint: true });
     requireSameRegularFile(
       namedBefore,
       before,
-      "Installed performance generated package output changed before it was read."
+      `Installed performance ${sourceKind} package source changed before it was read.`
     );
-    if (before.size <= 0n || before.size > BigInt(MAX_VSIX_ENTRY_BYTES)) {
-      throw new Error("Installed performance generated package output exceeds its bounded file size.");
+    if ((requireNonEmpty && before.size <= 0n) || before.size < 0n || before.size > BigInt(MAX_VSIX_ENTRY_BYTES)) {
+      throw new Error(`Installed performance ${sourceKind} package source exceeds its bounded file size.`);
     }
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(Math.min(Number(before.size), 64 * 1024));
@@ -1088,18 +1088,22 @@ function readGeneratedPackageSourceReceipt(file) {
     while (bytes < Number(before.size)) {
       const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, Number(before.size) - bytes), null);
       if (count === 0) {
-        throw new Error("Installed performance generated package output ended before its validated byte size.");
+        throw new Error(`Installed performance ${sourceKind} package source ended before its validated byte size.`);
       }
       hash.update(buffer.subarray(0, count));
       bytes += count;
     }
     const after = fstatSync(descriptor, { bigint: true });
     const namedAfter = lstatSync(absolute, { bigint: true });
-    requireSameRegularFile(after, before, "Installed performance generated package output changed while it was read.");
+    requireSameRegularFile(
+      after,
+      before,
+      `Installed performance ${sourceKind} package source changed while it was read.`
+    );
     requireSameRegularFile(
       namedAfter,
       before,
-      "Installed performance generated package output path changed while it was read."
+      `Installed performance ${sourceKind} package source path changed while it was read.`
     );
     return Object.freeze({
       path: identity,
@@ -1113,11 +1117,20 @@ function readGeneratedPackageSourceReceipt(file) {
   }
 }
 
+function readTrackedPackageSourceReceipt(file) {
+  return readPackageSourceReceipt(file, { sourceKind: "tracked", requireNonEmpty: false });
+}
+
+function readGeneratedPackageSourceReceipt(file) {
+  return readPackageSourceReceipt(file, { sourceKind: "generated", requireNonEmpty: true });
+}
+
 function requirePackageSourceReceipt(receipt) {
   if (
     !receipt ||
     typeof receipt !== "object" ||
     !Array.isArray(receipt.packageFiles) ||
+    !Array.isArray(receipt.trackedFiles) ||
     !Array.isArray(receipt.generatedFiles) ||
     receipt.packageFiles.some((entry) => packagePathIdentity(entry) === undefined) ||
     new Set(receipt.packageFiles).size !== receipt.packageFiles.length
@@ -1125,33 +1138,45 @@ function requirePackageSourceReceipt(receipt) {
     throw new Error("Guarded installed-performance packaging did not pin its package source set.");
   }
   const packageFiles = new Set(receipt.packageFiles);
-  const generatedPaths = new Set();
-  for (const entry of receipt.generatedFiles) {
-    if (
-      !entry ||
-      typeof entry !== "object" ||
-      packagePathIdentity(entry.path) !== entry.path ||
-      entry.archiveEntry !== archiveEntryForPackageFile(entry.path) ||
-      !packageFiles.has(entry.path) ||
-      generatedPaths.has(entry.path) ||
-      !Number.isSafeInteger(entry.bytes) ||
-      entry.bytes <= 0 ||
-      typeof entry.sha256 !== "string" ||
-      !/^[0-9a-f]{64}$/u.test(entry.sha256) ||
-      !entry.fileIdentity ||
-      typeof entry.fileIdentity !== "object" ||
-      !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof entry.fileIdentity[key] === "bigint") ||
-      entry.fileIdentity.size !== BigInt(entry.bytes)
-    ) {
-      throw new Error("Guarded installed-performance packaging did not pin its generated source set.");
+  const pinnedPaths = new Set();
+  const archiveEntries = new Set();
+  for (const [key, sourceKind, requireNonEmpty] of [
+    ["trackedFiles", "tracked", false],
+    ["generatedFiles", "generated", true]
+  ]) {
+    for (const entry of receipt[key]) {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        packagePathIdentity(entry.path) !== entry.path ||
+        entry.archiveEntry !== archiveEntryForPackageFile(entry.path) ||
+        !packageFiles.has(entry.path) ||
+        pinnedPaths.has(entry.path) ||
+        archiveEntries.has(entry.archiveEntry) ||
+        !Number.isSafeInteger(entry.bytes) ||
+        entry.bytes < (requireNonEmpty ? 1 : 0) ||
+        typeof entry.sha256 !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(entry.sha256) ||
+        !entry.fileIdentity ||
+        typeof entry.fileIdentity !== "object" ||
+        !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((field) => typeof entry.fileIdentity[field] === "bigint") ||
+        entry.fileIdentity.size !== BigInt(entry.bytes)
+      ) {
+        throw new Error(`Guarded installed-performance packaging did not pin its ${sourceKind} source set.`);
+      }
+      pinnedPaths.add(entry.path);
+      archiveEntries.add(entry.archiveEntry);
     }
-    generatedPaths.add(entry.path);
+  }
+  if (pinnedPaths.size !== packageFiles.size || [...packageFiles].some((entry) => !pinnedPaths.has(entry))) {
+    throw new Error("Guarded installed-performance packaging did not pin every package source byte set.");
   }
 }
 
 export async function assertNoPackageableUntrackedFiles({
   readTrackedFiles = readTrackedSourceFiles,
   listPackageFiles = () => listFiles({ cwd: root }),
+  pinTrackedFile = readTrackedPackageSourceReceipt,
   pinGeneratedFile = readGeneratedPackageSourceReceipt,
   deriveGeneratedFiles = expectedGeneratedPackageFiles
 } = {}) {
@@ -1193,18 +1218,26 @@ export async function assertNoPackageableUntrackedFiles({
   ) {
     throw new Error("Installed performance generated package output set is incomplete.");
   }
+  const trackedPaths = packageFiles.filter((entry) => tracked.has(entry));
+  const trackedSourceReceipts = [];
   const generatedFiles = [];
-  let generatedBytes = 0;
-  for (const file of generatedPaths) {
-    const receipt = await pinGeneratedFile(file);
-    generatedFiles.push(receipt);
-    generatedBytes += receipt?.bytes ?? Number.NaN;
-    if (!Number.isSafeInteger(generatedBytes) || generatedBytes > MAX_VSIX_UNCOMPRESSED_BYTES) {
-      throw new Error("Installed performance generated package outputs exceed their aggregate size budget.");
+  let sourceBytes = 0;
+  for (const [paths, pinFile, receipts] of [
+    [trackedPaths, pinTrackedFile, trackedSourceReceipts],
+    [generatedPaths, pinGeneratedFile, generatedFiles]
+  ]) {
+    for (const file of paths) {
+      const receipt = await pinFile(file);
+      receipts.push(receipt);
+      sourceBytes += receipt?.bytes ?? Number.NaN;
+      if (!Number.isSafeInteger(sourceBytes) || sourceBytes > MAX_VSIX_UNCOMPRESSED_BYTES) {
+        throw new Error("Installed performance package sources exceed their aggregate size budget.");
+      }
     }
   }
   const receipt = Object.freeze({
     packageFiles: Object.freeze(packageFiles),
+    trackedFiles: Object.freeze(trackedSourceReceipts),
     generatedFiles: Object.freeze(generatedFiles)
   });
   requirePackageSourceReceipt(receipt);
@@ -1229,21 +1262,29 @@ export function assertSameInstalledPerformancePackageSources(expected, actual) {
   if (
     expected.packageFiles.length !== actual.packageFiles.length ||
     expected.packageFiles.some((entry, index) => entry !== actual.packageFiles[index]) ||
+    expected.trackedFiles.length !== actual.trackedFiles.length ||
     expected.generatedFiles.length !== actual.generatedFiles.length
   ) {
     throw new Error("Installed-performance package sources changed while the candidate was created.");
   }
-  for (let index = 0; index < expected.generatedFiles.length; index += 1) {
-    const before = expected.generatedFiles[index];
-    const after = actual.generatedFiles[index];
-    if (
-      before.path !== after.path ||
-      before.archiveEntry !== after.archiveEntry ||
-      before.bytes !== after.bytes ||
-      before.sha256 !== after.sha256 ||
-      ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some((key) => before.fileIdentity[key] !== after.fileIdentity[key])
-    ) {
-      throw new Error("Installed-performance generated package output changed while the candidate was created.");
+  for (const [key, sourceKind] of [
+    ["trackedFiles", "tracked package source"],
+    ["generatedFiles", "generated package output"]
+  ]) {
+    for (let index = 0; index < expected[key].length; index += 1) {
+      const before = expected[key][index];
+      const after = actual[key][index];
+      if (
+        before.path !== after.path ||
+        before.archiveEntry !== after.archiveEntry ||
+        before.bytes !== after.bytes ||
+        before.sha256 !== after.sha256 ||
+        ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some(
+          (field) => before.fileIdentity[field] !== after.fileIdentity[field]
+        )
+      ) {
+        throw new Error(`Installed-performance ${sourceKind} changed while the candidate was created.`);
+      }
     }
   }
 }
@@ -1279,9 +1320,9 @@ export function assertInstalledPerformancePackageInventory(packageSource, archiv
     }
     digests.set(item[0], item[1]);
   }
-  for (const generated of packageSource.generatedFiles) {
-    if (digests.get(generated.archiveEntry) !== generated.sha256) {
-      throw new Error("The installed-performance VSIX generated output drifted from its pinned source bytes.");
+  for (const source of [...packageSource.trackedFiles, ...packageSource.generatedFiles]) {
+    if (digests.get(source.archiveEntry) !== source.sha256) {
+      throw new Error("The installed-performance VSIX source bytes drifted from their pinned package inputs.");
     }
   }
 }

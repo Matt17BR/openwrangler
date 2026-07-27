@@ -44,21 +44,39 @@ function packageInstalledPerformanceCandidate(options) {
   });
 }
 
-function packageSourceReceipt(packageFiles, generatedFiles = []) {
+function archiveEntryForPackageFile(file) {
+  const lower = file.toLowerCase();
+  if (lower === "readme.md") return "extension/readme.md";
+  if (lower === "changelog.md") return "extension/changelog.md";
+  if (lower === "license" || lower === "license.txt" || lower === "license.md") return "extension/LICENSE.txt";
+  return `extension/${file}`;
+}
+
+function packageFileReceipt({ path, sha256 = "a".repeat(64), identity = fakeFileIdentity }) {
+  return Object.freeze({
+    path,
+    archiveEntry: archiveEntryForPackageFile(path),
+    bytes: Number(identity.size),
+    sha256,
+    fileIdentity: identity
+  });
+}
+
+function packageSourceReceipt(packageFiles, generatedFiles = [], trackedFiles = undefined) {
+  const generatedPaths = new Set(generatedFiles.map(({ path }) => path));
   return Object.freeze({
     packageFiles: Object.freeze([...packageFiles].sort()),
-    generatedFiles: Object.freeze(
-      generatedFiles.map(({ path, sha256 = "a".repeat(64), identity = fakeFileIdentity }) =>
-        Object.freeze({
-          path,
-          archiveEntry: `extension/${path}`,
-          bytes: Number(identity.size),
-          sha256,
-          fileIdentity: identity
-        })
+    trackedFiles: Object.freeze(
+      (trackedFiles ?? packageFiles.filter((path) => !generatedPaths.has(path)).map((path) => ({ path }))).map(
+        packageFileReceipt
       )
-    )
+    ),
+    generatedFiles: Object.freeze(generatedFiles.map(packageFileReceipt))
   });
+}
+
+function archiveDigestsForPackageSource(receipt) {
+  return [...receipt.trackedFiles, ...receipt.generatedFiles].map(({ archiveEntry, sha256 }) => [archiveEntry, sha256]);
 }
 
 function previewSourceManifest(overrides = {}) {
@@ -169,6 +187,7 @@ test("package source guard rejects packageable untracked files, including ignore
     assertNoPackageableUntrackedFiles({
       readTrackedFiles: () => [...tracked],
       listPackageFiles: async () => ["package.json"],
+      pinTrackedFile: (path) => packageSourceReceipt([path]).trackedFiles[0],
       pinGeneratedFile: assert.fail,
       deriveGeneratedFiles: () => new Set()
     })
@@ -177,11 +196,12 @@ test("package source guard rejects packageable untracked files, including ignore
   assert.equal(scratchFile, "scratch.txt");
 });
 
-test("package source guard pins every exact generated output", async () => {
+test("package source guard pins every exact tracked and generated input", async () => {
   const source = await assertNoPackageableUntrackedFiles({
     readTrackedFiles: () => ["package.json"],
     listPackageFiles: async () => ["media/webview.js", "package.json"],
     deriveGeneratedFiles: () => new Set(["media/webview.js"]),
+    pinTrackedFile: (path) => packageSourceReceipt([path]).trackedFiles[0],
     pinGeneratedFile: (path) => packageSourceReceipt([path], [{ path }]).generatedFiles[0]
   });
   assert.deepEqual(source, packageSourceReceipt(["media/webview.js", "package.json"], [{ path: "media/webview.js" }]));
@@ -206,10 +226,16 @@ test("pinned package inventory rejects a source file that appears only while cre
     /inventory drifted from its pinned pre-package source set/u
   );
   archiveCreatedDuringPackaging.pop();
-  assert.doesNotThrow(() => assertInstalledPerformancePackageInventory(packageSource, archiveCreatedDuringPackaging));
+  assert.doesNotThrow(() =>
+    assertInstalledPerformancePackageInventory(
+      packageSource,
+      archiveCreatedDuringPackaging,
+      archiveDigestsForPackageSource(packageSource)
+    )
+  );
 });
 
-test("pinned generated outputs reject source changes and archive-byte substitutions", () => {
+test("pinned package sources reject tracked or generated source changes and archive-byte substitutions", () => {
   const before = packageSourceReceipt(
     ["package.json", "media/webview.js"],
     [{ path: "media/webview.js", sha256: "a".repeat(64) }]
@@ -222,6 +248,27 @@ test("pinned generated outputs reject source changes and archive-byte substituti
     () => assertSameInstalledPerformancePackageSources(before, changed),
     /generated package output changed/u
   );
+  const changedTracked = packageSourceReceipt(
+    ["package.json", "media/webview.js"],
+    [{ path: "media/webview.js", sha256: "a".repeat(64) }],
+    [{ path: "package.json", sha256: "b".repeat(64), identity: { ...fakeFileIdentity, ino: 8n } }]
+  );
+  assert.throws(
+    () => assertSameInstalledPerformancePackageSources(before, changedTracked),
+    /tracked package source changed/u
+  );
+  assert.throws(
+    () =>
+      assertInstalledPerformancePackageInventory(
+        before,
+        ["[Content_Types].xml", "extension.vsixmanifest", "extension/package.json", "extension/media/webview.js"],
+        [
+          ["extension/package.json", "a".repeat(64)],
+          ["extension/media/webview.js", "b".repeat(64)]
+        ]
+      ),
+    /source bytes drifted from their pinned package inputs/u
+  );
   assert.throws(
     () =>
       assertInstalledPerformancePackageInventory(
@@ -229,17 +276,17 @@ test("pinned generated outputs reject source changes and archive-byte substituti
         ["[Content_Types].xml", "extension.vsixmanifest", "extension/package.json", "extension/media/webview.js"],
         [
           ["extension/package.json", "c".repeat(64)],
-          ["extension/media/webview.js", "b".repeat(64)]
+          ["extension/media/webview.js", "a".repeat(64)]
         ]
       ),
-    /generated output drifted from its pinned source bytes/u
+    /source bytes drifted from their pinned package inputs/u
   );
   assert.doesNotThrow(() =>
     assertInstalledPerformancePackageInventory(
       before,
       ["[Content_Types].xml", "extension.vsixmanifest", "extension/package.json", "extension/media/webview.js"],
       [
-        ["extension/package.json", "c".repeat(64)],
+        ["extension/package.json", "a".repeat(64)],
         ["extension/media/webview.js", "a".repeat(64)]
       ]
     )

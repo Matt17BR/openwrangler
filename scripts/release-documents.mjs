@@ -12,6 +12,7 @@ const FEATURE_PARITY_HEADING = "Feature parity matrix";
 const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
 const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
+const FEATURE_PARITY_URL = "https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md";
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -22,7 +23,7 @@ const FUTURE_EVIDENCE =
 
 export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](docs/feature-parity.md) remains open.
+> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](${FEATURE_PARITY_URL}) remains open.
 
 ## Install
 
@@ -72,7 +73,7 @@ VS Code and Cursor are first-class release targets. Other VS Code-based desktop 
 
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
 
-This stable release satisfies every in-scope row in the checked-in [feature parity matrix](docs/feature-parity.md).
+This stable release satisfies every in-scope row in the checked-in [feature parity matrix](${FEATURE_PARITY_URL}).
 
 ${README_RELEASE_SECTION_END}`;
 
