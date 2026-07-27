@@ -205,23 +205,55 @@ test("candidate provenance enforces numeric versions and a matching release chan
       expectedError
     );
   }
+});
+
+test("candidate build provenance is bound to its release channel", () => {
+  const previewRun = editorRun("vscode");
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: { ...candidate(), buildMethod: "canonical-release-artifact-v1" },
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [previewRun]
+      }),
+    /candidate build method must be "guarded-clean-head-v1"/u
+  );
 
   const stableRun = editorRun("vscode");
   stableRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
   for (const phase of stableRun.phases) phase.runtime.openWranglerRuntimeVersion = "1.0.0";
+  const stableCandidate = {
+    ...candidate(),
+    extensionVersion: "1.0.0",
+    preview: false,
+    channel: "stable"
+  };
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: stableCandidate,
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [stableRun]
+      }),
+    /candidate build method must be "canonical-release-artifact-v1"/u
+  );
+
   const report = buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
     candidate: {
-      ...candidate(),
-      extensionVersion: "1.0.0",
-      preview: false,
-      channel: "stable"
+      ...stableCandidate,
+      buildMethod: "canonical-release-artifact-v1"
     },
     source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
     fixtureManifest: fixtureManifest(),
     editorRuns: [stableRun]
   });
   assert.equal(report.candidate.channel, "stable");
+  assert.equal(report.candidate.buildMethod, "canonical-release-artifact-v1");
 });
 
 test("aggregate verdicts retain dirty-source and missing-editor release failures", () => {

@@ -343,7 +343,9 @@ function validateCandidate(candidate) {
   if (!candidate.preview && candidate.extensionVersion.startsWith("0.")) {
     throw new TypeError("A stable installed-performance candidate requires extension version 1.0.0 or newer.");
   }
-  assertEqual(candidate.buildMethod, "guarded-clean-head-v1", "candidate build method");
+  const expectedBuildMethod =
+    classification.channel === "preview" ? "guarded-clean-head-v1" : "canonical-release-artifact-v1";
+  assertEqual(candidate.buildMethod, expectedBuildMethod, "candidate build method");
   assertMatch(candidate.sourceCommit, /^[0-9a-f]{40}$/u, "candidate source commit");
   assertMatch(candidate.vsixSha256, SHA256, "candidate VSIX SHA-256");
   if (!positiveInteger(candidate.vsixBytes)) throw new TypeError("Candidate VSIX size must be positive.");
