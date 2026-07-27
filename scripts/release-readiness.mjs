@@ -1,15 +1,24 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SaxesParser } from "saxes";
+import { NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
+import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 const VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
-const NUMERIC_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PYTHON_VERSION = /^__version__\s*=\s*"([^"\r\n]+)"\s*$/gmu;
-const CHANGELOG_HEADING = /^## \[([^\]\r\n]+)\] - ([^\r\n]+)$/gmu;
+const CHANGELOG_HEADING = /^## \[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
+const FEATURE_PARITY_HEADING = "# Feature parity matrix";
+const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
+const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
+const README_MAX_BYTES = 2 * 1024 * 1024;
+export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
+> **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
+${README_RELEASE_SECTION_END}`;
 const STABLE_PACKAGE_IDENTITY = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -47,25 +56,17 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Installed-editor first-usable-grid performance", "Yes", "Yes"],
   ["Cross-platform first-class editor package acceptance", "N/A", "N/A"]
 ]);
-const README_PREVIEW_CLAIMS = [
-  { pattern: /\bactive preview\b/iu, label: 'README still describes Open Wrangler as an "active preview".' },
-  {
-    pattern: /\bprebuilt releases are not published yet\b/iu,
-    label: "README still says that prebuilt releases are unavailable."
-  },
-  {
-    pattern: /\bfuture preview builds?\b/iu,
-    label: "README still directs users to future preview builds."
-  },
-  { pattern: /\bthis is a preview\b/iu, label: 'README still says "This is a preview".' }
-];
 
 function parseJsonObject(contents, label, problems) {
   let value;
   try {
-    value = JSON.parse(contents);
-  } catch {
-    problems.push(`${label} must contain valid JSON.`);
+    value = parseStrictJson(contents);
+  } catch (error) {
+    problems.push(
+      error instanceof DuplicateJsonKeyError
+        ? `${label} must not contain duplicate object keys.`
+        : `${label} must contain valid bounded JSON.`
+    );
     return undefined;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -84,6 +85,57 @@ function parsePythonRuntimeVersion(contents, label, problems) {
   return matches[0][1];
 }
 
+function stripHtmlComments(line, state) {
+  let cursor = 0;
+  let active = "";
+  while (cursor < line.length) {
+    if (state.inComment) {
+      const close = line.indexOf("-->", cursor);
+      if (close < 0) {
+        return active;
+      }
+      state.inComment = false;
+      cursor = close + 3;
+      continue;
+    }
+
+    const open = line.indexOf("<!--", cursor);
+    if (open < 0) {
+      active += line.slice(cursor);
+      return active;
+    }
+    active += line.slice(cursor, open);
+    state.inComment = true;
+    cursor = open + 4;
+  }
+  return active;
+}
+
+function activeMarkdownLines(contents) {
+  const comment = { inComment: false };
+  let fence;
+  return contents.split(/\r?\n/u).map((rawLine) => {
+    if (fence !== undefined) {
+      const closing = /^ {0,3}(`+|~+)[\t ]*$/u.exec(rawLine);
+      if (closing !== null && closing[1]?.[0] === fence.character && (closing[1]?.length ?? 0) >= fence.length) {
+        fence = undefined;
+      }
+      return "";
+    }
+
+    const line = stripHtmlComments(rawLine, comment);
+    const opening = /^ {0,3}(`{3,}|~{3,}).*$/u.exec(line);
+    if (opening !== null) {
+      fence = { character: opening[1]?.[0], length: opening[1]?.length ?? 0 };
+      return "";
+    }
+    if (/^(?: {4}|\t)/u.test(line)) {
+      return "";
+    }
+    return line;
+  });
+}
+
 function splitMarkdownTableRow(line) {
   const trimmed = line.trim();
   if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) {
@@ -95,21 +147,48 @@ function splitMarkdownTableRow(line) {
     .map((cell) => cell.trim());
 }
 
+function hasSubstantiveEvidence(evidence) {
+  const normalized = evidence
+    .replace(/[`*_~]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (normalized.length < 8 || !/[\p{L}\p{N}]/u.test(normalized)) {
+    return false;
+  }
+  if (/^(?:n\/?a|none|unknown|todo|tbd|pending|planned|placeholder)[.!]?$/iu.test(normalized)) {
+    return false;
+  }
+  return !/^(?:add|complete|enforce|finish|record|todo|tbd)\b/iu.test(normalized);
+}
+
 function inspectPrimaryParityMatrix(contents) {
   const problems = [];
-  const lines = contents.split(/\r?\n/u);
+  const lines = activeMarkdownLines(contents);
   const expectedHeader = ["Surface", "Pandas", "Polars", "Status", "Required evidence"];
-  const headerIndex = lines.findIndex((line) => {
+  const firstActiveLine = lines.find((line) => line.trim().length > 0)?.trim();
+  if (firstActiveLine !== FEATURE_PARITY_HEADING) {
+    problems.push(`docs/feature-parity.md must begin with "${FEATURE_PARITY_HEADING}".`);
+  }
+  const headerIndices = lines.flatMap((line, index) => {
     const cells = splitMarkdownTableRow(line);
-    return (
-      cells !== undefined &&
+    return cells !== undefined &&
       cells.length === expectedHeader.length &&
-      cells.every((cell, index) => cell === expectedHeader[index])
-    );
+      cells.every((cell, cellIndex) => cell === expectedHeader[cellIndex])
+      ? [index]
+      : [];
   });
-
-  if (headerIndex < 0) {
+  if (headerIndices.length === 0) {
     return ["docs/feature-parity.md is missing the canonical Pandas/Polars parity table."];
+  }
+  if (headerIndices.length !== 1) {
+    return [
+      `docs/feature-parity.md must contain exactly one active canonical Pandas/Polars parity table; found ${headerIndices.length}.`
+    ];
+  }
+  const headerIndex = headerIndices[0] ?? -1;
+  const firstSectionIndex = lines.findIndex((line) => /^##(?:\s|$)/u.test(line.trim()));
+  if (firstSectionIndex >= 0 && headerIndex > firstSectionIndex) {
+    problems.push("The canonical Pandas/Polars parity table must remain in the top-level feature-parity section.");
   }
 
   const separator = splitMarkdownTableRow(lines[headerIndex + 1] ?? "");
@@ -134,13 +213,15 @@ function inspectPrimaryParityMatrix(contents) {
     }
 
     rows.push({ cells, line: index + 1 });
-    const [surface, pandas, polars, status] = cells;
-    if (!surface || !pandas || !polars || !status) {
+    const [surface, pandas, polars, status, evidence] = cells;
+    if (!surface || !pandas || !polars || !status || !evidence) {
       problems.push(`The canonical Pandas/Polars parity table has an empty required cell at line ${index + 1}.`);
       continue;
     }
     if (status !== "Done") {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
+    } else if (!hasSubstantiveEvidence(evidence)) {
+      problems.push(`Parity row "${surface}" must record substantive completed acceptance evidence.`);
     }
   }
 
@@ -181,7 +262,12 @@ function isCalendarDate(value) {
 }
 
 function inspectChangelog(contents, version) {
-  const matches = [...contents.matchAll(CHANGELOG_HEADING)].filter((match) => match[1] === version);
+  const lines = activeMarkdownLines(contents);
+  const firstActiveLine = lines.find((line) => line.trim().length > 0)?.trim();
+  if (firstActiveLine !== "# Changelog") {
+    return ['CHANGELOG.md must begin with the active Markdown heading "# Changelog".'];
+  }
+  const matches = lines.map((line) => CHANGELOG_HEADING.exec(line.trim())).filter((match) => match?.[1] === version);
   if (matches.length !== 1) {
     return [`CHANGELOG.md must contain exactly one heading for version ${version}.`];
   }
@@ -190,6 +276,24 @@ function inspectChangelog(contents, version) {
     return [`CHANGELOG.md version ${version} must use a real YYYY-MM-DD release date instead of "${date}".`];
   }
   return [];
+}
+
+function inspectStableReadme(contents, label) {
+  if (Buffer.byteLength(contents, "utf8") > README_MAX_BYTES) {
+    return [`${label} exceeds the bounded stable-release documentation size.`];
+  }
+  const normalized = contents.replace(/\r\n?/gu, "\n");
+  const starts = normalized.split(README_RELEASE_SECTION_START).length - 1;
+  const ends = normalized.split(README_RELEASE_SECTION_END).length - 1;
+  if (starts !== 1 || ends !== 1 || !normalized.includes(STABLE_README_RELEASE_SECTION)) {
+    return [`${label} must contain exactly one canonical stable release/install-status section.`];
+  }
+  const start = normalized.indexOf(README_RELEASE_SECTION_START);
+  const end = normalized.indexOf(README_RELEASE_SECTION_END, start);
+  const actual = normalized.slice(start, end + README_RELEASE_SECTION_END.length);
+  return actual === STABLE_README_RELEASE_SECTION
+    ? []
+    : [`${label} must contain exactly one canonical stable release/install-status section.`];
 }
 
 function parseVsixIdentity(contents) {
@@ -285,7 +389,7 @@ export function inspectStableReleaseReadiness({
     problems
   );
 
-  if (sourceVersion === undefined || !NUMERIC_VERSION.test(sourceVersion)) {
+  if (sourceVersion === undefined || !NUMERIC_RELEASE_VERSION.test(sourceVersion)) {
     problems.push("Source package.json version must use stable major.minor.patch syntax.");
   }
   for (const [field, expected] of Object.entries(STABLE_PACKAGE_IDENTITY)) {
@@ -312,14 +416,8 @@ export function inspectStableReleaseReadiness({
     problems.push(...inspectChangelog(changelog, sourceVersion));
   }
   problems.push(...inspectPrimaryParityMatrix(featureParity));
-  for (const claim of README_PREVIEW_CLAIMS) {
-    if (claim.pattern.test(readme)) {
-      problems.push(claim.label);
-    }
-    if (claim.pattern.test(packagedReadme)) {
-      problems.push(claim.label.replace("README", "Packaged README"));
-    }
-  }
+  problems.push(...inspectStableReadme(readme, "README.md"));
+  problems.push(...inspectStableReadme(packagedReadme, "Packaged README"));
 
   if (packagedManifest?.preview !== false) {
     problems.push("Packaged package.json preview must be false for a stable release.");
@@ -328,6 +426,15 @@ export function inspectStableReleaseReadiness({
     if (sourceManifest?.[field] !== packagedManifest?.[field]) {
       problems.push(`Packaged package.json ${field} does not match source package.json.`);
     }
+  }
+  if (
+    sourceManifest !== undefined &&
+    packagedManifest !== undefined &&
+    !isDeepStrictEqual(sourceManifest, packagedManifest)
+  ) {
+    problems.push(
+      "Packaged package.json must exactly match source package.json; no packaging transformations are permitted."
+    );
   }
 
   problems.push(...inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest));

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { inspectReleaseMetadata } from "./release-metadata.mjs";
-import { inspectStableReleaseReadiness, PRIMARY_PARITY_SCOPE } from "./release-readiness.mjs";
+import {
+  inspectStableReleaseReadiness,
+  PRIMARY_PARITY_SCOPE,
+  STABLE_README_RELEASE_SECTION
+} from "./release-readiness.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const stablePackage = {
@@ -23,9 +27,9 @@ function manifest({ id = "openwrangler", publisher = "Matt17BR", version = "1.0.
 </PackageManifest>`;
 }
 
-function parity(status = "Done", scope = PRIMARY_PARITY_SCOPE) {
+function parity(status = "Done", scope = PRIMARY_PARITY_SCOPE, evidence = "Exact package") {
   const rows = scope
-    .map(([surface, pandas, polars]) => `| ${surface} | ${pandas} | ${polars} | ${status} | Exact package |`)
+    .map(([surface, pandas, polars]) => `| ${surface} | ${pandas} | ${polars} | ${status} | ${evidence} |`)
     .join("\n");
   return `# Feature parity matrix
 
@@ -48,10 +52,10 @@ function ready(overrides = {}) {
     pythonVersionFile: '__version__ = "1.0.0"\n',
     featureParity: parity(),
     changelog: "# Changelog\n\n## [1.0.0] - 2026-07-27\n",
-    readme: "# Open Wrangler\n\nInstall stable releases from GitHub Releases.\n",
+    readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
     packagedPackageJson: JSON.stringify(stablePackage),
     packagedPythonVersionFile: '__version__ = "1.0.0"\n',
-    packagedReadme: "# Open Wrangler\n\nInstall stable releases from GitHub Releases.\n",
+    packagedReadme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
     vsixManifest: manifest(),
     ...overrides
   };
@@ -128,6 +132,51 @@ broken
     })
   );
   assert.ok(malformed.some((problem) => problem.includes("malformed row")));
+});
+
+test("reads exactly one active primary parity table from its top-level section", () => {
+  const partialTable = parity("Partial");
+  for (const hiddenDoneTable of [`\`\`\`markdown\n${parity()}\`\`\`\n`, `<!--\n${parity()}-->\n`]) {
+    const problems = inspectStableReleaseReadiness(
+      ready({
+        featureParity: `# Feature parity matrix\n\n${hiddenDoneTable}\n${partialTable}`
+      })
+    );
+    assert.ok(problems.includes('Parity row "CSV/TSV/Parquet/Excel/JSONL entry points" is Partial, not Done.'));
+  }
+
+  const duplicate = inspectStableReleaseReadiness(
+    ready({ featureParity: `# Feature parity matrix\n\n${parity()}\n${parity()}` })
+  );
+  assert.ok(
+    duplicate.includes(
+      "docs/feature-parity.md must contain exactly one active canonical Pandas/Polars parity table; found 2."
+    )
+  );
+
+  const wrongSection = inspectStableReleaseReadiness(
+    ready({ featureParity: `# Feature parity matrix\n\n## Deferred\n\n${parity()}` })
+  );
+  assert.ok(
+    wrongSection.includes(
+      "The canonical Pandas/Polars parity table must remain in the top-level feature-parity section."
+    )
+  );
+});
+
+test("requires substantive completed evidence for every Done parity row", () => {
+  for (const evidence of ["", "TODO", "Pending", "Add installed-editor timing"]) {
+    const problems = inspectStableReleaseReadiness(
+      ready({ featureParity: parity("Done", PRIMARY_PARITY_SCOPE, evidence) })
+    );
+    assert.ok(
+      problems.some(
+        (problem) =>
+          problem.includes("empty required cell") ||
+          problem.includes("must record substantive completed acceptance evidence")
+      )
+    );
+  }
 });
 
 test("binds the primary parity table to the exact ordered release scope", () => {
@@ -214,30 +263,36 @@ test("requires explicit stable channel metadata in source, package, and VSIX", (
 
 test("requires one real dated changelog heading for the stable version", () => {
   for (const changelog of [
-    "## [1.0.0] - Unreleased\n",
-    "## [1.0.0] - 2026-02-30\n",
-    "## [1.0.0] - 2026-07-27\n## [1.0.0] - 2026-07-28\n"
+    "# Changelog\n\n## [1.0.0] - Unreleased\n",
+    "# Changelog\n\n## [1.0.0] - 2026-02-30\n",
+    "# Changelog\n\n## [1.0.0] - 2026-07-27\n## [1.0.0] - 2026-07-28\n",
+    "# Changelog\n\n```\n## [1.0.0] - 2026-07-27\n```\n",
+    "# Changelog\n\n<!--\n## [1.0.0] - 2026-07-27\n-->\n"
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ changelog }));
     assert.ok(problems.some((problem) => problem.startsWith("CHANGELOG.md")));
   }
 });
 
-test("rejects preview and unavailable-release claims from the stable README", () => {
+test("requires one exact positive stable release and install section in both README copies", () => {
   for (const readme of [
-    "Open Wrangler is an active preview.",
-    "Prebuilt releases are not published yet.",
-    "Future preview builds will appear on GitHub.",
-    "This is a preview, not a stable release."
+    "# Open Wrangler\n\nOpen Wrangler remains preview software.\n",
+    "# Open Wrangler\n\nNo packaged releases are available.\n",
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${STABLE_README_RELEASE_SECTION}\n`,
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed VSIX", "VSIX")}\n`
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ readme }));
-    assert.ok(problems.some((problem) => problem.startsWith("README still")));
+    assert.ok(problems.includes("README.md must contain exactly one canonical stable release/install-status section."));
   }
 
   const packagedProblems = inspectStableReleaseReadiness(
-    ready({ packagedReadme: "Prebuilt releases are not published yet." })
+    ready({ packagedReadme: "# Open Wrangler\n\nOpen Wrangler remains preview software.\n" })
   );
-  assert.ok(packagedProblems.includes("Packaged README still says that prebuilt releases are unavailable."));
+  assert.ok(
+    packagedProblems.includes(
+      "Packaged README must contain exactly one canonical stable release/install-status section."
+    )
+  );
 });
 
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {
@@ -251,7 +306,7 @@ test("rejects malformed and ambiguous package, Python, and VSIX metadata", () =>
     })
   );
 
-  assert.ok(problems.includes("Source package.json must contain valid JSON."));
+  assert.ok(problems.includes("Source package.json must contain valid bounded JSON."));
   assert.ok(
     problems.includes('python/openwrangler_runtime/version.py must contain exactly one __version__ = "..." assignment.')
   );
@@ -260,6 +315,40 @@ test("rejects malformed and ambiguous package, Python, and VSIX metadata", () =>
   );
   assert.ok(problems.includes("Packaged package.json must contain a JSON object."));
   assert.ok(problems.includes("VSIX manifest must contain one canonical Metadata > Identity element."));
+});
+
+test("rejects duplicate JSON keys including escaped and nested aliases", () => {
+  const duplicateSource = inspectStableReleaseReadiness(
+    ready({
+      sourcePackageJson:
+        '{"name":"wrong","\\u006eame":"openwrangler","displayName":"Open Wrangler","publisher":"Matt17BR","version":"1.0.0","preview":false}'
+    })
+  );
+  assert.ok(duplicateSource.includes("Source package.json must not contain duplicate object keys."));
+
+  const duplicatePackaged = inspectStableReleaseReadiness(
+    ready({
+      packagedPackageJson:
+        '{"name":"openwrangler","displayName":"Open Wrangler","publisher":"Matt17BR","version":"1.0.0","preview":false,"nested":{"value":1,"value":2}}'
+    })
+  );
+  assert.ok(duplicatePackaged.includes("Packaged package.json must not contain duplicate object keys."));
+});
+
+test("requires the complete packaged manifest to equal the source manifest", () => {
+  const source = { ...stablePackage, main: "./dist/extension/activate.js", engines: { vscode: "^1.105.0" } };
+  const packaged = { ...source, main: "./dist/extension/other.js", engines: { vscode: "*" } };
+  const problems = inspectStableReleaseReadiness(
+    ready({
+      sourcePackageJson: JSON.stringify(source),
+      packagedPackageJson: JSON.stringify(packaged)
+    })
+  );
+  assert.ok(
+    problems.includes(
+      "Packaged package.json must exactly match source package.json; no packaging transformations are permitted."
+    )
+  );
 });
 
 test("binds the VSIX identity to the extension package identity", () => {

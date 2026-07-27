@@ -4,7 +4,11 @@ Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family 
 
 Polars and Pandas are first-class backends. DuckDB provides a native file-backed path for larger local datasets.
 
-> Open Wrangler is an active preview. The core viewing and editing workflows work today, but the [1.0 parity matrix](docs/feature-parity.md) still has release gates to close.
+<!-- open-wrangler-release-status:start -->
+
+> **Release status:** Active preview. Prebuilt releases are not published yet; follow the source-install instructions below while the [1.0 parity matrix](docs/feature-parity.md) remains open.
+
+<!-- open-wrangler-release-status:end -->
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
