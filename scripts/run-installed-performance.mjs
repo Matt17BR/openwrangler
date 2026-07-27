@@ -11,7 +11,6 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
-  readFileSync,
   readSync,
   realpathSync,
   renameSync,
@@ -124,28 +123,33 @@ export function parseInstalledPerformanceArguments(arguments_) {
   return options;
 }
 
-export function stageInstalledPerformanceVsix(source, destination) {
+export function stageInstalledPerformanceVsix(source, destination, hooks = {}) {
   const sourcePath = resolve(source);
   const destinationPath = resolve(destination);
-  const sourceAtPath = lstatSync(sourcePath, { bigint: true });
-  if (!sourceAtPath.isFile() || sourceAtPath.isSymbolicLink() || sourceAtPath.nlink !== 1n) {
-    throw new Error("The installed-performance candidate must be a single-link regular VSIX.");
-  }
-  if (sourceAtPath.size <= 0n || sourceAtPath.size > BigInt(VSIX_MAX_BYTES)) {
-    throw new Error("The installed-performance candidate has an invalid byte size.");
-  }
-  mkdirSync(dirname(destinationPath), { recursive: true, mode: 0o700 });
-  assertAbsent(destinationPath, "staged installed-performance VSIX");
 
   let sourceDescriptor;
+  let sourceIdentity;
   let destinationDescriptor;
   let destinationIdentity;
   let complete = false;
   const digest = createHash("sha256");
   try {
-    sourceDescriptor = openSync(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const openedSource = fstatSync(sourceDescriptor, { bigint: true });
-    requireSameRegularFile(openedSource, sourceAtPath, "The candidate changed before it was staged.");
+    sourceDescriptor = openReadOnlyNoFollow(
+      sourcePath,
+      "The installed-performance candidate must be a single-link regular VSIX."
+    );
+    sourceIdentity = fstatSync(sourceDescriptor, { bigint: true });
+    if (!sourceIdentity.isFile() || sourceIdentity.nlink !== 1n) {
+      throw new Error("The installed-performance candidate must be a single-link regular VSIX.");
+    }
+    if (sourceIdentity.size <= 0n || sourceIdentity.size > BigInt(VSIX_MAX_BYTES)) {
+      throw new Error("The installed-performance candidate has an invalid byte size.");
+    }
+    hooks.afterSourceOpen?.(sourcePath);
+    const sourceAtPath = lstatSync(sourcePath, { bigint: true });
+    requireSameRegularFile(sourceAtPath, sourceIdentity, "The candidate changed before it was staged.");
+    mkdirSync(dirname(destinationPath), { recursive: true, mode: 0o700 });
+    assertAbsent(destinationPath, "staged installed-performance VSIX");
     destinationDescriptor = openSync(
       destinationPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
@@ -169,7 +173,7 @@ export function stageInstalledPerformanceVsix(source, destination) {
       }
       total += count;
     }
-    if (BigInt(total) !== sourceAtPath.size) throw new Error("The staged candidate copy was incomplete.");
+    if (BigInt(total) !== sourceIdentity.size) throw new Error("The staged candidate copy was incomplete.");
     fsyncSync(destinationDescriptor);
     const completedDestination = fstatSync(destinationDescriptor, { bigint: true });
     requireSameFileIdentity(
@@ -177,13 +181,13 @@ export function stageInstalledPerformanceVsix(source, destination) {
       destinationIdentity,
       "The staged candidate changed while it was written."
     );
-    if (completedDestination.size !== sourceAtPath.size) {
+    if (completedDestination.size !== sourceIdentity.size) {
       throw new Error("The staged candidate copy has an invalid published byte size.");
     }
     const completedSource = fstatSync(sourceDescriptor, { bigint: true });
     const completedSourcePath = lstatSync(sourcePath, { bigint: true });
-    requireSameRegularFile(completedSource, sourceAtPath, "The candidate changed while it was staged.");
-    requireSameRegularFile(completedSourcePath, sourceAtPath, "The candidate path changed while it was staged.");
+    requireSameRegularFile(completedSource, sourceIdentity, "The candidate changed while it was staged.");
+    requireSameRegularFile(completedSourcePath, sourceIdentity, "The candidate path changed while it was staged.");
     closeSync(destinationDescriptor);
     destinationDescriptor = undefined;
     closeSync(sourceDescriptor);
@@ -834,21 +838,32 @@ function verifyInstalledPerformanceVsix(candidate, environment) {
   });
 }
 
-function readBoundedJson(file, maxBytes) {
-  const before = lstatSync(file, { bigint: true });
-  if (
-    !before.isFile() ||
-    before.isSymbolicLink() ||
-    before.nlink !== 1n ||
-    before.size <= 0n ||
-    before.size > BigInt(maxBytes)
-  ) {
-    throw new Error("Installed performance produced an invalid bounded JSON file.");
+export function readBoundedJson(file, maxBytes, hooks = {}) {
+  let descriptor;
+  try {
+    descriptor = openReadOnlyNoFollow(file, "Installed performance produced an invalid bounded JSON file.");
+    const identity = fstatSync(descriptor, { bigint: true });
+    if (!identity.isFile() || identity.nlink !== 1n || identity.size <= 0n || identity.size > BigInt(maxBytes)) {
+      throw new Error("Installed performance produced an invalid bounded JSON file.");
+    }
+    const initialPath = lstatSync(file, { bigint: true });
+    requireSameRegularFile(initialPath, identity, "Installed performance JSON changed before it was read.");
+    hooks.afterOpen?.(file);
+    const contents = Buffer.alloc(Number(identity.size));
+    let offset = 0;
+    while (offset < contents.length) {
+      const count = readSync(descriptor, contents, offset, contents.length - offset, null);
+      if (count === 0) throw new Error("Installed performance JSON ended before its validated byte size.");
+      offset += count;
+    }
+    const completed = fstatSync(descriptor, { bigint: true });
+    const completedPath = lstatSync(file, { bigint: true });
+    requireSameRegularFile(completed, identity, "Installed performance JSON changed while it was read.");
+    requireSameRegularFile(completedPath, identity, "Installed performance JSON path changed while it was read.");
+    return JSON.parse(contents.toString("utf8"));
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
-  const contents = readFileSync(file, "utf8");
-  const after = lstatSync(file, { bigint: true });
-  requireSameRegularFile(after, before, "Installed performance JSON changed while it was read.");
-  return JSON.parse(contents);
 }
 
 function readVsixPackageJson(vsix) {
@@ -924,9 +939,20 @@ function requireSameRegularFile(actual, expected, message) {
     actual.nlink !== 1n ||
     actual.dev !== expected.dev ||
     actual.ino !== expected.ino ||
-    actual.size !== expected.size
+    actual.size !== expected.size ||
+    actual.mtimeNs !== expected.mtimeNs ||
+    actual.ctimeNs !== expected.ctimeNs
   ) {
     throw new Error(message);
+  }
+}
+
+function openReadOnlyNoFollow(file, symlinkMessage) {
+  try {
+    return openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (error?.code === "ELOOP") throw new Error(symlinkMessage, { cause: error });
+    throw error;
   }
 }
 

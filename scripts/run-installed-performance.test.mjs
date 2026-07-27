@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import {
   installedPerformanceDisplayMode,
   packageInstalledPerformanceCandidate,
   parseInstalledPerformanceArguments,
+  readBoundedJson,
   readInstalledPerformanceCandidate,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
@@ -283,6 +285,77 @@ test("the VSIX snapshot rejects symbolic and hard-linked candidates", async () =
     assert.throws(
       () => stageInstalledPerformanceVsix(source, join(directory, "hard-copy.vsix")),
       /single-link regular VSIX/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the VSIX snapshot rejects source substitution after descriptor acquisition", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
+  try {
+    const source = join(directory, "candidate.vsix");
+    const retained = join(directory, "retained.vsix");
+    const destination = join(directory, "private", "candidate.vsix");
+    await writeFile(source, "original candidate");
+
+    assert.throws(
+      () =>
+        stageInstalledPerformanceVsix(source, destination, {
+          afterSourceOpen(openedPath) {
+            renameSync(openedPath, retained);
+            writeFileSync(openedPath, "substituted candidate");
+          }
+        }),
+      /changed before it was staged/u
+    );
+    assert.equal(await readFile(source, "utf8"), "substituted candidate");
+    await assert.rejects(readFile(destination), /ENOENT/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded JSON reads reject symlinks and path substitution while retaining the replacement", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
+  try {
+    const source = join(directory, "phase.json");
+    const retained = join(directory, "retained.json");
+    const symbolic = join(directory, "symbolic.json");
+    await writeFile(source, JSON.stringify({ value: "original" }));
+    await symlink(source, symbolic);
+
+    assert.throws(() => readBoundedJson(symbolic, 1024), /invalid bounded JSON|changed before/u);
+    assert.throws(
+      () =>
+        readBoundedJson(source, 1024, {
+          afterOpen(openedPath) {
+            renameSync(openedPath, retained);
+            writeFileSync(openedPath, JSON.stringify({ value: "substituted" }));
+          }
+        }),
+      /changed while it was read/u
+    );
+    assert.deepEqual(JSON.parse(await readFile(source, "utf8")), { value: "substituted" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded JSON reads reject a same-inode rewrite after descriptor validation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
+  try {
+    const source = join(directory, "phase.json");
+    await writeFile(source, JSON.stringify({ value: "aaaa" }));
+
+    assert.throws(
+      () =>
+        readBoundedJson(source, 1024, {
+          afterOpen(openedPath) {
+            writeFileSync(openedPath, JSON.stringify({ value: "bbbb" }));
+          }
+        }),
+      /changed while it was read/u
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
