@@ -8,8 +8,6 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  rmSync,
-  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { homedir } from "node:os";
@@ -67,6 +65,14 @@ import {
   assertRemoteWorkspacePhaseLoaderStage,
   stageRemoteWorkspacePhaseLoader
 } from "./remote-workspace-phase-loader.mjs";
+import {
+  createEditorAcceptancePrivateRootReceipt,
+  removeEditorAcceptancePrivateRoot
+} from "./packaged-editor-orchestration.mjs";
+import {
+  createRemoteWorkspaceOwnedFileCleanupReceipt,
+  removeRemoteWorkspaceOwnedFile
+} from "./remote-workspace-cleanup.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -113,12 +119,14 @@ try {
   await verifyCandidate(candidatePath);
   const privateParent = preparePrivateParent(resolve(repositoryRoot, "tmp", "remote-workspace"));
   layout = createRemoteWorkspaceLayout(privateParent);
-  rootReceipt = captureDirectoryReceipt(layout.root);
+  rootReceipt = createEditorAcceptancePrivateRootReceipt(layout.root, { containedBy: privateParent });
   const namespaceLayout = createRemoteWorkspaceNamespaceLayout(layout);
   const runId = randomUUID();
   hostSentinel = join(privateParent, `.host-private-${runId}`);
   writeFileSync(hostSentinel, randomUUID(), { encoding: "utf8", flag: "wx", mode: 0o600 });
-  hostSentinelReceipt = captureRemoteWorkspaceFileReceipt(hostSentinel);
+  hostSentinelReceipt = createRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinel, {
+    parentContainedBy: dirname(privateParent)
+  });
   hostHome = realpathSync(homedir());
   hostHomeReceipt = captureDirectoryReceipt(hostHome);
   const hostIsolationSha256 = createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel);
@@ -337,7 +345,7 @@ try {
   });
   assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
-  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
+  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt.fileReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
   const attestation = await commandRunner.run(
     {
@@ -381,7 +389,7 @@ try {
   assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
   assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
-  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
+  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt.fileReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
   await assertAcceptanceProvenance({
     candidatePath,
@@ -396,8 +404,14 @@ try {
     ...candidateExpectation,
     hostIsolationSha256
   });
-  removePrivateRoot(layout.root, rootReceipt);
-  removeHostSentinel(hostSentinel, hostSentinelReceipt);
+  removeEditorAcceptancePrivateRoot(rootReceipt, {
+    processTreeVerifiedStopped: true,
+    privatePathsVerified: true
+  });
+  removeRemoteWorkspaceOwnedFile(hostSentinelReceipt, {
+    processTreeVerifiedStopped: true,
+    privatePathsVerified: true
+  });
   hostSentinel = undefined;
   hostSentinelReceipt = undefined;
   console.log(
@@ -412,14 +426,20 @@ try {
   const cleanupErrors = [];
   if (layout && rootReceipt) {
     try {
-      removePrivateRoot(layout.root, rootReceipt);
+      removeEditorAcceptancePrivateRoot(rootReceipt, {
+        processTreeVerifiedStopped: true,
+        privatePathsVerified: true
+      });
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
   }
   if (hostSentinel && hostSentinelReceipt) {
     try {
-      removeHostSentinel(hostSentinel, hostSentinelReceipt);
+      removeRemoteWorkspaceOwnedFile(hostSentinelReceipt, {
+        processTreeVerifiedStopped: true,
+        privatePathsVerified: true
+      });
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
@@ -724,11 +744,6 @@ function runSetupCommand(executable, args, environment, label) {
   );
 }
 
-function removeHostSentinel(path, receipt) {
-  assertRemoteWorkspaceFileReceipt(path, receipt);
-  unlinkSync(path);
-}
-
 async function verifyCandidate(path) {
   await runSetupCommand(
     process.execPath,
@@ -796,9 +811,4 @@ function assertDirectoryReceipt(path, receipt) {
     throw new Error("The Remote SSH host directory changed identity after it was pinned.");
   }
   return receipt;
-}
-
-function removePrivateRoot(path, receipt) {
-  assertDirectoryReceipt(path, receipt);
-  rmSync(path, { recursive: true, force: true });
 }
