@@ -18,16 +18,18 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
+  classifyRemoteWorkspaceResultWaitObservation,
   copyPrivatePythonEnvironment,
   createRemoteWorkspaceHostIsolationDigest,
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
   createRemoteWorkspaceNamespaceLayout,
+  inspectRemoteWorkspaceLogTopology,
   assertRemoteWorkspaceResultLease,
   closeRemoteWorkspaceResultLease,
   namespaceRemoteWorkspaceImmutablePath,
@@ -51,6 +53,7 @@ import {
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspaceLibstdcxxResolution,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
@@ -62,12 +65,22 @@ import {
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
 import {
   finalizeRemoteWorkspaceControllerFailure,
+  getRemoteWorkspaceControllerFailureMessage,
   publishRemoteWorkspaceControllerFailureResult,
   validateRemoteWorkspaceDropbearLoaderResolution
 } from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
+const resultWaitControllerCodes = Object.freeze([
+  "phase-result-wait-failed",
+  "phase-result-wait-client-not-ready",
+  "phase-result-wait-remote-ssh-not-ready",
+  "phase-result-wait-remote-agent-not-ready",
+  "phase-result-wait-remote-exthost-not-ready",
+  "phase-result-wait-harness-not-ready",
+  "phase-result-wait-harness-stalled"
+]);
 
 linuxTest("Remote workspace layout is short, private, and independently scoped", () => {
   const parent = privateRoot("ow-remote-layout-");
@@ -147,6 +160,24 @@ test("Dropbear default-loader listings resolve only the independently pinned lib
     `${listing}${"x".repeat(64 * 1024)}`
   ]) {
     assert.throws(() => validateRemoteWorkspaceDropbearLoaderResolution(mutation), /Dropbear loader/u);
+  }
+});
+
+test("VS Code CLI compatibility library stays inside the read-only multiarch runtime", () => {
+  const valid = "/usr/lib/x86_64-linux-gnu/libstdc++.so.6.0.33\n";
+  assert.equal(validateRemoteWorkspaceLibstdcxxResolution(valid), valid);
+  for (const malformed of [
+    valid.trimEnd(),
+    "/usr/lib64/libstdc++.so.6.0.33\n",
+    "/host/private/libstdc++.so.6.0.33\n",
+    "/usr/lib/x86_64-linux-gnu/libstdc++.so.6\n",
+    `${valid}secret-token\n`,
+    "x".repeat(4_097)
+  ]) {
+    assert.throws(
+      () => validateRemoteWorkspaceLibstdcxxResolution(malformed),
+      /compatibility library did not resolve inside its read-only runtime/u
+    );
   }
 });
 
@@ -489,6 +520,15 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     assert.equal(args.includes("/usr/bin/printenv"), true);
     assert.equal(args.includes("/usr/bin/ps"), true);
     assert.equal(args.includes("/usr/bin/ldconfig"), false);
+    assert.equal(
+      args.some(
+        (value, index) =>
+          value === "--symlink" &&
+          args[index + 1] === "../lib/x86_64-linux-gnu/libstdc++.so.6" &&
+          args[index + 2] === "/usr/lib64/libstdc++.so.6"
+      ),
+      true
+    );
     assert.equal(
       args.some(
         (value, index) => value === "--symlink" && args[index + 1] === "busybox" && args[index + 2] === "/usr/bin/ps"
@@ -872,6 +912,213 @@ test("Remote SSH log attestation proves exact offline reuse and rejects download
   }
 });
 
+test("Remote result-wait observations map only to fixed coarse stages", () => {
+  const observation = (overrides = {}) => ({
+    clientLogCount: 0,
+    remoteSshLogCount: 0,
+    remoteAgentLogCount: 0,
+    remoteExtensionHostLogCount: 0,
+    hasCorrelatedProgress: false,
+    ...overrides
+  });
+  for (const [value, code] of [
+    [observation(), "phase-result-wait-client-not-ready"],
+    [observation({ clientLogCount: 1 }), "phase-result-wait-remote-ssh-not-ready"],
+    [observation({ clientLogCount: 1, remoteSshLogCount: 1 }), "phase-result-wait-remote-agent-not-ready"],
+    [
+      observation({ clientLogCount: 1, remoteSshLogCount: 1, remoteAgentLogCount: 1 }),
+      "phase-result-wait-remote-exthost-not-ready"
+    ],
+    [
+      observation({
+        clientLogCount: 1,
+        remoteSshLogCount: 1,
+        remoteAgentLogCount: 1,
+        remoteExtensionHostLogCount: 1
+      }),
+      "phase-result-wait-harness-not-ready"
+    ],
+    [observation({ hasCorrelatedProgress: true }), "phase-result-wait-harness-stalled"],
+    [observation({ hasCorrelatedProgress: true, clientLogCount: 1 }), "phase-result-wait-failed"],
+    [observation({ clientLogCount: 2 }), "phase-result-wait-failed"],
+    [observation({ remoteSshLogCount: 1 }), "phase-result-wait-failed"]
+  ]) {
+    assert.equal(classifyRemoteWorkspaceResultWaitObservation(value), code);
+    assert.match(getRemoteWorkspaceControllerFailureMessage(code), new RegExp(`^controller:${code}:`, "u"));
+  }
+  for (const malformed of [
+    observation({ clientLogCount: -1 }),
+    observation({ remoteSshLogCount: 1.5 }),
+    observation({ remoteAgentLogCount: 1_001 }),
+    observation({ hasCorrelatedProgress: "true" }),
+    { ...observation(), rawLog: "secret-token https://example.test/private /host/private" }
+  ]) {
+    assert.throws(
+      () => classifyRemoteWorkspaceResultWaitObservation(malformed),
+      /result-wait observation is malformed/u
+    );
+  }
+});
+
+linuxTest("Remote result-wait topology observes metadata only under exact bounded shapes", () => {
+  const root = privateRoot("ow-remote-log-topology-");
+  const localLogs = join(root, "local-logs");
+  const remoteLogs = join(root, "remote-logs");
+  const uid = process.getuid();
+  const timestamp = "20260727T131428";
+  const writeLog = (path, contents = "secret-token https://example.test/private /host/private\n") => {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, contents, { mode: 0o600 });
+  };
+  const classify = (hasCorrelatedProgress = false) =>
+    classifyRemoteWorkspaceResultWaitObservation({
+      ...inspectRemoteWorkspaceLogTopology({ localLogs, remoteLogs, uid }),
+      hasCorrelatedProgress
+    });
+  try {
+    assert.equal(classify(), "phase-result-wait-client-not-ready");
+    writeLog(join(localLogs, timestamp, "main.log"));
+    assert.equal(classify(), "phase-result-wait-remote-ssh-not-ready");
+    writeLog(join(localLogs, timestamp, "window1", "exthost", `output_logging_${timestamp}`, "1-Remote - SSH.log"));
+    assert.equal(classify(), "phase-result-wait-remote-agent-not-ready");
+    writeLog(join(remoteLogs, timestamp, "remoteagent.log"));
+    assert.equal(classify(), "phase-result-wait-remote-exthost-not-ready");
+    const extensionHostLog = join(remoteLogs, timestamp, "exthost1", "exthost.log");
+    writeLog(extensionHostLog);
+    chmodSync(extensionHostLog, 0o000);
+    writeLog(join(remoteLogs, timestamp, "unrelated.log"));
+    writeLog(join(remoteLogs, "20260727T13142", "remoteagent.log"));
+    writeLog(join(remoteLogs, timestamp, "exthost0", "exthost.log"));
+    writeLog(join(localLogs, timestamp, "window0", "exthost", `output_logging_${timestamp}`, "1-Remote - SSH.log"));
+    assert.equal(classify(), "phase-result-wait-harness-not-ready");
+    assert.equal(
+      classifyRemoteWorkspaceResultWaitObservation({
+        clientLogCount: 0,
+        remoteSshLogCount: 0,
+        remoteAgentLogCount: 0,
+        remoteExtensionHostLogCount: 0,
+        hasCorrelatedProgress: true
+      }),
+      "phase-result-wait-harness-stalled"
+    );
+    writeLog(join(localLogs, "20260727T131429", "main.log"));
+    assert.equal(classify(), "phase-result-wait-failed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("Remote result-wait topology rejects linked, writable, special, deep, and oversized trees", () => {
+  const uid = process.getuid();
+  const inspect = (root) =>
+    inspectRemoteWorkspaceLogTopology({
+      localLogs: join(root, "local-logs"),
+      remoteLogs: join(root, "remote-logs"),
+      uid
+    });
+  for (const mutation of [
+    "symlink",
+    "hardlink",
+    "writable-file",
+    "writable-directory",
+    "special",
+    "deep",
+    "oversized"
+  ]) {
+    const root = privateRoot(`ow-remote-log-${mutation}-`);
+    const localLogs = join(root, "local-logs");
+    const target = join(root, "target.log");
+    try {
+      mkdirSync(localLogs, { recursive: true, mode: 0o700 });
+      writeFileSync(target, "private\n", { mode: 0o600 });
+      if (mutation === "symlink") {
+        symlinkSync(target, join(localLogs, "linked.log"));
+      } else if (mutation === "hardlink") {
+        linkSync(target, join(localLogs, "linked.log"));
+      } else if (mutation === "writable-file") {
+        const writable = join(localLogs, "writable.log");
+        writeFileSync(writable, "", { mode: 0o600 });
+        chmodSync(writable, 0o622);
+      } else if (mutation === "writable-directory") {
+        const writable = join(localLogs, "writable");
+        mkdirSync(writable, { mode: 0o700 });
+        chmodSync(writable, 0o722);
+      } else if (mutation === "special") {
+        const fifo = join(localLogs, "special.log");
+        const created = spawnSync("/usr/bin/mkfifo", [fifo], { encoding: "utf8" });
+        assert.equal(created.status, 0, created.stderr);
+      } else if (mutation === "deep") {
+        let directory = localLogs;
+        for (let depth = 0; depth < 9; depth += 1) directory = join(directory, `d${depth}`);
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+      } else {
+        for (let index = 0; index <= 1_000; index += 1) {
+          writeFileSync(join(localLogs, `entry-${index}.log`), "", { mode: 0o600 });
+        }
+      }
+      assert.throws(
+        () => inspect(root),
+        /private log tree (?:contains an unsafe entry|exceeded its (?:depth|entry) bound)/u
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+linuxTest("Remote result-wait topology stays bound across root and nested path swaps", () => {
+  const uid = process.getuid();
+  for (const swap of ["root", "nested"]) {
+    const root = privateRoot(`ow-remote-log-swap-${swap}-`);
+    const localLogs = join(root, "local-logs");
+    const timestamp = "20260727T131428";
+    const timestampDirectory = join(localLogs, timestamp);
+    const moved = join(root, `moved-${swap}`);
+    try {
+      mkdirSync(timestampDirectory, { recursive: true, mode: 0o700 });
+      writeFileSync(join(timestampDirectory, "main.log"), "", { mode: 0o600 });
+      let swapped = false;
+      assert.throws(
+        () =>
+          inspectRemoteWorkspaceLogTopology(
+            {
+              localLogs,
+              remoteLogs: join(root, "remote-logs"),
+              uid
+            },
+            {
+              onEntryObserved({ parts }) {
+                if (swapped || parts.join("/") !== timestamp) return;
+                swapped = true;
+                if (swap === "root") {
+                  renameSync(localLogs, moved);
+                  mkdirSync(localLogs, { mode: 0o700 });
+                } else {
+                  renameSync(timestampDirectory, moved);
+                  mkdirSync(timestampDirectory, { mode: 0o700 });
+                }
+              }
+            }
+          ),
+        (error) =>
+          error?.code === "ENOENT" ||
+          /private log tree changed identity/u.test(error instanceof Error ? error.message : String(error))
+      );
+      assert.equal(swapped, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  assert.throws(
+    () =>
+      inspectRemoteWorkspaceLogTopology(
+        { localLogs: "/tmp/local", remoteLogs: "/tmp/remote", uid },
+        { rawDiagnostic: true }
+      ),
+    /log-topology boundary is malformed/u
+  );
+});
+
 test("Remote result validation accepts strict correlated success and failure outcomes", () => {
   const runId = "11111111-1111-4111-8111-111111111111";
   assert.deepEqual(
@@ -950,7 +1197,7 @@ test("Remote controller failure finalization proves cleanup and isolation before
     bounding: 0,
     ambient: 0
   };
-  for (const code of ["phase-failed", "phase-result-wait-failed"]) {
+  for (const code of ["phase-failed", ...resultWaitControllerCodes]) {
     const calls = [];
     const result = await finalizeRemoteWorkspaceControllerFailure({
       async stopChildren() {
@@ -1169,6 +1416,17 @@ linuxTest("Remote controller failures publish one exclusive correlated result af
       validateRemoteWorkspaceResult(readFileSync(stagedFailurePath, "utf8"), { runId }).error,
       "controller:phase-result-wait-failed: the isolated extension host failed before publishing a result."
     );
+    for (const [index, code] of resultWaitControllerCodes.entries()) {
+      const fixedPath = join(root, `fixed-${index}.json`);
+      publishRemoteWorkspaceControllerFailureResult(fixedPath, { runId, code });
+      const fixed = validateRemoteWorkspaceResult(readFileSync(fixedPath, "utf8"), { runId });
+      assert.deepEqual(Object.keys(fixed).sort(), ["error", "ok", "outcome", "phase", "protocol", "runId"]);
+      assert.equal(fixed.error, getRemoteWorkspaceControllerFailureMessage(code));
+      assert.doesNotMatch(
+        JSON.stringify(fixed),
+        /secret-token|example\.test|host\/private|remote-workspace:harness-start|rawLog|rawPath/u
+      );
+    }
     writeFileSync(protectedPath, "protected\n", { mode: 0o600 });
     symlinkSync(protectedPath, linkedPath);
     linkSync(protectedPath, hardLinkedPath);

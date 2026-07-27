@@ -26,6 +26,8 @@ import {
 } from "./editor-acceptance.mjs";
 import {
   createRemoteWorkspaceHostIsolationDigest,
+  classifyRemoteWorkspaceResultWaitObservation,
+  inspectRemoteWorkspaceLogTopology,
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
@@ -52,6 +54,7 @@ import {
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspaceLibstdcxxResolution,
   validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
@@ -67,6 +70,8 @@ import {
 
 export {
   createRemoteWorkspaceHostIsolationDigest,
+  classifyRemoteWorkspaceResultWaitObservation,
+  inspectRemoteWorkspaceLogTopology,
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
@@ -91,6 +96,7 @@ export {
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspaceLibstdcxxResolution,
   validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
@@ -1089,6 +1095,9 @@ export function createRemoteWorkspaceBwrapArguments(
   }
   for (const applet of BUSYBOX_APPLETS) args.push("--symlink", "busybox", `/usr/bin/${applet}`);
   args.push(
+    "--symlink",
+    "../lib/x86_64-linux-gnu/libstdc++.so.6",
+    "/usr/lib64/libstdc++.so.6",
     "--symlink",
     "bash",
     "/usr/bin/sh",

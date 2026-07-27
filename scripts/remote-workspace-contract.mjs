@@ -7,6 +7,7 @@ import {
   linkSync,
   lstatSync,
   openSync,
+  opendirSync,
   readSync,
   realpathSync,
   unlinkSync,
@@ -36,6 +37,12 @@ const DROPBEAR_LOADER_LIST_LIMIT_BYTES = 64 * 1024;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_ERROR_LIMIT_CHARACTERS = 16_000;
+const REMOTE_WORKSPACE_LOG_TREE_ENTRY_LIMIT = 1_000;
+const REMOTE_WORKSPACE_LOG_TREE_DEPTH_LIMIT = 8;
+const REMOTE_WORKSPACE_LOG_TIMESTAMP = /^[0-9]{8}T[0-9]{6}$/u;
+const REMOTE_WORKSPACE_OUTPUT_LOG_DIRECTORY = /^output_logging_[0-9]{8}T[0-9]{6}$/u;
+const REMOTE_WORKSPACE_WINDOW_DIRECTORY = /^window[1-9][0-9]*$/u;
+const REMOTE_WORKSPACE_EXTENSION_HOST_DIRECTORY = /^exthost[1-9][0-9]*$/u;
 const REMOTE_WORKSPACE_CONTROLLER_FAILURES = new Map([
   ["phase-failed", "controller:phase-failed: the isolated Remote SSH controller exited after verified cleanup."],
   [
@@ -61,6 +68,30 @@ const REMOTE_WORKSPACE_CONTROLLER_FAILURES = new Map([
   [
     "phase-result-wait-failed",
     "controller:phase-result-wait-failed: the isolated extension host failed before publishing a result."
+  ],
+  [
+    "phase-result-wait-client-not-ready",
+    "controller:phase-result-wait-client-not-ready: last observed stage: no unique isolated VS Code client log."
+  ],
+  [
+    "phase-result-wait-remote-ssh-not-ready",
+    "controller:phase-result-wait-remote-ssh-not-ready: last observed stage: isolated VS Code client startup; no unique Remote SSH resolver log."
+  ],
+  [
+    "phase-result-wait-remote-agent-not-ready",
+    "controller:phase-result-wait-remote-agent-not-ready: last observed stage: Remote SSH resolver startup; no unique remote-agent log."
+  ],
+  [
+    "phase-result-wait-remote-exthost-not-ready",
+    "controller:phase-result-wait-remote-exthost-not-ready: last observed stage: remote-agent startup; no unique remote extension-host log."
+  ],
+  [
+    "phase-result-wait-harness-not-ready",
+    "controller:phase-result-wait-harness-not-ready: last observed stage: remote extension-host startup; no correlated acceptance checkpoint."
+  ],
+  [
+    "phase-result-wait-harness-stalled",
+    "controller:phase-result-wait-harness-stalled: last observed stage: correlated acceptance progress without a terminal result."
   ],
   [
     "phase-cleanup-failed",
@@ -97,6 +128,77 @@ export function getRemoteWorkspaceControllerFailureMessage(code) {
   return message;
 }
 
+export function inspectRemoteWorkspaceLogTopology({ localLogs, remoteLogs, uid }, testBoundary = {}) {
+  if (
+    typeof localLogs !== "string" ||
+    !isAbsolute(localLogs) ||
+    localLogs.length <= 0 ||
+    localLogs.length > PATH_LIMIT ||
+    typeof remoteLogs !== "string" ||
+    !isAbsolute(remoteLogs) ||
+    remoteLogs.length <= 0 ||
+    remoteLogs.length > PATH_LIMIT ||
+    !Number.isSafeInteger(uid) ||
+    uid < 0
+  ) {
+    throw new Error("The Remote SSH private log-topology request is malformed.");
+  }
+  const boundary = remoteWorkspaceLogTopologyBoundary(testBoundary);
+  const local = scanRemoteWorkspaceLogTree(localLogs, uid, "local", boundary);
+  const remote = scanRemoteWorkspaceLogTree(remoteLogs, uid, "remote", boundary);
+  return Object.freeze({
+    clientLogCount: local.clientLogCount,
+    remoteSshLogCount: local.remoteSshLogCount,
+    remoteAgentLogCount: remote.remoteAgentLogCount,
+    remoteExtensionHostLogCount: remote.remoteExtensionHostLogCount
+  });
+}
+
+export function classifyRemoteWorkspaceResultWaitObservation(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !==
+      "clientLogCount,hasCorrelatedProgress,remoteAgentLogCount,remoteExtensionHostLogCount,remoteSshLogCount" ||
+    typeof value.hasCorrelatedProgress !== "boolean"
+  ) {
+    throw new Error("The Remote SSH result-wait observation is malformed.");
+  }
+  const counts = [
+    value.clientLogCount,
+    value.remoteSshLogCount,
+    value.remoteAgentLogCount,
+    value.remoteExtensionHostLogCount
+  ];
+  if (
+    counts.some((count) => !Number.isSafeInteger(count) || count < 0 || count > REMOTE_WORKSPACE_LOG_TREE_ENTRY_LIMIT)
+  ) {
+    throw new Error("The Remote SSH result-wait observation is malformed.");
+  }
+  if (value.hasCorrelatedProgress) {
+    return counts.every((count) => count === 0) ? "phase-result-wait-harness-stalled" : "phase-result-wait-failed";
+  }
+  if (counts.some((count) => count > 1)) return "phase-result-wait-failed";
+  if (value.clientLogCount === 0) {
+    return counts.slice(1).every((count) => count === 0)
+      ? "phase-result-wait-client-not-ready"
+      : "phase-result-wait-failed";
+  }
+  if (value.remoteSshLogCount === 0) {
+    return counts.slice(2).every((count) => count === 0)
+      ? "phase-result-wait-remote-ssh-not-ready"
+      : "phase-result-wait-failed";
+  }
+  if (value.remoteAgentLogCount === 0) {
+    return value.remoteExtensionHostLogCount === 0
+      ? "phase-result-wait-remote-agent-not-ready"
+      : "phase-result-wait-failed";
+  }
+  if (value.remoteExtensionHostLogCount === 0) return "phase-result-wait-remote-exthost-not-ready";
+  return "phase-result-wait-harness-not-ready";
+}
+
 export function validateRemoteWorkspaceDropbearLoaderResolution(output) {
   if (
     typeof output !== "string" ||
@@ -119,6 +221,18 @@ export function validateRemoteWorkspaceDropbearLoaderResolution(output) {
     if (matching.length !== 1 || !exact) {
       throw new Error("The private Dropbear loader did not resolve one exact pinned dependency.");
     }
+  }
+  return output;
+}
+
+export function validateRemoteWorkspaceLibstdcxxResolution(output) {
+  if (
+    typeof output !== "string" ||
+    Buffer.byteLength(output, "utf8") <= 0 ||
+    Buffer.byteLength(output, "utf8") > 4_096 ||
+    !/^\/usr\/lib\/x86_64-linux-gnu\/libstdc\+\+\.so\.6(?:\.[0-9]+)+\n$/u.test(output)
+  ) {
+    throw new Error("The private VS Code CLI compatibility library did not resolve inside its read-only runtime.");
   }
   return output;
 }
@@ -548,6 +662,196 @@ export function validateRemoteSshLogAttestation(text) {
     commit: PINNED_REMOTE_VSCODE_COMMIT,
     didLocalDownload: false,
     existingInstallation: true
+  });
+}
+
+function scanRemoteWorkspaceLogTree(root, uid, kind, boundary) {
+  const counts = {
+    clientLogCount: 0,
+    remoteSshLogCount: 0,
+    remoteAgentLogCount: 0,
+    remoteExtensionHostLogCount: 0
+  };
+  let rootMetadata;
+  try {
+    rootMetadata = lstatSync(root, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return counts;
+    throw error;
+  }
+  assertPrivateLogEntry(rootMetadata, uid, "directory");
+  const state = { entries: 0 };
+  scanRemoteWorkspaceLogDirectory({
+    openPath: root,
+    namedPath: root,
+    parts: [],
+    uid,
+    kind,
+    counts,
+    state,
+    boundary
+  });
+  return counts;
+}
+
+function scanRemoteWorkspaceLogDirectory({ openPath, namedPath, parts, uid, kind, counts, state, boundary }) {
+  const namedBefore = lstatSync(namedPath, { bigint: true });
+  const anchoredBefore = openPath === namedPath ? namedBefore : lstatSync(openPath, { bigint: true });
+  assertPrivateLogEntry(namedBefore, uid, "directory");
+  if (!samePrivateLogEntry(namedBefore, anchoredBefore)) {
+    throw new Error("The Remote SSH private log tree changed identity before directory open.");
+  }
+  const descriptor = openSync(
+    openPath,
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0)
+  );
+  const observedChildren = [];
+  let handle;
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!samePrivateLogEntry(namedBefore, opened)) {
+      throw new Error("The Remote SSH private log tree changed identity during directory open.");
+    }
+    handle = opendirSync(`/proc/self/fd/${descriptor}`);
+    while (true) {
+      const entry = handle.readSync();
+      if (!entry) break;
+      state.entries += 1;
+      if (state.entries > REMOTE_WORKSPACE_LOG_TREE_ENTRY_LIMIT) {
+        throw new Error("The Remote SSH private log tree exceeded its entry bound.");
+      }
+      const childParts = [...parts, entry.name];
+      if (childParts.length > REMOTE_WORKSPACE_LOG_TREE_DEPTH_LIMIT) {
+        throw new Error("The Remote SSH private log tree exceeded its depth bound.");
+      }
+      const childNamedPath = join(namedPath, entry.name);
+      const childOpenPath = `/proc/self/fd/${descriptor}/${entry.name}`;
+      if (
+        Buffer.byteLength(childNamedPath, "utf8") > PATH_LIMIT ||
+        Buffer.byteLength(childOpenPath, "utf8") > PATH_LIMIT
+      ) {
+        throw new Error("The Remote SSH private log tree exceeded its path bound.");
+      }
+      const namedChild = lstatSync(childNamedPath, { bigint: true });
+      const anchoredChild = lstatSync(childOpenPath, { bigint: true });
+      if (!samePrivateLogEntry(namedChild, anchoredChild)) {
+        throw new Error("The Remote SSH private log tree changed identity during enumeration.");
+      }
+      const childKind = namedChild.isDirectory() ? "directory" : "file";
+      assertPrivateLogEntry(namedChild, uid, childKind);
+      observedChildren.push({
+        namedPath: childNamedPath,
+        openPath: childOpenPath,
+        snapshot: namedChild
+      });
+      boundary.onEntryObserved({
+        kind,
+        entryKind: childKind,
+        namedPath: childNamedPath,
+        parts: Object.freeze([...childParts])
+      });
+      if (childKind === "directory") {
+        scanRemoteWorkspaceLogDirectory({
+          openPath: childOpenPath,
+          namedPath: childNamedPath,
+          parts: childParts,
+          uid,
+          kind,
+          counts,
+          state,
+          boundary
+        });
+      } else {
+        classifyRemoteWorkspaceLogPath(kind, childParts, counts);
+      }
+    }
+    const completedHandle = handle;
+    handle = undefined;
+    completedHandle.closeSync();
+    for (const child of observedChildren) {
+      const namedAfter = lstatSync(child.namedPath, { bigint: true });
+      const anchoredAfter = lstatSync(child.openPath, { bigint: true });
+      if (!samePrivateLogEntry(child.snapshot, namedAfter) || !samePrivateLogEntry(child.snapshot, anchoredAfter)) {
+        throw new Error("The Remote SSH private log tree changed identity after enumeration.");
+      }
+    }
+    const openedAfter = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(namedPath, { bigint: true });
+    if (!samePrivateLogEntry(opened, openedAfter) || !samePrivateLogEntry(opened, namedAfter)) {
+      throw new Error("The Remote SSH private log directory changed identity after enumeration.");
+    }
+  } finally {
+    try {
+      handle?.closeSync();
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+}
+
+function classifyRemoteWorkspaceLogPath(kind, parts, counts) {
+  if (kind === "local") {
+    if (parts.length === 2 && REMOTE_WORKSPACE_LOG_TIMESTAMP.test(parts[0]) && parts[1] === "main.log") {
+      counts.clientLogCount += 1;
+    } else if (
+      parts.length === 5 &&
+      REMOTE_WORKSPACE_LOG_TIMESTAMP.test(parts[0]) &&
+      REMOTE_WORKSPACE_WINDOW_DIRECTORY.test(parts[1]) &&
+      parts[2] === "exthost" &&
+      REMOTE_WORKSPACE_OUTPUT_LOG_DIRECTORY.test(parts[3]) &&
+      parts[4] === "1-Remote - SSH.log"
+    ) {
+      counts.remoteSshLogCount += 1;
+    }
+  } else if (parts.length === 2 && REMOTE_WORKSPACE_LOG_TIMESTAMP.test(parts[0]) && parts[1] === "remoteagent.log") {
+    counts.remoteAgentLogCount += 1;
+  } else if (
+    parts.length === 3 &&
+    REMOTE_WORKSPACE_LOG_TIMESTAMP.test(parts[0]) &&
+    REMOTE_WORKSPACE_EXTENSION_HOST_DIRECTORY.test(parts[1]) &&
+    parts[2] === "exthost.log"
+  ) {
+    counts.remoteExtensionHostLogCount += 1;
+  }
+}
+
+function assertPrivateLogEntry(metadata, uid, kind) {
+  const validType = kind === "directory" ? metadata.isDirectory() : metadata.isFile();
+  if (
+    !validType ||
+    metadata.isSymbolicLink() ||
+    metadata.uid !== BigInt(uid) ||
+    Number(metadata.mode & 0o022n) !== 0 ||
+    (kind === "file" && metadata.nlink !== 1n)
+  ) {
+    throw new Error("The Remote SSH private log tree contains an unsafe entry.");
+  }
+}
+
+function samePrivateLogEntry(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.nlink === right.nlink &&
+    left.birthtimeNs === right.birthtimeNs
+  );
+}
+
+function remoteWorkspaceLogTopologyBoundary(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => key !== "onEntryObserved") ||
+    (value.onEntryObserved !== undefined && typeof value.onEntryObserved !== "function")
+  ) {
+    throw new Error("The Remote SSH private log-topology boundary is malformed.");
+  }
+  return Object.freeze({
+    onEntryObserved: value.onEntryObserved ?? (() => undefined)
   });
 }
 

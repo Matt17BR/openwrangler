@@ -13,8 +13,10 @@ import {
 import { join } from "node:path";
 import {
   assertRemoteWorkspaceResultLease,
+  classifyRemoteWorkspaceResultWaitObservation,
   closeRemoteWorkspaceResultLease,
   finalizeRemoteWorkspaceControllerFailure,
+  inspectRemoteWorkspaceLogTopology,
   openRemoteWorkspaceResultLeaseIfPresent,
   parseRemoteWorkspacePhaseDescriptor,
   publishRemoteWorkspaceControllerFailureResult,
@@ -23,6 +25,7 @@ import {
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceDropbearLoaderResolution,
+  validateRemoteWorkspaceLibstdcxxResolution,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
@@ -41,8 +44,26 @@ const PRIVATE_DISPLAY = ":99";
 const PRIVATE_DISPLAY_DIRECTORY = "/tmp/.X11-unix";
 const PRIVATE_DISPLAY_SOCKET = `${PRIVATE_DISPLAY_DIRECTORY}/X99`;
 const PRIVATE_DISPLAY_LOCK = "/tmp/.X99-lock";
+const PRIVATE_VSCODE_LIBSTDCXX = "/usr/lib64/libstdc++.so.6";
+const REMOTE_WORKSPACE_PROGRESS_CHECKPOINTS = new Set([
+  "remote-workspace:harness-start",
+  "preflight:start",
+  "activation:start",
+  "activation:complete",
+  "preflight:package",
+  "preflight:commands",
+  "preflight:contributions",
+  "preflight:complete",
+  "remote-workspace:start",
+  "remote-workspace:open",
+  "remote-workspace:filter",
+  "remote-workspace:cleanup",
+  "remote-workspace:complete"
+]);
 const [descriptorPath, ipExecutable, sshExecutable, dynamicLoader, mode] = process.argv.slice(2);
 let descriptor;
+
+class RemoteWorkspaceResultWaitError extends Error {}
 
 try {
   if (mode !== undefined && mode !== "--bootstrap-preflight") {
@@ -174,6 +195,13 @@ function assertBootstrapExecutables(config, ip, ssh, loader) {
   validateRemoteWorkspaceDropbearLoaderResolution(
     runSync(loader, ["--list", config.sshServer], "private bootstrap Dropbear default-loader listing").stdout
   );
+  validateRemoteWorkspaceLibstdcxxResolution(
+    runSync(
+      "/usr/bin/readlink",
+      ["-f", PRIVATE_VSCODE_LIBSTDCXX],
+      "private bootstrap VS Code CLI compatibility-library probe"
+    ).stdout
+  );
   runSync(config.sshServer, ["-V"], "private bootstrap Dropbear re-exec loader probe");
 }
 
@@ -205,6 +233,10 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   validateRemoteWorkspaceDropbearLoaderResolution(
     runSync(dynamicLoader, ["--list", sshServer], "private Dropbear default-loader listing").stdout
   );
+  validateRemoteWorkspaceLibstdcxxResolution(
+    runSync("/usr/bin/readlink", ["-f", PRIVATE_VSCODE_LIBSTDCXX], "private VS Code CLI compatibility-library probe")
+      .stdout
+  );
   runSync(sshServer, ["-V"], "private Dropbear re-exec loader probe");
 
   markFailureStage("phase-display-failed");
@@ -216,6 +248,8 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   let resultLease;
   let phaseError;
   let phaseFailureCode;
+  let resultWaitCanBeClassified = false;
+  const resultWaitObservation = { hasCorrelatedProgress: false };
   try {
     markFailureStage("phase-ssh-daemon-failed");
     sshd = spawnMonitoredRemoteWorkspaceChild(
@@ -322,9 +356,11 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     editor.child.stdout.on("data", (chunk) => editorOutput.append(chunk));
     editor.child.stderr.on("data", (chunk) => editorOutput.append(chunk));
     markFailureStage("phase-result-wait-failed");
-    resultLease = await observeAcceptance(config, editor);
+    resultLease = await observeAcceptance(config, editor, resultWaitObservation);
   } catch (error) {
     phaseFailureCode = currentFailureCode;
+    resultWaitCanBeClassified =
+      phaseFailureCode === "phase-result-wait-failed" && error instanceof RemoteWorkspaceResultWaitError;
     const editorDiagnostic = sanitizeFailure(editorOutput.text(), config.paths.root);
     phaseError = editorDiagnostic
       ? new Error(`${error instanceof Error ? error.message : String(error)} Editor: ${editorDiagnostic}`, {
@@ -372,10 +408,44 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
       markFailureStage(phaseFailureCode);
     }
   }
+  if (phaseError && cleanupErrors.length === 0 && resultWaitCanBeClassified) {
+    try {
+      assertPrivateNamespace(config);
+      validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
+      const topology = resultWaitObservation.hasCorrelatedProgress
+        ? {
+            clientLogCount: 0,
+            remoteSshLogCount: 0,
+            remoteAgentLogCount: 0,
+            remoteExtensionHostLogCount: 0
+          }
+        : inspectRemoteWorkspaceLogTopology({
+            localLogs: join(config.paths.userData, "logs"),
+            remoteLogs: join(config.paths.remoteHome, ".vscode-server", "data", "logs"),
+            uid: config.uid
+          });
+      markFailureStage(
+        classifyRemoteWorkspaceResultWaitObservation({
+          ...topology,
+          hasCorrelatedProgress: resultWaitObservation.hasCorrelatedProgress
+        })
+      );
+    } catch {
+      markFailureStage("phase-result-wait-failed");
+    }
+  }
 
   let capabilities;
   if (!terminalError && resultLease) {
     try {
+      const successfulTopology = inspectRemoteWorkspaceLogTopology({
+        localLogs: join(config.paths.userData, "logs"),
+        remoteLogs: join(config.paths.remoteHome, ".vscode-server", "data", "logs"),
+        uid: config.uid
+      });
+      if (Object.values(successfulTopology).some((count) => count !== 1)) {
+        throw new Error("The successful Remote SSH phase did not retain one exact private startup-log topology.");
+      }
       const remoteSshLog = findRemoteSshLog(config.paths.userData);
       validateRemoteSshLogAttestation(readBoundedRemoteWorkspaceFile(remoteSshLog, MAX_REMOTE_SSH_LOG_BYTES));
       capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
@@ -533,7 +603,7 @@ function assertPrivateDisplayEmpty() {
   }
 }
 
-async function observeAcceptance(config, editor) {
+async function observeAcceptance(config, editor, observation) {
   const startedAt = Date.now();
   let lastCheckpointAt = startedAt;
   let lastCheckpoint;
@@ -547,9 +617,15 @@ async function observeAcceptance(config, editor) {
           validateProgress(progress, config);
           lastCheckpoint = progress;
           lastCheckpointAt = Date.now();
+          observation.hasCorrelatedProgress = true;
         }
       } catch (error) {
-        const racedResult = acquireTimelyResult(config, startedAt);
+        let racedResult;
+        try {
+          racedResult = acquireTimelyResult(config, startedAt);
+        } catch {
+          throw error;
+        }
         if (racedResult) return racedResult;
         throw error;
       }
@@ -559,15 +635,18 @@ async function observeAcceptance(config, editor) {
     } catch (error) {
       const racedResult = acquireTimelyResult(config, startedAt);
       if (racedResult) return racedResult;
-      throw new Error("Official VS Code exited before the remote extension host published a result.", {
-        cause: error
-      });
+      throw new RemoteWorkspaceResultWaitError(
+        "Official VS Code exited before the remote extension host published a result.",
+        {
+          cause: error
+        }
+      );
     }
     const now = Date.now();
     if (now - lastCheckpointAt >= config.inactivityTimeoutMs) {
       const racedResult = acquireTimelyResult(config, startedAt);
       if (racedResult) return racedResult;
-      throw new Error("The Remote SSH phase made no checkpoint progress for 180 seconds.");
+      throw new RemoteWorkspaceResultWaitError("The Remote SSH phase made no checkpoint progress for 180 seconds.");
     }
     await wait(POLL_MS);
   }
@@ -575,7 +654,7 @@ async function observeAcceptance(config, editor) {
 
 function acquireTimelyResult(config, startedAt) {
   if (Date.now() - startedAt >= config.timeoutMs) {
-    throw new Error("The Remote SSH phase exceeded its 300-second deadline.");
+    throw new RemoteWorkspaceResultWaitError("The Remote SSH phase exceeded its 300-second deadline.");
   }
   const resultLease = openRemoteWorkspaceResultLeaseIfPresent(config.paths.result, {
     runId: config.runId
@@ -588,7 +667,7 @@ function acquireTimelyResult(config, startedAt) {
   } catch (error) {
     closeError = error;
   }
-  const timeout = new Error("The Remote SSH phase exceeded its 300-second deadline.");
+  const timeout = new RemoteWorkspaceResultWaitError("The Remote SSH phase exceeded its 300-second deadline.");
   if (closeError) {
     throw new AggregateError([timeout, closeError], "A late Remote SSH result could not close safely.");
   }
@@ -609,6 +688,7 @@ function validateProgress(contents, config) {
     typeof progress.checkpoint !== "string" ||
     progress.checkpoint.length <= 0 ||
     progress.checkpoint.length > 256 ||
+    !REMOTE_WORKSPACE_PROGRESS_CHECKPOINTS.has(progress.checkpoint) ||
     Object.keys(progress).sort().join(",") !== "checkpoint,phase,protocol,runId"
   ) {
     throw new Error("The Remote SSH progress checkpoint lost its phase correlation.");
