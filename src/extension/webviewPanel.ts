@@ -136,6 +136,10 @@ export class OpenWranglerPanel {
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
 
+  static openResponseForTesting(): OpenWranglerResponse | undefined {
+    return OpenWranglerPanel.activePanel?.openResponse ?? [...OpenWranglerPanel.panels].at(-1)?.openResponse;
+  }
+
   static changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
     if (!active?.panel.active || !canChangeImportOptions(active.source)) return Promise.resolve(false);

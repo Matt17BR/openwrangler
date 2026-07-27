@@ -145,13 +145,13 @@ async function runPhase(config, ip, ssh, ldconfig) {
         "/bin/sh",
         "-c",
         [
-          "'test -z \"${LD_PRELOAD-}\"",
-          "&& test -z \"${LD_LIBRARY_PATH-}\"",
-          "&& test -z \"${LD_BIND_NOW-}\"",
-          "&& test -z \"${LD_AUDIT-}\"",
-          "&& test -n \"${OPEN_WRANGLER_TEST_MODULE-}\"",
-          "&& test -n \"${OPEN_WRANGLER_TEST_RESULT-}\"",
-          "&& printf %s \"$HOME\"'"
+          '\'test -z "${LD_PRELOAD-}"',
+          '&& test -z "${LD_LIBRARY_PATH-}"',
+          '&& test -z "${LD_BIND_NOW-}"',
+          '&& test -z "${LD_AUDIT-}"',
+          '&& test -n "${OPEN_WRANGLER_TEST_MODULE-}"',
+          '&& test -n "${OPEN_WRANGLER_TEST_RESULT-}"',
+          '&& printf %s "$HOME"\''
         ].join(" ")
       ],
       "private loopback SSH probe",
@@ -195,10 +195,9 @@ async function runPhase(config, ip, ssh, ldconfig) {
   } catch (error) {
     const editorDiagnostic = sanitizeFailure(editorOutput.text(), config.paths.root);
     phaseError = editorDiagnostic
-      ? new Error(
-          `${error instanceof Error ? error.message : String(error)} Editor: ${editorDiagnostic}`,
-          { cause: error }
-        )
+      ? new Error(`${error instanceof Error ? error.message : String(error)} Editor: ${editorDiagnostic}`, {
+          cause: error
+        })
       : error;
   }
   let cleanupError;
@@ -262,11 +261,7 @@ function assertPrivateNamespace(config) {
   if (privateRoot.uid !== config.uid || systemNode.uid !== 65_534) {
     throw new Error("The private user map did not isolate the invoking user from host root.");
   }
-  if (
-    existsSync(config.hostHome) ||
-    existsSync(config.hostSentinel) ||
-    readdirSync("/home").length !== 0
-  ) {
+  if (existsSync(config.hostHome) || existsSync(config.hostSentinel) || readdirSync("/home").length !== 0) {
     throw new Error("The private runtime exposed a host home or host-private sentinel.");
   }
 }
@@ -293,15 +288,11 @@ async function startPrivateXvfb(config) {
   mkdirSync(PRIVATE_DISPLAY_DIRECTORY, { mode: 0o1777 });
   chmodSync(PRIVATE_DISPLAY_DIRECTORY, 0o1777);
   const output = boundedOutput();
-  const child = spawn(
-    config.xvfb,
-    [PRIVATE_DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"],
-    {
-      detached: true,
-      env: privateDisplayEnvironment(config.paths.localHome),
-      stdio: ["ignore", "ignore", "pipe"]
-    }
-  );
+  const child = spawn(config.xvfb, [PRIVATE_DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"], {
+    detached: true,
+    env: privateDisplayEnvironment(config.paths.localHome),
+    stdio: ["ignore", "ignore", "pipe"]
+  });
   child.stderr.on("data", (chunk) => output.append(chunk));
   try {
     const deadline = Date.now() + 10_000;

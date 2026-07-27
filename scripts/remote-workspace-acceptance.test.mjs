@@ -66,10 +66,7 @@ test("Remote phase descriptors cannot execute a test module outside the private 
       hostHome: join(parent, "host-home"),
       hostSentinel: join(parent, "host-sentinel")
     };
-    assert.equal(
-      validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root, { filesystem: false }),
-      descriptor
-    );
+    assert.equal(validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root, { filesystem: false }), descriptor);
     assert.throws(
       () =>
         validateRemoteWorkspacePhaseDescriptor(
@@ -159,7 +156,10 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
     const environmentNames = args
       .map((value, index) => (value === "--setenv" ? args[index + 1] : undefined))
       .filter(Boolean);
-    assert.equal(environmentNames.some((name) => name.startsWith("LD_")), false);
+    assert.equal(
+      environmentNames.some((name) => name.startsWith("LD_")),
+      false
+    );
     assert.equal(
       args.some((value, index) => value === "--ro-bind" && args[index + 1] === "/" && args[index + 2] === "/"),
       false
@@ -242,10 +242,10 @@ test("Namespace probe requires one ID row and zero effective capabilities", () =
   );
   assert.throws(
     () =>
-      validateRemoteWorkspaceNamespaceProbe(
-        "127.0.0.1\nUID_MAP\n1001 0 2\nGID_MAP\n1001 0 1\nCAP_EFF\nCapEff: 1\n",
-        { uid: 1001, gid: 1001 }
-      ),
+      validateRemoteWorkspaceNamespaceProbe("127.0.0.1\nUID_MAP\n1001 0 2\nGID_MAP\n1001 0 1\nCAP_EFF\nCapEff: 1\n", {
+        uid: 1001,
+        gid: 1001
+      }),
     /zero capabilities/u
   );
 });

@@ -24,10 +24,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { open as openZip } from "yauzl";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
-import {
-  PINNED_REMOTE_VSCODE_COMMIT,
-  PINNED_REMOTE_VSCODE_VERSION
-} from "./remote-workspace-contract.mjs";
+import { PINNED_REMOTE_VSCODE_COMMIT, PINNED_REMOTE_VSCODE_VERSION } from "./remote-workspace-contract.mjs";
 
 export { PINNED_REMOTE_VSCODE_COMMIT, PINNED_REMOTE_VSCODE_VERSION };
 export const PINNED_REMOTE_SSH_VERSION = "0.124.0";

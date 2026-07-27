@@ -89,17 +89,13 @@ try {
   stageExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs"));
   const stagedXvfb = stageExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700);
   const stagedTestModule = stageTestModuleTree(layout.remoteTestModule);
-  stageTestRuntimeDependency(
-    playwrightCoreRoot,
-    join(layout.remoteTestModule, "node_modules", "playwright-core"),
-    {
-      name: "playwright-core",
-      version: pinnedPlaywrightCoreVersion,
-      maximumFiles: 256,
-      maximumBytes: 24 * 1024 * 1024,
-      maximumFileBytes: 8 * 1024 * 1024
-    }
-  );
+  stageTestRuntimeDependency(playwrightCoreRoot, join(layout.remoteTestModule, "node_modules", "playwright-core"), {
+    name: "playwright-core",
+    version: pinnedPlaywrightCoreVersion,
+    maximumFiles: 256,
+    maximumBytes: 24 * 1024 * 1024,
+    maximumFileBytes: 8 * 1024 * 1024
+  });
   const acquisition = await acquirePinnedRemoteWorkspaceArtifacts(layout.root, {
     artifactPaths: artifactOverrides(process.env)
   });
@@ -284,10 +280,7 @@ try {
     }
   }
   if (cleanupErrors.length > 0) {
-    throw new AggregateError(
-      [error, ...cleanupErrors],
-      "Remote SSH acceptance and verified private cleanup failed."
-    );
+    throw new AggregateError([error, ...cleanupErrors], "Remote SSH acceptance and verified private cleanup failed.");
   }
   throw error;
 }
@@ -324,11 +317,7 @@ function createNamespaceLayout(paths) {
   const mapped = {};
   for (const [name, value] of Object.entries(paths)) {
     const relation = relative(paths.root, value);
-    if (
-      relation === ".." ||
-      relation.startsWith(`..${sep}`) ||
-      isAbsolute(relation)
-    ) {
+    if (relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
       throw new Error("A Remote SSH layout path escaped its private root.");
     }
     mapped[name] =
@@ -383,7 +372,10 @@ function stageTestModuleTree(destination) {
   });
   const after = captureBoundedTree(testModuleRoot, bounds);
   const staged = captureBoundedTree(destination, bounds);
-  if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(before.files) !== JSON.stringify(staged.files)) {
+  if (
+    JSON.stringify(before) !== JSON.stringify(after) ||
+    JSON.stringify(before.files) !== JSON.stringify(staged.files)
+  ) {
     throw new Error("The bounded Remote SSH test module changed while it was staged.");
   }
   return join(destination, relative(testModuleRoot, testModule));
@@ -504,11 +496,7 @@ function writePrivateAccountDatabase(directory, uid, gid, home, sshLibraryPath) 
     ["machine-id", "6f70656e7772616e676c657274657374\n", 0o600],
     ["ld.so.conf", `${sshLibraryPath}\n/usr/lib/x86_64-linux-gnu\n`, 0o600],
     ["ld.so.cache", "", 0o600],
-    [
-      "os-release",
-      'NAME="Open Wrangler acceptance"\nID=openwrangler-acceptance\nVERSION_ID="1"\n',
-      0o600
-    ]
+    ["os-release", 'NAME="Open Wrangler acceptance"\nID=openwrangler-acceptance\nVERSION_ID="1"\n', 0o600]
   ]) {
     writeFileSync(join(directory, name), contents, {
       encoding: "utf8",

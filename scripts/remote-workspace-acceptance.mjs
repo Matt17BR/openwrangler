@@ -469,22 +469,10 @@ export function createRemoteWorkspaceBwrapArguments({
     "os-release",
     "machine-id"
   ]) {
-    args.push(
-      "--ro-bind",
-      join(canonicalRoot, "rh", "accounts", name),
-      `/etc/${name}`
-    );
+    args.push("--ro-bind", join(canonicalRoot, "rh", "accounts", name), `/etc/${name}`);
   }
-  args.push(
-    "--ro-bind",
-    join(canonicalRoot, "rh", "accounts", "machine-id"),
-    "/var/lib/dbus/machine-id"
-  );
-  args.push(
-    "--symlink",
-    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/ld.so.cache`,
-    "/etc/ld.so.cache"
-  );
+  args.push("--ro-bind", join(canonicalRoot, "rh", "accounts", "machine-id"), "/var/lib/dbus/machine-id");
+  args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/ld.so.cache`, "/etc/ld.so.cache");
   args.push(
     "--tmpfs",
     "/run",
@@ -684,10 +672,7 @@ function assertAbsoluteRegularFile(path, label) {
   return resolve(path);
 }
 
-export function validateRootOwnedSystemRuntimeDirectory(
-  path,
-  { lstat = lstatSync, realpath = realpathSync } = {}
-) {
+export function validateRootOwnedSystemRuntimeDirectory(path, { lstat = lstatSync, realpath = realpathSync } = {}) {
   if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || path.length > PATH_LIMIT) {
     throw new Error("A system runtime closure root is malformed.");
   }

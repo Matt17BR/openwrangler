@@ -78,6 +78,7 @@ interface TestApi {
     | undefined;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
     activeSessionId?: string;
     sessionCount: number;
@@ -392,9 +393,8 @@ export async function run(): Promise<void> {
     `Explorer data files must expose the canonical Open in Open Wrangler action. Loaded: ${JSON.stringify(explorerContextItems)}`
   );
   if (vscode.env.remoteName === "ssh-remote") {
-    const loadedExplorerContextItems = (
-      extension.packageJSON.contributes as typeof contributions
-    ).menus?.["explorer/context"] ?? [];
+    const loadedExplorerContextItems =
+      (extension.packageJSON.contributes as typeof contributions).menus?.["explorer/context"] ?? [];
     const loadedRemoteAction = loadedExplorerContextItems.find(
       (item) => item.command === "openWrangler.openFile" && item.group === "navigation@50"
     );
@@ -3463,7 +3463,14 @@ async function exerciseRemoteWorkspace(
   await waitFor(
     () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the Remote SSH parquet source to open in the real Open Wrangler grid"
+    "the Remote SSH parquet source to open in the real Open Wrangler grid",
+    () =>
+      JSON.stringify({
+        coordinator: testing.diagnostics(),
+        runtimeRunning: testing.runtimeRunning(),
+        runtimeEnvironment: testing.runtimeEnvironment(),
+        panelOpenResponse: testing.panelOpenResponse()
+      })
   );
   const active = testing.activeSession();
   assert.ok(active, "The Remote SSH workspace must publish one active dataframe grid.");
