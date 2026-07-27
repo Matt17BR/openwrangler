@@ -72,7 +72,7 @@ VS Code and Cursor are first-class release targets. Other VS Code-based desktop 
 
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
 
-Open Wrangler 1.0 satisfies every in-scope row in the checked-in [feature parity matrix](docs/feature-parity.md).
+This stable release satisfies every in-scope row in the checked-in [feature parity matrix](docs/feature-parity.md).
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -83,9 +83,23 @@ function parseMarkdown(contents, label) {
   return { problem: undefined, tokens: markdown.parse(contents.replace(/\r\n?/gu, "\n"), {}) };
 }
 
+function visibleInlineText(token) {
+  if (token?.type !== "inline" || !Array.isArray(token.children)) {
+    return "";
+  }
+  return token.children
+    .map((child) => {
+      if (child.type === "text" || child.type === "code_inline") {
+        return child.content;
+      }
+      return child.type === "softbreak" || child.type === "hardbreak" ? " " : "";
+    })
+    .join("");
+}
+
 function inlineText(tokens, index) {
   const token = tokens[index + 1];
-  return token?.type === "inline" ? token.content.trim() : undefined;
+  return token?.type === "inline" ? visibleInlineText(token).trim() : undefined;
 }
 
 function topLevelHeadings(tokens, tag) {
@@ -117,7 +131,7 @@ function extractTable(tokens, tableIndex) {
     }
     if ((token?.type === "th_open" || token?.type === "td_open") && row !== undefined) {
       const value = tokens[index + 1];
-      row.push(value?.type === "inline" ? value.content.trim() : "");
+      row.push(value?.type === "inline" ? visibleInlineText(value).trim() : "");
     }
   }
   return undefined;
@@ -261,7 +275,7 @@ function substantiveListItem(tokens, start, end) {
     let text = "";
     for (let cursor = index + 1; cursor < end && tokens[cursor]?.type !== "list_item_close"; cursor += 1) {
       if (tokens[cursor]?.type === "inline") {
-        text += ` ${tokens[cursor].content}`;
+        text += ` ${visibleInlineText(tokens[cursor])}`;
       }
     }
     const normalized = text
@@ -381,11 +395,12 @@ function inspectReadmeReleaseRegion(contents, label, expectedSection, channel) {
       continue;
     }
     const isVisibleText = token.type === "inline" || (token.type === "html_block" && !token.content.startsWith("<!--"));
-    const hasReleaseStatus = isVisibleText && /^\s*\**Release status:\**/iu.test(token.content);
+    const visibleText = token.type === "inline" ? visibleInlineText(token) : token.content;
+    const hasReleaseStatus = isVisibleText && /^\s*\**Release status:\**/iu.test(visibleText);
     const hasReleaseLink =
       token.type === "inline" &&
       token.children?.some((child) => child.type === "link_open" && child.attrGet("href") === RELEASES_URL);
-    if (hasReleaseStatus || hasReleaseLink || (isVisibleText && isProductReleaseClaim(token.content))) {
+    if (hasReleaseStatus || hasReleaseLink || (isVisibleText && isProductReleaseClaim(visibleText))) {
       return [`${label} contains release-channel status or install material outside its generated region.`];
     }
   }

@@ -240,7 +240,9 @@ test("requires substantive completed evidence for every Done parity row", () => 
     "Exact acceptance; workflow:docs/testing.md",
     "Exact acceptance; record:scripts/release-readiness.test.mjs",
     "Exact acceptance; test:../scripts/release-readiness.test.mjs",
-    "Exact acceptance; test:scripts/release-readiness.test.mjs and test:not tracked"
+    "Exact acceptance; test:scripts/release-readiness.test.mjs and test:not tracked",
+    "<!-- Exact acceptance passed --> test:scripts/release-readiness.test.mjs",
+    "Exact acceptance passed <!-- test:scripts/release-readiness.test.mjs -->"
   ]) {
     const problems = inspectStableReleaseReadiness(
       ready({ featureParity: parity("Done", PRIMARY_PARITY_SCOPE, evidence) })
@@ -372,6 +374,7 @@ test("requires one real dated changelog heading for the stable version", () => {
     "# Changelog\n\n## [1.0.0] - Unreleased\n",
     "# Changelog\n\n## [1.0.0] - 2026-02-30\n",
     "# Changelog\n\n## [1.0.0] - 2026-07-27\n",
+    "# Changelog\n\n## [1.0.0] - 2026-07-27\n\n### Added\n\n- <!-- Hidden substantive release note. -->\n",
     "# Changelog\n\n## [1.0.0] - 2026-07-27\n\n### Notes\n\n- This decoy is not a release category.\n",
     "# Changelog\n\n## [1.0.0] - 2026-07-27\n## [1.0.0] - 2026-07-28\n",
     "# Changelog\n\n```\n## [1.0.0] - 2026-07-27\n```\n",
