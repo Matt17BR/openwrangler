@@ -1028,7 +1028,9 @@ export async function runInstalledPerformance(options, environment = process.env
     );
     const fixtureManifest = validateInstalledFixtureManifest(readBoundedJson(fixtureManifestPath, 64 * 1024));
 
-    const editors = await resolveEditors(options.editors, environment);
+    const editors = await resolveInstalledPerformanceEditors(options.editors, environment, {
+      mode: options.mode
+    });
     const editorRuns = await collectInstalledPerformanceEditorRuns({
       editors,
       candidateReceipt: guardedCandidate,
@@ -1535,7 +1537,30 @@ function prepareEditorWorkspace(workspace, fixtureRoot) {
   });
 }
 
-async function resolveEditors(requested, environment) {
+export async function resolveInstalledPerformanceEditors(
+  requested,
+  environment,
+  {
+    mode = "package",
+    pathExists = existsSync,
+    downloadVscode = downloadEditorWithRetry,
+    downloadedCliPath = resolveDownloadedEditorCliPath
+  } = {}
+) {
+  if (
+    !Array.isArray(requested) ||
+    requested.length === 0 ||
+    requested.some((key) => key !== "vscode" && key !== "cursor") ||
+    new Set(requested).size !== requested.length ||
+    environment === null ||
+    typeof environment !== "object" ||
+    (mode !== "package" && mode !== "consume") ||
+    typeof pathExists !== "function" ||
+    typeof downloadVscode !== "function" ||
+    typeof downloadedCliPath !== "function"
+  ) {
+    throw new TypeError("Installed-performance editor resolution arguments are malformed.");
+  }
   const candidates = [
     {
       name: "VS Code",
@@ -1551,17 +1576,19 @@ async function resolveEditors(requested, environment) {
       cli: environment.OPEN_WRANGLER_CURSOR_CLI ?? "/usr/share/cursor/bin/cursor",
       sharedDataDir: false
     }
-  ].filter((editor) => requested.includes(editor.key) && existsSync(editor.executable) && existsSync(editor.cli));
-  if (requested.includes("vscode") && !candidates.some((editor) => editor.key === "vscode")) {
-    const executable = await downloadEditorWithRetry(environment.VSCODE_TEST_VERSION ?? "stable");
-    const cli = resolveDownloadedEditorCliPath(executable);
-    if (!existsSync(cli)) throw new Error("The downloaded VS Code CLI was not found.");
+  ].filter((editor) => requested.includes(editor.key) && pathExists(editor.executable) && pathExists(editor.cli));
+  if (mode === "package" && requested.includes("vscode") && !candidates.some((editor) => editor.key === "vscode")) {
+    const executable = await downloadVscode(environment.VSCODE_TEST_VERSION ?? "stable");
+    const cli = downloadedCliPath(executable);
+    if (!pathExists(cli)) throw new Error("The downloaded VS Code CLI was not found.");
     candidates.unshift({ name: "VS Code", key: "vscode", executable, cli, sharedDataDir: true });
   }
   const missing = requested.filter((key) => !candidates.some((editor) => editor.key === key));
   if (missing.length > 0) {
     throw new Error(
-      `Requested installed-performance editor(s) were not found: ${missing.join(", ")}. Configure the corresponding OPEN_WRANGLER_* executable and CLI paths.`
+      `${
+        mode === "consume" ? "Stable canonical evidence requires fixed" : "Requested installed-performance"
+      } editor(s) were not found: ${missing.join(", ")}. Configure the corresponding OPEN_WRANGLER_* executable and CLI paths.`
     );
   }
   return requested.map((key) => candidates.find((editor) => editor.key === key));

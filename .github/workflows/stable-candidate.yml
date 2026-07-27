@@ -29,15 +29,15 @@ jobs:
         run: |
           test "$EVENT_REF" = "refs/heads/main"
           test "$EVENT_REF_PROTECTED" = "true"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.1.0
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.2.0
         with:
           python-version: "3.12"
           cache: pip
@@ -88,16 +88,16 @@ jobs:
     runs-on: [self-hosted, linux, x64, openwrangler-performance]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.2
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.1.0
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.2.0
         with:
           python-version: "3.12"
           cache: pip

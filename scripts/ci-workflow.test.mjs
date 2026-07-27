@@ -16,6 +16,9 @@ const requiredPullRequestWorkflows = [
   ".github/workflows/codeql.yml",
   ".github/workflows/released-jupyter.yml"
 ];
+const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
+const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
@@ -65,11 +68,13 @@ test("manual stable evidence packages once and consumes the same canonical artif
     normalizedCommand(sourceGuard?.run),
     'test "$EVENT_REF" = "refs/heads/main" test "$EVENT_REF_PROTECTED" = "true"'
   );
-  const packageCheckout = packaging.steps.find((step) => step.uses === "actions/checkout@v6");
+  const packageCheckout = packaging.steps.find((step) => step.uses === CHECKOUT_ACTION);
   assert.deepEqual(packageCheckout?.with, {
     "fetch-depth": 0,
     "persist-credentials": false
   });
+  assert.equal(packaging.steps.filter((step) => step.uses === SETUP_NODE_ACTION).length, 1);
+  assert.equal(packaging.steps.filter((step) => step.uses === SETUP_PYTHON_ACTION).length, 1);
   const metadata = packaging.steps.find((step) => step.id === "release_metadata");
   assert.equal(metadata?.run, "node scripts/release-metadata.mjs");
   assert.deepEqual(metadata?.env, { RELEASE_TAG: "${{ inputs.release_tag }}" });
@@ -128,12 +133,14 @@ test("manual stable evidence packages once and consumes the same canonical artif
   assert.equal(performance.env, undefined);
   assert.equal(performance.defaults, undefined);
   assert.ok(Array.isArray(performance.steps));
-  const performanceCheckout = performance.steps.find((step) => step.uses === "actions/checkout@v6");
+  const performanceCheckout = performance.steps.find((step) => step.uses === CHECKOUT_ACTION);
   assert.deepEqual(performanceCheckout?.with, {
     ref: "${{ github.sha }}",
     "fetch-depth": 0,
     "persist-credentials": false
   });
+  assert.equal(performance.steps.filter((step) => step.uses === SETUP_NODE_ACTION).length, 1);
+  assert.equal(performance.steps.filter((step) => step.uses === SETUP_PYTHON_ACTION).length, 1);
   const downloadIndex = performance.steps.findIndex(
     (step) => step.uses === "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
   );
@@ -218,6 +225,37 @@ test("stable evidence workflow inspector rejects source, artifact, and consumer 
     inspect((candidate) => {
       candidate.permissions.contents = "write";
     }).some((problem) => problem.includes("exactly contents: read"))
+  );
+  for (const jobName of ["package", "installed-performance"]) {
+    const expectedProblem = "exact pinned ordered step allowlist";
+    for (let index = 0; index < workflow.jobs[jobName].steps.length; index += 1) {
+      assert.ok(
+        inspect((candidate) => {
+          candidate.jobs[jobName].steps.splice(index, 1);
+        }).some((problem) => problem.includes(expectedProblem)),
+        `${jobName} must reject removing step ${index}.`
+      );
+    }
+    assert.ok(
+      inspect((candidate) => {
+        candidate.jobs[jobName].steps.splice(1, 0, {
+          uses: "attacker/example@main"
+        });
+      }).some((problem) => problem.includes(expectedProblem)),
+      `${jobName} must reject inserted actions.`
+    );
+  }
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps.find((step) => step.uses === CHECKOUT_ACTION).uses = "actions/checkout@v6";
+    }).some((problem) => problem.includes("exact pinned ordered step allowlist"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps.find(
+        (step) => step.run === "npm run verify:vsix -- openwrangler.candidate.vsix"
+      ).run = "true";
+    }).some((problem) => problem.includes("exact pinned ordered step allowlist"))
   );
 });
 

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
@@ -7,7 +8,171 @@ const EVENT_SHA = "${{ github.sha }}";
 const EVENT_TAG = "${{ github.ref_name }}";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
+const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
+const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
+const STABLE_CANDIDATE_ARTIFACT_PATHS = [
+  "canonical-release/openwrangler.vsix",
+  "canonical-release/openwrangler.vsix.sha256",
+  "canonical-release/openwrangler.vsix.provenance.json"
+];
+const STABLE_REPORT_PATH =
+  "${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json";
+const STABLE_PACKAGE_STEPS = [
+  {
+    name: "Require protected main source",
+    env: {
+      EVENT_REF: "${{ github.ref }}",
+      EVENT_REF_PROTECTED: "${{ github.ref_protected }}"
+    },
+    run: 'test "$EVENT_REF" = "refs/heads/main"\ntest "$EVENT_REF_PROTECTED" = "true"\n'
+  },
+  {
+    uses: CHECKOUT_ACTION,
+    with: {
+      "fetch-depth": 0,
+      "persist-credentials": false
+    }
+  },
+  {
+    uses: SETUP_NODE_ACTION,
+    with: {
+      "node-version": 22,
+      cache: "npm"
+    }
+  },
+  {
+    uses: SETUP_PYTHON_ACTION,
+    with: {
+      "python-version": "3.12",
+      cache: "pip"
+    }
+  },
+  {
+    id: "release_metadata",
+    name: "Validate intended stable metadata",
+    env: {
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    },
+    run: "node scripts/release-metadata.mjs"
+  },
+  {
+    name: "Reject preview metadata",
+    if: "${{ steps.release_metadata.outputs.prerelease != 'false' }}",
+    run: "exit 1"
+  },
+  {
+    name: "Prepare exact local intended tag",
+    env: {
+      EXPECTED_SHA: EVENT_SHA,
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    },
+    run: "node scripts/prepare-stable-candidate-tag.mjs"
+  },
+  { run: "npm ci" },
+  { run: "python -m pip install --upgrade pip" },
+  { run: 'python -m pip install -e "python[dev]"' },
+  {
+    run: 'python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"'
+  },
+  {
+    name: "Package stable candidate once",
+    run: "npm run package -- --out openwrangler.candidate.vsix"
+  },
+  { run: "npm run verify:vsix -- openwrangler.candidate.vsix" },
+  {
+    name: "Publish canonical candidate set",
+    env: {
+      EXPECTED_SHA: EVENT_SHA,
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    },
+    run: "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release"
+  },
+  {
+    id: "candidate_artifact",
+    name: "Upload canonical candidate set",
+    uses: UPLOAD_ACTION,
+    with: {
+      name: "openwrangler-stable-candidate",
+      path: `${STABLE_CANDIDATE_ARTIFACT_PATHS.join("\n")}\n`,
+      "if-no-files-found": "error",
+      "retention-days": 14,
+      "compression-level": 0,
+      "include-hidden-files": false
+    }
+  }
+];
+const STABLE_PERFORMANCE_STEPS = [
+  {
+    uses: CHECKOUT_ACTION,
+    with: {
+      ref: EVENT_SHA,
+      "fetch-depth": 0,
+      "persist-credentials": false
+    }
+  },
+  {
+    uses: SETUP_NODE_ACTION,
+    with: {
+      "node-version": 22,
+      cache: "npm"
+    }
+  },
+  {
+    uses: SETUP_PYTHON_ACTION,
+    with: {
+      "python-version": "3.12",
+      cache: "pip"
+    }
+  },
+  { run: "npm ci" },
+  { run: "python -m pip install --upgrade pip" },
+  { run: 'python -m pip install -e "python[dev]"' },
+  {
+    name: "Prepare exact local intended tag",
+    env: {
+      EXPECTED_SHA: EVENT_SHA,
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    },
+    run: "node scripts/prepare-stable-candidate-tag.mjs"
+  },
+  {
+    uses: DOWNLOAD_ACTION,
+    with: {
+      "artifact-ids": "${{ needs.package.outputs.artifact-id }}",
+      path: "canonical-release",
+      "merge-multiple": true
+    }
+  },
+  {
+    id: "installed_performance",
+    name: "Test exact canonical candidate in VS Code and Cursor",
+    env: {
+      EXPECTED_SHA: EVENT_SHA,
+      RELEASE_TAG: "${{ inputs.release_tag }}"
+    },
+    run: [
+      "npm run benchmark:installed --",
+      "--candidate-in canonical-release/openwrangler.vsix",
+      "--candidate-checksum canonical-release/openwrangler.vsix.sha256",
+      "--candidate-provenance canonical-release/openwrangler.vsix.provenance.json",
+      `--out ${STABLE_REPORT_PATH}`
+    ].join(" ")
+  },
+  {
+    name: "Upload installed-performance evidence",
+    uses: UPLOAD_ACTION,
+    with: {
+      name: "openwrangler-installed-performance",
+      path: STABLE_REPORT_PATH,
+      "if-no-files-found": "error",
+      "retention-days": 90,
+      "compression-level": 9,
+      "include-hidden-files": false
+    }
+  }
+];
 const PREVIEW_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
 const digest = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
@@ -365,14 +530,6 @@ git diff-index --quiet HEAD --`
   return problems;
 }
 
-const STABLE_CANDIDATE_ARTIFACT_PATHS = [
-  "canonical-release/openwrangler.vsix",
-  "canonical-release/openwrangler.vsix.sha256",
-  "canonical-release/openwrangler.vsix.provenance.json"
-];
-const STABLE_REPORT_PATH =
-  "${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json";
-
 function exactRecord(value, expected) {
   return (
     isRecord(value) &&
@@ -480,6 +637,9 @@ export function inspectStableCandidateWorkflow(contents) {
     problems.push("stable-candidate.yml package job must contain one bounded steps array.");
     return problems;
   }
+  if (!isDeepStrictEqual(packageSteps, STABLE_PACKAGE_STEPS)) {
+    problems.push("stable-candidate.yml package job must retain its exact pinned ordered step allowlist.");
+  }
   const sourceGuard = stableCandidateStep(
     packageSteps,
     (step) => step.name === "Require protected main source",
@@ -500,7 +660,7 @@ export function inspectStableCandidateWorkflow(contents) {
   }
   const packageCheckout = stableCandidateStep(
     packageSteps,
-    (step) => step.uses === "actions/checkout@v6",
+    (step) => step.uses === CHECKOUT_ACTION,
     "package checkout",
     problems
   );
@@ -643,9 +803,14 @@ export function inspectStableCandidateWorkflow(contents) {
     problems.push("stable-candidate.yml installed-performance job must contain one bounded steps array.");
     return problems;
   }
+  if (!isDeepStrictEqual(performanceSteps, STABLE_PERFORMANCE_STEPS)) {
+    problems.push(
+      "stable-candidate.yml installed-performance job must retain its exact pinned ordered step allowlist."
+    );
+  }
   const performanceCheckout = stableCandidateStep(
     performanceSteps,
-    (step) => step.uses === "actions/checkout@v6",
+    (step) => step.uses === CHECKOUT_ACTION,
     "installed-performance checkout",
     problems
   );

@@ -406,6 +406,31 @@ function assertDirectoryIdentity(path, expected, label) {
   return current;
 }
 
+function repinDirectoryAfterOwnedFileWrites(path, expected, fileReceipts) {
+  const current = lstatSync(path, { bigint: true });
+  if (
+    !current.isDirectory() ||
+    current.isSymbolicLink() ||
+    !isCurrentUserOwned(current) ||
+    !sameIdentity(current, expected) ||
+    current.mode !== expected.mode ||
+    current.uid !== expected.uid
+  ) {
+    throw new Error("The private canonical release directory changed while its owned files were written.");
+  }
+  const names = readdirSync(path).sort();
+  const expectedNames = [...CANONICAL_FILES].sort();
+  if (names.length !== expectedNames.length || names.some((name, index) => name !== expectedNames[index])) {
+    throw new Error("The private canonical release directory gained an unowned entry while its files were written.");
+  }
+  for (const name of names) {
+    if (!matchesFileReceipt(lstatSync(join(path, name), { bigint: true }), fileReceipts.get(name))) {
+      throw new Error(`Canonical release file identity changed before directory repinning: ${name}.`);
+    }
+  }
+  return directoryIdentity(current);
+}
+
 function assertExactInventory(directory, directoryReceipt, fileReceipts) {
   assertDirectoryIdentity(directory, directoryReceipt, "The canonical release directory");
   const names = readdirSync(directory).sort();
@@ -503,17 +528,23 @@ function sameSourceBinding(current, expected) {
   }
 }
 
-function defaultDependencies() {
+export function createCanonicalReleaseDependencies({ packageSourceOptions } = {}) {
+  if (
+    packageSourceOptions !== undefined &&
+    (packageSourceOptions === null || typeof packageSourceOptions !== "object" || Array.isArray(packageSourceOptions))
+  ) {
+    throw new TypeError("Canonical release package-source options must be one object.");
+  }
   return Object.freeze({
     assertPackageInventory: assertInstalledPerformancePackageInventory,
     assertSamePackageSources: assertSameInstalledPerformancePackageSources,
-    pinPackageSources: assertNoPackageableUntrackedFiles
+    pinPackageSources: () => assertNoPackageableUntrackedFiles(packageSourceOptions)
   });
 }
 
 export async function createCanonicalReleaseArtifact({
   candidatePath,
-  dependencies = defaultDependencies(),
+  dependencies = createCanonicalReleaseDependencies(),
   expectedCommit,
   hooks = {},
   outputDirectory,
@@ -599,6 +630,7 @@ export async function createCanonicalReleaseArtifact({
     ]) {
       fileReceipts.set(name, writeOwnedFile(join(publicationPath, name), bytes));
     }
+    directoryReceipt = repinDirectoryAfterOwnedFileWrites(publicationPath, directoryReceipt, fileReceipts);
     syncDirectory(publicationPath);
     assertExactInventory(publicationPath, directoryReceipt, fileReceipts);
     revalidateCandidate(resolvedCandidate, snapshot);

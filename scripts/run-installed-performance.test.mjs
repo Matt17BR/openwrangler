@@ -30,6 +30,7 @@ import {
   revalidateInstalledPerformanceChecksum,
   revalidateInstalledPerformanceProvenance,
   revalidateInstalledPerformanceVsix,
+  resolveInstalledPerformanceEditors,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
   validateInstalledPerformanceSourceManifest,
@@ -135,6 +136,79 @@ test("installed performance assigns unfocused release display modes per editor",
   assert.throws(
     () => installedPerformanceDisplayMode({ key: "vscode" }, { OPEN_WRANGLER_EDITOR_DISPLAY: "invalid" }),
     /headless.*xvfb.*current/u
+  );
+});
+
+test("stable canonical evidence requires fixed VS Code and Cursor installations", async () => {
+  const fixed = new Set(["/fixed/code", "/fixed/code-cli", "/fixed/cursor", "/fixed/cursor-cli"]);
+  let downloads = 0;
+  const environment = {
+    OPEN_WRANGLER_VSCODE_EXECUTABLE: "/fixed/code",
+    OPEN_WRANGLER_VSCODE_CLI: "/fixed/code-cli",
+    OPEN_WRANGLER_CURSOR_EXECUTABLE: "/fixed/cursor",
+    OPEN_WRANGLER_CURSOR_CLI: "/fixed/cursor-cli"
+  };
+  const editors = await resolveInstalledPerformanceEditors(["vscode", "cursor"], environment, {
+    mode: "consume",
+    pathExists: (path) => fixed.has(path),
+    downloadVscode: async () => {
+      downloads += 1;
+      return "/downloaded/code";
+    },
+    downloadedCliPath: () => "/downloaded/code-cli"
+  });
+  assert.equal(downloads, 0);
+  assert.deepEqual(
+    editors.map(({ key, executable, cli }) => ({ key, executable, cli })),
+    [
+      { key: "vscode", executable: "/fixed/code", cli: "/fixed/code-cli" },
+      { key: "cursor", executable: "/fixed/cursor", cli: "/fixed/cursor-cli" }
+    ]
+  );
+
+  fixed.delete("/fixed/code");
+  await assert.rejects(
+    resolveInstalledPerformanceEditors(["vscode", "cursor"], environment, {
+      mode: "consume",
+      pathExists: (path) => fixed.has(path),
+      downloadVscode: async () => {
+        downloads += 1;
+        return "/downloaded/code";
+      },
+      downloadedCliPath: () => "/downloaded/code-cli"
+    }),
+    /Stable canonical evidence requires fixed editor\(s\) were not found: vscode/u
+  );
+  assert.equal(downloads, 0);
+});
+
+test("preview installed performance retains its explicit VS Code download fallback", async () => {
+  const existing = new Set(["/fixed/cursor", "/fixed/cursor-cli", "/downloaded/code", "/downloaded/code-cli"]);
+  const requestedVersions = [];
+  const editors = await resolveInstalledPerformanceEditors(
+    ["vscode", "cursor"],
+    {
+      OPEN_WRANGLER_CURSOR_EXECUTABLE: "/fixed/cursor",
+      OPEN_WRANGLER_CURSOR_CLI: "/fixed/cursor-cli",
+      VSCODE_TEST_VERSION: "1.105.0"
+    },
+    {
+      mode: "package",
+      pathExists: (path) => existing.has(path),
+      downloadVscode: async (version) => {
+        requestedVersions.push(version);
+        return "/downloaded/code";
+      },
+      downloadedCliPath: () => "/downloaded/code-cli"
+    }
+  );
+  assert.deepEqual(requestedVersions, ["1.105.0"]);
+  assert.deepEqual(
+    editors.map(({ key, executable, cli }) => ({ key, executable, cli })),
+    [
+      { key: "vscode", executable: "/downloaded/code", cli: "/downloaded/code-cli" },
+      { key: "cursor", executable: "/fixed/cursor", cli: "/fixed/cursor-cli" }
+    ]
   );
 });
 

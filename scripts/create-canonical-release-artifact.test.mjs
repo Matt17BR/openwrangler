@@ -22,6 +22,7 @@ import { ZipFile } from "yazl";
 import {
   CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
   createCanonicalReleaseArtifact,
+  createCanonicalReleaseDependencies,
   validateCanonicalReleaseProvenance
 } from "./create-canonical-release-artifact.mjs";
 import { PRIMARY_PARITY_SCOPE, STABLE_README_RELEASE_SECTION } from "./release-readiness.mjs";
@@ -199,6 +200,54 @@ function artifactOptions(fixture, overrides = {}) {
   };
 }
 
+function packageFileForArchiveEntry(entry) {
+  if (entry === "extension/readme.md") return "README.md";
+  if (entry === "extension/changelog.md") return "CHANGELOG.md";
+  if (entry === "extension/LICENSE.txt") return "LICENSE.txt";
+  return entry.slice("extension/".length);
+}
+
+function archiveEntryForPackageFile(file) {
+  const lower = file.toLowerCase();
+  if (lower === "readme.md") return "extension/readme.md";
+  if (lower === "changelog.md") return "extension/changelog.md";
+  if (lower === "license" || lower === "license.txt" || lower === "license.md") return "extension/LICENSE.txt";
+  return `extension/${file}`;
+}
+
+function realPackageDependencies() {
+  const packageEntries = [...releaseEntries()].filter(
+    ([entry]) => entry !== "[Content_Types].xml" && entry !== "extension.vsixmanifest"
+  );
+  const packageFiles = packageEntries.map(([entry]) => packageFileForArchiveEntry(entry));
+  const byArchiveEntry = new Map(packageEntries.map(([entry, contents]) => [entry, Buffer.from(contents)]));
+  return createCanonicalReleaseDependencies({
+    packageSourceOptions: {
+      listPackageFiles: async () => packageFiles,
+      readTrackedFiles: () => packageFiles,
+      deriveGeneratedFiles: () => new Set(),
+      pinTrackedFile(file) {
+        const archiveEntry = archiveEntryForPackageFile(file);
+        const bytes = byArchiveEntry.get(archiveEntry);
+        const size = bytes.length;
+        return Object.freeze({
+          path: file,
+          archiveEntry,
+          bytes: size,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          fileIdentity: Object.freeze({
+            dev: 1n,
+            ino: BigInt(packageFiles.indexOf(file) + 1),
+            size: BigInt(size),
+            mtimeNs: 2n,
+            ctimeNs: 3n
+          })
+        });
+      }
+    }
+  });
+}
+
 test("atomically publishes exactly one source-bound stable artifact triple", async (context) => {
   const fixture = await createFixture(context);
   const { options, state } = artifactOptions(fixture);
@@ -239,6 +288,21 @@ test("atomically publishes exactly one source-bound stable artifact triple", asy
   assert.equal(
     readdirSync(fixture.root).some((name) => name.startsWith(".canonical-release.tmp-")),
     false
+  );
+});
+
+test("production dependency composition pins and verifies the complete package inventory", async (context) => {
+  const fixture = await createFixture(context);
+  const receipt = await createCanonicalReleaseArtifact({
+    ...fixture,
+    dependencies: realPackageDependencies()
+  });
+
+  assert.equal(receipt.files.length, 3);
+  assert.deepEqual(readFileSync(join(fixture.outputDirectory, "openwrangler.vsix")), fixture.candidateBytes);
+  assert.throws(
+    () => createCanonicalReleaseDependencies({ packageSourceOptions: [] }),
+    /package-source options must be one object/u
   );
 });
 
