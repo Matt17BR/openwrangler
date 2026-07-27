@@ -245,7 +245,7 @@ export function assertInstalledPerformanceReleaseGate(
   return report;
 }
 
-export function writeInstalledPerformanceReport(destination, report) {
+export function writeInstalledPerformanceReport(destination, report, hooks = {}) {
   const payload = `${JSON.stringify(report, null, 2)}\n`;
   if (Buffer.byteLength(payload, "utf8") > MAX_REPORT_BYTES) {
     throw new Error("Installed performance report exceeded its fixed 1 MiB limit.");
@@ -255,6 +255,7 @@ export function writeInstalledPerformanceReport(destination, report) {
   assertReplaceableDestination(absolute);
   const temporary = `${absolute}.${process.pid}.${randomUUID()}.tmp`;
   let descriptor;
+  let temporaryIdentity;
   let published = false;
   try {
     descriptor = openSync(
@@ -262,6 +263,10 @@ export function writeInstalledPerformanceReport(destination, report) {
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
       0o600
     );
+    temporaryIdentity = fstatSync(descriptor, { bigint: true });
+    if (!temporaryIdentity.isFile() || temporaryIdentity.isSymbolicLink() || temporaryIdentity.nlink !== 1n) {
+      throw new Error("Installed performance report temporary lost its file identity.");
+    }
     const bytes = Buffer.from(payload, "utf8");
     let offset = 0;
     while (offset < bytes.length) {
@@ -270,18 +275,38 @@ export function writeInstalledPerformanceReport(destination, report) {
       offset += written;
     }
     fsyncSync(descriptor);
-    const metadata = fstatSync(descriptor, { bigint: true });
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n) {
-      throw new Error("Installed performance report temporary lost its file identity.");
+    const completedIdentity = fstatSync(descriptor, { bigint: true });
+    requireSameReportIdentity(
+      completedIdentity,
+      temporaryIdentity,
+      "Installed performance report temporary changed while it was written."
+    );
+    if (completedIdentity.size !== BigInt(bytes.length)) {
+      throw new Error("Installed performance report temporary has an invalid byte size.");
     }
     closeSync(descriptor);
     descriptor = undefined;
+    hooks.beforePublish?.(temporary);
+    const temporaryAtPath = lstatSync(temporary, { bigint: true });
+    requireSameReportFile(
+      temporaryAtPath,
+      completedIdentity,
+      "Installed performance report temporary path changed before publication."
+    );
     assertReplaceableDestination(absolute);
     renameSync(temporary, absolute);
+    const publishedIdentity = lstatSync(absolute, { bigint: true });
+    requireSamePublishedReportFile(
+      publishedIdentity,
+      completedIdentity,
+      "Installed performance report destination changed during publication."
+    );
     published = true;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
-    if (!published) rmSync(temporary, { force: true });
+    if (!published && temporaryIdentity !== undefined) {
+      removeIdentifiedReportTemporary(temporary, temporaryIdentity);
+    }
   }
 }
 
@@ -916,5 +941,45 @@ function assertReplaceableDestination(destination) {
   } catch (error) {
     if (error?.code === "ENOENT") return;
     throw error;
+  }
+}
+
+function requireSameReportIdentity(actual, expected, message) {
+  if (
+    !actual.isFile() ||
+    actual.isSymbolicLink() ||
+    actual.nlink !== 1n ||
+    actual.dev !== expected.dev ||
+    actual.ino !== expected.ino
+  ) {
+    throw new Error(message);
+  }
+}
+
+function requireSameReportFile(actual, expected, message) {
+  requireSameReportIdentity(actual, expected, message);
+  if (actual.size !== expected.size || actual.mtimeNs !== expected.mtimeNs || actual.ctimeNs !== expected.ctimeNs) {
+    throw new Error(message);
+  }
+}
+
+function requireSamePublishedReportFile(actual, expected, message) {
+  requireSameReportIdentity(actual, expected, message);
+  if (actual.size !== expected.size || actual.mtimeNs !== expected.mtimeNs) {
+    throw new Error(message);
+  }
+}
+
+function removeIdentifiedReportTemporary(temporary, identity) {
+  try {
+    const current = lstatSync(temporary, { bigint: true });
+    requireSameReportIdentity(
+      current,
+      identity,
+      "Installed performance report temporary cleanup was withheld after an identity change."
+    );
+    rmSync(temporary);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
   }
 }

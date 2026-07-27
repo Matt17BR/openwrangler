@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { renameSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -205,6 +206,31 @@ test("report publication is bounded, atomic, and refuses a symlink destination",
     await symlink(outside, linked);
     assert.throws(() => writeInstalledPerformanceReport(linked, report), /single-link regular file/u);
     assert.equal(await readFile(outside, "utf8"), "unchanged\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("report publication withholds cleanup when its closed temporary is substituted", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-report-"));
+  try {
+    const destination = join(directory, "report.json");
+    const retained = join(directory, "retained-owned-temporary.json");
+    let substituted;
+
+    assert.throws(
+      () =>
+        writeInstalledPerformanceReport(destination, passingReport(), {
+          beforePublish(temporary) {
+            substituted = temporary;
+            renameSync(temporary, retained);
+            writeFileSync(temporary, "foreign replacement\n", { mode: 0o600 });
+          }
+        }),
+      /cleanup was withheld after an identity change/u
+    );
+    assert.equal(await readFile(substituted, "utf8"), "foreign replacement\n");
+    await assert.rejects(readFile(destination), /ENOENT/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
