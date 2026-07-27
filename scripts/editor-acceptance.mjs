@@ -2076,7 +2076,14 @@ function abandonUnverifiedWindowsSupervisor(child, message) {
 }
 
 export async function runBoundedEditorCommand(
-  { executable, args = [], environment = createEditorAcceptanceEnvironment(), label = "Editor command", beforeSpawn },
+  {
+    executable,
+    args = [],
+    environment = createEditorAcceptanceEnvironment(),
+    label = "Editor command",
+    beforeSpawn,
+    input
+  },
   {
     platform = process.platform,
     spawnProcess,
@@ -2090,6 +2097,12 @@ export async function runBoundedEditorCommand(
     now = () => performance.now()
   } = {}
 ) {
+  if (
+    input !== undefined &&
+    (!Buffer.isBuffer(input) || input.length <= 0 || input.length > 65_536 || platform === "win32")
+  ) {
+    throw new Error("A bounded editor command input must be one non-empty POSIX Buffer no larger than 65536 bytes.");
+  }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new Error("An editor command timeout must be a positive safe integer.");
   }
@@ -2151,7 +2164,12 @@ export async function runBoundedEditorCommand(
         detached: platform !== "win32",
         env: environment,
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe", ...(launchPreparation?.inheritedFileDescriptors ?? [])]
+        stdio: [
+          input === undefined ? "ignore" : "pipe",
+          "pipe",
+          "pipe",
+          ...(launchPreparation?.inheritedFileDescriptors ?? [])
+        ]
       },
       { platform, supervisorReceipt }
     );
@@ -2190,6 +2208,28 @@ export async function runBoundedEditorCommand(
   child.stdout?.on("data", onStdout);
   capturedStderr?.on("data", onStderr);
 
+  let inputError;
+  let resolveInputFailure;
+  const inputFailure = new Promise((resolve) => {
+    resolveInputFailure = resolve;
+  });
+  if (input !== undefined) {
+    const recordInputFailure = (error) => {
+      inputError ??= error instanceof Error ? error : new Error("The bounded command input stream failed.");
+      resolveInputFailure({ kind: "input-error" });
+    };
+    if (!child.stdin || typeof child.stdin.end !== "function") {
+      recordInputFailure(new Error("The bounded command did not expose its owned input stream."));
+    } else {
+      child.stdin.once("error", recordInputFailure);
+      try {
+        child.stdin.end(input);
+      } catch (error) {
+        recordInputFailure(error);
+      }
+    }
+  }
+
   let exitState;
   const exit = childExit(child).then((state) => (exitState ??= state));
   const close = childClose(child).then((state) => (exitState ??= state));
@@ -2227,6 +2267,7 @@ export async function runBoundedEditorCommand(
         : await Promise.race([
             close.then((state) => ({ kind: "exit", state })),
             overflow,
+            inputFailure,
             interruption,
             new Promise((resolveTimeout) => {
               timeout = setTimeout(() => resolveTimeout({ kind: "timeout" }), remainingObservationTimeoutMs);
@@ -2271,7 +2312,16 @@ export async function runBoundedEditorCommand(
   const stdout = outputExceeded ? "" : output.text("stdout");
   const stderr = outputExceeded ? "" : output.text("stderr");
   let commandFailure;
-  if (observation.kind === "exit" && outputExceeded) {
+  if (inputError || observation.kind === "input-error") {
+    commandFailure = editorCommandError(
+      label,
+      "could not write its bounded input",
+      startedAt,
+      stdout,
+      stderr,
+      inputError
+    );
+  } else if (observation.kind === "exit" && outputExceeded) {
     commandFailure = editorCommandError(
       label,
       `exceeded its ${maxOutputBytes}-byte combined output limit`,

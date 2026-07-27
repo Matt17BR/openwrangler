@@ -753,6 +753,53 @@ test(
   }
 );
 
+posixTest("bounded editor commands deliver one exact bounded input buffer", async () => {
+  const input = Buffer.from('{"kind":"status"}\n', "ascii");
+  const result = await runBoundedEditorCommand(
+    {
+      executable: process.execPath,
+      args: [
+        "-e",
+        "const chunks=[];process.stdin.on('data',(chunk)=>chunks.push(chunk));process.stdin.on('end',()=>process.stdout.write(Buffer.concat(chunks)))"
+      ],
+      environment: createEditorAcceptanceEnvironment(),
+      input,
+      label: "bounded input command"
+    },
+    { timeoutMs: 2_000 }
+  );
+  assert.deepEqual(result, { stdout: input.toString("ascii"), stderr: "" });
+});
+
+test("bounded editor commands reject malformed or Windows input before spawn", async () => {
+  let spawned = false;
+  for (const [input, platform] of [
+    ["not-a-buffer", process.platform],
+    [Buffer.alloc(0), process.platform],
+    [Buffer.alloc(65_537), process.platform],
+    [Buffer.from("frame\n", "ascii"), "win32"]
+  ]) {
+    await assert.rejects(
+      runBoundedEditorCommand(
+        {
+          executable: process.execPath,
+          environment: {},
+          input
+        },
+        {
+          platform,
+          spawnProcess() {
+            spawned = true;
+            return fakeCommandChild(7310);
+          }
+        }
+      ),
+      /non-empty POSIX Buffer/u
+    );
+  }
+  assert.equal(spawned, false);
+});
+
 posixTest("bounded editor commands seal inherited inputs synchronously at the spawn boundary", async () => {
   const descriptor = openSync("/dev/null", "r");
   const events = [];

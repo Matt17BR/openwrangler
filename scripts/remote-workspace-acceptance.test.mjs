@@ -1,21 +1,27 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  cpSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
+  copyPrivatePythonEnvironment,
   createRemoteWorkspaceHostIsolationDigest,
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceBwrapArguments,
@@ -589,6 +595,156 @@ test("Remote candidate paths reject relative caller arguments before resolution"
   }
 });
 
+linuxTest("copied Python accepts an absent journal only after the product guard reports clean", async () => {
+  const root = privateRoot("ow-remote-python-journal-absent-");
+  try {
+    const source = createTinyPythonEnvironment(root);
+    const destination = join(root, "copied");
+    const copied = await copyPrivatePythonEnvironment(source.executable, destination);
+    assert.equal(copied.executable, join(destination, "bin", "python"));
+    assert.throws(() => lstatSync(join(source.prefix, ".openwrangler-dependency-journal-v1")), {
+      code: "ENOENT"
+    });
+    assert.deepEqual(readdirSync(join(destination, ".openwrangler-dependency-journal-v1")), ["mutation.lock"]);
+    assert.equal(lstatSync(join(destination, ".openwrangler-dependency-journal-v1")).mode & 0o777, 0o700);
+    assert.equal(
+      lstatSync(join(destination, ".openwrangler-dependency-journal-v1", "mutation.lock")).mode & 0o777,
+      0o600
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("copied Python repairs only the copied clean journal under umask 0002", async () => {
+  const root = privateRoot("ow-remote-python-journal-clean-");
+  const priorUmask = process.umask(0o002);
+  try {
+    const source = createTinyPythonEnvironment(root);
+    const sourceJournal = join(source.prefix, ".openwrangler-dependency-journal-v1");
+    mkdirSync(sourceJournal, { mode: 0o700 });
+    chmodSync(sourceJournal, 0o700);
+    const sourceBefore = dependencyJournalTestReceipt(sourceJournal);
+    const destination = join(root, "copied");
+    let modeAfterRealCopy;
+    await copyPrivatePythonEnvironment(source.executable, destination, {
+      copy(sourcePath, destinationPath, options) {
+        cpSync(sourcePath, destinationPath, options);
+        modeAfterRealCopy = lstatSync(join(destinationPath, ".openwrangler-dependency-journal-v1")).mode & 0o777;
+      }
+    });
+    assert.equal(modeAfterRealCopy, 0o775);
+    assert.deepEqual(dependencyJournalTestReceipt(sourceJournal), sourceBefore);
+    assert.equal(lstatSync(sourceJournal).mode & 0o777, 0o700);
+    assert.equal(lstatSync(join(destination, ".openwrangler-dependency-journal-v1")).mode & 0o777, 0o700);
+    assert.deepEqual(readdirSync(join(destination, ".openwrangler-dependency-journal-v1")), ["mutation.lock"]);
+  } finally {
+    process.umask(priorUmask);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("copied Python rejects a retained dirty dependency marker without changing its source", async () => {
+  const root = privateRoot("ow-remote-python-journal-dirty-");
+  try {
+    const source = createTinyPythonEnvironment(root);
+    const journal = join(source.prefix, ".openwrangler-dependency-journal-v1");
+    mkdirSync(journal, { mode: 0o700 });
+    chmodSync(journal, 0o700);
+    writeFileSync(join(journal, "mutation.lock"), "", { mode: 0o600 });
+    const token = "11111111-1111-4111-8111-111111111111";
+    writeFileSync(
+      join(journal, `mutation-${token}.json`),
+      JSON.stringify({
+        dependencies: [
+          {
+            importModule: "pandas",
+            distribution: "pandas",
+            installSpec: "pandas",
+            minimumVersion: null,
+            maximumVersionExclusive: null
+          }
+        ],
+        environment: dependencyGuardTestEnvironment(source),
+        protocol: "openwrangler-dependency-guard-v1",
+        token
+      }),
+      { mode: 0o600 }
+    );
+    const before = dependencyJournalTestReceipt(journal);
+    await assert.rejects(copyPrivatePythonEnvironment(source.executable, join(root, "copied")), /exited with code 16/u);
+    assert.deepEqual(dependencyJournalTestReceipt(journal), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("copied Python rejects malformed journal state without filtering copied leaves", async () => {
+  const root = privateRoot("ow-remote-python-journal-malformed-");
+  try {
+    const source = createTinyPythonEnvironment(root);
+    const journal = join(source.prefix, ".openwrangler-dependency-journal-v1");
+    mkdirSync(journal, { mode: 0o700 });
+    chmodSync(journal, 0o700);
+    writeFileSync(join(journal, "mutation.lock"), "", { mode: 0o600 });
+    writeFileSync(join(journal, "unexpected.json"), "malformed\n", { mode: 0o600 });
+    const before = dependencyJournalTestReceipt(journal);
+    const destination = join(root, "copied");
+    await assert.rejects(copyPrivatePythonEnvironment(source.executable, destination), /exited with code 12/u);
+    assert.deepEqual(dependencyJournalTestReceipt(journal), before);
+    assert.equal(
+      readFileSync(join(destination, ".openwrangler-dependency-journal-v1", "unexpected.json"), "utf8"),
+      "malformed\n"
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("copied Python never asks the product guard to recover a pending journal leaf", async () => {
+  const root = privateRoot("ow-remote-python-journal-pending-");
+  try {
+    const source = createTinyPythonEnvironment(root);
+    const journal = join(source.prefix, ".openwrangler-dependency-journal-v1");
+    const token = "22222222-2222-4222-8222-222222222222";
+    const pending = `.pending-${token}.tmp`;
+    mkdirSync(journal, { mode: 0o700 });
+    chmodSync(journal, 0o700);
+    writeFileSync(join(journal, pending), "pending\n", { mode: 0o600 });
+    const destination = join(root, "copied");
+    await assert.rejects(
+      copyPrivatePythonEnvironment(source.executable, destination),
+      /contains recoverable or nested state/u
+    );
+    assert.equal(readFileSync(join(destination, ".openwrangler-dependency-journal-v1", pending), "utf8"), "pending\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("copied Python rejects source journal drift observed after the real copy", async () => {
+  const root = privateRoot("ow-remote-python-journal-drift-");
+  try {
+    const source = createTinyPythonEnvironment(root);
+    const journal = join(source.prefix, ".openwrangler-dependency-journal-v1");
+    const lock = join(journal, "mutation.lock");
+    mkdirSync(journal, { mode: 0o700 });
+    chmodSync(journal, 0o700);
+    writeFileSync(lock, "", { mode: 0o600 });
+    await assert.rejects(
+      copyPrivatePythonEnvironment(source.executable, join(root, "copied"), {
+        copy(sourcePath, destinationPath, options) {
+          cpSync(sourcePath, destinationPath, options);
+          writeFileSync(lock, "changed\n", { mode: 0o600 });
+        }
+      }),
+      /source Python dependency journal changed/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Remote acceptance deadlines stay bounded and match native-editor ownership rules", () => {
   assert.equal(REMOTE_WORKSPACE_PHASE_TIMEOUT_MS, 300_000);
   assert.equal(REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS, 180_000);
@@ -598,6 +754,74 @@ function privateRoot(prefix) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   chmodSync(root, 0o700);
   return root;
+}
+
+function createTinyPythonEnvironment(root) {
+  const prefix = join(root, "source");
+  const bootstrap = process.env.OPEN_WRANGLER_PYTHON ?? resolve(".venv", "bin", "python");
+  const created = spawnSync(bootstrap, ["-m", "venv", "--without-pip", prefix], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024
+  });
+  assert.equal(
+    created.status,
+    0,
+    `Could not create the tiny private Python fixture: ${created.stderr || created.stdout}`
+  );
+  const executable = join(prefix, "bin", "python");
+  const versionResult = spawnSync(
+    executable,
+    ["-I", "-c", "import sys;print('.'.join(str(part) for part in sys.version_info[:3]))"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 }
+  );
+  assert.equal(versionResult.status, 0, versionResult.stderr);
+  const version = versionResult.stdout.trim();
+  const majorMinor = version.split(".").slice(0, 2).join(".");
+  const sitePackages = join(prefix, "lib", `python${majorMinor}`, "site-packages");
+  mkdirSync(sitePackages, { recursive: true, mode: 0o700 });
+  for (const name of ["pandas", "polars", "pyarrow"]) {
+    writeFileSync(join(sitePackages, `${name}.py`), `__version__ = "1.0.0"\n`, {
+      mode: 0o600
+    });
+  }
+  return Object.freeze({ executable, prefix, version });
+}
+
+function dependencyGuardTestEnvironment({ executable, prefix, version }) {
+  const executableMetadata = statSync(executable, { bigint: true });
+  const rootMetadata = statSync(prefix, { bigint: true });
+  return {
+    executable,
+    executableIdentity: {
+      device: String(executableMetadata.dev),
+      inode: String(executableMetadata.ino),
+      size: String(executableMetadata.size),
+      mtimeNs: String(executableMetadata.mtimeNs),
+      ctimeNs: String(executableMetadata.ctimeNs)
+    },
+    packageRoot: prefix,
+    packageRootIdentity: {
+      device: String(rootMetadata.dev),
+      inode: String(rootMetadata.ino)
+    },
+    pythonVersion: version
+  };
+}
+
+function dependencyJournalTestReceipt(path) {
+  const metadata = lstatSync(path, { bigint: true });
+  return {
+    mode: metadata.mode,
+    uid: metadata.uid,
+    gid: metadata.gid,
+    entries: readdirSync(path)
+      .sort()
+      .map((name) => ({
+        name,
+        contents: readFileSync(join(path, name)),
+        mode: lstatSync(join(path, name), { bigint: true }).mode
+      }))
+  };
 }
 
 function remotePhaseDescriptor() {

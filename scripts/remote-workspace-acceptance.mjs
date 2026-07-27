@@ -1,16 +1,24 @@
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   chmodSync,
+  constants,
   cpSync,
   existsSync,
+  fchmodSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readlinkSync,
   realpathSync,
+  statSync,
   writeFileSync
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   createEditorAcceptanceEnvironment,
   editorProcessTreeMayBeLive,
@@ -44,6 +52,11 @@ import {
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
 import { validateRemoteWorkspaceImmutableMounts } from "./remote-workspace-launch.mjs";
+import {
+  assertRemoteWorkspaceExactFileStage,
+  captureRemoteWorkspaceTreeManifest,
+  stageRemoteWorkspaceExactFile
+} from "./remote-workspace-staging.mjs";
 
 export {
   createRemoteWorkspaceHostIsolationDigest,
@@ -72,7 +85,26 @@ export {
 };
 const HOST_COMMAND_OUTPUT_LIMIT_BYTES = 32 * 1024;
 const PYTHON_PROBE_OUTPUT_LIMIT_BYTES = 16 * 1024;
+const DEPENDENCY_GUARD_OUTPUT_LIMIT_BYTES = 4 * 1024;
 const PATH_LIMIT = 16_384;
+const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
+const DEPENDENCY_JOURNAL_NAME = ".openwrangler-dependency-journal-v1";
+const DEPENDENCY_JOURNAL_LOCK_NAME = "mutation.lock";
+const DEPENDENCY_JOURNAL_TEMP_PATTERN =
+  /^\.pending-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u;
+const DEPENDENCY_JOURNAL_BOUNDS = Object.freeze({
+  label: "Remote SSH copied dependency journal",
+  maximumFiles: 72,
+  maximumBytes: 256 * 1024,
+  maximumFileBytes: 65_536
+});
+const DEFAULT_DEPENDENCY_GUARD_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "python",
+  "openwrangler_runtime",
+  "dependency_guard.py"
+);
 const REQUIRED_HOST_TOOLS = Object.freeze({
   bash: "/usr/bin/bash",
   bwrap: "/usr/bin/bwrap",
@@ -428,11 +460,16 @@ export function namespaceRemoteWorkspaceImmutablePath(paths, value) {
 export async function copyPrivatePythonEnvironment(
   sourcePython,
   destination,
-  { copy = cpSync, runCommand = runBoundedEditorCommand } = {}
+  { copy = cpSync, dependencyGuardPath = DEFAULT_DEPENDENCY_GUARD_PATH, runCommand = runBoundedEditorCommand } = {}
 ) {
+  if (process.platform !== "linux") {
+    throw new Error("Remote SSH private Python copying is supported only by the Linux acceptance runner.");
+  }
   const executable = assertAbsoluteRegularFile(sourcePython, "source Python");
   const sourceProbe = await probePython(executable, runCommand);
   const sourcePrefix = assertPrivatePythonPrefix(sourceProbe.prefix, executable);
+  const sourceJournal = captureDependencyJournalSnapshot(sourcePrefix);
+  const guard = assertAbsoluteRegularFile(dependencyGuardPath, "dependency guard");
   if (existsSync(destination)) {
     throw new Error("Remote SSH acceptance refuses to replace a Python environment.");
   }
@@ -444,6 +481,18 @@ export async function copyPrivatePythonEnvironment(
     verbatimSymlinks: true
   });
   chmodSync(destination, 0o700);
+  assertDependencyJournalSnapshot(sourcePrefix, sourceJournal);
+  const copiedJournal = captureDependencyJournalSnapshot(destination, {
+    requirePrivateMode: false
+  });
+  assertCopiedDependencyJournal(sourceJournal, copiedJournal);
+  if (copiedJournal.kind === "present") {
+    repairCopiedDependencyJournalMode(copiedJournal.path, destination);
+    const repairedJournal = captureDependencyJournalSnapshot(destination);
+    if (!isDeepStrictEqual(dependencyJournalContents(repairedJournal), dependencyJournalContents(sourceJournal))) {
+      throw new Error("The copied dependency journal changed while its private mode was repaired.");
+    }
+  }
   const destinationPython = join(destination, "bin", "python");
   const copiedProbe = await probePython(destinationPython, runCommand);
   const sourceVersions = Object.fromEntries(
@@ -462,11 +511,367 @@ export async function copyPrivatePythonEnvironment(
   ) {
     throw new Error("The copied private Python environment did not preserve its exact dependency receipt.");
   }
+  const guardStage = stageRemoteWorkspaceExactFile(
+    guard,
+    join(destination, ".openwrangler-acceptance-dependency-guard.py"),
+    0o600
+  );
+  const beforeGuard = captureDependencyJournalSnapshot(destination);
+  assertDependencyJournalSafeForStatus(beforeGuard);
+  let guardResult;
+  let guardFailure;
+  try {
+    guardResult = await runCopiedDependencyGuardStatus({
+      dependencyGuardPath: guardStage.stagedPath,
+      executable: destinationPython,
+      packageRoot: copiedProbe.prefix,
+      pythonVersion: copiedProbe.version,
+      runCommand
+    });
+  } catch (error) {
+    guardFailure = error;
+  }
+  let integrityFailure;
+  try {
+    assertRemoteWorkspaceExactFileStage(guardStage);
+    assertDependencyJournalSnapshot(sourcePrefix, sourceJournal);
+    const afterGuard = captureDependencyJournalSnapshot(destination);
+    assertDependencyGuardPreservedJournal(beforeGuard, afterGuard);
+  } catch (error) {
+    integrityFailure = error;
+  }
+  if (guardFailure || integrityFailure) {
+    if (guardFailure && integrityFailure) {
+      throw new AggregateError(
+        [guardFailure, integrityFailure],
+        "The copied Python dependency guard failed without preserving every pinned input."
+      );
+    }
+    throw guardFailure ?? integrityFailure;
+  }
+  if (
+    guardResult.stderr !== "" ||
+    guardResult.stdout !== `{"kind":"status","protocol":"${DEPENDENCY_GUARD_PROTOCOL}","state":"clean","token":null}\n`
+  ) {
+    throw new Error("The copied Python dependency guard did not report one exact clean status.");
+  }
   return Object.freeze({
     executable: destinationPython,
     version: copiedProbe.version,
     packages: copiedProbe.packages,
-    systemRuntimeDirectories: resolveRemoteWorkspaceSystemRuntimeDirectories(sourceProbe.systemRuntimeDirectories)
+    systemRuntimeDirectories: resolveRemoteWorkspaceSystemRuntimeDirectories(
+      sourceProbe.systemRuntimeDirectories.filter(
+        (directory) => directory !== sourcePrefix && !isContained(sourcePrefix, directory)
+      )
+    )
+  });
+}
+
+export async function runCopiedDependencyGuardStatus({
+  dependencyGuardPath = DEFAULT_DEPENDENCY_GUARD_PATH,
+  executable,
+  packageRoot,
+  pythonVersion,
+  runCommand = runBoundedEditorCommand
+}) {
+  const guard = assertAbsoluteRegularFile(dependencyGuardPath, "dependency guard");
+  const python = assertAbsoluteRegularFile(executable, "copied Python");
+  const root = realpathSync(packageRoot);
+  const rootMetadata = statSync(root, { bigint: true });
+  const executableMetadata = statSync(python, { bigint: true });
+  if (
+    !rootMetadata.isDirectory() ||
+    !executableMetadata.isFile() ||
+    typeof pythonVersion !== "string" ||
+    !/^3\.(?:1[0-4])\.[0-9]+$/u.test(pythonVersion)
+  ) {
+    throw new Error("The copied Python dependency-guard environment is malformed.");
+  }
+  const frame = Buffer.from(
+    `${JSON.stringify({
+      protocol: DEPENDENCY_GUARD_PROTOCOL,
+      kind: "status",
+      environment: {
+        executable: python,
+        executableIdentity: dependencyGuardExecutableIdentity(executableMetadata),
+        packageRoot: root,
+        packageRootIdentity: dependencyGuardRootIdentity(rootMetadata),
+        pythonVersion
+      }
+    })}\n`,
+    "utf8"
+  );
+  if (frame.length > 65_536) {
+    throw new Error("The copied Python dependency-guard request exceeded its fixed frame bound.");
+  }
+  return runCommand(
+    {
+      executable: python,
+      args: ["-I", guard, "status"],
+      environment: createEditorAcceptanceEnvironment(),
+      input: frame,
+      label: "Remote SSH copied Python dependency status"
+    },
+    {
+      timeoutMs: 60_000,
+      maxOutputBytes: DEPENDENCY_GUARD_OUTPUT_LIMIT_BYTES
+    }
+  );
+}
+
+function captureDependencyJournalSnapshot(prefix, { requirePrivateMode = true } = {}) {
+  const canonicalPrefix = realpathSync(prefix);
+  const prefixBefore = dependencyJournalDirectoryReceipt(canonicalPrefix);
+  const path = join(canonicalPrefix, DEPENDENCY_JOURNAL_NAME);
+  let metadata;
+  try {
+    metadata = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    const prefixAfter = dependencyJournalDirectoryReceipt(canonicalPrefix);
+    if (!isDeepStrictEqual(prefixBefore, prefixAfter)) {
+      throw new Error("The Python environment changed while its dependency journal absence was captured.");
+    }
+    try {
+      lstatSync(path);
+    } catch (secondError) {
+      if (secondError?.code === "ENOENT") {
+        return Object.freeze({
+          kind: "absent",
+          path,
+          prefixReceipt: prefixAfter
+        });
+      }
+      throw secondError;
+    }
+    throw new Error("The Python dependency journal appeared while its absence was captured.");
+  }
+  if (
+    realpathSync(path) !== path ||
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    metadata.uid !== prefixBefore.uid ||
+    metadata.gid !== prefixBefore.gid ||
+    (requirePrivateMode && Number(metadata.mode & 0o777n) !== 0o700)
+  ) {
+    throw new Error("The Python dependency journal must be canonical, owner-matched, and mode 0700.");
+  }
+  const manifest = captureRemoteWorkspaceTreeManifest(path, DEPENDENCY_JOURNAL_BOUNDS);
+  const prefixAfter = dependencyJournalDirectoryReceipt(canonicalPrefix);
+  if (!isDeepStrictEqual(prefixBefore, prefixAfter)) {
+    throw new Error("The Python environment changed while its dependency journal was captured.");
+  }
+  return Object.freeze({
+    kind: "present",
+    path,
+    prefixReceipt: prefixAfter,
+    manifest
+  });
+}
+
+function assertDependencyJournalSnapshot(prefix, expected) {
+  const observed = captureDependencyJournalSnapshot(prefix);
+  if (!isDeepStrictEqual(observed, expected)) {
+    throw new Error("The source Python dependency journal changed while its environment was copied.");
+  }
+  return observed;
+}
+
+function assertCopiedDependencyJournal(source, copied) {
+  if (
+    source.kind !== copied.kind ||
+    !isDeepStrictEqual(dependencyJournalContents(source), dependencyJournalContents(copied))
+  ) {
+    throw new Error("The copied Python environment did not preserve every dependency-journal leaf.");
+  }
+}
+
+function dependencyJournalContents(snapshot) {
+  if (snapshot.kind === "absent") return Object.freeze({ kind: "absent" });
+  return Object.freeze({
+    kind: "present",
+    directories: Object.freeze(snapshot.manifest.directories.map((entry) => entry.path)),
+    files: Object.freeze(
+      snapshot.manifest.files.map((entry) =>
+        Object.freeze({
+          path: entry.path,
+          mode: Number(entry.receipt.mode & 0o777n),
+          size: entry.receipt.size,
+          sha256: entry.receipt.sha256
+        })
+      )
+    ),
+    links: Object.freeze(
+      snapshot.manifest.links.map((entry) =>
+        Object.freeze({
+          path: entry.path,
+          target: entry.target,
+          resolvedTarget: entry.resolvedTarget
+        })
+      )
+    )
+  });
+}
+
+function repairCopiedDependencyJournalMode(path, prefix) {
+  const prefixReceipt = dependencyJournalDirectoryReceipt(realpathSync(prefix));
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0)
+    );
+    const opened = fstatSync(descriptor, { bigint: true });
+    const namedBefore = lstatSync(path, { bigint: true });
+    if (
+      !opened.isDirectory() ||
+      opened.isSymbolicLink() ||
+      !sameDependencyJournalDirectory(opened, namedBefore) ||
+      opened.uid !== prefixReceipt.uid ||
+      opened.gid !== prefixReceipt.gid ||
+      realpathSync(path) !== path
+    ) {
+      throw new Error("The copied dependency-journal directory changed before its mode repair.");
+    }
+    fchmodSync(descriptor, 0o700);
+    const repaired = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(path, { bigint: true });
+    if (
+      !sameDependencyJournalDirectory(opened, repaired, { ignoreModeAndCtime: true }) ||
+      !sameDependencyJournalDirectory(repaired, namedAfter) ||
+      Number(repaired.mode & 0o777n) !== 0o700 ||
+      realpathSync(path) !== path
+    ) {
+      throw new Error("The copied dependency-journal directory changed during its mode repair.");
+    }
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function assertDependencyJournalSafeForStatus(snapshot) {
+  if (snapshot.kind === "absent") return;
+  if (
+    snapshot.manifest.links.length !== 0 ||
+    snapshot.manifest.directories.length !== 1 ||
+    snapshot.manifest.directories[0]?.path !== "." ||
+    snapshot.manifest.files.some((entry) => DEPENDENCY_JOURNAL_TEMP_PATTERN.test(entry.path))
+  ) {
+    throw new Error("The copied dependency journal contains recoverable or nested state; it will not be modified.");
+  }
+}
+
+function assertDependencyGuardPreservedJournal(before, after) {
+  if (before.kind === "absent") {
+    assertDependencyGuardCreatedOnlyLock(after);
+    return;
+  }
+  if (after.kind !== "present") {
+    throw new Error("The copied dependency guard removed its journal.");
+  }
+  const afterFiles = new Map(after.manifest.files.map((entry) => [entry.path, entry]));
+  for (const entry of before.manifest.files) {
+    const current = afterFiles.get(entry.path);
+    if (!current || !isDeepStrictEqual(current.receipt, entry.receipt)) {
+      throw new Error("The copied dependency guard changed a retained journal leaf.");
+    }
+    afterFiles.delete(entry.path);
+  }
+  if (afterFiles.size === 0) {
+    if (!isDeepStrictEqual(before.manifest, after.manifest)) {
+      throw new Error("The copied dependency guard changed journal metadata.");
+    }
+    return;
+  }
+  if (
+    afterFiles.size !== 1 ||
+    before.manifest.files.some((entry) => entry.path === DEPENDENCY_JOURNAL_LOCK_NAME) ||
+    !afterFiles.has(DEPENDENCY_JOURNAL_LOCK_NAME)
+  ) {
+    throw new Error("The copied dependency guard added an unexpected journal leaf.");
+  }
+  assertDependencyGuardLock(afterFiles.get(DEPENDENCY_JOURNAL_LOCK_NAME), after);
+}
+
+function assertDependencyGuardCreatedOnlyLock(snapshot) {
+  if (
+    snapshot.kind !== "present" ||
+    snapshot.manifest.directories.length !== 1 ||
+    snapshot.manifest.directories[0]?.path !== "." ||
+    snapshot.manifest.links.length !== 0 ||
+    snapshot.manifest.files.length !== 1 ||
+    snapshot.manifest.files[0]?.path !== DEPENDENCY_JOURNAL_LOCK_NAME
+  ) {
+    throw new Error("The copied dependency guard created more than its private journal lock.");
+  }
+  assertDependencyGuardLock(snapshot.manifest.files[0], snapshot);
+}
+
+function assertDependencyGuardLock(entry, snapshot) {
+  const rootReceipt = snapshot.manifest.directories[0]?.receipt;
+  if (
+    entry.receipt.size !== 0n ||
+    Number(entry.receipt.mode & 0o777n) !== 0o600 ||
+    entry.receipt.nlink !== 1n ||
+    entry.receipt.uid !== rootReceipt?.uid ||
+    entry.receipt.gid !== rootReceipt?.gid ||
+    Number(rootReceipt.mode & 0o777n) !== 0o700
+  ) {
+    throw new Error("The copied dependency guard did not create one exact private lock.");
+  }
+}
+
+function dependencyJournalDirectoryReceipt(path) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || realpathSync(path) !== path) {
+    throw new Error("A Python dependency-journal parent is not one canonical directory.");
+  }
+  return Object.freeze({
+    dev: metadata.dev,
+    ino: metadata.ino,
+    mode: metadata.mode,
+    nlink: metadata.nlink,
+    uid: metadata.uid,
+    gid: metadata.gid,
+    size: metadata.size,
+    mtimeNs: metadata.mtimeNs,
+    ctimeNs: metadata.ctimeNs,
+    birthtimeNs: metadata.birthtimeNs
+  });
+}
+
+function sameDependencyJournalDirectory(left, right, { ignoreModeAndCtime = false } = {}) {
+  return (
+    left.isDirectory() &&
+    right.isDirectory() &&
+    !left.isSymbolicLink() &&
+    !right.isSymbolicLink() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.nlink === right.nlink &&
+    left.uid === right.uid &&
+    left.gid === right.gid &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.birthtimeNs === right.birthtimeNs &&
+    (ignoreModeAndCtime || (left.mode === right.mode && left.ctimeNs === right.ctimeNs))
+  );
+}
+
+function dependencyGuardExecutableIdentity(metadata) {
+  return Object.freeze({
+    device: String(metadata.dev),
+    inode: String(metadata.ino),
+    size: String(metadata.size),
+    mtimeNs: String(metadata.mtimeNs),
+    ctimeNs: String(metadata.ctimeNs)
+  });
+}
+
+function dependencyGuardRootIdentity(metadata) {
+  return Object.freeze({
+    device: String(metadata.dev),
+    inode: String(metadata.ino)
   });
 }
 
