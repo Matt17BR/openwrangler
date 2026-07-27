@@ -301,6 +301,41 @@ describe("native operation commands", () => {
     });
   });
 
+  it("disambiguates a selected duplicate label by its human column position", () => {
+    const duplicate = snapshot({ mode: "viewing", steps: [] });
+    duplicate.metadata = {
+      protocolVersion: 2,
+      sessionId: "duplicate-summary",
+      revision: 0,
+      backend: "pandas",
+      mode: "viewing",
+      source: { kind: "notebookVariable", label: "duplicate_frame", variableName: "duplicate_frame" },
+      capabilities: {
+        editable: false,
+        lazy: false,
+        cancel: true,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      shape: { rows: 2, columns: 2 },
+      filteredShape: { rows: 2, columns: 2 },
+      schema: [
+        { id: "c:left", name: "duplicate", position: 0, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:right", name: "duplicate", position: 1, rawType: "Float64", type: "float", nullable: false }
+      ],
+      filterModel: { filters: [], sort: [] },
+      steps: []
+    };
+    duplicate.viewState.selectedColumnId = "c:right";
+    register(duplicate);
+
+    expect(treeChildren("openWrangler.summary").map(nodePresentation)).toContainEqual([
+      "Selected column",
+      "duplicate (column 2)"
+    ]);
+  });
+
   it("ignores caller-provided export destinations and still opens the Save dialog", async () => {
     register(noDraftSnapshot());
 

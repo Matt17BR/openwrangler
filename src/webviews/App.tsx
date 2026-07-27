@@ -103,6 +103,7 @@ export function App() {
   const desiredColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const inspectionColumnWindow = useRef<ColumnWindow>(initialColumnWindow());
   const sidePanelToggleRef = useRef<HTMLButtonElement | null>(null);
+  const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const operationReturnFocus = useRef<HTMLElement | null>(null);
   const operationWasOpen = useRef(false);
@@ -144,6 +145,12 @@ export function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [operationOpen]);
+
+  useEffect(() => {
+    if (!sidePanelOpen) return;
+    const frame = scheduleWebviewFocusRestoration(() => sidePanelCloseRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [sidePanelOpen]);
 
   const storeMetadata = useCallback((next: SessionMetadata | undefined) => {
     metadataRef.current = next;
@@ -1616,6 +1623,26 @@ export function App() {
     setOperationOpen(true);
   };
 
+  const closeSidePanel = () => {
+    sidePanelOpenRef.current = false;
+    setSidePanelOpen(false);
+    clearDrawerSummaryScheduling();
+    cancelBackgroundRequests(
+      (pending) =>
+        pending.kind === "stats" ||
+        pending.kind === "values" ||
+        (pending.kind === "summary" && !(summaryOwnersByColumnId.current.get(pending.columnId)?.size ?? 0))
+    );
+    const returnTarget = sidePanelReturnFocus.current;
+    sidePanelReturnFocus.current = null;
+    scheduleWebviewFocusRestoration(() => {
+      const targetIsAvailable =
+        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
+      if (targetIsAvailable) returnTarget.focus();
+      else sidePanelToggleRef.current?.focus();
+    });
+  };
+
   const handleKeyboardShortcut = (event: ReactKeyboardEvent<HTMLElement>) => {
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
@@ -1630,6 +1657,9 @@ export function App() {
         }
       } else if (stepInspectionTargetRef.current) {
         clearStepInspection();
+        handled = true;
+      } else if (sidePanelOpenRef.current) {
+        closeSidePanel();
         handled = true;
       } else if (metadata?.draftStep) {
         if (!projectionLoading) {
@@ -1673,23 +1703,6 @@ export function App() {
       viewContextId: failed.viewContextId,
       columnWindow: failed.columnWindow,
       reason: failed.reason
-    });
-  };
-
-  const closeSidePanel = () => {
-    sidePanelOpenRef.current = false;
-    setSidePanelOpen(false);
-    clearDrawerSummaryScheduling();
-    cancelBackgroundRequests(
-      (pending) =>
-        pending.kind === "stats" ||
-        pending.kind === "values" ||
-        (pending.kind === "summary" && !(summaryOwnersByColumnId.current.get(pending.columnId)?.size ?? 0))
-    );
-    const returnTarget = sidePanelReturnFocus.current;
-    scheduleWebviewFocusRestoration(() => {
-      if (returnTarget?.isConnected) returnTarget.focus();
-      else sidePanelToggleRef.current?.focus();
     });
   };
 
@@ -1777,6 +1790,7 @@ export function App() {
                 type="button"
                 className="toolbarButton"
                 aria-expanded={sidePanelOpen}
+                aria-controls="openwrangler-insights-panel"
                 disabled={inspectionMode || importOptionsPending}
                 title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
                 onClick={(event) => {
@@ -2025,10 +2039,11 @@ export function App() {
             )}
           </section>
           {sidePanelOpen && !inspectionMode && (
-            <aside className="sidebar" aria-label="Insights and filters">
+            <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Insights and filters">
               <div className="drawerHeader">
                 <strong>Insights & filters</strong>
                 <button
+                  ref={sidePanelCloseRef}
                   type="button"
                   className="iconButton codicon codicon-close"
                   aria-label="Close panel"

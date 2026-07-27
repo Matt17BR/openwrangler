@@ -43,9 +43,11 @@ const payloads = JSON.parse(
       "-c",
       String.raw`
 import json
+import __main__
 from pathlib import Path
 import nbformat
 from nbclient import NotebookClient
+import pandas as pd
 import polars as pl
 from openwrangler_runtime.session import SessionManager
 
@@ -224,6 +226,38 @@ unicode["harnessSummaries"] = manager.get_summary(
     {"logic": "and", "filters": [], "sort": []},
 )["summaries"]
 
+summary_families_frame = pd.concat(
+    [
+        pd.Series([1.0, 2.0, 3.0, 4.0], name="value"),
+        pd.Series(["alpha", "beta", "alpha", "gamma"], name="value"),
+        pd.Series([True, False, True, True], name="flag"),
+        pd.Series(pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"]), name="when"),
+    ],
+    axis=1,
+)
+setattr(__main__, "openwrangler_summary_families", summary_families_frame)
+summary_families = manager.open_session(
+    {
+        "kind": "notebookVariable",
+        "label": "Summary families",
+        "variableName": "openwrangler_summary_families",
+    },
+    backend="pandas",
+    page_size=4,
+    mode="viewing",
+)
+summary_families_id = summary_families["metadata"]["sessionId"]
+summary_families["harnessSummaries"] = manager.get_summary(
+    summary_families_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
+summary_families["metadata"]["stats"] = manager.get_dataset_stats(
+    summary_families_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+)["stats"]
+
 notebook = nbformat.read(root / "fixtures" / "example.ipynb", as_version=4)
 client = NotebookClient(notebook, timeout=60, kernel_name="python3", resources={"metadata": {"path": str(root)}})
 client.execute()
@@ -257,11 +291,17 @@ print(json.dumps({
     "widePages": wide_pages,
     "empty": empty,
     "unicode": unicode,
+    "summaryFamilies": summary_families,
     "notebook": mime_payload,
 }))
 `
     ],
-    { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, PYTHONPATH: resolve(root, "python") },
+      maxBuffer: 32 * 1024 * 1024
+    }
   )
 );
 
@@ -372,6 +412,22 @@ writeWebviewHarness(
   }
 );
 writeWebviewHarness("grid-dark-800.html", payloads.opened, {}, "acceptance/grid-dark-800.png", {}, { width: 800 });
+writeWebviewHarness(
+  "summary-families-dark-800.html",
+  payloads.summaryFamilies,
+  {},
+  "acceptance/summary-families-dark-800.png",
+  {},
+  { width: 800, defaultColumnWidth: 140 }
+);
+writeWebviewHarness(
+  "summary-families-dark-zoom-200.html",
+  payloads.summaryFamilies,
+  {},
+  "acceptance/summary-families-dark-zoom-200.png",
+  {},
+  { zoom: 2, defaultColumnWidth: 140 }
+);
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
 writeWebviewHarness(
   "grid-light-1280.html",
@@ -420,6 +476,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const openColumnFilter = appearance.openColumnFilter;
   const stepInspections = appearance.stepInspections ?? {};
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
+  const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
   const strictProjectedPages = appearance.strictProjectedPages === true;
   const html = `<!doctype html>
 <html lang="en">
@@ -555,7 +612,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     });
   </script>
 </head>
-<body data-fetch-block-size="200" data-fetch-column-block-size="${fetchColumnBlockSize}" data-default-column-width="190" data-insights-on-open="true" data-filter-mode="advanced">
+<body data-fetch-block-size="200" data-fetch-column-block-size="${fetchColumnBlockSize}" data-default-column-width="${defaultColumnWidth}" data-insights-on-open="true" data-filter-mode="advanced">
   <div id="root"></div>
   <script type="module" src="${mediaDir}/webview.js"></script>
 </body>

@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
+import type { ColumnSummary, GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
@@ -90,6 +90,141 @@ describe("DataGrid", () => {
     expect(screen.getByText("Paris")).toBeTruthy();
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "3");
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
+  });
+
+  it("renders exact min/max separately from accessible non-color-only summary visuals", async () => {
+    const schema: SessionMetadata["schema"] = [
+      { id: "c:number", name: "value", position: 0, rawType: "Float64", type: "float", nullable: false },
+      { id: "c:boolean", name: "flag", position: 1, rawType: "Boolean", type: "boolean", nullable: false },
+      { id: "c:category", name: "group", position: 2, rawType: "String", type: "string", nullable: false },
+      { id: "c:datetime", name: "when", position: 3, rawType: "Datetime", type: "datetime", nullable: false }
+    ];
+    const familyMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 4 },
+      filteredShape: { rows: 4, columns: 4 },
+      schema
+    };
+    const familyPage: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 4,
+      columnIds: schema.map((column) => column.id),
+      rows: [
+        {
+          id: "r:families",
+          rowNumber: 0,
+          values: [
+            { kind: "number", raw: 1, display: "1", isNull: false, isNaN: false },
+            { kind: "boolean", raw: true, display: "true", isNull: false, isNaN: false },
+            { kind: "string", raw: "alpha", display: "alpha", isNull: false, isNaN: false },
+            {
+              kind: "datetime",
+              raw: "2024-01-01T00:00:00",
+              display: "2024-01-01",
+              isNull: false,
+              isNaN: false
+            }
+          ]
+        }
+      ]
+    };
+    const baseSummary = {
+      totalCount: 4,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      topValues: []
+    };
+    const summaries: ColumnSummary[] = [
+      {
+        ...baseSummary,
+        columnId: "c:number",
+        column: "value",
+        type: "float",
+        rawType: "Float64",
+        numeric: { min: 1, max: 4, mean: 2.5, median: 2.5, std: 1.29 },
+        visualization: {
+          kind: "numeric",
+          bins: [
+            { min: 1, max: 2.5, count: 2 },
+            { min: 2.5, max: 4, count: 2 }
+          ],
+          sampled: true
+        }
+      },
+      {
+        ...baseSummary,
+        columnId: "c:boolean",
+        column: "flag",
+        type: "boolean",
+        rawType: "Boolean",
+        visualization: { kind: "boolean", trueCount: 3, falseCount: 1 }
+      },
+      {
+        ...baseSummary,
+        columnId: "c:category",
+        column: "group",
+        type: "string",
+        rawType: "String",
+        visualization: {
+          kind: "categorical",
+          categories: [
+            { value: "alpha", count: 3 },
+            { value: "beta", count: 1 }
+          ],
+          otherCount: 0
+        }
+      },
+      {
+        ...baseSummary,
+        columnId: "c:datetime",
+        column: "when",
+        type: "datetime",
+        rawType: "Datetime",
+        visualization: { kind: "datetime", min: "2024-01-01", max: "2024-04-01" }
+      }
+    ];
+    render(
+      <DataGrid
+        metadata={familyMetadata}
+        page={familyPage}
+        summaries={summaries}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 1_000 });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() => expect(screen.getByRole("img", { name: /categorical distribution/u })).toBeVisible());
+
+    const numericHeader = document.querySelector<HTMLElement>('th[data-column="value"]');
+    if (!numericHeader) throw new Error("Expected the numeric header.");
+    expect(within(numericHeader).getByText("Min 1")).toBeVisible();
+    expect(within(numericHeader).getByText("Max 4")).toBeVisible();
+    expect(within(numericHeader).getByText("Distribution sampled").closest(".summaryDistribution")).not.toBeNull();
+    expect(
+      within(numericHeader).getByRole("img", {
+        name: "Sampled numeric distribution with 2 bins; range 1 to 4."
+      })
+    ).toBeVisible();
+    expect(screen.getByRole("img", { name: "boolean distribution: true 3, false 1." })).toHaveTextContent(
+      "True 3False 1"
+    );
+    expect(screen.getByRole("img", { name: /categorical distribution: alpha: 3, beta: 1/u })).toHaveTextContent(
+      "alpha3beta1"
+    );
+    expect(
+      screen.getByRole("img", {
+        name: "datetime distribution: minimum 2024-01-01, maximum 2024-04-01."
+      })
+    ).toHaveTextContent("Min 2024-01-01Max 2024-04-01");
   });
 
   it("bounds very long cell text before it reaches the DOM", () => {

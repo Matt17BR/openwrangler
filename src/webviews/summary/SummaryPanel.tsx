@@ -8,6 +8,13 @@ interface SummaryPanelProps {
 
 export function SummaryPanel({ metadata, summaries, schemaById }: SummaryPanelProps) {
   const missingByColumn = metadata?.stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
+  const summaryByColumnId = new Map(summaries.map((summary) => [summary.columnId, summary]));
+  const orderedSummaries = metadata
+    ? metadata.schema.flatMap((column) => {
+        const summary = summaryByColumnId.get(column.id);
+        return summary ? [summary] : [];
+      })
+    : summaries;
 
   return (
     <section className="panel summaryPanel">
@@ -50,16 +57,19 @@ export function SummaryPanel({ metadata, summaries, schemaById }: SummaryPanelPr
       </details>
 
       <h3>Column Summary</h3>
-      {summaries.length === 0 && <p>No summary data yet.</p>}
-      {summaries.map((summary) => {
+      {orderedSummaries.length === 0 && <p>No summary data yet.</p>}
+      {orderedSummaries.map((summary) => {
         const schema = schemaById.get(summary.columnId);
+        const displayName = columnDisplayName(summary, schema, metadata?.schema);
         return (
-          <details key={summary.columnId} className="summaryGroup" open={summaries.length <= 6}>
+          <details key={summary.columnId} className="summaryGroup" open={orderedSummaries.length <= 6}>
             <summary>
-              <span>{summary.column}</span>
+              <span>{displayName}</span>
               <small>{schema?.rawType ?? summary.rawType}</small>
             </summary>
             <dl>
+              <dt>Values</dt>
+              <dd>{summary.totalCount.toLocaleString()}</dd>
               <dt>Missing</dt>
               <dd>{(summary.nullCount + summary.nanCount).toLocaleString()}</dd>
               <dt>Distinct</dt>
@@ -72,13 +82,17 @@ export function SummaryPanel({ metadata, summaries, schemaById }: SummaryPanelPr
                   <dd>{formatNumber(summary.numeric.max)}</dd>
                   <dt>Mean</dt>
                   <dd>{formatNumber(summary.numeric.mean)}</dd>
+                  <dt>Median</dt>
+                  <dd>{formatNumber(summary.numeric.median)}</dd>
+                  <dt>Std. deviation</dt>
+                  <dd>{formatNumber(summary.numeric.std)}</dd>
                 </>
               )}
             </dl>
             {summary.topValues.length > 0 && (
               <div className="topValues">
-                {summary.topValues.map((item) => (
-                  <div key={item.value} className="barRow">
+                {summary.topValues.map((item, index) => (
+                  <div key={`${item.value}-${index}`} className="barRow">
                     <span>{item.value}</span>
                     <meter min={0} max={summary.topValues[0]?.count ?? 1} value={item.count} />
                     <small>{item.count}</small>
@@ -91,6 +105,16 @@ export function SummaryPanel({ metadata, summaries, schemaById }: SummaryPanelPr
       })}
     </section>
   );
+}
+
+function columnDisplayName(
+  summary: ColumnSummary,
+  schema: ColumnSchema | undefined,
+  allColumns: readonly ColumnSchema[] | undefined
+): string {
+  if (!schema || !allColumns) return summary.column;
+  const duplicateCount = allColumns.filter((column) => column.name === schema.name).length;
+  return duplicateCount > 1 ? `${summary.column} (column ${schema.position + 1})` : summary.column;
 }
 
 const formatNumber = (value: number | undefined): string => {

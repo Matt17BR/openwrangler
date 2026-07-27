@@ -1849,6 +1849,33 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.notEqual(firstDatetime.id, secondDatetime.id, "Duplicate datetime labels must retain distinct identities.");
     assert.equal(integerLabel.name, "7");
 
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:profiles");
+    const duplicateProfiles = await testing.request({
+      kind: "getSummary",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      viewRequestId: "notebook-pandas-duplicate-profiles",
+      filterModel: active.metadata.filterModel,
+      columnIds: [firstDuplicate.id, secondDuplicate.id]
+    });
+    assert.equal(duplicateProfiles.kind, "summary", "Duplicate-label profiles must resolve by stable ID.");
+    if (duplicateProfiles.kind !== "summary") throw new Error("Duplicate-label profiles did not resolve.");
+    assert.deepEqual(
+      duplicateProfiles.summaries.map((summary) => [summary.columnId, summary.column]),
+      [
+        [firstDuplicate.id, "duplicate"],
+        [secondDuplicate.id, "duplicate"]
+      ]
+    );
+    assert.deepEqual(
+      duplicateProfiles.summaries.map((summary) => [summary.numeric?.min, summary.numeric?.max]),
+      [
+        [1, 2],
+        [10.26, 20.74]
+      ],
+      "Same-name numeric columns must retain their own statistics."
+    );
+
     let duplicateRevision = active.metadata.revision;
     const valueSteps: TransformStep[] = [
       {
@@ -2101,6 +2128,34 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     assert.equal(jupyter.testing.stats(notebook.uri)?.generation, duplicateReplacementGeneration);
     assert.equal(duplicateReplayed.page.totalRows, 1);
     assert.equal(duplicateReplayed.metadata.steps.length, valueSteps.length + duplicateSteps.length);
+    recordAcceptanceProgress("verify:notebook:pandas-duplicates:profiles-replayed");
+    const replayedDuplicateProfiles = await testing.request({
+      kind: "getSummary",
+      sessionId: active.sessionId,
+      revision: duplicateRevision,
+      viewRequestId: "notebook-pandas-duplicate-profiles-replayed",
+      filterModel: active.metadata.filterModel,
+      columnIds: [firstDuplicate.id, secondDuplicate.id]
+    });
+    assert.equal(replayedDuplicateProfiles.kind, "summary", "Duplicate-label profiles must replay by stable ID.");
+    if (replayedDuplicateProfiles.kind !== "summary") {
+      throw new Error("Replayed duplicate-label profiles did not resolve.");
+    }
+    assert.deepEqual(
+      replayedDuplicateProfiles.summaries.map((summary) => [summary.columnId, summary.column]),
+      [
+        [firstDuplicate.id, "duplicate"],
+        [secondDuplicate.id, "duplicate"]
+      ]
+    );
+    assert.deepEqual(
+      replayedDuplicateProfiles.summaries.map((summary) => [summary.numeric?.min, summary.numeric?.max]),
+      [
+        [2, 2],
+        [10.3, 10.3]
+      ],
+      "Kernel replay must not collapse same-name profiles."
+    );
     assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, firstDuplicate.id), ["2"]);
     assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, secondDuplicate.id), ["10.3"]);
     assert.deepEqual(gridColumnDisplays(duplicateReplayed.page, integerLabel.id), ["C"]);

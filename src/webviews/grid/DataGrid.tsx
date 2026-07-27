@@ -884,10 +884,16 @@ function ColumnHeader({
       {showInsights &&
         (summary ? (
           <div className="columnInsight">
-            <span>Missing {formatPercent(summary.nullCount + summary.nanCount, summary.totalCount)}</span>
-            <span>Distinct {formatPercent(summary.distinctCount ?? 0, summary.totalCount)}</span>
-            {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
-            <MiniChart visualization={summary.visualization} />
+            <div className="exactSummaryStats">
+              <span>Missing {formatPercent(summary.nullCount + summary.nanCount, summary.totalCount)}</span>
+              <span>Distinct {formatPercent(summary.distinctCount ?? 0, summary.totalCount)}</span>
+              {summary.numeric?.min !== undefined && <span>Min {formatInsightValue(summary.numeric.min)}</span>}
+              {summary.numeric?.max !== undefined && <span>Max {formatInsightValue(summary.numeric.max)}</span>}
+            </div>
+            <div className="summaryDistribution">
+              {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
+              <MiniChart visualization={summary.visualization} />
+            </div>
           </div>
         ) : (
           <span className="columnInsight emptyInsight">Profiling…</span>
@@ -903,49 +909,101 @@ function MiniChart({ visualization }: { visualization: ColumnVisualization | und
     const width = 96;
     const height = 28;
     const barWidth = visualization.bins.length ? width / visualization.bins.length : width;
+    const rangeStart = visualization.bins.at(0)?.min;
+    const rangeEnd = visualization.bins.at(-1)?.max;
+    const rangeLabel =
+      rangeStart === undefined || rangeEnd === undefined
+        ? "No finite values"
+        : `${formatInsightValue(rangeStart)} to ${formatInsightValue(rangeEnd)}`;
     return (
-      <svg className="miniChart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Numeric histogram">
-        {visualization.bins.map((bin, index) => {
-          const barHeight = Math.max(2, (bin.count / max) * height);
-          return (
-            <rect
-              key={`${bin.min}-${bin.max}-${index}`}
-              x={index * barWidth}
-              y={height - barHeight}
-              width={Math.max(1, barWidth - 1)}
-              height={barHeight}
-            />
-          );
-        })}
-      </svg>
+      <span
+        className="numericMiniChart"
+        role="img"
+        aria-label={`${visualization.sampled ? "Sampled " : ""}numeric distribution with ${visualization.bins.length} bins; range ${rangeLabel}.`}
+      >
+        <svg className="miniChart" viewBox={`0 0 ${width} ${height}`} aria-hidden="true" focusable="false">
+          {visualization.bins.map((bin, index) => {
+            const barHeight = Math.max(2, (bin.count / max) * height);
+            return (
+              <rect
+                key={`${bin.min}-${bin.max}-${index}`}
+                x={index * barWidth}
+                y={height - barHeight}
+                width={Math.max(1, barWidth - 1)}
+                height={barHeight}
+              />
+            );
+          })}
+        </svg>
+        <span className="miniChartCaption">
+          {rangeLabel} · {visualization.bins.length} bins
+        </span>
+      </span>
     );
   }
   if (visualization.kind === "boolean") {
     const total = Math.max(1, visualization.trueCount + visualization.falseCount);
     return (
-      <span className="stackedMiniChart" title={`True ${visualization.trueCount}, False ${visualization.falseCount}`}>
-        <i style={{ width: `${(visualization.trueCount / total) * 100}%` }} />
-        <b style={{ width: `${(visualization.falseCount / total) * 100}%` }} />
+      <span
+        className="booleanMiniChart"
+        role="img"
+        aria-label={`${visualization.sampled ? "Sampled " : ""}boolean distribution: true ${visualization.trueCount}, false ${visualization.falseCount}.`}
+      >
+        <span className="miniChartLegend">
+          <span>True {visualization.trueCount.toLocaleString()}</span>
+          <span>False {visualization.falseCount.toLocaleString()}</span>
+        </span>
+        <span className="stackedMiniChart" aria-hidden="true">
+          <i style={{ width: `${(visualization.trueCount / total) * 100}%` }} />
+          <b style={{ width: `${(visualization.falseCount / total) * 100}%` }} />
+        </span>
       </span>
     );
   }
   if (visualization.kind === "categorical") {
     const max = Math.max(1, ...visualization.categories.map((category) => category.count), visualization.otherCount);
+    const visibleCategories = visualization.categories.slice(0, 3);
+    const categoryLabel = [
+      ...visibleCategories.map((category) => `${category.value}: ${category.count}`),
+      ...(visualization.otherCount > 0 ? [`Other: ${visualization.otherCount}`] : [])
+    ].join(", ");
     return (
-      <span className="categoryMiniChart">
-        {visualization.categories.slice(0, 4).map((category) => (
-          <i
-            key={category.value}
-            title={`${category.value}: ${category.count}`}
-            style={{ width: `${(category.count / max) * 100}%` }}
-          />
+      <span
+        className="categoryMiniChart"
+        role="img"
+        aria-label={`${visualization.sampled ? "Sampled " : ""}categorical distribution${categoryLabel ? `: ${categoryLabel}` : " with no values"}.`}
+      >
+        {visibleCategories.map((category, index) => (
+          <span className="categoryMiniRow" key={`${category.value}-${index}`}>
+            <span className="categoryMiniLabel">{category.value}</span>
+            <i aria-hidden="true" style={{ width: `${(category.count / max) * 100}%` }} />
+            <small>{category.count.toLocaleString()}</small>
+          </span>
         ))}
+        {visualization.otherCount > 0 && (
+          <span className="categoryMiniRow">
+            <span className="categoryMiniLabel">Other</span>
+            <i aria-hidden="true" style={{ width: `${(visualization.otherCount / max) * 100}%` }} />
+            <small>{visualization.otherCount.toLocaleString()}</small>
+          </span>
+        )}
       </span>
     );
   }
+  const min = visualization.min ?? "n/a";
+  const max = visualization.max ?? "n/a";
   return (
-    <span className="datetimeMiniChart" title={`${visualization.min ?? "n/a"} – ${visualization.max ?? "n/a"}`}>
-      {visualization.min ?? "n/a"} – {visualization.max ?? "n/a"}
+    <span
+      className="datetimeMiniChart"
+      role="img"
+      aria-label={`${visualization.sampled ? "Sampled " : ""}datetime distribution: minimum ${min}, maximum ${max}.`}
+    >
+      <span>
+        <b>Min</b> {min}
+      </span>
+      <span>
+        <b>Max</b> {max}
+      </span>
     </span>
   );
 }
@@ -991,4 +1049,8 @@ function formatPercent(value: number, total: number): string {
   if (total <= 0) return "0%";
   const percentage = (value / total) * 100;
   return `${percentage < 1 && percentage > 0 ? "<1" : Math.round(percentage).toLocaleString()}%`;
+}
+
+function formatInsightValue(value: number): string {
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }

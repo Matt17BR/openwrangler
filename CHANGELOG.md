@@ -6,6 +6,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- Added exact numeric minimum and maximum values to column-header Insights and the Summary drawer, plus compact numeric, categorical, boolean, and datetime visuals whose meaning remains visible and accessible without relying on color.
 - Added **Change Import Options** to configurable file grids, initial-load errors, the editor toolbar and tab menu, and the Command Palette. A successful change keeps the public session, cleaning plan, draft, and view; cancellation or failure leaves the confirmed session untouched.
 - Added **Open in Open Wrangler** to supported-file editor toolbars and editor-tab context menus alongside the existing Explorer and Command Palette entry points, with actual workbench click acceptance in isolated VS Code and Cursor profiles. A declarative Cursor configuration default pins the canonical action because Cursor hides third-party title actions by default; explicit user settings still take precedence.
 - Added selectable Cleaning Steps history: each applied step opens a paged input→output inspection with identity-aware cell/column highlighting and generated code through that step, while Original Data restores the exact confirmed view.
@@ -18,6 +19,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Bound every progressive column summary to its stable column identity across the protocol, Pandas/Polars/DuckDB runtimes, saved snapshots, coordinator, native views, and webview. Duplicate and non-string Pandas labels are profiled positionally; missing, duplicate, unknown, or reordered summary results fail closed. The nonmodal Insights drawer now has deterministic focus entry, Escape close, exact opener restoration, and human positional disambiguation for duplicate labels.
 - Prevented actionless dependency notifications and hung status/validation helpers from retaining mutation barriers or keeping the extension host referenced during shutdown; helper processes are now exact-close tracked and idempotently unreferenced without signalling or killing them.
 - Prevented delayed grid virtualization, page retry, operation-dialog, and insights-drawer focus restoration from reclaiming the custom-editor iframe after VS Code or Cursor transfers focus to a QuickInput or another workbench surface. Focus ownership is now checked when restoration is scheduled and again immediately before the DOM focus call.
 - Made packaged notebook-renderer discovery observation-only and locally bounded. Cursor layout churn can no longer stall acceptance on Playwright pointer-actionability checks; the harness still requires the exact action to be visible, enabled, and functional while preserving the active-notebook provenance race, and retained diagnostics contain only capped structural state rather than rendered dataframe text.

@@ -86,6 +86,182 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
   });
 
+  it("keeps duplicate labels distinct through out-of-order profiles and selected-column state", async () => {
+    const duplicateMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 2 },
+      filteredShape: { rows: 2, columns: 2 },
+      schema: [
+        { id: "c:left", name: "duplicate", position: 0, rawType: "Int64", type: "integer", nullable: false },
+        { id: "c:right", name: "duplicate", position: 1, rawType: "Float64", type: "float", nullable: false }
+      ]
+    };
+    const duplicatePage: GridPage = {
+      offset: 0,
+      limit: 2,
+      totalRows: 2,
+      columnIds: ["c:left", "c:right"],
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: [
+            { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false },
+            { kind: "number", raw: 10, display: "10", isNull: false, isNaN: false }
+          ]
+        },
+        {
+          id: "r:1",
+          rowNumber: 1,
+          values: [
+            { kind: "integer", raw: "1", display: "1", isNull: false, isNaN: false },
+            { kind: "number", raw: 20, display: "20", isNull: false, isNaN: false }
+          ]
+        }
+      ]
+    };
+    const leftSummary: ColumnSummary = {
+      columnId: "c:left",
+      column: "duplicate",
+      type: "integer",
+      rawType: "Int64",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 1,
+      numeric: { min: 1, max: 1, mean: 1, median: 1, std: 0 },
+      topValues: [{ value: "1", count: 2 }]
+    };
+    const rightSummary: ColumnSummary = {
+      columnId: "c:right",
+      column: "duplicate",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      numeric: { min: 10, max: 20, mean: 15, median: 15, std: 7.0711 },
+      topValues: [
+        { value: "10", count: 1 },
+        { value: "20", count: 1 }
+      ]
+    };
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata: duplicateMetadata, page: duplicatePage, summaries: [] });
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
+    const leftRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:left");
+    const rightRequest = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:right");
+    if (!leftRequest || !rightRequest) throw new Error("Expected both duplicate-label summary requests.");
+
+    dispatch({
+      kind: "summary",
+      revision: duplicateMetadata.revision,
+      viewRequestId: viewId(rightRequest),
+      summaries: [rightSummary]
+    });
+    dispatch({
+      kind: "summary",
+      revision: duplicateMetadata.revision,
+      viewRequestId: viewId(leftRequest),
+      summaries: [leftSummary]
+    });
+
+    const headers = [...document.querySelectorAll<HTMLElement>('th[data-column="duplicate"]')];
+    expect(headers).toHaveLength(2);
+    expect(within(headers[0]!).getByText("Distinct 50%")).toBeVisible();
+    expect(within(headers[0]!).getByText("Min 1")).toBeVisible();
+    expect(within(headers[1]!).getByText("Distinct 100%")).toBeVisible();
+    expect(within(headers[1]!).getByText("Max 20")).toBeVisible();
+
+    postMessage.mockClear();
+    const secondDuplicateCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
+    if (!secondDuplicateCell) throw new Error("Expected the second duplicate-label cell.");
+    act(() => secondDuplicateCell.focus());
+    await waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "updateViewState",
+          state: expect.objectContaining({ selectedColumnId: "c:right" })
+        })
+      )
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    expect(screen.getAllByText(/duplicate \(column [12]\)/u).map((node) => node.textContent)).toEqual([
+      "duplicate (column 1)",
+      "duplicate (column 2)"
+    ]);
+  });
+
+  it.each(["mouse", "keyboard"] as const)(
+    "moves focus into the non-modal drawer on %s entry, closes on Escape, and restores its opener",
+    async (activation) => {
+      const frames: FrameRequestCallback[] = [];
+      const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      try {
+        render(<App />);
+        dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+        const toggle = await screen.findByRole("button", { name: "Insights & filters" });
+        expect(toggle).toHaveAttribute("aria-controls", "openwrangler-insights-panel");
+        if (activation === "keyboard") {
+          toggle.focus();
+          fireEvent.keyDown(toggle, { key: "Enter" });
+          fireEvent.click(toggle, { detail: 0 });
+        } else {
+          fireEvent.click(toggle, { detail: 1 });
+        }
+        const panel = screen.getByRole("complementary", { name: "Insights and filters" });
+        expect(panel).toHaveAttribute("id", "openwrangler-insights-panel");
+        expect(panel).not.toHaveAttribute("aria-modal");
+        const close = screen.getByRole("button", { name: "Close panel" });
+        act(() => frames.shift()?.(performance.now()));
+        expect(close).toHaveFocus();
+
+        fireEvent.keyDown(close, { key: "Escape" });
+        expect(screen.queryByRole("complementary", { name: "Insights and filters" })).toBeNull();
+        act(() => frames.shift()?.(performance.now()));
+        expect(toggle).toHaveFocus();
+      } finally {
+        hasFocus.mockRestore();
+        requestFrame.mockRestore();
+      }
+    }
+  );
+
+  it("returns drawer focus to the exact column-filter opener", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+      const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+      if (!cityHeader) throw new Error("Expected the city header.");
+      fireEvent.click(within(cityHeader).getByLabelText("Column actions for city"));
+      const filter = within(cityHeader).getByRole("button", { name: "Filter…" });
+      filter.focus();
+      fireEvent.click(filter);
+      const close = screen.getByRole("button", { name: "Close panel" });
+      act(() => frames.shift()?.(performance.now()));
+      expect(close).toHaveFocus();
+
+      fireEvent.keyDown(close, { key: "Escape" });
+      act(() => frames.shift()?.(performance.now()));
+      expect(filter).toHaveFocus();
+    } finally {
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
+  });
+
   it("keeps one renderer handshake while opening and accepting progressive profiles", async () => {
     render(<App />);
     expect(messagesOfKind("ready")).toHaveLength(1);
