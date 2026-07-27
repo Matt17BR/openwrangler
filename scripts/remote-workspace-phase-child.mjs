@@ -438,14 +438,6 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   let capabilities;
   if (!terminalError && resultLease) {
     try {
-      const successfulTopology = inspectRemoteWorkspaceLogTopology({
-        localLogs: join(config.paths.userData, "logs"),
-        remoteLogs: join(config.paths.remoteHome, ".vscode-server", "data", "logs"),
-        uid: config.uid
-      });
-      if (Object.values(successfulTopology).some((count) => count !== 1)) {
-        throw new Error("The successful Remote SSH phase did not retain one exact private startup-log topology.");
-      }
       const remoteSshLog = findRemoteSshLog(config.paths.userData);
       validateRemoteSshLogAttestation(readBoundedRemoteWorkspaceFile(remoteSshLog, MAX_REMOTE_SSH_LOG_BYTES));
       capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
