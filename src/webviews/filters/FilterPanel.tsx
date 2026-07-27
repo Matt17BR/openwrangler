@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionMetadata, TypedSelectionToken, ValuesResponse } from "../../shared/protocol";
 import type {
   ColumnFilter,
@@ -8,7 +8,12 @@ import type {
   PredicateOperator,
   SortDirection
 } from "../../shared/filterModel";
-import { supportsTypedViewComparison, viewPredicateOperators } from "../../shared/filterModel";
+import {
+  ambiguousViewColumnMessage,
+  countViewColumnNames,
+  supportsTypedViewComparison,
+  viewPredicateOperators
+} from "../../shared/filterModel";
 
 interface FilterPanelProps {
   metadata: SessionMetadata | undefined;
@@ -42,6 +47,7 @@ export function FilterPanel({
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [sortOpen, setSortOpen] = useState(model.sort.length > 0);
   const [advanced, setAdvanced] = useState(defaultAdvanced);
+  const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
 
   useEffect(() => {
     const requestedColumnChanged = previousRequestedColumn.current !== requestedColumn;
@@ -58,12 +64,18 @@ export function FilterPanel({
   const columnSchema = metadata?.schema.find((item) => item.id === columnId);
   const activeColumn = columnSchema?.name ?? "";
   const hasActiveColumn = Boolean(columnSchema && activeColumn);
+  const activeColumnNameCount = viewColumnNameCounts.get(activeColumn) ?? 0;
+  const activeColumnAmbiguous = activeColumnNameCount > 1;
+  const ambiguityMessage = activeColumnAmbiguous
+    ? ambiguousViewColumnMessage(activeColumn, activeColumnNameCount)
+    : undefined;
+  const viewQueryControlsDisabled = disabled || activeColumnAmbiguous;
   const supportsTypedComparison = columnSchema ? supportsTypedViewComparison(columnSchema.type) : false;
   const availableOperators = columnSchema ? viewPredicateOperators(columnSchema.type) : [];
   const activePredicateOperator = availableOperators.includes(predicateOperator)
     ? predicateOperator
     : (availableOperators[0] ?? "isNull");
-  const columnValueResponse = activeColumn ? values.get(activeColumn) : undefined;
+  const columnValueResponse = activeColumn && !activeColumnAmbiguous ? values.get(activeColumn) : undefined;
 
   const activeFilter = model.filters.find((item) => item.column === activeColumn);
   const selectedValues = new Map(
@@ -75,13 +87,13 @@ export function FilterPanel({
   }
 
   const updateFilter = (nextFilter: ColumnFilter) => {
-    if (disabled || !nextFilter.column) return;
+    if (viewQueryControlsDisabled || !nextFilter.column) return;
     const filters = model.filters.filter((item) => item.column !== nextFilter.column);
     onApply({ ...model, filters: [...filters, nextFilter] });
   };
 
   const toggleValue = (value: unknown) => {
-    if (disabled || !columnSchema || !activeColumn || !supportsTypedComparison) {
+    if (viewQueryControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) {
       return;
     }
     const nextSelected = new Map(selectedValues);
@@ -108,7 +120,7 @@ export function FilterPanel({
 
   const addPredicate = () => {
     if (
-      disabled ||
+      viewQueryControlsDisabled ||
       !columnSchema ||
       !activeColumn ||
       !availableOperators.includes(activePredicateOperator) ||
@@ -130,7 +142,7 @@ export function FilterPanel({
   };
 
   const applySort = () => {
-    if (disabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
+    if (viewQueryControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
     onApply({
       ...model,
       sort: [
@@ -192,28 +204,33 @@ export function FilterPanel({
             {metadata.schema.length === 0 && <option value="">No columns available</option>}
             {metadata.schema.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name}
+                {columnOptionLabel(item.name, item.position, viewColumnNameCounts)}
               </option>
             ))}
           </select>
         </label>
+        {ambiguityMessage && (
+          <p className="mutedText" role="status">
+            {ambiguityMessage}
+          </p>
+        )}
 
         <div className="row">
           <input
             aria-label={`Search values for ${activeColumn || "selected column"}`}
             value={search}
             placeholder="Search values"
-            disabled={disabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) => setSearch(event.target.value)}
             onKeyDown={(event) => {
-              if (!disabled && supportsTypedComparison && event.key === "Enter" && activeColumn) {
+              if (!viewQueryControlsDisabled && supportsTypedComparison && event.key === "Enter" && activeColumn) {
                 onRequestValues(activeColumn, search);
               }
             }}
           />
           <button
             type="button"
-            disabled={disabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={() => {
               if (activeColumn) onRequestValues(activeColumn, search);
             }}
@@ -231,7 +248,7 @@ export function FilterPanel({
                 <input
                   type="checkbox"
                   checked={selectedValues.has(selectionKey)}
-                  disabled={disabled || !supportsTypedComparison}
+                  disabled={viewQueryControlsDisabled || !supportsTypedComparison}
                   onChange={() => toggleValue(selectionValue)}
                 />
                 <span>{item.value}</span>
@@ -247,7 +264,7 @@ export function FilterPanel({
             <select
               aria-label="Condition combination"
               value={model.filters.find((item) => item.column === activeColumn)?.logic ?? "and"}
-              disabled={disabled || !hasActiveColumn}
+              disabled={viewQueryControlsDisabled || !hasActiveColumn}
               onChange={(event) => {
                 if (!columnSchema || !activeColumn) return;
                 const existing = model.filters.find((item) => item.column === activeColumn);
@@ -267,7 +284,7 @@ export function FilterPanel({
           <select
             aria-label="Predicate operator"
             value={activePredicateOperator}
-            disabled={disabled || !hasActiveColumn}
+            disabled={viewQueryControlsDisabled || !hasActiveColumn}
             onChange={(event) => setPredicateOperator(event.target.value as PredicateOperator)}
           >
             {availableOperators.map((operator) => (
@@ -281,7 +298,7 @@ export function FilterPanel({
               aria-label={`${activePredicateOperator} predicate value`}
               value={predicateValue}
               placeholder="Value"
-              disabled={disabled || !hasActiveColumn}
+              disabled={viewQueryControlsDisabled || !hasActiveColumn}
               onChange={(event) => setPredicateValue(event.target.value)}
             />
           )}
@@ -290,14 +307,14 @@ export function FilterPanel({
               aria-label="Between predicate upper bound"
               value={secondPredicateValue}
               placeholder="And"
-              disabled={disabled || !hasActiveColumn}
+              disabled={viewQueryControlsDisabled || !hasActiveColumn}
               onChange={(event) => setSecondPredicateValue(event.target.value)}
             />
           )}
           <button
             type="button"
             disabled={
-              disabled ||
+              viewQueryControlsDisabled ||
               !hasActiveColumn ||
               !availableOperators.includes(activePredicateOperator) ||
               !hasCompletePredicateValues(activePredicateOperator, predicateValue, secondPredicateValue)
@@ -340,7 +357,7 @@ export function FilterPanel({
             {metadata.schema.length === 0 && <option value="">No columns available</option>}
             {metadata.schema.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name}
+                {columnOptionLabel(item.name, item.position, viewColumnNameCounts)}
               </option>
             ))}
           </select>
@@ -349,13 +366,17 @@ export function FilterPanel({
           <select
             aria-label="Sort direction"
             value={sortDirection}
-            disabled={disabled || !hasActiveColumn || !supportsTypedComparison}
+            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onChange={(event) => setSortDirection(event.target.value as SortDirection)}
           >
             <option value="asc">Sort ascending</option>
             <option value="desc">Sort descending</option>
           </select>
-          <button type="button" disabled={disabled || !hasActiveColumn || !supportsTypedComparison} onClick={applySort}>
+          <button
+            type="button"
+            disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
+            onClick={applySort}
+          >
             Add sort
           </button>
         </div>
@@ -371,6 +392,9 @@ export function FilterPanel({
     </section>
   );
 }
+
+const columnOptionLabel = (name: string, position: number, nameCounts: ReadonlyMap<string, number>): string =>
+  (nameCounts.get(name) ?? 0) > 1 ? `${name} (column ${position + 1})` : name;
 
 const selectionValueKey = (value: unknown): string => {
   if (isTypedSelectionToken(value)) {

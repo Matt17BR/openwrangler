@@ -441,6 +441,10 @@ class EngineError(RuntimeError):
     """Raised when a backend cannot satisfy an Open Wrangler request."""
 
 
+class AmbiguousViewColumnError(EngineError):
+    """Raised when a name-addressed viewing query cannot identify one column."""
+
+
 def resolve_excel_sheet_selector(options: Mapping[str, Any]) -> ExcelSheetSelector:
     """Validate and resolve the one public Excel sheet selector."""
 

@@ -642,6 +642,12 @@ First-class editor platform and Remote SSH acceptance, 2026-07-27:
 
 This advances only **Original icons, native views, themes, accessibility** and **Cross-platform first-class editor package acceptance** to **Done**. Native Cursor on macOS/Windows is a bounded platform smoke, and Remote SSH evidence is the pinned Linux-x64 loopback fixture rather than every remote provider or host. Installed-editor first-usable-grid performance and virtual-grid timing remain **Partial**; experimental VS Code forks, DuckDB completion, parity completion, and 1.0 readiness are not implied.
 
+Ambiguous Pandas viewing-name hardening, 2026-07-27:
+
+- Live Pandas filters, sorts, and distinct-value lookup now reject both duplicate raw labels and distinct raw labels whose string forms collide, matching the existing saved-snapshot fail-closed behavior. Standalone and notebook transports preserve request and view correlation while returning the structured `ambiguous_view_column` diagnostic.
+- The grid and Filters / Sorts drawer explain the ambiguity, distinguish selector entries by position, and disable only controls that would emit a name-addressed query. Stable-ID cleaning operations, paging, profiling, resizing, selection, and clear actions remain usable.
+- Focused Pandas runtime, standalone protocol, kernel protocol, and React tests cover true duplicates and integer-`7`/string-`"7"` collisions. This closes a silent-first-column correctness gap without changing the status of any parity row or replacing packaged-editor evidence.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, DuckDB Excel/notebook/`.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. Native PySpark support is a tracked post-parity engine expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36); it remains unavailable until its distributed paging, Spark Connect, operation, recovery, and packaged-editor gates are green. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.

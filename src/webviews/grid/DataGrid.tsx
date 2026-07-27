@@ -11,7 +11,11 @@ import type {
   SessionMetadata
 } from "../../shared/protocol";
 import type { SortDirection } from "../../shared/filterModel";
-import { supportsTypedViewComparison } from "../../shared/filterModel";
+import {
+  ambiguousViewColumnMessage,
+  countViewColumnNames,
+  supportsTypedViewComparison
+} from "../../shared/filterModel";
 import type { GridViewState } from "../../shared/viewState";
 
 interface DataGridProps {
@@ -90,6 +94,7 @@ export function DataGrid({
     () => new Map(summaries.map((summary) => [summary.columnId, summary])),
     [summaries]
   );
+  const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata.schema), [metadata.schema]);
   const diffPresentation = useMemo(
     () => buildDiffPresentation(diff, page, metadata.schema, beforePage, beforeSchema),
     [beforePage, beforeSchema, diff, metadata.schema, page]
@@ -449,6 +454,7 @@ export function DataGrid({
                   summary={summaryByColumnId.get(column.id)}
                   viewControlsDisabled={viewControlsDisabled}
                   viewControlsDisabledReason={viewControlsDisabledReason}
+                  viewColumnNameCount={viewColumnNameCounts.get(column.name) ?? 0}
                   onOpenFilter={(name) => {
                     reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
                     onOpenFilter(name);
@@ -765,6 +771,7 @@ function ColumnHeader({
   summary,
   viewControlsDisabled,
   viewControlsDisabledReason,
+  viewColumnNameCount,
   onOpenFilter,
   onSortColumn,
   onResize
@@ -778,12 +785,17 @@ function ColumnHeader({
   summary: ColumnSummary | undefined;
   viewControlsDisabled: boolean;
   viewControlsDisabledReason: string;
+  viewColumnNameCount: number;
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
   onResize(width: number): void;
 }) {
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
+  const ambiguityReason =
+    viewColumnNameCount > 1 ? ambiguousViewColumnMessage(column.name, viewColumnNameCount) : undefined;
+  const viewQueryControlsDisabled = viewControlsDisabled || ambiguityReason !== undefined;
+  const viewQueryControlsDisabledReason = viewControlsDisabled ? viewControlsDisabledReason : ambiguityReason;
   const beginResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (viewControlsDisabled) return;
     event.preventDefault();
@@ -823,27 +835,27 @@ function ColumnHeader({
         <details className="columnMenu">
           <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
           <div className="columnMenuContent">
-            {viewControlsDisabled && (
+            {viewQueryControlsDisabled && (
               <span id={disabledDescriptionId} className="columnMenuNotice">
-                {viewControlsDisabledReason}
+                {viewQueryControlsDisabledReason}
               </span>
             )}
             <button
               type="button"
-              disabled={viewControlsDisabled}
-              aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
-              title={viewControlsDisabled ? viewControlsDisabledReason : undefined}
+              disabled={viewQueryControlsDisabled}
+              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+              title={viewQueryControlsDisabledReason}
               onClick={() => onOpenFilter(column.name)}
             >
               Filter…
             </button>
             <button
               type="button"
-              disabled={viewControlsDisabled || comparisonUnavailable}
-              aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
+              disabled={viewQueryControlsDisabled || comparisonUnavailable}
+              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
               title={
-                viewControlsDisabled
-                  ? viewControlsDisabledReason
+                viewQueryControlsDisabled
+                  ? viewQueryControlsDisabledReason
                   : comparisonUnavailable
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
@@ -854,11 +866,11 @@ function ColumnHeader({
             </button>
             <button
               type="button"
-              disabled={viewControlsDisabled || comparisonUnavailable}
-              aria-describedby={viewControlsDisabled ? disabledDescriptionId : undefined}
+              disabled={viewQueryControlsDisabled || comparisonUnavailable}
+              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
               title={
-                viewControlsDisabled
-                  ? viewControlsDisabledReason
+                viewQueryControlsDisabled
+                  ? viewQueryControlsDisabledReason
                   : comparisonUnavailable
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined

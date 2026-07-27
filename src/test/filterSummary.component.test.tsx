@@ -397,6 +397,77 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Add predicate" })).toBeEnabled();
   });
 
+  it("fails closed when stable columns share one displayed name", () => {
+    const onApply = vi.fn();
+    const onRequestValues = vi.fn();
+    const ambiguousMetadata: SessionMetadata = {
+      ...metadata,
+      backend: "pandas",
+      shape: { rows: 2, columns: 2 },
+      filteredShape: { rows: 2, columns: 2 },
+      schema: [
+        { id: "c:number", name: "7", position: 0, rawType: "int64", type: "integer", nullable: false },
+        { id: "c:string", name: "7", position: 1, rawType: "int64", type: "integer", nullable: false }
+      ]
+    };
+    const ambiguousValues = new Map<string, ValuesResponse>([
+      [
+        "7",
+        {
+          kind: "columnValues",
+          revision: 0,
+          viewRequestId: "stale-ambiguous-values",
+          column: "7",
+          values: [{ value: "100", count: 2 }],
+          hasMore: false
+        }
+      ]
+    ]);
+
+    render(
+      <FilterPanel
+        metadata={ambiguousMetadata}
+        model={{ filters: [], sort: [] }}
+        values={ambiguousValues}
+        activeColumn="7"
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={onRequestValues}
+      />
+    );
+
+    expect(
+      screen.getByText(
+        'View filters, sorts, and values are unavailable because 2 columns share the displayed name "7". Rename one column in a cleaning step first.'
+      )
+    ).toHaveAttribute("role", "status");
+    for (const select of screen.getAllByLabelText("Column")) {
+      expect(within(select).getByRole("option", { name: "7 (column 1)" })).toBeInTheDocument();
+      expect(within(select).getByRole("option", { name: "7 (column 2)" })).toBeInTheDocument();
+      expect(select).toBeEnabled();
+    }
+    expect(screen.getByPlaceholderText("Search values")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.queryByRole("checkbox", { name: /100/u })).toBeNull();
+    expect(screen.getByLabelText("Condition combination")).toBeDisabled();
+    expect(screen.getByLabelText("Predicate operator")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
+    expect(screen.getByLabelText("Sort direction")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear column" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+
+    fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Values" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onRequestValues).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+  });
+
   it("handles an empty schema without dispatching invalid filters", () => {
     const onApply = vi.fn();
     const onRequestValues = vi.fn();

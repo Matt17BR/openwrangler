@@ -13,6 +13,7 @@ from .base import (
     DEFAULT_STRIP_CHARACTERS,
     INTERNAL_ROW_ID_PREFIX,
     VIEW_COMPARABLE_TYPES,
+    AmbiguousViewColumnError,
     DataFrameEngine,
     EngineCapabilities,
     EngineError,
@@ -146,7 +147,7 @@ class PandasEngine(DataFrameEngine):
         df = self.normalize(frame)
         column_masks = []
         for column_filter in model.get("filters", []):
-            position = self._resolve_visible_position(df, column_filter.get("column"))
+            position = self._resolve_visible_position(df, column_filter.get("column"), "filter")
             if position is None:
                 continue
             series = df.iloc[:, position]
@@ -190,16 +191,14 @@ class PandasEngine(DataFrameEngine):
 
         sort_rules = model.get("sort", [])
         if sort_rules:
-            resolved_rules = [
-                (self._resolve_visible_column(df, rule["column"]), rule)
-                for rule in sort_rules
-                if self._resolve_visible_position(df, rule["column"]) is not None
-            ]
+            resolved_rules = []
+            for rule in sort_rules:
+                position = self._resolve_visible_position(df, rule["column"], "sort")
+                if position is not None:
+                    resolved_rules.append((position, rule))
             if resolved_rules:
-                for column, rule in reversed(resolved_rules):
-                    position = self._resolve_visible_position(df, column)
-                    if position is None:
-                        continue
+                for position, rule in reversed(resolved_rules):
+                    column = df.columns[position]
                     column_type = _pandas_semantic_type(df.iloc[:, position])
                     if column_type not in VIEW_COMPARABLE_TYPES:
                         raise EngineError(f"Pandas view sorting is unavailable for {column_type} columns.")
@@ -317,7 +316,7 @@ class PandasEngine(DataFrameEngine):
         self, frame: Any, column: str, search: str | None = None, limit: int = 100
     ) -> tuple[list[dict[str, Any]], bool]:
         df = self.normalize(frame)
-        position = self._resolve_visible_position(df, column)
+        position = self._resolve_visible_position(df, column, "values")
         if position is None:
             raise EngineError(f"Unknown Pandas column: {column}")
         series = df.iloc[:, position]
@@ -687,12 +686,18 @@ class PandasEngine(DataFrameEngine):
         sort = model.get("sort", [])
         return self._apply_bound_sort_rules(filtered, sort, "filterRows") if sort else filtered
 
-    def _resolve_visible_position(self, frame: Any, requested: Any) -> int | None:
+    def _resolve_visible_position(self, frame: Any, requested: Any, purpose: str = "view") -> int | None:
         requested_name = str(requested)
-        return next(
-            (position for position in self._visible_positions(frame) if str(frame.columns[position]) == requested_name),
-            None,
-        )
+        matches = [
+            position for position in self._visible_positions(frame) if str(frame.columns[position]) == requested_name
+        ]
+        if len(matches) > 1:
+            raise AmbiguousViewColumnError(
+                f"Pandas view {purpose} column {requested_name!r} is ambiguous because "
+                f"{len(matches)} dataframe columns share that displayed name. "
+                "Rename one column before filtering, sorting, or loading values."
+            )
+        return matches[0] if matches else None
 
     def _resolve_visible_positions(self, frame: Any, requested: list[str]) -> list[int]:
         available: dict[str, list[int]] = {}
@@ -704,10 +709,6 @@ class PandasEngine(DataFrameEngine):
             if positions:
                 resolved.append(positions.pop(0))
         return resolved
-
-    def _resolve_visible_column(self, frame: Any, requested: Any) -> Any:
-        position = self._resolve_visible_position(frame, requested)
-        return frame.columns[position] if position is not None else requested
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
         plan = list(steps)

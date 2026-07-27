@@ -1,4 +1,4 @@
-import type { ColumnFilter, ColumnType, FilterModel, PredicateFilter } from "./protocol.generated";
+import type { ColumnFilter, ColumnSchema, ColumnType, FilterModel, PredicateFilter } from "./protocol.generated";
 
 export type { ColumnFilter, ColumnType, FilterModel, PredicateFilter };
 export type SortRule = FilterModel["sort"][number];
@@ -50,6 +50,17 @@ export const viewPredicateOperators = (type: ColumnType): readonly PredicateOper
 
 export const supportsViewPredicate = (type: ColumnType, operator: PredicateOperator): boolean =>
   viewPredicateOperators(type).includes(operator);
+
+export const countViewColumnNames = (columns: readonly Pick<ColumnSchema, "name">[]): ReadonlyMap<string, number> => {
+  const counts = new Map<string, number>();
+  for (const column of columns) {
+    counts.set(column.name, (counts.get(column.name) ?? 0) + 1);
+  }
+  return counts;
+};
+
+export const ambiguousViewColumnMessage = (name: string, count: number): string =>
+  `View filters, sorts, and values are unavailable because ${count} columns share the displayed name ${JSON.stringify(name)}. Rename one column in a cleaning step first.`;
 
 export const emptyFilterModel = (): FilterModel => ({
   logic: "and",
