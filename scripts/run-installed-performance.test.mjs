@@ -7,11 +7,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL, editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
+  assertInstalledPerformancePackageInventory,
+  assertNoPackageableUntrackedFiles,
+  assertSameInstalledPerformancePackageSources,
   cleanupInstalledPerformancePrivateRoot,
   collectInstalledPerformanceEditorRuns,
   installInstalledPerformanceCandidate,
   installedPerformanceDisplayMode,
-  packageInstalledPerformanceCandidate,
+  packageInstalledPerformanceCandidate as packageInstalledPerformanceCandidateImplementation,
   parseInstalledPerformanceArguments,
   publishInstalledPerformanceReleaseResult,
   readBoundedJson,
@@ -32,6 +35,31 @@ const fakeFileIdentity = Object.freeze({
   mtimeNs: 3n,
   ctimeNs: 4n
 });
+
+function packageInstalledPerformanceCandidate(options) {
+  return packageInstalledPerformanceCandidateImplementation({
+    assertPackageSource: () => packageSourceReceipt(["package.json"]),
+    verifyPackageInventory: () => {},
+    ...options
+  });
+}
+
+function packageSourceReceipt(packageFiles, generatedFiles = []) {
+  return Object.freeze({
+    packageFiles: Object.freeze([...packageFiles].sort()),
+    generatedFiles: Object.freeze(
+      generatedFiles.map(({ path, sha256 = "a".repeat(64), identity = fakeFileIdentity }) =>
+        Object.freeze({
+          path,
+          archiveEntry: `extension/${path}`,
+          bytes: Number(identity.size),
+          sha256,
+          fileIdentity: identity
+        })
+      )
+    )
+  });
+}
 
 function previewSourceManifest(overrides = {}) {
   return {
@@ -113,6 +141,195 @@ test("installed performance arguments support explicit smoke editor sharding", (
   );
   assert.throws(() => parseInstalledPerformanceArguments(["--unknown"]), /Unknown installed-performance option/u);
   assert.throws(() => parseInstalledPerformanceArguments(["candidate.vsix"]), /packages its own clean-HEAD candidate/u);
+});
+
+test("package source guard rejects packageable untracked files, including ignored generated-root extras", async () => {
+  const runtimeFile = "python/openwrangler_runtime/user_file.py";
+  const scratchFile = "scratch.txt";
+  const tracked = ["package.json", "python/openwrangler_runtime/server.py"];
+
+  await assert.rejects(
+    assertNoPackageableUntrackedFiles({
+      readTrackedFiles: () => [...tracked],
+      listPackageFiles: async () => ["package.json", runtimeFile],
+      deriveGeneratedFiles: () => new Set()
+    }),
+    /refuses to package an untracked or unexpected generated source file/u
+  );
+  await assert.rejects(
+    assertNoPackageableUntrackedFiles({
+      readTrackedFiles: () => [...tracked],
+      listPackageFiles: async () => ["package.json", "media/webview.js", "media/rogue.js"],
+      deriveGeneratedFiles: () => new Set(["media/webview.js"]),
+      pinGeneratedFile: (path) => packageSourceReceipt([path], [{ path }]).generatedFiles[0]
+    }),
+    /refuses to package an untracked or unexpected generated source file/u
+  );
+  await assert.doesNotReject(
+    assertNoPackageableUntrackedFiles({
+      readTrackedFiles: () => [...tracked],
+      listPackageFiles: async () => ["package.json"],
+      pinGeneratedFile: assert.fail,
+      deriveGeneratedFiles: () => new Set()
+    })
+  );
+  assert.deepEqual(tracked, ["package.json", "python/openwrangler_runtime/server.py"]);
+  assert.equal(scratchFile, "scratch.txt");
+});
+
+test("package source guard pins every exact generated output", async () => {
+  const source = await assertNoPackageableUntrackedFiles({
+    readTrackedFiles: () => ["package.json"],
+    listPackageFiles: async () => ["media/webview.js", "package.json"],
+    deriveGeneratedFiles: () => new Set(["media/webview.js"]),
+    pinGeneratedFile: (path) => packageSourceReceipt([path], [{ path }]).generatedFiles[0]
+  });
+  assert.deepEqual(source, packageSourceReceipt(["media/webview.js", "package.json"], [{ path: "media/webview.js" }]));
+});
+
+test("pinned package inventory rejects a source file that appears only while createVSIX runs", () => {
+  const pinnedBeforePackaging = ["package.json", "README.md", "LICENSE", "python/openwrangler_runtime/server.py"];
+  const packageSource = packageSourceReceipt(pinnedBeforePackaging);
+  const transientRuntimeFile = "extension/python/openwrangler_runtime/user_file.py";
+  const archiveCreatedDuringPackaging = [
+    "[Content_Types].xml",
+    "extension.vsixmanifest",
+    "extension/package.json",
+    "extension/readme.md",
+    "extension/LICENSE.txt",
+    "extension/python/openwrangler_runtime/server.py",
+    transientRuntimeFile
+  ];
+
+  assert.throws(
+    () => assertInstalledPerformancePackageInventory(packageSource, archiveCreatedDuringPackaging),
+    /inventory drifted from its pinned pre-package source set/u
+  );
+  archiveCreatedDuringPackaging.pop();
+  assert.doesNotThrow(() => assertInstalledPerformancePackageInventory(packageSource, archiveCreatedDuringPackaging));
+});
+
+test("pinned generated outputs reject source changes and archive-byte substitutions", () => {
+  const before = packageSourceReceipt(
+    ["package.json", "media/webview.js"],
+    [{ path: "media/webview.js", sha256: "a".repeat(64) }]
+  );
+  const changed = packageSourceReceipt(
+    ["package.json", "media/webview.js"],
+    [{ path: "media/webview.js", sha256: "b".repeat(64), identity: { ...fakeFileIdentity, ino: 9n } }]
+  );
+  assert.throws(
+    () => assertSameInstalledPerformancePackageSources(before, changed),
+    /generated package output changed/u
+  );
+  assert.throws(
+    () =>
+      assertInstalledPerformancePackageInventory(
+        before,
+        ["[Content_Types].xml", "extension.vsixmanifest", "extension/package.json", "extension/media/webview.js"],
+        [
+          ["extension/package.json", "c".repeat(64)],
+          ["extension/media/webview.js", "b".repeat(64)]
+        ]
+      ),
+    /generated output drifted from its pinned source bytes/u
+  );
+  assert.doesNotThrow(() =>
+    assertInstalledPerformancePackageInventory(
+      before,
+      ["[Content_Types].xml", "extension.vsixmanifest", "extension/package.json", "extension/media/webview.js"],
+      [
+        ["extension/package.json", "c".repeat(64)],
+        ["extension/media/webview.js", "a".repeat(64)]
+      ]
+    )
+  );
+});
+
+test("guarded packaging rejects the sealed candidate before verification when createVSIX adds a transient file", async () => {
+  const pinned = ["package.json", "python/openwrangler_runtime/server.py"];
+  let candidateVerified = false;
+  await assert.rejects(
+    packageInstalledPerformanceCandidate({
+      destination: "/private/candidate.vsix",
+      snapshotDestination: "/private/snapshot.vsix",
+      readSource: () => ({ commit: "a".repeat(40), trackedWorktreeDirty: false }),
+      readSourceManifest: () => previewSourceManifest(),
+      build: () => {},
+      assertPackageSource: () => packageSourceReceipt(pinned),
+      packageCandidate: () => {},
+      snapshotCandidate: (_source, destination) => ({
+        path: destination,
+        sha256: "b".repeat(64),
+        bytes: 123,
+        fileIdentity: fakeFileIdentity
+      }),
+      verifyPackageInventory(_receipt, packageSource) {
+        assertInstalledPerformancePackageInventory(packageSource, [
+          "[Content_Types].xml",
+          "extension.vsixmanifest",
+          "extension/package.json",
+          "extension/python/openwrangler_runtime/server.py",
+          "extension/python/openwrangler_runtime/transient.py"
+        ]);
+      },
+      verifyCandidate() {
+        candidateVerified = true;
+      }
+    }),
+    /inventory drifted from its pinned pre-package source set/u
+  );
+  assert.equal(candidateVerified, false);
+});
+
+test("guarded candidate packaging checks packageable untracked files immediately around packaging", async () => {
+  const clean = { commit: "a".repeat(40), trackedWorktreeDirty: false };
+  const events = [];
+  await packageInstalledPerformanceCandidate({
+    destination: "/private/candidate.vsix",
+    snapshotDestination: "/private/snapshot.vsix",
+    readSource: () => clean,
+    readSourceManifest: () => previewSourceManifest(),
+    build: () => {},
+    assertPackageSource() {
+      events.push("package-source");
+      return packageSourceReceipt(["package.json"]);
+    },
+    packageCandidate() {
+      events.push("package");
+    },
+    snapshotCandidate: (_source, destination) => ({
+      path: destination,
+      sha256: "b".repeat(64),
+      bytes: 123,
+      fileIdentity: fakeFileIdentity
+    }),
+    verifyPackageInventory(_receipt, packageSource) {
+      assert.deepEqual(packageSource, packageSourceReceipt(["package.json"]));
+      events.push("inventory");
+    },
+    verifyCandidate: () => {}
+  });
+  assert.deepEqual(events, ["package-source", "package", "package-source", "inventory"]);
+
+  let packaged = false;
+  await assert.rejects(
+    packageInstalledPerformanceCandidate({
+      destination: "/private/candidate.vsix",
+      snapshotDestination: "/private/snapshot.vsix",
+      readSource: () => clean,
+      readSourceManifest: () => previewSourceManifest(),
+      build: () => {},
+      assertPackageSource() {
+        throw new Error("packageable untracked source");
+      },
+      packageCandidate() {
+        packaged = true;
+      }
+    }),
+    /packageable untracked source/u
+  );
+  assert.equal(packaged, false);
 });
 
 test("guarded candidate packaging pins one clean source through build, package, and verification", async () => {
@@ -721,7 +938,38 @@ test("release publication rejects public candidate drift introduced while the re
   }
 });
 
-test("release publication revalidates candidate and report only after report write and gate", () => {
+test("release publication rejects candidate mutation while the report is revalidated", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-joint-final-"));
+  try {
+    const source = join(directory, "source.vsix");
+    const publicCandidate = join(directory, "public.vsix");
+    await writeFile(source, "candidate bytes before joint final validation");
+    const publicReceipt = stageInstalledPerformanceVsix(source, publicCandidate);
+    let reportReads = 0;
+
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(directory, "report.json"),
+          result: { protocol: "test" },
+          publicCandidateReceipt: publicReceipt,
+          writeReport: () => ({ marker: "report" }),
+          assertGate() {},
+          revalidateReport(_receipt, hooks) {
+            reportReads += 1;
+            writeFileSync(publicCandidate, "candidate mutation while reading the report");
+            hooks.afterOpen();
+          }
+        }),
+      /VSIX (receipt|checksum)/u
+    );
+    assert.equal(reportReads, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("release publication jointly revalidates the candidate while the report is pinned and after its read", () => {
   const events = [];
   const candidateReceipt = { marker: "candidate" };
   const reportReceipt = { marker: "report" };
@@ -741,14 +989,40 @@ test("release publication revalidates candidate and report only after report wri
         assert.equal(receipt, candidateReceipt);
         events.push(["candidate"]);
       },
-      revalidateReport(receipt) {
+      revalidateReport(receipt, hooks) {
         assert.equal(receipt, reportReceipt);
-        events.push(["report"]);
+        events.push(["report-open"]);
+        hooks.afterOpen();
+        events.push(["report-close"]);
       }
     }),
     reportReceipt
   );
-  assert.deepEqual(events, [["write", "/private/report.json"], ["gate"], ["candidate"], ["report"]]);
+  assert.deepEqual(events, [
+    ["write", "/private/report.json"],
+    ["gate"],
+    ["candidate"],
+    ["report-open"],
+    ["candidate"],
+    ["report-close"],
+    ["candidate"]
+  ]);
+});
+
+test("release publication rejects a report validator that cannot expose the joint read window", () => {
+  assert.throws(
+    () =>
+      publishInstalledPerformanceReleaseResult({
+        output: "/private/report.json",
+        result: { protocol: "test" },
+        publicCandidateReceipt: { marker: "candidate" },
+        writeReport: () => ({ marker: "report" }),
+        assertGate() {},
+        revalidateCandidate() {},
+        revalidateReport() {}
+      }),
+    /could not jointly validate its candidate and report/u
+  );
 });
 
 test("the VSIX snapshot rejects symbolic and hard-linked candidates", async () => {

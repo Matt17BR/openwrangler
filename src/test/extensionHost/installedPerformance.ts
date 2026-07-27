@@ -12,7 +12,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
-  rmSync,
+  type BigIntStats,
   writeFileSync
 } from "node:fs";
 import * as path from "node:path";
@@ -21,14 +21,19 @@ import * as vscode from "vscode";
 import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
 import type { BridgeRequestOptions } from "../../extension/dataBridge";
 import type { SessionRequestExecutionCheckpoint } from "../../extension/sessionCoordinator";
+import { decodeInstalledPerformanceFixtureManifest } from "../../shared/installedPerformanceFixtureManifest.cjs";
+import type {
+  InstalledPerformanceFixtureEntry,
+  InstalledPerformanceFixtureManifest
+} from "../../shared/installedPerformanceFixtureManifestTypes";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { parseStrictJson } from "../../shared/strictJson.cjs";
+import { removeIdentifiedTemporary } from "./identifiedTemporary";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
 const ARTIFACT_RECEIPT_PROTOCOL = "openwrangler-editor-acceptance-artifact-receipt-v1";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
-const FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 const FIRST_GRID_BOUNDARY =
   "vscode.openWith dispatch to a visible production grid block with exact shape and aria-busy=false";
 const SAMPLE_COUNT = 10;
@@ -36,7 +41,6 @@ const GRID_DISCOVERY_TIMEOUT_MS = 60_000;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 const FIRST_GRID_PHASE_PATTERN = /^perf-(csv|parquet)-(cold|warm)$/u;
 const GRID_INTERACTION_PHASE = "perf-grid-interaction";
-const SHA256 = /^[0-9a-f]{64}$/u;
 const MAX_PRIVATE_JSON_BYTES = 16 * 1024;
 
 interface TestApi {
@@ -55,20 +59,6 @@ interface TestApi {
 
 interface ExtensionApi {
   testing?: TestApi;
-}
-
-interface FixtureEntry {
-  fileName: string;
-  format: "csv" | "parquet";
-  rows: number;
-  columns: number;
-  sha256: string;
-}
-
-interface FixtureManifest {
-  protocol: string;
-  smoke: boolean;
-  fixtures: { csv: FixtureEntry; parquet: FixtureEntry };
 }
 
 interface RuntimeProbe {
@@ -204,7 +194,7 @@ async function measureFirstUsableGrid({
   workspace: string;
   source: string;
   sourceUri: vscode.Uri;
-  fixture: FixtureEntry;
+  fixture: InstalledPerformanceFixtureEntry;
   sourceCache: "cold" | "warm";
 }): Promise<Record<string, unknown>> {
   const warmup = vscode.Uri.file(path.join(workspace, "warmup.csv"));
@@ -280,7 +270,7 @@ async function measureGridInteraction({
   testing: TestApi;
   workbench: Page;
   sourceUri: vscode.Uri;
-  fixture: FixtureEntry;
+  fixture: InstalledPerformanceFixtureEntry;
 }): Promise<Record<string, unknown>> {
   recordProgress("interaction:open");
   await vscode.commands.executeCommand("vscode.openWith", sourceUri, "openWrangler.viewer", vscode.ViewColumn.One);
@@ -435,27 +425,12 @@ async function configureBenchmarkProfile(testPython: string): Promise<ProductCon
   return expected;
 }
 
-function readFixtureManifest(manifestPath: string): FixtureManifest {
-  const parsed = parseStrictJson(readFileSync(manifestPath, "utf8"), {
-    maxBytes: MAX_PRIVATE_JSON_BYTES
-  });
-  assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
-  const manifest = parsed as FixtureManifest;
-  assert.deepEqual(Object.keys(manifest).sort(), ["fixtures", "protocol", "smoke"]);
-  assert.equal(manifest.protocol, FIXTURE_PROTOCOL);
-  assert.equal(typeof manifest.smoke, "boolean");
-  assert.ok(manifest.fixtures && typeof manifest.fixtures === "object" && !Array.isArray(manifest.fixtures));
-  assert.deepEqual(Object.keys(manifest.fixtures).sort(), ["csv", "parquet"]);
-  for (const [format, fixture] of Object.entries(manifest.fixtures)) {
-    assert.ok(fixture && typeof fixture === "object" && !Array.isArray(fixture));
-    assert.deepEqual(Object.keys(fixture).sort(), ["columns", "fileName", "format", "rows", "sha256"]);
-    assert.equal(fixture.format, format);
-    assert.match(fixture.fileName, /^\d+-\d+\.(?:csv|parquet)$/u);
-    assert.ok(Number.isSafeInteger(fixture.rows) && fixture.rows > 0);
-    assert.ok(Number.isSafeInteger(fixture.columns) && fixture.columns > 0);
-    assert.match(fixture.sha256, SHA256);
-  }
-  return manifest;
+function readFixtureManifest(manifestPath: string): InstalledPerformanceFixtureManifest {
+  return decodeInstalledPerformanceFixtureManifest(
+    parseStrictJson(readFileSync(manifestPath, "utf8"), {
+      maxBytes: MAX_PRIVATE_JSON_BYTES
+    })
+  ) as InstalledPerformanceFixtureManifest;
 }
 
 function prepareSourceCache(testPython: string, workspace: string, source: string, mode: "cold" | "warm"): CacheProof {
@@ -1031,6 +1006,7 @@ function publishFragment(destination: string, value: unknown): ArtifactReceipt {
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
   assert.ok(bytes.length > 0 && bytes.length <= MAX_PRIVATE_JSON_BYTES);
   let descriptor: number | undefined;
+  let temporaryIdentity: BigIntStats | undefined;
   let published = false;
   try {
     descriptor = openSync(
@@ -1040,6 +1016,7 @@ function publishFragment(destination: string, value: unknown): ArtifactReceipt {
     );
     const identity = fstatSync(descriptor, { bigint: true });
     assert.ok(identity.isFile() && identity.nlink === 1n);
+    temporaryIdentity = identity;
     writeFileSync(descriptor, bytes);
     fsyncSync(descriptor);
     const complete = fstatSync(descriptor, { bigint: true });
@@ -1076,7 +1053,7 @@ function publishFragment(destination: string, value: unknown): ArtifactReceipt {
     });
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
-    if (!published) rmSync(temporary, { force: true });
+    if (!published && temporaryIdentity !== undefined) removeIdentifiedTemporary(temporary, temporaryIdentity);
   }
 }
 

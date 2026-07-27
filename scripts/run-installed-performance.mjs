@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createVSIX } from "@vscode/vsce";
+import { createVSIX, listFiles } from "@vscode/vsce";
 import {
   EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
   configureEditorAcceptanceTempRoot,
@@ -59,7 +59,13 @@ import {
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixArchive, MAX_VSIX_BYTES as VSIX_MAX_BYTES, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+import {
+  inspectVsixArchive,
+  MAX_VSIX_BYTES as VSIX_MAX_BYTES,
+  MAX_VSIX_ENTRY_BYTES,
+  MAX_VSIX_UNCOMPRESSED_BYTES,
+  readBoundedVsixFileSnapshot
+} from "./vsix-archive.mjs";
 import {
   inspectNotebookRendererBundle,
   inspectReadmeSourceSrcsets,
@@ -80,6 +86,17 @@ const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
+const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
+  "media/activity-icon.svg",
+  "media/codePreview.js",
+  "media/codicon.ttf",
+  "media/icon-128.png",
+  "media/icon.png",
+  "media/icon.svg",
+  "media/notebookRenderer.js",
+  "media/webview.css",
+  "media/webview.js"
+]);
 
 export function parseInstalledPerformanceArguments(arguments_) {
   const options = {
@@ -287,6 +304,8 @@ export async function packageInstalledPerformanceCandidate({
   readSourceManifest = readInstalledPerformanceSourceManifest,
   build = runInstalledPerformanceBuild,
   packageCandidate = createInstalledPerformanceVsix,
+  assertPackageSource = assertNoPackageableUntrackedFiles,
+  verifyPackageInventory = verifyInstalledPerformancePackageInventory,
   verifyCandidate = verifyInstalledPerformanceVsix,
   snapshotCandidate = stageInstalledPerformanceVsix
 }) {
@@ -298,7 +317,11 @@ export async function packageInstalledPerformanceCandidate({
   const sourceManifest = validateInstalledPerformanceSourceManifest(await readSourceManifest());
   await build(environment);
   requireSameSource(readSource(), before, "during candidate build");
+  const packageSource = await assertPackageSource();
+  requirePackageSourceReceipt(packageSource);
   await packageCandidate(destination, { preRelease: sourceManifest.preview });
+  const packageSourceAfter = await assertPackageSource();
+  assertSameInstalledPerformancePackageSources(packageSource, packageSourceAfter);
   requireSameSource(readSource(), before, "during candidate packaging");
   const snapshot = await snapshotCandidate(destination, snapshotDestination);
   requireVsixReceipt(snapshot);
@@ -309,6 +332,7 @@ export async function packageInstalledPerformanceCandidate({
     bytes: snapshot.bytes,
     fileIdentity: Object.freeze({ ...snapshot.fileIdentity })
   });
+  await verifyPackageInventory(snapshotReceipt, packageSource);
   await verifyCandidate(snapshotReceipt, environment);
   requireSameSource(readSource(), before, "during candidate verification");
   const receipt = Object.freeze({
@@ -551,7 +575,17 @@ export function publishInstalledPerformanceReleaseResult({
   const reportReceipt = writeReport(output, result);
   assertGate(result);
   revalidateCandidate(publicCandidateReceipt);
-  revalidateReport(reportReceipt);
+  let candidateValidatedWhileReportOpen = false;
+  revalidateReport(reportReceipt, {
+    afterOpen() {
+      revalidateCandidate(publicCandidateReceipt);
+      candidateValidatedWhileReportOpen = true;
+    }
+  });
+  if (!candidateValidatedWhileReportOpen) {
+    throw new Error("Installed-performance publication could not jointly validate its candidate and report.");
+  }
+  revalidateCandidate(publicCandidateReceipt);
   return reportReceipt;
 }
 
@@ -995,6 +1029,269 @@ function readSourceProvenance() {
     timeout: 10_000
   });
   return { commit, trackedWorktreeDirty: trackedStatus.trim().length > 0 };
+}
+
+function readTrackedSourceFiles() {
+  const output = execFileSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    timeout: 10_000
+  });
+  return output.split("\0").filter((entry) => entry.length > 0);
+}
+
+function packagePathIdentity(file) {
+  if (typeof file !== "string" || file.length === 0 || isAbsolute(file)) return undefined;
+  const identity = file.replaceAll("\\", "/").replace(/^\.\/+/u, "");
+  if (identity.length === 0 || identity.split("/").some((segment) => segment === "" || segment === "..")) {
+    return undefined;
+  }
+  return identity;
+}
+
+function expectedGeneratedPackageFiles(trackedFiles) {
+  const generated = new Set(GENERATED_MEDIA_PACKAGE_FILES);
+  for (const file of trackedFiles) {
+    if (/^src\/(?:extension|shared)\/.+\.ts$/u.test(file) && !file.endsWith(".d.ts")) {
+      generated.add(`dist/${file.slice("src/".length, -".ts".length)}.js`);
+    }
+  }
+  return generated;
+}
+
+function readGeneratedPackageSourceReceipt(file) {
+  const identity = packagePathIdentity(file);
+  if (identity === undefined) {
+    throw new Error("Installed performance could not bind one generated package source path.");
+  }
+  const absolute = resolve(root, identity);
+  let descriptor;
+  try {
+    descriptor = openReadOnlyNoFollow(
+      absolute,
+      "Installed performance generated package output must not be a symbolic link."
+    );
+    const before = fstatSync(descriptor, { bigint: true });
+    const namedBefore = lstatSync(absolute, { bigint: true });
+    requireSameRegularFile(
+      namedBefore,
+      before,
+      "Installed performance generated package output changed before it was read."
+    );
+    if (before.size <= 0n || before.size > BigInt(MAX_VSIX_ENTRY_BYTES)) {
+      throw new Error("Installed performance generated package output exceeds its bounded file size.");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(Math.min(Number(before.size), 64 * 1024));
+    let bytes = 0;
+    while (bytes < Number(before.size)) {
+      const count = readSync(descriptor, buffer, 0, Math.min(buffer.length, Number(before.size) - bytes), null);
+      if (count === 0) {
+        throw new Error("Installed performance generated package output ended before its validated byte size.");
+      }
+      hash.update(buffer.subarray(0, count));
+      bytes += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(absolute, { bigint: true });
+    requireSameRegularFile(after, before, "Installed performance generated package output changed while it was read.");
+    requireSameRegularFile(
+      namedAfter,
+      before,
+      "Installed performance generated package output path changed while it was read."
+    );
+    return Object.freeze({
+      path: identity,
+      archiveEntry: archiveEntryForPackageFile(identity),
+      bytes,
+      sha256: hash.digest("hex"),
+      fileIdentity: fileIdentityReceipt(after)
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function requirePackageSourceReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    !Array.isArray(receipt.packageFiles) ||
+    !Array.isArray(receipt.generatedFiles) ||
+    receipt.packageFiles.some((entry) => packagePathIdentity(entry) === undefined) ||
+    new Set(receipt.packageFiles).size !== receipt.packageFiles.length
+  ) {
+    throw new Error("Guarded installed-performance packaging did not pin its package source set.");
+  }
+  const packageFiles = new Set(receipt.packageFiles);
+  const generatedPaths = new Set();
+  for (const entry of receipt.generatedFiles) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      packagePathIdentity(entry.path) !== entry.path ||
+      entry.archiveEntry !== archiveEntryForPackageFile(entry.path) ||
+      !packageFiles.has(entry.path) ||
+      generatedPaths.has(entry.path) ||
+      !Number.isSafeInteger(entry.bytes) ||
+      entry.bytes <= 0 ||
+      typeof entry.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(entry.sha256) ||
+      !entry.fileIdentity ||
+      typeof entry.fileIdentity !== "object" ||
+      !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof entry.fileIdentity[key] === "bigint") ||
+      entry.fileIdentity.size !== BigInt(entry.bytes)
+    ) {
+      throw new Error("Guarded installed-performance packaging did not pin its generated source set.");
+    }
+    generatedPaths.add(entry.path);
+  }
+}
+
+export async function assertNoPackageableUntrackedFiles({
+  readTrackedFiles = readTrackedSourceFiles,
+  listPackageFiles = () => listFiles({ cwd: root }),
+  pinGeneratedFile = readGeneratedPackageSourceReceipt,
+  deriveGeneratedFiles = expectedGeneratedPackageFiles
+} = {}) {
+  const packaged = await listPackageFiles();
+  if (!Array.isArray(packaged) || packaged.some((entry) => packagePathIdentity(entry) === undefined)) {
+    throw new Error("Installed performance could not determine the package file set.");
+  }
+  const packageFiles = packaged.map(packagePathIdentity).sort();
+  if (new Set(packageFiles).size !== packageFiles.length) {
+    throw new Error("Installed performance found colliding package source paths.");
+  }
+  const rawTracked = readTrackedFiles();
+  if (!Array.isArray(rawTracked) || rawTracked.some((entry) => packagePathIdentity(entry) === undefined)) {
+    throw new Error("Installed performance could not determine the tracked source file set.");
+  }
+  const trackedFiles = rawTracked.map(packagePathIdentity);
+  if (new Set(trackedFiles).size !== trackedFiles.length) {
+    throw new Error("Installed performance found colliding tracked source paths.");
+  }
+  const tracked = new Set(trackedFiles);
+  const expectedGenerated = deriveGeneratedFiles(trackedFiles);
+  if (
+    !(expectedGenerated instanceof Set) ||
+    [...expectedGenerated].some((entry) => packagePathIdentity(entry) !== entry)
+  ) {
+    throw new Error("Installed performance could not determine the expected generated package outputs.");
+  }
+  if ([...expectedGenerated].some((entry) => tracked.has(entry))) {
+    throw new Error("Installed performance generated package outputs must remain build-owned.");
+  }
+  const unexpected = packageFiles.filter((entry) => !tracked.has(entry) && !expectedGenerated.has(entry));
+  if (unexpected.length > 0) {
+    throw new Error("Installed performance refuses to package an untracked or unexpected generated source file.");
+  }
+  const generatedPaths = packageFiles.filter((entry) => expectedGenerated.has(entry));
+  if (
+    generatedPaths.length !== expectedGenerated.size ||
+    [...expectedGenerated].some((entry) => !generatedPaths.includes(entry))
+  ) {
+    throw new Error("Installed performance generated package output set is incomplete.");
+  }
+  const generatedFiles = [];
+  let generatedBytes = 0;
+  for (const file of generatedPaths) {
+    const receipt = await pinGeneratedFile(file);
+    generatedFiles.push(receipt);
+    generatedBytes += receipt?.bytes ?? Number.NaN;
+    if (!Number.isSafeInteger(generatedBytes) || generatedBytes > MAX_VSIX_UNCOMPRESSED_BYTES) {
+      throw new Error("Installed performance generated package outputs exceed their aggregate size budget.");
+    }
+  }
+  const receipt = Object.freeze({
+    packageFiles: Object.freeze(packageFiles),
+    generatedFiles: Object.freeze(generatedFiles)
+  });
+  requirePackageSourceReceipt(receipt);
+  return receipt;
+}
+
+function archiveEntryForPackageFile(file) {
+  const identity = packagePathIdentity(file);
+  if (identity === undefined) {
+    throw new Error("Installed performance could not bind one package source path.");
+  }
+  const lower = identity.toLowerCase();
+  if (lower === "readme.md") return "extension/readme.md";
+  if (lower === "changelog.md") return "extension/changelog.md";
+  if (lower === "license" || lower === "license.txt" || lower === "license.md") return "extension/LICENSE.txt";
+  return `extension/${identity}`;
+}
+
+export function assertSameInstalledPerformancePackageSources(expected, actual) {
+  requirePackageSourceReceipt(expected);
+  requirePackageSourceReceipt(actual);
+  if (
+    expected.packageFiles.length !== actual.packageFiles.length ||
+    expected.packageFiles.some((entry, index) => entry !== actual.packageFiles[index]) ||
+    expected.generatedFiles.length !== actual.generatedFiles.length
+  ) {
+    throw new Error("Installed-performance package sources changed while the candidate was created.");
+  }
+  for (let index = 0; index < expected.generatedFiles.length; index += 1) {
+    const before = expected.generatedFiles[index];
+    const after = actual.generatedFiles[index];
+    if (
+      before.path !== after.path ||
+      before.archiveEntry !== after.archiveEntry ||
+      before.bytes !== after.bytes ||
+      before.sha256 !== after.sha256 ||
+      ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some((key) => before.fileIdentity[key] !== after.fileIdentity[key])
+    ) {
+      throw new Error("Installed-performance generated package output changed while the candidate was created.");
+    }
+  }
+}
+
+export function assertInstalledPerformancePackageInventory(packageSource, archiveEntries, archiveEntryDigests = []) {
+  requirePackageSourceReceipt(packageSource);
+  if (!Array.isArray(archiveEntries) || !Array.isArray(archiveEntryDigests)) {
+    throw new TypeError("Installed performance package inventory validation requires bounded archive arrays.");
+  }
+  const expected = packageSource.packageFiles.map(archiveEntryForPackageFile).sort();
+  const actual = archiveEntries
+    .filter((entry) => entry !== "[Content_Types].xml" && entry !== "extension.vsixmanifest" && !entry.endsWith("/"))
+    .sort();
+  if (
+    new Set(expected).size !== expected.length ||
+    new Set(actual).size !== actual.length ||
+    expected.length !== actual.length ||
+    expected.some((entry, index) => entry !== actual[index])
+  ) {
+    throw new Error("The installed-performance VSIX inventory drifted from its pinned pre-package source set.");
+  }
+  const digests = new Map();
+  for (const item of archiveEntryDigests) {
+    if (
+      !Array.isArray(item) ||
+      item.length !== 2 ||
+      typeof item[0] !== "string" ||
+      typeof item[1] !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(item[1]) ||
+      digests.has(item[0])
+    ) {
+      throw new Error("The installed-performance VSIX returned an invalid entry-digest inventory.");
+    }
+    digests.set(item[0], item[1]);
+  }
+  for (const generated of packageSource.generatedFiles) {
+    if (digests.get(generated.archiveEntry) !== generated.sha256) {
+      throw new Error("The installed-performance VSIX generated output drifted from its pinned source bytes.");
+    }
+  }
+}
+
+async function verifyInstalledPerformancePackageInventory(receipt, packageSource) {
+  requirePackageSourceReceipt(packageSource);
+  const snapshot = readInstalledPerformanceVsixSnapshot(receipt);
+  const archive = await inspectVsixArchive(snapshot.bytes);
+  assertInstalledPerformancePackageInventory(packageSource, archive.archiveEntries, archive.entryDigests);
+  revalidateInstalledPerformanceVsix(receipt);
 }
 
 function requireCleanSource(source, stage) {

@@ -13,9 +13,10 @@ import {
   writeSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import fixtureManifestContract from "../src/shared/installedPerformanceFixtureManifest.cjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
-export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
+export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
 export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v5";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
@@ -57,34 +58,9 @@ export function summarizeInstalledDurationSamples(samples, label = "duration sam
 }
 
 export function validateInstalledFixtureManifest(manifest) {
-  exactKeys(
-    manifest,
-    ["protocol", "smoke", "generator", "license", "redistribution", "fixtures"],
-    [],
-    "fixture manifest"
-  );
-  assertEqual(manifest.protocol, INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL, "fixture manifest protocol");
-  assertBoolean(manifest.smoke, "fixture manifest smoke flag");
-  exactKeys(
-    manifest.generator,
-    ["contractVersion", "implementation", "implementationVersion"],
-    [],
-    "fixture generator"
-  );
-  assertEqual(manifest.generator.contractVersion, 1, "fixture generator contract version");
-  assertEqual(manifest.generator.implementation, "polars", "fixture generator implementation");
-  assertBoundedString(manifest.generator.implementationVersion, "fixture generator version");
-  assertEqual(manifest.license, "CC0-1.0", "fixture license");
-  assertBoundedString(manifest.redistribution, "fixture redistribution statement");
-  exactKeys(manifest.fixtures, ["csv", "parquet"], [], "fixture entries");
-  const expected = manifest.smoke
-    ? { csv: [2_000, 8], parquet: [5_000, 8] }
-    : { csv: [100_000, 50], parquet: [1_000_000, 20] };
-  for (const format of ["csv", "parquet"]) {
-    validateFixtureEntry(manifest.fixtures[format], format, ...expected[format]);
-  }
-  assertPublicEvidence(manifest);
-  return manifest;
+  const decoded = fixtureManifestContract.decodeInstalledPerformanceFixtureManifest(manifest);
+  assertPublicEvidence(decoded);
+  return decoded;
 }
 
 export function validateInstalledPerformancePhase(fragment, expected = {}) {
@@ -342,31 +318,6 @@ export function revalidateInstalledPerformanceReport(receipt, hooks = {}) {
     throw new Error("Installed performance report no longer matches its publication receipt.");
   }
   return receipt;
-}
-
-function validateFixtureEntry(entry, format, rows, columns) {
-  exactKeys(
-    entry,
-    ["fileName", "format", "rows", "columns", "columnType", "columnNamePattern", "sentinelRows", "sha256", "bytes"],
-    [],
-    `${format} fixture`
-  );
-  assertEqual(entry.fileName, `${rows}-${columns}.${format}`, `${format} fixture file name`);
-  assertEqual(entry.format, format, `${format} fixture format`);
-  assertEqual(entry.rows, rows, `${format} fixture rows`);
-  assertEqual(entry.columns, columns, `${format} fixture columns`);
-  assertEqual(entry.columnType, "Int64", `${format} fixture column type`);
-  assertEqual(
-    entry.columnNamePattern,
-    "c followed by a zero-padded zero-based integer",
-    `${format} fixture column-name pattern`
-  );
-  const sentinels = [0, Math.floor(rows / 2), rows - 1];
-  if (JSON.stringify(entry.sentinelRows) !== JSON.stringify(sentinels)) {
-    throw new TypeError(`${format} fixture sentinel rows do not match the deterministic contract.`);
-  }
-  assertMatch(entry.sha256, SHA256, `${format} fixture SHA-256`);
-  if (!positiveInteger(entry.bytes)) throw new TypeError(`${format} fixture byte size must be positive.`);
 }
 
 function validateCandidate(candidate) {
