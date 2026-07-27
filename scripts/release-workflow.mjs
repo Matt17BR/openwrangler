@@ -183,16 +183,16 @@ git update-index -q --refresh
 git diff-index --quiet HEAD --
 `;
 const PREVIEW_BUILD_STEPS = [
-  { uses: "actions/checkout@v6" },
+  { uses: CHECKOUT_ACTION },
   {
-    uses: "actions/setup-node@v6",
+    uses: SETUP_NODE_ACTION,
     with: {
       "node-version": 22,
       cache: "npm"
     }
   },
   {
-    uses: "actions/setup-python@v6",
+    uses: SETUP_PYTHON_ACTION,
     with: {
       "python-version": "3.12",
       cache: "pip"
@@ -240,6 +240,202 @@ const PREVIEW_BUILD_JOB = {
   needs: "preview-metadata",
   "runs-on": "ubuntu-latest",
   steps: PREVIEW_BUILD_STEPS
+};
+const CANONICAL_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
+const { readFileSync } = require("node:fs");
+
+const expectedLine = readFileSync("release/openwrangler.vsix.sha256", "utf8").trim();
+const match = /^([0-9a-f]{64})\\s+\\*?openwrangler\\.vsix$/iu.exec(expectedLine);
+if (!match) throw new Error(\`Malformed canonical checksum: \${expectedLine}\`);
+const actual = createHash("sha256")
+  .update(readFileSync("release/openwrangler.vsix"))
+  .digest("hex");
+if (actual !== match[1].toLowerCase()) {
+  throw new Error(\`Canonical VSIX checksum mismatch: expected \${match[1]}, received \${actual}\`);
+}
+`;
+const PREVIEW_VALIDATE_JOB = {
+  needs: "build",
+  "timeout-minutes": 60,
+  strategy: {
+    "fail-fast": false,
+    matrix: {
+      include: [
+        { os: "ubuntu-latest", python: "3.10" },
+        { os: "macos-latest", python: "3.12" },
+        { os: "windows-latest", python: "3.14" }
+      ]
+    }
+  },
+  "runs-on": "${{ matrix.os }}",
+  steps: [
+    { uses: CHECKOUT_ACTION },
+    {
+      uses: SETUP_NODE_ACTION,
+      with: {
+        "node-version": 22,
+        cache: "npm"
+      }
+    },
+    {
+      uses: SETUP_PYTHON_ACTION,
+      with: {
+        "python-version": "${{ matrix.python }}",
+        cache: "pip"
+      }
+    },
+    { run: "npm ci" },
+    { run: "python -m pip install --upgrade pip" },
+    { run: 'python -m pip install -e "python[dev]"' },
+    {
+      uses: DOWNLOAD_ACTION,
+      with: {
+        name: "openwrangler-release",
+        path: "release"
+      }
+    },
+    {
+      name: "Verify canonical checksum",
+      shell: "node {0}",
+      run: CANONICAL_CHECKSUM_RUN
+    },
+    { run: "npm run check" },
+    { run: "npm test" },
+    { run: "npm run verify:vsix -- release/openwrangler.vsix" },
+    {
+      if: "${{ runner.os != 'Linux' }}",
+      run: "npm run test:extension-host",
+      env: {
+        VSCODE_TEST_VERSION: "stable"
+      }
+    },
+    {
+      if: "${{ runner.os != 'Linux' }}",
+      run: "npm run build:test-extension"
+    },
+    {
+      if: "${{ runner.os != 'Linux' }}",
+      id: "packaged_editor",
+      name: "Test packaged editor",
+      run: "node scripts/run-packaged-editor-tests.mjs release/openwrangler.vsix",
+      env: {
+        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+        VSCODE_TEST_VERSION: "stable"
+      }
+    },
+    {
+      name: "Upload packaged-editor failure diagnostics",
+      if: "${{ always() && runner.os != 'Linux' && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}",
+      uses: UPLOAD_ACTION,
+      with: {
+        name: "release-packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+        path: "${{ steps.packaged_editor.outputs.evidence_path }}",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+        "compression-level": 9,
+        "include-hidden-files": false
+      }
+    },
+    {
+      if: "${{ runner.os != 'Linux' }}",
+      id: "cursor_smoke",
+      name: "Test pinned Cursor platform smoke",
+      run: "node scripts/run-packaged-editor-tests.mjs release/openwrangler.vsix",
+      env: {
+        OPEN_WRANGLER_PACKAGED_EDITORS: "cursor",
+        OPEN_WRANGLER_PACKAGED_MODE: "platform-smoke"
+      }
+    },
+    {
+      name: "Upload Cursor-smoke failure diagnostics",
+      if: "${{ always() && runner.os != 'Linux' && steps.cursor_smoke.outcome == 'failure' && steps.cursor_smoke.outputs.evidence_ready == 'true' }}",
+      uses: UPLOAD_ACTION,
+      with: {
+        name: "release-packaged-editor-diagnostics-cursor-${{ runner.os }}-${{ github.run_attempt }}",
+        path: "${{ steps.cursor_smoke.outputs.evidence_path }}",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+        "compression-level": 9,
+        "include-hidden-files": false
+      }
+    }
+  ]
+};
+const PREVIEW_RELEASE_ACCEPTANCE_JOB = {
+  needs: ["build", "validate"],
+  "runs-on": "ubuntu-latest",
+  "timeout-minutes": 60,
+  steps: [
+    { uses: CHECKOUT_ACTION },
+    {
+      uses: SETUP_NODE_ACTION,
+      with: {
+        "node-version": 22,
+        cache: "npm"
+      }
+    },
+    {
+      uses: SETUP_PYTHON_ACTION,
+      with: {
+        "python-version": "3.12",
+        cache: "pip"
+      }
+    },
+    { run: "npm ci" },
+    { run: "npx playwright-core install --with-deps chromium" },
+    { run: "python -m pip install --upgrade pip" },
+    { run: 'python -m pip install -e "python[dev]"' },
+    {
+      uses: DOWNLOAD_ACTION,
+      with: {
+        name: "openwrangler-release",
+        path: "release"
+      }
+    },
+    {
+      name: "Verify canonical checksum",
+      shell: "node {0}",
+      run: CANONICAL_CHECKSUM_RUN
+    },
+    { run: "npm run verify:vsix -- release/openwrangler.vsix" },
+    { run: "npm run test:webview-acceptance" },
+    {
+      if: "failure()",
+      uses: UPLOAD_ACTION,
+      with: {
+        name: "release-webview-visual-evidence",
+        path: "tmp/screenshots-actual/\ntmp/screenshots-diff/\n",
+        "if-no-files-found": "ignore"
+      }
+    },
+    { run: "npm run test:coverage" },
+    { run: "npm audit --omit=dev" },
+    { run: "npm run audit:python" },
+    { run: "npm run benchmark:runtime" },
+    { run: "npm run build:test-extension" },
+    {
+      id: "packaged_editor",
+      name: "Test packaged editor",
+      run: "node scripts/run-packaged-editor-tests.mjs release/openwrangler.vsix",
+      env: {
+        OPEN_WRANGLER_PACKAGED_EDITORS: "vscode",
+        VSCODE_TEST_VERSION: "stable"
+      }
+    },
+    {
+      name: "Upload packaged-editor failure diagnostics",
+      if: "${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}",
+      uses: UPLOAD_ACTION,
+      with: {
+        name: "release-packaged-editor-diagnostics-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+        path: "${{ steps.packaged_editor.outputs.evidence_path }}",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+        "compression-level": 9,
+        "include-hidden-files": false
+      }
+    }
+  ]
 };
 const RELEASE_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
@@ -564,6 +760,17 @@ export function inspectReleaseWorkflow(contents) {
     ) {
       problems.push("release.yml canonical upload must publish only the verified VSIX and checksum.");
     }
+  }
+
+  if (!isDeepStrictEqual(workflow.jobs.validate, PREVIEW_VALIDATE_JOB)) {
+    problems.push(
+      "release.yml validate job must retain exactly its canonical read-only controls, matrix, and ordered step/action allowlist."
+    );
+  }
+  if (!isDeepStrictEqual(workflow.jobs["release-acceptance"], PREVIEW_RELEASE_ACCEPTANCE_JOB)) {
+    problems.push(
+      "release.yml release-acceptance job must retain exactly its canonical read-only controls and ordered step/action allowlist."
+    );
   }
 
   const releaseJob = workflow.jobs.release;

@@ -978,6 +978,15 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
     )
   );
 
+  const unpinnedBuildCheckout = mutate((workflow) => {
+    workflow.jobs.build.steps[0].uses = "actions/checkout@v6";
+  });
+  assert.ok(
+    unpinnedBuildCheckout.includes(
+      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
+    )
+  );
+
   const buildBeforeMetadata = mutate((workflow) => {
     workflow.jobs["preview-metadata"].steps.splice(2, 0, {
       name: "Build before metadata",
@@ -1021,6 +1030,36 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   assert.ok(
     renamedMutablePublisher.includes(
       "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
+    )
+  );
+
+  const writeCapableValidatePublisher = mutate((workflow) => {
+    workflow.jobs.validate.permissions = { contents: "write" };
+    workflow.jobs.validate.steps.push({
+      name: "Publish validation decoy",
+      uses: "softprops/action-gh-release@v2",
+      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+      with: { files: "release/openwrangler.vsix", prerelease: false }
+    });
+  });
+  assert.ok(
+    writeCapableValidatePublisher.includes(
+      "release.yml validate job must retain exactly its canonical read-only controls, matrix, and ordered step/action allowlist."
+    )
+  );
+
+  const writeCapableAcceptancePublisher = mutate((workflow) => {
+    workflow.jobs["release-acceptance"].permissions = { contents: "write" };
+    workflow.jobs["release-acceptance"].steps.push({
+      name: "Publish acceptance decoy",
+      uses: "softprops/action-gh-release@v2",
+      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+      with: { files: "release/openwrangler.vsix", prerelease: false }
+    });
+  });
+  assert.ok(
+    writeCapableAcceptancePublisher.includes(
+      "release.yml release-acceptance job must retain exactly its canonical read-only controls and ordered step/action allowlist."
     )
   );
 
