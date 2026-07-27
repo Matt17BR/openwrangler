@@ -936,6 +936,30 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   });
   assert.ok(missingMetadataGate.includes("release.yml must contain one preview-only metadata gate job."));
 
+  const extraWriteCapableReleaseJob = mutate((workflow) => {
+    workflow.jobs["publish-decoy"] = {
+      "runs-on": "ubuntu-latest",
+      permissions: { contents: "write" },
+      steps: [
+        {
+          name: "Package hidden release",
+          run: "npm run package -- --out hidden.vsix"
+        },
+        {
+          name: "Publish hidden release",
+          uses: "softprops/action-gh-release@v2",
+          env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+          with: { files: "hidden.vsix" }
+        }
+      ]
+    };
+  });
+  assert.ok(
+    extraWriteCapableReleaseJob.includes(
+      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, and release."
+    )
+  );
+
   const unpinnedMetadataCheckout = mutate((workflow) => {
     workflow.jobs["preview-metadata"].steps[0].uses = "actions/checkout@v6";
   });
@@ -982,6 +1006,21 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   assert.ok(
     detachedBuild.includes(
       "release.yml build job must depend only on the successful preview-metadata gate and publish no channel outputs."
+    )
+  );
+
+  const renamedMutablePublisher = mutate((workflow) => {
+    const packageIndex = workflow.jobs.build.steps.findIndex((step) => step.name === "Package canonical preview VSIX");
+    workflow.jobs.build.steps.splice(packageIndex, 0, {
+      name: "Restore preview cache",
+      uses: "softprops/action-gh-release@v2",
+      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+      with: { files: "hidden.vsix" }
+    });
+  });
+  assert.ok(
+    renamedMutablePublisher.includes(
+      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
     )
   );
 

@@ -10,6 +10,7 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
+const PREVIEW_RELEASE_JOB_NAMES = ["preview-metadata", "build", "validate", "release-acceptance", "release"];
 const STABLE_CANDIDATE_ARTIFACT_PATHS = [
   "canonical-release/openwrangler.vsix",
   "canonical-release/openwrangler.vsix.sha256",
@@ -173,8 +174,73 @@ const STABLE_PERFORMANCE_STEPS = [
 ];
 const PREVIEW_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
+
 const digest = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
-writeFileSync("openwrangler.vsix.sha256", \`\${digest}  openwrangler.vsix\\n\`);`;
+writeFileSync("openwrangler.vsix.sha256", \`\${digest}  openwrangler.vsix\\n\`);
+`;
+const PREVIEW_SOURCE_CHECK_RUN = `test "$(git rev-parse HEAD)" = "$(git rev-parse "\${EXPECTED_SHA}^{commit}")"
+git update-index -q --refresh
+git diff-index --quiet HEAD --
+`;
+const PREVIEW_BUILD_STEPS = [
+  { uses: "actions/checkout@v6" },
+  {
+    uses: "actions/setup-node@v6",
+    with: {
+      "node-version": 22,
+      cache: "npm"
+    }
+  },
+  {
+    uses: "actions/setup-python@v6",
+    with: {
+      "python-version": "3.12",
+      cache: "pip"
+    }
+  },
+  { run: "npm ci" },
+  { run: "python -m pip install --upgrade pip" },
+  { run: 'python -m pip install -e "python[dev]"' },
+  {
+    run: 'python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"'
+  },
+  { run: "npm run lock:remote-jupyter:check" },
+  {
+    name: "Package canonical preview VSIX",
+    run: "npm run package -- --pre-release --out openwrangler.vsix"
+  },
+  {
+    name: "Verify exact tagged source after packaging",
+    shell: "bash",
+    env: {
+      EXPECTED_SHA: EVENT_SHA
+    },
+    run: PREVIEW_SOURCE_CHECK_RUN
+  },
+  {
+    name: "Verify canonical preview VSIX",
+    run: "npm run verify:vsix -- openwrangler.vsix"
+  },
+  {
+    name: "Create canonical preview checksum",
+    shell: "node {0}",
+    run: PREVIEW_CHECKSUM_RUN
+  },
+  {
+    uses: UPLOAD_ACTION,
+    with: {
+      name: "openwrangler-release",
+      path: "openwrangler.vsix\nopenwrangler.vsix.sha256\n",
+      "if-no-files-found": "error",
+      "compression-level": 0
+    }
+  }
+];
+const PREVIEW_BUILD_JOB = {
+  needs: "preview-metadata",
+  "runs-on": "ubuntu-latest",
+  steps: PREVIEW_BUILD_STEPS
+};
 const RELEASE_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const expectedLine = readFileSync("release/openwrangler.vsix.sha256", "utf8").trim();
@@ -337,6 +403,15 @@ export function inspectReleaseWorkflow(contents) {
   if (hasOwn(workflow, "env") || hasOwn(workflow, "defaults")) {
     problems.push("release.yml must not override workflow environment or run defaults.");
   }
+  const jobNames = Object.keys(workflow.jobs);
+  if (
+    jobNames.length !== PREVIEW_RELEASE_JOB_NAMES.length ||
+    PREVIEW_RELEASE_JOB_NAMES.some((name) => !hasOwn(workflow.jobs, name))
+  ) {
+    problems.push(
+      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, and release."
+    );
+  }
 
   const previewMetadataJob = workflow.jobs["preview-metadata"];
   if (!isRecord(previewMetadataJob)) {
@@ -392,6 +467,11 @@ export function inspectReleaseWorkflow(contents) {
   }
 
   problems.push(...inspectJobExecutionControls(workflow.jobs.build, "build"));
+  if (!isDeepStrictEqual(workflow.jobs.build, PREVIEW_BUILD_JOB)) {
+    problems.push(
+      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
+    );
+  }
   if (workflow.jobs.build.needs !== "preview-metadata" || hasOwn(workflow.jobs.build, "outputs")) {
     problems.push(
       "release.yml build job must depend only on the successful preview-metadata gate and publish no channel outputs."
@@ -419,9 +499,7 @@ export function inspectReleaseWorkflow(contents) {
     {
       env: { EXPECTED_SHA: EVENT_SHA },
       shell: "bash",
-      run: `test "$(git rev-parse HEAD)" = "$(git rev-parse "\${EXPECTED_SHA}^{commit}")"
-git update-index -q --refresh
-git diff-index --quiet HEAD --`
+      run: PREVIEW_SOURCE_CHECK_RUN
     },
     problems
   );
