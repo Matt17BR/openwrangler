@@ -1,0 +1,259 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  INSTALLED_PERFORMANCE_BOUNDARY,
+  INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL,
+  INSTALLED_PERFORMANCE_OUTLIER_POLICY,
+  INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
+  assertInstalledPerformanceReleaseGate,
+  buildInstalledPerformanceReport,
+  summarizeInstalledDurationSamples,
+  validateInstalledFixtureManifest,
+  validateInstalledPerformancePhase,
+  writeInstalledPerformanceReport
+} from "./installed-performance-report.mjs";
+
+const sha = (digit) => digit.repeat(64);
+const sample = (value) => Array.from({ length: 10 }, (_, index) => value + index / 100);
+
+test("duration summaries retain every sample and use nearest-rank p95", () => {
+  const samples = [10, 1, 8, 3, 9, 2, 7, 4, 6, 5];
+  assert.deepEqual(summarizeInstalledDurationSamples(samples), {
+    count: 10,
+    samplesMs: samples,
+    excludedSamples: 0,
+    outlierPolicy: INSTALLED_PERFORMANCE_OUTLIER_POLICY,
+    minMs: 1,
+    medianMs: 5.5,
+    p95Ms: 10,
+    maxMs: 10
+  });
+  assert.throws(() => summarizeInstalledDurationSamples(samples.slice(1)), /at least|between 10 and 1,000/u);
+  assert.throws(() => summarizeInstalledDurationSamples([...sample(1), Number.NaN]), /finite non-negative/u);
+});
+
+test("fixture manifests are exact, path-free, and release-sized", () => {
+  const manifest = fixtureManifest();
+  assert.equal(validateInstalledFixtureManifest(manifest), manifest);
+  assert.throws(
+    () => validateInstalledFixtureManifest({ ...manifest, privatePath: "/tmp/fixture" }),
+    /missing or unknown fields/u
+  );
+  assert.throws(
+    () =>
+      validateInstalledFixtureManifest({
+        ...manifest,
+        fixtures: { ...manifest.fixtures, csv: { ...manifest.fixtures.csv, sha256: "bad" } }
+      }),
+    /SHA-256/u
+  );
+});
+
+test("phase validation rejects provenance drift and source data disclosure", () => {
+  const phase = firstGridPhase("vscode", "csv", "cold", 100);
+  assert.equal(validateInstalledPerformancePhase(phase, { runId: phase.runId, phase: phase.phase }), phase);
+  assert.throws(
+    () =>
+      validateInstalledPerformancePhase({
+        ...phase,
+        measurement: { ...phase.measurement, sourcePath: "/home/alice/data.csv" }
+      }),
+    /missing or unknown fields/u
+  );
+  assert.throws(
+    () =>
+      validateInstalledPerformancePhase({
+        ...phase,
+        editor: { ...phase.editor, appName: "VS Code", profile: "/home/alice/.config" }
+      }),
+    /missing or unknown fields/u
+  );
+});
+
+test("the aggregate report gates both editors and every cold/warm/grid case", () => {
+  const report = passingReport();
+  assert.equal(report.releaseGate.passed, true);
+  assert.equal(assertInstalledPerformanceReleaseGate(report), report);
+
+  const failed = structuredClone(report);
+  failed.editors[1].results.firstGrid.parquet.cold.timing.samplesMs[9] = 5_000;
+  failed.editors[1].results.firstGrid.parquet.cold.timing.p95Ms = 5_000;
+  failed.editors[1].results.firstGrid.parquet.cold.timing.maxMs = 5_000;
+  failed.releaseGate = {
+    passed: false,
+    failures: ["cursor parquet cold first-grid p95 5000ms >= 5000ms"]
+  };
+  assert.throws(() => assertInstalledPerformanceReleaseGate(failed), /parquet cold first-grid p95/u);
+});
+
+test("report publication is bounded, atomic, and refuses a symlink destination", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-report-"));
+  try {
+    const destination = join(directory, "report.json");
+    const report = passingReport();
+    writeInstalledPerformanceReport(destination, report);
+    assert.deepEqual(JSON.parse(await readFile(destination, "utf8")), report);
+
+    const outside = join(directory, "outside.json");
+    const linked = join(directory, "linked.json");
+    await writeFile(outside, "unchanged\n", "utf8");
+    await symlink(outside, linked);
+    assert.throws(() => writeInstalledPerformanceReport(linked, report), /single-link regular file/u);
+    assert.equal(await readFile(outside, "utf8"), "unchanged\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function passingReport() {
+  return buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: {
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "0.3.0",
+      preview: true,
+      vsixSha256: sha("a"),
+      vsixBytes: 1_000_000
+    },
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [editorRun("vscode"), editorRun("cursor")]
+  });
+}
+
+function editorRun(key) {
+  return {
+    provenance: {
+      editor: editor(key),
+      runtime: runtime(),
+      platform: {
+        operatingSystem: "Linux",
+        operatingSystemRelease: "6.8.0",
+        architecture: "x64",
+        cpuModel: "Acceptance CPU",
+        logicalCpuCount: 8,
+        totalMemoryBytes: 16_000_000_000
+      },
+      storage: {
+        filesystemType: "ext4",
+        blockSizeBytes: 4_096,
+        deviceModel: "Acceptance SSD",
+        firmwareVersion: "1.0",
+        rotational: false
+      }
+    },
+    resources: {
+      supported: true,
+      sampler: "linux-proc-process-group",
+      peakEditorTreeRssBytes: 500_000_000,
+      peakPythonRuntimeRssBytes: 200_000_000,
+      samples: [{ stage: "peak", editorTreeRssBytes: 500_000_000, pythonRuntimeRssBytes: 200_000_000 }]
+    },
+    phases: [
+      firstGridPhase(key, "csv", "cold", 100),
+      firstGridPhase(key, "csv", "warm", 80),
+      firstGridPhase(key, "parquet", "cold", 200),
+      firstGridPhase(key, "parquet", "warm", 150),
+      interactionPhase(key)
+    ]
+  };
+}
+
+function firstGridPhase(key, format, sourceCache, duration) {
+  const fixture = fixtureManifest().fixtures[format];
+  return {
+    protocol: INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
+    runId: "11111111-1111-4111-8111-111111111111",
+    phase: `first-grid-${format}-${sourceCache}`,
+    editor: editor(key),
+    runtime: runtime(),
+    fixture: { format, rows: fixture.rows, columns: fixture.columns, sha256: fixture.sha256 },
+    measurement: {
+      kind: "first-grid",
+      boundary: INSTALLED_PERFORMANCE_BOUNDARY,
+      sourceCache,
+      cacheControl: {
+        supported: true,
+        applied: true,
+        method: sourceCache === "cold" ? "posix_fadvise(POSIX_FADV_DONTNEED)" : "sequential-full-file-read"
+      },
+      samplesMs: sample(duration)
+    }
+  };
+}
+
+function interactionPhase(key) {
+  const fixture = fixtureManifest().fixtures.parquet;
+  return {
+    protocol: INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
+    runId: "22222222-2222-4222-8222-222222222222",
+    phase: "grid-interaction-parquet",
+    editor: editor(key),
+    runtime: runtime(),
+    fixture: { format: "parquet", rows: fixture.rows, columns: fixture.columns, sha256: fixture.sha256 },
+    measurement: {
+      kind: "grid-interaction",
+      cachedSamplesMs: sample(10),
+      uncachedSamplesMs: sample(50),
+      heartbeatSamplesMs: sample(5),
+      filter: { completed: true, latencyMs: 100 },
+      sort: { completed: true, latencyMs: 110 },
+      profiling: {
+        activeObserved: true,
+        cancellationRequested: true,
+        cancelAcknowledged: true,
+        originalRequestSettled: true,
+        originalResponseKind: "cancelled"
+      }
+    }
+  };
+}
+
+function editor(key) {
+  return { key, appName: key === "vscode" ? "Visual Studio Code" : "Cursor", version: "1.130.0" };
+}
+
+function runtime() {
+  return {
+    pythonVersion: "3.12.13",
+    pythonImplementation: "CPython",
+    pythonExecutableSha256: sha("c"),
+    polarsVersion: "1.43.0",
+    openWranglerRuntimeVersion: "0.3.0"
+  };
+}
+
+function fixtureManifest() {
+  return {
+    protocol: INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL,
+    smoke: false,
+    generator: {
+      contractVersion: 1,
+      implementation: "polars",
+      implementationVersion: "1.43.0"
+    },
+    license: "CC0-1.0",
+    redistribution: "Deterministic synthetic integer fixtures generated by Open Wrangler.",
+    fixtures: {
+      csv: fixture("csv", 100_000, 50, "d"),
+      parquet: fixture("parquet", 1_000_000, 20, "e")
+    }
+  };
+}
+
+function fixture(format, rows, columns, digestDigit) {
+  return {
+    fileName: `${rows}-${columns}.${format}`,
+    format,
+    rows,
+    columns,
+    columnType: "Int64",
+    columnNamePattern: "c followed by a zero-padded zero-based integer",
+    sentinelRows: [0, Math.floor(rows / 2), rows - 1],
+    sha256: sha(digestDigit),
+    bytes: 1_000
+  };
+}
