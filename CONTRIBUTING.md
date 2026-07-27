@@ -22,6 +22,7 @@ Set `OPEN_WRANGLER_PYTHON` when the development interpreter is not `.venv/bin/py
 - Update the documentation listed in the `AGENTS.md` matrix.
 - Run `npm run generate:reference` after changing commands, settings, operations, protocol messages, or notebook MIME types; never hand-edit `docs/reference.md`.
 - Include screenshots for visible changes in light, dark, and high-contrast themes.
+- Push independently green branch commits before opening a pull request when early review is not needed. Opening a draft pull request intentionally starts the complete PR evidence set; required jobs must never be conditionally skipped for drafts.
 - Do not commit generated VSIX files, local virtual environments, editor profiles, notebook execution caches, or user scratch files.
 
 All required checks must pass before merge. Feature work is tested in both VS Code and Cursor before a prerelease.
