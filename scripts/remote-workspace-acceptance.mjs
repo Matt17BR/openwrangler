@@ -22,6 +22,7 @@ import {
   PINNED_REMOTE_SSH_VERSION,
   PINNED_REMOTE_VSCODE_COMMIT,
   PINNED_REMOTE_VSCODE_VERSION,
+  parseRemoteWorkspacePhaseDescriptor,
   readBoundedRemoteWorkspaceFile,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
@@ -43,6 +44,7 @@ export {
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
+  parseRemoteWorkspacePhaseDescriptor,
   readBoundedRemoteWorkspaceFile,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
@@ -631,7 +633,7 @@ export function writeRemoteWorkspacePhaseDescriptor(
       progress: layout.progress
     }
   };
-  validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root, { filesystem: false });
+  validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: false });
   writeFileSync(path, `${JSON.stringify(descriptor)}\n`, {
     encoding: "utf8",
     flag: "wx",

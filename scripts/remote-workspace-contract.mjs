@@ -15,14 +15,94 @@ export const REMOTE_WORKSPACE_PORT = 49_321;
 export const REMOTE_WORKSPACE_NAMESPACE_ROOT = "/ow";
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
 const PATH_LIMIT = 16_384;
+const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
+const PHASE_DESCRIPTOR_KEYS = Object.freeze([
+  "authority",
+  "candidateBytes",
+  "candidateSha256",
+  "commit",
+  "displayMode",
+  "editor",
+  "gid",
+  "hostHome",
+  "hostIpcNamespace",
+  "hostNetworkNamespace",
+  "hostPidNamespace",
+  "hostSentinel",
+  "hostUserNamespace",
+  "hostUtsNamespace",
+  "inactivityTimeoutMs",
+  "paths",
+  "phase",
+  "protocol",
+  "python",
+  "remoteSshBytes",
+  "remoteSshSha256",
+  "remoteSshVersion",
+  "runId",
+  "sshAuthorizedKeys",
+  "sshConfig",
+  "sshHostKey",
+  "sshLibraryPath",
+  "sshServer",
+  "testModule",
+  "timeoutMs",
+  "uid",
+  "user",
+  "version",
+  "xvfb"
+]);
+const FIXED_PHASE_PATHS = Object.freeze({
+  root: REMOTE_WORKSPACE_NAMESPACE_ROOT,
+  workspace: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/workspace`,
+  userData: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/ud`,
+  localExtensions: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/le`,
+  localHome: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh`,
+  remoteHome: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh`,
+  result: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/result.json`,
+  progress: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/progress.json`
+});
+const FIXED_DESCRIPTOR_PATHS = Object.freeze({
+  xvfb: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-runtime/Xvfb`,
+  testModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module/test/extensionHost/index.js`,
+  python: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/python/bin/python`,
+  sshConfig: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/config`,
+  sshHostKey: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/host`,
+  sshAuthorizedKeys: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh`
+});
 
-export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { filesystem = true } = {}) {
+export function parseRemoteWorkspacePhaseDescriptor(contents, { filesystem = true } = {}) {
+  if (
+    typeof contents !== "string" ||
+    Buffer.byteLength(contents, "utf8") <= 0 ||
+    Buffer.byteLength(contents, "utf8") > PHASE_DESCRIPTOR_LIMIT_BYTES ||
+    !contents.endsWith("\n") ||
+    contents.slice(0, -1).includes("\n") ||
+    contents.includes("\r")
+  ) {
+    throw new Error("The Remote SSH phase descriptor is not one bounded canonical JSON line.");
+  }
+  let value;
+  try {
+    value = JSON.parse(contents.slice(0, -1));
+  } catch (error) {
+    throw new Error("The Remote SSH phase descriptor is malformed.", { cause: error });
+  }
+  if (`${JSON.stringify(value)}\n` !== contents) {
+    throw new Error("The Remote SSH phase descriptor is not canonical JSON.");
+  }
+  return validateRemoteWorkspacePhaseDescriptor(value, { filesystem });
+}
+
+export function validateRemoteWorkspacePhaseDescriptor(value, { filesystem = true } = {}) {
   if (
     !value ||
     typeof value !== "object" ||
+    Array.isArray(value) ||
+    !hasExactKeys(value, PHASE_DESCRIPTOR_KEYS) ||
     value.protocol !== REMOTE_WORKSPACE_PROTOCOL ||
     value.phase !== REMOTE_WORKSPACE_PHASE ||
-    !/^[0-9a-f-]{36}$/u.test(value.runId) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value.runId) ||
     value.timeoutMs !== REMOTE_WORKSPACE_PHASE_TIMEOUT_MS ||
     value.inactivityTimeoutMs !== REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS ||
     value.authority !== REMOTE_WORKSPACE_AUTHORITY ||
@@ -49,7 +129,17 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
   ) {
     throw new Error("The Remote SSH phase descriptor is malformed.");
   }
-  const root = filesystem ? realpathSync(privateRoot) : resolve(privateRoot);
+  if (
+    !value.paths ||
+    typeof value.paths !== "object" ||
+    Array.isArray(value.paths) ||
+    !hasExactKeys(value.paths, Object.keys(FIXED_PHASE_PATHS)) ||
+    Object.entries(FIXED_PHASE_PATHS).some(([name, expected]) => value.paths[name] !== expected) ||
+    Object.entries(FIXED_DESCRIPTOR_PATHS).some(([name, expected]) => value[name] !== expected)
+  ) {
+    throw new Error("The Remote SSH phase descriptor does not use the fixed private namespace layout.");
+  }
+  const root = REMOTE_WORKSPACE_NAMESPACE_ROOT;
   for (const candidate of [
     value.editor,
     value.xvfb,
@@ -70,6 +160,16 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
       throw new Error("The Remote SSH phase descriptor escaped its private root.");
     }
   }
+  for (const [label, candidate, expectedRoot] of [
+    ["editor", value.editor, `${root}/client`],
+    ["SSH server", value.sshServer, `${root}/rh/ssh-runtime`],
+    ["SSH library", value.sshLibraryPath, `${root}/rh/ssh-runtime`]
+  ]) {
+    const resolved = resolve(candidate);
+    if (resolved !== expectedRoot && !isContained(expectedRoot, resolved)) {
+      throw new Error(`The Remote SSH phase descriptor contains an invalid ${label} path.`);
+    }
+  }
   for (const external of [value.hostHome, value.hostSentinel]) {
     if (
       typeof external !== "string" ||
@@ -82,8 +182,26 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
     }
   }
   if (filesystem) {
-    assertAbsoluteRegularFile(value.testModule, "remote test module");
-    assertAbsoluteRegularFile(value.xvfb, "private Xvfb executable");
+    if (realpathSync(root) !== root) {
+      throw new Error("The Remote SSH private namespace root is not canonical.");
+    }
+    for (const [candidate, label] of [
+      [value.editor, "private editor executable"],
+      [value.xvfb, "private Xvfb executable"],
+      [value.testModule, "remote test module"],
+      [value.python, "private Python executable"],
+      [value.sshConfig, "private SSH configuration"],
+      [value.sshServer, "private SSH server"],
+      [value.sshHostKey, "private SSH host key"]
+    ]) {
+      assertContainedRegularFile(candidate, label, root);
+    }
+    for (const [candidate, label] of [
+      [value.sshLibraryPath, "private SSH library directory"],
+      [value.sshAuthorizedKeys, "private SSH authorized-keys directory"]
+    ]) {
+      assertContainedDirectory(candidate, label, root);
+    }
   }
   return value;
 }
@@ -230,6 +348,31 @@ function assertAbsoluteRegularFile(path, label) {
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
     throw new Error(`Remote SSH acceptance requires one regular ${label}.`);
   }
+}
+
+function assertContainedRegularFile(path, label, root) {
+  assertAbsoluteRegularFile(path, label);
+  const canonical = realpathSync(path);
+  if (canonical !== path || !isContained(root, canonical)) {
+    throw new Error(`Remote SSH acceptance requires one canonical private ${label}.`);
+  }
+}
+
+function assertContainedDirectory(path, label, root) {
+  if (typeof path !== "string" || !isAbsolute(path) || path.length > PATH_LIMIT) {
+    throw new Error(`Remote SSH acceptance requires one bounded absolute ${label} path.`);
+  }
+  const canonical = realpathSync(path);
+  const metadata = lstatSync(path);
+  if (canonical !== path || !isContained(root, canonical) || !metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error(`Remote SSH acceptance requires one canonical private ${label}.`);
+  }
+}
+
+function hasExactKeys(value, expected) {
+  const actual = Object.keys(value).sort();
+  const required = [...expected].sort();
+  return actual.length === required.length && actual.every((key, index) => key === required[index]);
 }
 
 function isContained(parent, candidate) {

@@ -11,6 +11,7 @@ import {
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
+  parseRemoteWorkspacePhaseDescriptor,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
@@ -56,59 +57,45 @@ test("Remote command ownership uncertainty latches permanently across later comm
 });
 
 test("Remote phase descriptors cannot execute a test module outside the private run root", () => {
-  const parent = privateRoot("ow-remote-descriptor-");
-  try {
-    const layout = createRemoteWorkspaceLayout(parent);
-    const internal = (name) => join(layout.root, name);
-    const descriptor = {
-      protocol: 1,
-      phase: "remote-workspace",
-      runId: "11111111-1111-4111-8111-111111111111",
-      timeoutMs: REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
-      inactivityTimeoutMs: REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
-      authority: REMOTE_WORKSPACE_AUTHORITY,
-      version: "1.130.0",
-      commit: PINNED_REMOTE_VSCODE_COMMIT,
-      candidateSha256: "a".repeat(64),
-      candidateBytes: 123,
-      remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
-      remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
-      remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
-      displayMode: "xvfb",
-      hostPidNamespace: "pid:[1]",
-      hostNetworkNamespace: "net:[1]",
-      hostIpcNamespace: "ipc:[1]",
-      hostUtsNamespace: "uts:[1]",
-      hostUserNamespace: "user:[1]",
-      user: "openwrangler",
-      uid: 1001,
-      gid: 1001,
-      editor: internal("editor"),
-      xvfb: internal("Xvfb"),
-      testModule: internal("test-module"),
-      python: internal("python"),
-      sshConfig: internal("ssh-config"),
-      sshServer: internal("dropbear"),
-      sshLibraryPath: internal("ssh-libraries"),
-      sshHostKey: internal("host-key"),
-      sshAuthorizedKeys: internal("authorized-keys"),
-      paths: { root: layout.root },
-      hostHome: join(parent, "host-home"),
-      hostSentinel: join(parent, "host-sentinel")
-    };
-    assert.equal(validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root, { filesystem: false }), descriptor);
-    assert.throws(
-      () =>
-        validateRemoteWorkspacePhaseDescriptor(
-          { ...descriptor, testModule: join(parent, "host-test-module.mjs") },
-          layout.root,
-          { filesystem: false }
-        ),
-      /escaped its private root/u
-    );
-  } finally {
-    rmSync(parent, { recursive: true, force: true });
-  }
+  const descriptor = remotePhaseDescriptor();
+  assert.equal(validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: false }), descriptor);
+  assert.throws(
+    () =>
+      validateRemoteWorkspacePhaseDescriptor(
+        { ...descriptor, testModule: "/host-test-module.mjs" },
+        { filesystem: false }
+      ),
+    /fixed private namespace layout/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteWorkspacePhaseDescriptor(
+        { ...descriptor, paths: { ...descriptor.paths, root: "/attacker-root" } },
+        { filesystem: false }
+      ),
+    /fixed private namespace layout/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteWorkspacePhaseDescriptor(
+        { ...descriptor, paths: { ...descriptor.paths, extra: "/ow/extra" } },
+        { filesystem: false }
+      ),
+    /fixed private namespace layout/u
+  );
+  assert.throws(
+    () => validateRemoteWorkspacePhaseDescriptor({ ...descriptor, extra: true }, { filesystem: false }),
+    /malformed/u
+  );
+  const canonical = `${JSON.stringify(descriptor)}\n`;
+  assert.deepEqual(parseRemoteWorkspacePhaseDescriptor(canonical, { filesystem: false }), descriptor);
+  assert.throws(
+    () =>
+      parseRemoteWorkspacePhaseDescriptor(canonical.replace('"protocol":1', '"protocol":99,"protocol":1'), {
+        filesystem: false
+      }),
+    /canonical JSON/u
+  );
 });
 
 test("Remote host preflight is Linux-only and fails closed without user namespaces", async () => {
@@ -390,4 +377,52 @@ function privateRoot(prefix) {
   const root = mkdtempSync(join(tmpdir(), prefix));
   chmodSync(root, 0o700);
   return root;
+}
+
+function remotePhaseDescriptor() {
+  return {
+    protocol: 1,
+    phase: "remote-workspace",
+    runId: "11111111-1111-4111-8111-111111111111",
+    timeoutMs: REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+    inactivityTimeoutMs: REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+    authority: REMOTE_WORKSPACE_AUTHORITY,
+    version: "1.130.0",
+    commit: PINNED_REMOTE_VSCODE_COMMIT,
+    candidateSha256: "a".repeat(64),
+    candidateBytes: 123,
+    remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
+    remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
+    remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
+    hostPidNamespace: "pid:[1]",
+    hostNetworkNamespace: "net:[1]",
+    hostIpcNamespace: "ipc:[1]",
+    hostUtsNamespace: "uts:[1]",
+    hostUserNamespace: "user:[1]",
+    editor: "/ow/client/code",
+    xvfb: "/ow/phase-runtime/Xvfb",
+    displayMode: "xvfb",
+    testModule: "/ow/rh/test-module/test/extensionHost/index.js",
+    python: "/ow/rh/python/bin/python",
+    user: "openwrangler",
+    sshConfig: "/ow/rh/ssh/config",
+    sshServer: "/ow/rh/ssh-runtime/dropbear",
+    sshLibraryPath: "/ow/rh/ssh-runtime/lib",
+    sshHostKey: "/ow/rh/ssh/host",
+    sshAuthorizedKeys: "/ow/rh/ssh",
+    hostHome: "/host-home",
+    hostSentinel: "/host-sentinel",
+    uid: 1001,
+    gid: 1001,
+    paths: {
+      root: "/ow",
+      workspace: "/ow/rh/workspace",
+      userData: "/ow/ud",
+      localExtensions: "/ow/le",
+      localHome: "/ow/lh",
+      remoteHome: "/ow/rh",
+      result: "/ow/result.json",
+      progress: "/ow/progress.json"
+    }
+  };
 }

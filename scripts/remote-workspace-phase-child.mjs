@@ -12,9 +12,9 @@ import {
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
+  parseRemoteWorkspacePhaseDescriptor,
   readBoundedRemoteWorkspaceFile,
   validateRemoteSshLogAttestation,
-  validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
 import {
@@ -572,8 +572,7 @@ function readDescriptor(path) {
   ) {
     throw new Error("The Remote SSH phase descriptor is not one bounded private file.");
   }
-  const value = JSON.parse(readFileSync(path, "utf8"));
-  return validateRemoteWorkspacePhaseDescriptor(value, value?.paths?.root);
+  return parseRemoteWorkspacePhaseDescriptor(readFileSync(path, "utf8"));
 }
 
 function runSync(executable, args, label, expectedOutput) {
