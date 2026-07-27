@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  createWriteStream,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { ZipFile } from "yazl";
 import { inspectReleaseMetadata } from "./release-metadata.mjs";
 import {
   inspectStableReleaseReadiness,
   PRIMARY_PARITY_SCOPE,
-  STABLE_README_RELEASE_SECTION
+  readOwnedVsixSnapshot,
+  readStableVsixPayload,
+  STABLE_README_RELEASE_SECTION,
+  writeStableReleaseArtifacts
 } from "./release-readiness.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
@@ -59,6 +75,38 @@ function ready(overrides = {}) {
     vsixManifest: manifest(),
     ...overrides
   };
+}
+
+function createReleaseVsix(path) {
+  const zip = new ZipFile();
+  const entries = new Map([
+    ["[Content_Types].xml", "<Types />"],
+    ["extension.vsixmanifest", manifest()],
+    ["extension/package.json", JSON.stringify(stablePackage)],
+    ["extension/readme.md", `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`],
+    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/webviewPanel.js", "export {};"],
+    ["extension/media/webview.js", "export {};"],
+    ["extension/media/webview.css", "body {}"],
+    ["extension/media/codicon.ttf", "font"],
+    ["extension/media/notebookRenderer.js", "export function activate() {}"],
+    ["extension/media/icon.png", "icon"],
+    ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
+    ["extension/python/openwrangler_runtime/server.py", "pass\n"],
+    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
+  ]);
+  for (const [name, contents] of entries) {
+    zip.addBuffer(Buffer.from(contents), name);
+  }
+
+  return new Promise((resolveWrite, rejectWrite) => {
+    const output = createWriteStream(path, { flags: "wx", mode: 0o600 });
+    output.once("error", rejectWrite);
+    output.once("close", resolveWrite);
+    zip.outputStream.once("error", rejectWrite);
+    zip.outputStream.pipe(output);
+    zip.end();
+  });
 }
 
 test("accepts one internally consistent stable release candidate", () => {
@@ -381,22 +429,83 @@ test("pins the stable source identity even when source, package, and VSIX agree 
   assert.ok(problems.includes('Source package.json publisher must be "Matt17BR" for a stable release.'));
 });
 
+test("inspects and checksums one owned immutable VSIX snapshot", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-readiness-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const candidate = join(root, "candidate.vsix");
+  const published = join(root, "openwrangler.vsix");
+  const checksum = join(root, "openwrangler.vsix.sha256");
+  await createReleaseVsix(candidate);
+
+  const snapshot = readOwnedVsixSnapshot(candidate);
+  const original = Buffer.from(snapshot.bytes);
+  const expectedDigest = createHash("sha256").update(original).digest("hex");
+  assert.equal(snapshot.sha256, expectedDigest);
+
+  writeFileSync(candidate, "replacement bytes that must never be published");
+  const payload = await readStableVsixPayload(snapshot.bytes);
+  assert.deepEqual(JSON.parse(payload.packagedPackageJson), stablePackage);
+  assert.equal(payload.packagedPythonVersionFile, '__version__ = "1.0.0"\n');
+
+  writeStableReleaseArtifacts({ checksumOutput: checksum, snapshot, vsixOutput: published });
+  assert.deepEqual(readFileSync(published), original);
+  assert.equal(readFileSync(checksum, "utf8"), `${expectedDigest}  openwrangler.vsix\n`);
+  if (process.platform !== "win32") {
+    assert.equal(statSync(published).mode & 0o222, 0);
+    assert.equal(statSync(checksum).mode & 0o222, 0);
+  }
+});
+
+test("rejects symlinked and hard-linked stable VSIX candidates", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-alias-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const candidate = join(root, "candidate.vsix");
+  await createReleaseVsix(candidate);
+
+  const hardLink = join(root, "candidate-hardlink.vsix");
+  linkSync(candidate, hardLink);
+  assert.throws(() => readOwnedVsixSnapshot(candidate), /one regular, unlinked file/u);
+
+  if (process.platform !== "win32") {
+    const symlink = join(root, "candidate-symlink.vsix");
+    symlinkSync(candidate, symlink);
+    assert.throws(() => readOwnedVsixSnapshot(symlink), /one regular, unlinked file/u);
+  }
+});
+
 test("the tag workflow gates stable artifacts before checksums, upload, and release creation", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const stablePackage = workflow.indexOf("name: Package canonical stable VSIX");
-  const readiness = workflow.indexOf("name: Enforce stable release readiness");
-  const checksum = workflow.indexOf("name: Create canonical checksum");
+  const metadata = workflow.indexOf("run: node scripts/release-metadata.mjs");
+  const previewPackage = workflow.indexOf("name: Package canonical preview VSIX");
+  const stablePackage = workflow.indexOf("name: Package stable VSIX candidate");
+  const sourceCheck = workflow.indexOf("name: Verify exact tagged source after packaging");
+  const stableVerification = workflow.indexOf("name: Verify stable VSIX candidate");
+  const readiness = workflow.indexOf("name: Enforce stable release readiness and publish immutable snapshot");
+  const previewChecksum = workflow.indexOf("name: Create canonical preview checksum");
   const upload = workflow.indexOf("name: openwrangler-release");
   const release = workflow.indexOf("softprops/action-gh-release@");
 
+  assert.ok(metadata >= 0);
+  assert.ok(previewPackage > metadata);
   assert.ok(stablePackage >= 0);
-  assert.ok(readiness > stablePackage);
-  assert.ok(checksum > readiness);
-  assert.ok(upload > checksum);
+  assert.ok(stablePackage > metadata);
+  assert.ok(sourceCheck > stablePackage);
+  assert.ok(stableVerification > sourceCheck);
+  assert.ok(readiness > stableVerification);
+  assert.ok(previewChecksum > readiness);
+  assert.ok(upload > previewChecksum);
   assert.ok(release > upload);
-  assert.equal(workflow.match(/name: Enforce stable release readiness/gu)?.length, 1);
+  assert.equal(workflow.match(/name: Enforce stable release readiness and publish immutable snapshot/gu)?.length, 1);
   assert.match(
-    workflow.slice(readiness, checksum),
-    /if: \$\{\{ steps\.release_metadata\.outputs\.prerelease != 'true' \}\}[\s\S]*RELEASE_TAG: \$\{\{ github\.ref_name \}\}[\s\S]*npm run release:readiness -- openwrangler\.vsix/u
+    workflow.slice(stablePackage, sourceCheck),
+    /if: \$\{\{ steps\.release_metadata\.outputs\.prerelease != 'true' \}\}[\s\S]*--out openwrangler\.candidate\.vsix/u
+  );
+  assert.match(
+    workflow.slice(sourceCheck, stableVerification),
+    /EXPECTED_SHA: \$\{\{ github\.sha \}\}[\s\S]*git diff-index --quiet HEAD --/u
+  );
+  assert.match(
+    workflow.slice(readiness, previewChecksum),
+    /if: \$\{\{ steps\.release_metadata\.outputs\.prerelease != 'true' \}\}[\s\S]*RELEASE_TAG: \$\{\{ github\.ref_name \}\}[\s\S]*openwrangler\.candidate\.vsix[\s\S]*--out openwrangler\.vsix[\s\S]*--checksum-out openwrangler\.vsix\.sha256/u
   );
 });

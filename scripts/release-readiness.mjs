@@ -1,12 +1,24 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  constants as fsConstants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
+import { fromBuffer as openZipBuffer } from "yauzl";
 import { NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
+import { inspectVsixEntries, inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 const VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const PYTHON_VERSION = /^__version__\s*=\s*"([^"\r\n]+)"\s*$/gmu;
@@ -16,6 +28,15 @@ const FEATURE_PARITY_HEADING = "# Feature parity matrix";
 const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
 const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const README_MAX_BYTES = 2 * 1024 * 1024;
+const MAX_VSIX_BYTES = 128 * 1024 * 1024;
+const MAX_VSIX_ENTRIES = 4096;
+const MAX_VSIX_ENTRY_NAME = 1024;
+const REQUIRED_VSIX_ENTRIES = new Map([
+  ["extension/package.json", { key: "packagedPackageJson", maxBytes: 1024 * 1024 }],
+  ["extension/python/openwrangler_runtime/version.py", { key: "packagedPythonVersionFile", maxBytes: 64 * 1024 }],
+  ["extension/readme.md", { key: "packagedReadme", maxBytes: README_MAX_BYTES }],
+  ["extension.vsixmanifest", { key: "vsixManifest", maxBytes: 1024 * 1024 }]
+]);
 export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 > **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
 ${README_RELEASE_SECTION_END}`;
@@ -461,16 +482,341 @@ export function inspectStableReleaseReadiness({
   return [...new Set(problems)];
 }
 
-function runCli() {
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function unchangedFileSnapshot(before, after) {
+  return (
+    sameFileIdentity(before, after) &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs
+  );
+}
+
+function sha256(contents) {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+export function readOwnedVsixSnapshot(vsixPath) {
+  const absolutePath = resolve(vsixPath);
+  let pathIdentity;
+  try {
+    pathIdentity = lstatSync(absolutePath, { bigint: true });
+  } catch (error) {
+    throw new Error(`Stable VSIX candidate cannot be inspected: ${basename(absolutePath)}.`, { cause: error });
+  }
+  if (!pathIdentity.isFile() || pathIdentity.nlink !== 1n) {
+    throw new Error("Stable VSIX candidate must be one regular, unlinked file.");
+  }
+
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  let descriptor;
+  try {
+    descriptor = openSync(absolutePath, fsConstants.O_RDONLY | noFollow);
+    const before = fstatSync(descriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      !sameFileIdentity(pathIdentity, before) ||
+      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("Stable VSIX candidate identity or ownership changed before inspection.");
+    }
+    if (before.size <= 0n || before.size > BigInt(MAX_VSIX_BYTES)) {
+      throw new Error(`Stable VSIX candidate must be between 1 and ${MAX_VSIX_BYTES} bytes.`);
+    }
+
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (bytes.length !== Number(before.size) || !unchangedFileSnapshot(before, after)) {
+      throw new Error("Stable VSIX candidate changed while its immutable snapshot was read.");
+    }
+    return Object.freeze({
+      bytes,
+      sha256: sha256(bytes),
+      sourceIdentity: Object.freeze({ dev: before.dev, ino: before.ino, size: before.size })
+    });
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
+  }
+}
+
+function openVsixArchive(bytes) {
+  return new Promise((resolveArchive, rejectArchive) => {
+    openZipBuffer(
+      bytes,
+      {
+        autoClose: true,
+        decodeStrings: true,
+        lazyEntries: true,
+        strictFileNames: true,
+        validateEntrySizes: true
+      },
+      (error, archive) => {
+        if (error) {
+          rejectArchive(error);
+        } else if (archive === undefined) {
+          rejectArchive(new Error("Stable VSIX candidate did not open as a ZIP archive."));
+        } else {
+          resolveArchive(archive);
+        }
+      }
+    );
+  });
+}
+
+function readUtf8ArchiveEntry(archive, entry, maxBytes) {
+  if (entry.uncompressedSize > maxBytes) {
+    return Promise.reject(new Error(`Stable VSIX metadata entry ${entry.fileName} exceeds its size limit.`));
+  }
+  return new Promise((resolveEntry, rejectEntry) => {
+    archive.openReadStream(entry, (error, stream) => {
+      if (error) {
+        rejectEntry(error);
+        return;
+      }
+      if (stream === undefined) {
+        rejectEntry(new Error(`Stable VSIX metadata entry ${entry.fileName} could not be opened.`));
+        return;
+      }
+
+      const chunks = [];
+      let length = 0;
+      stream.on("data", (chunk) => {
+        length += chunk.length;
+        if (length > maxBytes) {
+          stream.destroy(new Error(`Stable VSIX metadata entry ${entry.fileName} exceeds its size limit.`));
+        } else {
+          chunks.push(chunk);
+        }
+      });
+      stream.once("error", rejectEntry);
+      stream.once("end", () => {
+        try {
+          resolveEntry(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, length)));
+        } catch (error) {
+          rejectEntry(new Error(`Stable VSIX metadata entry ${entry.fileName} must be valid UTF-8.`, { cause: error }));
+        }
+      });
+    });
+  });
+}
+
+export async function readStableVsixPayload(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_VSIX_BYTES) {
+    throw new Error("Stable VSIX snapshot must be one bounded non-empty Buffer.");
+  }
+  const archive = await openVsixArchive(bytes);
+  return await new Promise((resolvePayload, rejectPayload) => {
+    const archiveEntries = [];
+    const seen = new Set();
+    const values = new Map();
+    let settled = false;
+
+    const reject = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        archive.close();
+      } catch {
+        // The original bounded archive failure remains authoritative.
+      }
+      rejectPayload(error);
+    };
+
+    archive.once("error", reject);
+    archive.on("entry", async (entry) => {
+      try {
+        if (
+          archiveEntries.length >= MAX_VSIX_ENTRIES ||
+          Buffer.byteLength(entry.fileName, "utf8") > MAX_VSIX_ENTRY_NAME
+        ) {
+          throw new Error("Stable VSIX candidate exceeds its bounded archive inventory.");
+        }
+        if (seen.has(entry.fileName)) {
+          throw new Error(`Stable VSIX candidate contains duplicate entry ${entry.fileName}.`);
+        }
+        seen.add(entry.fileName);
+        archiveEntries.push(entry.fileName);
+
+        const requirement = REQUIRED_VSIX_ENTRIES.get(entry.fileName);
+        if (requirement !== undefined) {
+          values.set(requirement.key, await readUtf8ArchiveEntry(archive, entry, requirement.maxBytes));
+        }
+        if (!settled) {
+          archive.readEntry();
+        }
+      } catch (error) {
+        reject(error);
+      }
+    });
+    archive.once("end", () => {
+      if (settled) {
+        return;
+      }
+      try {
+        const { forbidden, missing, duplicates } = inspectVsixEntries(archiveEntries);
+        if (forbidden.length > 0 || missing.length > 0 || duplicates.length > 0) {
+          throw new Error("Stable VSIX snapshot does not satisfy the production archive allowlist.");
+        }
+        for (const requirement of REQUIRED_VSIX_ENTRIES.values()) {
+          if (!values.has(requirement.key)) {
+            throw new Error(`Stable VSIX snapshot is missing required metadata ${requirement.key}.`);
+          }
+        }
+        settled = true;
+        resolvePayload({
+          archiveEntries,
+          packagedPackageJson: values.get("packagedPackageJson"),
+          packagedPythonVersionFile: values.get("packagedPythonVersionFile"),
+          packagedReadme: values.get("packagedReadme"),
+          vsixManifest: values.get("vsixManifest")
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+    archive.readEntry();
+  });
+}
+
+function sameReceipt(path, receipt) {
+  try {
+    const current = lstatSync(path, { bigint: true });
+    return (
+      current.isFile() &&
+      current.nlink === 1n &&
+      sameFileIdentity(current, receipt) &&
+      (receipt.size === undefined || current.size === receipt.size) &&
+      (receipt.mode === undefined || (current.mode & 0o777n) === receipt.mode)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function removeOwnedOutput(path, receipt) {
+  if (!sameReceipt(path, receipt)) {
+    throw new Error(`Refusing to clean an unverified release output: ${basename(path)}.`);
+  }
+  unlinkSync(path);
+}
+
+function writeExclusiveOwnedOutput(path, contents) {
+  const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents, "utf8");
+  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+  let descriptor;
+  let receipt;
+  let failure;
+  try {
+    descriptor = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error(`Release output ownership could not be established: ${basename(path)}.`);
+    }
+    receipt = { dev: opened.dev, ino: opened.ino };
+
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(descriptor, bytes, offset, bytes.length - offset);
+      if (written <= 0) {
+        throw new Error(`Release output write did not make progress: ${basename(path)}.`);
+      }
+      offset += written;
+    }
+    fsyncSync(descriptor);
+    fchmodSync(descriptor, 0o444);
+    fsyncSync(descriptor);
+    const completed = fstatSync(descriptor, { bigint: true });
+    if (!sameFileIdentity(opened, completed) || completed.size !== BigInt(bytes.length)) {
+      throw new Error(`Release output changed while it was published: ${basename(path)}.`);
+    }
+    receipt = {
+      ...receipt,
+      mode: process.platform === "win32" ? undefined : 0o444n,
+      size: completed.size
+    };
+  } catch (error) {
+    failure = error;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  }
+
+  if (failure !== undefined) {
+    if (receipt !== undefined && sameReceipt(path, receipt)) {
+      removeOwnedOutput(path, receipt);
+    }
+    throw failure;
+  }
+  if (receipt === undefined || !sameReceipt(path, receipt)) {
+    throw new Error(`Release output identity was lost after close: ${basename(path)}.`);
+  }
+  return Object.freeze(receipt);
+}
+
+export function writeStableReleaseArtifacts({ snapshot, vsixOutput, checksumOutput }) {
+  if (
+    !Buffer.isBuffer(snapshot?.bytes) ||
+    typeof snapshot?.sha256 !== "string" ||
+    sha256(snapshot.bytes) !== snapshot.sha256
+  ) {
+    throw new Error("Stable release snapshot digest no longer matches its inspected bytes.");
+  }
+  const resolvedVsixOutput = resolve(vsixOutput);
+  const resolvedChecksumOutput = resolve(checksumOutput);
+  if (resolvedVsixOutput === resolvedChecksumOutput) {
+    throw new Error("Stable VSIX and checksum outputs must be different paths.");
+  }
+
+  const vsixReceipt = writeExclusiveOwnedOutput(resolvedVsixOutput, snapshot.bytes);
+  try {
+    const checksumReceipt = writeExclusiveOwnedOutput(
+      resolvedChecksumOutput,
+      `${snapshot.sha256}  ${basename(resolvedVsixOutput)}\n`
+    );
+    return Object.freeze({ checksumReceipt, vsixReceipt });
+  } catch (error) {
+    removeOwnedOutput(resolvedVsixOutput, vsixReceipt);
+    throw error;
+  }
+}
+
+function parseCliArguments(args) {
+  if (args.length !== 5 || args[1] !== "--out" || args[3] !== "--checksum-out" || !args[0] || !args[2] || !args[4]) {
+    throw new Error(
+      "Pass one stable candidate plus explicit outputs: <candidate.vsix> --out <openwrangler.vsix> --checksum-out <openwrangler.vsix.sha256>."
+    );
+  }
+  return { candidate: args[0], checksumOutput: args[4], vsixOutput: args[2] };
+}
+
+async function runCli() {
   const root = resolve(import.meta.dirname, "..");
-  const requested = process.argv[2];
-  if (!requested) {
-    throw new Error("Pass the exact stable VSIX path to inspect; implicit artifact selection is disabled.");
+  const requested = parseCliArguments(process.argv.slice(2));
+  const candidate = resolve(root, requested.candidate);
+  const vsixOutput = resolve(root, requested.vsixOutput);
+  const checksumOutput = resolve(root, requested.checksumOutput);
+  if (new Set([candidate, vsixOutput, checksumOutput]).size !== 3) {
+    throw new Error("Stable candidate, VSIX output, and checksum output must be three distinct paths.");
   }
-  const vsix = resolve(root, requested);
-  if (!existsSync(vsix)) {
-    throw new Error(`Stable VSIX not found: ${requested}`);
-  }
+  const snapshot = readOwnedVsixSnapshot(candidate);
+  const packaged = await readStableVsixPayload(snapshot.bytes);
 
   const problems = inspectStableReleaseReadiness({
     releaseTag: process.env.RELEASE_TAG,
@@ -479,20 +825,22 @@ function runCli() {
     featureParity: readFileSync(resolve(root, "docs/feature-parity.md"), "utf8"),
     changelog: readFileSync(resolve(root, "CHANGELOG.md"), "utf8"),
     readme: readFileSync(resolve(root, "README.md"), "utf8"),
-    packagedPackageJson: execFileSync("unzip", ["-p", vsix, "extension/package.json"], { encoding: "utf8" }),
-    packagedPythonVersionFile: execFileSync("unzip", ["-p", vsix, "extension/python/openwrangler_runtime/version.py"], {
-      encoding: "utf8"
-    }),
-    packagedReadme: execFileSync("unzip", ["-p", vsix, "extension/readme.md"], { encoding: "utf8" }),
-    vsixManifest: execFileSync("unzip", ["-p", vsix, "extension.vsixmanifest"], { encoding: "utf8" })
+    packagedPackageJson: packaged.packagedPackageJson,
+    packagedPythonVersionFile: packaged.packagedPythonVersionFile,
+    packagedReadme: packaged.packagedReadme,
+    vsixManifest: packaged.vsixManifest
   });
 
   if (problems.length > 0) {
-    throw new Error(`Stable release readiness failed for ${basename(vsix)}:\n- ${problems.join("\n- ")}`);
+    throw new Error(`Stable release readiness failed for ${basename(candidate)}:\n- ${problems.join("\n- ")}`);
   }
-  console.log(`Stable release readiness verified for ${basename(vsix)}.`);
+  if (sha256(snapshot.bytes) !== snapshot.sha256) {
+    throw new Error("Stable VSIX snapshot changed during readiness inspection.");
+  }
+  writeStableReleaseArtifacts({ checksumOutput, snapshot, vsixOutput });
+  console.log(`Stable release readiness verified for ${basename(vsixOutput)} (${snapshot.sha256}).`);
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  runCli();
+  await runCli();
 }

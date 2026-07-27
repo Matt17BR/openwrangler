@@ -37,16 +37,34 @@ jobs:
       - name: Package canonical preview VSIX
         if: ${{ steps.release_metadata.outputs.prerelease == 'true' }}
         run: npm run package -- --pre-release --out openwrangler.vsix
-      - name: Package canonical stable VSIX
+      - name: Package stable VSIX candidate
         if: ${{ steps.release_metadata.outputs.prerelease != 'true' }}
-        run: npm run package -- --out openwrangler.vsix
-      - run: npm run verify:vsix -- openwrangler.vsix
-      - name: Enforce stable release readiness
+        run: npm run package -- --out openwrangler.candidate.vsix
+      - name: Verify exact tagged source after packaging
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "${EXPECTED_SHA}^{commit}")"
+          git update-index -q --refresh
+          git diff-index --quiet HEAD --
+      - name: Verify canonical preview VSIX
+        if: ${{ steps.release_metadata.outputs.prerelease == 'true' }}
+        run: npm run verify:vsix -- openwrangler.vsix
+      - name: Verify stable VSIX candidate
+        if: ${{ steps.release_metadata.outputs.prerelease != 'true' }}
+        run: npm run verify:vsix -- openwrangler.candidate.vsix
+      - name: Enforce stable release readiness and publish immutable snapshot
         if: ${{ steps.release_metadata.outputs.prerelease != 'true' }}
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: npm run release:readiness -- openwrangler.vsix
-      - name: Create canonical checksum
+        run: >-
+          npm run release:readiness --
+          openwrangler.candidate.vsix
+          --out openwrangler.vsix
+          --checksum-out openwrangler.vsix.sha256
+      - name: Create canonical preview checksum
+        if: ${{ steps.release_metadata.outputs.prerelease == 'true' }}
         shell: node {0}
         run: |
           const { createHash } = require("node:crypto");
