@@ -522,6 +522,9 @@ function sameEntrySnapshot(left, right, access, kind) {
   if (access === "immutable" || (access === "guard" && kind === "file")) {
     return isDeepStrictEqual(left, right);
   }
+  if (kind !== "directory" || !["mutable", "guard"].includes(access)) {
+    throw new Error("A Remote SSH immutable-input receipt has an unsupported identity policy.");
+  }
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -165,8 +166,10 @@ linuxTest("Remote launch guards retain host identity without treating mutable st
       const runtimeDirectory = join(sources[id], "runtime-directory");
       mkdirSync(runtimeDirectory, { mode: 0o700 });
       assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
+      openRemoteWorkspaceImmutableInputLeases(registry).release();
       rmSync(runtimeDirectory, { recursive: true });
       assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
+      openRemoteWorkspaceImmutableInputLeases(registry).release();
     }
     assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
 
@@ -187,9 +190,46 @@ linuxTest("Remote launch guards retain host identity without treating mutable st
     );
 
     chmodSync(sources.userData, 0o711);
-    assert.throws(() => assertRemoteWorkspaceImmutableInputRegistry(registry), /not private|changed after it was pinned/u);
+    assert.throws(
+      () => assertRemoteWorkspaceImmutableInputRegistry(registry),
+      /not private|changed after it was pinned/u
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxTest("Remote launch relaxed directory topology retains mode and file-link authority", () => {
+  const modeRoot = fixtureRoot("ow-remote-launch-directory-mode-");
+  try {
+    const sources = createRegistrySources(modeRoot);
+    const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
+    for (const id of ["userData", "hostHome"]) {
+      chmodSync(sources[id], 0o711);
+      assert.throws(
+        () => assertRemoteWorkspaceImmutableInputRegistry(registry),
+        /not private|changed after it was pinned/u
+      );
+      chmodSync(sources[id], 0o700);
+      assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
+    }
+  } finally {
+    rmSync(modeRoot, { recursive: true, force: true });
+  }
+
+  for (const id of ["descriptor", "hostSentinel"]) {
+    const linkRoot = fixtureRoot(`ow-remote-launch-${id}-post-pin-link-`);
+    try {
+      const sources = createRegistrySources(linkRoot);
+      const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
+      linkSync(sources[id], join(linkRoot, `${id}-linked`));
+      assert.throws(
+        () => assertRemoteWorkspaceImmutableInputRegistry(registry),
+        /unsafe type or link count|changed after it was pinned/u
+      );
+    } finally {
+      rmSync(linkRoot, { recursive: true, force: true });
+    }
   }
 });
 
@@ -233,7 +273,10 @@ linuxTest("Remote launch tree receipts allow pinned Python links and detect perm
     const sources = createRegistrySources(root);
     const pythonEntry = join(sources.python, "entry");
     symlinkSync("entry", join(sources.python, "python"));
-    symlinkSync("/usr/bin/true", join(sources.python, "python3"));
+    const externalPythonTarget = realpathSync("/usr/bin/true");
+    if (lstatSync(externalPythonTarget, { bigint: true }).uid === 0n) {
+      symlinkSync("/usr/bin/true", join(sources.python, "python3"));
+    }
     const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
     assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
     chmodSync(pythonEntry, 0o666);
