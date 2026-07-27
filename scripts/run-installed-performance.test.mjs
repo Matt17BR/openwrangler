@@ -3,8 +3,15 @@ import { createHash } from "node:crypto";
 import fs, { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import {
+  assertExtensionTestOutputTreeSafe,
+  copyExtensionTestRuntimeAssets,
+  EXTENSION_TEST_COMPILED_MODULES,
+  EXTENSION_TEST_RUNTIME_ASSETS,
+  verifyExtensionTestRuntimeAssets
+} from "./copy-extension-test-runtime-assets.mjs";
 import { EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL, editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   acceptInstalledPerformanceCandidate,
@@ -45,6 +52,197 @@ import {
   validatePerformanceEvidenceProvenance,
   writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
+
+test("extension-test builds explicitly stage declaration-shadowed CommonJS runtime assets", async () => {
+  assert.deepEqual(EXTENSION_TEST_RUNTIME_ASSETS, [
+    {
+      source: "src/shared/installedPerformanceFixtureManifest.cjs",
+      output: "dist-test/shared/installedPerformanceFixtureManifest.cjs"
+    },
+    {
+      source: "src/shared/strictJson.cjs",
+      output: "dist-test/shared/strictJson.cjs"
+    }
+  ]);
+  assert.deepEqual(EXTENSION_TEST_COMPILED_MODULES, [
+    "dist-test/test/extensionHost/installedPerformance.js",
+    "dist-test/test/extensionHost/identifiedTemporary.js",
+    "dist-test/test/extensionHost/progress.js"
+  ]);
+  const packageManifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(
+    packageManifest.scripts["build:test-extension"],
+    "node scripts/copy-extension-test-runtime-assets.mjs --guard-output-tree && tsc -p tsconfig.extension-test.json && node scripts/copy-extension-test-runtime-assets.mjs"
+  );
+  const compilerConfiguration = JSON.parse(
+    readFileSync(new URL("../tsconfig.extension-test.json", import.meta.url), "utf8")
+  );
+  assert.equal(compilerConfiguration.include.includes("src/shared/installedPerformanceFixtureManifest.cjs"), false);
+  assert.equal(compilerConfiguration.include.includes("src/shared/strictJson.cjs"), false);
+  assert.ok(compilerConfiguration.include.includes("src/shared/installedPerformanceFixtureManifest.d.cts"));
+  assert.ok(compilerConfiguration.include.includes("src/shared/strictJson.d.cts"));
+  const installedPerformanceRunner = readFileSync(new URL("./run-installed-performance.mjs", import.meta.url), "utf8");
+  assert.match(
+    installedPerformanceRunner,
+    /for \(const phase of INSTALLED_PERFORMANCE_PHASES\) \{\s+verifyExtensionTestRuntimeAssets\(\);/u
+  );
+
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-extension-test-assets-"));
+  try {
+    for (const [index, asset] of EXTENSION_TEST_RUNTIME_ASSETS.entries()) {
+      const source = join(directory, asset.source);
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, `module.exports = { value: ${index} };\n`, { flag: "wx", mode: 0o600 });
+    }
+    const entrypoint = join(directory, "dist-test/test/extensionHost/installedPerformance.js");
+    await mkdir(dirname(entrypoint), { recursive: true });
+    await mkdir(join(directory, "dist-test/shared"), { recursive: true });
+    await writeFile(
+      entrypoint,
+      [
+        'require("../../shared/installedPerformanceFixtureManifest.cjs");',
+        'require("../../shared/strictJson.cjs");',
+        'require("./identifiedTemporary");',
+        'require("./progress");',
+        "exports.run = async function run() {};",
+        ""
+      ].join("\n"),
+      { flag: "wx", mode: 0o600 }
+    );
+    for (const helper of EXTENSION_TEST_COMPILED_MODULES.slice(1)) {
+      await writeFile(join(directory, helper), "module.exports = {};\n", { flag: "wx", mode: 0o600 });
+    }
+
+    copyExtensionTestRuntimeAssets({ root: directory });
+    verifyExtensionTestRuntimeAssets({ root: directory });
+    for (const asset of EXTENSION_TEST_RUNTIME_ASSETS) {
+      assert.deepEqual(readFileSync(join(directory, asset.output)), readFileSync(join(directory, asset.source)));
+    }
+
+    for (const asset of EXTENSION_TEST_RUNTIME_ASSETS) {
+      await rm(join(directory, asset.output));
+      assert.throws(
+        () => verifyExtensionTestRuntimeAssets({ root: directory }),
+        /Extension-test output .* is missing/u
+      );
+      copyExtensionTestRuntimeAssets({ root: directory });
+    }
+
+    await writeFile(join(directory, EXTENSION_TEST_RUNTIME_ASSETS[1].output), "module.exports = {};\n");
+    assert.throws(() => verifyExtensionTestRuntimeAssets({ root: directory }), /does not match/u);
+    copyExtensionTestRuntimeAssets({ root: directory });
+
+    for (const helper of EXTENSION_TEST_COMPILED_MODULES.slice(1)) {
+      await rm(join(directory, helper));
+      assert.throws(
+        () => verifyExtensionTestRuntimeAssets({ root: directory }),
+        /Extension-test compiled module .* is missing/u
+      );
+      await writeFile(join(directory, helper), "module.exports = {};\n", { flag: "wx", mode: 0o600 });
+    }
+
+    const replacedHelper = join(directory, EXTENSION_TEST_COMPILED_MODULES[1]);
+    const priorHelper = `${replacedHelper}.prior`;
+    assert.throws(
+      () =>
+        verifyExtensionTestRuntimeAssets({
+          root: directory,
+          spawnPreflight() {
+            renameSync(replacedHelper, priorHelper);
+            writeFileSync(replacedHelper, readFileSync(priorHelper), { flag: "wx", mode: 0o600 });
+            fs.rmSync(priorHelper);
+            return {
+              error: undefined,
+              signal: null,
+              status: 0,
+              stderr: "",
+              stdout: JSON.stringify(
+                [...EXTENSION_TEST_COMPILED_MODULES, ...EXTENSION_TEST_RUNTIME_ASSETS.map(({ output }) => output)]
+                  .map((path) => join(directory, path))
+                  .sort()
+              )
+            };
+          }
+        }),
+      /compiled module .* changed during its load preflight/u
+    );
+
+    await rm(entrypoint);
+    assert.throws(
+      () => verifyExtensionTestRuntimeAssets({ root: directory }),
+      /Extension-test compiled module .* is missing/u
+    );
+    await writeFile(
+      entrypoint,
+      ['require("../../shared/future-runtime-dependency.cjs");', "exports.run = async function run() {};", ""].join(
+        "\n"
+      ),
+      { flag: "wx", mode: 0o600 }
+    );
+    assert.throws(() => verifyExtensionTestRuntimeAssets({ root: directory }), /could not load without an editor/u);
+    await writeFile(join(directory, "dist-test/shared/future-runtime-dependency.cjs"), "module.exports = {};\n", {
+      flag: "wx",
+      mode: 0o600
+    });
+    assert.throws(
+      () => verifyExtensionTestRuntimeAssets({ root: directory }),
+      /incomplete or unknown local-module closure/u
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("extension-test staging rejects linked output paths without touching their targets", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-extension-test-links-"));
+  const alias = `${directory}-alias`;
+  try {
+    for (const [index, asset] of EXTENSION_TEST_RUNTIME_ASSETS.entries()) {
+      const source = join(directory, asset.source);
+      await mkdir(dirname(source), { recursive: true });
+      await writeFile(source, `module.exports = { value: ${index} };\n`, { flag: "wx", mode: 0o600 });
+    }
+    const entrypoint = join(directory, "dist-test/test/extensionHost/installedPerformance.js");
+    await mkdir(dirname(entrypoint), { recursive: true });
+    await writeFile(entrypoint, "exports.run = async function run() {};\n", { flag: "wx", mode: 0o600 });
+
+    const outside = join(directory, "outside");
+    const sentinel = join(outside, "sentinel.cjs");
+    await mkdir(outside);
+    await writeFile(sentinel, "do not overwrite\n", { flag: "wx", mode: 0o600 });
+    const shared = join(directory, "dist-test/shared");
+    await symlink(outside, shared, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(() => assertExtensionTestOutputTreeSafe({ root: directory }), /must not contain symbolic links/u);
+    assert.throws(() => copyExtensionTestRuntimeAssets({ root: directory }), /must not contain symbolic links/u);
+    assert.equal(readFileSync(sentinel, "utf8"), "do not overwrite\n");
+    for (const asset of EXTENSION_TEST_RUNTIME_ASSETS) {
+      assert.equal(fs.existsSync(join(outside, asset.output.split("/").at(-1))), false);
+    }
+
+    await rm(shared);
+    await mkdir(shared);
+    const firstOutput = join(directory, EXTENSION_TEST_RUNTIME_ASSETS[0].output);
+    await symlink(sentinel, firstOutput);
+    assert.throws(() => assertExtensionTestOutputTreeSafe({ root: directory }), /must not contain symbolic links/u);
+    assert.throws(() => copyExtensionTestRuntimeAssets({ root: directory }), /must not contain symbolic links/u);
+    assert.equal(readFileSync(sentinel, "utf8"), "do not overwrite\n");
+
+    await rm(firstOutput);
+    await link(sentinel, firstOutput);
+    assert.throws(() => assertExtensionTestOutputTreeSafe({ root: directory }), /single-link regular files/u);
+    assert.throws(() => copyExtensionTestRuntimeAssets({ root: directory }), /single-link regular files/u);
+    assert.equal(readFileSync(sentinel, "utf8"), "do not overwrite\n");
+
+    await symlink(directory, alias, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(
+      () => assertExtensionTestOutputTreeSafe({ root: alias }),
+      /repository root must be one canonical directory/u
+    );
+  } finally {
+    await rm(alias, { force: true });
+    await rm(directory, { force: true, recursive: true });
+  }
+});
 
 const fakeFileIdentity = Object.freeze({
   dev: 1n,
@@ -1731,6 +1929,9 @@ test("consume-only preparation builds only the acceptance harness and retains al
     buildHarness: async () => {
       events.push("harness");
     },
+    verifyHarness() {
+      events.push("preflight");
+    },
     readSource: () => ({ commit, trackedWorktreeDirty: false }),
     revalidateCandidate(receipt) {
       assert.ok(receipt === candidateReceipt || receipt === publicCandidateReceipt);
@@ -1748,7 +1949,7 @@ test("consume-only preparation builds only the acceptance harness and retains al
   });
 
   assert.equal(prepared, accepted);
-  assert.deepEqual(events, ["accept", "harness", "candidate", "candidate", "checksum", "provenance"]);
+  assert.deepEqual(events, ["accept", "harness", "preflight", "candidate", "candidate", "checksum", "provenance"]);
 });
 
 test("candidate preparation rejects programmatically inconsistent consume and package modes before work", async () => {

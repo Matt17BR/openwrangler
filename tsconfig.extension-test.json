@@ -13,10 +13,8 @@
     "src/extension/notebooks/notebookInsertion.ts",
     "src/shared/protocol.ts",
     "src/shared/protocol.generated.ts",
-    "src/shared/installedPerformanceFixtureManifest.cjs",
     "src/shared/installedPerformanceFixtureManifest.d.cts",
     "src/shared/installedPerformanceFixtureManifestTypes.d.ts",
-    "src/shared/strictJson.cjs",
     "src/shared/strictJson.d.cts"
   ]
 }

@@ -58,7 +58,7 @@
     "clean": "node scripts/clean.mjs",
     "build": "npm run build:extension && npm run build:webview",
     "build:extension": "tsc -p tsconfig.extension.json",
-    "build:test-extension": "tsc -p tsconfig.extension-test.json",
+    "build:test-extension": "node scripts/copy-extension-test-runtime-assets.mjs --guard-output-tree && tsc -p tsconfig.extension-test.json && node scripts/copy-extension-test-runtime-assets.mjs",
     "build:webview": "node scripts/build-webviews.mjs",
     "typecheck": "tsc -p tsconfig.extension.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
     "lint": "eslint .",

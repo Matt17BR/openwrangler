@@ -61,6 +61,7 @@ import {
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
 import { acquirePinnedVSCodeClient } from "./remote-workspace-acquisition.mjs";
+import { verifyExtensionTestRuntimeAssets } from "./copy-extension-test-runtime-assets.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import {
@@ -884,6 +885,7 @@ export async function prepareInstalledPerformanceCandidate({
   readCandidate = readInstalledPerformanceCandidate,
   stageCandidate = stageInstalledPerformanceVsix,
   buildHarness = runInstalledPerformanceHarnessBuild,
+  verifyHarness = verifyExtensionTestRuntimeAssets,
   readSource = readSourceProvenance,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
@@ -916,6 +918,7 @@ export async function prepareInstalledPerformanceCandidate({
       environment
     });
     await buildHarness(environment);
+    verifyHarness();
     requireSameSource(readSource(), accepted.sourceBefore, "during the acceptance-harness build");
     revalidateCandidate(accepted.candidateReceipt);
     revalidateCandidate(accepted.publicCandidateReceipt);
@@ -938,6 +941,7 @@ export async function prepareInstalledPerformanceCandidate({
     snapshotDestination: resolve(privateRoot, "candidate.vsix"),
     environment
   });
+  verifyHarness();
   const sourceBefore = guardedCandidate.source;
   const candidate = await readCandidate(guardedCandidate);
   const published = await stageCandidate(guardedCandidate.path, options.candidateOutput);
@@ -1662,6 +1666,7 @@ async function runEditorPerformancePhases({
   const sampler = createInstalledResourceSampler();
   const phases = [];
   for (const phase of INSTALLED_PERFORMANCE_PHASES) {
+    verifyExtensionTestRuntimeAssets();
     const runId = randomUUID();
     const resultPath = resolve(profile, `${phase}-result.json`);
     const artifactReceipt = await runInstalledMeasuredEditorPhase({
