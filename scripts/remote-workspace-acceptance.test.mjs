@@ -4,6 +4,7 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -19,6 +20,8 @@ import {
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
+  createRemoteWorkspaceNamespaceLayout,
+  namespaceRemoteWorkspaceImmutablePath,
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
@@ -51,8 +54,38 @@ linuxTest("Remote workspace layout is short, private, and independently scoped",
   try {
     const layout = createRemoteWorkspaceLayout(parent);
     assert.equal(layout.root.startsWith(parent), true);
-    assert.equal(layout.workspace.startsWith(layout.remoteHome), true);
-    assert.equal(layout.remoteExtensions.startsWith(layout.remoteHome), true);
+    assert.equal(layout.workspace.startsWith(layout.remoteHome), false);
+    assert.equal(layout.remoteExtensions.startsWith(layout.remoteHome), false);
+    assert.equal(layout.python.startsWith(layout.remoteHome), false);
+    assert.equal(layout.sshRuntime.startsWith(layout.remoteHome), false);
+    assert.equal(layout.remoteServerBase.startsWith(layout.remoteHome), false);
+    assert.equal(layout.workspace.startsWith(layout.immutable), true);
+    assert.deepEqual(readdirSync(layout.remoteHome).sort(), [
+      ".vscode-server",
+      "cache",
+      "config",
+      "data",
+      "runtime",
+      "state",
+      "tmp"
+    ]);
+    const namespace = createRemoteWorkspaceNamespaceLayout(layout);
+    assert.equal(namespace.remoteHome, "/ow/rh");
+    assert.equal(namespace.workspace, "/ow/rh/workspace");
+    assert.equal(namespace.remoteServerBase, "/ow/rh/.vscode-server");
+    assert.equal(namespace.immutable, "/ow/immutable-unreachable");
+    assert.equal(
+      namespaceRemoteWorkspaceImmutablePath(layout, join(layout.python, "bin", "python")),
+      "/ow/rh/python/bin/python"
+    );
+    assert.equal(
+      namespaceRemoteWorkspaceImmutablePath(layout, join(layout.remoteServerBase, "code-test")),
+      "/ow/rh/.vscode-server/code-test"
+    );
+    assert.throws(
+      () => namespaceRemoteWorkspaceImmutablePath(layout, join(layout.remoteHome, "state", "untrusted")),
+      /not part of one phase-visible immutable mount/u
+    );
     assert.notEqual(layout.localHome, layout.remoteHome);
     assert.notEqual(layout.localExtensions, layout.remoteExtensions);
   } finally {

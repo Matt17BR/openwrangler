@@ -13,7 +13,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createVSIX } from "@vscode/vsce";
 import {
@@ -42,7 +42,8 @@ import {
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceLayout,
-  REMOTE_WORKSPACE_NAMESPACE_ROOT,
+  createRemoteWorkspaceNamespaceLayout,
+  namespaceRemoteWorkspaceImmutablePath,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
@@ -116,7 +117,7 @@ try {
   const privateParent = preparePrivateParent(resolve(repositoryRoot, "tmp", "remote-workspace"));
   layout = createRemoteWorkspaceLayout(privateParent);
   rootReceipt = captureDirectoryReceipt(layout.root);
-  const namespaceLayout = createNamespaceLayout(layout);
+  const namespaceLayout = createRemoteWorkspaceNamespaceLayout(layout);
   const runId = randomUUID();
   hostSentinel = join(privateParent, `.host-private-${runId}`);
   writeFileSync(hostSentinel, randomUUID(), { encoding: "utf8", flag: "wx", mode: 0o600 });
@@ -156,12 +157,12 @@ try {
     tools.uid,
     tools.gid,
     namespaceLayout.remoteHome,
-    namespacePrivatePath(layout, sshServer.libraryPath)
+    namespaceRemoteWorkspaceImmutablePath(layout, sshServer.libraryPath)
   );
   const clientRoot = layout.client;
   await extractPinnedRemoteTar(acquisition.artifacts.vscode, clientRoot, { runCommand: commandRunner.run });
 
-  const remoteServerBase = join(layout.remoteHome, ".vscode-server");
+  const remoteServerBase = layout.remoteServerBase;
   await extractPinnedRemoteTar(acquisition.artifacts.cli, remoteServerBase, { runCommand: commandRunner.run });
   const unpackedCli = join(remoteServerBase, "code");
   const committedCli = join(remoteServerBase, `code-${PINNED_REMOTE_VSCODE_COMMIT}`);
@@ -196,7 +197,7 @@ try {
     runCommand: commandRunner.run
   });
   await writeRemoteFixture(layout, python.executable);
-  writeWorkspaceSettings(layout, namespacePrivatePath(layout, python.executable));
+  writeWorkspaceSettings(layout, namespaceRemoteWorkspaceImmutablePath(layout, python.executable));
 
   const harnessVsix = join(layout.root, "harness.vsix");
   writeEditorAcceptanceHarness(layout.acceptanceHarness);
@@ -278,14 +279,14 @@ try {
   writeRemoteWorkspacePhaseDescriptor(layout.descriptor, {
     runId,
     layout: namespaceLayout,
-    editor: namespacePrivatePath(layout, installation.clientExecutable),
-    xvfb: namespacePrivatePath(layout, xvfbStage.stagedPath),
-    testModule: namespacePrivatePath(layout, testModuleStage.entrypoint),
-    python: namespacePrivatePath(layout, python.executable),
+    editor: namespaceRemoteWorkspaceImmutablePath(layout, installation.clientExecutable),
+    xvfb: namespaceRemoteWorkspaceImmutablePath(layout, xvfbStage.stagedPath),
+    testModule: namespaceRemoteWorkspaceImmutablePath(layout, testModuleStage.entrypoint),
+    python: namespaceRemoteWorkspaceImmutablePath(layout, python.executable),
     user: namespaceSshUser,
     sshConfig: ssh.namespaceClientConfig,
-    sshServer: namespacePrivatePath(layout, sshServer.executable),
-    sshLibraryPath: namespacePrivatePath(layout, sshServer.libraryPath),
+    sshServer: namespaceRemoteWorkspaceImmutablePath(layout, sshServer.executable),
+    sshLibraryPath: namespaceRemoteWorkspaceImmutablePath(layout, sshServer.libraryPath),
     sshHostKey: ssh.namespaceHostKey,
     sshAuthorizedKeys: ssh.namespaceAuthorizedKeys,
     hostHome,
@@ -462,27 +463,6 @@ function resolveSourcePython(environment) {
     throw new Error("Remote SSH acceptance requires an absolute pre-provisioned Python environment.");
   }
   return candidate;
-}
-
-function createNamespaceLayout(paths) {
-  const mapped = {};
-  for (const [name, value] of Object.entries(paths)) {
-    const relation = relative(paths.root, value);
-    if (relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
-      throw new Error("A Remote SSH layout path escaped its private root.");
-    }
-    mapped[name] =
-      relation.length === 0 ? REMOTE_WORKSPACE_NAMESPACE_ROOT : join(REMOTE_WORKSPACE_NAMESPACE_ROOT, relation);
-  }
-  return Object.freeze(mapped);
-}
-
-function namespacePrivatePath(paths, value) {
-  const relation = relative(paths.root, resolve(value));
-  if (!relation || relation === ".." || relation.startsWith(`..${sep}`) || isAbsolute(relation)) {
-    throw new Error("A Remote SSH runtime path escaped its private root.");
-  }
-  return join(REMOTE_WORKSPACE_NAMESPACE_ROOT, relation);
 }
 
 function stageTestModuleTree(destination) {

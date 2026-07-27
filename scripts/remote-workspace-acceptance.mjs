@@ -312,21 +312,23 @@ export function createRemoteWorkspaceLayout(parent) {
   chmodSync(root, 0o700);
   const paths = {
     root,
-    client: join(root, "client"),
+    immutable: join(root, "immutable"),
+    client: join(root, "immutable", "client"),
     localHome: join(root, "lh"),
     userData: join(root, "ud"),
     localExtensions: join(root, "le"),
     remoteHome: join(root, "rh"),
-    remoteExtensions: join(root, "rh", ".vscode-server", "extensions"),
-    workspace: join(root, "rh", "workspace"),
-    accounts: join(root, "rh", "accounts"),
-    ssh: join(root, "rh", "ssh"),
-    sshRuntime: join(root, "rh", "ssh-runtime"),
+    remoteServerBase: join(root, "immutable", "vscode-server"),
+    remoteExtensions: join(root, "immutable", "remote-extensions"),
+    workspace: join(root, "immutable", "workspace"),
+    accounts: join(root, "immutable", "accounts"),
+    ssh: join(root, "immutable", "ssh"),
+    sshRuntime: join(root, "immutable", "ssh-runtime"),
     phaseRuntime: join(root, "phase-runtime"),
-    remoteTestModule: join(root, "rh", "test-module"),
+    remoteTestModule: join(root, "immutable", "test-module"),
     logs: join(root, "logs"),
     acceptanceHarness: join(root, "harness"),
-    python: join(root, "rh", "python"),
+    python: join(root, "immutable", "python"),
     candidate: join(root, "candidate.vsix"),
     output: join(root, "out"),
     result: join(root, "out", "result.json"),
@@ -334,6 +336,7 @@ export function createRemoteWorkspaceLayout(parent) {
     descriptor: join(root, "phase.json")
   };
   for (const path of [
+    paths.immutable,
     paths.client,
     paths.localHome,
     paths.userData,
@@ -356,7 +359,70 @@ export function createRemoteWorkspaceLayout(parent) {
       mkdirSync(join(home, child), { recursive: true, mode: 0o700 });
     }
   }
+  for (const path of [
+    join(paths.remoteHome, ".vscode-server"),
+    join(paths.remoteHome, ".vscode-server", "cli", "servers", `Stable-${PINNED_REMOTE_VSCODE_COMMIT}`)
+  ]) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
   return Object.freeze(paths);
+}
+
+export function createRemoteWorkspaceNamespaceLayout(paths) {
+  assertRemoteWorkspacePhysicalLayout(paths);
+  return Object.freeze({
+    ...paths,
+    root: REMOTE_WORKSPACE_NAMESPACE_ROOT,
+    immutable: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/immutable-unreachable`,
+    client: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/client`,
+    localHome: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh`,
+    userData: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/ud`,
+    localExtensions: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/le`,
+    remoteHome: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh`,
+    remoteServerBase: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/.vscode-server`,
+    remoteExtensions: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/.vscode-server/extensions`,
+    workspace: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/workspace`,
+    accounts: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts`,
+    ssh: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh`,
+    sshRuntime: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime`,
+    phaseRuntime: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-runtime`,
+    remoteTestModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module`,
+    logs: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/logs-unreachable`,
+    acceptanceHarness: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/harness-unreachable`,
+    python: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/python`,
+    candidate: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/candidate-unreachable.vsix`,
+    output: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/out`,
+    result: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/out/result.json`,
+    progress: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/out/progress.json`,
+    descriptor: REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
+  });
+}
+
+export function namespaceRemoteWorkspaceImmutablePath(paths, value) {
+  const namespacePaths = createRemoteWorkspaceNamespaceLayout(paths);
+  const mappings = [
+    "remoteExtensions",
+    "remoteTestModule",
+    "remoteServerBase",
+    "phaseRuntime",
+    "sshRuntime",
+    "workspace",
+    "python",
+    "client",
+    "ssh",
+    "accounts"
+  ]
+    .map((name) => ({ source: resolve(paths[name]), destination: namespacePaths[name] }))
+    .sort((left, right) => right.source.length - left.source.length);
+  const candidate = resolve(value);
+  for (const mapping of mappings) {
+    const relation = relative(mapping.source, candidate);
+    if (!relation) return mapping.destination;
+    if (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation)) {
+      return join(mapping.destination, relation);
+    }
+  }
+  throw new Error("A Remote SSH runtime path is not part of one phase-visible immutable mount.");
 }
 
 export async function copyPrivatePythonEnvironment(
@@ -402,6 +468,38 @@ export async function copyPrivatePythonEnvironment(
     packages: copiedProbe.packages,
     systemRuntimeDirectories: resolveRemoteWorkspaceSystemRuntimeDirectories(sourceProbe.systemRuntimeDirectories)
   });
+}
+
+function assertRemoteWorkspacePhysicalLayout(paths) {
+  const root = typeof paths?.root === "string" ? realpathSync(paths.root) : undefined;
+  const immutable = typeof paths?.immutable === "string" ? realpathSync(paths.immutable) : undefined;
+  if (
+    !paths ||
+    typeof paths !== "object" ||
+    root === undefined ||
+    immutable === undefined ||
+    !isContained(root, immutable)
+  ) {
+    throw new Error("The Remote SSH physical layout is malformed.");
+  }
+  for (const name of [
+    "client",
+    "remoteServerBase",
+    "remoteExtensions",
+    "workspace",
+    "accounts",
+    "ssh",
+    "sshRuntime",
+    "remoteTestModule",
+    "python"
+  ]) {
+    if (typeof paths[name] !== "string" || !isContained(immutable, resolve(paths[name]))) {
+      throw new Error("A Remote SSH immutable physical input escaped its setup-only root.");
+    }
+  }
+  if (typeof paths.remoteHome !== "string" || isContained(realpathSync(paths.remoteHome), immutable)) {
+    throw new Error("The Remote SSH mutable home contains its physical immutable-input root.");
+  }
 }
 
 export function createRemoteWorkspaceBwrapArguments(
