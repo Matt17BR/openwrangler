@@ -529,6 +529,13 @@ export async function run(): Promise<void> {
     console.log("Open Wrangler real Python-environment selection acceptance passed.");
     return;
   }
+  if (phase === "platform-smoke") {
+    recordAcceptanceProgress("platform-smoke:start");
+    await exercisePackagedPlatformSmoke(testing, extension, fixture);
+    recordAcceptanceProgress("platform-smoke:complete");
+    console.log("Open Wrangler packaged platform smoke passed.");
+    return;
+  }
   if (phase === "seed") {
     recordAcceptanceProgress("seed:start");
     await seedPersistedPlan(testing, fixture);
@@ -3249,6 +3256,152 @@ async function exercisePackagedStepInspection(testing: TestApi, fixture: vscode.
     "Clearing must restore filters, sorts, widths, selection, and viewport exactly."
   );
   assert.equal(restored.code, confirmedCode, "Clearing must restore the full-plan generated code.");
+}
+
+async function exercisePackagedPlatformSmoke(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  fixture: vscode.Uri
+): Promise<void> {
+  assert.equal(
+    process.env.OPEN_WRANGLER_TEST_EDITOR,
+    "cursor",
+    "The bounded cross-platform smoke is reserved for the pinned Cursor candidate."
+  );
+  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+  const page = await connectToEditorWorkbench();
+  const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
+
+  recordAcceptanceProgress("platform-smoke:gallery-icon");
+  await vscode.commands.executeCommand("workbench.view.extensions");
+  const installedExtension = page
+    .locator(".part.sidebar .monaco-list-row, .part.sidebar [role=treeitem]")
+    .filter({ hasText: "Open Wrangler" })
+    .first();
+  await installedExtension.waitFor({ state: "visible", timeout: 10_000 });
+  const galleryIcon = installedExtension.locator("img").first();
+  await galleryIcon.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await galleryIcon.evaluate((image: unknown) => {
+      const candidate = image as { complete?: unknown; naturalWidth?: unknown; tagName?: unknown };
+      return candidate.tagName === "IMG" && candidate.complete === true && Number(candidate.naturalWidth) > 0;
+    }),
+    true,
+    "The installed Open Wrangler gallery entry must render its packaged icon."
+  );
+
+  recordAcceptanceProgress("platform-smoke:file-action");
+  await vscode.commands.executeCommand("vscode.open", fixture, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.One
+  });
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    10_000,
+    "the CSV source editor before the Cursor title action"
+  );
+  await page.bringToFront();
+  const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
+  await titleAction.waitFor({ state: "visible", timeout: 10_000 });
+  await titleAction.click();
+  await acceptDefaultDelimitedImport(page, testing, fixture, "platform-smoke:import");
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the pinned Cursor CSV action to open a dataframe session"
+  );
+  const active = testing.activeSession();
+  assert.ok(active, "The pinned Cursor smoke must publish an active dataframe session.");
+  assert.equal(active.metadata.source.path, fixture.fsPath);
+  assert.equal(active.metadata.shape.rows > 0, true);
+  assert.equal(active.metadata.shape.columns, 4);
+
+  recordAcceptanceProgress("platform-smoke:grid");
+  const gridTarget = await waitForOpenWranglerGridTarget(page);
+  const grid = gridTarget.frame.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
+  await grid.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await grid.getAttribute("aria-colcount"), "5");
+  const firstCell = gridTarget.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+  await firstCell.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal((await firstCell.innerText()).trim(), "Milan");
+  await firstCell.focus();
+  await firstCell.press("ArrowRight");
+  await gridTarget.frame
+    .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
+    .waitFor({ state: "visible", timeout: 5_000 });
+
+  recordAcceptanceProgress("platform-smoke:theme");
+  const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
+    const window = element.ownerDocument.defaultView;
+    if (!window) throw new Error("The pinned Cursor webview did not expose a live window.");
+    const computed = window.getComputedStyle(element);
+    const root = window.getComputedStyle(element.ownerDocument.documentElement);
+    const probe = element.ownerDocument.createElement("span");
+    probe.style.color = "var(--vscode-foreground)";
+    probe.style.backgroundColor = "var(--vscode-editor-background)";
+    element.appendChild(probe);
+    const expected = window.getComputedStyle(probe);
+    const result = {
+      color: computed.color,
+      background: root.backgroundColor,
+      expectedColor: expected.color,
+      expectedBackground: expected.backgroundColor,
+      foregroundToken: root.getPropertyValue("--vscode-foreground").trim(),
+      backgroundToken: root.getPropertyValue("--vscode-editor-background").trim(),
+      fontToken: root.getPropertyValue("--vscode-font-family").trim(),
+      fontFamily: computed.fontFamily
+    };
+    probe.remove();
+    return result;
+  });
+  assert.ok(themeAttestation.foregroundToken, "The Cursor webview must receive the VS Code foreground token.");
+  assert.ok(themeAttestation.backgroundToken, "The Cursor webview must receive the VS Code editor-background token.");
+  assert.ok(themeAttestation.fontToken, "The Cursor webview must receive the VS Code font token.");
+  assert.equal(themeAttestation.color, themeAttestation.expectedColor);
+  assert.equal(themeAttestation.background, themeAttestation.expectedBackground);
+  assert.ok(themeAttestation.fontFamily);
+
+  recordAcceptanceProgress("platform-smoke:native-views");
+  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  const activityAction = page.getByRole("tab", { name: /Open Wrangler/iu }).first();
+  await activityAction.waitFor({ state: "visible", timeout: 10_000 });
+  const sidebar = page.locator(".part.sidebar:visible");
+  for (const label of ["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"]) {
+    await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+  }
+  assert.equal(extension.isActive, true);
+
+  recordAcceptanceProgress("platform-smoke:cleanup");
+  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    10_000,
+    "the pinned Cursor smoke session and Python runtime to terminate"
+  );
+  assert.deepEqual(testing.diagnostics().sessions, []);
+}
+
+async function waitForOpenWranglerGridTarget(workbench: Page): Promise<OpenWranglerWebviewTarget> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    const browser = workbench.context().browser();
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const grid = target.frame.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
+        if ((await grid.count()) > 0 && (await grid.isVisible())) return target;
+      } catch (error) {
+        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error("The pinned Cursor smoke did not expose a live Open Wrangler grid.");
 }
 
 async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {

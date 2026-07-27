@@ -57,6 +57,7 @@ import {
   writeRemoteJupyterAcceptanceDescriptor,
   writeRemoteJupyterAcceptanceEnvironment
 } from "./jupyter-acceptance-environment.mjs";
+import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
   remoteJupyterAcceptanceEnabled,
@@ -99,6 +100,7 @@ let orchestrationTreeMayBeLive = false;
 let evidenceCollectionSafe = true;
 let privatePathsVerified = true;
 let editorDisplay;
+let cursorAcquisition;
 
 try {
   hostHomes = collectEditorAcceptancePrivateDiagnosticPaths([
@@ -166,6 +168,15 @@ try {
           const requested = process.env.OPEN_WRANGLER_PACKAGED_EDITORS?.split(",")
             .map((value) => value.trim())
             .filter(Boolean);
+          const acceptanceMode = process.env.OPEN_WRANGLER_PACKAGED_MODE ?? "full";
+          if (acceptanceMode !== "full" && acceptanceMode !== "platform-smoke") {
+            throw new Error('OPEN_WRANGLER_PACKAGED_MODE must be "full" or "platform-smoke".');
+          }
+          if (acceptanceMode === "platform-smoke" && (requested?.length !== 1 || requested[0] !== "cursor")) {
+            throw new Error(
+              'OPEN_WRANGLER_PACKAGED_MODE="platform-smoke" requires OPEN_WRANGLER_PACKAGED_EDITORS="cursor".'
+            );
+          }
           const supportedEditorKeys = new Set(["vscode", "cursor"]);
           const unknownRequested = requested?.filter((key) => !supportedEditorKeys.has(key)) ?? [];
           if (unknownRequested.length) {
@@ -173,7 +184,7 @@ try {
               'The packaged editor selection contains an unsupported value; allowed values are "vscode" and "cursor".'
             );
           }
-          const candidates = [
+          let candidates = [
             {
               name: "VS Code",
               key: "vscode",
@@ -211,6 +222,16 @@ try {
               cli: downloadedCli,
               sharedDataDir: true
             });
+          }
+          if (
+            requested?.includes("cursor") &&
+            (process.platform === "darwin" || process.platform === "win32") &&
+            (acceptanceMode === "platform-smoke" || !candidates.some((editor) => editor.key === "cursor"))
+          ) {
+            writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:acquire-cursor");
+            cursorAcquisition = await acquirePinnedCursor(temporaryRoot);
+            candidates = candidates.filter((editor) => editor.key !== "cursor");
+            candidates.push(cursorAcquisition.editor);
           }
           if (!candidates.length) throw new Error("No supported VS Code or Cursor desktop executable was found.");
           const missingRequested = requested?.filter((key) => !candidates.some((editor) => editor.key === key)) ?? [];
@@ -321,7 +342,13 @@ try {
             const acceptanceHarnessVsix = resolve(profile, "openwrangler-packaged-test-harness.vsix");
             const resultPaths = {
               setup: resolve(profile, "setup-result.json"),
-              restricted: resolve(profile, "restricted-result.json"),
+              ...(acceptanceMode === "full"
+                ? {
+                    restricted: resolve(profile, "restricted-result.json"),
+                    seed: resolve(profile, "seed-result.json"),
+                    verify: resolve(profile, "verify-result.json")
+                  }
+                : { "platform-smoke": resolve(profile, "platform-smoke-result.json") }),
               ...(pythonExtensionInstallTarget
                 ? { "python-environment": resolve(profile, "python-environment-result.json") }
                 : {}),
@@ -337,13 +364,13 @@ try {
                         }
                       : {})
                   }
-                : {}),
-              seed: resolve(profile, "seed-result.json"),
-              verify: resolve(profile, "verify-result.json")
+                : {})
             };
             const runIds = {
               setup: randomUUID(),
-              restricted: randomUUID(),
+              ...(acceptanceMode === "full"
+                ? { restricted: randomUUID(), seed: randomUUID(), verify: randomUUID() }
+                : { "platform-smoke": randomUUID() }),
               ...(pythonExtensionInstallTarget ? { "python-environment": randomUUID() } : {}),
               ...(jupyterExtensionInstallTarget
                 ? {
@@ -357,9 +384,7 @@ try {
                         }
                       : {})
                   }
-                : {}),
-              seed: randomUUID(),
-              verify: randomUUID()
+                : {})
             };
             const progressPaths = Object.fromEntries(
               Object.entries(resultPaths).map(([phase, resultPath]) => [
@@ -663,24 +688,42 @@ try {
                 }
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:complete");
 
-                activePhase = "restricted";
-                await runEditorAcceptancePhase({
-                  editor: identifiedEditor,
-                  workspace,
-                  userData: restrictedUserData,
-                  extensions,
-                  developmentPaths: [],
-                  testModule: resolve(root, "dist-test", "test", "extensionHost", "restricted.js"),
-                  python: acceptancePythonForPhase("restricted", testPython, jupyterKernelPython),
-                  phase: "restricted",
-                  workspaceTrust: "restricted",
-                  resultPath: resultPaths.restricted,
-                  runId: runIds.restricted,
-                  progressPath: progressPaths.restricted
-                });
-
                 const testModule = resolve(root, "dist-test", "test", "extensionHost", "index.js");
-                if (pythonExtensionInstallTarget) {
+                if (acceptanceMode === "platform-smoke") {
+                  activePhase = "platform-smoke";
+                  await runEditorAcceptancePhase({
+                    editor: identifiedEditor,
+                    workspace,
+                    userData,
+                    extensions,
+                    developmentPaths: [fakeJupyter],
+                    testModule,
+                    python: acceptancePythonForPhase("platform-smoke", testPython, jupyterKernelPython),
+                    phase: "platform-smoke",
+                    resultPath: resultPaths["platform-smoke"],
+                    runId: runIds["platform-smoke"],
+                    progressPath: progressPaths["platform-smoke"],
+                    requiresWorkbenchCdp: true
+                  });
+                } else {
+                  activePhase = "restricted";
+                  await runEditorAcceptancePhase({
+                    editor: identifiedEditor,
+                    workspace,
+                    userData: restrictedUserData,
+                    extensions,
+                    developmentPaths: [],
+                    testModule: resolve(root, "dist-test", "test", "extensionHost", "restricted.js"),
+                    python: acceptancePythonForPhase("restricted", testPython, jupyterKernelPython),
+                    phase: "restricted",
+                    workspaceTrust: "restricted",
+                    resultPath: resultPaths.restricted,
+                    runId: runIds.restricted,
+                    progressPath: progressPaths.restricted
+                  });
+                }
+
+                if (acceptanceMode === "full" && pythonExtensionInstallTarget) {
                   activePhase = "python-environment";
                   await runEditorAcceptancePhase({
                     editor: identifiedEditor,
@@ -696,7 +739,7 @@ try {
                     progressPath: progressPaths["python-environment"]
                   });
                 }
-                if (jupyterExtensionInstallTarget) {
+                if (acceptanceMode === "full" && jupyterExtensionInstallTarget) {
                   for (const phase of ["jupyter-deny", "jupyter-allow"]) {
                     activePhase = phase;
                     await runEditorAcceptancePhase({
@@ -829,21 +872,23 @@ try {
                     }
                   }
                 }
-                for (const phase of ["seed", "verify"]) {
-                  activePhase = phase;
-                  await runEditorAcceptancePhase({
-                    editor: identifiedEditor,
-                    workspace,
-                    userData,
-                    extensions,
-                    developmentPaths: [fakeJupyter],
-                    testModule,
-                    python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
-                    phase,
-                    resultPath: resultPaths[phase],
-                    runId: runIds[phase],
-                    progressPath: progressPaths[phase]
-                  });
+                if (acceptanceMode === "full") {
+                  for (const phase of ["seed", "verify"]) {
+                    activePhase = phase;
+                    await runEditorAcceptancePhase({
+                      editor: identifiedEditor,
+                      workspace,
+                      userData,
+                      extensions,
+                      developmentPaths: [fakeJupyter],
+                      testModule,
+                      python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
+                      phase,
+                      resultPath: resultPaths[phase],
+                      runId: runIds[phase],
+                      progressPath: progressPaths[phase]
+                    });
+                  }
                 }
                 console.log(`${identifiedEditor.name} packaged acceptance passed.`);
               },
@@ -932,6 +977,14 @@ try {
         } catch (error) {
           runError = error;
         }
+        let cursorCleanupError;
+        try {
+          await cursorAcquisition?.cleanup();
+        } catch (error) {
+          cursorCleanupError = error;
+          orchestrationTreeMayBeLive ||= editorProcessTreeMayBeLive(error);
+          markFailureTree(error, cleanupFailures);
+        }
         let displayStopError;
         try {
           await editorDisplay?.stop({
@@ -942,13 +995,20 @@ try {
           orchestrationTreeMayBeLive ||= editorProcessTreeMayBeLive(error);
           markFailureTree(error, cleanupFailures);
         }
-        if (runError && displayStopError) {
+        if (runError && (cursorCleanupError || displayStopError)) {
           throw new AggregateError(
-            [runError, displayStopError],
-            "Packaged editor acceptance and display cleanup failed."
+            [runError, cursorCleanupError, displayStopError].filter(Boolean),
+            "Packaged editor acceptance and owned-resource cleanup failed."
           );
         }
         if (runError) throw runError;
+        if (cursorCleanupError && displayStopError) {
+          throw new AggregateError(
+            [cursorCleanupError, displayStopError],
+            "Packaged editor owned-resource cleanup failed."
+          );
+        }
+        if (cursorCleanupError) throw cursorCleanupError;
         if (displayStopError) throw displayStopError;
       },
       retainFailure: (error, { stage } = { stage: "run" }) => {
