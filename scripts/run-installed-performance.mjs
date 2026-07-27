@@ -18,7 +18,7 @@ import {
   writeFileSync,
   writeSync
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createVSIX } from "@vscode/vsce";
 import {
@@ -58,6 +58,11 @@ import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixArchive, MAX_VSIX_BYTES as VSIX_MAX_BYTES, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+import {
+  inspectNotebookRendererBundle,
+  inspectReadmeSourceSrcsets,
+  inspectVsixPreReleaseMetadata
+} from "./vsix-contents.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v5";
@@ -292,16 +297,19 @@ export async function packageInstalledPerformanceCandidate({
   requireSameSource(readSource(), before, "during candidate build");
   await packageCandidate(destination, { preRelease: sourceManifest.preview });
   requireSameSource(readSource(), before, "during candidate packaging");
-  await verifyCandidate(destination, environment);
-  requireSameSource(readSource(), before, "during candidate verification");
   const snapshot = await snapshotCandidate(destination, snapshotDestination);
   requireVsixReceipt(snapshot);
   requireSameSource(readSource(), before, "during candidate snapshot");
-  const receipt = Object.freeze({
+  const snapshotReceipt = Object.freeze({
     path: snapshot.path,
     sha256: snapshot.sha256,
     bytes: snapshot.bytes,
-    fileIdentity: snapshot.fileIdentity,
+    fileIdentity: Object.freeze({ ...snapshot.fileIdentity })
+  });
+  await verifyCandidate(snapshotReceipt, environment);
+  requireSameSource(readSource(), before, "during candidate verification");
+  const receipt = Object.freeze({
+    ...snapshotReceipt,
     source: Object.freeze({ ...before }),
     sourceManifest
   });
@@ -385,12 +393,14 @@ function readInstalledPerformanceVsixSnapshot(receipt) {
 export async function collectInstalledPerformanceEditorRuns({
   editors,
   candidateReceipt,
+  publicCandidateReceipt,
   runEditor,
   revalidateCandidate = revalidateInstalledPerformanceVsix
 }) {
   const runs = [];
   for (const editor of editors) runs.push(await runEditor(editor));
   revalidateCandidate(candidateReceipt);
+  if (publicCandidateReceipt !== undefined) revalidateCandidate(publicCandidateReceipt);
   return runs;
 }
 
@@ -408,6 +418,7 @@ export async function runInstalledPerformance(options, environment = process.env
   let processTreeUncertain = false;
   let primaryError;
   let result;
+  let publicCandidateReceipt;
   try {
     const builtCandidate = resolve(privateRoot, "built-candidate.vsix");
     const guardedCandidate = await packageInstalledPerformanceCandidate({
@@ -421,6 +432,7 @@ export async function runInstalledPerformance(options, environment = process.env
     if (published.sha256 !== guardedCandidate.sha256 || published.bytes !== guardedCandidate.bytes) {
       throw new Error("The published installed-performance candidate does not match its private snapshot.");
     }
+    publicCandidateReceipt = published;
     requireSameSource(readSourceProvenance(), sourceBefore, "after candidate publication");
     const python = resolveTestPython(environment);
     const fixtureRoot = resolve(privateRoot, "f");
@@ -452,10 +464,11 @@ export async function runInstalledPerformance(options, environment = process.env
     const editorRuns = await collectInstalledPerformanceEditorRuns({
       editors,
       candidateReceipt: guardedCandidate,
+      publicCandidateReceipt,
       runEditor: (editor) =>
         runEditorPerformanceWithIsolatedDisplay({
           editor,
-          stagedVsix: guardedCandidate.path,
+          candidateReceipt: guardedCandidate,
           candidate,
           python,
           privateRoot,
@@ -504,6 +517,12 @@ export async function runInstalledPerformance(options, environment = process.env
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
   }
   if (!result) throw new Error("Installed performance completed without a result.");
+  if (!publicCandidateReceipt) throw new Error("Installed performance completed without a public candidate receipt.");
+  try {
+    revalidateInstalledPerformanceVsix(publicCandidateReceipt);
+  } catch (error) {
+    throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
+  }
   if (options.smoke) writeInstalledPerformanceRun(options.output, result);
   else {
     writeInstalledPerformanceReport(options.output, result);
@@ -603,9 +622,87 @@ export async function runInstalledMeasuredEditorPhase({
   }
 }
 
+export async function installInstalledPerformanceCandidate({
+  editor,
+  candidateReceipt,
+  userData,
+  extensions,
+  sandboxArgs,
+  environment,
+  runCli = runBoundedEditorCliCommand,
+  revalidateCandidate = revalidateInstalledPerformanceVsix,
+  spawnOwned = spawnOwnedEditorProcess
+}) {
+  requireVsixReceipt(candidateReceipt);
+  if (!editor || typeof editor !== "object" || typeof editor.name !== "string") {
+    throw new TypeError("Installed performance requires one identified editor for candidate installation.");
+  }
+  if (
+    typeof userData !== "string" ||
+    typeof extensions !== "string" ||
+    !Array.isArray(sandboxArgs) ||
+    !environment ||
+    typeof environment !== "object"
+  ) {
+    throw new TypeError("Installed performance requires exact private editor installation paths and arguments.");
+  }
+
+  let commandResult;
+  let commandError;
+  let spawned = false;
+  try {
+    commandResult = await runCli(
+      {
+        editor,
+        args: [
+          "--user-data-dir",
+          userData,
+          "--extensions-dir",
+          extensions,
+          "--install-extension",
+          candidateReceipt.path,
+          "--force",
+          ...sandboxArgs
+        ],
+        environment,
+        label: `${editor.name} Open Wrangler candidate installation`
+      },
+      {
+        timeoutMs: 120_000,
+        spawnProcess(...arguments_) {
+          revalidateCandidate(candidateReceipt);
+          const child = spawnOwned(...arguments_);
+          spawned = true;
+          return child;
+        }
+      }
+    );
+    if (!spawned) {
+      throw new Error(`${editor.name} candidate installation completed without an owned CLI spawn.`);
+    }
+  } catch (error) {
+    commandError = error;
+  }
+
+  let postInstallError;
+  if (spawned) {
+    try {
+      revalidateCandidate(candidateReceipt);
+    } catch (error) {
+      postInstallError = error;
+    }
+  }
+  const failures = [commandError, postInstallError].filter((error) => error !== undefined);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, `${editor.name} candidate installation or receipt validation failed.`);
+  }
+  return commandResult;
+}
+
 async function runEditorPerformancePhases({
   editor,
-  stagedVsix,
+  candidateReceipt,
   candidate,
   python,
   privateRoot,
@@ -647,29 +744,32 @@ async function runEditorPerformancePhases({
     ...editor,
     version: await readEditorVersion(editor, userData, extensions, sandboxArgs, editorEnvironment)
   };
-  for (const [label, extension] of [
-    ["Open Wrangler candidate", stagedVsix],
-    ["installed-performance harness", harnessVsix]
-  ]) {
-    await runBoundedEditorCliCommand(
-      {
-        editor: identifiedEditor,
-        args: [
-          "--user-data-dir",
-          userData,
-          "--extensions-dir",
-          extensions,
-          "--install-extension",
-          extension,
-          "--force",
-          ...sandboxArgs
-        ],
-        environment: editorEnvironment,
-        label: `${identifiedEditor.name} ${label} installation`
-      },
-      { timeoutMs: 120_000 }
-    );
-  }
+  await installInstalledPerformanceCandidate({
+    editor: identifiedEditor,
+    candidateReceipt,
+    userData,
+    extensions,
+    sandboxArgs,
+    environment: editorEnvironment
+  });
+  await runBoundedEditorCliCommand(
+    {
+      editor: identifiedEditor,
+      args: [
+        "--user-data-dir",
+        userData,
+        "--extensions-dir",
+        extensions,
+        "--install-extension",
+        harnessVsix,
+        "--force",
+        ...sandboxArgs
+      ],
+      environment: editorEnvironment,
+      label: `${identifiedEditor.name} installed-performance harness installation`
+    },
+    { timeoutMs: 120_000 }
+  );
   const { stdout: installed } = await runBoundedEditorCliCommand(
     {
       editor: identifiedEditor,
@@ -911,15 +1011,25 @@ async function createInstalledPerformanceVsix(destination, { preRelease }) {
   });
 }
 
-function verifyInstalledPerformanceVsix(candidate, environment) {
-  execFileSync(process.execPath, [resolve(root, "scripts", "verify-vsix.mjs"), candidate], {
-    cwd: root,
-    env: environment,
-    maxBuffer: 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 60_000,
-    windowsHide: true
-  });
+async function verifyInstalledPerformanceVsix(receipt, _environment) {
+  const snapshot = readInstalledPerformanceVsixSnapshot(receipt);
+  const payload = await inspectVsixArchive(snapshot.bytes);
+  const { packagedPackageJson, packagedReadme, vsixManifest, webviewCss, webviewPanel, notebookRenderer } = payload;
+  const problems = [
+    ...inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest),
+    ...inspectReadmeSourceSrcsets(packagedReadme),
+    ...inspectNotebookRendererBundle(notebookRenderer)
+  ];
+  if (!/url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u.test(webviewCss)) {
+    problems.push("webview.css must load codicon.ttf from its own bundle directory.");
+  }
+  if (!/font-src \$\{webview\.cspSource\};/u.test(webviewPanel)) {
+    problems.push("The main webview CSP must allow its bundled font origin.");
+  }
+  if (problems.length > 0) {
+    throw new Error(`Invalid ${basename(receipt.path)}. ${problems.join(" ")}`);
+  }
+  revalidateInstalledPerformanceVsix(receipt);
 }
 
 export function readBoundedJson(file, maxBytes, hooks = {}) {
