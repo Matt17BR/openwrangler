@@ -8,7 +8,8 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
-  realpathSync
+  realpathSync,
+  statfsSync
 } from "node:fs";
 import { join } from "node:path";
 import {
@@ -27,6 +28,7 @@ import {
   validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceDropbearLoaderResolution,
   validateRemoteWorkspaceLibstdcxxResolution,
+  validateRemoteWorkspaceProcfsType,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
@@ -503,6 +505,7 @@ function assertPrivateNamespace(config) {
   ) {
     throw new Error("The Remote SSH phase did not retain private user, PID, network, IPC, and UTS namespaces.");
   }
+  validateRemoteWorkspaceProcfsType(statfsSync("/proc").type);
   const uidMap = readSingleIdMap("/proc/self/uid_map", config.uid);
   const gidMap = readSingleIdMap("/proc/self/gid_map", config.gid);
   if (uidMap.count !== 1 || gidMap.count !== 1) {

@@ -32,10 +32,11 @@ export const REMOTE_WORKSPACE_PHASE_CHILD_PATH = `${REMOTE_WORKSPACE_NAMESPACE_R
 export const REMOTE_WORKSPACE_PHASE_NODE_PATH = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-node`;
 export const REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES = 256 * 1024 * 1024;
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
-const REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime`;
+const REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/ssh-runtime/runtime`;
 const REMOTE_WORKSPACE_DROPBEAR_SERVER = `${REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT}/bin/dropbear`;
 const REMOTE_WORKSPACE_DROPBEAR_LIBRARY_PATH = `${REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT}/lib`;
-export const REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0 = `${REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT}/bin/.openwrangler-no-reexec/dropbear`;
+export const REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0 = "/proc/.openwrangler-no-reexec/dropbear";
+const REMOTE_WORKSPACE_PROCFS_MAGIC = 0x9fa0;
 const PATH_LIMIT = 16_384;
 const DROPBEAR_LOADER_LIST_LIMIT_BYTES = 64 * 1024;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
@@ -354,7 +355,7 @@ const FIXED_DESCRIPTOR_PATHS = Object.freeze({
 
 export function assertRemoteWorkspaceDropbearNoReexecPath(path, boundary) {
   if (path !== REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0) {
-    throw new Error("The Remote SSH Dropbear argv0 does not use its fixed immutable no-reexec path.");
+    throw new Error("The Remote SSH Dropbear argv0 does not use its fixed private-procfs no-reexec path.");
   }
   const lstat = remoteWorkspaceDropbearAbsenceBoundary(boundary);
   try {
@@ -364,6 +365,13 @@ export function assertRemoteWorkspaceDropbearNoReexecPath(path, boundary) {
     throw new Error("The Remote SSH Dropbear no-reexec argv0 could not be proven absent.", { cause: error });
   }
   throw new Error("The Remote SSH Dropbear no-reexec argv0 must remain absent.");
+}
+
+export function validateRemoteWorkspaceProcfsType(type) {
+  if (type !== REMOTE_WORKSPACE_PROCFS_MAGIC && type !== BigInt(REMOTE_WORKSPACE_PROCFS_MAGIC)) {
+    throw new Error("The Remote SSH private /proc mount is not procfs.");
+  }
+  return REMOTE_WORKSPACE_PROCFS_MAGIC;
 }
 
 export function createRemoteWorkspaceDropbearLoaderArguments(value, boundary) {
