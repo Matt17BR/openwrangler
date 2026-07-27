@@ -834,7 +834,7 @@ linuxTest("copied Python rejects source journal drift observed after the real co
   }
 });
 
-test("copied Python rejects a malformed injected final system-runtime resolver before source access", async () => {
+linuxTest("copied Python rejects a malformed injected final system-runtime resolver before source access", async () => {
   await assert.rejects(
     copyPrivatePythonEnvironment("/not-used", "/not-used", {
       resolveSystemRuntimeDirectories: null

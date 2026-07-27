@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -77,7 +78,7 @@ test("Cursor private-root receipts retain identity while owned children are adde
 });
 
 test("Cursor metadata reads reject a named-path replacement after descriptor open", () => {
-  const directory = mkdtempSync(join(tmpdir(), "openwrangler-cursor-metadata-race-"));
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-metadata-race-")));
   chmodSync(directory, 0o700);
   try {
     const path = join(directory, "product.json");
