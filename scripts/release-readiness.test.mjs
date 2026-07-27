@@ -113,6 +113,17 @@ test("binds the primary parity table to the exact ordered release scope", () => 
   );
 });
 
+test("keeps the checked-in parity table aligned with the canonical scope before every release", () => {
+  const featureParity = readFileSync(new URL("../docs/feature-parity.md", import.meta.url), "utf8");
+  const problems = inspectStableReleaseReadiness(ready({ featureParity }));
+  const expectedIncompleteRows = /^Parity row ".+" is (?:Partial|Planned), not Done\.$/u;
+
+  assert.deepEqual(
+    problems.filter((problem) => !expectedIncompleteRows.test(problem)),
+    []
+  );
+});
+
 test("binds the release tag, source package, Python runtime, and packaged versions", () => {
   const problems = inspectStableReleaseReadiness(
     ready({
