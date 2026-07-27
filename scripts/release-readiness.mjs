@@ -16,7 +16,6 @@ import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
-import { fromBuffer as openZipBuffer } from "yauzl";
 import {
   inspectChangelog,
   inspectPrimaryParityMatrix,
@@ -25,20 +24,11 @@ import {
 } from "./release-documents.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixEntries, inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
+import { inspectVsixArchive, MAX_VSIX_BYTES } from "./vsix-archive.mjs";
+import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 const VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const PYTHON_VERSION = /^__version__\s*=\s*"([^"\r\n]+)"\s*$/gmu;
-const README_MAX_BYTES = 2 * 1024 * 1024;
-const MAX_VSIX_BYTES = 128 * 1024 * 1024;
-const MAX_VSIX_ENTRIES = 4096;
-const MAX_VSIX_ENTRY_NAME = 1024;
-const REQUIRED_VSIX_ENTRIES = new Map([
-  ["extension/package.json", { key: "packagedPackageJson", maxBytes: 1024 * 1024 }],
-  ["extension/python/openwrangler_runtime/version.py", { key: "packagedPythonVersionFile", maxBytes: 64 * 1024 }],
-  ["extension/readme.md", { key: "packagedReadme", maxBytes: README_MAX_BYTES }],
-  ["extension.vsixmanifest", { key: "vsixManifest", maxBytes: 1024 * 1024 }]
-]);
 export { STABLE_README_RELEASE_SECTION };
 const STABLE_PACKAGE_IDENTITY = Object.freeze({
   name: "openwrangler",
@@ -340,145 +330,8 @@ export function readOwnedVsixSnapshot(vsixPath) {
   }
 }
 
-function openVsixArchive(bytes) {
-  return new Promise((resolveArchive, rejectArchive) => {
-    openZipBuffer(
-      bytes,
-      {
-        autoClose: true,
-        decodeStrings: true,
-        lazyEntries: true,
-        strictFileNames: true,
-        validateEntrySizes: true
-      },
-      (error, archive) => {
-        if (error) {
-          rejectArchive(error);
-        } else if (archive === undefined) {
-          rejectArchive(new Error("Stable VSIX candidate did not open as a ZIP archive."));
-        } else {
-          resolveArchive(archive);
-        }
-      }
-    );
-  });
-}
-
-function readUtf8ArchiveEntry(archive, entry, maxBytes) {
-  if (entry.uncompressedSize > maxBytes) {
-    return Promise.reject(new Error(`Stable VSIX metadata entry ${entry.fileName} exceeds its size limit.`));
-  }
-  return new Promise((resolveEntry, rejectEntry) => {
-    archive.openReadStream(entry, (error, stream) => {
-      if (error) {
-        rejectEntry(error);
-        return;
-      }
-      if (stream === undefined) {
-        rejectEntry(new Error(`Stable VSIX metadata entry ${entry.fileName} could not be opened.`));
-        return;
-      }
-
-      const chunks = [];
-      let length = 0;
-      stream.on("data", (chunk) => {
-        length += chunk.length;
-        if (length > maxBytes) {
-          stream.destroy(new Error(`Stable VSIX metadata entry ${entry.fileName} exceeds its size limit.`));
-        } else {
-          chunks.push(chunk);
-        }
-      });
-      stream.once("error", rejectEntry);
-      stream.once("end", () => {
-        try {
-          resolveEntry(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, length)));
-        } catch (error) {
-          rejectEntry(new Error(`Stable VSIX metadata entry ${entry.fileName} must be valid UTF-8.`, { cause: error }));
-        }
-      });
-    });
-  });
-}
-
 export async function readStableVsixPayload(bytes) {
-  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > MAX_VSIX_BYTES) {
-    throw new Error("Stable VSIX snapshot must be one bounded non-empty Buffer.");
-  }
-  const archive = await openVsixArchive(bytes);
-  return await new Promise((resolvePayload, rejectPayload) => {
-    const archiveEntries = [];
-    const seen = new Set();
-    const values = new Map();
-    let settled = false;
-
-    const reject = (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      try {
-        archive.close();
-      } catch {
-        // The original bounded archive failure remains authoritative.
-      }
-      rejectPayload(error);
-    };
-
-    archive.once("error", reject);
-    archive.on("entry", async (entry) => {
-      try {
-        if (
-          archiveEntries.length >= MAX_VSIX_ENTRIES ||
-          Buffer.byteLength(entry.fileName, "utf8") > MAX_VSIX_ENTRY_NAME
-        ) {
-          throw new Error("Stable VSIX candidate exceeds its bounded archive inventory.");
-        }
-        if (seen.has(entry.fileName)) {
-          throw new Error(`Stable VSIX candidate contains duplicate entry ${entry.fileName}.`);
-        }
-        seen.add(entry.fileName);
-        archiveEntries.push(entry.fileName);
-
-        const requirement = REQUIRED_VSIX_ENTRIES.get(entry.fileName);
-        if (requirement !== undefined) {
-          values.set(requirement.key, await readUtf8ArchiveEntry(archive, entry, requirement.maxBytes));
-        }
-        if (!settled) {
-          archive.readEntry();
-        }
-      } catch (error) {
-        reject(error);
-      }
-    });
-    archive.once("end", () => {
-      if (settled) {
-        return;
-      }
-      try {
-        const { forbidden, missing, duplicates } = inspectVsixEntries(archiveEntries);
-        if (forbidden.length > 0 || missing.length > 0 || duplicates.length > 0) {
-          throw new Error("Stable VSIX snapshot does not satisfy the production archive allowlist.");
-        }
-        for (const requirement of REQUIRED_VSIX_ENTRIES.values()) {
-          if (!values.has(requirement.key)) {
-            throw new Error(`Stable VSIX snapshot is missing required metadata ${requirement.key}.`);
-          }
-        }
-        settled = true;
-        resolvePayload({
-          archiveEntries,
-          packagedPackageJson: values.get("packagedPackageJson"),
-          packagedPythonVersionFile: values.get("packagedPythonVersionFile"),
-          packagedReadme: values.get("packagedReadme"),
-          vsixManifest: values.get("vsixManifest")
-        });
-      } catch (error) {
-        reject(error);
-      }
-    });
-    archive.readEntry();
-  });
+  return await inspectVsixArchive(bytes);
 }
 
 function sameReceipt(path, receipt) {

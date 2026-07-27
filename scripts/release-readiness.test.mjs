@@ -1,19 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import {
-  createWriteStream,
-  linkSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync
-} from "node:fs";
+import { linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
+import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
 import { inspectReleaseMetadata } from "./release-metadata.mjs";
 import { inspectPreviewReadme, PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
@@ -87,36 +79,75 @@ function ready(overrides = {}) {
   };
 }
 
-function createReleaseVsix(path) {
-  const zip = new ZipFile();
-  const entries = new Map([
-    ["[Content_Types].xml", "<Types />"],
+function releaseVsixEntries(packageJson = stablePackage) {
+  return new Map([
+    ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     ["extension.vsixmanifest", manifest()],
-    ["extension/package.json", JSON.stringify(stablePackage)],
+    ["extension/package.json", JSON.stringify(packageJson)],
+    ["extension/LICENSE.txt", "MIT License\n"],
     ["extension/readme.md", `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`],
+    ["extension/changelog.md", "# Changelog\n"],
+    ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
     ["extension/dist/extension/activate.js", "export {};"],
-    ["extension/dist/extension/webviewPanel.js", "export {};"],
+    ["extension/dist/extension/webviewPanel.js", "const policy = `font-src ${webview.cspSource};`;"],
     ["extension/media/webview.js", "export {};"],
-    ["extension/media/webview.css", "body {}"],
+    ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
     ["extension/media/codicon.ttf", "font"],
+    ["extension/media/codePreview.js", "export {};"],
     ["extension/media/notebookRenderer.js", "export function activate() {}"],
+    ["extension/media/activity-icon.svg", "<svg></svg>"],
     ["extension/media/icon.png", "icon"],
+    ["extension/media/icon-128.png", "icon"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
     ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
   ]);
+}
+
+function createReleaseVsixBuffer({ entryModes = new Map(), entries = releaseVsixEntries(), omitted = new Set() } = {}) {
+  const zip = new ZipFile();
   for (const [name, contents] of entries) {
-    zip.addBuffer(Buffer.from(contents), name);
+    if (!omitted.has(name)) {
+      zip.addBuffer(Buffer.isBuffer(contents) ? contents : Buffer.from(contents), name, {
+        mode: entryModes.get(name)
+      });
+    }
   }
 
-  return new Promise((resolveWrite, rejectWrite) => {
-    const output = createWriteStream(path, { flags: "wx", mode: 0o600 });
-    output.once("error", rejectWrite);
-    output.once("close", resolveWrite);
-    zip.outputStream.once("error", rejectWrite);
-    zip.outputStream.pipe(output);
+  return new Promise((resolveBytes, rejectBytes) => {
+    const chunks = [];
+    let length = 0;
+    zip.outputStream.on("data", (chunk) => {
+      chunks.push(chunk);
+      length += chunk.length;
+    });
+    zip.outputStream.once("error", rejectBytes);
+    zip.outputStream.once("end", () => resolveBytes(Buffer.concat(chunks, length)));
     zip.end();
   });
+}
+
+async function createReleaseVsix(path) {
+  writeFileSync(path, await createReleaseVsixBuffer(), { flag: "wx", mode: 0o600 });
+}
+
+function patchZipEntry(bytes, entryName, patch) {
+  const result = Buffer.from(bytes);
+  const centralSignature = Buffer.from([0x50, 0x4b, 0x01, 0x02]);
+  let offset = 0;
+  while ((offset = result.indexOf(centralSignature, offset)) >= 0) {
+    const nameLength = result.readUInt16LE(offset + 28);
+    const extraLength = result.readUInt16LE(offset + 30);
+    const commentLength = result.readUInt16LE(offset + 32);
+    const name = result.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
+    if (name === entryName) {
+      const localOffset = result.readUInt32LE(offset + 42);
+      patch({ centralOffset: offset, localOffset, result });
+      return result;
+    }
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  throw new Error(`ZIP test entry not found: ${entryName}`);
 }
 
 test("accepts one internally consistent stable release candidate", () => {
@@ -547,6 +578,61 @@ test("inspects and checksums one owned immutable VSIX snapshot", async (context)
     assert.equal(statSync(published).mode & 0o222, 0);
     assert.equal(statSync(checksum).mode & 0o222, 0);
   }
+});
+
+test("strictly streams and validates the complete shared VSIX inventory", async () => {
+  const valid = await createReleaseVsixBuffer();
+  const payload = await inspectVsixArchive(valid);
+  assert.equal(payload.archiveEntries.length, releaseVsixEntries().size);
+  assert.deepEqual(JSON.parse(payload.packagedPackageJson), stablePackage);
+
+  await assert.rejects(
+    inspectVsixArchive(
+      await createReleaseVsixBuffer({
+        omitted: new Set(["extension/LICENSE.txt"])
+      })
+    ),
+    /Missing: extension\/LICENSE\.txt/u
+  );
+
+  await assert.rejects(
+    inspectVsixArchive(
+      await createReleaseVsixBuffer({
+        entryModes: new Map([["extension/media/icon.png", 0o120777]])
+      })
+    ),
+    /must be a regular file or matching directory entry/u
+  );
+
+  await assert.rejects(
+    inspectVsixArchive(
+      await createReleaseVsixBuffer({
+        entries: releaseVsixEntries({
+          ...stablePackage,
+          icon: "media/missing.png"
+        })
+      })
+    ),
+    /references missing regular asset extension\/media\/missing\.png/u
+  );
+
+  const oversizedEntries = releaseVsixEntries();
+  oversizedEntries.set("extension/media/webview.js", Buffer.alloc(MAX_VSIX_ENTRY_BYTES + 1));
+  await assert.rejects(
+    inspectVsixArchive(await createReleaseVsixBuffer({ entries: oversizedEntries })),
+    /exceeds its per-entry size limit/u
+  );
+
+  const encrypted = patchZipEntry(valid, "extension/media/icon.png", ({ centralOffset, localOffset, result }) => {
+    result.writeUInt16LE(result.readUInt16LE(centralOffset + 8) | 0x0001, centralOffset + 8);
+    result.writeUInt16LE(result.readUInt16LE(localOffset + 6) | 0x0001, localOffset + 6);
+  });
+  await assert.rejects(inspectVsixArchive(encrypted), /uses unsupported or encrypted ZIP flags/u);
+
+  const wrongCrc = patchZipEntry(valid, "extension/media/icon.png", ({ centralOffset, result }) => {
+    result.writeUInt32LE((result.readUInt32LE(centralOffset + 16) ^ 0xffffffff) >>> 0, centralOffset + 16);
+  });
+  await assert.rejects(inspectVsixArchive(wrongCrc), /failed CRC-32 validation/u);
 });
 
 test("rejects symlinked and hard-linked stable VSIX candidates", async (context) => {

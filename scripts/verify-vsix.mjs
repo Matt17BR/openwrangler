@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { inspectVsixArchive, MAX_VSIX_BYTES } from "./vsix-archive.mjs";
 import {
   inspectNotebookRendererBundle,
   inspectReadmeSourceSrcsets,
-  inspectVsixEntries,
   inspectVsixPreReleaseMetadata
 } from "./vsix-contents.mjs";
 
@@ -19,39 +18,25 @@ if (!existsSync(vsix)) {
   throw new Error(`VSIX not found: ${requested}`);
 }
 
-const entries = execFileSync("unzip", ["-Z1", vsix], { encoding: "utf8" }).split(/\r?\n/u).filter(Boolean);
-const { forbidden, missing, duplicates } = inspectVsixEntries(entries);
-
-if (forbidden.length > 0 || missing.length > 0 || duplicates.length > 0) {
-  throw new Error(
-    [
-      `Invalid ${basename(vsix)}.`,
-      forbidden.length ? `Forbidden: ${forbidden.join(", ")}` : "",
-      missing.length ? `Missing: ${missing.join(", ")}` : "",
-      duplicates.length ? `Colliding archive paths: ${duplicates.join(", ")}` : ""
-    ]
-      .filter(Boolean)
-      .join(" ")
-  );
+const file = statSync(vsix);
+if (!file.isFile() || file.size <= 0 || file.size > MAX_VSIX_BYTES) {
+  throw new Error(`Invalid ${basename(vsix)}. VSIX must be a bounded regular file.`);
 }
-
-const packagedPackageJson = execFileSync("unzip", ["-p", vsix, "extension/package.json"], {
-  encoding: "utf8"
-});
-const vsixManifest = execFileSync("unzip", ["-p", vsix, "extension.vsixmanifest"], { encoding: "utf8" });
+const payload = await inspectVsixArchive(readFileSync(vsix));
+const {
+  archiveEntries,
+  packagedPackageJson,
+  packagedReadme,
+  vsixManifest,
+  webviewCss,
+  webviewPanel,
+  notebookRenderer
+} = payload;
 const preReleaseProblems = inspectVsixPreReleaseMetadata(packagedPackageJson, vsixManifest);
 if (preReleaseProblems.length > 0) {
   throw new Error(`Invalid ${basename(vsix)}. ${preReleaseProblems.join(" ")}`);
 }
 
-const webviewCss = execFileSync("unzip", ["-p", vsix, "extension/media/webview.css"], { encoding: "utf8" });
-const webviewPanel = execFileSync("unzip", ["-p", vsix, "extension/dist/extension/webviewPanel.js"], {
-  encoding: "utf8"
-});
-const notebookRenderer = execFileSync("unzip", ["-p", vsix, "extension/media/notebookRenderer.js"], {
-  encoding: "utf8"
-});
-const packagedReadme = execFileSync("unzip", ["-p", vsix, "extension/readme.md"], { encoding: "utf8" });
 const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
 const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
 const readmeSourceProblems = inspectReadmeSourceSrcsets(packagedReadme);
@@ -70,4 +55,4 @@ if (notebookRendererProblems.length > 0) {
   throw new Error(`Invalid ${basename(vsix)}. ${notebookRendererProblems.join(" ")}`);
 }
 
-console.log(`Verified ${basename(vsix)} (${entries.length} archive entries).`);
+console.log(`Verified ${basename(vsix)} (${archiveEntries.length} archive entries).`);
