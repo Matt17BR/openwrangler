@@ -254,7 +254,7 @@ jobs:
           include-hidden-files: false
       - id: cursor_smoke
         name: Test pinned Cursor platform smoke
-        run: node scripts/run-packaged-editor-tests.mjs openwrangler.vsix
+        run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
         env:
           OPEN_WRANGLER_PACKAGED_EDITORS: cursor
           OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
