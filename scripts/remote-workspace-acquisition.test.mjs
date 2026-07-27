@@ -97,19 +97,22 @@ test("Remote metadata and license reads reject in-place mutation and linked leav
   try {
     const metadata = join(root, "product.json");
     const linked = join(root, "linked.json");
-    writeFileSync(metadata, '{"version":"1.130.0"}');
+    const original = '{"version":"1.130.0"}';
+    const mutated = '{"version":"changed-after-open"}';
+    assert.notEqual(Buffer.byteLength(original), Buffer.byteLength(mutated));
+    writeFileSync(metadata, original);
     assert.throws(
       () =>
         readBoundedRegularFile(metadata, 1024, {
           containedBy: root,
           label: "Pinned VS Code metadata",
           afterOpenForTest() {
-            writeFileSync(metadata, '{"version":"changed"}');
+            writeFileSync(metadata, mutated);
           }
         }),
       /changed during its descriptor-bound read/u
     );
-    writeFileSync(metadata, '{"version":"1.130.0"}');
+    writeFileSync(metadata, original);
     linkSync(metadata, linked);
     assert.throws(
       () =>

@@ -526,7 +526,6 @@ function sameEntrySnapshot(left, right, access, kind) {
     left.dev === right.dev &&
     left.ino === right.ino &&
     left.mode === right.mode &&
-    left.nlink === right.nlink &&
     left.uid === right.uid &&
     left.gid === right.gid &&
     left.birthtimeNs === right.birthtimeNs

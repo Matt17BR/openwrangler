@@ -161,6 +161,13 @@ linuxTest("Remote launch guards retain host identity without treating mutable st
     const sources = createRegistrySources(root);
     const registry = createRemoteWorkspaceImmutableInputRegistry(sources, registryOptions());
     writeFileSync(join(sources.userData, "runtime-state"), "mutable\n", { mode: 0o600 });
+    for (const id of ["localHome", "userData", "remoteHome", "output", "hostHome"]) {
+      const runtimeDirectory = join(sources[id], "runtime-directory");
+      mkdirSync(runtimeDirectory, { mode: 0o700 });
+      assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
+      rmSync(runtimeDirectory, { recursive: true });
+      assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
+    }
     assert.equal(assertRemoteWorkspaceImmutableInputRegistry(registry), registry);
 
     const hostHome = sources.hostHome;
@@ -178,6 +185,9 @@ linuxTest("Remote launch guards retain host identity without treating mutable st
         }),
       /changed at the launch boundary/u
     );
+
+    chmodSync(sources.userData, 0o711);
+    assert.throws(() => assertRemoteWorkspaceImmutableInputRegistry(registry), /not private|changed after it was pinned/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
