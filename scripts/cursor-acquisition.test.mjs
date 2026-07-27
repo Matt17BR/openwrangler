@@ -321,6 +321,121 @@ test("Cursor extraction revalidates the artifact at every consuming command spaw
   }
 });
 
+test("Cursor macOS extraction separates integrity verification from exact signing-team inspection", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-macos-signature-")));
+  chmodSync(directory, 0o700);
+  try {
+    const body = Buffer.from("pinned-cursor-macos-signature", "utf8");
+    const target = {
+      ...testTarget(body),
+      architecture: "universal",
+      artifactName: "cursor-test.dmg",
+      format: "dmg",
+      platform: "darwin"
+    };
+    const rootReceipt = createCursorAcquisitionRootReceipt(directory);
+    const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, {
+      openResponse: async () => cursorResponse(body),
+      timeoutMs: 1_000
+    });
+    const commands = [];
+    const extraction = await extractPinnedCursorTarget(target, artifact, rootReceipt, {
+      environment: {},
+      async runCommand(command) {
+        command.beforeSpawnCheck?.();
+        commands.push(command);
+        if (command.label === "Pinned Cursor DMG attachment") {
+          const mountPoint = command.args[command.args.indexOf("-mountpoint") + 1];
+          mkdirSync(join(mountPoint, "Cursor.app"));
+        } else if (command.label === "Pinned Cursor application extraction") {
+          mkdirSync(command.args.at(-1));
+        } else if (command.label === "Pinned Cursor signing-team inspection") {
+          return { stdout: "", stderr: "TeamIdentifier=VDXQ22DGB9\n" };
+        }
+        return { stdout: "", stderr: "" };
+      }
+    });
+    assert.equal(extraction.installationRoot, join(directory, "installation"));
+    const signature = commands.find((command) => command.label === "Pinned Cursor code-signature verification");
+    assert.deepEqual(signature, {
+      executable: "/usr/bin/codesign",
+      args: ["--verify", "--deep", "--strict", join(directory, "installation", "Cursor.app")],
+      environment: {},
+      label: "Pinned Cursor code-signature verification"
+    });
+    assert.deepEqual(
+      commands.find((command) => command.label === "Pinned Cursor signing-team inspection"),
+      {
+        executable: "/usr/bin/codesign",
+        args: ["--display", "--verbose=4", join(directory, "installation", "Cursor.app")],
+        environment: {},
+        label: "Pinned Cursor signing-team inspection"
+      }
+    );
+    assert.deepEqual(
+      commands.map((command) => command.label),
+      [
+        "Pinned Cursor DMG attachment",
+        "Pinned Cursor application extraction",
+        "Pinned Cursor code-signature verification",
+        "Pinned Cursor signing-team inspection",
+        "Pinned Cursor DMG detachment"
+      ]
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Cursor Windows extraction binds the artifact path inside the encoded Authenticode command", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-windows-signature-")));
+  chmodSync(directory, 0o700);
+  try {
+    const body = Buffer.from("pinned-cursor-windows-signature", "utf8");
+    const target = testTarget(body);
+    const rootReceipt = createCursorAcquisitionRootReceipt(directory);
+    const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, {
+      openResponse: async () => cursorResponse(body),
+      timeoutMs: 1_000
+    });
+    const commands = [];
+    const environment = { SYSTEMROOT: "C:\\Windows" };
+    const extraction = await extractPinnedCursorTarget(target, artifact, rootReceipt, {
+      environment,
+      async runCommand(command) {
+        command.beforeSpawnCheck?.();
+        commands.push(command);
+        if (command.label === "Pinned Cursor private installation") {
+          writeFileSync(join(directory, "installation", "unins000.exe"), "uninstaller");
+        }
+        return { stdout: "", stderr: "" };
+      }
+    });
+    assert.equal(extraction.installationRoot, join(directory, "installation"));
+    const signature = commands.find((command) => command.label === "Pinned Cursor Authenticode verification");
+    assert.equal(
+      signature.executable,
+      join(environment.SYSTEMROOT, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    );
+    assert.deepEqual(signature.args.slice(0, -1), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    const decodedCommand = Buffer.from(signature.args.at(-1), "base64").toString("utf16le");
+    const encodedArtifactPath = Buffer.from(artifact.path, "utf16le").toString("base64");
+    assert.match(decodedCommand, /Get-AuthenticodeSignature -LiteralPath \$literalPath/u);
+    assert.match(decodedCommand, /Status -ne 'Valid'/u);
+    assert.match(decodedCommand, /CN=Anysphere, Inc\./u);
+    assert.equal(decodedCommand.includes(encodedArtifactPath), true);
+    assert.doesNotMatch(decodedCommand, /\$args/u);
+    assert.equal(signature.args.includes(artifact.path), false);
+    assert.deepEqual(signature.environment, environment);
+    assert.deepEqual(
+      commands.map((command) => command.label),
+      ["Pinned Cursor Authenticode verification", "Pinned Cursor private installation"]
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Cursor installation validation binds product, version, commit, target files, and containment", () => {
   for (const platform of ["darwin", "win32"]) {
     const directory = mkdtempSync(join(tmpdir(), `openwrangler-cursor-${platform}-`));

@@ -447,12 +447,21 @@ async function extractDarwinTarget(
       },
       { timeoutMs: EXTRACTION_TIMEOUT_MS, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
     );
+    await runCommand(
+      {
+        executable: "/usr/bin/codesign",
+        args: ["--verify", "--deep", "--strict", join(installationRoot, "Cursor.app")],
+        environment,
+        label: "Pinned Cursor code-signature verification"
+      },
+      { timeoutMs: 60_000, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
+    );
     const signature = await runCommand(
       {
         executable: "/usr/bin/codesign",
-        args: ["--display", "--verbose=4", "--verify", "--deep", "--strict", join(installationRoot, "Cursor.app")],
+        args: ["--display", "--verbose=4", join(installationRoot, "Cursor.app")],
         environment,
-        label: "Pinned Cursor code-signature verification"
+        label: "Pinned Cursor signing-team inspection"
       },
       { timeoutMs: 60_000, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
     );
@@ -502,6 +511,13 @@ async function extractWindowsTarget(
 ) {
   const systemRoot = environment.SYSTEMROOT;
   if (!systemRoot) throw new Error("Pinned Cursor Windows acquisition requires the isolated system root.");
+  const encodedArtifactPath = Buffer.from(artifact.path, "utf16le").toString("base64");
+  const authenticodeScript = [
+    "$ErrorActionPreference = 'Stop'",
+    `$literalPath = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedArtifactPath}'))`,
+    "$signature = Get-AuthenticodeSignature -LiteralPath $literalPath",
+    `if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*${CURSOR_WINDOWS_SIGNER}*') { exit 41 }`
+  ].join("; ");
   await runCommand(
     {
       executable: join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
@@ -509,9 +525,8 @@ async function extractWindowsTarget(
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-Command",
-        `$signature = Get-AuthenticodeSignature -LiteralPath $args[0]; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*${CURSOR_WINDOWS_SIGNER}*') { exit 41 }`,
-        artifact.path
+        "-EncodedCommand",
+        Buffer.from(authenticodeScript, "utf16le").toString("base64")
       ],
       beforeSpawnCheck: artifactPreSpawnCheck(
         target,
