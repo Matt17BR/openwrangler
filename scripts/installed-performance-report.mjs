@@ -112,6 +112,9 @@ export function validateInstalledPerformancePhase(fragment, expected = {}) {
 export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, source, fixtureManifest, editorRuns }) {
   validateCandidate(candidate);
   validateSource(source);
+  if (candidate.sourceCommit !== source.commit) {
+    throw new TypeError("Installed performance candidate does not match its guarded source commit.");
+  }
   validateInstalledFixtureManifest(fixtureManifest);
   if (fixtureManifest.smoke) {
     throw new TypeError("A release report cannot use smoke-sized performance fixtures.");
@@ -203,6 +206,9 @@ export function assertInstalledPerformanceReleaseGate(
   canonicalUtcTimestamp(report.generatedAtUtc);
   validateCandidate(report.candidate);
   validateSource(report.source);
+  if (report.candidate.sourceCommit !== report.source.commit) {
+    throw new TypeError("Installed performance candidate does not match its guarded source commit.");
+  }
   validateInstalledFixtureManifest(report.fixtureManifest);
   exactKeys(report.measurement, ["boundary", "sampleCountPerCase", "outlierPolicy"], [], "measurement contract");
   assertEqual(report.measurement.boundary, INSTALLED_PERFORMANCE_BOUNDARY, "measurement boundary");
@@ -302,13 +308,15 @@ function validateFixtureEntry(entry, format, rows, columns) {
 function validateCandidate(candidate) {
   exactKeys(
     candidate,
-    ["extensionId", "extensionVersion", "preview", "vsixSha256", "vsixBytes"],
+    ["extensionId", "extensionVersion", "preview", "buildMethod", "sourceCommit", "vsixSha256", "vsixBytes"],
     [],
     "candidate provenance"
   );
   assertEqual(candidate.extensionId, "Matt17BR.openwrangler", "candidate extension ID");
   assertMatch(candidate.extensionVersion, VERSION, "candidate extension version");
   assertBoolean(candidate.preview, "candidate preview flag");
+  assertEqual(candidate.buildMethod, "guarded-clean-head-v1", "candidate build method");
+  assertMatch(candidate.sourceCommit, /^[0-9a-f]{40}$/u, "candidate source commit");
   assertMatch(candidate.vsixSha256, SHA256, "candidate VSIX SHA-256");
   if (!positiveInteger(candidate.vsixBytes)) throw new TypeError("Candidate VSIX size must be positive.");
 }

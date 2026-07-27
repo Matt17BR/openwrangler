@@ -99,7 +99,7 @@
     "test:accessibility": "node scripts/test-webview-accessibility.mjs",
     "test:webview-acceptance": "npm run test:visual && npm run test:accessibility",
     "benchmark:runtime": "node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
-    "benchmark:installed": "npm run build:test-extension && node scripts/run-installed-performance.mjs",
+    "benchmark:installed": "node scripts/run-installed-performance.mjs",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",
     "package": "vsce package",
     "package:prepared": "vsce package",

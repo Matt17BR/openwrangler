@@ -96,13 +96,7 @@ test("aggregate evidence rejects a runtime that does not match the VSIX candidat
     () =>
       buildInstalledPerformanceReport({
         generatedAtUtc: "2026-07-27T00:00:00.000Z",
-        candidate: {
-          extensionId: "Matt17BR.openwrangler",
-          extensionVersion: "0.3.0",
-          preview: true,
-          vsixSha256: sha("a"),
-          vsixBytes: 1_000_000
-        },
+        candidate: candidate(),
         source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
         fixtureManifest: fixtureManifest(),
         editorRuns: [run]
@@ -114,13 +108,7 @@ test("aggregate evidence rejects a runtime that does not match the VSIX candidat
 test("aggregate verdicts retain dirty-source and missing-editor release failures", () => {
   const report = buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
-    candidate: {
-      extensionId: "Matt17BR.openwrangler",
-      extensionVersion: "0.3.0",
-      preview: true,
-      vsixSha256: sha("a"),
-      vsixBytes: 1_000_000
-    },
+    candidate: candidate(),
     source: { commit: "b".repeat(40), trackedWorktreeDirty: true },
     fixtureManifest: fixtureManifest(),
     editorRuns: [editorRun("vscode")]
@@ -130,6 +118,20 @@ test("aggregate verdicts retain dirty-source and missing-editor release failures
     failures: ["candidate source worktree has tracked changes", "missing cursor installed performance evidence"]
   });
   assert.throws(() => assertInstalledPerformanceReleaseGate(report), /tracked changes.*missing cursor/su);
+});
+
+test("aggregate evidence rejects a candidate attributed to another checkout commit", () => {
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: { ...candidate(), sourceCommit: "c".repeat(40) },
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [editorRun("vscode")]
+      }),
+    /guarded source commit/u
+  );
 });
 
 test("report publication is bounded, atomic, and refuses a symlink destination", async () => {
@@ -154,13 +156,7 @@ test("report publication is bounded, atomic, and refuses a symlink destination",
 function passingReport() {
   return buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
-    candidate: {
-      extensionId: "Matt17BR.openwrangler",
-      extensionVersion: "0.3.0",
-      preview: true,
-      vsixSha256: sha("a"),
-      vsixBytes: 1_000_000
-    },
+    candidate: candidate(),
     source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
     fixtureManifest: fixtureManifest(),
     editorRuns: [editorRun("vscode"), editorRun("cursor")]
@@ -203,6 +199,18 @@ function editorRun(key) {
       firstGridPhase(key, "parquet", "warm", 150),
       interactionPhase(key)
     ]
+  };
+}
+
+function candidate() {
+  return {
+    extensionId: "Matt17BR.openwrangler",
+    extensionVersion: "0.3.0",
+    preview: true,
+    buildMethod: "guarded-clean-head-v1",
+    sourceCommit: "b".repeat(40),
+    vsixSha256: sha("a"),
+    vsixBytes: 1_000_000
   };
 }
 

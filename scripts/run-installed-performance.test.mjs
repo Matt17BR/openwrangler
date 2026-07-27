@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   installedPerformanceDisplayMode,
+  packageInstalledPerformanceCandidate,
   parseInstalledPerformanceArguments,
+  readInstalledPerformanceCandidate,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
   writeInstalledPerformanceRun
@@ -25,34 +27,196 @@ test("installed performance assigns unfocused release display modes per editor",
 });
 
 test("installed performance arguments default to both first-class editors", () => {
-  const parsed = parseInstalledPerformanceArguments(["candidate.vsix"]);
+  const parsed = parseInstalledPerformanceArguments([]);
 
   assert.equal(parsed.smoke, false);
   assert.deepEqual(parsed.editors, ["vscode", "cursor"]);
-  assert.match(parsed.vsix, /candidate\.vsix$/u);
+  assert.match(parsed.candidateOutput, /tmp[/\\]performance[/\\]openwrangler-installed-candidate\.vsix$/u);
   assert.match(parsed.output, /tmp[/\\]performance[/\\]installed-performance\.json$/u);
 });
 
 test("installed performance arguments support explicit smoke editor sharding", () => {
   const parsed = parseInstalledPerformanceArguments([
-    "candidate.vsix",
     "--smoke",
     "--editors",
     "vscode",
+    "--candidate-out",
+    "tmp/custom.vsix",
     "--out",
     "tmp/custom.json"
   ]);
 
   assert.equal(parsed.smoke, true);
   assert.deepEqual(parsed.editors, ["vscode"]);
+  assert.match(parsed.candidateOutput, /tmp[/\\]custom\.vsix$/u);
   assert.match(parsed.output, /tmp[/\\]custom\.json$/u);
   assert.throws(
-    () => parseInstalledPerformanceArguments(["candidate.vsix", "--editors", "vscode,vscode"]),
+    () => parseInstalledPerformanceArguments(["--editors", "vscode,vscode"]),
     /unique comma-separated subset/u
   );
-  assert.throws(
-    () => parseInstalledPerformanceArguments(["candidate.vsix", "--unknown"]),
-    /Unknown installed-performance option/u
+  assert.throws(() => parseInstalledPerformanceArguments(["--unknown"]), /Unknown installed-performance option/u);
+  assert.throws(() => parseInstalledPerformanceArguments(["candidate.vsix"]), /packages its own clean-HEAD candidate/u);
+});
+
+test("guarded candidate packaging pins one clean source through build, package, and verification", async () => {
+  const commit = "a".repeat(40);
+  const clean = { commit, trackedWorktreeDirty: false };
+  const events = [];
+
+  const receipt = await packageInstalledPerformanceCandidate({
+    destination: "/private/candidate.vsix",
+    snapshotDestination: "/private/snapshot.vsix",
+    environment: {},
+    readSource() {
+      events.push("source");
+      return clean;
+    },
+    async build() {
+      events.push("build");
+    },
+    async packageCandidate(destination) {
+      events.push(["package", destination]);
+    },
+    async verifyCandidate(destination) {
+      events.push(["verify", destination]);
+    },
+    snapshotCandidate(source, destination) {
+      events.push(["snapshot", source, destination]);
+      return { path: destination, sha256: "b".repeat(64), bytes: 123 };
+    }
+  });
+
+  assert.deepEqual(receipt, {
+    path: "/private/snapshot.vsix",
+    sha256: "b".repeat(64),
+    bytes: 123,
+    source: clean
+  });
+  assert.equal(Object.isFrozen(receipt), true);
+  assert.equal(Object.isFrozen(receipt.source), true);
+  assert.deepEqual(events, [
+    "source",
+    "build",
+    "source",
+    ["package", "/private/candidate.vsix"],
+    "source",
+    ["verify", "/private/candidate.vsix"],
+    "source",
+    ["snapshot", "/private/candidate.vsix", "/private/snapshot.vsix"],
+    "source"
+  ]);
+});
+
+test("guarded candidate packaging rejects dirty or drifting checkout provenance", async () => {
+  await assert.rejects(
+    packageInstalledPerformanceCandidate({
+      destination: "/private/candidate.vsix",
+      snapshotDestination: "/private/snapshot.vsix",
+      readSource: () => ({ commit: "a".repeat(40), trackedWorktreeDirty: true }),
+      build: () => assert.fail("a dirty checkout must fail before build"),
+      packageCandidate: () => assert.fail("a dirty checkout must fail before package"),
+      verifyCandidate: () => assert.fail("a dirty checkout must fail before verification")
+    }),
+    /clean exact HEAD before candidate build/u
+  );
+
+  const sources = [
+    { commit: "a".repeat(40), trackedWorktreeDirty: false },
+    { commit: "b".repeat(40), trackedWorktreeDirty: false }
+  ];
+  let packaged = false;
+  await assert.rejects(
+    packageInstalledPerformanceCandidate({
+      destination: "/private/candidate.vsix",
+      snapshotDestination: "/private/snapshot.vsix",
+      readSource: () => sources.shift(),
+      build: () => {},
+      packageCandidate: () => {
+        packaged = true;
+      },
+      verifyCandidate: () => assert.fail("source drift must fail before verification")
+    }),
+    /source commit changed during candidate build/u
+  );
+  assert.equal(packaged, false);
+
+  for (const [dirtyRead, expectedStage, expectedVerified] of [
+    [2, "during candidate build", false],
+    [3, "during candidate packaging", false],
+    [4, "during candidate verification", true],
+    [5, "during candidate snapshot", true]
+  ]) {
+    let reads = 0;
+    let verified = false;
+    await assert.rejects(
+      packageInstalledPerformanceCandidate({
+        destination: "/private/candidate.vsix",
+        snapshotDestination: "/private/snapshot.vsix",
+        readSource() {
+          reads += 1;
+          return {
+            commit: "a".repeat(40),
+            trackedWorktreeDirty: reads === dirtyRead
+          };
+        },
+        build: () => {},
+        packageCandidate: () => {},
+        verifyCandidate: () => {
+          verified = true;
+        },
+        snapshotCandidate: () => ({ path: "/private/snapshot.vsix", sha256: "b".repeat(64), bytes: 123 })
+      }),
+      new RegExp(`clean exact HEAD ${expectedStage}`, "u")
+    );
+    assert.equal(verified, expectedVerified);
+  }
+});
+
+test("guarded candidate packaging never advances after a failed build, package, or verification", async () => {
+  const clean = { commit: "a".repeat(40), trackedWorktreeDirty: false };
+  for (const failedStage of ["build", "package", "verify"]) {
+    const events = [];
+    await assert.rejects(
+      packageInstalledPerformanceCandidate({
+        destination: "/private/candidate.vsix",
+        snapshotDestination: "/private/snapshot.vsix",
+        readSource: () => clean,
+        build() {
+          events.push("build");
+          if (failedStage === "build") throw new Error("build failed");
+        },
+        packageCandidate() {
+          events.push("package");
+          if (failedStage === "package") throw new Error("package failed");
+        },
+        verifyCandidate() {
+          events.push("verify");
+          if (failedStage === "verify") throw new Error("verify failed");
+        },
+        snapshotCandidate: () => ({ path: "/private/snapshot.vsix", sha256: "b".repeat(64), bytes: 123 })
+      }),
+      new RegExp(`${failedStage} failed`, "u")
+    );
+    assert.deepEqual(
+      events,
+      failedStage === "build"
+        ? ["build"]
+        : failedStage === "package"
+          ? ["build", "package"]
+          : ["build", "package", "verify"]
+    );
+  }
+});
+
+test("candidate metadata rejects any receipt not minted by guarded packaging", async () => {
+  await assert.rejects(
+    readInstalledPerformanceCandidate({
+      path: "/tmp/arbitrary.vsix",
+      sha256: "b".repeat(64),
+      bytes: 123,
+      source: { commit: "a".repeat(40), trackedWorktreeDirty: false }
+    }),
+    /guarded build receipt/u
   );
 });
 

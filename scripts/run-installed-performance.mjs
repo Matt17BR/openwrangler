@@ -72,12 +72,13 @@ const VSIX_MAX_BYTES = 512 * 1024 * 1024;
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const VSIX_MAX_ENTRIES = 100_000;
 const OUTPUT_MAX_BYTES = 1024 * 1024;
+const guardedCandidateReceipts = new WeakSet();
 
 export function parseInstalledPerformanceArguments(arguments_) {
   const options = {
-    vsix: undefined,
     smoke: false,
     editors: ["vscode", "cursor"],
+    candidateOutput: resolve(root, "tmp", "performance", "openwrangler-installed-candidate.vsix"),
     output: resolve(root, "tmp", "performance", "installed-performance.json")
   };
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -109,11 +110,17 @@ export function parseInstalledPerformanceArguments(arguments_) {
       options.output = resolve(root, value);
       continue;
     }
+    if (argument === "--candidate-out") {
+      const value = arguments_[++index];
+      if (!value) throw new Error("--candidate-out requires one filesystem path.");
+      options.candidateOutput = resolve(root, value);
+      continue;
+    }
     if (argument?.startsWith("--")) throw new Error(`Unknown installed-performance option ${argument}.`);
-    if (options.vsix !== undefined) throw new Error("Pass exactly one VSIX candidate.");
-    options.vsix = resolve(root, argument);
+    throw new Error(
+      "Installed performance packages its own clean-HEAD candidate; use --candidate-out to choose its destination."
+    );
   }
-  if (!options.vsix) throw new Error("Pass the exact VSIX candidate to benchmark.");
   return options;
 }
 
@@ -196,8 +203,11 @@ export function stageInstalledPerformanceVsix(source, destination) {
   }
 }
 
-export async function readInstalledPerformanceCandidate(vsix, snapshot) {
-  const packageJson = await readVsixPackageJson(vsix);
+export async function readInstalledPerformanceCandidate(receipt) {
+  if (!guardedCandidateReceipts.has(receipt)) {
+    throw new Error("Installed performance candidate metadata requires one guarded build receipt.");
+  }
+  const packageJson = await readVsixPackageJson(receipt.path);
   if (
     packageJson.publisher !== "Matt17BR" ||
     packageJson.name !== "openwrangler" ||
@@ -210,9 +220,44 @@ export async function readInstalledPerformanceCandidate(vsix, snapshot) {
     extensionId: `${packageJson.publisher}.${packageJson.name}`,
     extensionVersion: packageJson.version,
     preview: packageJson.preview,
-    vsixSha256: snapshot.sha256,
-    vsixBytes: snapshot.bytes
+    buildMethod: "guarded-clean-head-v1",
+    sourceCommit: receipt.source.commit,
+    vsixSha256: receipt.sha256,
+    vsixBytes: receipt.bytes
   };
+}
+
+export async function packageInstalledPerformanceCandidate({
+  destination,
+  snapshotDestination,
+  environment = process.env,
+  readSource = readSourceProvenance,
+  build = runInstalledPerformanceBuild,
+  packageCandidate = createInstalledPerformanceVsix,
+  verifyCandidate = verifyInstalledPerformanceVsix,
+  snapshotCandidate = stageInstalledPerformanceVsix
+}) {
+  if (typeof snapshotDestination !== "string" || snapshotDestination.length === 0) {
+    throw new TypeError("Guarded installed-performance packaging requires a private snapshot destination.");
+  }
+  const before = readSource();
+  requireCleanSource(before, "before candidate build");
+  await build(environment);
+  requireSameSource(readSource(), before, "during candidate build");
+  await packageCandidate(destination);
+  requireSameSource(readSource(), before, "during candidate packaging");
+  await verifyCandidate(destination, environment);
+  requireSameSource(readSource(), before, "during candidate verification");
+  const snapshot = await snapshotCandidate(destination, snapshotDestination);
+  requireSameSource(readSource(), before, "during candidate snapshot");
+  const receipt = Object.freeze({
+    path: snapshot.path,
+    sha256: snapshot.sha256,
+    bytes: snapshot.bytes,
+    source: Object.freeze({ ...before })
+  });
+  guardedCandidateReceipts.add(receipt);
+  return receipt;
 }
 
 export function writeInstalledPerformanceRun(destination, result) {
@@ -264,14 +309,24 @@ export async function runInstalledPerformance(options, environment = process.env
   const privateRoot = mkdtempSync(join(privateParent, "x-"));
   const privateRootReceipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: privateParent });
   configureEditorAcceptanceTempRoot(privateRoot, environment);
-  const privatePaths = [privateRoot, options.vsix];
+  const privatePaths = [privateRoot, options.candidateOutput];
   let processTreeUncertain = false;
   let primaryError;
   let result;
   try {
-    const staged = stageInstalledPerformanceVsix(options.vsix, resolve(privateRoot, "candidate.vsix"));
-    const candidate = await readInstalledPerformanceCandidate(staged.path, staged);
-    const sourceBefore = readSourceProvenance();
+    const builtCandidate = resolve(privateRoot, "built-candidate.vsix");
+    const guardedCandidate = await packageInstalledPerformanceCandidate({
+      destination: builtCandidate,
+      snapshotDestination: resolve(privateRoot, "candidate.vsix"),
+      environment
+    });
+    const sourceBefore = guardedCandidate.source;
+    const candidate = await readInstalledPerformanceCandidate(guardedCandidate);
+    const published = stageInstalledPerformanceVsix(guardedCandidate.path, options.candidateOutput);
+    if (published.sha256 !== guardedCandidate.sha256 || published.bytes !== guardedCandidate.bytes) {
+      throw new Error("The published installed-performance candidate does not match its private snapshot.");
+    }
+    requireSameSource(readSourceProvenance(), sourceBefore, "after candidate publication");
     const python = resolveTestPython(environment);
     const fixtureRoot = resolve(privateRoot, "f");
     const fixtureDirectory = resolve(fixtureRoot, "fixtures");
@@ -304,7 +359,7 @@ export async function runInstalledPerformance(options, environment = process.env
       editorRuns.push(
         await runEditorPerformanceWithIsolatedDisplay({
           editor,
-          stagedVsix: staged.path,
+          stagedVsix: guardedCandidate.path,
           candidate,
           python,
           privateRoot,
@@ -315,9 +370,7 @@ export async function runInstalledPerformance(options, environment = process.env
       );
     }
     const sourceAfter = readSourceProvenance();
-    if (JSON.stringify(sourceAfter) !== JSON.stringify(sourceBefore)) {
-      throw new Error("The installed-performance source provenance changed during the run.");
-    }
+    requireSameSource(sourceAfter, sourceBefore, "during the editor run");
     result = options.smoke
       ? {
           protocol: INSTALLED_RUN_PROTOCOL,
@@ -711,6 +764,58 @@ function readSourceProvenance() {
     timeout: 10_000
   });
   return { commit, trackedWorktreeDirty: trackedStatus.trim().length > 0 };
+}
+
+function requireCleanSource(source, stage) {
+  if (!/^[0-9a-f]{40}$/u.test(source?.commit) || source.trackedWorktreeDirty !== false) {
+    throw new Error(`Installed performance requires one clean exact HEAD ${stage}.`);
+  }
+}
+
+function requireSameSource(current, expected, stage) {
+  requireCleanSource(current, stage);
+  if (current.commit !== expected.commit) {
+    throw new Error(`The installed-performance source commit changed ${stage}.`);
+  }
+}
+
+function runInstalledPerformanceBuild(environment) {
+  for (const [script, timeout] of [
+    ["clean", 60_000],
+    ["build", 180_000],
+    ["build:test-extension", 120_000]
+  ]) {
+    execFileSync("npm", ["run", script], {
+      cwd: root,
+      env: environment,
+      maxBuffer: 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout,
+      windowsHide: true
+    });
+  }
+}
+
+async function createInstalledPerformanceVsix(destination) {
+  assertAbsent(destination, "guarded installed-performance candidate");
+  await createVSIX({
+    cwd: root,
+    packagePath: destination,
+    preRelease: true,
+    allowStarActivation: false,
+    allowMissingRepository: false
+  });
+}
+
+function verifyInstalledPerformanceVsix(candidate, environment) {
+  execFileSync(process.execPath, [resolve(root, "scripts", "verify-vsix.mjs"), candidate], {
+    cwd: root,
+    env: environment,
+    maxBuffer: 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 60_000,
+    windowsHide: true
+  });
 }
 
 function readBoundedJson(file, maxBytes) {
