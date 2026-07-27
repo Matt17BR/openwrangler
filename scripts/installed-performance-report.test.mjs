@@ -145,7 +145,8 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
   assert.equal(report.releaseGate.passed, true);
   assert.equal(assertInstalledPerformanceReleaseGate(report), report);
   assert.throws(
-    () => assertInstalledPerformanceReleaseGate({ ...report, protocol: "openwrangler-installed-performance-report-v4" }),
+    () =>
+      assertInstalledPerformanceReleaseGate({ ...report, protocol: "openwrangler-installed-performance-report-v4" }),
     /installed performance report protocol/u
   );
   assert.throws(
@@ -296,10 +297,7 @@ test("report receipt rejects same-path replacement and in-place mutation after p
     const mutated = Buffer.from(original);
     mutated[mutated.length - 2] ^= 1;
     writeFileSync(destination, mutated);
-    assert.throws(
-      () => revalidateInstalledPerformanceReport(receipt),
-      /changed after publication|no longer matches/u
-    );
+    assert.throws(() => revalidateInstalledPerformanceReport(receipt), /changed after publication|no longer matches/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

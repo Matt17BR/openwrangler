@@ -24,6 +24,7 @@ import {
   describeEditorAcceptanceHarnessFailure,
   downloadEditorWithRetry,
   EDITOR_DOWNLOAD_ATTEMPT_TIMEOUT_MS,
+  EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
   EDITOR_ACCEPTANCE_INACTIVITY_TIMEOUT_MS,
   EDITOR_ACCEPTANCE_PHASE_TIMEOUT_MS,
   EDITOR_ACCEPTANCE_PROGRESS_MAX_BYTES,
@@ -3608,6 +3609,21 @@ test("editor phase failures distinguish emitted spawn errors, early exits, malfo
           fakeEditorChild({
             code: 0,
             resultPath,
+            result: `{"protocol":1,"runId":${JSON.stringify(options.env.OPEN_WRANGLER_TEST_RUN_ID)},"phase":${JSON.stringify(options.env.OPEN_WRANGLER_TEST_PHASE)},"ok":true,"o\\u006b":false}`
+          })
+      }),
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "result-protocol-failure" &&
+        /duplicate keys/u.test(error.message)
+    );
+
+    await assert.rejects(
+      runEditorAcceptancePhase(input, {
+        spawnProcess: (_executable, _arguments, options) =>
+          fakeEditorChild({
+            code: 0,
+            resultPath,
             result: acceptanceResult(
               { ...options.env, OPEN_WRANGLER_TEST_RUN_ID: "00000000-0000-0000-0000-000000000000" },
               { ok: true }
@@ -3633,6 +3649,29 @@ test("editor phase failures distinguish emitted spawn errors, early exits, malfo
         error instanceof EditorAcceptanceFailure &&
         error.kind === "result-protocol-failure" &&
         /missing or unexpected fields/u.test(error.message)
+    );
+
+    await assert.rejects(
+      runEditorAcceptancePhase(input, {
+        spawnProcess: (_executable, _arguments, options) =>
+          fakeEditorChild({
+            code: 0,
+            resultPath,
+            result: acceptanceResult(options.env, {
+              ok: true,
+              evidence: {
+                protocol: EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
+                bytes: 12,
+                sha256: "a".repeat(64),
+                unexpected: true
+              }
+            })
+          })
+      }),
+      (error) =>
+        error instanceof EditorAcceptanceFailure &&
+        error.kind === "result-protocol-failure" &&
+        /success evidence contains missing or unexpected fields/u.test(error.message)
     );
 
     await assert.rejects(
@@ -3674,10 +3713,16 @@ test("editor phase failures distinguish emitted spawn errors, early exits, malfo
       }
     );
 
-    await runEditorAcceptancePhase(input, {
+    const evidence = {
+      protocol: EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
+      bytes: 12,
+      sha256: "a".repeat(64)
+    };
+    const returned = await runEditorAcceptancePhase(input, {
       spawnProcess: (_executable, _arguments, options) =>
-        fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) })
+        fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true, evidence }) })
     });
+    assert.deepEqual(returned, evidence);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -4547,6 +4592,7 @@ test("the generated harness records startup before loading the acceptance module
     assert.match(source, /const EDITOR_HARNESS_ERROR_MAX_CHARACTERS = 16000;/u);
     assert.match(source, /const EDITOR_HARNESS_RESULT_MAX_BYTES = 131072;/u);
     assert.match(source, /serializeEditorAcceptanceHarnessOutcome/u);
+    assert.match(source, /const evidence = await require\(process\.env\.OPEN_WRANGLER_TEST_MODULE\)\.run\(\);/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

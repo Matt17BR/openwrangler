@@ -22,9 +22,11 @@ import { chromium, type Browser, type Frame, type Locator, type Page } from "pla
 import type { BridgeRequestOptions } from "../../extension/dataBridge";
 import type { SessionRequestExecutionCheckpoint } from "../../extension/sessionCoordinator";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
+import { parseStrictJson } from "../../shared/strictJson.cjs";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
+const ARTIFACT_RECEIPT_PROTOCOL = "openwrangler-editor-acceptance-artifact-receipt-v1";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 const FIRST_GRID_BOUNDARY =
@@ -35,6 +37,7 @@ const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 const FIRST_GRID_PHASE_PATTERN = /^perf-(csv|parquet)-(cold|warm)$/u;
 const GRID_INTERACTION_PHASE = "perf-grid-interaction";
 const SHA256 = /^[0-9a-f]{64}$/u;
+const MAX_PRIVATE_JSON_BYTES = 16 * 1024;
 
 interface TestApi {
   activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
@@ -96,7 +99,13 @@ interface ProductConfiguration {
   fetchColumnBlockSize: 16;
 }
 
-export async function run(): Promise<void> {
+interface ArtifactReceipt {
+  protocol: typeof ARTIFACT_RECEIPT_PROTOCOL;
+  bytes: number;
+  sha256: string;
+}
+
+export async function run(): Promise<ArtifactReceipt> {
   const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
   const firstGridMatch = FIRST_GRID_PHASE_PATTERN.exec(phase);
   assert.ok(
@@ -174,8 +183,9 @@ export async function run(): Promise<void> {
     },
     measurement
   };
-  publishFragment(path.join(workspace, "results", `${phase}.json`), fragment);
+  const receipt = publishFragment(path.join(workspace, "results", `${phase}.json`), fragment);
   recordProgress("fragment:published");
+  return receipt;
 }
 
 async function measureFirstUsableGrid({
@@ -426,11 +436,19 @@ async function configureBenchmarkProfile(testPython: string): Promise<ProductCon
 }
 
 function readFixtureManifest(manifestPath: string): FixtureManifest {
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as FixtureManifest;
+  const parsed = parseStrictJson(readFileSync(manifestPath, "utf8"), {
+    maxBytes: MAX_PRIVATE_JSON_BYTES
+  });
+  assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  const manifest = parsed as FixtureManifest;
+  assert.deepEqual(Object.keys(manifest).sort(), ["fixtures", "protocol", "smoke"]);
   assert.equal(manifest.protocol, FIXTURE_PROTOCOL);
   assert.equal(typeof manifest.smoke, "boolean");
+  assert.ok(manifest.fixtures && typeof manifest.fixtures === "object" && !Array.isArray(manifest.fixtures));
   assert.deepEqual(Object.keys(manifest.fixtures).sort(), ["csv", "parquet"]);
   for (const [format, fixture] of Object.entries(manifest.fixtures)) {
+    assert.ok(fixture && typeof fixture === "object" && !Array.isArray(fixture));
+    assert.deepEqual(Object.keys(fixture).sort(), ["columns", "fileName", "format", "rows", "sha256"]);
     assert.equal(fixture.format, format);
     assert.match(fixture.fileName, /^\d+-\d+\.(?:csv|parquet)$/u);
     assert.ok(Number.isSafeInteger(fixture.rows) && fixture.rows > 0);
@@ -451,7 +469,9 @@ function prepareSourceCache(testPython: string, workspace: string, source: strin
       windowsHide: true
     }
   );
-  const result = JSON.parse(output) as CacheProof;
+  const parsed = parseStrictJson(output, { maxBytes: MAX_PRIVATE_JSON_BYTES });
+  assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  const result = parsed as CacheProof;
   assert.deepEqual(Object.keys(result).sort(), [
     "adviceAccepted",
     "fdatasyncApplied",
@@ -514,7 +534,9 @@ async function runtimeProvenance(
     ],
     { encoding: "utf8", maxBuffer: 16 * 1024, timeout: 30_000, windowsHide: true }
   );
-  const probe = JSON.parse(output) as RuntimeProbe;
+  const parsed = parseStrictJson(output, { maxBytes: MAX_PRIVATE_JSON_BYTES });
+  assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  const probe = parsed as RuntimeProbe;
   assert.deepEqual(Object.keys(probe).sort(), ["polarsVersion", "pythonImplementation", "pythonVersion"]);
   return {
     ...probe,
@@ -997,7 +1019,7 @@ async function sha256(file: string): Promise<string> {
   return digest.digest("hex");
 }
 
-function publishFragment(destination: string, value: unknown): void {
+function publishFragment(destination: string, value: unknown): ArtifactReceipt {
   mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
   try {
     lstatSync(destination);
@@ -1006,6 +1028,8 @@ function publishFragment(destination: string, value: unknown): void {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  assert.ok(bytes.length > 0 && bytes.length <= MAX_PRIVATE_JSON_BYTES);
   let descriptor: number | undefined;
   let published = false;
   try {
@@ -1016,7 +1040,7 @@ function publishFragment(destination: string, value: unknown): void {
     );
     const identity = fstatSync(descriptor, { bigint: true });
     assert.ok(identity.isFile() && identity.nlink === 1n);
-    writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    writeFileSync(descriptor, bytes);
     fsyncSync(descriptor);
     const complete = fstatSync(descriptor, { bigint: true });
     assert.ok(
@@ -1033,7 +1057,23 @@ function publishFragment(destination: string, value: unknown): void {
         atPath.ino === complete.ino
     );
     renameSync(temporary, destination);
+    const publishedIdentity = lstatSync(destination, { bigint: true });
+    assert.ok(
+      publishedIdentity.isFile() &&
+        !publishedIdentity.isSymbolicLink() &&
+        publishedIdentity.nlink === 1n &&
+        publishedIdentity.dev === complete.dev &&
+        publishedIdentity.ino === complete.ino &&
+        publishedIdentity.size === complete.size &&
+        publishedIdentity.mtimeNs === complete.mtimeNs &&
+        publishedIdentity.ctimeNs === complete.ctimeNs
+    );
     published = true;
+    return Object.freeze({
+      protocol: ARTIFACT_RECEIPT_PROTOCOL,
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex")
+    });
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
     if (!published) rmSync(temporary, { force: true });

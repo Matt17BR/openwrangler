@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs, { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
+import { EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL, editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   cleanupInstalledPerformancePrivateRoot,
   collectInstalledPerformanceEditorRuns,
@@ -12,7 +13,9 @@ import {
   installedPerformanceDisplayMode,
   packageInstalledPerformanceCandidate,
   parseInstalledPerformanceArguments,
+  publishInstalledPerformanceReleaseResult,
   readBoundedJson,
+  readInstalledPerformanceFragment,
   readInstalledPerformanceCandidate,
   readInstalledPerformanceSourceManifest,
   revalidateInstalledPerformanceVsix,
@@ -686,6 +689,68 @@ test("editor collection rejects public candidate drift after the editor runs", a
   }
 });
 
+test("release publication rejects public candidate drift introduced while the report is written", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-final-"));
+  try {
+    const source = join(directory, "source.vsix");
+    const publicCandidate = join(directory, "public.vsix");
+    await writeFile(source, "candidate bytes before final report publication");
+    const publicReceipt = stageInstalledPerformanceVsix(source, publicCandidate);
+    let reportRevalidated = false;
+
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(directory, "report.json"),
+          result: { protocol: "test" },
+          publicCandidateReceipt: publicReceipt,
+          writeReport() {
+            writeFileSync(publicCandidate, "candidate drift during final report publication");
+            return { marker: "report" };
+          },
+          assertGate() {},
+          revalidateReport() {
+            reportRevalidated = true;
+          }
+        }),
+      /VSIX (receipt|checksum)/u
+    );
+    assert.equal(reportRevalidated, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("release publication revalidates candidate and report only after report write and gate", () => {
+  const events = [];
+  const candidateReceipt = { marker: "candidate" };
+  const reportReceipt = { marker: "report" };
+  assert.equal(
+    publishInstalledPerformanceReleaseResult({
+      output: "/private/report.json",
+      result: { protocol: "test" },
+      publicCandidateReceipt: candidateReceipt,
+      writeReport(output) {
+        events.push(["write", output]);
+        return reportReceipt;
+      },
+      assertGate() {
+        events.push(["gate"]);
+      },
+      revalidateCandidate(receipt) {
+        assert.equal(receipt, candidateReceipt);
+        events.push(["candidate"]);
+      },
+      revalidateReport(receipt) {
+        assert.equal(receipt, reportReceipt);
+        events.push(["report"]);
+      }
+    }),
+    reportReceipt
+  );
+  assert.deepEqual(events, [["write", "/private/report.json"], ["gate"], ["candidate"], ["report"]]);
+});
+
 test("the VSIX snapshot rejects symbolic and hard-linked candidates", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
   try {
@@ -779,13 +844,50 @@ test("bounded JSON reads reject a same-inode rewrite after descriptor validation
   }
 });
 
-test("bounded JSON reads use the shared strict parser and reject duplicate envelope keys", async () => {
+test("bounded JSON reads use the shared strict parser and reject nested or escaped duplicate keys", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
   try {
     const source = join(directory, "phase.json");
-    await writeFile(source, '{"protocol":"openwrangler-installed-performance-phase-v4","protocol":"drifted"}');
+    for (const contents of [
+      '{"protocol":"openwrangler-installed-performance-phase-v4","protocol":"drifted"}',
+      '{"outer":{"phase":"expected","phase":"drifted"}}',
+      '{"outer":{"phase":"expected","ph\\u0061se":"drifted"}}'
+    ]) {
+      await writeFile(source, contents);
+      assert.throws(() => readBoundedJson(source, 1024), /must not contain duplicate keys/u);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
-    assert.throws(() => readBoundedJson(source, 1024), /must not contain duplicate keys/u);
+test("phase fragments must match the exact editor-host artifact receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-fragment-"));
+  try {
+    const source = join(directory, "phase.json");
+    const contents = Buffer.from('{"protocol":"openwrangler-installed-performance-phase-v4"}', "utf8");
+    await writeFile(source, contents);
+    const receipt = {
+      protocol: EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
+      bytes: contents.length,
+      sha256: createHash("sha256").update(contents).digest("hex")
+    };
+
+    assert.deepEqual(readInstalledPerformanceFragment(source, 1024, receipt), {
+      protocol: "openwrangler-installed-performance-phase-v4"
+    });
+    assert.throws(
+      () => readInstalledPerformanceFragment(source, 1024, { ...receipt, sha256: "0".repeat(64) }),
+      /does not match its editor-host artifact receipt/u
+    );
+    assert.throws(
+      () => readInstalledPerformanceFragment(source, 1024, { ...receipt, unexpected: true }),
+      /invalid artifact receipt/u
+    );
+    assert.throws(
+      () => readInstalledPerformanceFragment(source, 1024, { ...receipt, protocol: "unknown" }),
+      /invalid artifact receipt/u
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -814,7 +916,8 @@ test("the installed performance result writer replaces only a regular destinatio
 test("measured editor phases attach after spawn and sample only after verified phase cleanup", async () => {
   const events = [];
   const child = { pid: 4812 };
-  await runInstalledMeasuredEditorPhase({
+  const artifactReceipt = { protocol: "receipt" };
+  const returned = await runInstalledMeasuredEditorPhase({
     phase: "perf-parquet-warm",
     sampler: {
       begin(phase, processGroupId) {
@@ -831,8 +934,10 @@ test("measured editor phases attach after spawn and sample only after verified p
     async runPhase(spawnProcess) {
       assert.equal(spawnProcess("editor", [], {}), child);
       events.push(["phase-clean"]);
+      return artifactReceipt;
     }
   });
+  assert.equal(returned, artifactReceipt);
   assert.deepEqual(events, [["spawn"], ["begin", "perf-parquet-warm", 4812], ["phase-clean"], ["end"]]);
 });
 

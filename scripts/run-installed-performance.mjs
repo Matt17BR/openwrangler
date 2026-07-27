@@ -22,6 +22,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { pathToFileURL } from "node:url";
 import { createVSIX } from "@vscode/vsce";
 import {
+  EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL,
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
   downloadEditorWithRetry,
@@ -45,6 +46,7 @@ import {
 import {
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
+  revalidateInstalledPerformanceReport,
   validateInstalledFixtureManifest,
   validateInstalledPerformancePhase,
   writeInstalledPerformanceReport
@@ -76,6 +78,7 @@ const INSTALLED_PERFORMANCE_PHASES = [
 const EXPECTED_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const OUTPUT_MAX_BYTES = 1024 * 1024;
+const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
 
 export function parseInstalledPerformanceArguments(arguments_) {
@@ -523,12 +526,33 @@ export async function runInstalledPerformance(options, environment = process.env
   } catch (error) {
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
   }
-  if (options.smoke) writeInstalledPerformanceRun(options.output, result);
-  else {
-    writeInstalledPerformanceReport(options.output, result);
-    assertInstalledPerformanceReleaseGate(result);
+  if (options.smoke) {
+    writeInstalledPerformanceRun(options.output, result);
+    revalidateInstalledPerformanceVsix(publicCandidateReceipt);
+  } else {
+    publishInstalledPerformanceReleaseResult({
+      output: options.output,
+      result,
+      publicCandidateReceipt
+    });
   }
   return result;
+}
+
+export function publishInstalledPerformanceReleaseResult({
+  output,
+  result,
+  publicCandidateReceipt,
+  writeReport = writeInstalledPerformanceReport,
+  assertGate = assertInstalledPerformanceReleaseGate,
+  revalidateCandidate = revalidateInstalledPerformanceVsix,
+  revalidateReport = revalidateInstalledPerformanceReport
+}) {
+  const reportReceipt = writeReport(output, result);
+  assertGate(result);
+  revalidateCandidate(publicCandidateReceipt);
+  revalidateReport(reportReceipt);
+  return reportReceipt;
 }
 
 export function installedPerformanceDisplayMode(editor, environment = process.env) {
@@ -591,6 +615,7 @@ export async function runInstalledMeasuredEditorPhase({
   let samplerStartError;
   let samplerEndError;
   let samplerStarted = false;
+  let phaseResult;
   const measuredSpawn = (...arguments_) => {
     const child = spawnOwned(...arguments_);
     try {
@@ -602,7 +627,7 @@ export async function runInstalledMeasuredEditorPhase({
     return child;
   };
   try {
-    await runPhase(measuredSpawn);
+    phaseResult = await runPhase(measuredSpawn);
   } catch (error) {
     phaseError = error;
   }
@@ -620,6 +645,7 @@ export async function runInstalledMeasuredEditorPhase({
   if (failures.length > 1) {
     throw new AggregateError(failures, "Installed performance editor phase or RSS sampling failed.");
   }
+  return phaseResult;
 }
 
 export async function installInstalledPerformanceCandidate({
@@ -801,7 +827,7 @@ async function runEditorPerformancePhases({
   for (const phase of INSTALLED_PERFORMANCE_PHASES) {
     const runId = randomUUID();
     const resultPath = resolve(profile, `${phase}-result.json`);
-    await runInstalledMeasuredEditorPhase({
+    const artifactReceipt = await runInstalledMeasuredEditorPhase({
       phase,
       sampler,
       runPhase: (spawnProcess) =>
@@ -825,7 +851,11 @@ async function runEditorPerformancePhases({
         )
     });
     const fragment = validateInstalledPerformancePhase(
-      readBoundedJson(resolve(workspace, "results", `${phase}.json`), 256 * 1024),
+      readInstalledPerformanceFragment(
+        resolve(workspace, "results", `${phase}.json`),
+        INSTALLED_PHASE_FRAGMENT_MAX_BYTES,
+        artifactReceipt
+      ),
       { runId, phase }
     );
     const expectedFixture = fixtureManifest.fixtures[fragment.fixture.format];
@@ -1033,6 +1063,10 @@ async function verifyInstalledPerformanceVsix(receipt, _environment) {
 }
 
 export function readBoundedJson(file, maxBytes, hooks = {}) {
+  return readBoundedJsonSnapshot(file, maxBytes, hooks).value;
+}
+
+export function readBoundedJsonSnapshot(file, maxBytes, hooks = {}) {
   let descriptor;
   try {
     descriptor = openReadOnlyNoFollow(file, "Installed performance produced an invalid bounded JSON file.");
@@ -1054,10 +1088,37 @@ export function readBoundedJson(file, maxBytes, hooks = {}) {
     const completedPath = lstatSync(file, { bigint: true });
     requireSameRegularFile(completed, identity, "Installed performance JSON changed while it was read.");
     requireSameRegularFile(completedPath, identity, "Installed performance JSON path changed while it was read.");
-    return parseStrictJson(contents.toString("utf8"), { maxBytes });
+    return Object.freeze({
+      value: parseStrictJson(contents.toString("utf8"), { maxBytes }),
+      bytes: contents.length,
+      sha256: createHash("sha256").update(contents).digest("hex")
+    });
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
+}
+
+export function readInstalledPerformanceFragment(file, maxBytes, receipt, hooks = {}) {
+  const expectedKeys = ["bytes", "protocol", "sha256"];
+  const actualKeys =
+    receipt && typeof receipt === "object" && !Array.isArray(receipt) ? Object.keys(receipt).sort() : [];
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    actualKeys.some((key, index) => key !== expectedKeys[index]) ||
+    receipt.protocol !== EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    receipt.bytes > maxBytes ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256)
+  ) {
+    throw new Error("Installed performance phase returned an invalid artifact receipt.");
+  }
+  const snapshot = readBoundedJsonSnapshot(file, maxBytes, hooks);
+  if (snapshot.bytes !== receipt.bytes || snapshot.sha256 !== receipt.sha256) {
+    throw new Error("Installed performance phase fragment does not match its editor-host artifact receipt.");
+  }
+  return snapshot.value;
 }
 
 function requireSameRegularFile(actual, expected, message) {

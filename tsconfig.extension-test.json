@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "allowJs": true,
     "outDir": "dist-test",
     "rootDir": "src",
     "lib": ["ES2022"],
@@ -11,6 +12,8 @@
     "src/extension/configuration.ts",
     "src/extension/notebooks/notebookInsertion.ts",
     "src/shared/protocol.ts",
-    "src/shared/protocol.generated.ts"
+    "src/shared/protocol.generated.ts",
+    "src/shared/strictJson.cjs",
+    "src/shared/strictJson.d.cts"
   ]
 }
