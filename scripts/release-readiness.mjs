@@ -453,7 +453,9 @@ function sameReceipt(path, receipt) {
       current.nlink === 1n &&
       sameFileIdentity(current, receipt) &&
       (receipt.size === undefined || current.size === receipt.size) &&
-      (receipt.mode === undefined || (current.mode & 0o777n) === receipt.mode)
+      (receipt.mode === undefined || (current.mode & 0o777n) === receipt.mode) &&
+      (receipt.mtimeNs === undefined || current.mtimeNs === receipt.mtimeNs) &&
+      (receipt.ctimeNs === undefined || current.ctimeNs === receipt.ctimeNs)
     );
   } catch {
     return false;
@@ -503,6 +505,8 @@ function writeExclusiveOwnedOutput(path, contents) {
     }
     receipt = {
       ...receipt,
+      ctimeNs: completed.ctimeNs,
+      mtimeNs: completed.mtimeNs,
       sha256: sha256(bytes),
       mode: process.platform === "win32" ? undefined : 0o444n,
       size: completed.size
@@ -562,6 +566,7 @@ function readVerifiedOutput(path, receipt) {
 }
 
 export function revalidateStableReleaseArtifacts({
+  afterVsixRead,
   checksumOutput,
   checksumReceipt,
   snapshot,
@@ -579,10 +584,14 @@ export function revalidateStableReleaseArtifacts({
   if (!vsixBytes.equals(snapshot.bytes)) {
     throw new Error("Published stable VSIX does not match the inspected immutable snapshot.");
   }
+  afterVsixRead?.();
   const checksumBytes = readVerifiedOutput(resolve(checksumOutput), checksumReceipt);
   const expectedChecksum = Buffer.from(`${snapshot.sha256}  ${basename(resolve(vsixOutput))}\n`, "utf8");
   if (!checksumBytes.equals(expectedChecksum)) {
     throw new Error("Published stable checksum does not match the inspected immutable snapshot.");
+  }
+  if (!sameReceipt(resolve(vsixOutput), vsixReceipt) || !sameReceipt(resolve(checksumOutput), checksumReceipt)) {
+    throw new Error("Published stable outputs did not retain one joint final identity.");
   }
 }
 

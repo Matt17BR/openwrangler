@@ -27,7 +27,6 @@ jobs:
       - id: release_metadata
         name: Validate release tag and manifest channel
         env:
-          EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/release-metadata.mjs
       - run: npm ci
@@ -58,6 +57,7 @@ jobs:
       - name: Enforce stable release readiness and publish immutable snapshot
         if: ${{ steps.release_metadata.outputs.prerelease != 'true' }}
         env:
+          EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: >-
           npm run release:readiness --

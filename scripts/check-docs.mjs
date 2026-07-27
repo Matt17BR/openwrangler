@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inspectPreviewReadme, inspectStableReadme } from "./release-documents.mjs";
+import { inspectReleaseWorkflow } from "./release-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -26,6 +27,12 @@ const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const readmeProblems = packageJson.preview ? inspectPreviewReadme(readme) : inspectStableReadme(readme);
 if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
+}
+const releaseWorkflowProblems = inspectReleaseWorkflow(
+  readFileSync(resolve(root, ".github/workflows/release.yml"), "utf8")
+);
+if (releaseWorkflowProblems.length > 0) {
+  throw new Error(`Release workflow contract is stale:\n- ${releaseWorkflowProblems.join("\n- ")}`);
 }
 const changelog = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${packageJson.version}]`)) {

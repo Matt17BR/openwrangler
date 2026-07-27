@@ -16,9 +16,11 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
 import { inspectReleaseMetadata } from "./release-metadata.mjs";
+import { inspectReleaseWorkflow } from "./release-workflow.mjs";
 import { inspectPreviewReadme, PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
   inspectStableReleaseReadiness,
@@ -657,7 +659,7 @@ test("revalidates published output content and parent identities", async (contex
         vsixOutput: published,
         vsixReceipt: receipts.vsixReceipt
       }),
-    /content changed|does not match/u
+    /identity or parent changed|content changed|does not match/u
   );
 
   renameSync(root, movedRoot);
@@ -672,6 +674,40 @@ test("revalidates published output content and parent identities", async (contex
         vsixReceipt: receipts.vsixReceipt
       }),
     /identity or parent changed/u
+  );
+});
+
+test("rejects mutation of the first output while jointly verifying the second", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-joint-output-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const candidate = join(root, "candidate.vsix");
+  const published = join(root, "openwrangler.vsix");
+  const checksum = join(root, "openwrangler.vsix.sha256");
+  await createReleaseVsix(candidate);
+  const snapshot = readOwnedVsixSnapshot(candidate);
+  const receipts = writeStableReleaseArtifacts({
+    checksumOutput: checksum,
+    snapshot,
+    vsixOutput: published
+  });
+
+  assert.throws(
+    () =>
+      revalidateStableReleaseArtifacts({
+        afterVsixRead: () => {
+          chmodSync(published, 0o600);
+          const tampered = Buffer.from(snapshot.bytes);
+          tampered[tampered.length - 1] ^= 0xff;
+          writeFileSync(published, tampered);
+          chmodSync(published, 0o444);
+        },
+        checksumOutput: checksum,
+        checksumReceipt: receipts.checksumReceipt,
+        snapshot,
+        vsixOutput: published,
+        vsixReceipt: receipts.vsixReceipt
+      }),
+    /joint final identity/u
   );
 });
 
@@ -747,39 +783,54 @@ test("rejects symlinked and hard-linked stable VSIX candidates", async (context)
   }
 });
 
-test("the tag workflow gates stable artifacts before checksums, upload, and release creation", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  const metadata = workflow.indexOf("run: node scripts/release-metadata.mjs");
-  const previewPackage = workflow.indexOf("name: Package canonical preview VSIX");
-  const stablePackage = workflow.indexOf("name: Package stable VSIX candidate");
-  const sourceCheck = workflow.indexOf("name: Verify exact tagged source after packaging");
-  const stableVerification = workflow.indexOf("name: Verify stable VSIX candidate");
-  const readiness = workflow.indexOf("name: Enforce stable release readiness and publish immutable snapshot");
-  const previewChecksum = workflow.indexOf("name: Create canonical preview checksum");
-  const upload = workflow.indexOf("name: openwrangler-release");
-  const release = workflow.indexOf("softprops/action-gh-release@");
+test("structurally gates tag-workflow packaging, readiness, upload, and release", () => {
+  const source = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.deepEqual(inspectReleaseWorkflow(source), []);
 
-  assert.ok(metadata >= 0);
-  assert.ok(previewPackage > metadata);
-  assert.ok(stablePackage >= 0);
-  assert.ok(stablePackage > metadata);
-  assert.ok(sourceCheck > stablePackage);
-  assert.ok(stableVerification > sourceCheck);
-  assert.ok(readiness > stableVerification);
-  assert.ok(previewChecksum > readiness);
-  assert.ok(upload > previewChecksum);
-  assert.ok(release > upload);
-  assert.equal(workflow.match(/name: Enforce stable release readiness and publish immutable snapshot/gu)?.length, 1);
-  assert.match(
-    workflow.slice(stablePackage, sourceCheck),
-    /if: \$\{\{ steps\.release_metadata\.outputs\.prerelease != 'true' \}\}[\s\S]*--out openwrangler\.candidate\.vsix/u
+  const mutate = (change) => {
+    const workflow = parseYaml(source);
+    change(workflow);
+    return inspectReleaseWorkflow(dumpYaml(workflow));
+  };
+  const namedStep = (workflow, name) => workflow.jobs.build.steps.find((step) => step.name === name);
+
+  const movedReadiness = mutate((workflow) => {
+    const index = workflow.jobs.build.steps.findIndex(
+      (step) => step.name === "Enforce stable release readiness and publish immutable snapshot"
+    );
+    const [step] = workflow.jobs.build.steps.splice(index, 1);
+    workflow.jobs.decoy = { "runs-on": "ubuntu-latest", steps: [step] };
+  });
+  assert.ok(
+    movedReadiness.includes(
+      'release.yml build job must contain exactly one "Enforce stable release readiness and publish immutable snapshot" step; found 0.'
+    )
   );
-  assert.match(
-    workflow.slice(sourceCheck, stableVerification),
-    /EXPECTED_SHA: \$\{\{ github\.sha \}\}[\s\S]*git diff-index --quiet HEAD --/u
-  );
-  assert.match(
-    workflow.slice(readiness, previewChecksum),
-    /if: \$\{\{ steps\.release_metadata\.outputs\.prerelease != 'true' \}\}[\s\S]*RELEASE_TAG: \$\{\{ github\.ref_name \}\}[\s\S]*openwrangler\.candidate\.vsix[\s\S]*--out openwrangler\.vsix[\s\S]*--checksum-out openwrangler\.vsix\.sha256/u
-  );
+
+  const duplicateReadiness = mutate((workflow) => {
+    workflow.jobs.build.steps.push({
+      ...namedStep(workflow, "Enforce stable release readiness and publish immutable snapshot")
+    });
+  });
+  assert.ok(duplicateReadiness.some((problem) => problem.endsWith("step; found 2.")));
+
+  const wrongEnvironment = mutate((workflow) => {
+    delete namedStep(workflow, "Enforce stable release readiness and publish immutable snapshot").env.EXPECTED_SHA;
+  });
+  assert.ok(wrongEnvironment.some((problem) => problem.includes("must bind EXPECTED_SHA")));
+
+  const commentedCommandDecoy = mutate((workflow) => {
+    namedStep(workflow, "Verify exact tagged source after packaging").run =
+      "# git diff-index --quiet HEAD --\necho skipped";
+  });
+  assert.ok(commentedCommandDecoy.some((problem) => problem.includes("must run only its canonical release command")));
+
+  const movedUpload = mutate((workflow) => {
+    const index = workflow.jobs.build.steps.findIndex((step) =>
+      String(step.uses ?? "").startsWith("actions/upload-artifact@")
+    );
+    const [step] = workflow.jobs.build.steps.splice(index, 1);
+    workflow.jobs.decoy = { "runs-on": "ubuntu-latest", steps: [step] };
+  });
+  assert.ok(movedUpload.includes("release.yml build job must contain exactly one canonical release upload; found 0."));
 });
