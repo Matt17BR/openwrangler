@@ -9,7 +9,8 @@ const lifecycle = vi.hoisted(() => ({
   },
   coordinator: {
     shutdown: vi.fn(),
-    createBridge: vi.fn()
+    createBridge: vi.fn(),
+    testingRequestExecutionCheckpoint: vi.fn()
   },
   coordinatedBridge: {
     request: vi.fn(),
@@ -50,6 +51,7 @@ describe("extension deactivation", () => {
     lifecycle.bridge.reportDiagnostic.mockReset();
     lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting.mockReset().mockResolvedValue(false);
     lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
+    lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReset();
     lifecycle.coordinatedBridge.request.mockReset();
     lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
     lifecycle.coordinator.createBridge.mockReset().mockReturnValue(lifecycle.coordinatedBridge);
@@ -133,6 +135,36 @@ describe("extension deactivation", () => {
     api?.testing?.cancelViewRequests("session-a", ["profile-a"]);
 
     expect(lifecycle.coordinatedBridge.cancelViewRequests).toHaveBeenCalledWith("session-a", ["profile-a"]);
+  });
+
+  it("exposes exact scheduler checkpoints only through the environment-gated test API", async () => {
+    await deactivate();
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+    lifecycle.coordinator.testingRequestExecutionCheckpoint.mockReturnValue({
+      sessionId: "session-a",
+      state: "active",
+      lane: "background",
+      requestKind: "getSummary",
+      viewRequestId: "profile-a"
+    });
+
+    const api = await activate({
+      subscriptions: [],
+      workspaceState: {}
+    } as unknown as vscode.ExtensionContext);
+
+    expect(api?.testing?.requestExecutionCheckpoint("session-a", "getSummary", "profile-a")).toEqual({
+      sessionId: "session-a",
+      state: "active",
+      lane: "background",
+      requestKind: "getSummary",
+      viewRequestId: "profile-a"
+    });
+    expect(lifecycle.coordinator.testingRequestExecutionCheckpoint).toHaveBeenCalledWith(
+      "session-a",
+      "getSummary",
+      "profile-a"
+    );
   });
 
   it("exposes only a decline path for dependency revalidation through the environment-gated test API", async () => {

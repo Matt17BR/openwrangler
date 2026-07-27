@@ -53,7 +53,9 @@ interface CoordinatedSession extends RuntimeSessionState {
   latestRequestedViewContextId?: string;
   latestRequestedPageRequestId?: string;
   activeForegroundOperation?: Promise<void>;
+  activeForegroundRequest?: SessionBoundRequest;
   activeBackgroundOperation?: Promise<void>;
+  activeBackgroundRequest?: SessionBoundRequest;
   interactiveQueue: QueuedSessionOperation[];
   backgroundQueue: QueuedSessionOperation[];
   terminalOperation?: QueuedSessionOperation;
@@ -107,6 +109,16 @@ export interface SessionCoordinatorDiagnostics {
     runtimeRevision: number;
     sourceLabel: string;
   }>;
+}
+
+export type SessionRequestExecutionLane = "foreground" | "background";
+
+export interface SessionRequestExecutionCheckpoint {
+  sessionId: string;
+  state: "active" | "queued";
+  lane: SessionRequestExecutionLane;
+  requestKind: SessionBoundRequest["kind"];
+  viewRequestId: string;
 }
 
 export class SessionCoordinator implements vscode.Disposable {
@@ -229,6 +241,34 @@ export class SessionCoordinator implements vscode.Disposable {
         sourceLabel: session.openRequest.source.label
       }))
     };
+  }
+
+  testingRequestExecutionCheckpoint(
+    sessionId: string,
+    requestKind: SessionBoundRequest["kind"],
+    viewRequestId: string
+  ): SessionRequestExecutionCheckpoint | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing || viewRequestId.length === 0) return undefined;
+    const checkpoints: SessionRequestExecutionCheckpoint[] = [];
+    const append = (
+      request: SessionBoundRequest | undefined,
+      state: SessionRequestExecutionCheckpoint["state"],
+      lane: SessionRequestExecutionLane
+    ): void => {
+      if (request?.kind !== requestKind || requestViewId(request) !== viewRequestId) return;
+      checkpoints.push({ sessionId, state, lane, requestKind, viewRequestId });
+    };
+    append(session.activeForegroundRequest, "active", "foreground");
+    append(session.activeBackgroundRequest, "active", "background");
+    for (const operation of session.interactiveQueue) append(operation.request, "queued", "foreground");
+    for (const operation of session.backgroundQueue) append(operation.request, "queued", "background");
+    if (checkpoints.length > 1) {
+      throw new Error(
+        `The test-only scheduler checkpoint is ambiguous for ${sessionId}/${requestKind}/${viewRequestId}.`
+      );
+    }
+    return checkpoints[0];
   }
 
   async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
@@ -914,14 +954,18 @@ export class SessionCoordinator implements vscode.Disposable {
     operation: QueuedSessionOperation,
     lane: "foreground" | "background"
   ): void {
+    if (lane === "foreground") session.activeForegroundRequest = operation.request;
+    else session.activeBackgroundRequest = operation.request;
     const activeOperation = this.executeSessionRequest(session, operation.request, operation.options)
       .then(operation.resolve, operation.reject)
       .finally(() => {
         if (lane === "foreground" && session.activeForegroundOperation === activeOperation) {
           session.activeForegroundOperation = undefined;
+          session.activeForegroundRequest = undefined;
         }
         if (lane === "background" && session.activeBackgroundOperation === activeOperation) {
           session.activeBackgroundOperation = undefined;
+          session.activeBackgroundRequest = undefined;
         }
         this.startNextSessionOperation(session);
       });

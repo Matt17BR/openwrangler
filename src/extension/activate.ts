@@ -17,6 +17,7 @@ export interface OpenWranglerTestApi {
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
+  requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
@@ -70,6 +71,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         synchronizePanel: (sessionId) => OpenWranglerPanel.synchronizePanelForSession(sessionId),
         cancelViewRequests: (sessionId, viewRequestIds) =>
           coordinatedBridge.cancelViewRequests?.(sessionId, viewRequestIds),
+        requestExecutionCheckpoint: (sessionId, requestKind, viewRequestId) =>
+          coordinator.testingRequestExecutionCheckpoint(sessionId, requestKind, viewRequestId),
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,

@@ -59,7 +59,7 @@ import {
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v3";
+const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v4";
 const INSTALLED_PERFORMANCE_PHASES = [
   "perf-csv-cold",
   "perf-csv-warm",

@@ -14,8 +14,8 @@ import {
 import { dirname, resolve } from "node:path";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v3";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v3";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v4";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
@@ -491,6 +491,8 @@ function validateGridInteractionMeasurement(measurement) {
     measurement.profiling,
     [
       "activeObserved",
+      "activeCheckpoint",
+      "queuedCheckpoint",
       "cancellationRequested",
       "cancelAcknowledged",
       "originalRequestSettled",
@@ -503,8 +505,39 @@ function validateGridInteractionMeasurement(measurement) {
   for (const key of ["activeObserved", "cancellationRequested", "cancelAcknowledged", "originalRequestSettled"]) {
     assertEqual(measurement.profiling[key], true, `profiling ${key}`);
   }
+  validateSchedulerCheckpoint(
+    measurement.profiling.activeCheckpoint,
+    "active",
+    "background",
+    "getSummary",
+    "active profiling scheduler checkpoint"
+  );
+  validateSchedulerCheckpoint(
+    measurement.profiling.queuedCheckpoint,
+    "queued",
+    "background",
+    "getDatasetStats",
+    "queued profiling scheduler checkpoint"
+  );
+  assertEqual(
+    measurement.profiling.queuedCheckpoint.sessionId,
+    measurement.profiling.activeCheckpoint.sessionId,
+    "profiling scheduler checkpoint session"
+  );
+  if (measurement.profiling.queuedCheckpoint.viewRequestId === measurement.profiling.activeCheckpoint.viewRequestId) {
+    throw new TypeError("Profiling scheduler checkpoints must identify distinct requests.");
+  }
   assertEqual(measurement.profiling.originalResponseKind, "cancelled", "profiling original response kind");
   validateOutstandingResponsiveness(measurement.profiling.responsiveness, "profiling responsiveness");
+}
+
+function validateSchedulerCheckpoint(checkpoint, state, lane, requestKind, label) {
+  exactKeys(checkpoint, ["sessionId", "state", "lane", "requestKind", "viewRequestId"], [], label);
+  assertBoundedString(checkpoint.sessionId, `${label} session ID`);
+  assertEqual(checkpoint.state, state, `${label} state`);
+  assertEqual(checkpoint.lane, lane, `${label} lane`);
+  assertEqual(checkpoint.requestKind, requestKind, `${label} request kind`);
+  assertBoundedString(checkpoint.viewRequestId, `${label} view request ID`);
 }
 
 function validateOutstandingResponsiveness(responsiveness, label) {
@@ -746,6 +779,12 @@ function installedPerformanceFailures(
     if (!interaction.sort.completed) failures.push(`${label} sort did not complete`);
     if (
       !interaction.profiling.activeObserved ||
+      interaction.profiling.activeCheckpoint.state !== "active" ||
+      interaction.profiling.activeCheckpoint.lane !== "background" ||
+      interaction.profiling.activeCheckpoint.requestKind !== "getSummary" ||
+      interaction.profiling.queuedCheckpoint.state !== "queued" ||
+      interaction.profiling.queuedCheckpoint.lane !== "background" ||
+      interaction.profiling.queuedCheckpoint.requestKind !== "getDatasetStats" ||
       !interaction.profiling.cancellationRequested ||
       !interaction.profiling.cancelAcknowledged ||
       !interaction.profiling.originalRequestSettled ||

@@ -120,6 +120,16 @@ test("release evidence gates responsiveness while filter, sort, and profiling re
   assert.ok(report.releaseGate.failures.includes("vscode sort outstanding renderer heartbeat 100ms >= 100ms"));
 });
 
+test("queued profiling cannot impersonate an accepted active scheduler request", () => {
+  const phase = interactionPhase("vscode");
+  phase.measurement.profiling.activeCheckpoint.state = "queued";
+
+  assert.throws(
+    () => validateInstalledPerformancePhase(phase),
+    /active profiling scheduler checkpoint state must be "active"/u
+  );
+});
+
 test("the aggregate report gates both editors and every cold/warm/grid case", () => {
   const report = passingReport();
   assert.equal(report.releaseGate.passed, true);
@@ -318,6 +328,20 @@ function interactionPhase(key) {
       sort: { completed: true, latencyMs: 110, responsiveness: responsiveness() },
       profiling: {
         activeObserved: true,
+        activeCheckpoint: {
+          sessionId: "installed-session-a",
+          state: "active",
+          lane: "background",
+          requestKind: "getSummary",
+          viewRequestId: "installed-profile-active-a"
+        },
+        queuedCheckpoint: {
+          sessionId: "installed-session-a",
+          state: "queued",
+          lane: "background",
+          requestKind: "getDatasetStats",
+          viewRequestId: "installed-profile-queued-a"
+        },
         cancellationRequested: true,
         cancelAcknowledged: true,
         originalRequestSettled: true,

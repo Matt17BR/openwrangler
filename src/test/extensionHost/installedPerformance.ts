@@ -20,10 +20,11 @@ import { performance } from "node:perf_hooks";
 import * as vscode from "vscode";
 import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
 import type { BridgeRequestOptions } from "../../extension/dataBridge";
+import type { SessionRequestExecutionCheckpoint } from "../../extension/sessionCoordinator";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
-const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v3";
+const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 const FIRST_GRID_BOUNDARY =
@@ -39,6 +40,11 @@ interface TestApi {
   activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
+  requestExecutionCheckpoint(
+    sessionId: string,
+    requestKind: "getSummary" | "getDatasetStats",
+    viewRequestId: string
+  ): SessionRequestExecutionCheckpoint | undefined;
   diagnostics(): { sessionCount: number };
   runtimeRunning(): boolean;
   synchronizePanel(sessionId: string): Promise<boolean>;
@@ -329,7 +335,13 @@ async function measureGridInteraction({
     filterSettled = true;
   });
   const [filterResponsiveness] = await Promise.all([
-    measureOutstandingResponsiveness(frame, testing, session.sessionId, () => filterSettled),
+    measureOutstandingResponsiveness(frame, testing, session.sessionId, () =>
+      assert.equal(
+        filterSettled,
+        false,
+        "The filter UI operation must still be outstanding when responsiveness probes start."
+      )
+    ),
     filterOperation
   ]);
   const filter = {
@@ -355,7 +367,13 @@ async function measureGridInteraction({
     sortSettled = true;
   });
   const [sortResponsiveness] = await Promise.all([
-    measureOutstandingResponsiveness(frame, testing, session.sessionId, () => sortSettled),
+    measureOutstandingResponsiveness(frame, testing, session.sessionId, () =>
+      assert.equal(
+        sortSettled,
+        false,
+        "The sort UI operation must still be outstanding when responsiveness probes start."
+      )
+    ),
     sortOperation
   ]);
   const sort = {
@@ -659,6 +677,8 @@ async function proveAuthoritativeProfileCancellation(
   expectedSessionId: string
 ): Promise<{
   activeObserved: true;
+  activeCheckpoint: SessionRequestExecutionCheckpoint;
+  queuedCheckpoint: SessionRequestExecutionCheckpoint;
   cancellationRequested: true;
   cancelAcknowledged: true;
   originalRequestSettled: true;
@@ -668,24 +688,29 @@ async function proveAuthoritativeProfileCancellation(
   const active = testing.activeSession();
   assert.ok(active && active.sessionId === expectedSessionId, "The interaction session must remain active.");
   const { metadata } = active;
+  const [firstColumn, ...remainingColumns] = metadata.schema;
+  assert.ok(firstColumn, "The interaction fixture must expose at least one column.");
   const activeRequestId = `installed-profile-active-${randomUUID()}`;
   const cancelledRequestId = `installed-profile-cancelled-${randomUUID()}`;
-  let activeSettled = false;
-  const activeProfile = testing
-    .request(
-      {
-        kind: "getSummary",
-        sessionId: expectedSessionId,
-        revision: metadata.revision,
-        viewRequestId: activeRequestId,
-        filterModel: metadata.filterModel,
-        columns: metadata.schema.map((column) => column.name)
-      },
-      { priority: "background", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
-    )
-    .finally(() => {
-      activeSettled = true;
-    });
+  const activeProfile = testing.request(
+    {
+      kind: "getSummary",
+      sessionId: expectedSessionId,
+      revision: metadata.revision,
+      viewRequestId: activeRequestId,
+      filterModel: metadata.filterModel,
+      columnIds: [firstColumn.id, ...remainingColumns.map((column) => column.id)]
+    },
+    { priority: "background", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
+  );
+  const activeCheckpoint = await waitForExecutionCheckpoint(
+    testing,
+    expectedSessionId,
+    "getSummary",
+    activeRequestId,
+    "active",
+    "background"
+  );
   const cancelledProfile = testing.request(
     {
       kind: "getDatasetStats",
@@ -696,30 +721,66 @@ async function proveAuthoritativeProfileCancellation(
     },
     { priority: "background", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
   );
-  const responsivenessPromise = measureOutstandingResponsiveness(
-    frame,
+  const queuedCheckpoint = await waitForExecutionCheckpoint(
     testing,
     expectedSessionId,
-    () => activeSettled
+    "getDatasetStats",
+    cancelledRequestId,
+    "queued",
+    "background"
   );
-
-  const activeObserved = !activeSettled;
+  const responsivenessPromise = measureOutstandingResponsiveness(frame, testing, expectedSessionId, () => {
+    assert.deepEqual(
+      testing.requestExecutionCheckpoint(expectedSessionId, "getSummary", activeRequestId),
+      activeCheckpoint,
+      "The exact accepted profile must still own the background lane when responsiveness probes start."
+    );
+    assert.deepEqual(
+      testing.requestExecutionCheckpoint(expectedSessionId, "getDatasetStats", cancelledRequestId),
+      queuedCheckpoint,
+      "The exact cancellable profile must still be queued when responsiveness probes start."
+    );
+  });
   testing.cancelViewRequests(expectedSessionId, [cancelledRequestId]);
   const cancelledResponse = await cancelledProfile;
   const [activeResponse, responsiveness] = await Promise.all([activeProfile, responsivenessPromise]);
   assert.equal(activeResponse.kind, "summary", "The accepted active profile must settle authoritatively.");
   assert.equal(cancelledResponse.kind, "cancelled", "The original queued profile must return its own cancellation.");
   assert.equal(cancelledResponse.viewRequestId, cancelledRequestId);
-  assert.equal(activeObserved, true, "The cancelled profile must have queued behind accepted active profiling.");
 
   return {
     activeObserved: true,
+    activeCheckpoint,
+    queuedCheckpoint,
     cancellationRequested: true,
     cancelAcknowledged: true,
     originalRequestSettled: true,
     originalResponseKind: "cancelled",
     responsiveness
   };
+}
+
+async function waitForExecutionCheckpoint(
+  testing: TestApi,
+  sessionId: string,
+  requestKind: "getSummary" | "getDatasetStats",
+  viewRequestId: string,
+  state: SessionRequestExecutionCheckpoint["state"],
+  lane: SessionRequestExecutionCheckpoint["lane"]
+): Promise<SessionRequestExecutionCheckpoint> {
+  let observed: SessionRequestExecutionCheckpoint | undefined;
+  await waitFor(
+    () => {
+      const checkpoint = testing.requestExecutionCheckpoint(sessionId, requestKind, viewRequestId);
+      if (checkpoint?.state !== state || checkpoint.lane !== lane) return false;
+      observed = checkpoint;
+      return true;
+    },
+    GRID_DISCOVERY_TIMEOUT_MS,
+    `${requestKind} ${viewRequestId} to enter the exact ${state} ${lane} scheduler lane`
+  );
+  assert.deepEqual(observed, { sessionId, state, lane, requestKind, viewRequestId });
+  return observed;
 }
 
 interface OutstandingResponsiveness {
@@ -733,9 +794,9 @@ async function measureOutstandingResponsiveness(
   frame: Frame,
   testing: TestApi,
   expectedSessionId: string,
-  settled: () => boolean
+  assertOutstanding: () => void
 ): Promise<OutstandingResponsiveness> {
-  assert.equal(settled(), false, "The measured operation must still be outstanding when responsiveness probes start.");
+  assertOutstanding();
   const heartbeat = measureRendererHeartbeat(frame);
   const foregroundPage = measureForegroundPage(testing, expectedSessionId);
   const [rendererHeartbeatMs, page] = await Promise.all([heartbeat, foregroundPage]);
