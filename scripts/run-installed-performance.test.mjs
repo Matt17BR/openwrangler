@@ -8,6 +8,7 @@ import test from "node:test";
 import { EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL, editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   acceptInstalledPerformanceCandidate,
+  acquirePinnedInstalledPerformanceEditors,
   assertInstalledPerformanceArtifactPathSeparation,
   assertInstalledPerformancePackageInventory,
   assertNoPackageableUntrackedFiles,
@@ -16,6 +17,10 @@ import {
   collectInstalledPerformanceEditorRuns,
   installInstalledPerformanceCandidate,
   installedPerformanceDisplayMode,
+  installedPerformanceReportGateForOptions,
+  PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
+  PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
+  PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
   packageInstalledPerformanceCandidate as packageInstalledPerformanceCandidateImplementation,
   parseInstalledPerformanceArguments,
   prepareInstalledPerformanceCandidate,
@@ -25,15 +30,19 @@ import {
   readInstalledPerformanceFragment,
   readInstalledPerformanceCandidate,
   readInstalledPerformanceProvenance,
+  readPerformanceEvidenceProvenance,
   readInstalledPerformanceSourceManifest,
   readInstalledPerformanceVsixReceipt,
   revalidateInstalledPerformanceChecksum,
   revalidateInstalledPerformanceProvenance,
+  revalidatePerformanceEvidenceProvenance,
   revalidateInstalledPerformanceVsix,
   resolveInstalledPerformanceEditors,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
+  validateInstalledPerformanceProvenance,
   validateInstalledPerformanceSourceManifest,
+  validatePerformanceEvidenceProvenance,
   writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
 
@@ -126,6 +135,14 @@ function fakeProvenanceReceipt(path = resolve("release", "openwrangler.vsix.prov
   return Object.freeze(receipt);
 }
 
+function fakeEvidenceProvenanceReceipt(path = resolve("release", "openwrangler.vsix.provenance.json"), overrides = {}) {
+  return fakeProvenanceReceipt(path, {
+    protocol: PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
+    artifactRole: PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
+    ...overrides
+  });
+}
+
 test("installed performance assigns unfocused release display modes per editor", () => {
   assert.equal(installedPerformanceDisplayMode({ key: "vscode" }, {}), "headless");
   assert.equal(installedPerformanceDisplayMode({ key: "cursor" }, {}), "xvfb");
@@ -139,7 +156,87 @@ test("installed performance assigns unfocused release display modes per editor",
   );
 });
 
-test("stable canonical evidence requires fixed VS Code and Cursor installations", async () => {
+test("stable canonical evidence resolves only freshly acquired pinned VS Code and Cursor installations", async () => {
+  const environment = {
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/private/session-bus",
+    OPEN_WRANGLER_VSCODE_EXECUTABLE: "/untrusted/code",
+    OPEN_WRANGLER_CURSOR_EXECUTABLE: "/untrusted/cursor"
+  };
+  const calls = [];
+  const acquired = await acquirePinnedInstalledPerformanceEditors("/private/root", environment, {
+    async acquireVscode(root) {
+      calls.push(["vscode", root]);
+      return {
+        editor: {
+          key: "vscode",
+          executable: "/private/root/vscode/code",
+          cli: "/private/root/vscode/bin/code"
+        }
+      };
+    },
+    async acquireCursor(root) {
+      calls.push(["cursor", root]);
+      return {
+        editor: {
+          key: "cursor",
+          executable: "/private/root/cursor/cursor",
+          cli: "/private/root/cursor/bin/cursor"
+        }
+      };
+    }
+  });
+  assert.deepEqual(calls, [
+    ["vscode", "/private/root"],
+    ["cursor", "/private/root"]
+  ]);
+  assert.equal(acquired[0].editor.key, "vscode");
+  assert.equal(acquired[1].editor.key, "cursor");
+  assert.equal(environment.OPEN_WRANGLER_VSCODE_EXECUTABLE, "/private/root/vscode/code");
+  assert.equal(environment.OPEN_WRANGLER_VSCODE_CLI, "/private/root/vscode/bin/code");
+  assert.equal(environment.OPEN_WRANGLER_CURSOR_EXECUTABLE, "/private/root/cursor/cursor");
+  assert.equal(environment.OPEN_WRANGLER_CURSOR_CLI, "/private/root/cursor/bin/cursor");
+  await assert.rejects(
+    acquirePinnedInstalledPerformanceEditors(
+      "/private/root",
+      {},
+      {
+        acquireVscode: async () => assert.fail("missing session bus must fail before acquisition"),
+        acquireCursor: async () => assert.fail("missing session bus must fail before acquisition")
+      }
+    ),
+    /isolated D-Bus session/u
+  );
+
+  const failedEnvironment = {
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/private/session-bus",
+    OPEN_WRANGLER_VSCODE_EXECUTABLE: "/original/code"
+  };
+  let cursorSettled = false;
+  await assert.rejects(
+    acquirePinnedInstalledPerformanceEditors("/private/root", failedEnvironment, {
+      acquireVscode: async () => {
+        throw new Error("VS Code acquisition failed");
+      },
+      acquireCursor: async () => {
+        await new Promise((resolvePromise) => setImmediate(resolvePromise));
+        cursorSettled = true;
+        return {
+          editor: {
+            key: "cursor",
+            executable: "/private/root/cursor/cursor",
+            cli: "/private/root/cursor/bin/cursor"
+          }
+        };
+      }
+    }),
+    /VS Code acquisition failed/u
+  );
+  assert.equal(cursorSettled, true);
+  assert.equal(failedEnvironment.OPEN_WRANGLER_VSCODE_EXECUTABLE, "/original/code");
+  assert.equal(failedEnvironment.OPEN_WRANGLER_CURSOR_EXECUTABLE, undefined);
+});
+
+test("resolved stable editors never use a moving download fallback", async () => {
   const fixed = new Set(["/fixed/code", "/fixed/code-cli", "/fixed/cursor", "/fixed/cursor-cli"]);
   let downloads = 0;
   const environment = {
@@ -243,6 +340,7 @@ test("installed performance arguments default to both first-class editors", () =
   const parsed = parseInstalledPerformanceArguments([]);
 
   assert.equal(parsed.smoke, false);
+  assert.equal(parsed.artifactKind, "stable-release");
   assert.deepEqual(parsed.editors, ["vscode", "cursor"]);
   assert.equal(parsed.mode, "package");
   assert.match(parsed.candidateOutput, /tmp[/\\]performance[/\\]openwrangler-installed-candidate\.vsix$/u);
@@ -275,6 +373,7 @@ test("installed performance arguments support explicit smoke editor sharding", (
 
 test("installed performance arguments make canonical candidate intake an exclusive stable mode", () => {
   const parsed = parseInstalledPerformanceArguments([
+    "--pinned-editors",
     "--candidate-in",
     "release/openwrangler.vsix",
     "--candidate-checksum",
@@ -286,11 +385,60 @@ test("installed performance arguments make canonical candidate intake an exclusi
   ]);
 
   assert.equal(parsed.mode, "consume");
+  assert.equal(parsed.pinnedEditors, true);
+  assert.equal(parsed.artifactKind, "stable-release");
   assert.equal(parsed.candidateOutput, undefined);
   assert.match(parsed.candidateInput, /release[/\\]openwrangler\.vsix$/u);
   assert.match(parsed.candidateChecksum, /release[/\\]openwrangler\.vsix\.sha256$/u);
   assert.match(parsed.candidateProvenance, /release[/\\]openwrangler\.vsix\.provenance\.json$/u);
   assert.deepEqual(parsed.editors, ["vscode", "cursor"]);
+  const evidence = parseInstalledPerformanceArguments([
+    "--pinned-editors",
+    "--performance-evidence",
+    "--candidate-in",
+    "release/openwrangler.vsix",
+    "--candidate-checksum",
+    "release/openwrangler.vsix.sha256",
+    "--candidate-provenance",
+    "release/openwrangler.vsix.provenance.json"
+  ]);
+  assert.equal(evidence.artifactKind, PERFORMANCE_EVIDENCE_ARTIFACT_KIND);
+  const releaseGate = () => "release";
+  const evidenceGate = () => "evidence";
+  assert.equal(installedPerformanceReportGateForOptions(evidence, { releaseGate, evidenceGate }), evidenceGate);
+  assert.equal(installedPerformanceReportGateForOptions(parsed, { releaseGate, evidenceGate }), releaseGate);
+  assert.throws(
+    () => installedPerformanceReportGateForOptions({ artifactKind: "unknown" }, { releaseGate, evidenceGate }),
+    /unknown artifact kind/u
+  );
+  assert.throws(
+    () =>
+      parseInstalledPerformanceArguments([
+        "--candidate-in",
+        "openwrangler.vsix",
+        "--candidate-checksum",
+        "openwrangler.vsix.sha256",
+        "--candidate-provenance",
+        "openwrangler.vsix.provenance.json"
+      ]),
+    /requires --pinned-editors/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--pinned-editors", "--pinned-editors"]),
+    /provided only once/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--performance-evidence", "--performance-evidence"]),
+    /provided only once/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--pinned-editors"]),
+    /reserved for canonical stable candidate consumption/u
+  );
+  assert.throws(
+    () => parseInstalledPerformanceArguments(["--performance-evidence"]),
+    /reserved for canonical candidate consumption/u
+  );
   for (const incomplete of [
     ["--candidate-in", "openwrangler.vsix"],
     ["--candidate-checksum", "openwrangler.vsix.sha256"],
@@ -319,6 +467,7 @@ test("installed performance arguments make canonical candidate intake an exclusi
     assert.throws(
       () =>
         parseInstalledPerformanceArguments([
+          "--pinned-editors",
           "--candidate-in",
           "openwrangler.vsix",
           "--candidate-checksum",
@@ -366,6 +515,7 @@ test("installed performance arguments make canonical candidate intake an exclusi
     assert.throws(
       () =>
         parseInstalledPerformanceArguments([
+          "--pinned-editors",
           "--candidate-in",
           "openwrangler.vsix",
           "--candidate-checksum",
@@ -379,6 +529,7 @@ test("installed performance arguments make canonical candidate intake an exclusi
   assert.throws(
     () =>
       parseInstalledPerformanceArguments([
+        "--pinned-editors",
         "--candidate-in",
         "openwrangler.vsix",
         "--candidate-checksum",
@@ -1145,6 +1296,40 @@ test("canonical provenance intake pins one strict stable build receipt", async (
   }
 });
 
+test("ordinary stable provenance consumers reject the evidence-only artifact role", async () => {
+  const evidenceOnly = {
+    protocol: PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
+    artifactRole: PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
+    extensionId: "Matt17BR.openwrangler",
+    extensionVersion: "1.0.0",
+    preview: false,
+    releaseTag: "v1.0.0",
+    sourceCommit: "a".repeat(40),
+    vsixSha256: "b".repeat(64),
+    vsixBytes: 123
+  };
+  assert.deepEqual(validatePerformanceEvidenceProvenance(evidenceOnly), evidenceOnly);
+  assert.throws(() => validateInstalledPerformanceProvenance(evidenceOnly), /exactly the canonical artifact fields/u);
+
+  const stable = { ...evidenceOnly };
+  delete stable.artifactRole;
+  stable.protocol = "openwrangler-canonical-release-artifact-v1";
+  assert.deepEqual(validateInstalledPerformanceProvenance(stable), stable);
+  assert.throws(() => validatePerformanceEvidenceProvenance(stable), /exactly its evidence-only artifact fields/u);
+
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-evidence-provenance-"));
+  try {
+    const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
+    await writeFile(provenancePath, `${JSON.stringify(evidenceOnly)}\n`);
+    assert.throws(() => readInstalledPerformanceProvenance(provenancePath), /exactly the canonical artifact fields/u);
+    const receipt = readPerformanceEvidenceProvenance(provenancePath);
+    assert.equal(receipt.artifactRole, PERFORMANCE_EVIDENCE_ARTIFACT_ROLE);
+    assert.equal(revalidatePerformanceEvidenceProvenance(receipt), receipt);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("canonical provenance intake rejects malformed, linked, and changing receipts", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-provenance-invalid-"));
   try {
@@ -1323,6 +1508,90 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
   );
   assert.ok(events.filter((event) => event === "checksum").length >= 3);
   assert.ok(events.filter((event) => event === "provenance").length >= 3);
+});
+
+test("performance-evidence intake stays distinct from an ordinary stable artifact", async () => {
+  const commit = "a".repeat(40);
+  const candidatePath = resolve("release", "openwrangler.vsix");
+  const checksumPath = resolve("release", "openwrangler.vsix.sha256");
+  const provenancePath = resolve("release", "openwrangler.vsix.provenance.json");
+  const privatePath = resolve("private", "candidate.vsix");
+  const external = fakeVsixReceipt(candidatePath);
+  const staged = fakeVsixReceipt(privatePath);
+  const checksum = Object.freeze({
+    path: checksumPath,
+    candidatePath,
+    candidateSha256: external.sha256,
+    sha256: "c".repeat(64),
+    bytes: 86,
+    fileIdentity: Object.freeze({ ...fakeFileIdentity, size: 86n })
+  });
+  const evidence = fakeEvidenceProvenanceReceipt(provenancePath, {
+    sourceCommit: commit,
+    vsixSha256: external.sha256,
+    vsixBytes: external.bytes
+  });
+
+  const accepted = await acceptInstalledPerformanceCandidate({
+    artifactKind: PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
+    candidatePath,
+    checksumPath,
+    provenancePath,
+    privateDestination: privatePath,
+    expectedCommit: commit,
+    releaseTag: "v1.0.0",
+    readSource: () => ({ commit, trackedWorktreeDirty: false }),
+    readSourceManifest: () => previewSourceManifest({ version: "1.0.0", preview: false }),
+    readExternalCandidate: () => external,
+    readChecksum: () => checksum,
+    readProvenance: () => evidence,
+    readReleaseTagCommit: () => commit,
+    stageCandidate: () => staged,
+    verifyCandidate: () => {},
+    readCandidate(receipt) {
+      assert.equal(receipt.buildMethod, "performance-evidence-artifact-v1");
+      return Object.freeze({
+        extensionId: "Matt17BR.openwrangler",
+        extensionVersion: "1.0.0",
+        preview: false,
+        channel: "stable",
+        buildMethod: receipt.buildMethod,
+        releaseTag: receipt.releaseTag,
+        provenanceSha256: receipt.provenanceSha256,
+        sourceCommit: commit,
+        vsixSha256: receipt.sha256,
+        vsixBytes: receipt.bytes
+      });
+    },
+    revalidateCandidate: () => {},
+    revalidateChecksum: () => {},
+    revalidateProvenance: () => {}
+  });
+  assert.equal(accepted.candidate.buildMethod, "performance-evidence-artifact-v1");
+  assert.equal(accepted.candidateReceipt.buildMethod, "performance-evidence-artifact-v1");
+
+  await assert.rejects(
+    acceptInstalledPerformanceCandidate({
+      artifactKind: PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
+      candidatePath,
+      checksumPath,
+      provenancePath,
+      privateDestination: privatePath,
+      expectedCommit: commit,
+      releaseTag: "v1.0.0",
+      readSource: () => ({ commit, trackedWorktreeDirty: false }),
+      readSourceManifest: () => previewSourceManifest({ version: "1.0.0", preview: false }),
+      readExternalCandidate: () => external,
+      readChecksum: () => checksum,
+      readProvenance: () => fakeProvenanceReceipt(provenancePath),
+      readReleaseTagCommit: () => commit,
+      stageCandidate: () => assert.fail("mismatched provenance must fail before staging"),
+      revalidateCandidate: () => {},
+      revalidateChecksum: () => {},
+      revalidateProvenance: () => {}
+    }),
+    /requested publication kind/u
+  );
 });
 
 test("canonical candidate acceptance rejects invalid release provenance and digest before staging", async () => {

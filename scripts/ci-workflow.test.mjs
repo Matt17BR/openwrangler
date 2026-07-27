@@ -47,7 +47,7 @@ test("manual stable evidence packages once and consumes the same canonical artif
   assert.deepEqual(Object.keys(workflow.jobs), ["package", "installed-performance"]);
 
   const packaging = workflow.jobs.package;
-  assert.equal(packaging["runs-on"], "ubuntu-latest");
+  assert.equal(packaging["runs-on"], "ubuntu-24.04");
   assert.equal(packaging["timeout-minutes"], 60);
   assert.deepEqual(packaging.outputs, {
     "artifact-id": "${{ steps.candidate_artifact.outputs.artifact-id }}"
@@ -96,12 +96,14 @@ test("manual stable evidence packages once and consumes the same canonical artif
     assert.equal(source.includes(forbidden), false, `The prepublication workflow must not contain ${forbidden}.`);
   }
 
-  const producerIndex = packaging.steps.findIndex((step) => step.name === "Publish canonical candidate set");
-  const candidateUploadIndex = packaging.steps.findIndex((step) => step.name === "Upload canonical candidate set");
+  const producerIndex = packaging.steps.findIndex((step) => step.name === "Publish performance-evidence candidate set");
+  const candidateUploadIndex = packaging.steps.findIndex(
+    (step) => step.name === "Upload performance-evidence candidate set"
+  );
   assert.equal(candidateUploadIndex, producerIndex + 1);
   assert.equal(
     normalizedCommand(packaging.steps[producerIndex]?.run),
-    "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release"
+    "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir performance-evidence --performance-evidence"
   );
   assert.deepEqual(packaging.steps[producerIndex]?.env, {
     EXPECTED_SHA: "${{ github.sha }}",
@@ -111,12 +113,12 @@ test("manual stable evidence packages once and consumes the same canonical artif
   assert.equal(candidateUpload?.id, "candidate_artifact");
   assert.equal(candidateUpload?.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
   assert.deepEqual(candidateUpload?.with, {
-    name: "openwrangler-stable-candidate",
+    name: "openwrangler-performance-evidence-candidate",
     path:
       [
-        "canonical-release/openwrangler.vsix",
-        "canonical-release/openwrangler.vsix.sha256",
-        "canonical-release/openwrangler.vsix.provenance.json"
+        "performance-evidence/openwrangler.vsix",
+        "performance-evidence/openwrangler.vsix.sha256",
+        "performance-evidence/openwrangler.vsix.provenance.json"
       ].join("\n") + "\n",
     "if-no-files-found": "error",
     "retention-days": 14,
@@ -126,7 +128,7 @@ test("manual stable evidence packages once and consumes the same canonical artif
 
   const performance = workflow.jobs["installed-performance"];
   assert.equal(performance.needs, "package");
-  assert.deepEqual(performance["runs-on"], ["self-hosted", "linux", "x64", "openwrangler-performance"]);
+  assert.equal(performance["runs-on"], "ubuntu-24.04");
   assert.equal(performance["timeout-minutes"], 120);
   assert.equal(performance.permissions, undefined);
   assert.equal(performance.if, undefined);
@@ -151,16 +153,18 @@ test("manual stable evidence packages once and consumes the same canonical artif
   assert.ok(downloadIndex >= 0 && downloadIndex < benchmarkIndex && benchmarkIndex < evidenceUploadIndex);
   assert.deepEqual(performance.steps[downloadIndex]?.with, {
     "artifact-ids": "${{ needs.package.outputs.artifact-id }}",
-    path: "canonical-release",
+    path: "performance-evidence",
     "merge-multiple": true
   });
   assert.equal(
     normalizedCommand(performance.steps[benchmarkIndex]?.run),
     [
-      "npm run benchmark:installed --",
-      "--candidate-in canonical-release/openwrangler.vsix",
-      "--candidate-checksum canonical-release/openwrangler.vsix.sha256",
-      "--candidate-provenance canonical-release/openwrangler.vsix.provenance.json",
+      "/usr/bin/dbus-run-session -- npm run benchmark:installed --",
+      "--pinned-editors",
+      "--performance-evidence",
+      "--candidate-in performance-evidence/openwrangler.vsix",
+      "--candidate-checksum performance-evidence/openwrangler.vsix.sha256",
+      "--candidate-provenance performance-evidence/openwrangler.vsix.provenance.json",
       "--out ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json"
     ].join(" ")
   );
@@ -213,13 +217,13 @@ test("stable evidence workflow inspector rejects source, artifact, and consumer 
   assert.ok(
     inspect((candidate) => {
       candidate.jobs["installed-performance"]["runs-on"] = "ubuntu-latest";
-    }).some((problem) => problem.includes("protected Linux reference runner"))
+    }).some((problem) => problem.includes("pinned hosted Linux runner"))
   );
   assert.ok(
     inspect((candidate) => {
       candidate.jobs["installed-performance"].steps.find((step) => step.id === "installed_performance").run +=
         " --smoke";
-    }).some((problem) => problem.includes("unsharded consume-only"))
+    }).some((problem) => problem.includes("isolated unsharded"))
   );
   assert.ok(
     inspect((candidate) => {

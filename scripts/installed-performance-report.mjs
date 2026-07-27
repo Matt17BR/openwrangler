@@ -19,6 +19,7 @@ import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
 export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v6";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v1";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
@@ -146,8 +147,9 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     };
   });
 
+  const evidenceOnly = candidate.buildMethod === "performance-evidence-artifact-v1";
   const report = {
-    protocol: INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
+    protocol: evidenceOnly ? INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL : INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
     generatedAtUtc: canonicalUtcTimestamp(generatedAtUtc),
     candidate: structuredClone(candidate),
     source: structuredClone(source),
@@ -161,7 +163,7 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     editors
   };
   const failures = installedPerformanceFailures(report);
-  report.releaseGate = { passed: failures.length === 0, failures };
+  report[evidenceOnly ? "evidenceGate" : "releaseGate"] = { passed: failures.length === 0, failures };
   assertPublicEvidence(report);
   return report;
 }
@@ -169,6 +171,34 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
 export function assertInstalledPerformanceReleaseGate(
   report,
   { requiredEditors = ["vscode", "cursor"], requireLinuxReference = true } = {}
+) {
+  return assertInstalledPerformanceGate(report, {
+    protocol: INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
+    verdictKey: "releaseGate",
+    candidateBuildMethods: new Set(["guarded-clean-head-v1", "canonical-release-artifact-v1"]),
+    requiredEditors,
+    requireLinuxReference,
+    gateLabel: "release"
+  });
+}
+
+export function assertInstalledPerformanceEvidenceGate(
+  report,
+  { requiredEditors = ["vscode", "cursor"], requireLinuxReference = true } = {}
+) {
+  return assertInstalledPerformanceGate(report, {
+    protocol: INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL,
+    verdictKey: "evidenceGate",
+    candidateBuildMethods: new Set(["performance-evidence-artifact-v1"]),
+    requiredEditors,
+    requireLinuxReference,
+    gateLabel: "evidence"
+  });
+}
+
+function assertInstalledPerformanceGate(
+  report,
+  { protocol, verdictKey, candidateBuildMethods, requiredEditors, requireLinuxReference, gateLabel }
 ) {
   exactKeys(
     report,
@@ -181,14 +211,17 @@ export function assertInstalledPerformanceReleaseGate(
       "measurement",
       "limits",
       "editors",
-      "releaseGate"
+      verdictKey
     ],
     [],
     "installed performance report"
   );
-  assertEqual(report.protocol, INSTALLED_PERFORMANCE_REPORT_PROTOCOL, "installed performance report protocol");
+  assertEqual(report.protocol, protocol, "installed performance report protocol");
   canonicalUtcTimestamp(report.generatedAtUtc);
   validateCandidate(report.candidate);
+  if (!candidateBuildMethods.has(report.candidate.buildMethod)) {
+    throw new TypeError(`Installed performance ${gateLabel} gate received incompatible candidate provenance.`);
+  }
   validateSource(report.source);
   if (report.candidate.sourceCommit !== report.source.commit) {
     throw new TypeError("Installed performance candidate does not match its guarded source commit.");
@@ -211,14 +244,14 @@ export function assertInstalledPerformanceReleaseGate(
     validateResources(editor.resources);
     validateGroupedResults(editor.results);
   }
-  exactKeys(report.releaseGate, ["passed", "failures"], [], "release-gate verdict");
+  exactKeys(report[verdictKey], ["passed", "failures"], [], `${gateLabel}-gate verdict`);
   const failures = installedPerformanceFailures(report, { requiredEditors, requireLinuxReference });
   const expectedVerdict = { passed: failures.length === 0, failures };
-  if (JSON.stringify(report.releaseGate) !== JSON.stringify(expectedVerdict)) {
-    throw new Error("Installed performance report release verdict does not match its measurements.");
+  if (JSON.stringify(report[verdictKey]) !== JSON.stringify(expectedVerdict)) {
+    throw new Error(`Installed performance report ${gateLabel} verdict does not match its measurements.`);
   }
   if (failures.length > 0) {
-    throw new Error(`Installed performance release gates failed:\n${failures.join("\n")}`);
+    throw new Error(`Installed performance ${gateLabel} gates failed:\n${failures.join("\n")}`);
   }
   assertPublicEvidence(report);
   return report;
@@ -354,9 +387,16 @@ function validateCandidate(candidate) {
   if (!candidate.preview && candidate.extensionVersion.startsWith("0.")) {
     throw new TypeError("A stable installed-performance candidate requires extension version 1.0.0 or newer.");
   }
-  const expectedBuildMethod =
-    classification.channel === "preview" ? "guarded-clean-head-v1" : "canonical-release-artifact-v1";
-  assertEqual(candidate.buildMethod, expectedBuildMethod, "candidate build method");
+  if (classification.channel === "preview") {
+    assertEqual(candidate.buildMethod, "guarded-clean-head-v1", "candidate build method");
+  } else if (
+    candidate.buildMethod !== "canonical-release-artifact-v1" &&
+    candidate.buildMethod !== "performance-evidence-artifact-v1"
+  ) {
+    throw new TypeError(
+      'candidate build method must be "canonical-release-artifact-v1" or "performance-evidence-artifact-v1".'
+    );
+  }
   if (classification.channel === "preview") {
     assertEqual(candidate.releaseTag, null, "preview candidate release tag");
     assertEqual(candidate.provenanceSha256, null, "preview candidate provenance SHA-256");

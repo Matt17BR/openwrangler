@@ -12,9 +12,9 @@ const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
 const PREVIEW_RELEASE_JOB_NAMES = ["preview-metadata", "build", "validate", "release-acceptance", "release"];
 const STABLE_CANDIDATE_ARTIFACT_PATHS = [
-  "canonical-release/openwrangler.vsix",
-  "canonical-release/openwrangler.vsix.sha256",
-  "canonical-release/openwrangler.vsix.provenance.json"
+  "performance-evidence/openwrangler.vsix",
+  "performance-evidence/openwrangler.vsix.sha256",
+  "performance-evidence/openwrangler.vsix.provenance.json"
 ];
 const STABLE_REPORT_PATH =
   "${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json";
@@ -81,19 +81,19 @@ const STABLE_PACKAGE_STEPS = [
   },
   { run: "npm run verify:vsix -- openwrangler.candidate.vsix" },
   {
-    name: "Publish canonical candidate set",
+    name: "Publish performance-evidence candidate set",
     env: {
       EXPECTED_SHA: EVENT_SHA,
       RELEASE_TAG: "${{ inputs.release_tag }}"
     },
-    run: "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release"
+    run: "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir performance-evidence --performance-evidence"
   },
   {
     id: "candidate_artifact",
-    name: "Upload canonical candidate set",
+    name: "Upload performance-evidence candidate set",
     uses: UPLOAD_ACTION,
     with: {
-      name: "openwrangler-stable-candidate",
+      name: "openwrangler-performance-evidence-candidate",
       path: `${STABLE_CANDIDATE_ARTIFACT_PATHS.join("\n")}\n`,
       "if-no-files-found": "error",
       "retention-days": 14,
@@ -140,22 +140,24 @@ const STABLE_PERFORMANCE_STEPS = [
     uses: DOWNLOAD_ACTION,
     with: {
       "artifact-ids": "${{ needs.package.outputs.artifact-id }}",
-      path: "canonical-release",
+      path: "performance-evidence",
       "merge-multiple": true
     }
   },
   {
     id: "installed_performance",
-    name: "Test exact canonical candidate in VS Code and Cursor",
+    name: "Test exact evidence candidate in pinned VS Code and Cursor",
     env: {
       EXPECTED_SHA: EVENT_SHA,
       RELEASE_TAG: "${{ inputs.release_tag }}"
     },
     run: [
-      "npm run benchmark:installed --",
-      "--candidate-in canonical-release/openwrangler.vsix",
-      "--candidate-checksum canonical-release/openwrangler.vsix.sha256",
-      "--candidate-provenance canonical-release/openwrangler.vsix.provenance.json",
+      "/usr/bin/dbus-run-session -- npm run benchmark:installed --",
+      "--pinned-editors",
+      "--performance-evidence",
+      "--candidate-in performance-evidence/openwrangler.vsix",
+      "--candidate-checksum performance-evidence/openwrangler.vsix.sha256",
+      "--candidate-provenance performance-evidence/openwrangler.vsix.provenance.json",
       `--out ${STABLE_REPORT_PATH}`
     ].join(" ")
   },
@@ -922,7 +924,7 @@ export function inspectStableCandidateWorkflow(contents) {
 
   const packaging = workflow.jobs.package;
   if (
-    packaging["runs-on"] !== "ubuntu-latest" ||
+    packaging["runs-on"] !== "ubuntu-24.04" ||
     packaging["timeout-minutes"] !== 60 ||
     !exactRecord(packaging.outputs, {
       "artifact-id": "${{ steps.candidate_artifact.outputs.artifact-id }}"
@@ -1024,32 +1026,32 @@ export function inspectStableCandidateWorkflow(contents) {
   );
   const producer = stableCandidateStep(
     packageSteps,
-    (step) => step.name === "Publish canonical candidate set",
-    "canonical artifact producer",
+    (step) => step.name === "Publish performance-evidence candidate set",
+    "performance-evidence artifact producer",
     problems
   );
   if (
     normalizeRun(producer?.step.run) !==
-      "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release" ||
+      "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir performance-evidence --performance-evidence" ||
     !exactRecord(producer?.step.env, {
       EXPECTED_SHA: EVENT_SHA,
       RELEASE_TAG: "${{ inputs.release_tag }}"
     }) ||
     !defaultStableStepControls(producer?.step)
   ) {
-    problems.push("stable-candidate.yml must publish one exact source-bound canonical artifact set.");
+    problems.push("stable-candidate.yml must publish one exact source-bound performance-evidence artifact set.");
   }
   const candidateUpload = stableCandidateStep(
     packageSteps,
-    (step) => step.name === "Upload canonical candidate set",
-    "canonical candidate upload",
+    (step) => step.name === "Upload performance-evidence candidate set",
+    "performance-evidence candidate upload",
     problems
   );
   if (
     candidateUpload?.step.id !== "candidate_artifact" ||
     candidateUpload?.step.uses !== UPLOAD_ACTION ||
     !exactRecord(candidateUpload?.step.with, {
-      name: "openwrangler-stable-candidate",
+      name: "openwrangler-performance-evidence-candidate",
       path: `${STABLE_CANDIDATE_ARTIFACT_PATHS.join("\n")}\n`,
       "if-no-files-found": "error",
       "retention-days": 14,
@@ -1059,7 +1061,7 @@ export function inspectStableCandidateWorkflow(contents) {
     !defaultStableStepControls(candidateUpload?.step) ||
     hasOwn(candidateUpload?.step ?? {}, "env")
   ) {
-    problems.push("stable-candidate.yml must upload only the exact three-file canonical artifact set.");
+    problems.push("stable-candidate.yml must upload only the exact three-file evidence artifact set.");
   }
   if (
     packageCommand === undefined ||
@@ -1080,18 +1082,17 @@ export function inspectStableCandidateWorkflow(contents) {
     candidateUpload.index !== producer.index + 1 ||
     candidateUpload.index !== packageSteps.length - 1
   ) {
-    problems.push("stable-candidate.yml canonical production and upload must be one immutable final chain.");
+    problems.push("stable-candidate.yml evidence production and upload must be one immutable final chain.");
   }
 
   const performance = workflow.jobs["installed-performance"];
   if (
     performance.needs !== "package" ||
-    !Array.isArray(performance["runs-on"]) ||
-    performance["runs-on"].join("\n") !== "self-hosted\nlinux\nx64\nopenwrangler-performance" ||
+    performance["runs-on"] !== "ubuntu-24.04" ||
     performance["timeout-minutes"] !== 120 ||
     ["if", "env", "defaults", "permissions", "continue-on-error"].some((key) => hasOwn(performance, key))
   ) {
-    problems.push("stable-candidate.yml installed performance must use the protected Linux reference runner.");
+    problems.push("stable-candidate.yml installed performance must use the pinned hosted Linux runner.");
   }
   const performanceSteps = Array.isArray(performance.steps) ? performance.steps : [];
   if (
@@ -1149,7 +1150,7 @@ export function inspectStableCandidateWorkflow(contents) {
   if (
     !exactRecord(download?.step.with, {
       "artifact-ids": "${{ needs.package.outputs.artifact-id }}",
-      path: "canonical-release",
+      path: "performance-evidence",
       "merge-multiple": true
     }) ||
     !defaultStableStepControls(download?.step) ||
@@ -1164,14 +1165,16 @@ export function inspectStableCandidateWorkflow(contents) {
     problems
   );
   const expectedBenchmark = [
-    "npm run benchmark:installed --",
-    "--candidate-in canonical-release/openwrangler.vsix",
-    "--candidate-checksum canonical-release/openwrangler.vsix.sha256",
-    "--candidate-provenance canonical-release/openwrangler.vsix.provenance.json",
+    "/usr/bin/dbus-run-session -- npm run benchmark:installed --",
+    "--pinned-editors",
+    "--performance-evidence",
+    "--candidate-in performance-evidence/openwrangler.vsix",
+    "--candidate-checksum performance-evidence/openwrangler.vsix.sha256",
+    "--candidate-provenance performance-evidence/openwrangler.vsix.provenance.json",
     `--out ${STABLE_REPORT_PATH}`
   ].join(" ");
   if (
-    benchmark?.step.name !== "Test exact canonical candidate in VS Code and Cursor" ||
+    benchmark?.step.name !== "Test exact evidence candidate in pinned VS Code and Cursor" ||
     normalizeRun(benchmark?.step.run) !== expectedBenchmark ||
     !exactRecord(benchmark?.step.env, {
       EXPECTED_SHA: EVENT_SHA,
@@ -1179,7 +1182,7 @@ export function inspectStableCandidateWorkflow(contents) {
     }) ||
     !defaultStableStepControls(benchmark?.step)
   ) {
-    problems.push("stable-candidate.yml consumer must run one unsharded consume-only stable benchmark.");
+    problems.push("stable-candidate.yml consumer must run one isolated unsharded evidence benchmark.");
   }
   const reportUpload = stableCandidateStep(
     performanceSteps,

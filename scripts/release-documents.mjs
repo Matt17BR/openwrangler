@@ -187,7 +187,12 @@ function inspectEvidence(evidence, trackedEvidencePaths) {
   });
 }
 
-export function inspectPrimaryParityMatrix(contents, expectedScope, trackedEvidencePaths) {
+export function inspectPrimaryParityMatrix(
+  contents,
+  expectedScope,
+  trackedEvidencePaths,
+  allowedIncompleteRows = new Map()
+) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
     return [parsed.problem];
@@ -245,11 +250,12 @@ export function inspectPrimaryParityMatrix(contents, expectedScope, trackedEvide
     }
 
     const [surface, pandas, polars, status, evidence] = actual;
-    if (status !== "Done") {
+    const allowedIncompleteStatus = allowedIncompleteRows.get(surface);
+    if (status !== "Done" && status !== allowedIncompleteStatus) {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
     } else if (!inspectEvidence(evidence, trackedEvidencePaths)) {
       problems.push(
-        `Parity row "${surface}" must record human acceptance evidence plus a valid tracked test:, workflow:, or record: reference.`
+        `Parity row "${surface}" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.`
       );
     }
     if (surface !== expected[0] || pandas !== expected[1] || polars !== expected[2]) {

@@ -28,7 +28,9 @@ import {
 import { inspectReleaseWorkflow } from "./release-workflow.mjs";
 import { inspectPreviewReadme, PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
+  inspectPerformanceEvidenceCandidateReadiness,
   inspectStableReleaseReadiness,
+  PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
   PRIMARY_PARITY_SCOPE,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
@@ -63,7 +65,10 @@ function parity(
   evidence = "Exact package acceptance; test:scripts/release-readiness.test.mjs"
 ) {
   const rows = scope
-    .map(([surface, pandas, polars]) => `| ${surface} | ${pandas} | ${polars} | ${status} | ${evidence} |`)
+    .map(([surface, pandas, polars]) => {
+      const rowStatus = typeof status === "function" ? status(surface) : status;
+      return `| ${surface} | ${pandas} | ${polars} | ${rowStatus} | ${evidence} |`;
+    })
     .join("\n");
   return `# Feature parity matrix
 
@@ -173,6 +178,55 @@ function patchZipEntry(bytes, entryName, patch) {
 
 test("accepts one internally consistent stable release candidate", () => {
   assert.deepEqual(inspectStableReleaseReadiness(ready()), []);
+});
+
+test("performance-evidence readiness permits only the two exact performance rows to remain Partial", () => {
+  const performanceRows = new Set(PERFORMANCE_EVIDENCE_PARTIAL_ROWS);
+  const featureParity = parity((surface) => (performanceRows.has(surface) ? "Partial" : "Done"));
+
+  assert.deepEqual(inspectPerformanceEvidenceCandidateReadiness(ready({ featureParity })), []);
+  assert.deepEqual(
+    inspectStableReleaseReadiness(ready({ featureParity })).filter((problem) =>
+      /^Parity row ".+" is Partial, not Done\.$/u.test(problem)
+    ),
+    PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => `Parity row "${surface}" is Partial, not Done.`)
+  );
+
+  const unrelatedPartial = parity((surface) =>
+    surface === "Dataset summary and quick insights" || performanceRows.has(surface) ? "Partial" : "Done"
+  );
+  assert.ok(
+    inspectPerformanceEvidenceCandidateReadiness(ready({ featureParity: unrelatedPartial })).includes(
+      'Parity row "Dataset summary and quick insights" is Partial, not Done.'
+    )
+  );
+
+  for (const surface of PERFORMANCE_EVIDENCE_PARTIAL_ROWS) {
+    const planned = parity((candidate) => (candidate === surface ? "Planned" : "Done"));
+    assert.ok(
+      inspectPerformanceEvidenceCandidateReadiness(ready({ featureParity: planned })).includes(
+        `Parity row "${surface}" is Planned, not Done.`
+      )
+    );
+  }
+
+  const missingProgressEvidence = featureParity.replace(
+    "| Virtual grid, column sizing, navigation | Yes | Yes | Partial | Exact package acceptance; test:scripts/release-readiness.test.mjs |",
+    "| Virtual grid, column sizing, navigation | Yes | Yes | Partial | TODO |"
+  );
+  assert.ok(
+    inspectPerformanceEvidenceCandidateReadiness(ready({ featureParity: missingProgressEvidence })).includes(
+      'Parity row "Virtual grid, column sizing, navigation" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.'
+    )
+  );
+
+  const invalidMetadata = inspectPerformanceEvidenceCandidateReadiness(
+    ready({
+      featureParity,
+      sourcePackageJson: JSON.stringify({ ...stablePackage, preview: true })
+    })
+  );
+  assert.ok(invalidMetadata.includes("Source package.json preview must be false for a stable release."));
 });
 
 test("binds numeric release versions to their channel before workflow branching", () => {
@@ -338,8 +392,7 @@ test("requires substantive completed evidence for every Done parity row", () => 
     );
     assert.ok(
       problems.some(
-        (problem) =>
-          problem.includes("empty or malformed row") || problem.includes("must record human acceptance evidence")
+        (problem) => problem.includes("empty or malformed row") || problem.includes("must record acceptance progress")
       )
     );
   }

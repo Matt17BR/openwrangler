@@ -76,6 +76,13 @@ export const PRIMARY_PARITY_SCOPE = Object.freeze([
   ["Installed-editor first-usable-grid performance", "Yes", "Yes"],
   ["Cross-platform first-class editor package acceptance", "N/A", "N/A"]
 ]);
+export const PERFORMANCE_EVIDENCE_PARTIAL_ROWS = Object.freeze([
+  "Virtual grid, column sizing, navigation",
+  "Installed-editor first-usable-grid performance"
+]);
+const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
+  PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"])
+);
 
 function parseJsonObject(contents, label, problems) {
   let value;
@@ -171,19 +178,22 @@ function parseVsixIdentity(contents) {
   return identities[0];
 }
 
-export function inspectStableReleaseReadiness({
-  releaseTag,
-  sourcePackageJson,
-  pythonVersionFile,
-  featureParity,
-  changelog,
-  readme,
-  packagedPackageJson,
-  packagedPythonVersionFile,
-  packagedReadme,
-  vsixManifest,
-  trackedEvidencePaths = new Set()
-}) {
+function inspectReleaseReadiness(
+  {
+    releaseTag,
+    sourcePackageJson,
+    pythonVersionFile,
+    featureParity,
+    changelog,
+    readme,
+    packagedPackageJson,
+    packagedPythonVersionFile,
+    packagedReadme,
+    vsixManifest,
+    trackedEvidencePaths = new Set()
+  },
+  allowedIncompleteRows
+) {
   const problems = [];
   const sourceManifest = parseJsonObject(sourcePackageJson, "Source package.json", problems);
   const packagedManifest = parseJsonObject(packagedPackageJson, "Packaged package.json", problems);
@@ -230,7 +240,9 @@ export function inspectStableReleaseReadiness({
   if (sourceVersion !== undefined) {
     problems.push(...inspectChangelog(changelog, sourceVersion));
   }
-  problems.push(...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths));
+  problems.push(
+    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, allowedIncompleteRows)
+  );
   problems.push(...inspectStableReadme(readme, "README.md"));
   problems.push(...inspectStableReadme(packagedReadme, "Packaged README"));
 
@@ -274,6 +286,14 @@ export function inspectStableReleaseReadiness({
   }
 
   return [...new Set(problems)];
+}
+
+export function inspectStableReleaseReadiness(options) {
+  return inspectReleaseReadiness(options, new Map());
+}
+
+export function inspectPerformanceEvidenceCandidateReadiness(options) {
+  return inspectReleaseReadiness(options, PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS);
 }
 
 function sameFileIdentity(left, right) {
