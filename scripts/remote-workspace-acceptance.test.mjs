@@ -495,6 +495,23 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       ),
       false
     );
+    assert.equal(
+      args.some(
+        (value, index) => value === "--symlink" && args[index + 1] === "busybox" && args[index + 2] === "/usr/bin/sh"
+      ),
+      false
+    );
+    const bashMount = args.findIndex(
+      (value, index) =>
+        value === "--ro-bind" &&
+        args[index + 1] === realpathSync(process.execPath) &&
+        args[index + 2] === "/usr/bin/bash"
+    );
+    const shellSymlink = args.findIndex(
+      (value, index) => value === "--symlink" && args[index + 1] === "bash" && args[index + 2] === "/usr/bin/sh"
+    );
+    assert.notEqual(bashMount, -1);
+    assert.ok(shellSymlink > bashMount);
     const usrLibDirectory = args.findIndex((value, index) => value === "--dir" && args[index + 1] === "/usr/lib");
     assert.notEqual(usrLibDirectory, -1);
     const systemRuntimeMount = args.findIndex(

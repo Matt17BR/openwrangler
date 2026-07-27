@@ -16,7 +16,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -181,7 +181,6 @@ const BUSYBOX_APPLETS = Object.freeze([
   "readlink",
   "rm",
   "sed",
-  "sh",
   "sleep",
   "sort",
   "tail",
@@ -1091,6 +1090,9 @@ export function createRemoteWorkspaceBwrapArguments(
   for (const applet of BUSYBOX_APPLETS) args.push("--symlink", "busybox", `/usr/bin/${applet}`);
   args.push(
     "--symlink",
+    "bash",
+    "/usr/bin/sh",
+    "--symlink",
     "usr/bin",
     "/bin",
     "--symlink",
@@ -1421,16 +1423,16 @@ export function validateRootOwnedDropbearLibraryMountpoint(
   let expectedCanonical = path;
   if (leaf.isSymbolicLink()) {
     const target = readlink(path);
-    const resolvedTarget = typeof target === "string" ? resolve(dirname(path), target) : "";
+    const resolvedTarget = typeof target === "string" ? posix.resolve(posix.dirname(path), target) : "";
     if (
       typeof target !== "string" ||
       target.length === 0 ||
       target.length > PATH_LIMIT ||
-      isAbsolute(target) ||
+      posix.isAbsolute(target) ||
       target === "." ||
       target === ".." ||
-      target !== basename(target) ||
-      dirname(resolvedTarget) !== root
+      target !== posix.basename(target) ||
+      posix.dirname(resolvedTarget) !== root
     ) {
       throw new Error("A Dropbear system-library mountpoint symlink is not one direct multiarch child.");
     }
@@ -1440,7 +1442,7 @@ export function validateRootOwnedDropbearLibraryMountpoint(
   const target = lstat(canonical);
   if (
     canonical !== expectedCanonical ||
-    !isContained(root, canonical) ||
+    !isPosixContained(root, canonical) ||
     !target.isFile() ||
     target.isSymbolicLink() ||
     target.uid !== 0 ||
@@ -1449,6 +1451,13 @@ export function validateRootOwnedDropbearLibraryMountpoint(
     throw new Error("A Dropbear system-library mountpoint target is unsafe.");
   }
   return path;
+}
+
+function isPosixContained(parent, candidate) {
+  const relation = posix.relative(parent, candidate);
+  return (
+    relation.length > 0 && relation !== ".." && !relation.startsWith(`..${posix.sep}`) && !posix.isAbsolute(relation)
+  );
 }
 
 function isContained(parent, candidate) {
