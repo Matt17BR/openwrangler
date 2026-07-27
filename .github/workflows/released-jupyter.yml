@@ -4,10 +4,26 @@ on:
   pull_request:
     paths:
       - ".github/workflows/released-jupyter.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "protocol/**"
+      - "fixtures/**"
+      - "python/openwrangler_runtime/**"
+      - "scripts/build-webviews.mjs"
+      - "scripts/download-editor.mjs"
+      - "scripts/editor-acceptance*.mjs"
+      - "scripts/generate-protocol.mjs"
+      - "scripts/jupyter-acceptance-environment*.mjs"
+      - "scripts/packaged-editor-orchestration*.mjs"
+      - "scripts/prepare-xvfb*.mjs"
       - "scripts/remote-jupyter/**"
       - "scripts/remote-jupyter-acceptance.mjs"
       - "scripts/run-packaged-editor-tests.mjs"
+      - "scripts/xvfb-packages.json"
+      - "src/extension/**"
+      - "src/shared/**"
       - "src/test/extensionHost/**"
+      - "src/webviews/**"
   workflow_dispatch:
   schedule:
     - cron: "23 4 * * 1"
@@ -37,7 +53,6 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: npm run build
       - run: npm run package -- --pre-release --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension
