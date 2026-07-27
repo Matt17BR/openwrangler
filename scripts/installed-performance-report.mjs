@@ -14,8 +14,9 @@ import {
 import { dirname, resolve } from "node:path";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v1";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v1";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v2";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v2";
+export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
   "retain every measured sample; no trimming, deletion, winsorization, or retry";
@@ -363,22 +364,83 @@ function validatePhaseFixture(fixture) {
 }
 
 function validateFirstGridMeasurement(measurement, format) {
-  exactKeys(
-    measurement,
-    ["kind", "boundary", "sourceCache", "cacheControl", "samplesMs"],
-    [],
-    "first-grid measurement"
-  );
+  exactKeys(measurement, ["kind", "boundary", "sourceCache", "cacheProofs", "samplesMs"], [], "first-grid measurement");
   assertEqual(measurement.kind, "first-grid", "first-grid measurement kind");
   assertEqual(measurement.boundary, INSTALLED_PERFORMANCE_BOUNDARY, "first-grid measurement boundary");
   if (!["cold", "warm"].includes(measurement.sourceCache)) {
     throw new TypeError("First-grid source cache must be cold or warm.");
   }
-  exactKeys(measurement.cacheControl, ["supported", "applied", "method"], [], "source-cache control");
-  assertBoolean(measurement.cacheControl.supported, "source-cache support");
-  assertBoolean(measurement.cacheControl.applied, "source-cache application");
-  assertBoundedString(measurement.cacheControl.method, "source-cache method");
   assertDurationSamples(measurement.samplesMs, `${format} ${measurement.sourceCache} first-grid samples`);
+  if (!Array.isArray(measurement.cacheProofs) || measurement.cacheProofs.length !== measurement.samplesMs.length) {
+    throw new TypeError("Every first-grid sample must retain one aligned source-cache proof.");
+  }
+  const requestedState = measurement.sourceCache === "cold" ? "evicted" : "resident";
+  for (const proof of measurement.cacheProofs) validateCacheProof(proof, requestedState);
+}
+
+function validateCacheProof(proof, requestedState) {
+  exactKeys(
+    proof,
+    [
+      "protocol",
+      "requestedState",
+      "fdatasyncApplied",
+      "adviceAccepted",
+      "verification",
+      "pageSizeBytes",
+      "totalPages",
+      "residentPagesBefore",
+      "residentPagesAfter",
+      "identityStable",
+      "verified"
+    ],
+    [],
+    "source-cache proof"
+  );
+  assertEqual(proof.protocol, INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL, "source-cache proof protocol");
+  assertEqual(proof.requestedState, requestedState, "source-cache requested state");
+  assertBoolean(proof.fdatasyncApplied, "source-cache fdatasync application");
+  assertBoolean(proof.adviceAccepted, "source-cache advice acceptance");
+  if (!["linux-mincore", "unavailable"].includes(proof.verification)) {
+    throw new TypeError("Source-cache proof verification method is invalid.");
+  }
+  if (!positiveInteger(proof.pageSizeBytes) || !positiveInteger(proof.totalPages)) {
+    throw new TypeError("Source-cache proof page dimensions must be positive integers.");
+  }
+  for (const [key, value] of [
+    ["before", proof.residentPagesBefore],
+    ["after", proof.residentPagesAfter]
+  ]) {
+    if (value !== null && (!Number.isSafeInteger(value) || value < 0 || value > proof.totalPages)) {
+      throw new TypeError(`Source-cache resident-pages ${key} count is invalid.`);
+    }
+  }
+  assertBoolean(proof.identityStable, "source-cache identity stability");
+  assertBoolean(proof.verified, "source-cache verification");
+  if (proof.verification === "unavailable") {
+    if (
+      proof.residentPagesBefore !== null ||
+      proof.residentPagesAfter !== null ||
+      proof.fdatasyncApplied ||
+      proof.adviceAccepted ||
+      proof.verified
+    ) {
+      throw new TypeError("Unavailable source-cache proof cannot claim cache operations or residency.");
+    }
+    return;
+  }
+  if (proof.residentPagesBefore === null || proof.residentPagesAfter === null) {
+    throw new TypeError("Linux mincore proof requires both residency counts.");
+  }
+  if (proof.adviceAccepted !== (requestedState === "evicted")) {
+    throw new TypeError("Source-cache advice state does not match the requested preparation.");
+  }
+  const expectedAfter = requestedState === "evicted" ? 0 : proof.totalPages;
+  const semanticallyVerified =
+    proof.fdatasyncApplied && proof.identityStable && proof.residentPagesAfter === expectedAfter;
+  if (proof.verified !== semanticallyVerified) {
+    throw new TypeError("Source-cache verification does not match its retained residency evidence.");
+  }
 }
 
 function validateGridInteractionMeasurement(measurement) {
@@ -500,7 +562,7 @@ function groupEditorPhases(phases) {
         throw new TypeError(`Duplicate ${format} ${cache} installed first-grid phase.`);
       }
       firstGrid[format][cache] = {
-        cacheControl: structuredClone(phase.measurement.cacheControl),
+        cacheProofs: structuredClone(phase.measurement.cacheProofs),
         timing: summarizeInstalledDurationSamples(phase.measurement.samplesMs, `${format} ${cache} first-grid samples`)
       };
       continue;
@@ -535,12 +597,13 @@ function validateGroupedResults(results) {
     exactKeys(results.firstGrid[format], ["cold", "warm"], [], `${format} first-grid cases`);
     for (const cache of ["cold", "warm"]) {
       const result = results.firstGrid[format][cache];
-      exactKeys(result, ["cacheControl", "timing"], [], `${format} ${cache} first-grid result`);
-      exactKeys(result.cacheControl, ["supported", "applied", "method"], [], `${format} ${cache} cache control`);
-      assertBoolean(result.cacheControl.supported, `${format} ${cache} cache-control support`);
-      assertBoolean(result.cacheControl.applied, `${format} ${cache} cache-control application`);
-      assertBoundedString(result.cacheControl.method, `${format} ${cache} cache-control method`);
+      exactKeys(result, ["cacheProofs", "timing"], [], `${format} ${cache} first-grid result`);
       validateSummary(result.timing);
+      if (!Array.isArray(result.cacheProofs) || result.cacheProofs.length !== result.timing.samplesMs.length) {
+        throw new TypeError(`${format} ${cache} result must retain one proof per timing sample.`);
+      }
+      const requestedState = cache === "cold" ? "evicted" : "resident";
+      for (const proof of result.cacheProofs) validateCacheProof(proof, requestedState);
     }
   }
   exactKeys(
@@ -615,8 +678,8 @@ function installedPerformanceFailures(
         const result = editor.results.firstGrid[format][cache];
         const actual = result.timing.p95Ms;
         if (!(actual < limit)) failures.push(`${label} ${format} ${cache} first-grid p95 ${actual}ms >= ${limit}ms`);
-        if (!result.cacheControl.supported || !result.cacheControl.applied) {
-          failures.push(`${label} ${format} ${cache} source-cache control was not applied`);
+        if (result.cacheProofs.some((proof) => !proof.verified)) {
+          failures.push(`${label} ${format} ${cache} source-cache residency was not proven for every sample`);
         }
       }
     }

@@ -73,6 +73,28 @@ test("phase validation rejects provenance drift and source data disclosure", () 
   );
 });
 
+test("cache evidence retains every proof and rejects forged eviction verification", () => {
+  const phase = firstGridPhase("vscode", "csv", "cold", 100);
+  const forged = structuredClone(phase);
+  forged.measurement.cacheProofs[4].residentPagesAfter = 1;
+  assert.throws(() => validateInstalledPerformancePhase(forged), /does not match its retained residency/u);
+
+  const run = editorRun("vscode");
+  const residual = run.phases[0].measurement.cacheProofs[4];
+  residual.residentPagesAfter = 1;
+  residual.verified = false;
+  const report = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: candidate(),
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [run]
+  });
+  assert.ok(
+    report.releaseGate.failures.includes("vscode csv cold source-cache residency was not proven for every sample")
+  );
+});
+
 test("the aggregate report gates both editors and every cold/warm/grid case", () => {
   const report = passingReport();
   assert.equal(report.releaseGate.passed, true);
@@ -227,13 +249,26 @@ function firstGridPhase(key, format, sourceCache, duration) {
       kind: "first-grid",
       boundary: INSTALLED_PERFORMANCE_BOUNDARY,
       sourceCache,
-      cacheControl: {
-        supported: true,
-        applied: true,
-        method: sourceCache === "cold" ? "posix_fadvise(POSIX_FADV_DONTNEED)" : "sequential-full-file-read"
-      },
+      cacheProofs: Array.from({ length: 10 }, () => cacheProof(sourceCache)),
       samplesMs: sample(duration)
     }
+  };
+}
+
+function cacheProof(sourceCache) {
+  const totalPages = 2_048;
+  return {
+    protocol: "openwrangler-source-cache-proof-v1",
+    requestedState: sourceCache === "cold" ? "evicted" : "resident",
+    fdatasyncApplied: true,
+    adviceAccepted: sourceCache === "cold",
+    verification: "linux-mincore",
+    pageSizeBytes: 4_096,
+    totalPages,
+    residentPagesBefore: sourceCache === "cold" ? totalPages : 0,
+    residentPagesAfter: sourceCache === "cold" ? 0 : totalPages,
+    identityStable: true,
+    verified: true
   };
 }
 

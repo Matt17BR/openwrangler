@@ -23,7 +23,8 @@ import type { BridgeRequestOptions } from "../../extension/dataBridge";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
-const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v1";
+const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v2";
+const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 const FIRST_GRID_BOUNDARY =
   "vscode.openWith dispatch to a visible production grid block with exact shape and aria-busy=false";
@@ -67,10 +68,18 @@ interface RuntimeProbe {
   polarsVersion: string;
 }
 
-interface CacheControl {
-  supported: boolean;
-  applied: boolean;
-  method: string;
+interface CacheProof {
+  protocol: string;
+  requestedState: "evicted" | "resident";
+  fdatasyncApplied: boolean;
+  adviceAccepted: boolean;
+  verification: "linux-mincore" | "unavailable";
+  pageSizeBytes: number;
+  totalPages: number;
+  residentPagesBefore: number | null;
+  residentPagesAfter: number | null;
+  identityStable: boolean;
+  verified: boolean;
 }
 
 export async function run(): Promise<void> {
@@ -175,7 +184,7 @@ async function measureFirstUsableGrid({
 }): Promise<Record<string, unknown>> {
   const warmup = vscode.Uri.file(path.join(workspace, "warmup.csv"));
   const samplesMs: number[] = [];
-  let cacheControl: CacheControl | undefined;
+  const cacheProofs: CacheProof[] = [];
 
   recordProgress("warmup:open");
   await vscode.commands.executeCommand("vscode.openWith", warmup, "openWrangler.viewer", vscode.ViewColumn.One);
@@ -194,8 +203,7 @@ async function measureFirstUsableGrid({
   for (let sample = 0; sample < SAMPLE_COUNT; sample += 1) {
     recordProgress(`sample-${sample + 1}:cache`);
     const prepared = prepareSourceCache(testPython, workspace, source, sourceCache);
-    if (cacheControl === undefined) cacheControl = prepared;
-    else assert.deepEqual(prepared, cacheControl, "Source-cache preparation must remain stable across samples.");
+    cacheProofs.push(prepared);
 
     const started = performance.now();
     await vscode.commands.executeCommand("vscode.openWith", sourceUri, "openWrangler.viewer", vscode.ViewColumn.One);
@@ -223,12 +231,12 @@ async function measureFirstUsableGrid({
   }
 
   assert.equal(samplesMs.length, SAMPLE_COUNT);
-  assert.ok(cacheControl, "The first-grid phase must apply source-cache preparation.");
+  assert.equal(cacheProofs.length, samplesMs.length, "Every timed first-grid sample must retain one cache proof.");
   return {
     kind: "first-grid",
     boundary: FIRST_GRID_BOUNDARY,
     sourceCache,
-    cacheControl,
+    cacheProofs,
     samplesMs
   };
 }
@@ -361,12 +369,7 @@ function readFixtureManifest(manifestPath: string): FixtureManifest {
   return manifest;
 }
 
-function prepareSourceCache(
-  testPython: string,
-  workspace: string,
-  source: string,
-  mode: "cold" | "warm"
-): CacheControl {
+function prepareSourceCache(testPython: string, workspace: string, source: string, mode: "cold" | "warm"): CacheProof {
   const output = execFileSync(
     testPython,
     [path.join(workspace, "benchmarks", "source_cache_control.py"), "--source", source, "--mode", mode],
@@ -377,11 +380,53 @@ function prepareSourceCache(
       windowsHide: true
     }
   );
-  const result = JSON.parse(output) as CacheControl;
-  assert.deepEqual(Object.keys(result).sort(), ["applied", "method", "supported"]);
-  assert.equal(typeof result.supported, "boolean");
-  assert.equal(typeof result.applied, "boolean");
-  assert.ok(typeof result.method === "string" && result.method.length > 0 && result.method.length <= 256);
+  const result = JSON.parse(output) as CacheProof;
+  assert.deepEqual(Object.keys(result).sort(), [
+    "adviceAccepted",
+    "fdatasyncApplied",
+    "identityStable",
+    "pageSizeBytes",
+    "protocol",
+    "requestedState",
+    "residentPagesAfter",
+    "residentPagesBefore",
+    "totalPages",
+    "verification",
+    "verified"
+  ]);
+  assert.equal(result.protocol, CACHE_PROOF_PROTOCOL);
+  assert.equal(result.requestedState, mode === "cold" ? "evicted" : "resident");
+  assert.equal(typeof result.fdatasyncApplied, "boolean");
+  assert.equal(typeof result.adviceAccepted, "boolean");
+  assert.ok(["linux-mincore", "unavailable"].includes(result.verification));
+  assert.ok(Number.isSafeInteger(result.pageSizeBytes) && result.pageSizeBytes > 0);
+  assert.ok(Number.isSafeInteger(result.totalPages) && result.totalPages > 0);
+  for (const count of [result.residentPagesBefore, result.residentPagesAfter]) {
+    assert.ok(
+      count === null || (Number.isSafeInteger(count) && count >= 0 && count <= result.totalPages),
+      "Cache residency counts must be null or bounded page counts."
+    );
+  }
+  assert.equal(typeof result.identityStable, "boolean");
+  assert.equal(typeof result.verified, "boolean");
+  if (result.verification === "linux-mincore") {
+    assert.notEqual(result.residentPagesBefore, null);
+    assert.notEqual(result.residentPagesAfter, null);
+  } else {
+    assert.equal(result.residentPagesBefore, null);
+    assert.equal(result.residentPagesAfter, null);
+  }
+  if (result.verified) {
+    assert.equal(result.fdatasyncApplied, true);
+    assert.equal(result.identityStable, true);
+    assert.equal(result.verification, "linux-mincore");
+    assert.equal(
+      result.residentPagesAfter,
+      mode === "cold" ? 0 : result.totalPages,
+      "Verified cache proof must show the requested final residency."
+    );
+    assert.equal(result.adviceAccepted, mode === "cold");
+  }
   return result;
 }
 
