@@ -1,0 +1,101 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import test from "node:test";
+
+import {
+  REMOTE_JUPYTER_INPUT_PATH,
+  REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER,
+  REMOTE_JUPYTER_LOCK_PATH,
+  REMOTE_JUPYTER_LOCK_PLATFORM,
+  REMOTE_JUPYTER_LOCK_PYTHON_VERSION,
+  REMOTE_JUPYTER_LOCK_TOOL_VERSION,
+  checkRemoteJupyterLockFiles,
+  remoteJupyterCompileArguments,
+  validateRemoteJupyterLock
+} from "./remote-jupyter-lock.mjs";
+
+const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
+
+test("the remote Jupyter lock is complete, canonical, and above its security floor", async () => {
+  const { directEntries, lockedEntries } = await checkRemoteJupyterLockFiles();
+  assert.equal(directEntries.find(({ name }) => name === "jupyter-server")?.version, "2.20.0");
+  assert.ok(lockedEntries.length > 50);
+});
+
+test("the remote Jupyter lock rejects a vulnerable server regression", async () => {
+  const [inputText, lockText] = await fixtureTexts();
+  assert.throws(
+    () =>
+      validateRemoteJupyterLock(
+        inputText.replace("jupyter-server==2.20.0", "jupyter-server==2.19.0"),
+        lockText.replace("jupyter-server==2.20.0", "jupyter-server==2.19.0")
+      ),
+    /at or above 2\.20\.0/u
+  );
+});
+
+test("the remote Jupyter lock rejects stale direct pins and incomplete hashes", async () => {
+  const [inputText, lockText] = await fixtureTexts();
+  assert.throws(
+    () => validateRemoteJupyterLock(inputText, lockText.replace("jupyter-server==2.20.0", "jupyter-server==2.19.0")),
+    /must match its hashed lock entry exactly/u
+  );
+  assert.throws(
+    () =>
+      validateRemoteJupyterLock(
+        inputText,
+        lockText.replace(
+          "    --hash=sha256:b5778ba337d8015a3dc2b80803ecdd5ac18d3797fddf61a50ea5fb472b4ebe14 \\\n",
+          "    --hash=sha256:b5778ba337d8015a3dc2b80803ecdd5ac18d3797fddf61a50ea5fb472b4ebe14\n"
+        )
+      ),
+    /unique, sorted, canonical hash lines/u
+  );
+});
+
+test("the lock compiler freezes its tool, target, index, and release horizon", () => {
+  const output = "/tmp/openwrangler-lock-contract.txt";
+  const argumentsList = remoteJupyterCompileArguments(output);
+  assert.equal(REMOTE_JUPYTER_LOCK_TOOL_VERSION, "0.7.15");
+  assert.equal(REMOTE_JUPYTER_LOCK_PYTHON_VERSION, "3.12");
+  assert.equal(REMOTE_JUPYTER_LOCK_PLATFORM, "x86_64-manylinux_2_28");
+  assert.equal(REMOTE_JUPYTER_LOCK_EXCLUDE_NEWER, "2026-07-27T00:00:00Z");
+  assert.deepEqual(argumentsList.slice(0, 3), ["pip", "compile", REMOTE_JUPYTER_INPUT_PATH]);
+  assert.ok(argumentsList.includes("--only-binary=:all:"));
+  assert.ok(argumentsList.includes("--generate-hashes"));
+  assert.ok(argumentsList.includes("--no-config"));
+  assert.ok(argumentsList.includes("--upgrade"));
+  assert.deepEqual(argumentsList.slice(-2), ["--output-file", output]);
+});
+
+test("ordinary and released audit workflows cannot omit the fixture lock", async () => {
+  const [packageText, ci, release, releasedJupyter, vscodeIgnore] = await Promise.all([
+    readFile(resolve(REPOSITORY_ROOT, "package.json"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "release.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".github", "workflows", "released-jupyter.yml"), "utf8"),
+    readFile(resolve(REPOSITORY_ROOT, ".vscodeignore"), "utf8")
+  ]);
+  const packageJson = JSON.parse(packageText);
+  assert.match(packageJson.scripts["audit:python"], /audit:remote-jupyter/u);
+  assert.match(packageJson.scripts["audit:remote-jupyter"], /scripts\/remote-jupyter\/requirements\.txt/u);
+  assert.match(packageJson.scripts["audit:remote-jupyter"], /--require-hashes/u);
+  assert.match(packageJson.scripts["audit:remote-jupyter"], /--strict/u);
+  assert.doesNotMatch(packageJson.scripts["audit:remote-jupyter"], /--ignore-vuln/u);
+  assert.match(packageJson.scripts.check, /check:remote-jupyter-lock/u);
+  assert.match(ci, /python -m pip install uv==0\.7\.15/u);
+  assert.match(ci, /run: npm run lock:remote-jupyter:check/u);
+  assert.match(ci, /run: npm run audit:python/u);
+  assert.match(release, /python -m pip install uv==0\.7\.15/u);
+  assert.match(release, /run: npm run lock:remote-jupyter:check/u);
+  assert.match(release, /run: npm run audit:python/u);
+  assert.match(releasedJupyter, /python -m pip install uv==0\.7\.15/u);
+  assert.match(releasedJupyter, /run: npm run lock:remote-jupyter:check/u);
+  assert.match(releasedJupyter, /run: npm run audit:remote-jupyter/u);
+  assert.match(vscodeIgnore, /^scripts\/\*\*$/mu);
+});
+
+async function fixtureTexts() {
+  return Promise.all([readFile(REMOTE_JUPYTER_INPUT_PATH, "utf8"), readFile(REMOTE_JUPYTER_LOCK_PATH, "utf8")]);
+}

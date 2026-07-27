@@ -6,7 +6,9 @@ on:
       - ".github/workflows/released-jupyter.yml"
       - "scripts/remote-jupyter/**"
       - "scripts/remote-jupyter-acceptance.mjs"
+      - "scripts/remote-jupyter-lock*.mjs"
       - "scripts/run-packaged-editor-tests.mjs"
+      - "scripts/update-remote-jupyter-lock.mjs"
       - "src/test/extensionHost/**"
   workflow_dispatch:
   schedule:
@@ -37,6 +39,9 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install uv==0.7.15
+      - run: npm run lock:remote-jupyter:check
+      - run: npm run audit:remote-jupyter
       - run: npm run build
       - run: npm run package -- --pre-release --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix

@@ -53,6 +53,8 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install uv==0.7.15
+      - run: npm run lock:remote-jupyter:check
       - name: Package canonical preview VSIX
         if: ${{ steps.release_metadata.outputs.prerelease == 'true' }}
         run: npm run package -- --pre-release --out openwrangler.vsix
@@ -200,7 +202,7 @@ jobs:
           if-no-files-found: ignore
       - run: npm run test:coverage
       - run: npm audit --omit=dev
-      - run: python -m pip_audit
+      - run: npm run audit:python
       - run: npm run benchmark:runtime
       - run: npm run build:test-extension
       - id: packaged_editor
