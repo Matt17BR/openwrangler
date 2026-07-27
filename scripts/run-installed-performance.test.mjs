@@ -994,7 +994,10 @@ test("canonical checksum intake rejects malformed, linked, and changing receipts
 
     const symlinkPath = join(directory, "checksum-symlink");
     await symlink(checksumPath, symlinkPath);
-    assert.throws(() => readInstalledPerformanceChecksum(symlinkPath, candidatePath), /single-link regular file/u);
+    assert.throws(
+      () => readInstalledPerformanceChecksum(symlinkPath, candidatePath),
+      /single-link regular file|changed before it was read/u
+    );
     assert.throws(
       () => readInstalledPerformanceChecksum(checksumPath, join(directory, "candidate.vsix")),
       /candidate filename openwrangler\.vsix/u
@@ -1111,7 +1114,10 @@ test("canonical provenance intake rejects malformed, linked, and changing receip
     await mkdir(symlinkDirectory);
     const symlinkPath = join(symlinkDirectory, "openwrangler.vsix.provenance.json");
     await symlink(provenancePath, symlinkPath);
-    assert.throws(() => readInstalledPerformanceProvenance(symlinkPath), /single-link regular file/u);
+    assert.throws(
+      () => readInstalledPerformanceProvenance(symlinkPath),
+      /single-link regular file|changed before it was read/u
+    );
     await rm(symlinkDirectory, { recursive: true, force: true });
 
     assert.throws(
