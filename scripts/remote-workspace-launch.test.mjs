@@ -262,9 +262,7 @@ function createRegistrySources(root) {
         writeFileSync(join(path, "entry"), `${id}\n`, { mode: 0o600 });
       }
     } else {
-      writeFileSync(path, id === "account:ld.so.cache" ? "" : `${id}\n`, {
-        mode: id === "remoteCli" ? 0o700 : 0o600
-      });
+      writeFileSync(path, `${id}\n`, { mode: id === "remoteCli" ? 0o700 : 0o600 });
     }
   }
   return sources;

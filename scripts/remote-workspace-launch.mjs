@@ -16,8 +16,6 @@ const MAXIMUM_MOUNTS = 32;
 const ACCOUNT_FILES = Object.freeze([
   "group",
   "hosts",
-  "ld.so.cache",
-  "ld.so.conf",
   "machine-id",
   "nsswitch.conf",
   "os-release",
@@ -215,8 +213,7 @@ const REQUIRED_MOUNTS = Object.freeze([
       id: `account:${name}`,
       kind: "file",
       access: "immutable",
-      destination: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/${name}`,
-      allowEmpty: name === "ld.so.cache"
+      destination: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/${name}`
     })
   )
 ]);

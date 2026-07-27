@@ -126,7 +126,6 @@ const REQUIRED_HOST_TOOLS = Object.freeze({
   getconf: "/usr/bin/getconf",
   ip: "/usr/bin/ip",
   ldd: "/usr/bin/ldd",
-  ldconfig: "/usr/sbin/ldconfig",
   ssh: "/usr/bin/ssh",
   sshKeygen: "/usr/bin/ssh-keygen",
   xkbcomp: "/usr/bin/xkbcomp"
@@ -1038,7 +1037,6 @@ export function createRemoteWorkspaceBwrapArguments(
     [tools.getconf, "/usr/bin/getconf"],
     [tools.ip, "/usr/bin/ip"],
     [tools.ldd, "/usr/bin/ldd"],
-    [tools.ldconfig, "/usr/bin/ldconfig"],
     [tools.ssh, "/usr/bin/ssh"],
     [tools.xkbcomp, "/usr/bin/xkbcomp"],
     [canonicalPython, canonicalPython]
@@ -1076,7 +1074,6 @@ export function createRemoteWorkspaceBwrapArguments(
     args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/${name}`, `/etc/${name}`);
   }
   args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/machine-id`, "/var/lib/dbus/machine-id");
-  args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/ld.so.cache`, "/etc/ld.so.cache");
   args.push(
     "--tmpfs",
     "/run",
@@ -1129,8 +1126,7 @@ export function createRemoteWorkspaceBwrapArguments(
     REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
     "/usr/bin/ip",
     "/usr/bin/ssh",
-    "/usr/lib64/ld-linux-x86-64.so.2",
-    "/usr/bin/ldconfig"
+    "/usr/lib64/ld-linux-x86-64.so.2"
   );
   return Object.freeze(args);
 }

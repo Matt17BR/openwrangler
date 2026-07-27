@@ -1,6 +1,18 @@
-import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  linkSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  unlinkSync,
+  writeSync
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const PINNED_REMOTE_VSCODE_VERSION = "1.130.0";
 export const PINNED_REMOTE_VSCODE_COMMIT = "1b6a188127eeaf9194f945eb6eb89a657e93c54c";
@@ -23,6 +35,9 @@ const PATH_LIMIT = 16_384;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_ERROR_LIMIT_CHARACTERS = 16_000;
+const REMOTE_WORKSPACE_CONTROLLER_FAILURES = new Map([
+  ["phase-failed", "controller:phase-failed: the isolated Remote SSH controller exited after verified cleanup."]
+]);
 const REMOTE_WORKSPACE_RESULT_LEASES = new WeakMap();
 const LINUX_CAPABILITY_FIELDS = Object.freeze([
   ["CapInh", "inheritable"],
@@ -437,6 +452,220 @@ export function validateRemoteWorkspaceResult(contents, { runId }) {
   throw new Error("The Remote SSH acceptance phase did not publish one correlated terminal result.");
 }
 
+export async function finalizeRemoteWorkspaceControllerFailure({
+  stopChildren,
+  assertDisplayEmpty,
+  assertNamespace,
+  captureCapabilities,
+  publishResult
+}) {
+  for (const operation of [stopChildren, assertDisplayEmpty, assertNamespace, captureCapabilities, publishResult]) {
+    if (typeof operation !== "function") {
+      throw new Error("The Remote SSH controller failure boundary is malformed.");
+    }
+  }
+  await stopChildren();
+  assertDisplayEmpty();
+  assertNamespace();
+  const capabilities = captureCapabilities();
+  if (!isZeroCapabilityAttestation(capabilities)) {
+    throw new Error("The Remote SSH controller failure boundary did not retain zero capabilities.");
+  }
+  const result = publishResult("phase-failed");
+  if (
+    !result ||
+    typeof result !== "object" ||
+    Array.isArray(result) ||
+    result.outcome !== "failure" ||
+    !Number.isSafeInteger(result.resultBytes) ||
+    result.resultBytes <= 0 ||
+    result.resultBytes > REMOTE_WORKSPACE_RESULT_LIMIT_BYTES ||
+    typeof result.resultSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(result.resultSha256) ||
+    Object.keys(result).sort().join(",") !== "outcome,resultBytes,resultSha256"
+  ) {
+    throw new Error("The Remote SSH controller failure result receipt is malformed.");
+  }
+  return Object.freeze({
+    ...result,
+    capabilities: Object.freeze({ ...capabilities })
+  });
+}
+
+export function publishRemoteWorkspaceControllerFailureResult(path, { runId, code }, testBoundary = {}) {
+  const error = REMOTE_WORKSPACE_CONTROLLER_FAILURES.get(code);
+  if (
+    typeof path !== "string" ||
+    !isAbsolute(path) ||
+    path.length <= 0 ||
+    path.length > PATH_LIMIT ||
+    typeof runId !== "string" ||
+    !/^[0-9a-f-]{36}$/u.test(runId) ||
+    typeof code !== "string" ||
+    error === undefined
+  ) {
+    throw new Error("The Remote SSH controller failure result is malformed.");
+  }
+  const contents = JSON.stringify({
+    protocol: REMOTE_WORKSPACE_PROTOCOL,
+    runId,
+    phase: REMOTE_WORKSPACE_PHASE,
+    ok: false,
+    error
+  });
+  const result = validateRemoteWorkspaceResult(contents, { runId });
+  const bytes = Buffer.from(contents, "utf8");
+  const publication = controllerFailurePublicationBoundary(testBoundary);
+  const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  if (temporary.length > PATH_LIMIT) {
+    throw new Error("The Remote SSH controller failure temporary path is malformed.");
+  }
+  let descriptor;
+  let opened;
+  let completed;
+  let temporaryRemoved = false;
+  let failure;
+  try {
+    descriptor = openSync(
+      temporary,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_CLOEXEC ?? 0),
+      0o600
+    );
+    opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1n ||
+      opened.size !== 0n ||
+      Number(opened.mode & 0o777n) !== 0o600
+    ) {
+      throw new Error("The Remote SSH controller failure target is not one exclusive private regular file.");
+    }
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = publication.write(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (!Number.isSafeInteger(written) || written <= 0) {
+        throw new Error("The Remote SSH controller failure result made no write progress.");
+      }
+      offset += written;
+    }
+    publication.fsync(descriptor);
+    completed = fstatSync(descriptor, { bigint: true });
+    if (
+      !sameResultPublicationIdentity(opened, completed) ||
+      completed.nlink !== 1n ||
+      completed.size !== BigInt(bytes.length) ||
+      Number(completed.mode & 0o777n) !== 0o600
+    ) {
+      throw new Error("The Remote SSH controller failure result changed while it was published.");
+    }
+    const closingDescriptor = descriptor;
+    descriptor = undefined;
+    publication.close(closingDescriptor);
+
+    publication.beforeLink(temporary, path);
+    const temporaryBeforeLink = lstatSync(temporary, { bigint: true });
+    if (
+      !sameResultPublicationIdentity(completed, temporaryBeforeLink) ||
+      temporaryBeforeLink.nlink !== 1n ||
+      temporaryBeforeLink.size !== BigInt(bytes.length)
+    ) {
+      throw new Error("The Remote SSH controller failure temporary changed before publication.");
+    }
+    publication.link(temporary, path);
+    publication.beforeTemporaryRemoval(temporary, path);
+    const linkedTemporary = lstatSync(temporary, { bigint: true });
+    const linkedResult = lstatSync(path, { bigint: true });
+    if (
+      !sameResultPublicationIdentity(completed, linkedTemporary) ||
+      !sameResultPublicationIdentity(completed, linkedResult) ||
+      linkedTemporary.nlink !== 2n ||
+      linkedResult.nlink !== 2n ||
+      linkedTemporary.size !== BigInt(bytes.length) ||
+      linkedResult.size !== BigInt(bytes.length) ||
+      Number(linkedTemporary.mode & 0o777n) !== 0o600 ||
+      Number(linkedResult.mode & 0o777n) !== 0o600
+    ) {
+      throw new Error("The Remote SSH controller failure result changed during atomic publication.");
+    }
+    publication.unlink(temporary);
+    assertControllerFailureTemporaryAbsent(temporary);
+    temporaryRemoved = true;
+    const published = lstatSync(path, { bigint: true });
+    if (
+      !sameResultPublicationIdentity(completed, published) ||
+      published.nlink !== 1n ||
+      published.size !== BigInt(bytes.length) ||
+      Number(published.mode & 0o777n) !== 0o600
+    ) {
+      throw new Error("The Remote SSH controller failure result changed after atomic publication.");
+    }
+  } catch (candidate) {
+    failure = candidate;
+  } finally {
+    if (descriptor !== undefined) {
+      const closingDescriptor = descriptor;
+      descriptor = undefined;
+      try {
+        publication.close(closingDescriptor);
+      } catch (candidate) {
+        failure = combinePublicationErrors(
+          failure,
+          candidate,
+          "The Remote SSH controller failure write and close both failed."
+        );
+      }
+    }
+    if (opened !== undefined && !temporaryRemoved) {
+      try {
+        removeIdentifiedControllerFailureTemporary(temporary, opened, publication.unlink);
+      } catch (candidate) {
+        failure = combinePublicationErrors(
+          failure,
+          candidate,
+          "The Remote SSH controller failure publication and temporary cleanup both failed."
+        );
+      }
+    }
+  }
+  if (failure) throw failure;
+
+  const lease = openRemoteWorkspaceResultLeaseIfPresent(path, { runId });
+  if (!lease) throw new Error("The Remote SSH controller failure result disappeared after publication.");
+  let validationError;
+  try {
+    if (lease.outcome !== "failure" || lease.result.error !== result.error) {
+      throw new Error("The Remote SSH controller failure result changed after publication.");
+    }
+    assertRemoteWorkspaceResultLease(lease);
+  } catch (candidate) {
+    validationError = candidate;
+  }
+  let closeError;
+  try {
+    closeRemoteWorkspaceResultLease(lease);
+  } catch (candidate) {
+    closeError = candidate;
+  }
+  if (validationError && closeError) {
+    throw new AggregateError(
+      [validationError, closeError],
+      "The Remote SSH controller failure result failed validation and close."
+    );
+  }
+  if (validationError) throw validationError;
+  if (closeError) throw closeError;
+  return Object.freeze({
+    outcome: "failure",
+    resultBytes: lease.bytes,
+    resultSha256: lease.sha256
+  });
+}
+
 export function openRemoteWorkspaceResultLeaseIfPresent(path, { runId, onDescriptorOpened, afterRead } = {}) {
   if (
     typeof path !== "string" ||
@@ -586,6 +815,84 @@ function decodeResultLeaseBytes(bytes) {
 
 function sameResultLeaseSnapshot(left, right) {
   return Object.keys(left).every((key) => left[key] === right[key]);
+}
+
+function sameResultPublicationIdentity(opened, completed) {
+  return (
+    opened.isFile() &&
+    !opened.isSymbolicLink() &&
+    completed.isFile() &&
+    !completed.isSymbolicLink() &&
+    opened.dev === completed.dev &&
+    opened.ino === completed.ino &&
+    opened.mode === completed.mode &&
+    opened.uid === completed.uid &&
+    opened.gid === completed.gid &&
+    opened.birthtimeNs === completed.birthtimeNs
+  );
+}
+
+function controllerFailurePublicationBoundary(value) {
+  const allowed = new Set(["beforeLink", "beforeTemporaryRemoval", "close", "fsync", "link", "unlink", "write"]);
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !allowed.has(key))
+  ) {
+    throw new Error("The Remote SSH controller failure publication boundary is malformed.");
+  }
+  const boundary = {
+    beforeLink: value.beforeLink ?? (() => undefined),
+    beforeTemporaryRemoval: value.beforeTemporaryRemoval ?? (() => undefined),
+    close: value.close ?? closeSync,
+    fsync: value.fsync ?? fsyncSync,
+    link: value.link ?? linkSync,
+    unlink: value.unlink ?? unlinkSync,
+    write: value.write ?? writeSync
+  };
+  if (Object.values(boundary).some((operation) => typeof operation !== "function")) {
+    throw new Error("The Remote SSH controller failure publication boundary is malformed.");
+  }
+  return Object.freeze(boundary);
+}
+
+function removeIdentifiedControllerFailureTemporary(path, identity, unlink) {
+  let current;
+  try {
+    current = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error("The Remote SSH controller failure temporary disappeared before identified cleanup.", {
+        cause: error
+      });
+    }
+    throw error;
+  }
+  if (
+    !sameResultPublicationIdentity(identity, current) ||
+    current.nlink < 1n ||
+    current.nlink > 2n ||
+    Number(current.mode & 0o777n) !== 0o600
+  ) {
+    throw new Error("The Remote SSH controller failure temporary changed before identified cleanup.");
+  }
+  unlink(path);
+  assertControllerFailureTemporaryAbsent(path);
+}
+
+function assertControllerFailureTemporaryAbsent(path) {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error("The Remote SSH controller failure temporary remained after cleanup.");
+}
+
+function combinePublicationErrors(left, right, message) {
+  return left ? new AggregateError([left, right], message) : right;
 }
 
 export function readBoundedRemoteWorkspaceFile(path, maximumBytes, { onDescriptorOpened } = {}) {

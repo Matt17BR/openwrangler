@@ -168,13 +168,7 @@ try {
     dpkgDeb: tools.dpkgDeb,
     runCommand: commandRunner.run
   });
-  writePrivateAccountDatabase(
-    layout.accounts,
-    tools.uid,
-    tools.gid,
-    namespaceLayout.remoteHome,
-    namespaceRemoteWorkspaceImmutablePath(layout, sshServer.libraryPath)
-  );
+  writePrivateAccountDatabase(layout.accounts, tools.uid, tools.gid, namespaceLayout.remoteHome);
   const clientRoot = layout.client;
   await extractPinnedRemoteTar(acquisition.artifacts.vscode, clientRoot, { runCommand: commandRunner.run });
 
@@ -339,8 +333,6 @@ try {
       workspace: layout.workspace,
       "account:group": join(layout.accounts, "group"),
       "account:hosts": join(layout.accounts, "hosts"),
-      "account:ld.so.cache": join(layout.accounts, "ld.so.cache"),
-      "account:ld.so.conf": join(layout.accounts, "ld.so.conf"),
       "account:machine-id": join(layout.accounts, "machine-id"),
       "account:nsswitch.conf": join(layout.accounts, "nsswitch.conf"),
       "account:os-release": join(layout.accounts, "os-release"),
@@ -365,6 +357,33 @@ try {
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
   assertRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinelReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
+  const sealPhaseLaunch = () => {
+    assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
+    const leases = openRemoteWorkspaceImmutableInputLeases(immutableInputs);
+    try {
+      const args = createRemoteWorkspaceBwrapArguments({
+        root: layout.root,
+        descriptor: layout.descriptor,
+        childScript: phaseLoaderStage.entrypoint,
+        systemPython,
+        systemRuntimeDirectories: python.systemRuntimeDirectories,
+        immutableMounts: leases.mounts,
+        uid: tools.uid,
+        gid: tools.gid,
+        tools
+      });
+      return {
+        args,
+        inheritedFileDescriptors: leases.inheritedFileDescriptors,
+        release: leases.release
+      };
+    } catch (error) {
+      leases.release();
+      throw error;
+    }
+  };
+  const preflightLaunch = sealPhaseLaunch();
+  preflightLaunch.release();
   phaseCleanupAuthorized = false;
   const phaseResult = await commandRunner.run(
     {
@@ -373,29 +392,7 @@ try {
       environment: createEditorAcceptanceEnvironment(),
       label: "Official VS Code Remote SSH packaged acceptance",
       beforeSpawn() {
-        assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
-        const leases = openRemoteWorkspaceImmutableInputLeases(immutableInputs);
-        try {
-          const args = createRemoteWorkspaceBwrapArguments({
-            root: layout.root,
-            descriptor: layout.descriptor,
-            childScript: phaseLoaderStage.entrypoint,
-            systemPython,
-            systemRuntimeDirectories: python.systemRuntimeDirectories,
-            immutableMounts: leases.mounts,
-            uid: tools.uid,
-            gid: tools.gid,
-            tools
-          });
-          return {
-            args,
-            inheritedFileDescriptors: leases.inheritedFileDescriptors,
-            release: leases.release
-          };
-        } catch (error) {
-          leases.release();
-          throw error;
-        }
+        return sealPhaseLaunch();
       }
     },
     {
@@ -598,7 +595,7 @@ function writeWorkspaceSettings(paths, python) {
   );
 }
 
-function writePrivateAccountDatabase(directory, uid, gid, home, sshLibraryPath) {
+function writePrivateAccountDatabase(directory, uid, gid, home) {
   for (const [name, contents, mode] of [
     ["passwd", `${namespaceSshUser}:x:${uid}:${gid}:Open Wrangler Remote:${home}:/bin/sh\n`, 0o600],
     ["group", `${namespaceSshUser}:x:${gid}:\n`, 0o600],
@@ -607,8 +604,6 @@ function writePrivateAccountDatabase(directory, uid, gid, home, sshLibraryPath) 
     ["hosts", "127.0.0.1 localhost openwrangler-remote-acceptance\n::1 localhost\n", 0o600],
     ["resolv.conf", "# Private network namespace: no resolver configured.\n", 0o600],
     ["machine-id", "6f70656e7772616e676c657274657374\n", 0o600],
-    ["ld.so.conf", `${sshLibraryPath}\n/usr/lib/x86_64-linux-gnu\n`, 0o600],
-    ["ld.so.cache", "", 0o600],
     ["os-release", 'NAME="Open Wrangler acceptance"\nID=openwrangler-acceptance\nVERSION_ID="1"\n', 0o600]
   ]) {
     writeFileSync(join(directory, name), contents, {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  closeSync,
   cpSync,
   linkSync,
   lstatSync,
@@ -57,6 +58,10 @@ import {
   validateRemoteWorkspaceResult
 } from "./remote-workspace-acceptance.mjs";
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
+import {
+  finalizeRemoteWorkspaceControllerFailure,
+  publishRemoteWorkspaceControllerFailureResult
+} from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
 
 const linuxTest = process.platform === "linux" ? test : test.skip;
@@ -270,20 +275,9 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
     /only Linux x64/u
   );
   const fakeTools = Object.fromEntries(
-    [
-      "bash",
-      "bwrap",
-      "busybox",
-      "dpkgDeb",
-      "dynamicLoader",
-      "getconf",
-      "ip",
-      "ldd",
-      "ldconfig",
-      "ssh",
-      "sshKeygen",
-      "xkbcomp"
-    ].map((name) => [name, process.execPath])
+    ["bash", "bwrap", "busybox", "dpkgDeb", "dynamicLoader", "getconf", "ip", "ldd", "ssh", "sshKeygen", "xkbcomp"].map(
+      (name) => [name, process.execPath]
+    )
   );
   await assert.rejects(
     assertRemoteWorkspaceHost(
@@ -364,7 +358,6 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
           getconf: process.execPath,
           ip: process.execPath,
           ldd: process.execPath,
-          ldconfig: process.execPath,
           ssh: process.execPath,
           xkbcomp: process.execPath
         }
@@ -435,6 +428,11 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     assert.equal(args.includes("/home"), true);
     assert.equal(args.includes("/usr/bin/getconf"), true);
     assert.equal(args.includes("/usr/bin/ldd"), true);
+    assert.equal(args.includes("/usr/bin/ldconfig"), false);
+    assert.equal(
+      args.some((value) => value.includes("ld.so.cache") || value.includes("ld.so.conf")),
+      false
+    );
     const descriptorBind = args.findIndex(
       (value, index) =>
         value === "--ro-bind-fd" &&
@@ -653,6 +651,275 @@ test("Remote result validation accepts strict correlated success and failure out
       () => validateRemoteWorkspaceResult(JSON.stringify(result), { runId }),
       /correlated terminal result/u
     );
+  }
+});
+
+test("Remote controller failure finalization proves cleanup and isolation before fixed publication", async () => {
+  const calls = [];
+  const capabilities = {
+    inheritable: 0,
+    permitted: 0,
+    effective: 0,
+    bounding: 0,
+    ambient: 0
+  };
+  const result = await finalizeRemoteWorkspaceControllerFailure({
+    async stopChildren() {
+      calls.push("stop");
+    },
+    assertDisplayEmpty() {
+      calls.push("display");
+    },
+    assertNamespace() {
+      calls.push("namespace");
+    },
+    captureCapabilities() {
+      calls.push("capabilities");
+      return capabilities;
+    },
+    publishResult(code) {
+      calls.push(`publish:${code}`);
+      return { outcome: "failure", resultBytes: 123, resultSha256: "a".repeat(64) };
+    }
+  });
+  assert.deepEqual(calls, ["stop", "display", "namespace", "capabilities", "publish:phase-failed"]);
+  assert.deepEqual(result, {
+    outcome: "failure",
+    resultBytes: 123,
+    resultSha256: "a".repeat(64),
+    capabilities
+  });
+});
+
+test("Remote controller failure finalization never publishes across cleanup or isolation uncertainty", async () => {
+  for (const failedOperation of ["stop", "display", "namespace", "capabilities"]) {
+    const calls = [];
+    await assert.rejects(
+      finalizeRemoteWorkspaceControllerFailure({
+        async stopChildren() {
+          calls.push("stop");
+          if (failedOperation === "stop") throw new Error("stop failed");
+        },
+        assertDisplayEmpty() {
+          calls.push("display");
+          if (failedOperation === "display") throw new Error("display failed");
+        },
+        assertNamespace() {
+          calls.push("namespace");
+          if (failedOperation === "namespace") throw new Error("namespace failed");
+        },
+        captureCapabilities() {
+          calls.push("capabilities");
+          return failedOperation === "capabilities"
+            ? { inheritable: 0, permitted: 0, effective: 1, bounding: 0, ambient: 0 }
+            : { inheritable: 0, permitted: 0, effective: 0, bounding: 0, ambient: 0 };
+        },
+        publishResult() {
+          calls.push("publish");
+          return { outcome: "failure", resultBytes: 123, resultSha256: "a".repeat(64) };
+        }
+      }),
+      /failed|zero capabilities/u
+    );
+    assert.equal(calls.includes("publish"), false);
+  }
+});
+
+test("Remote controller failures publish one exclusive correlated result after owned cleanup", () => {
+  const root = privateRoot("ow-remote-controller-result-");
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const path = join(root, "result.json");
+  const rejectedPath = join(root, "rejected.json");
+  const protectedPath = join(root, "protected.txt");
+  const linkedPath = join(root, "linked.json");
+  const hardLinkedPath = join(root, "hard-linked.json");
+  try {
+    assert.throws(
+      () =>
+        publishRemoteWorkspaceControllerFailureResult(rejectedPath, {
+          runId,
+          code: "phase-failed secret-token https://example.test/private /host/private"
+        }),
+      /malformed/u
+    );
+    assert.throws(
+      () => lstatSync(rejectedPath),
+      (error) => error?.code === "ENOENT"
+    );
+    const receipt = publishRemoteWorkspaceControllerFailureResult(path, {
+      runId,
+      code: "phase-failed"
+    });
+    assert.equal(receipt.outcome, "failure");
+    assert.equal(receipt.resultBytes, statSync(path).size);
+    assert.match(receipt.resultSha256, /^[0-9a-f]{64}$/u);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.deepEqual(validateRemoteWorkspaceResult(readFileSync(path, "utf8"), { runId }), {
+      protocol: 1,
+      runId,
+      phase: "remote-workspace",
+      ok: false,
+      error: "controller:phase-failed: the isolated Remote SSH controller exited after verified cleanup.",
+      outcome: "failure"
+    });
+    assert.throws(
+      () =>
+        publishRemoteWorkspaceControllerFailureResult(path, {
+          runId,
+          code: "phase-failed"
+        }),
+      (error) => error?.code === "EEXIST"
+    );
+    assert.match(readFileSync(path, "utf8"), /controller:phase-failed/u);
+    assert.doesNotMatch(readFileSync(path, "utf8"), /secret-token|example\.test|host\/private/u);
+    writeFileSync(protectedPath, "protected\n", { mode: 0o600 });
+    symlinkSync(protectedPath, linkedPath);
+    linkSync(protectedPath, hardLinkedPath);
+    for (const existingPath of [linkedPath, hardLinkedPath]) {
+      assert.throws(
+        () =>
+          publishRemoteWorkspaceControllerFailureResult(existingPath, {
+            runId,
+            code: "phase-failed"
+          }),
+        (error) => error?.code === "EEXIST"
+      );
+    }
+    assert.equal(readFileSync(protectedPath, "utf8"), "protected\n");
+    assert.doesNotThrow(() => lstatSync(path));
+    assert.deepEqual(
+      readdirSync(root)
+        .filter((name) => name.startsWith(".result.json."))
+        .sort(),
+      []
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote controller failure publication never exposes write, flush, or close faults", () => {
+  const root = privateRoot("ow-remote-controller-fault-");
+  const runId = "11111111-1111-4111-8111-111111111111";
+  try {
+    for (const [stage, boundary] of [
+      [
+        "write",
+        {
+          write() {
+            throw new Error("injected write fault");
+          }
+        }
+      ],
+      [
+        "fsync",
+        {
+          fsync() {
+            throw new Error("injected fsync fault");
+          }
+        }
+      ],
+      [
+        "close",
+        {
+          close(descriptor) {
+            closeSync(descriptor);
+            throw new Error("injected close fault");
+          }
+        }
+      ]
+    ]) {
+      const path = join(root, `${stage}.json`);
+      assert.throws(
+        () =>
+          publishRemoteWorkspaceControllerFailureResult(
+            path,
+            {
+              runId,
+              code: "phase-failed"
+            },
+            boundary
+          ),
+        new RegExp(`injected ${stage} fault`, "u")
+      );
+      assert.throws(
+        () => lstatSync(path),
+        (error) => error?.code === "ENOENT"
+      );
+      assert.deepEqual(
+        readdirSync(root).filter((name) => name.includes(`${stage}.json`)),
+        []
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote controller failure atomic publication never overwrites a racing result", () => {
+  const root = privateRoot("ow-remote-controller-race-");
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const path = join(root, "result.json");
+  try {
+    assert.throws(
+      () =>
+        publishRemoteWorkspaceControllerFailureResult(
+          path,
+          {
+            runId,
+            code: "phase-failed"
+          },
+          {
+            beforeLink(_temporary, resultPath) {
+              writeFileSync(resultPath, "racing-owner\n", { mode: 0o600 });
+            }
+          }
+        ),
+      (error) => error?.code === "EEXIST"
+    );
+    assert.equal(readFileSync(path, "utf8"), "racing-owner\n");
+    assert.deepEqual(
+      readdirSync(root)
+        .filter((name) => name.startsWith(".result.json."))
+        .sort(),
+      []
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote controller failure publication fails closed when identified temporary cleanup fails", () => {
+  const root = privateRoot("ow-remote-controller-cleanup-");
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const path = join(root, "result.json");
+  let unlinkCalls = 0;
+  try {
+    assert.throws(
+      () =>
+        publishRemoteWorkspaceControllerFailureResult(
+          path,
+          {
+            runId,
+            code: "phase-failed"
+          },
+          {
+            unlink() {
+              unlinkCalls += 1;
+              throw new Error("injected identified cleanup fault");
+            }
+          }
+        ),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.length === 2 &&
+        error.errors.every((candidate) => /identified cleanup fault/u.test(candidate.message))
+    );
+    assert.equal(unlinkCalls, 2);
+    assert.equal(lstatSync(path).nlink, 2);
+    assert.throws(() => openRemoteWorkspaceResultLeaseIfPresent(path, { runId }), /private regular file/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

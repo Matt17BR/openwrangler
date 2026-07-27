@@ -14,8 +14,10 @@ import { join } from "node:path";
 import {
   assertRemoteWorkspaceResultLease,
   closeRemoteWorkspaceResultLease,
+  finalizeRemoteWorkspaceControllerFailure,
   openRemoteWorkspaceResultLeaseIfPresent,
   parseRemoteWorkspacePhaseDescriptor,
+  publishRemoteWorkspaceControllerFailureResult,
   readBoundedRemoteWorkspaceFile,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
@@ -36,21 +38,18 @@ const PRIVATE_DISPLAY = ":99";
 const PRIVATE_DISPLAY_DIRECTORY = "/tmp/.X11-unix";
 const PRIVATE_DISPLAY_SOCKET = `${PRIVATE_DISPLAY_DIRECTORY}/X99`;
 const PRIVATE_DISPLAY_LOCK = "/tmp/.X99-lock";
-const [descriptorPath, ipExecutable, sshExecutable, dynamicLoader, ldconfigExecutable] = process.argv.slice(2);
+const [descriptorPath, ipExecutable, sshExecutable, dynamicLoader] = process.argv.slice(2);
 let descriptor;
 
 try {
   descriptor = readDescriptor(descriptorPath);
-  if (
-    readlinkSync("/proc/self/ns/pid") === descriptor.hostPidNamespace ||
-    readlinkSync("/proc/self/ns/net") === descriptor.hostNetworkNamespace ||
-    readlinkSync("/proc/self/ns/ipc") === descriptor.hostIpcNamespace ||
-    readlinkSync("/proc/self/ns/uts") === descriptor.hostUtsNamespace ||
-    readlinkSync("/proc/self/ns/user") === descriptor.hostUserNamespace
-  ) {
-    throw new Error("The Remote SSH phase did not enter private user, PID, network, IPC, and UTS namespaces.");
+  assertPrivateNamespace(descriptor);
+  let terminal;
+  try {
+    terminal = await runPhase(descriptor, ipExecutable, sshExecutable);
+  } catch {
+    terminal = await recoverRemoteWorkspaceControllerFailure(descriptor);
   }
-  const terminal = await runPhase(descriptor, ipExecutable, sshExecutable, ldconfigExecutable);
   process.stdout.write(
     `${JSON.stringify({
       protocol: 1,
@@ -86,11 +85,24 @@ try {
   process.exitCode = 1;
 }
 
-async function runPhase(config, ip, ssh, ldconfig) {
+async function recoverRemoteWorkspaceControllerFailure(config) {
+  return finalizeRemoteWorkspaceControllerFailure({
+    stopChildren: () => stopNamespaceChildren([]),
+    assertDisplayEmpty: assertPrivateDisplayEmpty,
+    assertNamespace: () => assertPrivateNamespace(config),
+    captureCapabilities: () => validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8")),
+    publishResult: (code) =>
+      publishRemoteWorkspaceControllerFailureResult(config.paths.result, {
+        runId: config.runId,
+        code
+      })
+  });
+}
+
+async function runPhase(config, ip, ssh) {
   assertExecutable(ip, "private-network setup");
   assertExecutable(ssh, "private SSH client");
   assertExecutable(dynamicLoader, "private SSH dynamic loader");
-  assertExecutable(ldconfig, "private dynamic-loader cache builder");
   assertExecutable(config.xvfb, "private Xvfb executable");
   const sshServer = remoteNamespacePath(config, config.sshServer);
   const sshLibraryPath = remoteNamespacePath(config, config.sshLibraryPath);
@@ -105,19 +117,7 @@ async function runPhase(config, ip, ssh, ldconfig) {
   if (!loopback.stdout.includes("127.0.0.1")) {
     throw new Error("The private loopback network was not initialized.");
   }
-  runSync(
-    ldconfig,
-    [
-      "-C",
-      join(config.paths.remoteHome, "accounts", "ld.so.cache"),
-      "-f",
-      join(config.paths.remoteHome, "accounts", "ld.so.conf"),
-      "-i",
-      "-X"
-    ],
-    "private dynamic-loader cache setup"
-  );
-  runSync(sshServer, ["-V"], "private Dropbear cache probe");
+  runSync(dynamicLoader, ["--library-path", sshLibraryPath, sshServer, "-V"], "private Dropbear dynamic-loader probe");
 
   const xvfb = await startPrivateXvfb(config);
   const sshdOutput = boundedOutput();
@@ -300,6 +300,15 @@ async function runPhase(config, ip, ssh, ldconfig) {
 }
 
 function assertPrivateNamespace(config) {
+  if (
+    readlinkSync("/proc/self/ns/pid") === config.hostPidNamespace ||
+    readlinkSync("/proc/self/ns/net") === config.hostNetworkNamespace ||
+    readlinkSync("/proc/self/ns/ipc") === config.hostIpcNamespace ||
+    readlinkSync("/proc/self/ns/uts") === config.hostUtsNamespace ||
+    readlinkSync("/proc/self/ns/user") === config.hostUserNamespace
+  ) {
+    throw new Error("The Remote SSH phase did not retain private user, PID, network, IPC, and UTS namespaces.");
+  }
   const uidMap = readSingleIdMap("/proc/self/uid_map", config.uid);
   const gidMap = readSingleIdMap("/proc/self/gid_map", config.gid);
   if (uidMap.count !== 1 || gidMap.count !== 1) {
