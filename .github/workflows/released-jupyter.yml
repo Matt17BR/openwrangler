@@ -8,6 +8,7 @@ on:
       - "package-lock.json"
       - "protocol/**"
       - "fixtures/**"
+      - "python/pyproject.toml"
       - "python/openwrangler_runtime/**"
       - "scripts/build-webviews.mjs"
       - "scripts/download-editor.mjs"

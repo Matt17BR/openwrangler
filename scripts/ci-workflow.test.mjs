@@ -213,7 +213,7 @@ updates:
   );
 });
 
-test("required Linux Python 3.10 owns real environment discovery before its legacy cell is retired", () => {
+test("required Linux Python 3.10 owns real discovery while cross-platform keeps distinct native cells", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
   const job = workflow?.jobs?.["python-matrix"];
@@ -239,4 +239,25 @@ test("required Linux Python 3.10 owns real environment discovery before its lega
   const runtimeSuite = steps.filter((step) => step?.run === "python -m pytest python/tests -q");
   assert.equal(runtimeSuite.length, 1);
   assert.equal(runtimeSuite[0]?.if, undefined, "The runtime suite must execute on both matrix cells.");
+
+  const crossPlatformSource = readFileSync(new URL("../.github/workflows/cross-platform.yml", import.meta.url), "utf8");
+  const crossPlatform = parseYaml(crossPlatformSource);
+  assert.deepEqual(crossPlatform?.jobs?.runtime?.strategy?.matrix?.include, [
+    { os: "macos-latest", python: "3.12" },
+    { os: "windows-latest", python: "3.14" }
+  ]);
+});
+
+test("released-Jupyter PR paths include every consumed dependency manifest", () => {
+  const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const paths = workflow?.on?.pull_request?.paths;
+  assert.ok(Array.isArray(paths));
+  for (const manifest of ["package.json", "package-lock.json", "python/pyproject.toml"]) {
+    assert.equal(paths.includes(manifest), true, `Released Jupyter acceptance must run when ${manifest} changes.`);
+  }
+  assert.equal(
+    workflow?.jobs?.vscode?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
+    true
+  );
 });
