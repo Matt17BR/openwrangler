@@ -62,20 +62,17 @@ import {
   createRemoteWorkspaceImmutableInputRegistry,
   openRemoteWorkspaceImmutableInputLeases
 } from "./remote-workspace-launch.mjs";
+import { assertRemoteWorkspaceTreeStage, stageRemoteWorkspaceTree } from "./remote-workspace-staging.mjs";
 import {
-  assertRemoteWorkspaceExactFileStage,
-  assertRemoteWorkspaceTreeStage,
-  stageRemoteWorkspaceExactFile,
-  stageRemoteWorkspaceTree
-} from "./remote-workspace-staging.mjs";
+  assertRemoteWorkspacePhaseLoaderStage,
+  stageRemoteWorkspacePhaseLoader
+} from "./remote-workspace-phase-loader.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateArguments = process.argv.slice(2);
 let candidatePath;
-const childScript = resolve(repositoryRoot, "scripts", "remote-workspace-phase-child.mjs");
-const contractScript = resolve(repositoryRoot, "scripts", "remote-workspace-contract.mjs");
-const processScript = resolve(repositoryRoot, "scripts", "remote-workspace-processes.mjs");
+const scriptsRoot = resolve(repositoryRoot, "scripts");
 const testModule = resolve(repositoryRoot, "dist-test", "test", "extensionHost", "index.js");
 const testModuleRoot = resolve(repositoryRoot, "dist-test");
 const playwrightCoreRoot = resolve(repositoryRoot, "node_modules", "playwright-core");
@@ -125,13 +122,8 @@ try {
   hostHome = realpathSync(homedir());
   hostHomeReceipt = captureDirectoryReceipt(hostHome);
   const hostIsolationSha256 = createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel);
-  const exactStages = [
-    stageRemoteWorkspaceExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs")),
-    stageRemoteWorkspaceExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs")),
-    stageRemoteWorkspaceExactFile(processScript, join(layout.phaseRuntime, "remote-workspace-processes.mjs")),
-    stageRemoteWorkspaceExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700)
-  ];
-  const [childStage, , , xvfbStage] = exactStages;
+  const phaseLoaderStage = stageRemoteWorkspacePhaseLoader(scriptsRoot, layout.phaseRuntime, preparedXvfb);
+  const xvfbStage = phaseLoaderStage.xvfbStage;
   const testModuleStage = stageTestModuleTree(layout.remoteTestModule);
   const playwrightStage = stageTestRuntimeDependency(
     playwrightCoreRoot,
@@ -343,7 +335,7 @@ try {
     candidateExpectation,
     remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
-  assertStagedRuntimeInputs(exactStages, treeStages);
+  assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
   assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
@@ -354,12 +346,13 @@ try {
       environment: createEditorAcceptanceEnvironment(),
       label: "Official VS Code Remote SSH packaged acceptance",
       beforeSpawn() {
+        assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
         const leases = openRemoteWorkspaceImmutableInputLeases(immutableInputs);
         try {
           const args = createRemoteWorkspaceBwrapArguments({
             root: layout.root,
             descriptor: layout.descriptor,
-            childScript: childStage.stagedPath,
+            childScript: phaseLoaderStage.entrypoint,
             systemPython,
             systemRuntimeDirectories: python.systemRuntimeDirectories,
             immutableMounts: leases.mounts,
@@ -385,7 +378,7 @@ try {
       killGraceMs: 5_000
     }
   );
-  assertStagedRuntimeInputs(exactStages, treeStages);
+  assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
   assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
   assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
@@ -506,8 +499,8 @@ function stageTestRuntimeDependency(source, destination, identity) {
   return stage;
 }
 
-function assertStagedRuntimeInputs(exactStages, treeStages) {
-  for (const stage of exactStages) assertRemoteWorkspaceExactFileStage(stage);
+function assertStagedRuntimeInputs(phaseLoaderStage, treeStages) {
+  assertRemoteWorkspacePhaseLoaderStage(phaseLoaderStage);
   for (const stage of treeStages) assertRemoteWorkspaceTreeStage(stage);
 }
 
@@ -749,9 +742,6 @@ function assertRegularCandidate(path, expectation) {
   if (!isAbsolute(path)) throw new Error("The Remote SSH candidate VSIX must use an absolute path.");
   const receipt = acceptRemoteWorkspaceCandidate(path, expectation);
   captureRemoteWorkspaceFileReceipt(testModule);
-  captureRemoteWorkspaceFileReceipt(childScript);
-  captureRemoteWorkspaceFileReceipt(contractScript);
-  captureRemoteWorkspaceFileReceipt(processScript);
   return receipt;
 }
 
