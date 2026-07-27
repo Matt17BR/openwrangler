@@ -5,6 +5,9 @@ import { clearEditorAcceptanceEvidence } from "./editor-acceptance-evidence.mjs"
 
 const PRIVATE_ROOT_CLEANUP_WITHHELD_CODE = "EDITOR_PRIVATE_ROOT_CLEANUP_WITHHELD";
 const PRIVATE_ROOT_IDENTITY_LOST_CODE = "EDITOR_PRIVATE_ROOT_IDENTITY_LOST";
+const WINDOWS_QUARANTINE_MOVE_RETRY_DELAYS_MS = Object.freeze([250, 500, 1_000, 2_000, 4_000, 8_000]);
+const WINDOWS_QUARANTINE_MOVE_RETRY_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
+const WINDOWS_QUARANTINE_MOVE_RETRY_STATE = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 const PRIVATE_ROOT_IDENTITY_CHECKPOINTS = new Set([
   "capture-metadata",
   "capture-containment",
@@ -257,7 +260,9 @@ export function removeEditorAcceptancePrivateRoot(
     removeQuarantine = rmSync,
     quarantinePathFor = (parentPath, id) => join(parentPath, `.openwrangler-remove-${id}`),
     beforeRemove,
-    cleanupId = randomUUID
+    cleanupId = randomUUID,
+    platform = process.platform,
+    waitForQuarantineMoveRetry = waitForWindowsQuarantineMoveRetry
   } = {}
 ) {
   if (!processTreeVerifiedStopped) throw privateRootCleanupWithheldError();
@@ -283,11 +288,11 @@ export function removeEditorAcceptancePrivateRoot(
   } catch {
     throw privateRootIdentityLostError("source-recheck");
   }
-  try {
-    moveToQuarantine(path, quarantinePath);
-  } catch {
-    throw privateRootIdentityLostError("quarantine-move");
-  }
+  movePrivateRootToQuarantine(receipt, path, quarantinePath, {
+    moveToQuarantine,
+    platform,
+    waitForQuarantineMoveRetry
+  });
   try {
     assertQuarantinedPrivateRootReceipt(receipt, quarantinePath);
   } catch {
@@ -306,6 +311,51 @@ export function removeEditorAcceptancePrivateRoot(
     removeQuarantine(quarantinePath, { recursive: true, force: true });
   } catch {
     throw privateRootIdentityLostError("quarantine-delete");
+  }
+}
+
+function movePrivateRootToQuarantine(
+  receipt,
+  path,
+  quarantinePath,
+  { moveToQuarantine, platform, waitForQuarantineMoveRetry }
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      moveToQuarantine(path, quarantinePath);
+      return;
+    } catch (error) {
+      if (
+        platform !== "win32" ||
+        !WINDOWS_QUARANTINE_MOVE_RETRY_ERRORS.has(error?.code) ||
+        attempt >= WINDOWS_QUARANTINE_MOVE_RETRY_DELAYS_MS.length
+      ) {
+        throw privateRootIdentityLostError("quarantine-move");
+      }
+    }
+
+    revalidatePrivateRootMoveRetry(receipt, quarantinePath);
+    try {
+      waitForQuarantineMoveRetry(WINDOWS_QUARANTINE_MOVE_RETRY_DELAYS_MS[attempt]);
+    } catch {
+      throw privateRootIdentityLostError("quarantine-move");
+    }
+    revalidatePrivateRootMoveRetry(receipt, quarantinePath);
+  }
+}
+
+function revalidatePrivateRootMoveRetry(receipt, quarantinePath) {
+  requireAbsentPrivateRootPath(quarantinePath, "quarantine-absence");
+  try {
+    assertEditorAcceptancePrivateRootReceipt(receipt);
+  } catch {
+    throw privateRootIdentityLostError("source-recheck");
+  }
+}
+
+function waitForWindowsQuarantineMoveRetry(delayMs) {
+  if (Atomics.wait(WINDOWS_QUARANTINE_MOVE_RETRY_STATE, 0, 0, delayMs) !== "timed-out") {
+    throw new Error("The Windows quarantine-move retry wait ended unexpectedly.");
   }
 }
 

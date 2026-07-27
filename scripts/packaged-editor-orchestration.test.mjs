@@ -831,6 +831,284 @@ test("private-root quarantine move faults expose only their fixed checkpoint", a
   }
 });
 
+test("Windows private-root cleanup retries only bounded transient quarantine-move failures", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-windows-retry-"));
+  const privateRoot = join(directory, "captured-root");
+  const waits = [];
+  let moveAttempts = 0;
+  let removals = 0;
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    removeEditorAcceptancePrivateRoot(receipt, {
+      platform: "win32",
+      moveToQuarantine(source, target) {
+        moveAttempts += 1;
+        if (moveAttempts < 3) {
+          const error = new Error("transient Windows sharing violation");
+          error.code = moveAttempts === 1 ? "EPERM" : "EBUSY";
+          throw error;
+        }
+        renameSync(source, target);
+      },
+      waitForQuarantineMoveRetry(delayMs) {
+        waits.push(delayMs);
+      },
+      removeQuarantine(path, options) {
+        removals += 1;
+        rmSync(path, options);
+      }
+    });
+
+    assert.equal(moveAttempts, 3);
+    assert.deepEqual(waits, [250, 500]);
+    assert.equal(removals, 1);
+    await assert.rejects(stat(privateRoot), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows quarantine-move retries revalidate the source after every wait", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-windows-recheck-"));
+  const privateRoot = join(directory, "captured-root");
+  const displaced = join(directory, "displaced-root");
+  const replacement = join(directory, "replacement-root");
+  let moveAttempts = 0;
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    await mkdir(replacement);
+    await writeFile(join(replacement, "user-owned.txt"), "preserve me\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          platform: "win32",
+          moveToQuarantine() {
+            moveAttempts += 1;
+            const error = new Error("transient Windows sharing violation");
+            error.code = "EACCES";
+            throw error;
+          },
+          waitForQuarantineMoveRetry() {
+            renameSync(privateRoot, displaced);
+            renameSync(replacement, privateRoot);
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "source-recheck");
+        return true;
+      }
+    );
+    assert.equal(moveAttempts, 1);
+    assert.equal(await readFile(join(displaced, "owned.txt"), "utf8"), "owned\n");
+    assert.equal(await readFile(join(privateRoot, "user-owned.txt"), "utf8"), "preserve me\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows quarantine-move retries fail closed if the quarantine target appears", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-windows-target-"));
+  const privateRoot = join(directory, "captured-root");
+  const cleanupId = "22222222-2222-4222-8222-222222222222";
+  const quarantine = join(directory, `.openwrangler-remove-${cleanupId}`);
+  let moveAttempts = 0;
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          cleanupId: () => cleanupId,
+          platform: "win32",
+          moveToQuarantine() {
+            moveAttempts += 1;
+            const error = new Error("transient Windows sharing violation");
+            error.code = "EPERM";
+            throw error;
+          },
+          waitForQuarantineMoveRetry() {
+            mkdirSync(quarantine);
+            writeFileSync(join(quarantine, "user-owned.txt"), "preserve me\n");
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "quarantine-absence");
+        return true;
+      }
+    );
+    assert.equal(moveAttempts, 1);
+    assert.equal(await readFile(join(privateRoot, "owned.txt"), "utf8"), "owned\n");
+    assert.equal(await readFile(join(quarantine, "user-owned.txt"), "utf8"), "preserve me\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows quarantine-move retries reject non-transient errors immediately", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-windows-terminal-"));
+  const privateRoot = join(directory, "captured-root");
+  let moveAttempts = 0;
+  let waits = 0;
+  try {
+    await mkdir(privateRoot);
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          platform: "win32",
+          moveToQuarantine() {
+            moveAttempts += 1;
+            const error = new Error("terminal native error");
+            error.code = "ENOENT";
+            throw error;
+          },
+          waitForQuarantineMoveRetry() {
+            waits += 1;
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "quarantine-move");
+        return true;
+      }
+    );
+    assert.equal(moveAttempts, 1);
+    assert.equal(waits, 0);
+    assert.equal((await stat(privateRoot)).isDirectory(), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("non-Windows quarantine moves never retry Windows sharing errors", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-posix-terminal-"));
+  const privateRoot = join(directory, "captured-root");
+  let moveAttempts = 0;
+  let waits = 0;
+  try {
+    await mkdir(privateRoot);
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          platform: "linux",
+          moveToQuarantine() {
+            moveAttempts += 1;
+            const error = new Error("EPERM /raw/private/path");
+            error.code = "EPERM";
+            throw error;
+          },
+          waitForQuarantineMoveRetry() {
+            waits += 1;
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "quarantine-move");
+        assert.doesNotMatch(error.message, /EPERM|\/raw\/private\/path/u);
+        return true;
+      }
+    );
+    assert.equal(moveAttempts, 1);
+    assert.equal(waits, 0);
+    assert.equal((await stat(privateRoot)).isDirectory(), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows quarantine-move retry wait failures remain path-free and terminal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-windows-wait-"));
+  const privateRoot = join(directory, "captured-root");
+  let moveAttempts = 0;
+  let removals = 0;
+  try {
+    await mkdir(privateRoot);
+    await writeFile(join(privateRoot, "owned.txt"), "owned\n");
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          platform: "win32",
+          moveToQuarantine() {
+            moveAttempts += 1;
+            const error = new Error("transient Windows sharing violation");
+            error.code = "EPERM";
+            throw error;
+          },
+          waitForQuarantineMoveRetry() {
+            throw new Error("wait failed at C:\\private\\path");
+          },
+          removeQuarantine() {
+            removals += 1;
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "quarantine-move");
+        assert.doesNotMatch(error.message, /wait failed|C:\\private\\path/iu);
+        return true;
+      }
+    );
+    assert.equal(moveAttempts, 1);
+    assert.equal(removals, 0);
+    assert.equal(await readFile(join(privateRoot, "owned.txt"), "utf8"), "owned\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows quarantine-move retries remain bounded and hide the native error", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-windows-bounded-"));
+  const privateRoot = join(directory, "captured-root");
+  let moveAttempts = 0;
+  const waits = [];
+  try {
+    await mkdir(privateRoot);
+    const receipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: directory });
+
+    assert.throws(
+      () =>
+        removeEditorAcceptancePrivateRoot(receipt, {
+          platform: "win32",
+          moveToQuarantine() {
+            moveAttempts += 1;
+            const error = new Error("EPERM C:\\private\\path");
+            error.code = "EPERM";
+            throw error;
+          },
+          waitForQuarantineMoveRetry(delayMs) {
+            waits.push(delayMs);
+          }
+        }),
+      (error) => {
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "quarantine-move");
+        assert.doesNotMatch(error.message, /EPERM|C:\\private\\path/iu);
+        return true;
+      }
+    );
+    assert.equal(moveAttempts, 7);
+    assert.deepEqual(waits, [250, 500, 1_000, 2_000, 4_000, 8_000]);
+    assert.equal((await stat(privateRoot)).isDirectory(), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("private-root cleanup never deletes a directory rebound during quarantine", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-private-root-quarantine-rebind-"));
   const privateRoot = join(directory, "captured-root");
