@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
   fstatSync,
-  mkdirSync,
+  mkdtempSync,
   openSync,
   readSync,
   renameSync,
@@ -29,9 +28,8 @@ function readDescriptor(file: number, size: number): string {
 
 describe("identified fragment temporary cleanup", () => {
   it("withholds cleanup after path substitution and retains the replacement", () => {
-    const root = join(tmpdir(), `ow-fragment-cleanup-${process.pid}-${randomUUID()}`);
+    const root = mkdtempSync(join(tmpdir(), "ow-fragment-cleanup-"));
     roots.push(root);
-    mkdirSync(root, { mode: 0o700 });
     const temporary = join(root, "fragment.tmp");
     const retained = join(root, "retained.tmp");
     writeFileSync(temporary, "owned temporary", { flag: "wx", mode: 0o600 });
