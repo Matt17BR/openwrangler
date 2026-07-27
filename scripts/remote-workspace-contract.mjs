@@ -703,7 +703,8 @@ function scanRemoteWorkspaceLogDirectory({ openPath, namedPath, parts, uid, kind
   }
   const descriptor = openSync(
     openPath,
-    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0)
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0),
+    0o700
   );
   const observedChildren = [];
   let handle;

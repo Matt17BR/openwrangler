@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   closeSync,
+  constants,
   cpSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -81,6 +84,29 @@ const resultWaitControllerCodes = Object.freeze([
   "phase-result-wait-harness-not-ready",
   "phase-result-wait-harness-stalled"
 ]);
+
+function readPrivateTestFile(path) {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_CLOEXEC ?? 0),
+    0o600
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    assert.equal(before.isFile(), true);
+    assert.equal(before.isSymbolicLink(), false);
+    assert.equal(before.nlink, 1n);
+    assert.equal(Number(before.mode & 0o777n), 0o600);
+    const contents = readFileSync(descriptor, "utf8");
+    const after = fstatSync(descriptor, { bigint: true });
+    for (const field of ["dev", "ino", "mode", "nlink", "uid", "gid", "size", "mtimeNs", "ctimeNs"]) {
+      assert.equal(after[field], before[field]);
+    }
+    return Object.freeze({ contents, bytes: Number(before.size) });
+  } finally {
+    closeSync(descriptor);
+  }
+}
 
 linuxTest("Remote workspace layout is short, private, and independently scoped", () => {
   const parent = privateRoot("ow-remote-layout-");
@@ -1385,11 +1411,11 @@ linuxTest("Remote controller failures publish one exclusive correlated result af
       runId,
       code: "phase-failed"
     });
+    const published = readPrivateTestFile(path);
     assert.equal(receipt.outcome, "failure");
-    assert.equal(receipt.resultBytes, statSync(path).size);
+    assert.equal(receipt.resultBytes, published.bytes);
     assert.match(receipt.resultSha256, /^[0-9a-f]{64}$/u);
-    assert.equal(statSync(path).mode & 0o777, 0o600);
-    assert.deepEqual(validateRemoteWorkspaceResult(readFileSync(path, "utf8"), { runId }), {
+    assert.deepEqual(validateRemoteWorkspaceResult(published.contents, { runId }), {
       protocol: 1,
       runId,
       phase: "remote-workspace",
@@ -1405,21 +1431,21 @@ linuxTest("Remote controller failures publish one exclusive correlated result af
         }),
       (error) => error?.code === "EEXIST"
     );
-    assert.match(readFileSync(path, "utf8"), /controller:phase-failed/u);
-    assert.doesNotMatch(readFileSync(path, "utf8"), /secret-token|example\.test|host\/private/u);
+    assert.match(published.contents, /controller:phase-failed/u);
+    assert.doesNotMatch(published.contents, /secret-token|example\.test|host\/private/u);
     const stagedFailurePath = join(root, "stage-failure.json");
     publishRemoteWorkspaceControllerFailureResult(stagedFailurePath, {
       runId,
       code: "phase-result-wait-failed"
     });
     assert.equal(
-      validateRemoteWorkspaceResult(readFileSync(stagedFailurePath, "utf8"), { runId }).error,
+      validateRemoteWorkspaceResult(readPrivateTestFile(stagedFailurePath).contents, { runId }).error,
       "controller:phase-result-wait-failed: the isolated extension host failed before publishing a result."
     );
     for (const [index, code] of resultWaitControllerCodes.entries()) {
       const fixedPath = join(root, `fixed-${index}.json`);
       publishRemoteWorkspaceControllerFailureResult(fixedPath, { runId, code });
-      const fixed = validateRemoteWorkspaceResult(readFileSync(fixedPath, "utf8"), { runId });
+      const fixed = validateRemoteWorkspaceResult(readPrivateTestFile(fixedPath).contents, { runId });
       assert.deepEqual(Object.keys(fixed).sort(), ["error", "ok", "outcome", "phase", "protocol", "runId"]);
       assert.equal(fixed.error, getRemoteWorkspaceControllerFailureMessage(code));
       assert.doesNotMatch(
