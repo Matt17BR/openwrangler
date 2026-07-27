@@ -72,6 +72,11 @@ linuxTest("Remote workspace layout is short, private, and independently scoped",
     assert.equal(layout.sshRuntime.startsWith(layout.remoteHome), false);
     assert.equal(layout.remoteServerBase.startsWith(layout.remoteHome), false);
     assert.equal(layout.workspace.startsWith(layout.immutable), true);
+    const remoteServerBase = lstatSync(layout.remoteServerBase);
+    assert.equal(remoteServerBase.isDirectory(), true);
+    assert.equal(remoteServerBase.isSymbolicLink(), false);
+    assert.equal(remoteServerBase.mode & 0o777, 0o700);
+    assert.deepEqual(readdirSync(layout.remoteServerBase), []);
     assert.deepEqual(readdirSync(layout.remoteHome).sort(), [
       ".vscode-server",
       "cache",

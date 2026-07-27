@@ -3456,14 +3456,14 @@ async function exerciseRemoteWorkspace(
   );
   assert.equal(vscode.workspace.getConfiguration("openWrangler", workspace).get<string>("pythonPath"), testPython);
 
-  const fixture = vscode.Uri.joinPath(workspace, "remote.parquet");
+  const fixture = vscode.Uri.joinPath(workspace, "remote.csv");
   const sourceBytes = await vscode.workspace.fs.readFile(fixture);
   recordAcceptanceProgress("remote-workspace:open");
   await vscode.commands.executeCommand("openWrangler.openFile", fixture);
   await waitFor(
     () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the Remote SSH parquet source to open in the real Open Wrangler grid",
+    "the Remote SSH CSV source to open in the real Open Wrangler grid",
     () =>
       JSON.stringify({
         coordinator: testing.diagnostics(),
@@ -3521,7 +3521,7 @@ async function exerciseRemoteWorkspace(
   assert.deepEqual(
     await vscode.workspace.fs.readFile(fixture),
     sourceBytes,
-    "A remote viewing filter must leave the source parquet bytes unchanged."
+    "A remote viewing filter must leave the source CSV bytes unchanged."
   );
 
   recordAcceptanceProgress("remote-workspace:cleanup");

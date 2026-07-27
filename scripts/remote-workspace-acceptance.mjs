@@ -390,6 +390,7 @@ export function createRemoteWorkspaceLayout(parent) {
     paths.userData,
     paths.localExtensions,
     paths.remoteHome,
+    paths.remoteServerBase,
     paths.remoteExtensions,
     paths.workspace,
     paths.accounts,

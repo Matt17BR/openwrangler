@@ -212,7 +212,7 @@ try {
   const python = await copyPrivatePythonEnvironment(sourcePython, layout.python, {
     runCommand: commandRunner.run
   });
-  await writeRemoteFixture(layout, python.executable);
+  writeRemoteFixture(layout);
   writeWorkspaceSettings(layout, namespaceRemoteWorkspaceImmutablePath(layout, python.executable));
 
   const harnessVsix = join(layout.root, "harness.vsix");
@@ -572,18 +572,12 @@ function assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages)
   for (const stage of treeStages) assertRemoteWorkspaceTreeStage(stage);
 }
 
-async function writeRemoteFixture(paths, python) {
-  const fixture = join(paths.workspace, "remote.parquet");
-  const script = [
-    "import polars as pl,sys",
-    "pl.DataFrame({'city':['Milan','Rome','Berlin'],'value':[42,7,12]}).write_parquet(sys.argv[1])"
-  ].join("\n");
-  await runSetupCommand(
-    python,
-    ["-I", "-c", script, fixture],
-    isolatedEnvironment(paths.remoteHome),
-    "Remote Parquet fixture creation"
-  );
+function writeRemoteFixture(paths) {
+  writeFileSync(join(paths.workspace, "remote.csv"), "city,value\nMilan,42\nRome,7\nBerlin,12\n", {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600
+  });
 }
 
 function writeWorkspaceSettings(paths, python) {
