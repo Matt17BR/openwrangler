@@ -277,7 +277,7 @@ export async function run(): Promise<void> {
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
-  if (testPython && phase !== "python-environment") {
+  if (testPython && phase !== "python-environment" && phase !== "remote-workspace") {
     await vscode.workspace
       .getConfiguration("openWrangler")
       .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
