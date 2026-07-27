@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { load as parseYaml } from "js-yaml";
+import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 
 const replaceablePendingWorkflows = [
   [".github/workflows/ci.yml", "ci"],
@@ -15,6 +16,248 @@ const requiredPullRequestWorkflows = [
   ".github/workflows/codeql.yml",
   ".github/workflows/released-jupyter.yml"
 ];
+const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
+const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
+const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+
+function normalizedCommand(value) {
+  return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
+}
+
+test("manual stable evidence packages once and consumes the same canonical artifact set", () => {
+  const source = readFileSync(new URL("../.github/workflows/stable-candidate.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+
+  assert.deepEqual(inspectStableCandidateWorkflow(source), []);
+  assert.deepEqual(Object.keys(workflow?.on ?? {}), ["workflow_dispatch"]);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs, {
+    release_tag: {
+      description: "Intended stable tag matching package.json, for example v1.0.0",
+      required: true,
+      type: "string"
+    }
+  });
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.deepEqual(workflow.concurrency, {
+    group: "stable-candidate-${{ github.sha }}",
+    "cancel-in-progress": false
+  });
+  assert.equal(workflow.env, undefined);
+  assert.equal(workflow.defaults, undefined);
+  assert.deepEqual(Object.keys(workflow.jobs), ["package", "installed-performance"]);
+
+  const packaging = workflow.jobs.package;
+  assert.equal(packaging["runs-on"], "ubuntu-latest");
+  assert.equal(packaging["timeout-minutes"], 60);
+  assert.deepEqual(packaging.outputs, {
+    "artifact-id": "${{ steps.candidate_artifact.outputs.artifact-id }}"
+  });
+  assert.equal(packaging.permissions, undefined);
+  assert.equal(packaging.if, undefined);
+  assert.equal(packaging.env, undefined);
+  assert.equal(packaging.defaults, undefined);
+  assert.ok(Array.isArray(packaging.steps));
+
+  const sourceGuard = packaging.steps[0];
+  assert.equal(sourceGuard?.name, "Require protected main source");
+  assert.deepEqual(sourceGuard?.env, {
+    EVENT_REF: "${{ github.ref }}",
+    EVENT_REF_PROTECTED: "${{ github.ref_protected }}"
+  });
+  assert.equal(
+    normalizedCommand(sourceGuard?.run),
+    'test "$EVENT_REF" = "refs/heads/main" test "$EVENT_REF_PROTECTED" = "true"'
+  );
+  const packageCheckout = packaging.steps.find((step) => step.uses === CHECKOUT_ACTION);
+  assert.deepEqual(packageCheckout?.with, {
+    "fetch-depth": 0,
+    "persist-credentials": false
+  });
+  assert.equal(packaging.steps.filter((step) => step.uses === SETUP_NODE_ACTION).length, 1);
+  assert.equal(packaging.steps.filter((step) => step.uses === SETUP_PYTHON_ACTION).length, 1);
+  const metadata = packaging.steps.find((step) => step.id === "release_metadata");
+  assert.equal(metadata?.run, "node scripts/release-metadata.mjs");
+  assert.deepEqual(metadata?.env, { RELEASE_TAG: "${{ inputs.release_tag }}" });
+  const previewRejection = packaging.steps.find((step) => step.name === "Reject preview metadata");
+  assert.equal(previewRejection?.if, "${{ steps.release_metadata.outputs.prerelease != 'false' }}");
+  assert.equal(previewRejection?.run, "exit 1");
+
+  const allRuns = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps)
+    .map((step) => normalizedCommand(step.run))
+    .filter(Boolean);
+  assert.equal(
+    allRuns.filter((command) => command.startsWith("npm run package ")).length,
+    1,
+    "The stable workflow must package the production VSIX exactly once."
+  );
+  assert.ok(allRuns.includes("npm run package -- --out openwrangler.candidate.vsix"));
+  for (const forbidden of ["vsce publish", "ovsx publish", "gh release", "git push", "action-gh-release"]) {
+    assert.equal(source.includes(forbidden), false, `The prepublication workflow must not contain ${forbidden}.`);
+  }
+
+  const producerIndex = packaging.steps.findIndex((step) => step.name === "Publish canonical candidate set");
+  const candidateUploadIndex = packaging.steps.findIndex((step) => step.name === "Upload canonical candidate set");
+  assert.equal(candidateUploadIndex, producerIndex + 1);
+  assert.equal(
+    normalizedCommand(packaging.steps[producerIndex]?.run),
+    "node scripts/create-canonical-release-artifact.mjs openwrangler.candidate.vsix --out-dir canonical-release"
+  );
+  assert.deepEqual(packaging.steps[producerIndex]?.env, {
+    EXPECTED_SHA: "${{ github.sha }}",
+    RELEASE_TAG: "${{ inputs.release_tag }}"
+  });
+  const candidateUpload = packaging.steps[candidateUploadIndex];
+  assert.equal(candidateUpload?.id, "candidate_artifact");
+  assert.equal(candidateUpload?.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+  assert.deepEqual(candidateUpload?.with, {
+    name: "openwrangler-stable-candidate",
+    path:
+      [
+        "canonical-release/openwrangler.vsix",
+        "canonical-release/openwrangler.vsix.sha256",
+        "canonical-release/openwrangler.vsix.provenance.json"
+      ].join("\n") + "\n",
+    "if-no-files-found": "error",
+    "retention-days": 14,
+    "compression-level": 0,
+    "include-hidden-files": false
+  });
+
+  const performance = workflow.jobs["installed-performance"];
+  assert.equal(performance.needs, "package");
+  assert.deepEqual(performance["runs-on"], ["self-hosted", "linux", "x64", "openwrangler-performance"]);
+  assert.equal(performance["timeout-minutes"], 120);
+  assert.equal(performance.permissions, undefined);
+  assert.equal(performance.if, undefined);
+  assert.equal(performance.env, undefined);
+  assert.equal(performance.defaults, undefined);
+  assert.ok(Array.isArray(performance.steps));
+  const performanceCheckout = performance.steps.find((step) => step.uses === CHECKOUT_ACTION);
+  assert.deepEqual(performanceCheckout?.with, {
+    ref: "${{ github.sha }}",
+    "fetch-depth": 0,
+    "persist-credentials": false
+  });
+  assert.equal(performance.steps.filter((step) => step.uses === SETUP_NODE_ACTION).length, 1);
+  assert.equal(performance.steps.filter((step) => step.uses === SETUP_PYTHON_ACTION).length, 1);
+  const downloadIndex = performance.steps.findIndex(
+    (step) => step.uses === "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+  );
+  const benchmarkIndex = performance.steps.findIndex((step) => step.id === "installed_performance");
+  const evidenceUploadIndex = performance.steps.findIndex(
+    (step) => step.name === "Upload installed-performance evidence"
+  );
+  assert.ok(downloadIndex >= 0 && downloadIndex < benchmarkIndex && benchmarkIndex < evidenceUploadIndex);
+  assert.deepEqual(performance.steps[downloadIndex]?.with, {
+    "artifact-ids": "${{ needs.package.outputs.artifact-id }}",
+    path: "canonical-release",
+    "merge-multiple": true
+  });
+  assert.equal(
+    normalizedCommand(performance.steps[benchmarkIndex]?.run),
+    [
+      "npm run benchmark:installed --",
+      "--candidate-in canonical-release/openwrangler.vsix",
+      "--candidate-checksum canonical-release/openwrangler.vsix.sha256",
+      "--candidate-provenance canonical-release/openwrangler.vsix.provenance.json",
+      "--out ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json"
+    ].join(" ")
+  );
+  assert.deepEqual(performance.steps[benchmarkIndex]?.env, {
+    EXPECTED_SHA: "${{ github.sha }}",
+    RELEASE_TAG: "${{ inputs.release_tag }}"
+  });
+  const evidenceUpload = performance.steps[evidenceUploadIndex];
+  assert.equal(evidenceUpload?.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+  assert.equal(evidenceUpload?.if, undefined);
+  assert.deepEqual(evidenceUpload?.with, {
+    name: "openwrangler-installed-performance",
+    path: "${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json",
+    "if-no-files-found": "error",
+    "retention-days": 90,
+    "compression-level": 9,
+    "include-hidden-files": false
+  });
+  assert.equal(
+    performance.steps.some((step) => /\bnpm run (?:package|build)(?:\s|$)/u.test(step.run ?? "")),
+    false,
+    "The stable consumer may build its test harness internally but must never package or rebuild the extension."
+  );
+});
+
+test("stable evidence workflow inspector rejects source, artifact, and consumer drift", () => {
+  const source = readFileSync(new URL("../.github/workflows/stable-candidate.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const inspect = (mutate) => {
+    const candidate = structuredClone(workflow);
+    mutate(candidate);
+    return inspectStableCandidateWorkflow(JSON.stringify(candidate));
+  };
+
+  assert.ok(
+    inspect((candidate) => {
+      candidate.on.push = { branches: ["main"] };
+    }).some((problem) => problem.includes("only one manual release_tag"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps[0].if = "${{ false }}";
+    }).some((problem) => problem.includes("fail first"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps.at(-1).with.path += "canonical-release/untrusted.txt\n";
+    }).some((problem) => problem.includes("exact three-file"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs["installed-performance"]["runs-on"] = "ubuntu-latest";
+    }).some((problem) => problem.includes("protected Linux reference runner"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs["installed-performance"].steps.find((step) => step.id === "installed_performance").run +=
+        " --smoke";
+    }).some((problem) => problem.includes("unsharded consume-only"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.permissions.contents = "write";
+    }).some((problem) => problem.includes("exactly contents: read"))
+  );
+  for (const jobName of ["package", "installed-performance"]) {
+    const expectedProblem = "exact pinned ordered step allowlist";
+    for (let index = 0; index < workflow.jobs[jobName].steps.length; index += 1) {
+      assert.ok(
+        inspect((candidate) => {
+          candidate.jobs[jobName].steps.splice(index, 1);
+        }).some((problem) => problem.includes(expectedProblem)),
+        `${jobName} must reject removing step ${index}.`
+      );
+    }
+    assert.ok(
+      inspect((candidate) => {
+        candidate.jobs[jobName].steps.splice(1, 0, {
+          uses: "attacker/example@main"
+        });
+      }).some((problem) => problem.includes(expectedProblem)),
+      `${jobName} must reject inserted actions.`
+    );
+  }
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps.find((step) => step.uses === CHECKOUT_ACTION).uses = "actions/checkout@v6";
+    }).some((problem) => problem.includes("exact pinned ordered step allowlist"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps.find(
+        (step) => step.run === "npm run verify:vsix -- openwrangler.candidate.vsix"
+      ).run = "true";
+    }).some((problem) => problem.includes("exact pinned ordered step allowlist"))
+  );
+});
 
 test("PR workflows replace only superseded pending runs", () => {
   for (const [relativePath, groupPrefix] of replaceablePendingWorkflows) {
