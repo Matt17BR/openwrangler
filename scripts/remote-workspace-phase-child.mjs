@@ -249,7 +249,7 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   let phaseError;
   let phaseFailureCode;
   let resultWaitCanBeClassified = false;
-  const resultWaitObservation = { hasCorrelatedProgress: false };
+  const resultWaitObservation = { lastProgressCheckpoint: null };
   try {
     markFailureStage("phase-ssh-daemon-failed");
     sshd = spawnMonitoredRemoteWorkspaceChild(
@@ -412,7 +412,7 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     try {
       assertPrivateNamespace(config);
       validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
-      const topology = resultWaitObservation.hasCorrelatedProgress
+      const topology = resultWaitObservation.lastProgressCheckpoint
         ? {
             clientLogCount: 0,
             remoteSshLogCount: 0,
@@ -427,7 +427,7 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
       markFailureStage(
         classifyRemoteWorkspaceResultWaitObservation({
           ...topology,
-          hasCorrelatedProgress: resultWaitObservation.hasCorrelatedProgress
+          lastProgressCheckpoint: resultWaitObservation.lastProgressCheckpoint
         })
       );
     } catch {
@@ -606,10 +606,10 @@ async function observeAcceptance(config, editor, observation) {
       try {
         const progress = readBoundedRemoteWorkspaceFile(config.paths.progress, 1_024);
         if (progress !== lastCheckpoint) {
-          validateProgress(progress, config);
+          const checkpoint = validateProgress(progress, config);
           lastCheckpoint = progress;
           lastCheckpointAt = Date.now();
-          observation.hasCorrelatedProgress = true;
+          observation.lastProgressCheckpoint = checkpoint;
         }
       } catch (error) {
         let racedResult;
@@ -685,6 +685,7 @@ function validateProgress(contents, config) {
   ) {
     throw new Error("The Remote SSH progress checkpoint lost its phase correlation.");
   }
+  return progress.checkpoint;
 }
 
 async function stopNamespaceChildren(monitors) {

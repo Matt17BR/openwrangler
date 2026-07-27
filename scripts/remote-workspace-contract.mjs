@@ -90,8 +90,36 @@ const REMOTE_WORKSPACE_CONTROLLER_FAILURES = new Map([
     "controller:phase-result-wait-harness-not-ready: last observed stage: remote extension-host startup; no correlated acceptance checkpoint."
   ],
   [
-    "phase-result-wait-harness-stalled",
-    "controller:phase-result-wait-harness-stalled: last observed stage: correlated acceptance progress without a terminal result."
+    "phase-result-wait-harness-bootstrap-stalled",
+    "controller:phase-result-wait-harness-bootstrap-stalled: last observed stage: correlated acceptance-harness bootstrap."
+  ],
+  [
+    "phase-result-wait-harness-activation-stalled",
+    "controller:phase-result-wait-harness-activation-stalled: last observed stage: correlated Open Wrangler activation."
+  ],
+  [
+    "phase-result-wait-harness-preflight-stalled",
+    "controller:phase-result-wait-harness-preflight-stalled: last observed stage: correlated packaged-extension preflight."
+  ],
+  [
+    "phase-result-wait-harness-scenario-stalled",
+    "controller:phase-result-wait-harness-scenario-stalled: last observed stage: correlated Remote SSH scenario setup."
+  ],
+  [
+    "phase-result-wait-harness-open-stalled",
+    "controller:phase-result-wait-harness-open-stalled: last observed stage: correlated remote file-open request."
+  ],
+  [
+    "phase-result-wait-harness-filter-stalled",
+    "controller:phase-result-wait-harness-filter-stalled: last observed stage: correlated remote filter request."
+  ],
+  [
+    "phase-result-wait-harness-cleanup-stalled",
+    "controller:phase-result-wait-harness-cleanup-stalled: last observed stage: correlated remote session cleanup."
+  ],
+  [
+    "phase-result-wait-harness-completion-stalled",
+    "controller:phase-result-wait-harness-completion-stalled: last observed stage: correlated acceptance completion without a terminal result."
   ],
   [
     "phase-cleanup-failed",
@@ -101,6 +129,21 @@ const REMOTE_WORKSPACE_CONTROLLER_FAILURES = new Map([
     "phase-result-validation-failed",
     "controller:phase-result-validation-failed: the isolated Remote SSH terminal evidence failed validation."
   ]
+]);
+const REMOTE_WORKSPACE_PROGRESS_FAILURES = new Map([
+  ["remote-workspace:harness-start", "phase-result-wait-harness-bootstrap-stalled"],
+  ["preflight:start", "phase-result-wait-harness-bootstrap-stalled"],
+  ["activation:start", "phase-result-wait-harness-activation-stalled"],
+  ["activation:complete", "phase-result-wait-harness-preflight-stalled"],
+  ["preflight:package", "phase-result-wait-harness-preflight-stalled"],
+  ["preflight:commands", "phase-result-wait-harness-preflight-stalled"],
+  ["preflight:contributions", "phase-result-wait-harness-preflight-stalled"],
+  ["preflight:complete", "phase-result-wait-harness-preflight-stalled"],
+  ["remote-workspace:start", "phase-result-wait-harness-scenario-stalled"],
+  ["remote-workspace:open", "phase-result-wait-harness-open-stalled"],
+  ["remote-workspace:filter", "phase-result-wait-harness-filter-stalled"],
+  ["remote-workspace:cleanup", "phase-result-wait-harness-cleanup-stalled"],
+  ["remote-workspace:complete", "phase-result-wait-harness-completion-stalled"]
 ]);
 const REMOTE_WORKSPACE_POST_RESULT_CONTROLLER_FAILURES = new Set([
   "phase-cleanup-failed",
@@ -160,8 +203,8 @@ export function classifyRemoteWorkspaceResultWaitObservation(value) {
     typeof value !== "object" ||
     Array.isArray(value) ||
     Object.keys(value).sort().join(",") !==
-      "clientLogCount,hasCorrelatedProgress,remoteAgentLogCount,remoteExtensionHostLogCount,remoteSshLogCount" ||
-    typeof value.hasCorrelatedProgress !== "boolean"
+      "clientLogCount,lastProgressCheckpoint,remoteAgentLogCount,remoteExtensionHostLogCount,remoteSshLogCount" ||
+    (value.lastProgressCheckpoint !== null && typeof value.lastProgressCheckpoint !== "string")
   ) {
     throw new Error("The Remote SSH result-wait observation is malformed.");
   }
@@ -176,8 +219,9 @@ export function classifyRemoteWorkspaceResultWaitObservation(value) {
   ) {
     throw new Error("The Remote SSH result-wait observation is malformed.");
   }
-  if (value.hasCorrelatedProgress) {
-    return counts.every((count) => count === 0) ? "phase-result-wait-harness-stalled" : "phase-result-wait-failed";
+  if (value.lastProgressCheckpoint !== null) {
+    const code = REMOTE_WORKSPACE_PROGRESS_FAILURES.get(value.lastProgressCheckpoint);
+    return counts.every((count) => count === 0) && code !== undefined ? code : "phase-result-wait-failed";
   }
   if (counts.some((count) => count > 1)) return "phase-result-wait-failed";
   if (value.clientLogCount === 0) {

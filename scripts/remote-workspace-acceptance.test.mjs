@@ -82,7 +82,14 @@ const resultWaitControllerCodes = Object.freeze([
   "phase-result-wait-remote-agent-not-ready",
   "phase-result-wait-remote-exthost-not-ready",
   "phase-result-wait-harness-not-ready",
-  "phase-result-wait-harness-stalled"
+  "phase-result-wait-harness-bootstrap-stalled",
+  "phase-result-wait-harness-activation-stalled",
+  "phase-result-wait-harness-preflight-stalled",
+  "phase-result-wait-harness-scenario-stalled",
+  "phase-result-wait-harness-open-stalled",
+  "phase-result-wait-harness-filter-stalled",
+  "phase-result-wait-harness-cleanup-stalled",
+  "phase-result-wait-harness-completion-stalled"
 ]);
 
 function readPrivateTestFile(path) {
@@ -944,7 +951,7 @@ test("Remote result-wait observations map only to fixed coarse stages", () => {
     remoteSshLogCount: 0,
     remoteAgentLogCount: 0,
     remoteExtensionHostLogCount: 0,
-    hasCorrelatedProgress: false,
+    lastProgressCheckpoint: null,
     ...overrides
   });
   for (const [value, code] of [
@@ -964,8 +971,27 @@ test("Remote result-wait observations map only to fixed coarse stages", () => {
       }),
       "phase-result-wait-harness-not-ready"
     ],
-    [observation({ hasCorrelatedProgress: true }), "phase-result-wait-harness-stalled"],
-    [observation({ hasCorrelatedProgress: true, clientLogCount: 1 }), "phase-result-wait-failed"],
+    [
+      observation({ lastProgressCheckpoint: "remote-workspace:harness-start" }),
+      "phase-result-wait-harness-bootstrap-stalled"
+    ],
+    [observation({ lastProgressCheckpoint: "preflight:start" }), "phase-result-wait-harness-bootstrap-stalled"],
+    [observation({ lastProgressCheckpoint: "activation:start" }), "phase-result-wait-harness-activation-stalled"],
+    [observation({ lastProgressCheckpoint: "activation:complete" }), "phase-result-wait-harness-preflight-stalled"],
+    [observation({ lastProgressCheckpoint: "preflight:package" }), "phase-result-wait-harness-preflight-stalled"],
+    [observation({ lastProgressCheckpoint: "preflight:commands" }), "phase-result-wait-harness-preflight-stalled"],
+    [observation({ lastProgressCheckpoint: "preflight:contributions" }), "phase-result-wait-harness-preflight-stalled"],
+    [observation({ lastProgressCheckpoint: "preflight:complete" }), "phase-result-wait-harness-preflight-stalled"],
+    [observation({ lastProgressCheckpoint: "remote-workspace:start" }), "phase-result-wait-harness-scenario-stalled"],
+    [observation({ lastProgressCheckpoint: "remote-workspace:open" }), "phase-result-wait-harness-open-stalled"],
+    [observation({ lastProgressCheckpoint: "remote-workspace:filter" }), "phase-result-wait-harness-filter-stalled"],
+    [observation({ lastProgressCheckpoint: "remote-workspace:cleanup" }), "phase-result-wait-harness-cleanup-stalled"],
+    [
+      observation({ lastProgressCheckpoint: "remote-workspace:complete" }),
+      "phase-result-wait-harness-completion-stalled"
+    ],
+    [observation({ lastProgressCheckpoint: "remote-workspace:open", clientLogCount: 1 }), "phase-result-wait-failed"],
+    [observation({ lastProgressCheckpoint: "unknown" }), "phase-result-wait-failed"],
     [observation({ clientLogCount: 2 }), "phase-result-wait-failed"],
     [observation({ remoteSshLogCount: 1 }), "phase-result-wait-failed"]
   ]) {
@@ -976,7 +1002,7 @@ test("Remote result-wait observations map only to fixed coarse stages", () => {
     observation({ clientLogCount: -1 }),
     observation({ remoteSshLogCount: 1.5 }),
     observation({ remoteAgentLogCount: 1_001 }),
-    observation({ hasCorrelatedProgress: "true" }),
+    observation({ lastProgressCheckpoint: true }),
     { ...observation(), rawLog: "secret-token https://example.test/private /host/private" }
   ]) {
     assert.throws(
@@ -996,10 +1022,10 @@ linuxTest("Remote result-wait topology observes metadata only under exact bounde
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(path, contents, { mode: 0o600 });
   };
-  const classify = (hasCorrelatedProgress = false) =>
+  const classify = (lastProgressCheckpoint = null) =>
     classifyRemoteWorkspaceResultWaitObservation({
       ...inspectRemoteWorkspaceLogTopology({ localLogs, remoteLogs, uid }),
-      hasCorrelatedProgress
+      lastProgressCheckpoint
     });
   try {
     assert.equal(classify(), "phase-result-wait-client-not-ready");
@@ -1023,9 +1049,9 @@ linuxTest("Remote result-wait topology observes metadata only under exact bounde
         remoteSshLogCount: 0,
         remoteAgentLogCount: 0,
         remoteExtensionHostLogCount: 0,
-        hasCorrelatedProgress: true
+        lastProgressCheckpoint: "remote-workspace:open"
       }),
-      "phase-result-wait-harness-stalled"
+      "phase-result-wait-harness-open-stalled"
     );
     writeLog(join(localLogs, "20260727T131429", "main.log"));
     assert.equal(classify(), "phase-result-wait-failed");
