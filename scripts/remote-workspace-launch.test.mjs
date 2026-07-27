@@ -245,8 +245,8 @@ linuxTest("Remote launch mount template is complete, ordered, and read-only afte
       .filter((mount) => ["sshTomcrypt", "sshTommath"].includes(mount.id))
       .map(({ id, destination, access }) => ({ id, destination, access })),
     [
-      { id: "sshTomcrypt", destination: "/usr/lib/libtomcrypt.so.1", access: "immutable" },
-      { id: "sshTommath", destination: "/usr/lib/libtommath.so.1", access: "immutable" }
+      { id: "sshTomcrypt", destination: "/usr/lib/x86_64-linux-gnu/libtomcrypt.so.1", access: "immutable" },
+      { id: "sshTommath", destination: "/usr/lib/x86_64-linux-gnu/libtommath.so.1", access: "immutable" }
     ]
   );
   for (const mutation of [

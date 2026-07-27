@@ -148,6 +148,10 @@ const REQUIRED_SYSTEM_RUNTIME_DIRECTORIES = Object.freeze([
   "/etc/fonts",
   "/etc/ssl/certs"
 ]);
+const DROPBEAR_SYSTEM_LIBRARY_MOUNTPOINTS = Object.freeze([
+  "/usr/lib/x86_64-linux-gnu/libtomcrypt.so.1",
+  "/usr/lib/x86_64-linux-gnu/libtommath.so.1"
+]);
 const BUSYBOX_APPLETS = Object.freeze([
   "awk",
   "basename",
@@ -963,7 +967,10 @@ export function createRemoteWorkspaceBwrapArguments(
     bootstrapPreflight = false,
     tools = REQUIRED_HOST_TOOLS
   },
-  { validateSystemRuntimeDirectory = validateRootOwnedSystemRuntimeDirectory, pathExists = existsSync } = {}
+  {
+    validateSystemRuntimeDirectory = validateRootOwnedSystemRuntimeDirectory,
+    validateDropbearLibraryMountpoint = validateRootOwnedDropbearLibraryMountpoint
+  } = {}
 ) {
   for (const [label, value] of Object.entries({ root, descriptor, childScript, systemPython })) {
     if (typeof value !== "string" || !isAbsolute(value) || value.length > PATH_LIMIT) {
@@ -983,14 +990,6 @@ export function createRemoteWorkspaceBwrapArguments(
   if (typeof bootstrapPreflight !== "boolean") {
     throw new Error("Remote SSH acceptance requires one explicit bootstrap-preflight policy.");
   }
-  if (typeof pathExists !== "function") {
-    throw new Error("Remote SSH acceptance requires one library-shadow probe.");
-  }
-  for (const soname of ["libtomcrypt.so.1", "libtommath.so.1"]) {
-    if (pathExists(`/usr/lib/x86_64-linux-gnu/${soname}`)) {
-      throw new Error("A host library would shadow a pinned private Dropbear dependency.");
-    }
-  }
   const canonicalRoot = realpathSync(root);
   for (const [label, value] of Object.entries({ descriptor, childScript })) {
     const canonical = realpathSync(value);
@@ -1007,12 +1006,22 @@ export function createRemoteWorkspaceBwrapArguments(
   const runtimeDirectories = validateRemoteWorkspaceSystemRuntimeDirectories(systemRuntimeDirectories, {
     validateDirectory: validateSystemRuntimeDirectory
   });
+  if (typeof validateDropbearLibraryMountpoint !== "function") {
+    throw new Error("The Remote SSH Dropbear library-mountpoint validator is malformed.");
+  }
+  for (const mountpoint of DROPBEAR_SYSTEM_LIBRARY_MOUNTPOINTS) {
+    if (validateDropbearLibraryMountpoint(mountpoint) !== mountpoint) {
+      throw new Error("The Remote SSH Dropbear library-mountpoint validator altered its exact target.");
+    }
+  }
   const mounts = validateRemoteWorkspaceImmutableMounts(immutableMounts, {
     commit: PINNED_REMOTE_VSCODE_COMMIT
   });
   const privateMounts = mounts.filter((mount) => mount.destination.startsWith(`${REMOTE_WORKSPACE_NAMESPACE_ROOT}/`));
   const dropbearLibraryMounts = mounts.filter((mount) =>
-    ["/usr/lib/libtomcrypt.so.1", "/usr/lib/libtommath.so.1"].includes(mount.destination)
+    ["/usr/lib/x86_64-linux-gnu/libtomcrypt.so.1", "/usr/lib/x86_64-linux-gnu/libtommath.so.1"].includes(
+      mount.destination
+    )
   );
   const args = [
     "--unshare-user",
@@ -1385,6 +1394,56 @@ export function validateRootOwnedSystemRuntimeDirectory(path, { lstat = lstatSyn
       );
     }
     if (dirname(current) === current) break;
+  }
+  return path;
+}
+
+export function validateRootOwnedDropbearLibraryMountpoint(
+  path,
+  { lstat = lstatSync, readlink = readlinkSync, realpath = realpathSync } = {}
+) {
+  const root = "/usr/lib/x86_64-linux-gnu";
+  if (
+    !DROPBEAR_SYSTEM_LIBRARY_MOUNTPOINTS.includes(path) ||
+    typeof lstat !== "function" ||
+    typeof readlink !== "function" ||
+    typeof realpath !== "function"
+  ) {
+    throw new Error("A Dropbear system-library mountpoint is malformed.");
+  }
+  const leaf = lstat(path);
+  if ((!leaf.isFile() && !leaf.isSymbolicLink()) || leaf.uid !== 0) {
+    throw new Error("A Dropbear system-library mountpoint is not root-controlled.");
+  }
+  let expectedCanonical = path;
+  if (leaf.isSymbolicLink()) {
+    const target = readlink(path);
+    const resolvedTarget = typeof target === "string" ? resolve(dirname(path), target) : "";
+    if (
+      typeof target !== "string" ||
+      target.length === 0 ||
+      target.length > PATH_LIMIT ||
+      isAbsolute(target) ||
+      target === "." ||
+      target === ".." ||
+      target !== basename(target) ||
+      dirname(resolvedTarget) !== root
+    ) {
+      throw new Error("A Dropbear system-library mountpoint symlink is not one direct multiarch child.");
+    }
+    expectedCanonical = resolvedTarget;
+  }
+  const canonical = realpath(path);
+  const target = lstat(canonical);
+  if (
+    canonical !== expectedCanonical ||
+    !isContained(root, canonical) ||
+    !target.isFile() ||
+    target.isSymbolicLink() ||
+    target.uid !== 0 ||
+    (target.mode & 0o022) !== 0
+  ) {
+    throw new Error("A Dropbear system-library mountpoint target is unsafe.");
   }
   return path;
 }

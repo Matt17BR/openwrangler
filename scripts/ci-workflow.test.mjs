@@ -65,6 +65,8 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.match(host?.run ?? "", /kernel\.apparmor_restrict_unprivileged_userns=0/u);
   assert.match(host?.run ?? "", /kernel\.unprivileged_userns_clone=1/u);
   assert.match(host?.run ?? "", /user\.max_user_namespaces/u);
+  assert.match(host?.run ?? "", /libtomcrypt1/u);
+  assert.match(host?.run ?? "", /libtommath1/u);
   assert.equal((host?.run ?? "").includes("sudo chmod go-w -- /usr/share"), true);
   assert.equal((host?.run ?? "").includes("test ! -w /usr/share"), true);
   assert.equal((host?.run ?? "").includes('sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"'), true);

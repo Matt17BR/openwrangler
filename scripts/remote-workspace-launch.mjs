@@ -16,11 +16,11 @@ const MAXIMUM_MOUNTS = 32;
 const DROPBEAR_LIBRARY_MOUNTS = Object.freeze([
   Object.freeze({
     id: "sshTomcrypt",
-    destination: "/usr/lib/libtomcrypt.so.1"
+    destination: "/usr/lib/x86_64-linux-gnu/libtomcrypt.so.1"
   }),
   Object.freeze({
     id: "sshTommath",
-    destination: "/usr/lib/libtommath.so.1"
+    destination: "/usr/lib/x86_64-linux-gnu/libtommath.so.1"
   })
 ]);
 const DROPBEAR_LIBRARY_DESTINATIONS = new Set(DROPBEAR_LIBRARY_MOUNTS.map((entry) => entry.destination));

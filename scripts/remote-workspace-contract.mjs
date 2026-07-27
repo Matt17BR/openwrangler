@@ -78,11 +78,14 @@ const REMOTE_WORKSPACE_POST_RESULT_CONTROLLER_FAILURES = new Set([
 const DROPBEAR_PINNED_LOADER_RESOLUTIONS = Object.freeze([
   Object.freeze({
     soname: "libtomcrypt.so.1",
-    reportedPath: "/lib/libtomcrypt.so.1"
+    reportedPaths: Object.freeze([
+      "/lib/x86_64-linux-gnu/libtomcrypt.so.1",
+      "/usr/lib/x86_64-linux-gnu/libtomcrypt.so.1"
+    ])
   }),
   Object.freeze({
     soname: "libtommath.so.1",
-    reportedPath: "/lib/libtommath.so.1"
+    reportedPaths: Object.freeze(["/lib/x86_64-linux-gnu/libtommath.so.1", "/usr/lib/x86_64-linux-gnu/libtommath.so.1"])
   })
 ]);
 
@@ -107,9 +110,13 @@ export function validateRemoteWorkspaceDropbearLoaderResolution(output) {
   for (const expected of DROPBEAR_PINNED_LOADER_RESOLUTIONS) {
     const matching = lines.filter((line) => line.includes(expected.soname));
     const escapedSoname = expected.soname.replaceAll(".", String.raw`\.`);
-    const escapedPath = expected.reportedPath.replaceAll(".", String.raw`\.`);
-    const exact = new RegExp(String.raw`^\s*${escapedSoname}\s+=>\s+${escapedPath}\s+\(0x[0-9A-Fa-f]+\)\s*$`, "u");
-    if (matching.length !== 1 || !exact.test(matching[0])) {
+    const exact = expected.reportedPaths.some((path) => {
+      const escapedPath = path.replaceAll(".", String.raw`\.`);
+      return new RegExp(String.raw`^\s*${escapedSoname}\s+=>\s+${escapedPath}\s+\(0x[0-9A-Fa-f]+\)\s*$`, "u").test(
+        matching[0] ?? ""
+      );
+    });
+    if (matching.length !== 1 || !exact) {
       throw new Error("The private Dropbear loader did not resolve one exact pinned dependency.");
     }
   }

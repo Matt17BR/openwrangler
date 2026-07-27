@@ -44,6 +44,7 @@ import {
   REMOTE_WORKSPACE_PHASE_NODE_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   resolveRemoteWorkspaceSystemRuntimeDirectories,
+  validateRootOwnedDropbearLibraryMountpoint,
   validateRootOwnedSystemRuntimeDirectory,
   validateRemoteWorkspaceBwrapHelp,
   validateRemoteWorkspaceBootstrapAttestation,
@@ -120,22 +121,27 @@ linuxTest("Remote workspace layout is short, private, and independently scoped",
 test("Dropbear default-loader listings resolve only the independently pinned libraries", () => {
   const listing = [
     "\tlinux-vdso.so.1 (0x00007ffc00000000)",
-    "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000000)",
-    "\tlibtommath.so.1 => /lib/libtommath.so.1 (0x00007f0200000000)",
+    "\tlibtomcrypt.so.1 => /lib/x86_64-linux-gnu/libtomcrypt.so.1 (0x00007f0100000000)",
+    "\tlibtommath.so.1 => /lib/x86_64-linux-gnu/libtommath.so.1 (0x00007f0200000000)",
     "\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007f0300000000)",
     "\t/usr/lib64/ld-linux-x86-64.so.2 (0x00007f0400000000)",
     ""
   ].join("\n");
   assert.equal(validateRemoteWorkspaceDropbearLoaderResolution(listing), listing);
+  const usrAliasListing = listing.replaceAll("/lib/x86_64-linux-gnu/", "/usr/lib/x86_64-linux-gnu/");
+  assert.equal(validateRemoteWorkspaceDropbearLoaderResolution(usrAliasListing), usrAliasListing);
   for (const mutation of [
-    listing.replace("/lib/libtomcrypt.so.1", "/usr/lib/x86_64-linux-gnu/glibc-hwcaps/x86-64-v3/libtomcrypt.so.1"),
-    listing.replace("/lib/libtommath.so.1", "/usr/lib/x86_64-linux-gnu/libtommath.so.1"),
-    listing.replace("\tlibtommath.so.1 => /lib/libtommath.so.1 (0x00007f0200000000)\n", ""),
     listing.replace(
-      "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000000)",
+      "/lib/x86_64-linux-gnu/libtomcrypt.so.1",
+      "/usr/lib/x86_64-linux-gnu/glibc-hwcaps/x86-64-v3/libtomcrypt.so.1"
+    ),
+    listing.replace("/lib/x86_64-linux-gnu/libtommath.so.1", "/usr/lib/libtommath.so.1"),
+    listing.replace("\tlibtommath.so.1 => /lib/x86_64-linux-gnu/libtommath.so.1 (0x00007f0200000000)\n", ""),
+    listing.replace(
+      "\tlibtomcrypt.so.1 => /lib/x86_64-linux-gnu/libtomcrypt.so.1 (0x00007f0100000000)",
       [
-        "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000000)",
-        "\tlibtomcrypt.so.1 => /lib/libtomcrypt.so.1 (0x00007f0100000001)"
+        "\tlibtomcrypt.so.1 => /lib/x86_64-linux-gnu/libtomcrypt.so.1 (0x00007f0100000000)",
+        "\tlibtomcrypt.so.1 => /lib/x86_64-linux-gnu/libtomcrypt.so.1 (0x00007f0100000001)"
       ].join("\n")
     ),
     `${listing}${"x".repeat(64 * 1024)}`
@@ -381,7 +387,7 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       // platform-present regular executable that stays distinct from the
       // staged phase-Node destination on system-Node layouts.
       systemPython: realpathSync("/usr/bin/true"),
-      systemRuntimeDirectories: ["/usr"],
+      systemRuntimeDirectories: ["/usr/lib/x86_64-linux-gnu"],
       immutableMounts: createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT),
       uid: 1001,
       gid: 1001,
@@ -399,7 +405,7 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     };
     const args = createRemoteWorkspaceBwrapArguments(builderInput, {
       validateSystemRuntimeDirectory: (path) => path,
-      pathExists: () => false
+      validateDropbearLibraryMountpoint: (path) => path
     });
     for (const required of [
       "--unshare-user",
@@ -470,12 +476,15 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     const usrLibDirectory = args.findIndex((value, index) => value === "--dir" && args[index + 1] === "/usr/lib");
     assert.notEqual(usrLibDirectory, -1);
     const systemRuntimeMount = args.findIndex(
-      (value, index) => value === "--ro-bind" && args[index + 1] === "/usr" && args[index + 2] === "/usr"
+      (value, index) =>
+        value === "--ro-bind" &&
+        args[index + 1] === "/usr/lib/x86_64-linux-gnu" &&
+        args[index + 2] === "/usr/lib/x86_64-linux-gnu"
     );
     assert.notEqual(systemRuntimeMount, -1);
     for (const [id, destination] of [
-      ["sshTomcrypt", "/usr/lib/libtomcrypt.so.1"],
-      ["sshTommath", "/usr/lib/libtommath.so.1"]
+      ["sshTomcrypt", "/usr/lib/x86_64-linux-gnu/libtomcrypt.so.1"],
+      ["sshTommath", "/usr/lib/x86_64-linux-gnu/libtommath.so.1"]
     ]) {
       const mount = createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
         (entry) => entry.id === id
@@ -520,7 +529,10 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     assert.equal(args.includes("--bootstrap-preflight"), false);
     const bootstrapArgs = createRemoteWorkspaceBwrapArguments(
       { ...builderInput, bootstrapPreflight: true },
-      { validateSystemRuntimeDirectory: (path) => path, pathExists: () => false }
+      {
+        validateSystemRuntimeDirectory: (path) => path,
+        validateDropbearLibraryMountpoint: (path) => path
+      }
     );
     assert.deepEqual(bootstrapArgs.slice(-6), [
       REMOTE_WORKSPACE_PHASE_CHILD_PATH,
@@ -530,29 +542,30 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
       "/usr/lib64/ld-linux-x86-64.so.2",
       "--bootstrap-preflight"
     ]);
-    for (const soname of ["libtomcrypt.so.1", "libtommath.so.1"]) {
-      assert.throws(
-        () =>
-          createRemoteWorkspaceBwrapArguments(builderInput, {
-            validateSystemRuntimeDirectory: (path) => path,
-            pathExists: (path) => path.endsWith(`/${soname}`)
-          }),
-        /host library would shadow a pinned private Dropbear dependency/u
-      );
-    }
     assert.throws(
       () =>
         createRemoteWorkspaceBwrapArguments(builderInput, {
           validateSystemRuntimeDirectory: (path) => path,
-          pathExists: null
+          validateDropbearLibraryMountpoint: null
         }),
-      /library-shadow probe/u
+      /library-mountpoint validator/u
+    );
+    assert.throws(
+      () =>
+        createRemoteWorkspaceBwrapArguments(builderInput, {
+          validateSystemRuntimeDirectory: (path) => path,
+          validateDropbearLibraryMountpoint: () => "/wrong"
+        }),
+      /altered its exact target/u
     );
     assert.throws(
       () =>
         createRemoteWorkspaceBwrapArguments(
           { ...builderInput, bootstrapPreflight: "yes" },
-          { validateSystemRuntimeDirectory: (path) => path }
+          {
+            validateSystemRuntimeDirectory: (path) => path,
+            validateDropbearLibraryMountpoint: (path) => path
+          }
         ),
       /bootstrap-preflight policy/u
     );
@@ -610,6 +623,104 @@ linuxTest("System runtime closure roots and ancestors must be canonical, root-ow
       /every ancestor must be canonical, root-owned, and non-writable/u
     );
   }
+});
+
+test("Dropbear system-library mountpoints stay on root-controlled multiarch files", () => {
+  const root = "/usr/lib/x86_64-linux-gnu";
+  const file = (overrides = {}) => ({
+    isFile: () => true,
+    isSymbolicLink: () => false,
+    uid: 0,
+    mode: 0o100644,
+    ...overrides
+  });
+  const symlink = (overrides = {}) => ({
+    isFile: () => false,
+    isSymbolicLink: () => true,
+    uid: 0,
+    mode: 0o120777,
+    ...overrides
+  });
+  for (const [soname, versioned] of [
+    ["libtomcrypt.so.1", "libtomcrypt.so.1.0.1"],
+    ["libtommath.so.1", "libtommath.so.1.3.0"]
+  ]) {
+    const mountpoint = `${root}/${soname}`;
+    const target = `${root}/${versioned}`;
+    assert.equal(
+      validateRootOwnedDropbearLibraryMountpoint(mountpoint, {
+        lstat: (path) => (path === mountpoint ? symlink() : file()),
+        readlink: () => versioned,
+        realpath: () => target
+      }),
+      mountpoint
+    );
+    assert.equal(
+      validateRootOwnedDropbearLibraryMountpoint(mountpoint, {
+        lstat: () => file(),
+        readlink: () => {
+          throw new Error("A regular mountpoint must not be read as a link.");
+        },
+        realpath: () => mountpoint
+      }),
+      mountpoint
+    );
+  }
+
+  const mountpoint = `${root}/libtomcrypt.so.1`;
+  const target = `${root}/libtomcrypt.so.1.0.1`;
+  const valid = {
+    lstat: (path) => (path === mountpoint ? symlink() : file()),
+    readlink: () => "libtomcrypt.so.1.0.1",
+    realpath: () => target
+  };
+  for (const overrides of [
+    { lstat: () => symlink({ uid: 1001 }) },
+    { readlink: () => "/tmp/libtomcrypt.so.1.0.1" },
+    { readlink: () => "../../../tmp/libtomcrypt.so.1.0.1" },
+    {
+      readlink: () => "mutable/libtomcrypt.so.1.0.1",
+      realpath: () => `${root}/mutable/libtomcrypt.so.1.0.1`
+    },
+    {
+      readlink: () => "libtomcrypt.so.1.indirect",
+      realpath: () => target
+    },
+    {
+      readlink: () => "libtomcrypt.so.1.0.1",
+      realpath: () => `${root}/libtomcrypt.so.1.0.2`
+    },
+    { realpath: () => "/tmp/libtomcrypt.so.1.0.1" },
+    { lstat: (path) => (path === mountpoint ? symlink() : file({ uid: 1001 })) },
+    { lstat: (path) => (path === mountpoint ? symlink() : file({ mode: 0o100666 })) },
+    {
+      lstat: (path) =>
+        path === mountpoint
+          ? symlink()
+          : symlink({
+              isFile: () => true
+            })
+    },
+    {
+      lstat: (path) =>
+        path === mountpoint
+          ? symlink()
+          : file({
+              isFile: () => false
+            })
+    }
+  ]) {
+    assert.throws(() => validateRootOwnedDropbearLibraryMountpoint(mountpoint, { ...valid, ...overrides }));
+  }
+  assert.throws(() => validateRootOwnedDropbearLibraryMountpoint(`${root}/unapproved.so`, valid));
+  assert.throws(() =>
+    validateRootOwnedDropbearLibraryMountpoint(mountpoint, {
+      ...valid,
+      lstat: () => {
+        throw new Error("missing");
+      }
+    })
+  );
 });
 
 test("The system-runtime resolver constructs its complete closure before delegated validation", () => {

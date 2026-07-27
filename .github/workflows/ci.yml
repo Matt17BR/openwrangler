@@ -296,6 +296,8 @@ jobs:
             bubblewrap \
             busybox-static \
             iproute2 \
+            libtomcrypt1 \
+            libtommath1 \
             openssh-client \
             python3-venv \
             x11-xkb-utils
