@@ -605,6 +605,300 @@ def test_status_establishes_guard_state_on_a_writable_absent_prefix(guard_fixtur
     assert (guard_fixture.journal / "mutation.lock").is_file()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX flock and EROFS semantics.")
+def test_status_locks_an_existing_clean_journal_on_a_read_only_mount(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    before = lock.stat()
+    original_open = guard.os.open
+    access_modes: list[int] = []
+    frames: list[dict[str, Any]] = []
+
+    def open_with_read_only_mount(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock:
+            access_mode = flags & os.O_ACCMODE
+            access_modes.append(access_mode)
+            if access_mode == os.O_RDWR:
+                raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", open_with_read_only_mount)
+    monkeypatch.setattr(guard, "_emit", frames.append)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    assert guard._run_status(_status_request(guard_fixture)) == 0
+    after = lock.stat()
+    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None}]
+    assert access_modes == [os.O_RDWR, os.O_RDONLY]
+    assert (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX flock and EROFS semantics.")
+def test_read_only_status_reports_a_valid_retained_marker_as_dirty_without_changing_it(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    identity = guard._validate_private_directory(guard_fixture.journal)
+    token = str(uuid.uuid4())
+    marker, _payload, _marker_identity = guard._publish_marker(
+        guard_fixture.journal,
+        identity,
+        token,
+        guard_fixture.environment,
+        [guard_fixture.dependency],
+    )
+    before = marker.read_bytes()
+    before_stat = marker.stat()
+    original_open = guard.os.open
+    frames: list[dict[str, Any]] = []
+
+    def open_with_read_only_mount(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock and flags & os.O_ACCMODE == os.O_RDWR:
+            raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", open_with_read_only_mount)
+    monkeypatch.setattr(guard, "_emit", frames.append)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    assert guard._run_status(_status_request(guard_fixture)) == 0
+    after_stat = marker.stat()
+    assert frames == [{"kind": "status", "protocol": PROTOCOL, "state": "dirty", "token": token}]
+    assert marker.read_bytes() == before
+    assert (
+        after_stat.st_dev,
+        after_stat.st_ino,
+        after_stat.st_mode,
+        after_stat.st_size,
+        after_stat.st_mtime_ns,
+        after_stat.st_ctime_ns,
+    ) == (
+        before_stat.st_dev,
+        before_stat.st_ino,
+        before_stat.st_mode,
+        before_stat.st_size,
+        before_stat.st_mtime_ns,
+        before_stat.st_ctime_ns,
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX EROFS semantics.")
+def test_read_only_status_never_accepts_an_existing_journal_without_a_lock(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_empty_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    original_open = guard.os.open
+    access_modes: list[int] = []
+
+    def refuse_lock_creation(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock:
+            access_modes.append(flags & os.O_ACCMODE)
+            raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", refuse_lock_creation)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    with pytest.raises(guard.GuardError) as raised:
+        guard._run_status(_status_request(guard_fixture))
+    assert raised.value.code == "malformed_state"
+    assert access_modes == [os.O_RDWR]
+    assert not lock.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX EROFS semantics.")
+def test_read_only_status_never_hides_an_unrecoverable_pending_marker(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    pending = guard_fixture.journal / f".pending-{uuid.uuid4()}.tmp"
+    _write_manual_journal_leaf(pending, b"partial")
+    original_open = guard.os.open
+    original_unlink = guard.Path.unlink
+    frames: list[dict[str, Any]] = []
+
+    def open_with_read_only_mount(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock and flags & os.O_ACCMODE == os.O_RDWR:
+            raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    def unlink_from_read_only_mount(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == pending:
+            raise OSError(errno.EROFS, "simulated read-only mount")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(guard.os, "open", open_with_read_only_mount)
+    monkeypatch.setattr(guard.Path, "unlink", unlink_from_read_only_mount)
+    monkeypatch.setattr(guard, "_emit", frames.append)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    with pytest.raises(guard.GuardError) as raised:
+        guard._run_status(_status_request(guard_fixture))
+    assert raised.value.code == "malformed_state"
+    assert frames == []
+    assert pending.read_bytes() == b"partial"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX EROFS semantics.")
+def test_read_only_status_never_hides_an_unknown_journal_leaf(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    unknown = guard_fixture.journal / "unexpected.json"
+    _write_manual_journal_leaf(unknown, b"malformed")
+    original_open = guard.os.open
+    frames: list[dict[str, Any]] = []
+
+    def open_with_read_only_mount(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock and flags & os.O_ACCMODE == os.O_RDWR:
+            raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", open_with_read_only_mount)
+    monkeypatch.setattr(guard, "_emit", frames.append)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    with pytest.raises(guard.GuardError) as raised:
+        guard._run_status(_status_request(guard_fixture))
+    assert raised.value.code == "malformed_state"
+    assert frames == []
+    assert unknown.read_bytes() == b"malformed"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX errno semantics.")
+@pytest.mark.parametrize(
+    ("open_errno", "expected_code"),
+    [(errno.EACCES, "busy"), (errno.EPERM, "malformed_state")],
+    ids=["access-denied", "operation-not-permitted"],
+)
+def test_status_read_only_fallback_rejects_every_error_except_erofs(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    open_errno: int,
+    expected_code: str,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    original_open = guard.os.open
+    access_modes: list[int] = []
+
+    def refuse_write_access(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock:
+            access_modes.append(flags & os.O_ACCMODE)
+            raise OSError(open_errno, "simulated non-EROFS open failure")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", refuse_write_access)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    with pytest.raises(guard.GuardError) as raised:
+        guard._run_status(_status_request(guard_fixture))
+    assert raised.value.code == expected_code
+    assert access_modes == [os.O_RDWR]
+    assert lock.is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX inode and EROFS semantics.")
+def test_status_read_only_fallback_rejects_lock_replacement_between_opens(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    displaced = guard_fixture.root / "displaced-lock"
+    replacement = guard_fixture.root / "replacement-lock"
+    replacement.write_bytes(b"")
+    replacement.chmod(0o600)
+    original_identity = (lock.stat().st_dev, lock.stat().st_ino)
+    replacement_identity = (replacement.stat().st_dev, replacement.stat().st_ino)
+    original_open = guard.os.open
+    access_modes: list[int] = []
+
+    def swap_before_read_only_open(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock:
+            access_mode = flags & os.O_ACCMODE
+            access_modes.append(access_mode)
+            if access_mode == os.O_RDWR:
+                lock.replace(displaced)
+                replacement.replace(lock)
+                raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", swap_before_read_only_open)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    with pytest.raises(guard.GuardError) as raised:
+        guard._run_status(_status_request(guard_fixture))
+    assert raised.value.code == "malformed_state"
+    assert access_modes == [os.O_RDWR, os.O_RDONLY]
+    assert (displaced.stat().st_dev, displaced.stat().st_ino) == original_identity
+    assert (lock.stat().st_dev, lock.stat().st_ino) == replacement_identity
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Requires POSIX EROFS semantics.")
+@pytest.mark.parametrize("operation", ["install", "recovery-validation"])
+def test_mutating_dependency_paths_never_use_a_read_only_journal_lock(
+    guard_fixture: GuardFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    guard = _load_dependency_guard()
+    _create_manual_journal(guard_fixture)
+    lock = guard_fixture.journal / "mutation.lock"
+    original_open = guard.os.open
+    access_modes: list[int] = []
+
+    def refuse_write_access(path: str | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        if Path(path) == lock:
+            access_modes.append(flags & os.O_ACCMODE)
+            raise OSError(errno.EROFS, "simulated read-only mount")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(guard.os, "open", refuse_write_access)
+    monkeypatch.setattr(guard, "_actual_environment", lambda: _request_environment(guard_fixture))
+
+    token = str(uuid.uuid4())
+    with pytest.raises(guard.GuardError) as raised:
+        if operation == "install":
+            guard._run_install(_install_request(guard_fixture, token))
+        else:
+            guard._run_validate(_validate_request(guard_fixture, token))
+    assert raised.value.code == "malformed_state"
+    assert access_modes == [os.O_RDWR]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Requires native Windows security descriptors.")
 def test_windows_status_creates_exact_protected_journal_and_lock_acls(
     guard_fixture: GuardFixture,
