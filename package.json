@@ -676,7 +676,7 @@
     "pyright": "^1.1.405",
     "saxes": "^6.0.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.38.0",
+    "typescript-eslint": "^8.65.0",
     "vite": "^8.0.14",
     "vitest": "^4.1.7",
     "yauzl": "^3.3.1",
