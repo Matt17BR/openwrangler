@@ -62,6 +62,11 @@ jobs:
         if: ${{ steps.release_metadata.outputs.prerelease != 'true' }}
         run: npm run package -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
+      - name: Enforce stable release readiness
+        if: ${{ steps.release_metadata.outputs.prerelease != 'true' }}
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: npm run release:readiness -- openwrangler.vsix
       - name: Create canonical checksum
         shell: node {0}
         run: |
