@@ -1,4 +1,6 @@
+.venv
 .venv/**
+node_modules
 node_modules/**
 src/**
 python/tests/**

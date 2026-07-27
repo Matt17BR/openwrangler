@@ -36,6 +36,7 @@ interface TestApi {
   activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
   diagnostics(): { sessionCount: number };
   runtimeRunning(): boolean;
+  synchronizePanel(sessionId: string): Promise<boolean>;
 }
 
 interface ExtensionApi {
@@ -103,15 +104,21 @@ export async function run(): Promise<void> {
   const samplesMs: number[] = [];
   let cacheControl: CacheControl | undefined;
   try {
+    const workbench = await connectToEditorWorkbench();
+    await waitForWorkbenchReady(workbench);
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    recordProgress("warmup:open");
     await vscode.commands.executeCommand("vscode.openWith", warmup, "openWrangler.viewer", vscode.ViewColumn.One);
-    await waitForHostSession(
+    const warmupSession = await waitForHostSession(
       testing,
       (metadata) => metadata.source.kind === "file" && metadata.source.path === warmup.fsPath,
       GRID_DISCOVERY_TIMEOUT_MS,
       "the runtime warm-up session"
     );
-    const workbench = await connectToEditorWorkbench();
+    recordProgress("warmup:host-session");
+    await waitForPanelSynchronization(testing, warmupSession.sessionId);
+    recordProgress("warmup:renderer-synchronized");
     await waitForUsableGrid(workbench, { rows: 2, columns: 2 });
     recordProgress("warmup:complete");
 
@@ -269,6 +276,26 @@ async function connectToEditorWorkbench(): Promise<Page> {
   throw new Error("The private CDP endpoint did not expose an editor workbench.");
 }
 
+async function waitForWorkbenchReady(workbench: Page): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  do {
+    const editor = workbench.locator(".monaco-workbench .part.editor").first();
+    if ((await editor.count()) > 0 && (await editor.isVisible())) return;
+    await delay(25);
+  } while (Date.now() < deadline);
+  throw new Error("The private editor workbench did not expose a visible editor part.");
+}
+
+async function waitForPanelSynchronization(testing: TestApi, sessionId: string): Promise<void> {
+  const deadline = Date.now() + GRID_DISCOVERY_TIMEOUT_MS;
+  do {
+    const synchronized = await Promise.race([testing.synchronizePanel(sessionId), delay(2_000).then(() => false)]);
+    if (synchronized) return;
+    await delay(25);
+  } while (Date.now() < deadline);
+  throw new Error("The installed warm-up renderer did not acknowledge its authoritative host snapshot.");
+}
+
 async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns: number }): Promise<void> {
   const deadline = Date.now() + GRID_DISCOVERY_TIMEOUT_MS;
   do {
@@ -283,8 +310,11 @@ async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns
     }
     await delay(20);
   } while (Date.now() < deadline);
+  const browser = workbench.context().browser();
+  assertWorkbenchAlive(workbench, browser);
+  const diagnostics = await usableGridDiagnostics(workbench, browser);
   throw new Error(
-    `The installed production grid did not become usable for shape ${shape.rows}x${shape.columns} within ${GRID_DISCOVERY_TIMEOUT_MS} ms.`
+    `The installed production grid did not become usable for shape ${shape.rows}x${shape.columns} within ${GRID_DISCOVERY_TIMEOUT_MS} ms: ${JSON.stringify(diagnostics)}`
   );
 }
 
@@ -321,6 +351,55 @@ function rendererFrames(workbench: Page, browser: Browser | null): Frame[] {
   return [...new Set(pages)].flatMap((page) => page.frames()).slice(0, 64);
 }
 
+async function usableGridDiagnostics(workbench: Page, browser: Browser | null): Promise<unknown> {
+  const discovered = browser?.contexts().flatMap((context) => context.pages()) ?? [workbench];
+  const pages = [workbench, ...discovered.filter((page) => page !== workbench && !page.isClosed())];
+  const uniquePages = [...new Set(pages)].slice(0, 16);
+  const diagnostics: unknown[] = [];
+  for (const [pageIndex, page] of uniquePages.entries()) {
+    for (const [frameIndex, frame] of page.frames().slice(0, 16).entries()) {
+      try {
+        const grid = frame.locator('table[role="grid"]').first();
+        const gridCount = await grid.count();
+        const firstCell = frame.locator('[data-grid-row="0"][data-grid-column="0"]').first();
+        const firstCellCount = await firstCell.count();
+        const protocol = rendererProtocol(frame.url());
+        diagnostics.push({
+          pageIndex,
+          frameIndex,
+          protocol,
+          workbench: page === workbench,
+          mainFrame: frame === page.mainFrame(),
+          rootCount: await frame.locator("#root").count(),
+          workspaceCount: await frame.locator('[data-testid="app-workspace"]').count(),
+          gridCount,
+          gridVisible: gridCount > 0 && (await grid.isVisible()),
+          busy: gridCount > 0 ? await grid.getAttribute("aria-busy") : null,
+          rowCount: gridCount > 0 ? await grid.getAttribute("aria-rowcount") : null,
+          columnCount: gridCount > 0 ? await grid.getAttribute("aria-colcount") : null,
+          firstCellCount,
+          firstCellVisible: firstCellCount > 0 && (await firstCell.isVisible())
+        });
+      } catch {
+        diagnostics.push({ pageIndex, frameIndex, retired: true });
+      }
+      if (diagnostics.length >= 32) return diagnostics;
+    }
+  }
+  return diagnostics;
+}
+
+function rendererProtocol(url: string): string {
+  try {
+    const protocol = new URL(url).protocol.toLowerCase();
+    return ["about:", "file:", "http:", "https:", "vscode-file:", "vscode-webview:"].includes(protocol)
+      ? protocol
+      : "other";
+  } catch {
+    return "other";
+  }
+}
+
 function assertWorkbenchAlive(workbench: Page, browser: Browser | null): void {
   if (workbench.isClosed()) throw new Error("The editor workbench closed during installed grid discovery.");
   if (browser && !browser.isConnected()) throw new Error("The private CDP browser disconnected.");
@@ -331,15 +410,22 @@ async function waitForHostSession(
   predicate: (metadata: SessionMetadata) => boolean,
   timeoutMs: number,
   label: string
-): Promise<void> {
+): Promise<{ sessionId: string; metadata: SessionMetadata }> {
+  let matched: { sessionId: string; metadata: SessionMetadata } | undefined;
   await waitFor(
     () => {
       const active = testing.activeSession();
-      return active !== undefined && predicate(active.metadata);
+      if (active !== undefined && predicate(active.metadata)) {
+        matched = active;
+        return true;
+      }
+      return false;
     },
     timeoutMs,
     label
   );
+  assert.ok(matched);
+  return matched;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
