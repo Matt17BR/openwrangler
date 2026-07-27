@@ -15,6 +15,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync
 } from "node:fs";
@@ -84,6 +85,8 @@ const INSTALLED_PERFORMANCE_PHASES = [
 const EXPECTED_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const INSTALLED_CHECKSUM_MAX_BYTES = 512;
+const INSTALLED_PROVENANCE_MAX_BYTES = 4096;
+const INSTALLED_PROVENANCE_PROTOCOL = "openwrangler-canonical-release-artifact-v1";
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
@@ -161,17 +164,36 @@ export function parseInstalledPerformanceArguments(arguments_) {
       options.candidateChecksum = resolve(root, value);
       continue;
     }
+    if (argument === "--candidate-provenance") {
+      const value = arguments_[++index];
+      if (!value) throw new Error("--candidate-provenance requires one filesystem path.");
+      if (options.candidateProvenance !== undefined) {
+        throw new Error("--candidate-provenance may be provided only once.");
+      }
+      options.candidateProvenance = resolve(root, value);
+      continue;
+    }
     if (argument?.startsWith("--")) throw new Error(`Unknown installed-performance option ${argument}.`);
     throw new Error(
-      "Installed performance requires named candidate options; use --candidate-out or --candidate-in with --candidate-checksum."
+      "Installed performance requires named candidate options; use --candidate-out or --candidate-in with --candidate-checksum and --candidate-provenance."
     );
   }
-  const consumesCandidate = options.candidateInput !== undefined || options.candidateChecksum !== undefined;
-  if (consumesCandidate && (options.candidateInput === undefined || options.candidateChecksum === undefined)) {
-    throw new Error("--candidate-in and --candidate-checksum are required together.");
+  const consumesCandidate =
+    options.candidateInput !== undefined ||
+    options.candidateChecksum !== undefined ||
+    options.candidateProvenance !== undefined;
+  if (
+    consumesCandidate &&
+    (options.candidateInput === undefined ||
+      options.candidateChecksum === undefined ||
+      options.candidateProvenance === undefined)
+  ) {
+    throw new Error("--candidate-in, --candidate-checksum, and --candidate-provenance are required together.");
   }
   if (consumesCandidate && candidateOutputExplicit) {
-    throw new Error("--candidate-in/--candidate-checksum cannot be combined with --candidate-out.");
+    throw new Error(
+      "--candidate-in/--candidate-checksum/--candidate-provenance cannot be combined with --candidate-out."
+    );
   }
   if (consumesCandidate && options.smoke) {
     throw new Error("Canonical candidate consumption is stable release evidence and cannot use --smoke.");
@@ -180,12 +202,55 @@ export function parseInstalledPerformanceArguments(arguments_) {
     throw new Error("Canonical candidate consumption always runs both first-class editors and cannot use --editors.");
   }
   if (consumesCandidate) {
+    const canonicalPaths = [
+      options.candidateInput,
+      options.candidateChecksum,
+      options.candidateProvenance,
+      options.output
+    ];
+    if (new Set(canonicalPaths).size !== canonicalPaths.length) {
+      throw new Error("Canonical candidate inputs and the installed-performance report must use different paths.");
+    }
     options.candidateOutput = undefined;
     options.mode = "consume";
   } else {
+    if (options.output === options.candidateOutput) {
+      throw new Error("The preview candidate and installed-performance report must use different paths.");
+    }
     options.mode = "package";
   }
   return options;
+}
+
+export function assertInstalledPerformanceArtifactPathSeparation({
+  output,
+  candidateInput,
+  candidateChecksum,
+  candidateProvenance,
+  candidateOutput
+}) {
+  if (typeof output !== "string" || output.length === 0) {
+    throw new TypeError("Installed performance requires one report output path.");
+  }
+  const protectedPaths = [candidateInput, candidateChecksum, candidateProvenance, candidateOutput].filter(
+    (path) => typeof path === "string" && path.length > 0
+  );
+  if (protectedPaths.length === 0) {
+    throw new TypeError("Installed performance requires at least one protected candidate artifact path.");
+  }
+  const resolvedOutput = resolve(output);
+  const outputTarget = canonicalProspectivePath(resolvedOutput);
+  const outputIdentity = existingPathIdentity(resolvedOutput);
+  for (const protectedPath of protectedPaths) {
+    const resolvedProtected = resolve(protectedPath);
+    if (
+      resolvedProtected === resolvedOutput ||
+      canonicalProspectivePath(resolvedProtected) === outputTarget ||
+      sameExistingPathIdentity(existingPathIdentity(resolvedProtected), outputIdentity)
+    ) {
+      throw new Error("The installed-performance report path aliases a protected candidate artifact.");
+    }
+  }
 }
 
 export function stageInstalledPerformanceVsix(source, destination, hooks = {}) {
@@ -338,6 +403,100 @@ export function readInstalledPerformanceChecksum(checksumPath, candidatePath, ho
   }
 }
 
+export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
+  const path = resolve(provenancePath);
+  if (basename(path) !== "openwrangler.vsix.provenance.json") {
+    throw new Error(
+      "Canonical installed performance requires the provenance filename openwrangler.vsix.provenance.json."
+    );
+  }
+  let descriptor;
+  try {
+    descriptor = openReadOnlyNoFollow(path, "The installed-performance provenance must be a single-link regular file.");
+    const before = fstatSync(descriptor, { bigint: true });
+    const namedBefore = lstatSync(path, { bigint: true });
+    requireSameRegularFile(namedBefore, before, "The installed-performance provenance changed before it was read.");
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size <= 0n ||
+      before.size > BigInt(INSTALLED_PROVENANCE_MAX_BYTES) ||
+      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("The installed-performance provenance must be one bounded current-user-owned regular file.");
+    }
+    hooks.afterOpen?.(path);
+    const bytes = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (count === 0) throw new Error("The installed-performance provenance ended before its validated byte size.");
+      offset += count;
+    }
+    hooks.afterRead?.(path);
+    const after = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(path, { bigint: true });
+    requireSameRegularFile(after, before, "The installed-performance provenance changed while it was read.");
+    requireSameRegularFile(namedAfter, before, "The installed-performance provenance path changed while it was read.");
+    const value = validateInstalledPerformanceProvenance(
+      parseStrictJson(bytes.toString("utf8"), { maxBytes: INSTALLED_PROVENANCE_MAX_BYTES })
+    );
+    return Object.freeze({
+      path,
+      ...value,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.length,
+      fileIdentity: fileIdentityReceipt(after)
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+export function validateInstalledPerformanceProvenance(value) {
+  const expectedKeys = [
+    "extensionId",
+    "extensionVersion",
+    "preview",
+    "protocol",
+    "releaseTag",
+    "sourceCommit",
+    "vsixBytes",
+    "vsixSha256"
+  ];
+  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error("The installed-performance provenance must contain exactly the canonical artifact fields.");
+  }
+  if (
+    value.protocol !== INSTALLED_PROVENANCE_PROTOCOL ||
+    value.extensionId !== "Matt17BR.openwrangler" ||
+    typeof value.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(value.extensionVersion)?.channel !== "stable" ||
+    value.preview !== false ||
+    value.releaseTag !== `v${value.extensionVersion}` ||
+    typeof value.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(value.sourceCommit) ||
+    typeof value.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.vsixSha256) ||
+    !Number.isSafeInteger(value.vsixBytes) ||
+    value.vsixBytes <= 0 ||
+    value.vsixBytes > VSIX_MAX_BYTES
+  ) {
+    throw new Error("The installed-performance provenance does not describe one canonical stable artifact.");
+  }
+  return Object.freeze({
+    protocol: value.protocol,
+    extensionId: value.extensionId,
+    extensionVersion: value.extensionVersion,
+    preview: value.preview,
+    releaseTag: value.releaseTag,
+    sourceCommit: value.sourceCommit,
+    vsixSha256: value.vsixSha256,
+    vsixBytes: value.vsixBytes
+  });
+}
+
 export async function readInstalledPerformanceCandidate(receipt) {
   if (!guardedCandidateReceipts.has(receipt)) {
     throw new Error("Installed performance candidate metadata requires one guarded candidate receipt.");
@@ -362,6 +521,8 @@ export async function readInstalledPerformanceCandidate(receipt) {
     preview: packagedManifest.preview,
     channel: packagedManifest.channel,
     buildMethod: receipt.buildMethod,
+    releaseTag: receipt.releaseTag ?? null,
+    provenanceSha256: receipt.provenanceSha256 ?? null,
     sourceCommit: receipt.source.commit,
     vsixSha256: receipt.sha256,
     vsixBytes: receipt.bytes
@@ -461,6 +622,7 @@ export async function packageInstalledPerformanceCandidate({
 export async function acceptInstalledPerformanceCandidate({
   candidatePath,
   checksumPath,
+  provenancePath,
   privateDestination,
   environment = process.env,
   expectedCommit = environment.EXPECTED_SHA,
@@ -469,27 +631,35 @@ export async function acceptInstalledPerformanceCandidate({
   readSourceManifest = readInstalledPerformanceSourceManifest,
   readExternalCandidate = readInstalledPerformanceVsixReceipt,
   readChecksum = readInstalledPerformanceChecksum,
+  readProvenance = readInstalledPerformanceProvenance,
+  readReleaseTagCommit = readInstalledPerformanceReleaseTagCommit,
   stageCandidate = stageInstalledPerformanceVsix,
   verifyCandidate = verifyInstalledPerformanceVsix,
   readCandidate = readInstalledPerformanceCandidate,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
-  revalidateChecksum = revalidateInstalledPerformanceChecksum
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance
 }) {
   if (
     typeof candidatePath !== "string" ||
     candidatePath.length === 0 ||
     typeof checksumPath !== "string" ||
     checksumPath.length === 0 ||
+    typeof provenancePath !== "string" ||
+    provenancePath.length === 0 ||
     typeof privateDestination !== "string" ||
     privateDestination.length === 0
   ) {
-    throw new TypeError("Canonical installed performance requires candidate, checksum, and private destination paths.");
+    throw new TypeError(
+      "Canonical installed performance requires candidate, checksum, provenance, and private destination paths."
+    );
   }
   const resolvedCandidate = resolve(candidatePath);
   const resolvedChecksum = resolve(checksumPath);
+  const resolvedProvenance = resolve(provenancePath);
   const resolvedPrivate = resolve(privateDestination);
-  if (new Set([resolvedCandidate, resolvedChecksum, resolvedPrivate]).size !== 3) {
-    throw new Error("Canonical candidate, checksum, and private destination paths must be different.");
+  if (new Set([resolvedCandidate, resolvedChecksum, resolvedProvenance, resolvedPrivate]).size !== 4) {
+    throw new Error("Canonical candidate, checksum, provenance, and private destination paths must be different.");
   }
   if (typeof expectedCommit !== "string" || !/^[0-9a-f]{40}$/u.test(expectedCommit)) {
     throw new Error("EXPECTED_SHA must be one full lowercase hexadecimal Git commit ID.");
@@ -510,6 +680,9 @@ export async function acceptInstalledPerformanceCandidate({
   if (releaseTag !== `v${sourceManifest.version}`) {
     throw new Error("RELEASE_TAG must exactly match the stable source package version.");
   }
+  if ((await readReleaseTagCommit(releaseTag)) !== expectedCommit) {
+    throw new Error("RELEASE_TAG must resolve to the exact expected source commit.");
+  }
 
   const externalCandidate = await readExternalCandidate(resolvedCandidate);
   requireVsixReceipt(externalCandidate);
@@ -520,8 +693,23 @@ export async function acceptInstalledPerformanceCandidate({
   if (checksum?.candidateSha256 !== externalCandidate.sha256) {
     throw new Error("The canonical candidate does not match its transferred checksum.");
   }
+  const provenance = await readProvenance(resolvedProvenance);
+  requireProvenanceReceipt(provenance);
+  if (
+    provenance.path !== resolvedProvenance ||
+    provenance.extensionId !== `${sourceManifest.publisher}.${sourceManifest.name}` ||
+    provenance.extensionVersion !== sourceManifest.version ||
+    provenance.preview !== sourceManifest.preview ||
+    provenance.releaseTag !== releaseTag ||
+    provenance.sourceCommit !== expectedCommit ||
+    provenance.vsixSha256 !== externalCandidate.sha256 ||
+    provenance.vsixBytes !== externalCandidate.bytes
+  ) {
+    throw new Error("The canonical candidate does not match its trusted build provenance.");
+  }
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
   const staged = await stageCandidate(externalCandidate.path, resolvedPrivate);
   requireVsixReceipt(staged);
   if (
@@ -533,6 +721,7 @@ export async function acceptInstalledPerformanceCandidate({
   }
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
   const privateReceipt = Object.freeze({
     path: staged.path,
     sha256: staged.sha256,
@@ -544,23 +733,28 @@ export async function acceptInstalledPerformanceCandidate({
   revalidateCandidate(privateReceipt);
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
 
   const candidateReceipt = Object.freeze({
     ...privateReceipt,
     source: Object.freeze({ ...sourceBefore }),
     sourceManifest,
-    buildMethod: "canonical-release-artifact-v1"
+    buildMethod: "canonical-release-artifact-v1",
+    releaseTag,
+    provenanceSha256: provenance.sha256
   });
   guardedCandidateReceipts.add(candidateReceipt);
   const candidate = await readCandidate(candidateReceipt);
   revalidateCandidate(candidateReceipt);
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
   return Object.freeze({
     candidate,
     candidateReceipt,
     publicCandidateReceipt: externalCandidate,
     publicChecksumReceipt: checksum,
+    publicProvenanceReceipt: provenance,
     sourceBefore: candidateReceipt.source
   });
 }
@@ -576,7 +770,8 @@ export async function prepareInstalledPerformanceCandidate({
   buildHarness = runInstalledPerformanceHarnessBuild,
   readSource = readSourceProvenance,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
-  revalidateChecksum = revalidateInstalledPerformanceChecksum
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance
 }) {
   if (!options || typeof options !== "object" || typeof privateRoot !== "string" || privateRoot.length === 0) {
     throw new TypeError("Installed performance candidate preparation requires options and one private root.");
@@ -585,6 +780,7 @@ export async function prepareInstalledPerformanceCandidate({
     if (
       typeof options.candidateInput !== "string" ||
       typeof options.candidateChecksum !== "string" ||
+      typeof options.candidateProvenance !== "string" ||
       options.candidateOutput !== undefined ||
       options.smoke !== false ||
       JSON.stringify(options.editors) !== JSON.stringify(["vscode", "cursor"])
@@ -594,6 +790,7 @@ export async function prepareInstalledPerformanceCandidate({
     const accepted = await acceptCandidate({
       candidatePath: options.candidateInput,
       checksumPath: options.candidateChecksum,
+      provenancePath: options.candidateProvenance,
       privateDestination: resolve(privateRoot, "candidate.vsix"),
       environment
     });
@@ -602,12 +799,14 @@ export async function prepareInstalledPerformanceCandidate({
     revalidateCandidate(accepted.candidateReceipt);
     revalidateCandidate(accepted.publicCandidateReceipt);
     revalidateChecksum(accepted.publicChecksumReceipt, accepted.publicCandidateReceipt.path);
+    revalidateProvenance(accepted.publicProvenanceReceipt);
     return accepted;
   }
   if (
     options.mode !== "package" ||
     options.candidateInput !== undefined ||
     options.candidateChecksum !== undefined ||
+    options.candidateProvenance !== undefined ||
     typeof options.candidateOutput !== "string"
   ) {
     throw new Error("Self-packaged installed performance received an inconsistent option set.");
@@ -629,6 +828,7 @@ export async function prepareInstalledPerformanceCandidate({
     candidateReceipt: guardedCandidate,
     publicCandidateReceipt: published,
     publicChecksumReceipt: undefined,
+    publicProvenanceReceipt: undefined,
     sourceBefore
   });
 }
@@ -703,6 +903,28 @@ export function revalidateInstalledPerformanceChecksum(receipt, candidatePath = 
   return receipt;
 }
 
+export function revalidateInstalledPerformanceProvenance(receipt) {
+  requireProvenanceReceipt(receipt);
+  const current = readInstalledPerformanceProvenance(receipt.path);
+  if (
+    current.path !== receipt.path ||
+    current.protocol !== receipt.protocol ||
+    current.extensionId !== receipt.extensionId ||
+    current.extensionVersion !== receipt.extensionVersion ||
+    current.preview !== receipt.preview ||
+    current.releaseTag !== receipt.releaseTag ||
+    current.sourceCommit !== receipt.sourceCommit ||
+    current.vsixSha256 !== receipt.vsixSha256 ||
+    current.vsixBytes !== receipt.vsixBytes ||
+    current.sha256 !== receipt.sha256 ||
+    current.bytes !== receipt.bytes ||
+    !sameFileIdentityReceipt(current.fileIdentity, receipt.fileIdentity)
+  ) {
+    throw new Error("The installed-performance provenance receipt changed.");
+  }
+  return receipt;
+}
+
 function readInstalledPerformanceVsixSnapshot(receipt) {
   requireVsixReceipt(receipt);
   const snapshot = readBoundedVsixFileSnapshot(receipt.path, { requireOwner: true });
@@ -727,9 +949,11 @@ export async function collectInstalledPerformanceEditorRuns({
   candidateReceipt,
   publicCandidateReceipt,
   publicChecksumReceipt,
+  publicProvenanceReceipt,
   runEditor,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
-  revalidateChecksum = revalidateInstalledPerformanceChecksum
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance
 }) {
   const runs = [];
   for (const editor of editors) runs.push(await runEditor(editor));
@@ -738,6 +962,7 @@ export async function collectInstalledPerformanceEditorRuns({
   if (publicChecksumReceipt !== undefined) {
     revalidateChecksum(publicChecksumReceipt, publicCandidateReceipt?.path);
   }
+  if (publicProvenanceReceipt !== undefined) revalidateProvenance(publicProvenanceReceipt);
   return runs;
 }
 
@@ -746,6 +971,7 @@ export async function runInstalledPerformance(options, environment = process.env
   if (process.platform !== "linux") {
     throw new Error("Strict installed performance evidence currently requires a Linux reference machine.");
   }
+  assertInstalledPerformanceArtifactPathSeparation(options);
   const privateParent = resolve(root, "tmp", "ow");
   mkdirSync(privateParent, { recursive: true, mode: 0o700 });
   const privateRoot = mkdtempSync(join(privateParent, "x-"));
@@ -753,7 +979,7 @@ export async function runInstalledPerformance(options, environment = process.env
   configureEditorAcceptanceTempRoot(privateRoot, environment);
   const privatePaths = [
     privateRoot,
-    ...[options.candidateOutput, options.candidateInput, options.candidateChecksum].filter(
+    ...[options.candidateOutput, options.candidateInput, options.candidateChecksum, options.candidateProvenance].filter(
       (path) => typeof path === "string"
     )
   ];
@@ -762,6 +988,7 @@ export async function runInstalledPerformance(options, environment = process.env
   let result;
   let publicCandidateReceipt;
   let publicChecksumReceipt;
+  let publicProvenanceReceipt;
   try {
     const prepared = await prepareInstalledPerformanceCandidate({
       options,
@@ -773,6 +1000,7 @@ export async function runInstalledPerformance(options, environment = process.env
     const candidate = prepared.candidate;
     publicCandidateReceipt = prepared.publicCandidateReceipt;
     publicChecksumReceipt = prepared.publicChecksumReceipt;
+    publicProvenanceReceipt = prepared.publicProvenanceReceipt;
     const python = resolveTestPython(environment);
     const fixtureRoot = resolve(privateRoot, "f");
     const fixtureDirectory = resolve(fixtureRoot, "fixtures");
@@ -805,6 +1033,7 @@ export async function runInstalledPerformance(options, environment = process.env
       candidateReceipt: guardedCandidate,
       publicCandidateReceipt,
       publicChecksumReceipt,
+      publicProvenanceReceipt,
       runEditor: (editor) =>
         runEditorPerformanceWithIsolatedDisplay({
           editor,
@@ -863,6 +1092,10 @@ export async function runInstalledPerformance(options, environment = process.env
     if (publicChecksumReceipt !== undefined) {
       revalidateInstalledPerformanceChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
     }
+    if (publicProvenanceReceipt !== undefined) {
+      revalidateInstalledPerformanceProvenance(publicProvenanceReceipt);
+    }
+    assertInstalledPerformanceArtifactPathSeparation(options);
   } catch (error) {
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
   }
@@ -874,7 +1107,8 @@ export async function runInstalledPerformance(options, environment = process.env
       output: options.output,
       result,
       publicCandidateReceipt,
-      publicChecksumReceipt
+      publicChecksumReceipt,
+      publicProvenanceReceipt
     });
   }
   return result;
@@ -885,12 +1119,20 @@ export function publishInstalledPerformanceReleaseResult({
   result,
   publicCandidateReceipt,
   publicChecksumReceipt,
+  publicProvenanceReceipt,
   writeReport = writeInstalledPerformanceReport,
   assertGate = assertInstalledPerformanceReleaseGate,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance,
   revalidateReport = revalidateInstalledPerformanceReport
 }) {
+  assertInstalledPerformanceArtifactPathSeparation({
+    output,
+    candidateInput: publicCandidateReceipt?.path,
+    candidateChecksum: publicChecksumReceipt?.path,
+    candidateProvenance: publicProvenanceReceipt?.path
+  });
   const reportReceipt = writeReport(output, result);
   let gateError;
   try {
@@ -905,6 +1147,7 @@ export function publishInstalledPerformanceReleaseResult({
       if (publicChecksumReceipt !== undefined) {
         revalidateChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
       }
+      if (publicProvenanceReceipt !== undefined) revalidateProvenance(publicProvenanceReceipt);
     };
     revalidateArtifacts();
     let artifactsValidatedWhileReportOpen = false;
@@ -1372,6 +1615,19 @@ function readSourceProvenance() {
     timeout: 10_000
   });
   return { commit, trackedWorktreeDirty: trackedStatus.trim().length > 0 };
+}
+
+function readInstalledPerformanceReleaseTagCommit(releaseTag) {
+  const commit = execFileSync("git", ["rev-parse", "--verify", "--end-of-options", `${releaseTag}^{commit}`], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 4 * 1024,
+    timeout: 10_000
+  }).trim();
+  if (!/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error("RELEASE_TAG did not resolve to one full Git commit ID.");
+  }
+  return commit;
 }
 
 function readTrackedSourceFiles() {
@@ -1881,8 +2137,71 @@ function requireChecksumReceipt(receipt) {
   }
 }
 
+function requireProvenanceReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.path !== "string" ||
+    receipt.path.length === 0 ||
+    receipt.protocol !== INSTALLED_PROVENANCE_PROTOCOL ||
+    receipt.extensionId !== "Matt17BR.openwrangler" ||
+    typeof receipt.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(receipt.extensionVersion)?.channel !== "stable" ||
+    receipt.preview !== false ||
+    receipt.releaseTag !== `v${receipt.extensionVersion}` ||
+    typeof receipt.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(receipt.sourceCommit) ||
+    typeof receipt.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.vsixSha256) ||
+    !Number.isSafeInteger(receipt.vsixBytes) ||
+    receipt.vsixBytes <= 0 ||
+    receipt.vsixBytes > VSIX_MAX_BYTES ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256) ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    receipt.bytes > INSTALLED_PROVENANCE_MAX_BYTES ||
+    !receipt.fileIdentity ||
+    typeof receipt.fileIdentity !== "object" ||
+    !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof receipt.fileIdentity[key] === "bigint") ||
+    receipt.fileIdentity.size !== BigInt(receipt.bytes)
+  ) {
+    throw new Error("The installed-performance provenance receipt is invalid.");
+  }
+}
+
 function sameFileIdentityReceipt(actual, expected) {
   return ["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => actual[key] === expected[key]);
+}
+
+function canonicalProspectivePath(path) {
+  let cursor = resolve(path);
+  const suffix = [];
+  while (true) {
+    try {
+      return resolve(realpathSync.native(cursor), ...suffix);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      suffix.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function existingPathIdentity(path) {
+  try {
+    const identity = statSync(path, { bigint: true });
+    return Object.freeze({ dev: identity.dev, ino: identity.ino });
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function sameExistingPathIdentity(first, second) {
+  return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
 }
 
 function openReadOnlyNoFollow(file, symlinkMessage) {

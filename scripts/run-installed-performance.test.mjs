@@ -3,11 +3,12 @@ import { createHash } from "node:crypto";
 import fs, { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL, editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   acceptInstalledPerformanceCandidate,
+  assertInstalledPerformanceArtifactPathSeparation,
   assertInstalledPerformancePackageInventory,
   assertNoPackageableUntrackedFiles,
   assertSameInstalledPerformancePackageSources,
@@ -23,9 +24,11 @@ import {
   readInstalledPerformanceChecksum,
   readInstalledPerformanceFragment,
   readInstalledPerformanceCandidate,
+  readInstalledPerformanceProvenance,
   readInstalledPerformanceSourceManifest,
   readInstalledPerformanceVsixReceipt,
   revalidateInstalledPerformanceChecksum,
+  revalidateInstalledPerformanceProvenance,
   revalidateInstalledPerformanceVsix,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
@@ -101,6 +104,25 @@ function fakeVsixReceipt(path, sha256 = "b".repeat(64)) {
     bytes: 123,
     fileIdentity: fakeFileIdentity
   });
+}
+
+function fakeProvenanceReceipt(path = resolve("release", "openwrangler.vsix.provenance.json"), overrides = {}) {
+  const receipt = {
+    path,
+    protocol: "openwrangler-canonical-release-artifact-v1",
+    extensionId: "Matt17BR.openwrangler",
+    extensionVersion: "1.0.0",
+    preview: false,
+    releaseTag: "v1.0.0",
+    sourceCommit: "a".repeat(40),
+    vsixSha256: "b".repeat(64),
+    vsixBytes: 123,
+    sha256: "d".repeat(64),
+    bytes: 256,
+    ...overrides
+  };
+  receipt.fileIdentity = overrides.fileIdentity ?? Object.freeze({ ...fakeFileIdentity, size: BigInt(receipt.bytes) });
+  return Object.freeze(receipt);
 }
 
 test("installed performance assigns unfocused release display modes per editor", () => {
@@ -183,6 +205,8 @@ test("installed performance arguments make canonical candidate intake an exclusi
     "release/openwrangler.vsix",
     "--candidate-checksum",
     "release/openwrangler.vsix.sha256",
+    "--candidate-provenance",
+    "release/openwrangler.vsix.provenance.json",
     "--out",
     "tmp/canonical.json"
   ]);
@@ -191,15 +215,18 @@ test("installed performance arguments make canonical candidate intake an exclusi
   assert.equal(parsed.candidateOutput, undefined);
   assert.match(parsed.candidateInput, /release[/\\]openwrangler\.vsix$/u);
   assert.match(parsed.candidateChecksum, /release[/\\]openwrangler\.vsix\.sha256$/u);
+  assert.match(parsed.candidateProvenance, /release[/\\]openwrangler\.vsix\.provenance\.json$/u);
   assert.deepEqual(parsed.editors, ["vscode", "cursor"]);
-  assert.throws(
-    () => parseInstalledPerformanceArguments(["--candidate-in", "openwrangler.vsix"]),
-    /required together/u
-  );
-  assert.throws(
-    () => parseInstalledPerformanceArguments(["--candidate-checksum", "openwrangler.vsix.sha256"]),
-    /required together/u
-  );
+  for (const incomplete of [
+    ["--candidate-in", "openwrangler.vsix"],
+    ["--candidate-checksum", "openwrangler.vsix.sha256"],
+    ["--candidate-provenance", "openwrangler.vsix.provenance.json"],
+    ["--candidate-in", "openwrangler.vsix", "--candidate-checksum", "openwrangler.vsix.sha256"],
+    ["--candidate-in", "openwrangler.vsix", "--candidate-provenance", "openwrangler.vsix.provenance.json"],
+    ["--candidate-checksum", "openwrangler.vsix.sha256", "--candidate-provenance", "openwrangler.vsix.provenance.json"]
+  ]) {
+    assert.throws(() => parseInstalledPerformanceArguments(incomplete), /required together/u);
+  }
   assert.throws(
     () =>
       parseInstalledPerformanceArguments([
@@ -207,6 +234,8 @@ test("installed performance arguments make canonical candidate intake an exclusi
         "openwrangler.vsix",
         "--candidate-checksum",
         "openwrangler.vsix.sha256",
+        "--candidate-provenance",
+        "openwrangler.vsix.provenance.json",
         "--candidate-out",
         "copy.vsix"
       ]),
@@ -220,6 +249,8 @@ test("installed performance arguments make canonical candidate intake an exclusi
           "openwrangler.vsix",
           "--candidate-checksum",
           "openwrangler.vsix.sha256",
+          "--candidate-provenance",
+          "openwrangler.vsix.provenance.json",
           ...forbidden
         ]),
       /cannot use --smoke|cannot use --editors/u
@@ -233,10 +264,118 @@ test("installed performance arguments make canonical candidate intake an exclusi
         "--candidate-in",
         "two.vsix",
         "--candidate-checksum",
-        "openwrangler.vsix.sha256"
+        "openwrangler.vsix.sha256",
+        "--candidate-provenance",
+        "openwrangler.vsix.provenance.json"
       ]),
     /provided only once/u
   );
+  assert.throws(
+    () =>
+      parseInstalledPerformanceArguments([
+        "--candidate-in",
+        "openwrangler.vsix",
+        "--candidate-checksum",
+        "openwrangler.vsix.sha256",
+        "--candidate-provenance",
+        "one.json",
+        "--candidate-provenance",
+        "two.json"
+      ]),
+    /provided only once/u
+  );
+  for (const [option, value] of [
+    ["--candidate-checksum", "openwrangler.vsix"],
+    ["--candidate-provenance", "openwrangler.vsix"],
+    ["--candidate-provenance", "openwrangler.vsix.sha256"]
+  ]) {
+    assert.throws(
+      () =>
+        parseInstalledPerformanceArguments([
+          "--candidate-in",
+          "openwrangler.vsix",
+          "--candidate-checksum",
+          option === "--candidate-checksum" ? value : "openwrangler.vsix.sha256",
+          "--candidate-provenance",
+          option === "--candidate-provenance" ? value : "openwrangler.vsix.provenance.json"
+        ]),
+      /must use different paths/u
+    );
+  }
+  assert.throws(
+    () =>
+      parseInstalledPerformanceArguments([
+        "--candidate-in",
+        "openwrangler.vsix",
+        "--candidate-checksum",
+        "openwrangler.vsix.sha256",
+        "--candidate-provenance",
+        "openwrangler.vsix.provenance.json",
+        "--out",
+        "openwrangler.vsix.provenance.json"
+      ]),
+    /must use different paths/u
+  );
+});
+
+test("installed performance rejects direct and filesystem aliases between reports and candidate artifacts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-alias-"));
+  try {
+    const candidate = join(directory, "openwrangler.vsix");
+    const report = join(directory, "report.json");
+    await writeFile(candidate, "candidate");
+    assert.throws(
+      () =>
+        assertInstalledPerformanceArtifactPathSeparation({
+          output: candidate,
+          candidateInput: candidate
+        }),
+      /report path aliases a protected candidate artifact/u
+    );
+
+    const realParent = join(directory, "real");
+    const linkedParent = join(directory, "linked");
+    await mkdir(realParent);
+    await symlink(realParent, linkedParent, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(
+      () =>
+        assertInstalledPerformanceArtifactPathSeparation({
+          output: join(linkedParent, "future.json"),
+          candidateInput: join(realParent, "future.json")
+        }),
+      /report path aliases a protected candidate artifact/u
+    );
+
+    const outputSymlink = join(directory, "report-link.json");
+    await symlink(candidate, outputSymlink, "file");
+    assert.throws(
+      () =>
+        assertInstalledPerformanceArtifactPathSeparation({
+          output: outputSymlink,
+          candidateInput: candidate
+        }),
+      /report path aliases a protected candidate artifact/u
+    );
+
+    const hardLinkedReport = join(directory, "hard-report.json");
+    await link(candidate, hardLinkedReport);
+    assert.throws(
+      () =>
+        assertInstalledPerformanceArtifactPathSeparation({
+          output: hardLinkedReport,
+          candidateInput: candidate
+        }),
+      /report path aliases a protected candidate artifact/u
+    );
+    assert.doesNotThrow(() =>
+      assertInstalledPerformanceArtifactPathSeparation({
+        output: report,
+        candidateInput: candidate
+      })
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("package source guard rejects packageable untracked files, including ignored generated-root extras", async () => {
@@ -892,11 +1031,114 @@ test("canonical checksum intake rejects malformed, linked, and changing receipts
   }
 });
 
+test("canonical provenance intake pins one strict stable build receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-provenance-"));
+  try {
+    const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
+    const value = {
+      protocol: "openwrangler-canonical-release-artifact-v1",
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "1.0.0",
+      preview: false,
+      releaseTag: "v1.0.0",
+      sourceCommit: "a".repeat(40),
+      vsixSha256: "b".repeat(64),
+      vsixBytes: 123
+    };
+    await writeFile(provenancePath, `${JSON.stringify(value)}\n`);
+
+    const receipt = readInstalledPerformanceProvenance(provenancePath);
+    assert.deepEqual(
+      {
+        protocol: receipt.protocol,
+        extensionId: receipt.extensionId,
+        extensionVersion: receipt.extensionVersion,
+        preview: receipt.preview,
+        releaseTag: receipt.releaseTag,
+        sourceCommit: receipt.sourceCommit,
+        vsixSha256: receipt.vsixSha256,
+        vsixBytes: receipt.vsixBytes
+      },
+      value
+    );
+    assert.equal(Object.isFrozen(receipt), true);
+    assert.equal(revalidateInstalledPerformanceProvenance(receipt), receipt);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("canonical provenance intake rejects malformed, linked, and changing receipts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-provenance-invalid-"));
+  try {
+    const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
+    const value = {
+      protocol: "openwrangler-canonical-release-artifact-v1",
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "1.0.0",
+      preview: false,
+      releaseTag: "v1.0.0",
+      sourceCommit: "a".repeat(40),
+      vsixSha256: "b".repeat(64),
+      vsixBytes: 123
+    };
+    for (const malformed of [
+      "{",
+      JSON.stringify({ ...value, unexpected: true }),
+      JSON.stringify(Object.fromEntries(Object.entries(value).filter(([key]) => key !== "releaseTag"))),
+      JSON.stringify({ ...value, preview: true }),
+      JSON.stringify({ ...value, sourceCommit: "A".repeat(40) }),
+      JSON.stringify({ ...value, vsixSha256: "B".repeat(64) }),
+      JSON.stringify({ ...value, vsixBytes: 0 })
+    ]) {
+      await writeFile(provenancePath, malformed);
+      assert.throws(
+        () => readInstalledPerformanceProvenance(provenancePath),
+        /Unterminated JSON|strict JSON|canonical artifact fields|canonical stable artifact/u
+      );
+    }
+
+    await writeFile(provenancePath, JSON.stringify(value));
+    const hardLink = join(directory, "provenance-hardlink.json");
+    await link(provenancePath, hardLink);
+    assert.throws(
+      () => readInstalledPerformanceProvenance(provenancePath),
+      /single-link regular file|bounded current-user-owned|changed before it was read/u
+    );
+    await rm(hardLink);
+
+    const symlinkDirectory = join(directory, "symlink");
+    await mkdir(symlinkDirectory);
+    const symlinkPath = join(symlinkDirectory, "openwrangler.vsix.provenance.json");
+    await symlink(provenancePath, symlinkPath);
+    assert.throws(() => readInstalledPerformanceProvenance(symlinkPath), /single-link regular file/u);
+    await rm(symlinkDirectory, { recursive: true, force: true });
+
+    assert.throws(
+      () =>
+        readInstalledPerformanceProvenance(provenancePath, {
+          afterOpen() {
+            writeFileSync(provenancePath, `${JSON.stringify({ ...value, vsixBytes: 124 })}\n`);
+          }
+        }),
+      /changed while it was read|path changed while it was read/u
+    );
+
+    await writeFile(provenancePath, JSON.stringify(value));
+    const receipt = readInstalledPerformanceProvenance(provenancePath);
+    await writeFile(provenancePath, `${JSON.stringify({ ...value, vsixBytes: 124 })}\n`);
+    assert.throws(() => revalidateInstalledPerformanceProvenance(receipt), /changed|receipt/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("canonical candidate acceptance binds stable source, checksum, and canonical provenance", async () => {
   const commit = "a".repeat(40);
-  const candidatePath = "/release/openwrangler.vsix";
-  const checksumPath = "/release/openwrangler.vsix.sha256";
-  const privatePath = "/private/candidate.vsix";
+  const candidatePath = resolve("release", "openwrangler.vsix");
+  const checksumPath = resolve("release", "openwrangler.vsix.sha256");
+  const provenancePath = resolve("release", "openwrangler.vsix.provenance.json");
+  const privatePath = resolve("private", "candidate.vsix");
   const external = fakeVsixReceipt(candidatePath);
   const staged = fakeVsixReceipt(privatePath);
   const checksum = Object.freeze({
@@ -907,11 +1149,17 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
     bytes: 86,
     fileIdentity: Object.freeze({ ...fakeFileIdentity, size: 86n })
   });
+  const provenance = fakeProvenanceReceipt(provenancePath, {
+    sourceCommit: commit,
+    vsixSha256: external.sha256,
+    vsixBytes: external.bytes
+  });
   const events = [];
 
   const accepted = await acceptInstalledPerformanceCandidate({
     candidatePath,
     checksumPath,
+    provenancePath,
     privateDestination: privatePath,
     expectedCommit: commit,
     releaseTag: "v1.0.0",
@@ -926,6 +1174,15 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
       assert.equal(candidate, candidatePath);
       return checksum;
     },
+    readProvenance(path) {
+      assert.equal(path, provenancePath);
+      return provenance;
+    },
+    readReleaseTagCommit(tag) {
+      assert.equal(tag, "v1.0.0");
+      events.push("tag");
+      return commit;
+    },
     stageCandidate(source, destination) {
       assert.equal(source, candidatePath);
       assert.equal(destination, privatePath);
@@ -939,6 +1196,8 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
     readCandidate(receipt) {
       assert.equal(receipt.buildMethod, "canonical-release-artifact-v1");
       assert.equal(receipt.sourceManifest.channel, "stable");
+      assert.equal(receipt.releaseTag, "v1.0.0");
+      assert.equal(receipt.provenanceSha256, provenance.sha256);
       events.push("metadata");
       return Object.freeze({
         extensionId: "Matt17BR.openwrangler",
@@ -946,6 +1205,8 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
         preview: false,
         channel: "stable",
         buildMethod: receipt.buildMethod,
+        releaseTag: receipt.releaseTag,
+        provenanceSha256: receipt.provenanceSha256,
         sourceCommit: commit,
         vsixSha256: receipt.sha256,
         vsixBytes: receipt.bytes
@@ -959,34 +1220,54 @@ test("canonical candidate acceptance binds stable source, checksum, and canonica
       assert.equal(receipt, checksum);
       assert.equal(candidate, candidatePath);
       events.push("checksum");
+    },
+    revalidateProvenance(receipt) {
+      assert.equal(receipt, provenance);
+      events.push("provenance");
     }
   });
 
   assert.equal(accepted.candidate.buildMethod, "canonical-release-artifact-v1");
+  assert.equal(accepted.candidate.releaseTag, "v1.0.0");
+  assert.equal(accepted.candidate.provenanceSha256, provenance.sha256);
   assert.equal(accepted.candidateReceipt.buildMethod, "canonical-release-artifact-v1");
+  assert.equal(accepted.candidateReceipt.releaseTag, "v1.0.0");
+  assert.equal(accepted.candidateReceipt.provenanceSha256, provenance.sha256);
   assert.equal(accepted.publicCandidateReceipt, external);
   assert.equal(accepted.publicChecksumReceipt, checksum);
+  assert.equal(accepted.publicProvenanceReceipt, provenance);
   assert.deepEqual(
-    events.filter((event) => event === "stage" || event === "verify" || event === "metadata"),
-    ["stage", "verify", "metadata"]
+    events.filter((event) => ["tag", "stage", "verify", "metadata"].includes(event)),
+    ["tag", "stage", "verify", "metadata"]
   );
   assert.ok(events.filter((event) => event === "checksum").length >= 3);
+  assert.ok(events.filter((event) => event === "provenance").length >= 3);
 });
 
 test("canonical candidate acceptance rejects invalid release provenance and digest before staging", async () => {
   const commit = "a".repeat(40);
-  const candidatePath = "/release/openwrangler.vsix";
-  const checksumPath = "/release/openwrangler.vsix.sha256";
+  const candidatePath = resolve("release", "openwrangler.vsix");
+  const checksumPath = resolve("release", "openwrangler.vsix.sha256");
+  const provenancePath = resolve("release", "openwrangler.vsix.provenance.json");
   const external = fakeVsixReceipt(candidatePath);
+  const provenance = fakeProvenanceReceipt(provenancePath, {
+    sourceCommit: commit,
+    vsixSha256: external.sha256,
+    vsixBytes: external.bytes
+  });
   const base = {
     candidatePath,
     checksumPath,
-    privateDestination: "/private/candidate.vsix",
+    provenancePath,
+    privateDestination: resolve("private", "candidate.vsix"),
     expectedCommit: commit,
     releaseTag: "v1.0.0",
     readSource: () => ({ commit, trackedWorktreeDirty: false }),
     readSourceManifest: () => previewSourceManifest({ version: "1.0.0", preview: false }),
+    readReleaseTagCommit: () => commit,
     readExternalCandidate: () => external,
+    readChecksum: () => ({ candidateSha256: external.sha256 }),
+    readProvenance: () => provenance,
     stageCandidate: () => assert.fail("rejected canonical intake must not stage a candidate"),
     verifyCandidate: () => assert.fail("rejected canonical intake must not verify a candidate")
   };
@@ -1023,18 +1304,54 @@ test("canonical candidate acceptance rejects invalid release provenance and dige
       expected
     );
   }
+
+  let artifactReads = 0;
+  await assert.rejects(
+    acceptInstalledPerformanceCandidate({
+      ...base,
+      readReleaseTagCommit: () => "f".repeat(40),
+      readExternalCandidate: () => {
+        artifactReads += 1;
+        return external;
+      }
+    }),
+    /resolve to the exact expected source commit/u
+  );
+  assert.equal(artifactReads, 0);
+
+  for (const overrides of [{ vsixSha256: "0".repeat(64) }, { vsixBytes: external.bytes + 1 }]) {
+    let stageCalls = 0;
+    await assert.rejects(
+      acceptInstalledPerformanceCandidate({
+        ...base,
+        readProvenance: () => fakeProvenanceReceipt(provenancePath, overrides),
+        stageCandidate: () => {
+          stageCalls += 1;
+          return fakeVsixReceipt(resolve("private", "candidate.vsix"));
+        }
+      }),
+      /does not match its trusted build provenance/u
+    );
+    assert.equal(stageCalls, 0);
+  }
 });
 
-test("consume-only preparation builds only the acceptance harness and retains both artifact receipts", async () => {
+test("consume-only preparation builds only the acceptance harness and retains all canonical artifact receipts", async () => {
   const commit = "a".repeat(40);
-  const candidateReceipt = fakeVsixReceipt("/private/candidate.vsix");
-  const publicCandidateReceipt = fakeVsixReceipt("/release/openwrangler.vsix");
+  const candidatePath = resolve("release", "openwrangler.vsix");
+  const checksumPath = resolve("release", "openwrangler.vsix.sha256");
+  const provenancePath = resolve("release", "openwrangler.vsix.provenance.json");
+  const privateRoot = resolve("private");
+  const candidateReceipt = fakeVsixReceipt(resolve(privateRoot, "candidate.vsix"));
+  const publicCandidateReceipt = fakeVsixReceipt(candidatePath);
   const publicChecksumReceipt = { marker: "checksum" };
+  const publicProvenanceReceipt = { marker: "provenance" };
   const accepted = Object.freeze({
     candidate: { buildMethod: "canonical-release-artifact-v1" },
     candidateReceipt,
     publicCandidateReceipt,
     publicChecksumReceipt,
+    publicProvenanceReceipt,
     sourceBefore: Object.freeze({ commit, trackedWorktreeDirty: false })
   });
   const events = [];
@@ -1044,15 +1361,17 @@ test("consume-only preparation builds only the acceptance harness and retains bo
       mode: "consume",
       smoke: false,
       editors: ["vscode", "cursor"],
-      candidateInput: "/release/openwrangler.vsix",
-      candidateChecksum: "/release/openwrangler.vsix.sha256",
+      candidateInput: candidatePath,
+      candidateChecksum: checksumPath,
+      candidateProvenance: provenancePath,
       candidateOutput: undefined
     },
-    privateRoot: "/private",
+    privateRoot,
     environment: {},
     acceptCandidate: async (options) => {
-      assert.equal(options.candidatePath, "/release/openwrangler.vsix");
-      assert.equal(options.checksumPath, "/release/openwrangler.vsix.sha256");
+      assert.equal(options.candidatePath, candidatePath);
+      assert.equal(options.checksumPath, checksumPath);
+      assert.equal(options.provenancePath, provenancePath);
       events.push("accept");
       return accepted;
     },
@@ -1071,11 +1390,15 @@ test("consume-only preparation builds only the acceptance harness and retains bo
       assert.equal(receipt, publicChecksumReceipt);
       assert.equal(candidate, publicCandidateReceipt.path);
       events.push("checksum");
+    },
+    revalidateProvenance(receipt) {
+      assert.equal(receipt, publicProvenanceReceipt);
+      events.push("provenance");
     }
   });
 
   assert.equal(prepared, accepted);
-  assert.deepEqual(events, ["accept", "harness", "candidate", "candidate", "checksum"]);
+  assert.deepEqual(events, ["accept", "harness", "candidate", "candidate", "checksum", "provenance"]);
 });
 
 test("candidate preparation rejects programmatically inconsistent consume and package modes before work", async () => {
@@ -1089,25 +1412,37 @@ test("candidate preparation rejects programmatically inconsistent consume and pa
       mode: "consume",
       smoke: true,
       editors: ["vscode", "cursor"],
-      candidateInput: "/release/openwrangler.vsix",
-      candidateChecksum: "/release/openwrangler.vsix.sha256",
+      candidateInput: resolve("release", "openwrangler.vsix"),
+      candidateChecksum: resolve("release", "openwrangler.vsix.sha256"),
+      candidateProvenance: resolve("release", "openwrangler.vsix.provenance.json"),
       candidateOutput: undefined
     },
     {
       mode: "consume",
       smoke: false,
       editors: ["vscode"],
-      candidateInput: "/release/openwrangler.vsix",
-      candidateChecksum: "/release/openwrangler.vsix.sha256",
+      candidateInput: resolve("release", "openwrangler.vsix"),
+      candidateChecksum: resolve("release", "openwrangler.vsix.sha256"),
+      candidateProvenance: resolve("release", "openwrangler.vsix.provenance.json"),
       candidateOutput: undefined
     },
     {
       mode: "package",
       smoke: false,
       editors: ["vscode", "cursor"],
-      candidateInput: "/release/openwrangler.vsix",
+      candidateInput: resolve("release", "openwrangler.vsix"),
       candidateChecksum: undefined,
+      candidateProvenance: undefined,
       candidateOutput: "/tmp/copy.vsix"
+    },
+    {
+      mode: "consume",
+      smoke: false,
+      editors: ["vscode", "cursor"],
+      candidateInput: resolve("release", "openwrangler.vsix"),
+      candidateChecksum: resolve("release", "openwrangler.vsix.sha256"),
+      candidateProvenance: undefined,
+      candidateOutput: undefined
     }
   ]) {
     await assert.rejects(prepareInstalledPerformanceCandidate({ ...noWork, options }), /inconsistent option set/u);
@@ -1312,10 +1647,14 @@ test("editor collection revalidates the exact VSIX receipt only after both edito
   const events = [];
   const receipt = { marker: "candidate" };
   const publicReceipt = { marker: "public-candidate" };
+  const checksumReceipt = { marker: "checksum" };
+  const provenanceReceipt = { marker: "provenance" };
   const runs = await collectInstalledPerformanceEditorRuns({
     editors: [{ key: "vscode" }, { key: "cursor" }],
     candidateReceipt: receipt,
     publicCandidateReceipt: publicReceipt,
+    publicChecksumReceipt: checksumReceipt,
+    publicProvenanceReceipt: provenanceReceipt,
     async runEditor(editor) {
       events.push(`run:${editor.key}`);
       return { editor: editor.key };
@@ -1323,11 +1662,26 @@ test("editor collection revalidates the exact VSIX receipt only after both edito
     revalidateCandidate(candidate) {
       assert.ok(candidate === receipt || candidate === publicReceipt);
       events.push(`revalidate:${candidate.marker}`);
+    },
+    revalidateChecksum(checksum) {
+      assert.equal(checksum, checksumReceipt);
+      events.push("revalidate:checksum");
+    },
+    revalidateProvenance(provenance) {
+      assert.equal(provenance, provenanceReceipt);
+      events.push("revalidate:provenance");
     }
   });
 
   assert.deepEqual(runs, [{ editor: "vscode" }, { editor: "cursor" }]);
-  assert.deepEqual(events, ["run:vscode", "run:cursor", "revalidate:candidate", "revalidate:public-candidate"]);
+  assert.deepEqual(events, [
+    "run:vscode",
+    "run:cursor",
+    "revalidate:candidate",
+    "revalidate:public-candidate",
+    "revalidate:checksum",
+    "revalidate:provenance"
+  ]);
 });
 
 test("editor collection rejects public candidate drift after the editor runs", async () => {
@@ -1352,6 +1706,67 @@ test("editor collection rejects public candidate drift after the editor runs", a
       }),
       /VSIX (receipt|checksum)/u
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("editor collection rejects canonical provenance drift after the editor runs", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-public-provenance-"));
+  try {
+    const provenancePath = join(directory, "openwrangler.vsix.provenance.json");
+    const value = {
+      protocol: "openwrangler-canonical-release-artifact-v1",
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "1.0.0",
+      preview: false,
+      releaseTag: "v1.0.0",
+      sourceCommit: "a".repeat(40),
+      vsixSha256: "b".repeat(64),
+      vsixBytes: 123
+    };
+    await writeFile(provenancePath, JSON.stringify(value));
+    const provenanceReceipt = readInstalledPerformanceProvenance(provenancePath);
+
+    await assert.rejects(
+      collectInstalledPerformanceEditorRuns({
+        editors: [{ key: "vscode" }],
+        candidateReceipt: { marker: "private" },
+        publicProvenanceReceipt: provenanceReceipt,
+        revalidateCandidate() {},
+        async runEditor() {
+          writeFileSync(provenancePath, `${JSON.stringify({ ...value, vsixBytes: 124 })}\n`);
+          return { editor: "vscode" };
+        }
+      }),
+      /provenance.*(changed|receipt)/u
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("release publication refuses an aliased report path before writing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-publication-alias-"));
+  try {
+    const candidate = join(directory, "openwrangler.vsix");
+    await writeFile(candidate, "candidate");
+    let writeCalls = 0;
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: candidate,
+          result: { protocol: "test" },
+          publicCandidateReceipt: { path: candidate },
+          writeReport() {
+            writeCalls += 1;
+            return { marker: "report" };
+          }
+        }),
+      /report path aliases a protected candidate artifact/u
+    );
+    assert.equal(writeCalls, 0);
+    assert.equal(await readFile(candidate, "utf8"), "candidate");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1422,15 +1837,23 @@ test("release publication rejects candidate mutation while the report is revalid
 
 test("release publication jointly revalidates the candidate while the report is pinned and after its read", () => {
   const events = [];
-  const candidateReceipt = { marker: "candidate" };
-  const checksumReceipt = { marker: "checksum" };
+  const candidateReceipt = { marker: "candidate", path: resolve("release", "openwrangler.vsix") };
+  const checksumReceipt = {
+    marker: "checksum",
+    path: resolve("release", "openwrangler.vsix.sha256")
+  };
+  const provenanceReceipt = {
+    marker: "provenance",
+    path: resolve("release", "openwrangler.vsix.provenance.json")
+  };
   const reportReceipt = { marker: "report" };
   assert.equal(
     publishInstalledPerformanceReleaseResult({
-      output: "/private/report.json",
+      output: resolve("private", "report.json"),
       result: { protocol: "test" },
       publicCandidateReceipt: candidateReceipt,
       publicChecksumReceipt: checksumReceipt,
+      publicProvenanceReceipt: provenanceReceipt,
       writeReport(output) {
         events.push(["write", output]);
         return reportReceipt;
@@ -1444,8 +1867,12 @@ test("release publication jointly revalidates the candidate while the report is 
       },
       revalidateChecksum(receipt, candidatePath) {
         assert.equal(receipt, checksumReceipt);
-        assert.equal(candidatePath, undefined);
+        assert.equal(candidatePath, candidateReceipt.path);
         events.push(["checksum"]);
+      },
+      revalidateProvenance(receipt) {
+        assert.equal(receipt, provenanceReceipt);
+        events.push(["provenance"]);
       },
       revalidateReport(receipt, hooks) {
         assert.equal(receipt, reportReceipt);
@@ -1457,16 +1884,19 @@ test("release publication jointly revalidates the candidate while the report is 
     reportReceipt
   );
   assert.deepEqual(events, [
-    ["write", "/private/report.json"],
+    ["write", resolve("private", "report.json")],
     ["gate"],
     ["candidate"],
     ["checksum"],
+    ["provenance"],
     ["report-open"],
     ["candidate"],
     ["checksum"],
+    ["provenance"],
     ["report-close"],
     ["candidate"],
-    ["checksum"]
+    ["checksum"],
+    ["provenance"]
   ]);
 });
 
@@ -1476,10 +1906,17 @@ test("release publication retains and jointly verifies evidence when the numeric
   assert.throws(
     () =>
       publishInstalledPerformanceReleaseResult({
-        output: "/private/report.json",
+        output: resolve("private", "report.json"),
         result: { protocol: "test" },
-        publicCandidateReceipt: { path: "/release/openwrangler.vsix" },
-        publicChecksumReceipt: { marker: "checksum" },
+        publicCandidateReceipt: { path: resolve("release", "openwrangler.vsix") },
+        publicChecksumReceipt: {
+          marker: "checksum",
+          path: resolve("release", "openwrangler.vsix.sha256")
+        },
+        publicProvenanceReceipt: {
+          marker: "provenance",
+          path: resolve("release", "openwrangler.vsix.provenance.json")
+        },
         writeReport() {
           events.push("write");
           return { marker: "report" };
@@ -1494,6 +1931,9 @@ test("release publication retains and jointly verifies evidence when the numeric
         revalidateChecksum() {
           events.push("checksum");
         },
+        revalidateProvenance() {
+          events.push("provenance");
+        },
         revalidateReport(_receipt, hooks) {
           events.push("report-open");
           hooks.afterOpen();
@@ -1507,12 +1947,15 @@ test("release publication retains and jointly verifies evidence when the numeric
     "gate",
     "candidate",
     "checksum",
+    "provenance",
     "report-open",
     "candidate",
     "checksum",
+    "provenance",
     "report-close",
     "candidate",
-    "checksum"
+    "checksum",
+    "provenance"
   ]);
 });
 
@@ -1520,9 +1963,12 @@ test("release publication rejects a report validator that cannot expose the join
   assert.throws(
     () =>
       publishInstalledPerformanceReleaseResult({
-        output: "/private/report.json",
+        output: resolve("private", "report.json"),
         result: { protocol: "test" },
-        publicCandidateReceipt: { marker: "candidate" },
+        publicCandidateReceipt: {
+          marker: "candidate",
+          path: resolve("release", "openwrangler.vsix")
+        },
         writeReport: () => ({ marker: "report" }),
         assertGate() {},
         revalidateCandidate() {},

@@ -18,7 +18,7 @@ import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v5";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v6";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
@@ -323,7 +323,18 @@ export function revalidateInstalledPerformanceReport(receipt, hooks = {}) {
 function validateCandidate(candidate) {
   exactKeys(
     candidate,
-    ["extensionId", "extensionVersion", "preview", "channel", "buildMethod", "sourceCommit", "vsixSha256", "vsixBytes"],
+    [
+      "extensionId",
+      "extensionVersion",
+      "preview",
+      "channel",
+      "buildMethod",
+      "releaseTag",
+      "provenanceSha256",
+      "sourceCommit",
+      "vsixSha256",
+      "vsixBytes"
+    ],
     [],
     "candidate provenance"
   );
@@ -346,6 +357,13 @@ function validateCandidate(candidate) {
   const expectedBuildMethod =
     classification.channel === "preview" ? "guarded-clean-head-v1" : "canonical-release-artifact-v1";
   assertEqual(candidate.buildMethod, expectedBuildMethod, "candidate build method");
+  if (classification.channel === "preview") {
+    assertEqual(candidate.releaseTag, null, "preview candidate release tag");
+    assertEqual(candidate.provenanceSha256, null, "preview candidate provenance SHA-256");
+  } else {
+    assertEqual(candidate.releaseTag, `v${candidate.extensionVersion}`, "stable candidate release tag");
+    assertMatch(candidate.provenanceSha256, SHA256, "stable candidate provenance SHA-256");
+  }
   assertMatch(candidate.sourceCommit, /^[0-9a-f]{40}$/u, "candidate source commit");
   assertMatch(candidate.vsixSha256, SHA256, "candidate VSIX SHA-256");
   if (!positiveInteger(candidate.vsixBytes)) throw new TypeError("Candidate VSIX size must be positive.");
