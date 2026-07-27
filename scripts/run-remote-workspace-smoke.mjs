@@ -301,6 +301,7 @@ try {
     descriptor: layout.descriptor,
     childScript: childStage.stagedPath,
     systemPython,
+    systemRuntimeDirectories: python.systemRuntimeDirectories,
     uid: tools.uid,
     gid: tools.gid,
     tools

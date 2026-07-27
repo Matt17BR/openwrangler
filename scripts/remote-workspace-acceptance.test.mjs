@@ -35,6 +35,7 @@ import {
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
+  validateRemoteWorkspaceSystemRuntimeDirectories,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-acceptance.mjs";
@@ -255,6 +256,7 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
       // platform-present regular executable instead of assuming one Python
       // minor exists on every CI image.
       systemPython: process.execPath,
+      systemRuntimeDirectories: ["/usr/lib/x86_64-linux-gnu"],
       uid: 1001,
       gid: 1001,
       tools: {
@@ -324,6 +326,21 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
+});
+
+test("Bubblewrap requires an explicit available system-runtime closure", () => {
+  assert.throws(
+    () => validateRemoteWorkspaceSystemRuntimeDirectories(undefined),
+    /explicit unique system-runtime closure/u
+  );
+  assert.throws(
+    () => validateRemoteWorkspaceSystemRuntimeDirectories(["/definitely/missing/open-wrangler-runtime"]),
+    /unavailable or unsafe/u
+  );
+  assert.throws(
+    () => validateRemoteWorkspaceSystemRuntimeDirectories(["/usr/lib", "/usr/lib"]),
+    /explicit unique system-runtime closure/u
+  );
 });
 
 test("System runtime closure roots must be canonical, root-owned, and non-writable", () => {

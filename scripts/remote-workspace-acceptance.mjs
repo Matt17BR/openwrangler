@@ -88,24 +88,15 @@ const REQUIRED_HOST_TOOLS = Object.freeze({
 // The first entry is a deliberate read-only, root-owned system-library
 // closure. Synthesizing thousands of transitive ELF mounts is more brittle
 // without providing additional isolation from user data.
-const SYSTEM_LIBRARY_CLOSURE_DIRECTORIES = Object.freeze([
+const REQUIRED_SYSTEM_RUNTIME_DIRECTORIES = Object.freeze([
   "/usr/lib/x86_64-linux-gnu",
   "/usr/lib/locale",
-  "/usr/lib/python3.14",
-  "/usr/libexec/glycin-loaders",
   "/usr/share/fontconfig",
   "/usr/share/fonts",
   "/usr/share/glib-2.0",
-  "/usr/share/glycin-loaders",
   "/usr/share/icons",
   "/usr/share/mime",
-  "/usr/share/nodejs/acorn",
-  "/usr/share/nodejs/acorn-walk",
-  "/usr/share/nodejs/cjs-module-lexer",
-  "/usr/share/nodejs/minimatch",
-  "/usr/share/nodejs/undici",
   "/usr/share/X11",
-  "/usr/share/xkeyboard-config-2",
   "/usr/share/zoneinfo",
   "/etc/fonts",
   "/etc/ssl/certs"
@@ -381,7 +372,8 @@ export async function copyPrivatePythonEnvironment(
   return Object.freeze({
     executable: destinationPython,
     version: copiedProbe.version,
-    packages: copiedProbe.packages
+    packages: copiedProbe.packages,
+    systemRuntimeDirectories: resolveRemoteWorkspaceSystemRuntimeDirectories(sourceProbe.systemRuntimeDirectories)
   });
 }
 
@@ -390,6 +382,7 @@ export function createRemoteWorkspaceBwrapArguments({
   descriptor,
   childScript,
   systemPython,
+  systemRuntimeDirectories,
   uid,
   gid,
   tools = REQUIRED_HOST_TOOLS
@@ -419,9 +412,7 @@ export function createRemoteWorkspaceBwrapArguments({
   // Production resolves and probes the exact system Python before entering
   // this pure argument builder. Keeping this function path-agnostic lets its
   // structural contract run on CI images with different installed minors.
-  for (const directory of SYSTEM_LIBRARY_CLOSURE_DIRECTORIES) {
-    validateRootOwnedSystemRuntimeDirectory(directory);
-  }
+  const runtimeDirectories = validateRemoteWorkspaceSystemRuntimeDirectories(systemRuntimeDirectories);
   const args = [
     "--unshare-user",
     "--uid",
@@ -465,7 +456,7 @@ export function createRemoteWorkspaceBwrapArguments({
   ]) {
     args.push("--dir", directory);
   }
-  for (const directory of SYSTEM_LIBRARY_CLOSURE_DIRECTORIES) {
+  for (const directory of runtimeDirectories) {
     args.push("--dir", directory, "--ro-bind", directory, directory);
   }
   for (const [source, destination] of [
@@ -654,14 +645,15 @@ export function writeRemoteWorkspacePhaseDescriptor(
 
 async function probePython(executable, runCommand) {
   const script = [
-    "import importlib,json,os,sys",
+    "import importlib,json,os,sys,sysconfig",
     "names=('pandas','polars','pyarrow')",
     "packages={}",
     "for name in names:",
     " m=importlib.import_module(name)",
     " packages[name]={'name':name,'version':str(m.__version__),'path':os.path.realpath(m.__file__)}",
     "packages['python']={'name':'python','version':sys.version.split()[0],'path':os.path.realpath(sys.executable)}",
-    "print(json.dumps({'prefix':os.path.realpath(sys.prefix),'version':sys.version.split()[0],'packages':packages},sort_keys=True,separators=(',',':')))"
+    "runtime=sorted({os.path.realpath(p) for p in (sysconfig.get_path('stdlib'),sysconfig.get_path('platstdlib')) if p})",
+    "print(json.dumps({'prefix':os.path.realpath(sys.prefix),'version':sys.version.split()[0],'packages':packages,'systemRuntimeDirectories':runtime},sort_keys=True,separators=(',',':')))"
   ].join("\n");
   const result = await runCommand(
     {
@@ -677,6 +669,9 @@ async function probePython(executable, runCommand) {
     typeof probe.prefix !== "string" ||
     typeof probe.version !== "string" ||
     !/^3\.(?:1[0-4])\.[0-9]+$/u.test(probe.version) ||
+    !Array.isArray(probe.systemRuntimeDirectories) ||
+    probe.systemRuntimeDirectories.length <= 0 ||
+    !probe.systemRuntimeDirectories.every((path) => typeof path === "string" && isAbsolute(path)) ||
     Object.keys(probe.packages ?? {})
       .sort()
       .join(",") !== "pandas,polars,pyarrow,python"
@@ -684,6 +679,42 @@ async function probePython(executable, runCommand) {
     throw new Error("The Remote SSH private Python dependency probe returned malformed metadata.");
   }
   return probe;
+}
+
+export function resolveRemoteWorkspaceSystemRuntimeDirectories(pythonDirectories) {
+  if (
+    !Array.isArray(pythonDirectories) ||
+    pythonDirectories.length <= 0 ||
+    pythonDirectories.length > 8 ||
+    !pythonDirectories.every((path) => typeof path === "string" && isAbsolute(path))
+  ) {
+    throw new Error("The Remote SSH Python probe did not provide one explicit system-runtime closure.");
+  }
+  return validateRemoteWorkspaceSystemRuntimeDirectories([
+    ...REQUIRED_SYSTEM_RUNTIME_DIRECTORIES,
+    ...pythonDirectories
+  ]);
+}
+
+export function validateRemoteWorkspaceSystemRuntimeDirectories(directories) {
+  if (
+    !Array.isArray(directories) ||
+    directories.length <= 0 ||
+    directories.length > 64 ||
+    new Set(directories).size !== directories.length
+  ) {
+    throw new Error("Remote SSH acceptance requires one explicit unique system-runtime closure.");
+  }
+  const validated = directories.map((directory) => {
+    try {
+      return validateRootOwnedSystemRuntimeDirectory(directory);
+    } catch (error) {
+      throw new Error("A required Remote SSH system-runtime closure root is unavailable or unsafe.", {
+        cause: error
+      });
+    }
+  });
+  return Object.freeze(validated);
 }
 
 function assertPrivatePythonPrefix(prefix, executable) {
