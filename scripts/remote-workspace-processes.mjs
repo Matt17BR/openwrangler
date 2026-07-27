@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from "node:fs";
 
 const DISPLAY_LOCK_MAX_BYTES = 32n;
 
@@ -55,7 +55,7 @@ export function spawnMonitoredRemoteWorkspaceChild(label, executable, args, opti
 
 export function captureRemoteWorkspaceDisplayReceipt(
   { directoryPath, socketPath, lockPath, expectedEntry, uid, pid },
-  filesystem = { lstatSync, readFileSync, readdirSync }
+  filesystem = { closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync }
 ) {
   if (
     typeof directoryPath !== "string" ||
@@ -72,9 +72,8 @@ export function captureRemoteWorkspaceDisplayReceipt(
   }
   const directory = filesystem.lstatSync(directoryPath, { bigint: true });
   const socket = filesystem.lstatSync(socketPath, { bigint: true });
-  const lock = filesystem.lstatSync(lockPath, { bigint: true });
+  const { lock, recordedPid } = readPinnedDisplayLock(lockPath, filesystem);
   const entries = [...filesystem.readdirSync(directoryPath)].sort();
-  const recordedPid = filesystem.readFileSync(lockPath, "utf8").trim();
   if (
     !directory.isDirectory() ||
     directory.isSymbolicLink() ||
@@ -143,6 +142,39 @@ function identity(metadata) {
 
 function sameIdentity(left, right) {
   return left.device === right.device && left.inode === right.inode;
+}
+
+function readPinnedDisplayLock(lockPath, filesystem) {
+  const namedBefore = filesystem.lstatSync(lockPath, { bigint: true });
+  const descriptor = filesystem.openSync(lockPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = filesystem.fstatSync(descriptor, { bigint: true });
+    if (!sameLockSnapshot(namedBefore, opened)) {
+      throw new Error("The private Xvfb lock changed before its PID could be read.");
+    }
+    const recordedPid = filesystem.readFileSync(descriptor, "utf8").trim();
+    const completed = filesystem.fstatSync(descriptor, { bigint: true });
+    const namedAfter = filesystem.lstatSync(lockPath, { bigint: true });
+    if (!sameLockSnapshot(opened, completed) || !sameLockSnapshot(opened, namedAfter)) {
+      throw new Error("The private Xvfb lock changed while its PID was read.");
+    }
+    return { lock: opened, recordedPid };
+  } finally {
+    filesystem.closeSync(descriptor);
+  }
+}
+
+function sameLockSnapshot(left, right) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.uid === right.uid &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
 }
 
 async function waitForCloseWithTimeout(closedPromise, timeoutMs, label) {

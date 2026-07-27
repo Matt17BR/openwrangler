@@ -107,40 +107,41 @@ async function runPhase(config, ip, ssh, ldconfig) {
 
   const xvfb = await startPrivateXvfb(config);
   const sshdOutput = boundedOutput();
-  const sshd = spawnMonitoredRemoteWorkspaceChild(
-    "The private loopback SSH daemon",
-    dynamicLoader,
-    [
-      "--library-path",
-      sshLibraryPath,
-      sshServer,
-      "-F",
-      "-E",
-      "-e",
-      "-s",
-      "-g",
-      "-m",
-      "-z",
-      "-p",
-      "127.0.0.1:49321",
-      "-P",
-      join(config.paths.remoteHome, "dropbear.pid"),
-      "-r",
-      sshHostKey,
-      "-D",
-      sshAuthorizedKeys
-    ],
-    {
-      detached: true,
-      env: remoteServerEnvironment(config),
-      stdio: ["ignore", "ignore", "pipe"]
-    }
-  );
-  sshd.child.stderr.on("data", (chunk) => sshdOutput.append(chunk));
   const editorOutput = boundedOutput();
+  let sshd;
   let editor;
   let phaseError;
   try {
+    sshd = spawnMonitoredRemoteWorkspaceChild(
+      "The private loopback SSH daemon",
+      dynamicLoader,
+      [
+        "--library-path",
+        sshLibraryPath,
+        sshServer,
+        "-F",
+        "-E",
+        "-e",
+        "-s",
+        "-g",
+        "-m",
+        "-z",
+        "-p",
+        "127.0.0.1:49321",
+        "-P",
+        join(config.paths.remoteHome, "dropbear.pid"),
+        "-r",
+        sshHostKey,
+        "-D",
+        sshAuthorizedKeys
+      ],
+      {
+        detached: true,
+        env: remoteServerEnvironment(config),
+        stdio: ["ignore", "ignore", "pipe"]
+      }
+    );
+    sshd.child.stderr.on("data", (chunk) => sshdOutput.append(chunk));
     await wait(350);
     try {
       sshd.assertRunning();

@@ -45,12 +45,15 @@ test("private display receipts reject socket replacement and PID drift", () => {
     pid: "73\n"
   };
   const filesystem = {
+    closeSync() {},
+    fstatSync: () => state.lock,
     lstatSync(path) {
       if (path === paths.directoryPath) return state.directory;
       if (path === paths.socketPath) return state.socket;
       if (path === paths.lockPath) return state.lock;
       throw new Error("unexpected path");
     },
+    openSync: () => 17,
     readFileSync: () => state.pid,
     readdirSync: () => ["X99"]
   };
@@ -67,6 +70,36 @@ test("private display receipts reject socket replacement and PID drift", () => {
     () => assertRemoteWorkspaceDisplayReceipt(receipt, filesystem),
     /lost its isolated process, lock, or socket identity/u
   );
+});
+
+test("private display lock reads reject a same-path replacement during the descriptor read", () => {
+  const paths = {
+    directoryPath: "/tmp/.X11-unix",
+    socketPath: "/tmp/.X11-unix/X99",
+    lockPath: "/tmp/.X99-lock",
+    expectedEntry: "X99",
+    uid: 1001,
+    pid: 73
+  };
+  const originalLock = metadata("file", 13n, { mode: 0o100600n, size: 3n, mtimeNs: 5n, ctimeNs: 6n });
+  let namedLock = originalLock;
+  const filesystem = {
+    closeSync() {},
+    fstatSync: () => originalLock,
+    lstatSync(path) {
+      if (path === paths.directoryPath) return metadata("directory", 11n, { mode: 0o041777n });
+      if (path === paths.socketPath) return metadata("socket", 12n);
+      if (path === paths.lockPath) return namedLock;
+      throw new Error("unexpected path");
+    },
+    openSync: () => 19,
+    readFileSync() {
+      namedLock = metadata("file", 99n, { mode: 0o100600n, size: 3n, mtimeNs: 7n, ctimeNs: 8n });
+      return "73\n";
+    },
+    readdirSync: () => ["X99"]
+  };
+  assert.throws(() => captureRemoteWorkspaceDisplayReceipt(paths, filesystem), /lock changed while its PID was read/u);
 });
 
 function metadata(kind, inode, overrides = {}) {
