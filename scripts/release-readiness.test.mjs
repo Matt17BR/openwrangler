@@ -819,6 +819,21 @@ test("structurally gates tag-workflow packaging, readiness, upload, and release"
   });
   assert.ok(wrongEnvironment.some((problem) => problem.includes("must bind EXPECTED_SHA")));
 
+  const hostileShell = mutate((workflow) => {
+    namedStep(workflow, "Enforce stable release readiness and publish immutable snapshot").shell = "bash {0}";
+  });
+  assert.ok(hostileShell.some((problem) => problem.includes("must use its canonical command shell")));
+
+  const ignoredFailure = mutate((workflow) => {
+    namedStep(workflow, "Verify stable VSIX candidate")["continue-on-error"] = true;
+  });
+  assert.ok(ignoredFailure.some((problem) => problem.includes("must not override command execution controls")));
+
+  const skippedVerification = mutate((workflow) => {
+    namedStep(workflow, "Verify stable VSIX candidate").if = "${{ false }}";
+  });
+  assert.ok(skippedVerification.some((problem) => problem.includes("wrong release-channel condition")));
+
   const commentedCommandDecoy = mutate((workflow) => {
     namedStep(workflow, "Verify exact tagged source after packaging").run =
       "# git diff-index --quiet HEAD --\necho skipped";
@@ -833,4 +848,33 @@ test("structurally gates tag-workflow packaging, readiness, upload, and release"
     workflow.jobs.decoy = { "runs-on": "ubuntu-latest", steps: [step] };
   });
   assert.ok(movedUpload.includes("release.yml build job must contain exactly one canonical release upload; found 0."));
+
+  const postReadinessMutation = mutate((workflow) => {
+    const index = workflow.jobs.build.steps.findIndex((step) => step.name === "Create canonical preview checksum");
+    workflow.jobs.build.steps.splice(index, 0, { name: "Rewrite stable outputs", run: "node mutate.mjs" });
+  });
+  assert.ok(
+    postReadinessMutation.includes(
+      "release.yml readiness, preview checksum, and canonical upload must be one exact final chain."
+    )
+  );
+
+  const postUploadMutation = mutate((workflow) => {
+    workflow.jobs.build.steps.push({ name: "Rewrite uploaded outputs", run: "node mutate.mjs" });
+  });
+  assert.ok(postUploadMutation.includes("release.yml canonical upload must be the final build step."));
+
+  const unpinnedReleaseDownload = mutate((workflow) => {
+    workflow.jobs.release.steps[0].uses = "actions/download-artifact@v8";
+  });
+  assert.ok(
+    unpinnedReleaseDownload.includes("release.yml release job must begin with the pinned canonical artifact download.")
+  );
+
+  const postChecksumMutation = mutate((workflow) => {
+    workflow.jobs.release.steps.splice(2, 0, { name: "Rewrite release files", run: "node mutate.mjs" });
+  });
+  assert.ok(
+    postChecksumMutation.includes("release.yml release job must contain exactly download, checksum, and release steps.")
+  );
 });

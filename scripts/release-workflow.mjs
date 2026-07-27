@@ -6,6 +6,8 @@ const STABLE_CONDITION = "${{ steps.release_metadata.outputs.prerelease != 'true
 const EVENT_SHA = "${{ github.sha }}";
 const EVENT_TAG = "${{ github.ref_name }}";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
+const RELEASE_ACTION = "softprops/action-gh-release@v2";
 const PREVIEW_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
 const digest = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
@@ -24,6 +26,10 @@ throw new Error(\`Release VSIX checksum mismatch: expected \${match[1]}, receive
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function normalizeRun(value) {
@@ -58,16 +64,55 @@ function requireExactStep(step, expected, problems) {
   if (expected.id !== undefined && value.id !== expected.id) {
     problems.push(`release.yml step "${value.name}" must use id ${expected.id}.`);
   }
-  if (expected.condition !== undefined && value.if !== expected.condition) {
+  if (
+    (expected.condition === undefined && hasOwn(value, "if")) ||
+    (expected.condition !== undefined && value.if !== expected.condition)
+  ) {
     problems.push(`release.yml step "${value.name}" has the wrong release-channel condition.`);
+  }
+  if (
+    (expected.shell === undefined && hasOwn(value, "shell")) ||
+    (expected.shell !== undefined && value.shell !== expected.shell)
+  ) {
+    problems.push(`release.yml step "${value.name}" must use its canonical command shell.`);
+  }
+  if (hasOwn(value, "continue-on-error") || hasOwn(value, "working-directory")) {
+    problems.push(`release.yml step "${value.name}" must not override command execution controls.`);
   }
   if (expected.run !== undefined && normalizeRun(value.run) !== normalizeRun(expected.run)) {
     problems.push(`release.yml step "${value.name}" must run only its canonical release command.`);
   }
-  for (const [key, expectedValue] of Object.entries(expected.env ?? {})) {
-    if (!isRecord(value.env) || value.env[key] !== expectedValue) {
-      problems.push(`release.yml step "${value.name}" must bind ${key} to ${expectedValue}.`);
+  const expectedEnvironment = expected.env;
+  if (expectedEnvironment === undefined) {
+    if (hasOwn(value, "env")) {
+      problems.push(`release.yml step "${value.name}" must not add command environment overrides.`);
     }
+  } else if (!isRecord(value.env)) {
+    problems.push(`release.yml step "${value.name}" must use only its canonical command environment.`);
+  } else {
+    for (const [key, expectedValue] of Object.entries(expectedEnvironment)) {
+      if (value.env[key] !== expectedValue) {
+        problems.push(`release.yml step "${value.name}" must bind ${key} to ${expectedValue}.`);
+      }
+    }
+    if (
+      Object.keys(value.env).length !== Object.keys(expectedEnvironment).length ||
+      Object.keys(value.env).some((key) => !hasOwn(expectedEnvironment, key))
+    ) {
+      problems.push(`release.yml step "${value.name}" must use only its canonical command environment.`);
+    }
+  }
+}
+
+function requireDefaultActionControls(step, label, problems) {
+  if (
+    hasOwn(step, "if") ||
+    hasOwn(step, "continue-on-error") ||
+    hasOwn(step, "env") ||
+    hasOwn(step, "shell") ||
+    hasOwn(step, "working-directory")
+  ) {
+    problems.push(`release.yml ${label} must use default successful action execution controls.`);
   }
 }
 
@@ -140,6 +185,7 @@ export function inspectReleaseWorkflow(contents) {
     sourceCheck,
     {
       env: { EXPECTED_SHA: EVENT_SHA },
+      shell: "bash",
       run: `test "$(git rev-parse HEAD)" = "$(git rev-parse "\${EXPECTED_SHA}^{commit}")"
 git update-index -q --refresh
 git diff-index --quiet HEAD --`
@@ -178,6 +224,7 @@ git diff-index --quiet HEAD --`
     previewChecksum,
     {
       condition: PREVIEW_CONDITION,
+      shell: "node {0}",
       run: PREVIEW_CHECKSUM_RUN
     },
     problems
@@ -207,16 +254,19 @@ git diff-index --quiet HEAD --`
     problems.push(`release.yml build job must contain exactly one canonical release upload; found ${uploads.length}.`);
   } else {
     const upload = uploads[0];
-    if (
-      readiness !== undefined &&
-      previewChecksum !== undefined &&
-      upload.index <= Math.max(readiness.index, previewChecksum.index)
-    ) {
-      problems.push("release.yml canonical upload must occur after readiness and checksum creation.");
+    requireDefaultActionControls(upload.step, "canonical upload", problems);
+    if (readiness !== undefined && previewChecksum !== undefined) {
+      if (previewChecksum.index !== readiness.index + 1 || upload.index !== previewChecksum.index + 1) {
+        problems.push("release.yml readiness, preview checksum, and canonical upload must be one exact final chain.");
+      }
+      if (upload.index !== steps.length - 1) {
+        problems.push("release.yml canonical upload must be the final build step.");
+      }
     }
     const options = upload.step.with;
     if (
       !isRecord(options) ||
+      Object.keys(options).length !== 4 ||
       options.name !== "openwrangler-release" ||
       options["if-no-files-found"] !== "error" ||
       options["compression-level"] !== 0 ||
@@ -237,33 +287,43 @@ git diff-index --quiet HEAD --`
   ) {
     problems.push("release.yml release job must depend on all validation jobs and scope contents: write locally.");
   }
-  const releaseActions = releaseSteps
-    .map((step, index) => ({ index, step }))
-    .filter(({ step }) => isRecord(step) && step.uses === "softprops/action-gh-release@v2");
-  if (releaseActions.length !== 1) {
-    problems.push("release.yml release job must contain exactly one canonical GitHub Release action.");
+  if (releaseSteps.length !== 3 || releaseSteps.some((step) => !isRecord(step))) {
+    problems.push("release.yml release job must contain exactly download, checksum, and release steps.");
+  }
+  const releaseDownload = releaseSteps[0];
+  if (
+    !isRecord(releaseDownload) ||
+    releaseDownload.uses !== DOWNLOAD_ACTION ||
+    !isRecord(releaseDownload.with) ||
+    Object.keys(releaseDownload.with).length !== 2 ||
+    releaseDownload.with.name !== "openwrangler-release" ||
+    releaseDownload.with.path !== "release"
+  ) {
+    problems.push("release.yml release job must begin with the pinned canonical artifact download.");
   } else {
-    const options = releaseActions[0].step.with;
+    requireDefaultActionControls(releaseDownload, "release download", problems);
+  }
+  const releaseChecksum = releaseSteps[1];
+  if (!isRecord(releaseChecksum) || releaseChecksum.name !== "Verify release checksum") {
+    problems.push("release.yml canonical download must be followed immediately by final checksum verification.");
+  } else {
+    requireExactStep({ index: 1, step: releaseChecksum }, { run: RELEASE_CHECKSUM_RUN, shell: "node {0}" }, problems);
+  }
+  const releaseAction = releaseSteps[2];
+  if (!isRecord(releaseAction) || releaseAction.uses !== RELEASE_ACTION) {
+    problems.push("release.yml final checksum verification must be followed immediately by GitHub Release creation.");
+  } else {
+    requireDefaultActionControls(releaseAction, "GitHub Release action", problems);
+    const options = releaseAction.with;
     if (
       !isRecord(options) ||
+      Object.keys(options).length !== 4 ||
       options.prerelease !== "${{ needs.build.outputs.prerelease == 'true' }}" ||
+      options.generate_release_notes !== true ||
       options.fail_on_unmatched_files !== true ||
       normalizeLines(options.files).join("\n") !== "release/openwrangler.vsix\nrelease/openwrangler.vsix.sha256"
     ) {
       problems.push("release.yml GitHub Release action must publish only the validated canonical files.");
-    }
-  }
-  const releaseChecksum = releaseSteps
-    .map((step, index) => ({ index, step }))
-    .filter(({ step }) => isRecord(step) && step.name === "Verify release checksum");
-  if (releaseChecksum.length !== 1) {
-    problems.push("release.yml release job must contain exactly one final checksum verification.");
-  } else {
-    if (normalizeRun(releaseChecksum[0].step.run) !== normalizeRun(RELEASE_CHECKSUM_RUN)) {
-      problems.push("release.yml final checksum step must run only its canonical verification.");
-    }
-    if (releaseActions.length === 1 && releaseChecksum[0].index >= releaseActions[0].index) {
-      problems.push("release.yml final checksum verification must precede GitHub Release creation.");
     }
   }
 
