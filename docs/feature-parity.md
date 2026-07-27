@@ -6,7 +6,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
 
-VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their registry path and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
+VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google documents Antigravity's Open VSX path, but Open Wrangler publication and functional smoke evidence there remain outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
 | Surface                                              | Pandas | Polars | Status  | Required evidence                                                              |
 | ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------------------------------ |
