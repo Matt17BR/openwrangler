@@ -19,14 +19,23 @@ export const allowedVsixEntryPatterns = [
 ];
 
 export const requiredVsixEntries = [
+  "[Content_Types].xml",
+  "extension.vsixmanifest",
   "extension/package.json",
+  "extension/LICENSE.txt",
+  "extension/readme.md",
+  "extension/changelog.md",
+  "extension/THIRD_PARTY_NOTICES.md",
   "extension/dist/extension/activate.js",
   "extension/dist/extension/webviewPanel.js",
   "extension/media/webview.js",
   "extension/media/webview.css",
   "extension/media/codicon.ttf",
+  "extension/media/codePreview.js",
   "extension/media/notebookRenderer.js",
+  "extension/media/activity-icon.svg",
   "extension/media/icon.png",
+  "extension/media/icon-128.png",
   "extension/python/openwrangler_runtime/dependency_guard.py",
   "extension/python/openwrangler_runtime/server.py",
   "extension/python/openwrangler_runtime/version.py"
