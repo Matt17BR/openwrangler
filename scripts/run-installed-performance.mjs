@@ -34,6 +34,7 @@ import {
   runBoundedEditorCliCommand,
   runEditorAcceptancePhase,
   sanitizeEditorAcceptanceDiagnostic,
+  spawnOwnedEditorProcess,
   startIsolatedEditorDisplay,
   validateEditorAcceptancePrivatePathOverrides,
   writeEditorAcceptanceHarness,
@@ -44,9 +45,17 @@ import {
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
 import {
+  assertInstalledPerformanceReleaseGate,
+  buildInstalledPerformanceReport,
   validateInstalledFixtureManifest,
-  validateInstalledPerformancePhase
+  validateInstalledPerformancePhase,
+  writeInstalledPerformanceReport
 } from "./installed-performance-report.mjs";
+import {
+  createInstalledResourceSampler,
+  readInstalledPlatformProvenance,
+  readInstalledStorageProvenance
+} from "./installed-performance-system.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v1";
@@ -246,6 +255,9 @@ export function writeInstalledPerformanceRun(destination, result) {
 
 export async function runInstalledPerformance(options, environment = process.env) {
   validateEditorAcceptancePrivatePathOverrides();
+  if (process.platform !== "linux") {
+    throw new Error("Strict installed performance evidence currently requires a Linux reference machine.");
+  }
   const privateParent = resolve(root, "tmp", "ow");
   mkdirSync(privateParent, { recursive: true, mode: 0o700 });
   const privateRoot = mkdtempSync(join(privateParent, "x-"));
@@ -259,6 +271,7 @@ export async function runInstalledPerformance(options, environment = process.env
   try {
     const staged = stageInstalledPerformanceVsix(options.vsix, resolve(privateRoot, "candidate.vsix"));
     const candidate = await readInstalledPerformanceCandidate(staged.path, staged);
+    const sourceBefore = readSourceProvenance();
     const python = resolveTestPython(environment);
     const fixtureRoot = resolve(privateRoot, "f");
     const fixtureDirectory = resolve(fixtureRoot, "fixtures");
@@ -302,15 +315,27 @@ export async function runInstalledPerformance(options, environment = process.env
         })
       );
     }
-    result = {
-      protocol: INSTALLED_RUN_PROTOCOL,
-      generatedAtUtc: new Date().toISOString(),
-      smoke: options.smoke,
-      candidate,
-      source: readSourceProvenance(),
-      fixtureManifest,
-      editors: editorRuns
-    };
+    const sourceAfter = readSourceProvenance();
+    if (JSON.stringify(sourceAfter) !== JSON.stringify(sourceBefore)) {
+      throw new Error("The installed-performance source provenance changed during the run.");
+    }
+    result = options.smoke
+      ? {
+          protocol: INSTALLED_RUN_PROTOCOL,
+          generatedAtUtc: new Date().toISOString(),
+          smoke: true,
+          candidate,
+          source: sourceAfter,
+          fixtureManifest,
+          editors: editorRuns
+        }
+      : buildInstalledPerformanceReport({
+          generatedAtUtc: new Date().toISOString(),
+          candidate,
+          source: sourceAfter,
+          fixtureManifest,
+          editorRuns
+        });
   } catch (error) {
     primaryError = error;
     processTreeUncertain ||= editorProcessTreeMayBeLive(error);
@@ -341,8 +366,56 @@ export async function runInstalledPerformance(options, environment = process.env
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
   }
   if (!result) throw new Error("Installed performance completed without a result.");
-  writeInstalledPerformanceRun(options.output, result);
+  if (options.smoke) writeInstalledPerformanceRun(options.output, result);
+  else {
+    writeInstalledPerformanceReport(options.output, result);
+    assertInstalledPerformanceReleaseGate(result);
+  }
   return result;
+}
+
+export async function runInstalledMeasuredEditorPhase({
+  phase,
+  sampler,
+  runPhase,
+  spawnOwned = spawnOwnedEditorProcess
+}) {
+  if (typeof runPhase !== "function" || typeof spawnOwned !== "function") {
+    throw new TypeError("Installed performance requires callable phase and process launchers.");
+  }
+  let phaseError;
+  let samplerStartError;
+  let samplerEndError;
+  let samplerStarted = false;
+  const measuredSpawn = (...arguments_) => {
+    const child = spawnOwned(...arguments_);
+    try {
+      sampler.begin(phase, child.pid);
+      samplerStarted = true;
+    } catch (error) {
+      samplerStartError = error;
+    }
+    return child;
+  };
+  try {
+    await runPhase(measuredSpawn);
+  } catch (error) {
+    phaseError = error;
+  }
+  if (samplerStarted) {
+    try {
+      sampler.end();
+    } catch (error) {
+      samplerEndError = error;
+    }
+  } else if (!phaseError && !samplerStartError) {
+    samplerEndError = new Error("Installed performance completed an editor phase without attaching RSS sampling.");
+  }
+  const failures = [phaseError, samplerStartError, samplerEndError].filter((error) => error !== undefined);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Installed performance editor phase or RSS sampling failed.");
+  }
 }
 
 async function runEditorPerformancePhases({
@@ -437,23 +510,32 @@ async function runEditorPerformancePhases({
     throw new Error(`${identifiedEditor.name} did not report the exact installed candidate and harness.`);
   }
 
+  const sampler = createInstalledResourceSampler();
   const phases = [];
   for (const phase of INSTALLED_PERFORMANCE_PHASES) {
     const runId = randomUUID();
     const resultPath = resolve(profile, `${phase}-result.json`);
-    await runEditorAcceptancePhase({
-      editor: identifiedEditor,
-      workspace,
-      userData,
-      extensions,
-      developmentPaths: [],
-      testModule: resolve(root, "dist-test", "test", "extensionHost", "installedPerformance.js"),
-      python,
+    await runInstalledMeasuredEditorPhase({
       phase,
-      resultPath,
-      runId,
-      progressPath: editorAcceptanceProgressPath(resultPath, runId, phase),
-      requiresWorkbenchCdp: true
+      sampler,
+      runPhase: (spawnProcess) =>
+        runEditorAcceptancePhase(
+          {
+            editor: identifiedEditor,
+            workspace,
+            userData,
+            extensions,
+            developmentPaths: [],
+            testModule: resolve(root, "dist-test", "test", "extensionHost", "installedPerformance.js"),
+            python,
+            phase,
+            resultPath,
+            runId,
+            progressPath: editorAcceptanceProgressPath(resultPath, runId, phase),
+            requiresWorkbenchCdp: true
+          },
+          { environment, spawnProcess }
+        )
     });
     const fragment = validateInstalledPerformancePhase(
       readBoundedJson(resolve(workspace, "results", `${phase}.json`), 256 * 1024),
@@ -469,9 +551,18 @@ async function runEditorPerformancePhases({
     }
     phases.push(fragment);
   }
+  const runtime = phases[0].runtime;
+  if (phases.some((phase) => JSON.stringify(phase.runtime) !== JSON.stringify(runtime))) {
+    throw new Error(`${identifiedEditor.name} changed Python runtime provenance between performance phases.`);
+  }
   return {
-    editor: phases[0].editor,
-    runtime: phases[0].runtime,
+    provenance: {
+      editor: phases[0].editor,
+      runtime,
+      platform: readInstalledPlatformProvenance(),
+      storage: readInstalledStorageProvenance(fixtureRoot)
+    },
+    resources: sampler.finish(),
     phases
   };
 }
@@ -725,14 +816,14 @@ function assertReplaceableRegularFile(file, label) {
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   try {
     const options = parseInstalledPerformanceArguments(process.argv.slice(2));
-    const result = await runInstalledPerformance(options);
+    await runInstalledPerformance(options);
     const relativeOutput = relative(root, options.output);
     const label =
       relativeOutput && relativeOutput !== ".." && !relativeOutput.startsWith(`..${sep}`) && !isAbsolute(relativeOutput)
         ? relativeOutput.replaceAll("\\", "/")
         : "the requested output file";
     console.log(`Installed performance passed; path-free results were written to ${label}.`);
-    if (result.smoke) console.log("Smoke-sized fixtures were used; this is not release evidence.");
+    if (options.smoke) console.log("Smoke-sized fixtures were used; this is not release evidence.");
   } catch (error) {
     console.error(`Installed performance failed: ${sanitizeEditorAcceptanceDiagnostic(error)}`);
     process.exitCode = 1;

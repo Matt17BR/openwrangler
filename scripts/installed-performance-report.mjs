@@ -124,6 +124,9 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     exactKeys(run, ["provenance", "resources", "phases"], [], "editor performance run");
     validateProvenance(run.provenance);
     validateResources(run.resources);
+    if (run.provenance.runtime.openWranglerRuntimeVersion !== candidate.extensionVersion) {
+      throw new TypeError("Installed performance runtime version does not match its VSIX candidate.");
+    }
     if (editorKeys.has(run.provenance.editor.key)) {
       throw new TypeError(`Duplicate installed performance editor ${run.provenance.editor.key}.`);
     }
@@ -167,13 +170,10 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
       outlierPolicy: INSTALLED_PERFORMANCE_OUTLIER_POLICY
     },
     limits: { ...INSTALLED_PERFORMANCE_LIMITS },
-    editors,
-    releaseGate: installedPerformanceFailures({ editors })
+    editors
   };
-  report.releaseGate = {
-    passed: report.releaseGate.length === 0,
-    failures: report.releaseGate
-  };
+  const failures = installedPerformanceFailures(report);
+  report.releaseGate = { passed: failures.length === 0, failures };
   assertPublicEvidence(report);
   return report;
 }
@@ -202,9 +202,6 @@ export function assertInstalledPerformanceReleaseGate(
   canonicalUtcTimestamp(report.generatedAtUtc);
   validateCandidate(report.candidate);
   validateSource(report.source);
-  if (report.source.trackedWorktreeDirty) {
-    throw new Error("Strict installed performance evidence requires a clean tracked candidate worktree.");
-  }
   validateInstalledFixtureManifest(report.fixtureManifest);
   exactKeys(report.measurement, ["boundary", "sampleCountPerCase", "outlierPolicy"], [], "measurement contract");
   assertEqual(report.measurement.boundary, INSTALLED_PERFORMANCE_BOUNDARY, "measurement boundary");
@@ -218,38 +215,19 @@ export function assertInstalledPerformanceReleaseGate(
   }
   const keys = report.editors.map((entry) => entry.provenance.editor.key);
   if (new Set(keys).size !== keys.length) throw new TypeError("Installed performance editors must be unique.");
-  for (const required of requiredEditors) {
-    if (!keys.includes(required)) throw new Error(`Missing installed performance evidence for ${required}.`);
-  }
   for (const editor of report.editors) {
     validateProvenance(editor.provenance);
     validateResources(editor.resources);
     validateGroupedResults(editor.results);
-    if (requireLinuxReference && editor.provenance.platform.operatingSystem !== "Linux") {
-      throw new Error(`Strict installed performance evidence for ${editor.provenance.editor.key} must run on Linux.`);
-    }
-    if (
-      requireLinuxReference &&
-      (!editor.resources.supported ||
-        !positiveInteger(editor.resources.peakEditorTreeRssBytes) ||
-        !positiveInteger(editor.resources.peakPythonRuntimeRssBytes))
-    ) {
-      throw new Error(`Strict installed performance RSS evidence for ${editor.provenance.editor.key} is incomplete.`);
-    }
-  }
-  const failures = installedPerformanceFailures(report);
-  if (failures.length > 0) {
-    throw new Error(`Installed performance release gates failed:\n${failures.join("\n")}`);
   }
   exactKeys(report.releaseGate, ["passed", "failures"], [], "release-gate verdict");
-  if (report.releaseGate.passed !== true || !Array.isArray(report.releaseGate.failures)) {
+  const failures = installedPerformanceFailures(report, { requiredEditors, requireLinuxReference });
+  const expectedVerdict = { passed: failures.length === 0, failures };
+  if (JSON.stringify(report.releaseGate) !== JSON.stringify(expectedVerdict)) {
     throw new Error("Installed performance report release verdict does not match its measurements.");
   }
-  if (
-    report.releaseGate.failures.some((failure) => typeof failure !== "string") ||
-    report.releaseGate.failures.length
-  ) {
-    throw new Error("Installed performance report release verdict does not match its measurements.");
+  if (failures.length > 0) {
+    throw new Error(`Installed performance release gates failed:\n${failures.join("\n")}`);
   }
   assertPublicEvidence(report);
   return report;
@@ -578,10 +556,31 @@ function validateSummary(summary) {
   }
 }
 
-function installedPerformanceFailures(report) {
+function installedPerformanceFailures(
+  report,
+  { requiredEditors = ["vscode", "cursor"], requireLinuxReference = true } = {}
+) {
   const failures = [];
+  if (report.source.trackedWorktreeDirty) {
+    failures.push("candidate source worktree has tracked changes");
+  }
+  const editorKeys = report.editors.map((entry) => entry.provenance.editor.key);
+  for (const required of requiredEditors) {
+    if (!editorKeys.includes(required)) failures.push(`missing ${required} installed performance evidence`);
+  }
   for (const editor of report.editors) {
     const label = editor.provenance.editor.key;
+    if (requireLinuxReference && editor.provenance.platform.operatingSystem !== "Linux") {
+      failures.push(`${label} did not run on the Linux reference platform`);
+    }
+    if (
+      requireLinuxReference &&
+      (!editor.resources.supported ||
+        !positiveInteger(editor.resources.peakEditorTreeRssBytes) ||
+        !positiveInteger(editor.resources.peakPythonRuntimeRssBytes))
+    ) {
+      failures.push(`${label} RSS evidence is incomplete`);
+    }
     for (const format of ["csv", "parquet"]) {
       const limit =
         format === "csv"

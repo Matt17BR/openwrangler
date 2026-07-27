@@ -89,6 +89,49 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
   assert.throws(() => assertInstalledPerformanceReleaseGate(failed), /parquet cold first-grid p95/u);
 });
 
+test("aggregate evidence rejects a runtime that does not match the VSIX candidate", () => {
+  const run = editorRun("vscode");
+  run.provenance.runtime.openWranglerRuntimeVersion = "0.3.1";
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: {
+          extensionId: "Matt17BR.openwrangler",
+          extensionVersion: "0.3.0",
+          preview: true,
+          vsixSha256: sha("a"),
+          vsixBytes: 1_000_000
+        },
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [run]
+      }),
+    /runtime version does not match/u
+  );
+});
+
+test("aggregate verdicts retain dirty-source and missing-editor release failures", () => {
+  const report = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: {
+      extensionId: "Matt17BR.openwrangler",
+      extensionVersion: "0.3.0",
+      preview: true,
+      vsixSha256: sha("a"),
+      vsixBytes: 1_000_000
+    },
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: true },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [editorRun("vscode")]
+  });
+  assert.deepEqual(report.releaseGate, {
+    passed: false,
+    failures: ["candidate source worktree has tracked changes", "missing cursor installed performance evidence"]
+  });
+  assert.throws(() => assertInstalledPerformanceReleaseGate(report), /tracked changes.*missing cursor/su);
+});
+
 test("report publication is bounded, atomic, and refuses a symlink destination", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-report-"));
   try {

@@ -15,7 +15,8 @@ import { join } from "node:path";
 const PROC_FILE_MAX_BYTES = 64 * 1024;
 const PROC_ENTRY_LIMIT = 32_768;
 const RESOURCE_SAMPLE_LIMIT = 1_024;
-const RESOURCE_SAMPLE_INTERVAL_MS = 250;
+// Five 300-second editor phases can retain their initial sample plus every interval without crossing the report cap.
+const RESOURCE_SAMPLE_INTERVAL_MS = 1_500;
 const SYSFS_DEVICE_LIMIT = 32;
 const SYSFS_DEPTH_LIMIT = 8;
 const SYSFS_TEXT_MAX_BYTES = 4 * 1024;
