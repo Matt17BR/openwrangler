@@ -8,13 +8,15 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
-  realpathSync
+  realpathSync,
+  statfsSync
 } from "node:fs";
 import { join } from "node:path";
 import {
   assertRemoteWorkspaceResultLease,
   classifyRemoteWorkspaceResultWaitObservation,
   closeRemoteWorkspaceResultLease,
+  createRemoteWorkspaceDropbearLoaderArguments,
   finalizeRemoteWorkspaceControllerFailure,
   inspectRemoteWorkspaceLogTopology,
   openRemoteWorkspaceResultLeaseIfPresent,
@@ -25,7 +27,9 @@ import {
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceDropbearLoaderResolution,
+  validateRemoteWorkspaceDropbearRuntimePaths,
   validateRemoteWorkspaceLibstdcxxResolution,
+  validateRemoteWorkspaceProcfsType,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
@@ -189,8 +193,12 @@ function assertBootstrapExecutables(config, ip, ssh, loader) {
   }
   runSync(
     loader,
-    ["--library-path", config.sshLibraryPath, config.sshServer, "-V"],
-    "private bootstrap Dropbear dynamic-loader probe"
+    createRemoteWorkspaceDropbearLoaderArguments({
+      sshServer: config.sshServer,
+      sshLibraryPath: config.sshLibraryPath,
+      dropbearArguments: ["-V"]
+    }),
+    "private bootstrap Dropbear fork-only dynamic-loader probe"
   );
   validateRemoteWorkspaceDropbearLoaderResolution(
     runSync(loader, ["--list", config.sshServer], "private bootstrap Dropbear default-loader listing").stdout
@@ -202,7 +210,7 @@ function assertBootstrapExecutables(config, ip, ssh, loader) {
       "private bootstrap VS Code CLI compatibility-library probe"
     ).stdout
   );
-  runSync(config.sshServer, ["-V"], "private bootstrap Dropbear re-exec loader probe");
+  runSync(config.sshServer, ["-V"], "private bootstrap Dropbear default-loader probe");
 }
 
 async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingResultReceipt) {
@@ -216,10 +224,12 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   assertExecutable(ssh, "private SSH client");
   assertExecutable(dynamicLoader, "private SSH dynamic loader");
   assertExecutable(config.xvfb, "private Xvfb executable");
-  const sshServer = remoteNamespacePath(config, config.sshServer);
-  const sshLibraryPath = remoteNamespacePath(config, config.sshLibraryPath);
-  const sshHostKey = remoteNamespacePath(config, config.sshHostKey);
-  const sshAuthorizedKeys = remoteNamespacePath(config, config.sshAuthorizedKeys);
+  const { sshServer, sshLibraryPath } = validateRemoteWorkspaceDropbearRuntimePaths({
+    sshServer: config.sshServer,
+    sshLibraryPath: config.sshLibraryPath
+  });
+  const sshHostKey = remoteHomeNamespacePath(config, config.sshHostKey);
+  const sshAuthorizedKeys = remoteHomeNamespacePath(config, config.sshAuthorizedKeys);
   assertExecutable(sshServer, "private SSH daemon");
   if (process.getuid?.() !== config.uid || process.getgid?.() !== config.gid) {
     throw new Error("The private user namespace did not map its sole non-root owner.");
@@ -229,7 +239,15 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   if (!loopback.stdout.includes("127.0.0.1")) {
     throw new Error("The private loopback network was not initialized.");
   }
-  runSync(dynamicLoader, ["--library-path", sshLibraryPath, sshServer, "-V"], "private Dropbear dynamic-loader probe");
+  runSync(
+    dynamicLoader,
+    createRemoteWorkspaceDropbearLoaderArguments({
+      sshServer,
+      sshLibraryPath,
+      dropbearArguments: ["-V"]
+    }),
+    "private Dropbear fork-only dynamic-loader probe"
+  );
   validateRemoteWorkspaceDropbearLoaderResolution(
     runSync(dynamicLoader, ["--list", sshServer], "private Dropbear default-loader listing").stdout
   );
@@ -237,7 +255,7 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     runSync("/usr/bin/readlink", ["-f", PRIVATE_VSCODE_LIBSTDCXX], "private VS Code CLI compatibility-library probe")
       .stdout
   );
-  runSync(sshServer, ["-V"], "private Dropbear re-exec loader probe");
+  runSync(sshServer, ["-V"], "private Dropbear default-loader probe");
 
   markFailureStage("phase-display-failed");
   const xvfb = await startPrivateXvfb(config);
@@ -255,26 +273,27 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     sshd = spawnMonitoredRemoteWorkspaceChild(
       "The private loopback SSH daemon",
       dynamicLoader,
-      [
-        "--library-path",
-        sshLibraryPath,
+      createRemoteWorkspaceDropbearLoaderArguments({
         sshServer,
-        "-F",
-        "-E",
-        "-e",
-        "-s",
-        "-g",
-        "-m",
-        "-z",
-        "-p",
-        "127.0.0.1:49321",
-        "-P",
-        join(config.paths.remoteHome, "dropbear.pid"),
-        "-r",
-        sshHostKey,
-        "-D",
-        sshAuthorizedKeys
-      ],
+        sshLibraryPath,
+        dropbearArguments: [
+          "-F",
+          "-E",
+          "-e",
+          "-s",
+          "-g",
+          "-m",
+          "-z",
+          "-p",
+          "127.0.0.1:49321",
+          "-P",
+          join(config.paths.remoteHome, "dropbear.pid"),
+          "-r",
+          sshHostKey,
+          "-D",
+          sshAuthorizedKeys
+        ]
+      }),
       {
         detached: true,
         env: remoteServerEnvironment(config),
@@ -489,6 +508,7 @@ function assertPrivateNamespace(config) {
   ) {
     throw new Error("The Remote SSH phase did not retain private user, PID, network, IPC, and UTS namespaces.");
   }
+  validateRemoteWorkspaceProcfsType(statfsSync("/proc").type);
   const uidMap = readSingleIdMap("/proc/self/uid_map", config.uid);
   const gidMap = readSingleIdMap("/proc/self/gid_map", config.gid);
   if (uidMap.count !== 1 || gidMap.count !== 1) {
@@ -901,7 +921,7 @@ function remoteServerEnvironment(config) {
   };
 }
 
-function remoteNamespacePath(config, hostPath) {
+function remoteHomeNamespacePath(config, hostPath) {
   const prefix = `${config.paths.remoteHome}/`;
   if (typeof hostPath !== "string" || !hostPath.startsWith(prefix) || hostPath.includes("\0")) {
     throw new Error("The private SSH runtime escaped its remote-home mapping.");

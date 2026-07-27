@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
@@ -67,10 +67,15 @@ import {
 } from "./remote-workspace-acceptance.mjs";
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
 import {
+  assertRemoteWorkspaceDropbearNoReexecPath,
+  createRemoteWorkspaceDropbearLoaderArguments,
   finalizeRemoteWorkspaceControllerFailure,
   getRemoteWorkspaceControllerFailureMessage,
   publishRemoteWorkspaceControllerFailureResult,
-  validateRemoteWorkspaceDropbearLoaderResolution
+  REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0,
+  validateRemoteWorkspaceDropbearLoaderResolution,
+  validateRemoteWorkspaceDropbearRuntimePaths,
+  validateRemoteWorkspaceProcfsType
 } from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
 
@@ -144,6 +149,8 @@ linuxTest("Remote workspace layout is short, private, and independently scoped",
     assert.equal(namespace.remoteHome, "/ow/rh");
     assert.equal(namespace.workspace, "/ow/rh/workspace");
     assert.equal(namespace.remoteServerBase, "/ow/rh/.vscode-server");
+    assert.equal(namespace.sshRuntime, "/ow/ssh-runtime");
+    assert.equal(namespace.sshRuntime.startsWith(`${namespace.remoteHome}/`), false);
     assert.equal(namespace.immutable, "/ow/immutable-unreachable");
     assert.equal(
       namespaceRemoteWorkspaceImmutablePath(layout, join(layout.python, "bin", "openwrangler-python")),
@@ -193,6 +200,170 @@ test("Dropbear default-loader listings resolve only the independently pinned lib
     `${listing}${"x".repeat(64 * 1024)}`
   ]) {
     assert.throws(() => validateRemoteWorkspaceDropbearLoaderResolution(mutation), /Dropbear loader/u);
+  }
+});
+
+test("Dropbear private-loader arguments pin one absent fork-only argv0 inside private procfs", () => {
+  const descriptor = remotePhaseDescriptor();
+  const inspected = [];
+  const dropbearArguments = ["-V"];
+  const args = createRemoteWorkspaceDropbearLoaderArguments(
+    {
+      sshServer: descriptor.sshServer,
+      sshLibraryPath: descriptor.sshLibraryPath,
+      dropbearArguments
+    },
+    {
+      lstat(path) {
+        inspected.push(path);
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+    }
+  );
+  assert.deepEqual(args, [
+    "--argv0",
+    REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0,
+    "--library-path",
+    descriptor.sshLibraryPath,
+    descriptor.sshServer,
+    "-V"
+  ]);
+  assert.equal(Object.isFrozen(args), true);
+  assert.deepEqual(inspected, [REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0]);
+  dropbearArguments[0] = "--changed";
+  assert.equal(args.at(-1), "-V");
+  assert.equal(basename(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0), "dropbear");
+  assert.equal(dirname(dirname(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0)), "/proc");
+  assert.equal(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0.startsWith("/proc/"), true);
+  const sshRuntime = createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
+    (mount) => mount.id === "sshRuntime"
+  );
+  assert.equal(sshRuntime?.access, "immutable");
+  assert.equal(sshRuntime?.destination, "/ow/ssh-runtime/runtime");
+  assert.equal(descriptor.sshServer.startsWith(`${sshRuntime.destination}/`), true);
+  assert.equal(descriptor.sshLibraryPath.startsWith(`${sshRuntime.destination}/`), true);
+});
+
+test("Dropbear fork-only argv0 proof rejects existing, linked, inaccessible, and arbitrary paths", () => {
+  const root = privateRoot("ow-remote-dropbear-no-reexec-");
+  try {
+    const existing = join(root, "existing");
+    const linked = join(root, "linked");
+    writeFileSync(existing, "present\n", { mode: 0o600 });
+    symlinkSync(existing, linked);
+    for (const path of [existing, linked]) {
+      assert.throws(
+        () =>
+          assertRemoteWorkspaceDropbearNoReexecPath(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0, {
+            lstat: () => lstatSync(path)
+          }),
+        /must remain absent/u
+      );
+    }
+    assert.throws(
+      () =>
+        assertRemoteWorkspaceDropbearNoReexecPath(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0, {
+          lstat() {
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          }
+        }),
+      /could not be proven absent/u
+    );
+    let arbitraryInspected = false;
+    assert.throws(
+      () =>
+        assertRemoteWorkspaceDropbearNoReexecPath("/tmp/arbitrary/dropbear", {
+          lstat() {
+            arbitraryInspected = true;
+            throw Object.assign(new Error("missing"), { code: "ENOENT" });
+          }
+        }),
+      /fixed private-procfs no-reexec path/u
+    );
+    assert.equal(arbitraryInspected, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Dropbear fork-only proof requires the Linux procfs filesystem identity", () => {
+  assert.equal(validateRemoteWorkspaceProcfsType(0x9fa0), 0x9fa0);
+  assert.equal(validateRemoteWorkspaceProcfsType(0x9fa0n), 0x9fa0);
+  for (const type of [undefined, null, 0, 0x01021994, "procfs"]) {
+    assert.throws(() => validateRemoteWorkspaceProcfsType(type), /private \/proc mount is not procfs/u);
+  }
+});
+
+test("Dropbear runtime paths remain on the private mount outside the mutable remote home", () => {
+  const descriptor = remotePhaseDescriptor();
+  const validated = validateRemoteWorkspaceDropbearRuntimePaths({
+    sshServer: descriptor.sshServer,
+    sshLibraryPath: descriptor.sshLibraryPath
+  });
+  assert.deepEqual(validated, {
+    sshServer: "/ow/ssh-runtime/runtime/bin/dropbear",
+    sshLibraryPath: "/ow/ssh-runtime/runtime/lib"
+  });
+  assert.equal(Object.isFrozen(validated), true);
+  assert.equal(validated.sshServer.startsWith(`${descriptor.paths.remoteHome}/`), false);
+  for (const mutation of [
+    {},
+    { ...validated, sshServer: "/ow/rh/ssh-runtime/runtime/bin/dropbear" },
+    { ...validated, sshLibraryPath: "/ow/rh/ssh-runtime/runtime/lib" },
+    { ...validated, extra: true }
+  ]) {
+    assert.throws(
+      () => validateRemoteWorkspaceDropbearRuntimePaths(mutation),
+      /runtime paths escaped their fixed private mount/u
+    );
+  }
+});
+
+test("Remote phase keeps all Dropbear executions on the shared fork-only loader contract", () => {
+  const source = readFileSync(new URL("./remote-workspace-phase-child.mjs", import.meta.url), "utf8");
+  assert.equal(source.match(/createRemoteWorkspaceDropbearLoaderArguments\(/gu)?.length, 3);
+  assert.equal(source.match(/validateRemoteWorkspaceDropbearRuntimePaths\(/gu)?.length, 1);
+  for (const marker of [
+    "private bootstrap Dropbear fork-only dynamic-loader probe",
+    "private Dropbear fork-only dynamic-loader probe",
+    "The private loopback SSH daemon"
+  ]) {
+    assert.equal(source.includes(marker), true);
+  }
+  assert.equal(source.includes('validateRemoteWorkspaceProcfsType(statfsSync("/proc").type)'), true);
+});
+
+test("Dropbear private-loader arguments reject request and absence-boundary drift", () => {
+  const descriptor = remotePhaseDescriptor();
+  const valid = {
+    sshServer: descriptor.sshServer,
+    sshLibraryPath: descriptor.sshLibraryPath,
+    dropbearArguments: ["-V"]
+  };
+  const absent = {
+    lstat() {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    }
+  };
+  for (const mutation of [
+    {},
+    { ...valid, sshServer: "/tmp/dropbear" },
+    { ...valid, sshLibraryPath: "/tmp/lib" },
+    { ...valid, dropbearArguments: [] },
+    { ...valid, dropbearArguments: [null] },
+    { ...valid, dropbearArguments: ["-V\n"] },
+    { ...valid, extra: true }
+  ]) {
+    assert.throws(
+      () => createRemoteWorkspaceDropbearLoaderArguments(mutation, absent),
+      /private-loader request is malformed/u
+    );
+  }
+  for (const boundary of [null, {}, { lstat: null }, { lstat: absent.lstat, extra: true }]) {
+    assert.throws(
+      () => createRemoteWorkspaceDropbearLoaderArguments(valid, boundary),
+      /absence boundary is malformed/u
+    );
   }
 });
 
@@ -501,6 +672,25 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     const namespaceRootIndex = args.indexOf("/ow");
     assert.notEqual(namespaceRootIndex, -1);
     assert.deepEqual(args.slice(namespaceRootIndex - 3, namespaceRootIndex + 1), ["--perms", "0700", "--dir", "/ow"]);
+    const sshRuntimeRootIndex = args.indexOf("/ow/ssh-runtime");
+    assert.notEqual(sshRuntimeRootIndex, -1);
+    assert.deepEqual(args.slice(sshRuntimeRootIndex - 3, sshRuntimeRootIndex + 1), [
+      "--perms",
+      "0700",
+      "--dir",
+      "/ow/ssh-runtime"
+    ]);
+    const sshRuntimeMount = createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
+      (mount) => mount.id === "sshRuntime"
+    );
+    assert.ok(sshRuntimeMount);
+    const sshRuntimeMountIndex = args.findIndex(
+      (value, index) =>
+        value === "--ro-bind-fd" &&
+        args[index + 1] === String(sshRuntimeMount.descriptor) &&
+        args[index + 2] === "/ow/ssh-runtime/runtime"
+    );
+    assert.ok(sshRuntimeMountIndex > sshRuntimeRootIndex);
     assert.equal(args.includes(process.env.HOME ?? "<missing>"), false);
     const environmentNames = args
       .map((value, index) => (value === "--setenv" ? args[index + 1] : undefined))
@@ -2312,8 +2502,8 @@ function remotePhaseDescriptor() {
     python: "/ow/rh/python/bin/openwrangler-python",
     user: "openwrangler",
     sshConfig: "/ow/rh/ssh/config",
-    sshServer: "/ow/rh/ssh-runtime/runtime/bin/dropbear",
-    sshLibraryPath: "/ow/rh/ssh-runtime/runtime/lib",
+    sshServer: "/ow/ssh-runtime/runtime/bin/dropbear",
+    sshLibraryPath: "/ow/ssh-runtime/runtime/lib",
     sshHostKey: "/ow/rh/ssh/host",
     sshAuthorizedKeys: "/ow/rh/ssh",
     hostHome,
@@ -2345,8 +2535,8 @@ function createPhaseFilesystem(root) {
     "rh/test-module/dist-test/test/extensionHost",
     "rh/python/bin",
     "rh/ssh",
-    "rh/ssh-runtime/runtime/bin",
-    "rh/ssh-runtime/runtime/lib",
+    "ssh-runtime/runtime/bin",
+    "ssh-runtime/runtime/lib",
     "ud",
     "le",
     "lh",
@@ -2363,7 +2553,7 @@ function createPhaseFilesystem(root) {
     [join(root, "rh", "test-module", "dist-test", "test", "extensionHost", "index.js"), "export {};\n", 0o644],
     [join(root, "rh", "python", "bin", "openwrangler-python"), "#!/bin/sh\n", 0o700],
     [join(root, "rh", "ssh", "config"), "Host ow-loopback\n", 0o600],
-    [join(root, "rh", "ssh-runtime", "runtime", "bin", "dropbear"), "#!/bin/sh\n", 0o700],
+    [join(root, "ssh-runtime", "runtime", "bin", "dropbear"), "#!/bin/sh\n", 0o700],
     [join(root, "rh", "ssh", "host"), "private-key\n", 0o600]
   ]) {
     writeFileSync(path, contents, { mode });

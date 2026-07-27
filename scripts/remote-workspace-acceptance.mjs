@@ -447,7 +447,7 @@ export function createRemoteWorkspaceNamespaceLayout(paths) {
     workspace: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/workspace`,
     accounts: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts`,
     ssh: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh`,
-    sshRuntime: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime`,
+    sshRuntime: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/ssh-runtime`,
     phaseRuntime: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-runtime`,
     remoteTestModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module`,
     logs: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/logs-unreachable`,
@@ -1050,7 +1050,11 @@ export function createRemoteWorkspaceBwrapArguments(
     "--perms",
     "0700",
     "--dir",
-    REMOTE_WORKSPACE_NAMESPACE_ROOT
+    REMOTE_WORKSPACE_NAMESPACE_ROOT,
+    "--perms",
+    "0700",
+    "--dir",
+    `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/ssh-runtime`
   ];
   for (const mount of privateMounts) {
     args.push(mount.access === "mutable" ? "--bind-fd" : "--ro-bind-fd", String(mount.descriptor), mount.destination);

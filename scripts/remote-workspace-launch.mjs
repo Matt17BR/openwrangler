@@ -202,7 +202,7 @@ const REQUIRED_MOUNTS = Object.freeze([
     id: "sshRuntime",
     kind: "tree",
     access: "immutable",
-    destination: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime`,
+    destination: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/ssh-runtime/runtime`,
     bounds: TREE_BOUNDS.sshRuntime
   }),
   ...DROPBEAR_LIBRARY_MOUNTS.map((entry) =>
