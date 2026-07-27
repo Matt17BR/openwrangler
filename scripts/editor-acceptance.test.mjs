@@ -937,6 +937,56 @@ posixTest("bounded editor commands retain sealed inputs through timeout terminat
   assert.equal(child.signalCode, "SIGTERM");
 });
 
+test("bounded editor commands run cross-platform path checks at the synchronous spawn boundary", async () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const events = [];
+    await assert.rejects(
+      runBoundedEditorCommand(
+        {
+          executable: "/private/editor",
+          environment: {},
+          label: "checked editor command",
+          beforeSpawnCheck() {
+            events.push("check");
+          }
+        },
+        {
+          platform,
+          spawnProcess() {
+            events.push("spawn");
+            throw new Error("test spawn stopped");
+          }
+        }
+      ),
+      /could not start/u
+    );
+    assert.deepEqual(events, ["check", "spawn"]);
+  }
+});
+
+test("bounded editor commands reject asynchronous path checks before spawn", async () => {
+  let spawned = false;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/editor",
+        environment: {},
+        beforeSpawnCheck: () => Promise.resolve()
+      },
+      {
+        spawnProcess() {
+          spawned = true;
+          return fakeCommandChild(7315);
+        }
+      }
+    ),
+    (error) =>
+      /could not start/u.test(error.message) &&
+      /must complete synchronously without a result/u.test(error.cause?.message ?? "")
+  );
+  assert.equal(spawned, false);
+});
+
 test("editor downloads run each retry through the bounded isolated helper protocol", async () => {
   const calls = [];
   const waits = [];

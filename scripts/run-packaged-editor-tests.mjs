@@ -42,6 +42,7 @@ import {
 } from "./editor-acceptance-artifact.mjs";
 import {
   assertEditorAcceptancePrivateRootReceipt,
+  cleanupPackagedCursorAcquisition,
   createEditorAcceptancePrivateRootReceipt,
   editorAcceptancePrivateRootIdentityLost,
   packagedEditorFailureLeaves,
@@ -977,9 +978,12 @@ try {
         } catch (error) {
           runError = error;
         }
+        orchestrationTreeMayBeLive ||= editorProcessTreeMayBeLive(runError);
         let cursorCleanupError;
         try {
-          await cursorAcquisition?.cleanup();
+          await cleanupPackagedCursorAcquisition(cursorAcquisition, {
+            processTreeVerifiedStopped: !orchestrationTreeMayBeLive
+          });
         } catch (error) {
           cursorCleanupError = error;
           orchestrationTreeMayBeLive ||= editorProcessTreeMayBeLive(error);

@@ -45,9 +45,9 @@ import {
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
-  validateRemoteWorkspaceNamespaceAttestation,
   writeRemoteWorkspacePhaseDescriptor
 } from "./remote-workspace-acceptance.mjs";
+import { redactEditorAcceptanceText } from "./editor-acceptance-evidence.mjs";
 import {
   acceptRemoteWorkspaceCandidate,
   assertRemoteWorkspaceCandidateReceipt,
@@ -66,13 +66,16 @@ import {
   stageRemoteWorkspacePhaseLoader
 } from "./remote-workspace-phase-loader.mjs";
 import {
+  assertEditorAcceptancePrivateRootReceipt,
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
 import {
+  assertRemoteWorkspaceOwnedFileCleanupReceipt,
   createRemoteWorkspaceOwnedFileCleanupReceipt,
   removeRemoteWorkspaceOwnedFile
 } from "./remote-workspace-cleanup.mjs";
+import { validateRemoteWorkspaceTerminal } from "./remote-workspace-terminal.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,6 +102,7 @@ let descriptorReceipt;
 let candidateExpectation;
 let candidateSourceReceipt;
 let stagedCandidateReceipt;
+let phaseCleanupAuthorized = true;
 const commandRunner = createRemoteWorkspaceCommandRunner();
 
 try {
@@ -344,10 +348,12 @@ try {
     remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
   assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
+  assertEditorAcceptancePrivateRootReceipt(rootReceipt);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
-  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt.fileReceipt);
+  assertRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinelReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
-  const attestation = await commandRunner.run(
+  phaseCleanupAuthorized = false;
+  const phaseResult = await commandRunner.run(
     {
       executable: tools.bwrap,
       args: [],
@@ -386,28 +392,51 @@ try {
       killGraceMs: 5_000
     }
   );
-  assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
-  assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
-  assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
-  assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt.fileReceipt);
-  assertDirectoryReceipt(hostHome, hostHomeReceipt);
-  await assertAcceptanceProvenance({
-    candidatePath,
-    candidateSourceReceipt,
-    stagedCandidatePath: layout.candidate,
-    stagedCandidateReceipt,
-    candidateExpectation,
-    remoteSshArtifact: acquisition.artifacts.remoteSsh
+  const terminal = await validateRemoteWorkspaceTerminal({
+    stdout: phaseResult.stdout,
+    stderr: phaseResult.stderr,
+    resultPath: layout.result,
+    expected: {
+      runId,
+      ...candidateExpectation,
+      hostIsolationSha256
+    },
+    async revalidate() {
+      assertStagedRuntimeInputs(phaseLoaderStage, treeStages);
+      assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
+      assertEditorAcceptancePrivateRootReceipt(rootReceipt);
+      assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
+      assertRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinelReceipt);
+      assertDirectoryReceipt(hostHome, hostHomeReceipt);
+      await assertAcceptanceProvenance({
+        candidatePath,
+        candidateSourceReceipt,
+        stagedCandidatePath: layout.candidate,
+        stagedCandidateReceipt,
+        candidateExpectation,
+        remoteSshArtifact: acquisition.artifacts.remoteSsh
+      });
+    }
   });
-  validateRemoteWorkspaceNamespaceAttestation(attestation.stdout, {
-    runId,
-    ...candidateExpectation,
-    hostIsolationSha256
-  });
+  phaseCleanupAuthorized = true;
+  if (terminal.result.outcome === "failure") {
+    const diagnostic = redactEditorAcceptanceText(terminal.result.error, [
+      [layout.root, "<private-root>"],
+      [candidatePath, "<candidate-vsix>"],
+      [hostHome, "<host-home>"],
+      [hostSentinel, "<host-sentinel>"]
+    ]);
+    throw new Error(
+      `Open Wrangler Remote SSH acceptance failed: ${
+        diagnostic === undefined ? "<redacted-sensitive-diagnostic>" : diagnostic.slice(-8_192)
+      }`
+    );
+  }
   removeEditorAcceptancePrivateRoot(rootReceipt, {
     processTreeVerifiedStopped: true,
     privatePathsVerified: true
   });
+  rootReceipt = undefined;
   removeRemoteWorkspaceOwnedFile(hostSentinelReceipt, {
     processTreeVerifiedStopped: true,
     privatePathsVerified: true
@@ -421,6 +450,11 @@ try {
   if (commandRunner.ownershipUncertain() || editorProcessTreeMayBeLive(error)) {
     throw new Error(
       "Remote SSH acceptance lost PID-namespace ownership; no private result, logs, profile, or artifact path was inspected or removed."
+    );
+  }
+  if (!phaseCleanupAuthorized) {
+    throw new Error(
+      "Remote SSH acceptance did not prove its complete terminal boundary; private cleanup was withheld and unvalidated diagnostics were suppressed."
     );
   }
   const cleanupErrors = [];

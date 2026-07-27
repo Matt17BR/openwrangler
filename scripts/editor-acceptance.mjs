@@ -2082,6 +2082,7 @@ export async function runBoundedEditorCommand(
     environment = createEditorAcceptanceEnvironment(),
     label = "Editor command",
     beforeSpawn,
+    beforeSpawnCheck,
     input
   },
   {
@@ -2150,11 +2151,17 @@ export async function runBoundedEditorCommand(
   let child;
   let launchPreparation;
   try {
+    if (beforeSpawnCheck !== undefined && typeof beforeSpawnCheck !== "function") {
+      throw new Error("An editor command pre-spawn check must be one synchronous callback.");
+    }
     if (beforeSpawn !== undefined) {
       if (platform === "win32" || typeof beforeSpawn !== "function") {
         throw new Error("An editor command pre-spawn seal must be one synchronous POSIX callback.");
       }
       launchPreparation = normalizeEditorCommandLaunchPreparation(beforeSpawn());
+    }
+    if (beforeSpawnCheck?.() !== undefined) {
+      throw new Error("An editor command pre-spawn check must complete synchronously without a result.");
     }
     const launchProcess = spawnProcess ?? spawnOwnedEditorProcess;
     child = launchProcess(

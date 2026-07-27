@@ -83,6 +83,21 @@ export async function runWithRetainedFailure({ run, retainFailure, cleanup, fail
   return value;
 }
 
+export async function cleanupPackagedCursorAcquisition(acquisition, { processTreeVerifiedStopped } = {}) {
+  if (typeof processTreeVerifiedStopped !== "boolean") {
+    throw new Error("Packaged Cursor cleanup requires one explicit process-tree ownership decision.");
+  }
+  if (!processTreeVerifiedStopped) {
+    return Object.freeze({ cleaned: false, withheld: acquisition !== undefined });
+  }
+  if (acquisition === undefined) return Object.freeze({ cleaned: false, withheld: false });
+  if (!acquisition || typeof acquisition !== "object" || typeof acquisition.cleanup !== "function") {
+    throw new Error("Packaged Cursor cleanup received a malformed private acquisition.");
+  }
+  await acquisition.cleanup();
+  return Object.freeze({ cleaned: true, withheld: false });
+}
+
 export function packagedEditorFailureLeaves(error, seen = new Set()) {
   if (seen.has(error)) return [];
   seen.add(error);

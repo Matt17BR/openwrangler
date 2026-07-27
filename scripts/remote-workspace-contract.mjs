@@ -19,6 +19,9 @@ export const REMOTE_WORKSPACE_PHASE_CHILD_PATH = `${REMOTE_WORKSPACE_NAMESPACE_R
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
 const PATH_LIMIT = 16_384;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
+const REMOTE_WORKSPACE_RESULT_LIMIT_BYTES = 64 * 1024;
+const REMOTE_WORKSPACE_RESULT_ERROR_LIMIT_CHARACTERS = 16_000;
+const REMOTE_WORKSPACE_RESULT_LEASES = new WeakMap();
 const LINUX_CAPABILITY_FIELDS = Object.freeze([
   ["CapInh", "inheritable"],
   ["CapPrm", "permitted"],
@@ -357,9 +360,15 @@ export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) 
     value.remoteSshBytes !== PINNED_REMOTE_SSH_BYTES ||
     value.remoteSshSha256 !== PINNED_REMOTE_SSH_SHA256 ||
     value.hostIsolationSha256 !== expected.hostIsolationSha256 ||
+    !["success", "failure"].includes(value.outcome) ||
+    !Number.isSafeInteger(value.resultBytes) ||
+    value.resultBytes <= 0 ||
+    value.resultBytes > REMOTE_WORKSPACE_RESULT_LIMIT_BYTES ||
+    typeof value.resultSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.resultSha256) ||
     !isZeroCapabilityAttestation(value.capabilities) ||
     Object.keys(value).sort().join(",") !==
-      "candidateBytes,candidateSha256,capabilities,commit,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,runId,uts,version"
+      "candidateBytes,candidateSha256,capabilities,commit,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,outcome,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,resultBytes,resultSha256,runId,uts,version"
   ) {
     throw new Error(
       "The Remote SSH PID namespace did not attest its exact candidate, Remote SSH artifact, and empty owned state."
@@ -392,7 +401,11 @@ export function validateRemoteSshLogAttestation(text) {
 }
 
 export function validateRemoteWorkspaceResult(contents, { runId }) {
-  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 64 * 1024) {
+  if (
+    typeof contents !== "string" ||
+    Buffer.byteLength(contents, "utf8") <= 0 ||
+    Buffer.byteLength(contents, "utf8") > REMOTE_WORKSPACE_RESULT_LIMIT_BYTES
+  ) {
     throw new Error("The Remote SSH acceptance result is oversized.");
   }
   let result;
@@ -401,17 +414,176 @@ export function validateRemoteWorkspaceResult(contents, { runId }) {
   } catch (error) {
     throw new Error("The Remote SSH acceptance result is malformed.", { cause: error });
   }
-  if (
-    !result ||
-    result.protocol !== 1 ||
-    result.runId !== runId ||
-    result.phase !== REMOTE_WORKSPACE_PHASE ||
-    result.ok !== true ||
-    Object.keys(result).sort().join(",") !== "ok,phase,protocol,runId"
-  ) {
-    throw new Error("The Remote SSH acceptance phase did not publish one correlated success result.");
+  const correlated =
+    result &&
+    result.protocol === REMOTE_WORKSPACE_PROTOCOL &&
+    result.runId === runId &&
+    result.phase === REMOTE_WORKSPACE_PHASE;
+  if (correlated && result.ok === true && Object.keys(result).sort().join(",") === "ok,phase,protocol,runId") {
+    return Object.freeze({ ...result, outcome: "success" });
   }
-  return result;
+  if (
+    correlated &&
+    result.ok === false &&
+    typeof result.error === "string" &&
+    result.error.length > 0 &&
+    result.error.length <= REMOTE_WORKSPACE_RESULT_ERROR_LIMIT_CHARACTERS &&
+    Object.keys(result).sort().join(",") === "error,ok,phase,protocol,runId"
+  ) {
+    return Object.freeze({ ...result, outcome: "failure" });
+  }
+  throw new Error("The Remote SSH acceptance phase did not publish one correlated terminal result.");
+}
+
+export function openRemoteWorkspaceResultLeaseIfPresent(path, { runId, onDescriptorOpened, afterRead } = {}) {
+  if (
+    typeof path !== "string" ||
+    !isAbsolute(path) ||
+    path.length <= 0 ||
+    path.length > PATH_LIMIT ||
+    typeof runId !== "string" ||
+    !/^[0-9a-f-]{36}$/u.test(runId) ||
+    (onDescriptorOpened !== undefined && typeof onDescriptorOpened !== "function") ||
+    (afterRead !== undefined && typeof afterRead !== "function")
+  ) {
+    throw new Error("The Remote SSH result lease policy is malformed.");
+  }
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0) | (constants.O_CLOEXEC ?? 0)
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw new Error("The Remote SSH result could not be opened as one private regular file.", {
+      cause: error
+    });
+  }
+  let leased = false;
+  try {
+    const snapshot = resultLeaseSnapshot(fstatSync(descriptor, { bigint: true }));
+    onDescriptorOpened?.();
+    assertResultLeaseNamedPath(path, snapshot);
+    const bytes = readExactResultLeaseBytes(descriptor, snapshot);
+    afterRead?.();
+    assertResultLeaseDescriptorAndPath(descriptor, path, snapshot);
+    const contents = decodeResultLeaseBytes(bytes);
+    const result = validateRemoteWorkspaceResult(contents, { runId });
+    const token = Object.freeze({
+      outcome: result.outcome,
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      result
+    });
+    REMOTE_WORKSPACE_RESULT_LEASES.set(token, { descriptor, path, snapshot, bytes });
+    leased = true;
+    return token;
+  } finally {
+    if (!leased) closeSync(descriptor);
+  }
+}
+
+export function assertRemoteWorkspaceResultLease(lease) {
+  const state = REMOTE_WORKSPACE_RESULT_LEASES.get(lease);
+  if (!state) throw new Error("The Remote SSH result lease is not active.");
+  assertResultLeaseDescriptorAndPath(state.descriptor, state.path, state.snapshot);
+  const bytes = readExactResultLeaseBytes(state.descriptor, state.snapshot);
+  assertResultLeaseDescriptorAndPath(state.descriptor, state.path, state.snapshot);
+  if (!bytes.equals(state.bytes) || createHash("sha256").update(bytes).digest("hex") !== lease.sha256) {
+    throw new Error("The Remote SSH result changed after first observation.");
+  }
+  return lease;
+}
+
+export function closeRemoteWorkspaceResultLease(lease) {
+  const state = REMOTE_WORKSPACE_RESULT_LEASES.get(lease);
+  if (!state) throw new Error("The Remote SSH result lease is not active.");
+  let validationError;
+  try {
+    assertRemoteWorkspaceResultLease(lease);
+  } catch (error) {
+    validationError = error;
+  }
+  REMOTE_WORKSPACE_RESULT_LEASES.delete(lease);
+  let closeError;
+  try {
+    closeSync(state.descriptor);
+  } catch (error) {
+    closeError = error;
+  }
+  if (validationError && closeError) {
+    throw new AggregateError(
+      [validationError, closeError],
+      "The Remote SSH result changed and its lease could not close."
+    );
+  }
+  if (validationError) throw validationError;
+  if (closeError) throw closeError;
+}
+
+function resultLeaseSnapshot(metadata) {
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.size <= 0n ||
+    metadata.size > BigInt(REMOTE_WORKSPACE_RESULT_LIMIT_BYTES)
+  ) {
+    throw new Error("The Remote SSH result is not one bounded private regular file.");
+  }
+  return Object.freeze({
+    dev: metadata.dev,
+    ino: metadata.ino,
+    mode: metadata.mode,
+    nlink: metadata.nlink,
+    uid: metadata.uid,
+    gid: metadata.gid,
+    size: metadata.size,
+    mtimeNs: metadata.mtimeNs,
+    ctimeNs: metadata.ctimeNs,
+    birthtimeNs: metadata.birthtimeNs
+  });
+}
+
+function assertResultLeaseNamedPath(path, snapshot) {
+  const named = resultLeaseSnapshot(lstatSync(path, { bigint: true }));
+  if (!sameResultLeaseSnapshot(named, snapshot)) {
+    throw new Error("The Remote SSH result path changed after first observation.");
+  }
+}
+
+function assertResultLeaseDescriptorAndPath(descriptor, path, snapshot) {
+  const opened = resultLeaseSnapshot(fstatSync(descriptor, { bigint: true }));
+  if (!sameResultLeaseSnapshot(opened, snapshot)) {
+    throw new Error("The Remote SSH result descriptor changed after first observation.");
+  }
+  assertResultLeaseNamedPath(path, snapshot);
+}
+
+function readExactResultLeaseBytes(descriptor, snapshot) {
+  const bytes = Buffer.alloc(Number(snapshot.size));
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+    if (!Number.isSafeInteger(count) || count <= 0) {
+      throw new Error("The Remote SSH result ended before its pinned byte size.");
+    }
+    offset += count;
+  }
+  return bytes;
+}
+
+function decodeResultLeaseBytes(bytes) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw new Error("The Remote SSH result is not strict UTF-8.", { cause: error });
+  }
+}
+
+function sameResultLeaseSnapshot(left, right) {
+  return Object.keys(left).every((key) => left[key] === right[key]);
 }
 
 export function readBoundedRemoteWorkspaceFile(path, maximumBytes, { onDescriptorOpened } = {}) {

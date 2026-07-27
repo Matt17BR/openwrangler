@@ -12,11 +12,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
+  assertRemoteWorkspaceResultLease,
+  closeRemoteWorkspaceResultLease,
+  openRemoteWorkspaceResultLeaseIfPresent,
   parseRemoteWorkspacePhaseDescriptor,
   readBoundedRemoteWorkspaceFile,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
-  validateRemoteWorkspaceResult,
   validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
 import {
@@ -48,8 +50,7 @@ try {
   ) {
     throw new Error("The Remote SSH phase did not enter private user, PID, network, IPC, and UTS namespaces.");
   }
-  await runPhase(descriptor, ipExecutable, sshExecutable, ldconfigExecutable);
-  const capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
+  const terminal = await runPhase(descriptor, ipExecutable, sshExecutable, ldconfigExecutable);
   process.stdout.write(
     `${JSON.stringify({
       protocol: 1,
@@ -71,7 +72,10 @@ try {
       remoteSshBytes: descriptor.remoteSshBytes,
       remoteSshSha256: descriptor.remoteSshSha256,
       hostIsolationSha256: descriptor.hostIsolationSha256,
-      capabilities
+      outcome: terminal.outcome,
+      resultBytes: terminal.resultBytes,
+      resultSha256: terminal.resultSha256,
+      capabilities: terminal.capabilities
     })}\n`
   );
 } catch (error) {
@@ -120,6 +124,7 @@ async function runPhase(config, ip, ssh, ldconfig) {
   const editorOutput = boundedOutput();
   let sshd;
   let editor;
+  let resultLease;
   let phaseError;
   try {
     sshd = spawnMonitoredRemoteWorkspaceChild(
@@ -217,7 +222,7 @@ async function runPhase(config, ip, ssh, ldconfig) {
     );
     editor.child.stdout.on("data", (chunk) => editorOutput.append(chunk));
     editor.child.stderr.on("data", (chunk) => editorOutput.append(chunk));
-    await observeAcceptance(config, editor);
+    resultLease = await observeAcceptance(config, editor);
   } catch (error) {
     const editorDiagnostic = sanitizeFailure(editorOutput.text(), config.paths.root);
     phaseError = editorDiagnostic
@@ -242,48 +247,56 @@ async function runPhase(config, ip, ssh, ldconfig) {
   } catch (error) {
     cleanupErrors.push(error);
   }
-  const cleanupError =
+  let terminalError =
     cleanupErrors.length === 0
       ? undefined
       : cleanupErrors.length === 1
         ? cleanupErrors[0]
         : new AggregateError(cleanupErrors, "Private namespace cleanup had multiple failures.");
-  if (phaseError && cleanupError) {
-    throw new AggregateError([phaseError, cleanupError], "The Remote SSH phase and namespace cleanup both failed.");
-  }
-  if (cleanupError) throw cleanupError;
   if (phaseError) {
     const daemonDiagnostic = sshdOutput.text();
     if (daemonDiagnostic) {
-      throw new Error(
+      phaseError = new Error(
         `${phaseError instanceof Error ? phaseError.message : String(phaseError)} SSH daemon: ${daemonDiagnostic}`,
         { cause: phaseError }
       );
     }
-    throw phaseError;
+    terminalError = terminalError
+      ? new AggregateError([phaseError, terminalError], "The Remote SSH phase and namespace cleanup both failed.")
+      : phaseError;
   }
 
-  const resultSnapshot = immutableSnapshot(config.paths.result);
-  const resultContents = readBoundedRemoteWorkspaceFile(config.paths.result, 64 * 1024);
-  assertSnapshotUnchanged(config.paths.result, resultSnapshot);
-  try {
-    validateRemoteWorkspaceResult(resultContents, config);
-  } catch (error) {
-    let harnessDiagnostic = "";
+  let capabilities;
+  if (!terminalError && resultLease) {
     try {
-      const decoded = JSON.parse(resultContents);
-      if (typeof decoded?.error === "string") harnessDiagnostic = sanitizeFailure(decoded.error, config.paths.root);
-    } catch {
-      // The validator retains the authoritative malformed-result error.
+      const remoteSshLog = findRemoteSshLog(config.paths.userData);
+      validateRemoteSshLogAttestation(readBoundedRemoteWorkspaceFile(remoteSshLog, MAX_REMOTE_SSH_LOG_BYTES));
+      capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
+      assertRemoteWorkspaceResultLease(resultLease);
+    } catch (error) {
+      terminalError = error;
     }
-    throw new Error(
-      `${error instanceof Error ? error.message : String(error)}${harnessDiagnostic ? ` Harness: ${harnessDiagnostic}` : ""}`,
-      { cause: error }
-    );
   }
-  const remoteSshLog = findRemoteSshLog(config.paths.userData);
-  validateRemoteSshLogAttestation(readBoundedRemoteWorkspaceFile(remoteSshLog, MAX_REMOTE_SSH_LOG_BYTES));
-  assertSnapshotUnchanged(config.paths.result, resultSnapshot);
+
+  if (resultLease) {
+    try {
+      closeRemoteWorkspaceResultLease(resultLease);
+    } catch (error) {
+      terminalError = terminalError
+        ? new AggregateError([terminalError, error], "Remote SSH terminal validation and result close both failed.")
+        : error;
+    }
+  }
+  if (terminalError) throw terminalError;
+  if (!resultLease || !capabilities) {
+    throw new Error("The Remote SSH phase ended without one validated terminal result.");
+  }
+  return Object.freeze({
+    outcome: resultLease.outcome,
+    resultBytes: resultLease.bytes,
+    resultSha256: resultLease.sha256,
+    capabilities
+  });
 }
 
 function assertPrivateNamespace(config) {
@@ -398,31 +411,61 @@ async function observeAcceptance(config, editor) {
   let lastCheckpointAt = startedAt;
   let lastCheckpoint;
   while (true) {
+    const resultLease = acquireTimelyResult(config, startedAt);
+    if (resultLease) return resultLease;
     if (existsSync(config.paths.progress)) {
-      const progress = readBoundedRemoteWorkspaceFile(config.paths.progress, 16 * 1024);
-      if (progress !== lastCheckpoint) {
-        validateProgress(progress, config);
-        lastCheckpoint = progress;
-        lastCheckpointAt = Date.now();
+      try {
+        const progress = readBoundedRemoteWorkspaceFile(config.paths.progress, 1_024);
+        if (progress !== lastCheckpoint) {
+          validateProgress(progress, config);
+          lastCheckpoint = progress;
+          lastCheckpointAt = Date.now();
+        }
+      } catch (error) {
+        const racedResult = acquireTimelyResult(config, startedAt);
+        if (racedResult) return racedResult;
+        throw error;
       }
     }
-    if (existsSync(config.paths.result)) return;
     try {
       editor.assertRunning();
     } catch (error) {
+      const racedResult = acquireTimelyResult(config, startedAt);
+      if (racedResult) return racedResult;
       throw new Error("Official VS Code exited before the remote extension host published a result.", {
         cause: error
       });
     }
     const now = Date.now();
-    if (now - startedAt >= config.timeoutMs) {
-      throw new Error("The Remote SSH phase exceeded its 300-second deadline.");
-    }
     if (now - lastCheckpointAt >= config.inactivityTimeoutMs) {
+      const racedResult = acquireTimelyResult(config, startedAt);
+      if (racedResult) return racedResult;
       throw new Error("The Remote SSH phase made no checkpoint progress for 180 seconds.");
     }
     await wait(POLL_MS);
   }
+}
+
+function acquireTimelyResult(config, startedAt) {
+  if (Date.now() - startedAt >= config.timeoutMs) {
+    throw new Error("The Remote SSH phase exceeded its 300-second deadline.");
+  }
+  const resultLease = openRemoteWorkspaceResultLeaseIfPresent(config.paths.result, {
+    runId: config.runId
+  });
+  if (!resultLease) return undefined;
+  if (Date.now() - startedAt < config.timeoutMs) return resultLease;
+  let closeError;
+  try {
+    closeRemoteWorkspaceResultLease(resultLease);
+  } catch (error) {
+    closeError = error;
+  }
+  const timeout = new Error("The Remote SSH phase exceeded its 300-second deadline.");
+  if (closeError) {
+    throw new AggregateError([timeout, closeError], "A late Remote SSH result could not close safely.");
+  }
+  throw timeout;
 }
 
 function validateProgress(contents, config) {
@@ -438,7 +481,8 @@ function validateProgress(contents, config) {
     progress.phase !== config.phase ||
     typeof progress.checkpoint !== "string" ||
     progress.checkpoint.length <= 0 ||
-    progress.checkpoint.length > 256
+    progress.checkpoint.length > 256 ||
+    Object.keys(progress).sort().join(",") !== "checkpoint,phase,protocol,runId"
   ) {
     throw new Error("The Remote SSH progress checkpoint lost its phase correlation.");
   }
@@ -689,30 +733,6 @@ function boundedOutput() {
       return exceeded ? "<bounded-output-omitted>" : Buffer.concat(chunks).toString("utf8").trim();
     }
   };
-}
-
-function immutableSnapshot(path) {
-  const metadata = lstatSync(path, { bigint: true });
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n) {
-    throw new Error("The Remote SSH result is not one private regular file.");
-  }
-  return {
-    dev: metadata.dev,
-    ino: metadata.ino,
-    mode: metadata.mode,
-    nlink: metadata.nlink,
-    size: metadata.size,
-    mtimeNs: metadata.mtimeNs,
-    ctimeNs: metadata.ctimeNs,
-    birthtimeNs: metadata.birthtimeNs
-  };
-}
-
-function assertSnapshotUnchanged(path, expected) {
-  const current = immutableSnapshot(path);
-  if (Object.keys(expected).some((key) => current[key] !== expected[key])) {
-    throw new Error("The Remote SSH result changed after publication.");
-  }
 }
 
 function assertExecutable(path, label) {

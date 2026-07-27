@@ -27,7 +27,10 @@ import {
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
   createRemoteWorkspaceNamespaceLayout,
+  assertRemoteWorkspaceResultLease,
+  closeRemoteWorkspaceResultLease,
   namespaceRemoteWorkspaceImmutablePath,
+  openRemoteWorkspaceResultLeaseIfPresent,
   PINNED_REMOTE_SSH_BYTES,
   PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
@@ -571,21 +574,113 @@ test("Remote SSH log attestation proves exact offline reuse and rejects download
   }
 });
 
-test("Remote result validation rejects authority-loss failures and mis-correlation", () => {
+test("Remote result validation accepts strict correlated success and failure outcomes", () => {
   const runId = "11111111-1111-4111-8111-111111111111";
   assert.deepEqual(
     validateRemoteWorkspaceResult(JSON.stringify({ protocol: 1, runId, phase: "remote-workspace", ok: true }), {
       runId
     }),
-    { protocol: 1, runId, phase: "remote-workspace", ok: true }
+    { protocol: 1, runId, phase: "remote-workspace", ok: true, outcome: "success" }
+  );
+  assert.deepEqual(
+    validateRemoteWorkspaceResult(
+      JSON.stringify({ protocol: 1, runId, phase: "remote-workspace", ok: false, error: "assertion failed" }),
+      { runId }
+    ),
+    {
+      protocol: 1,
+      runId,
+      phase: "remote-workspace",
+      ok: false,
+      error: "assertion failed",
+      outcome: "failure"
+    }
   );
   for (const result of [
     { protocol: 1, runId: "22222222-2222-4222-8222-222222222222", phase: "remote-workspace", ok: true },
-    { protocol: 1, runId, phase: "remote-workspace", ok: false, error: "remote authority lost" },
+    { protocol: 1, runId, phase: "remote-workspace", ok: false, error: "" },
+    { protocol: 1, runId, phase: "remote-workspace", ok: false, error: "x".repeat(16_001) },
     { protocol: 1, runId, phase: "verify", ok: true },
-    { protocol: 1, runId, phase: "remote-workspace", ok: true, authority: REMOTE_WORKSPACE_AUTHORITY }
+    { protocol: 1, runId, phase: "remote-workspace", ok: true, authority: REMOTE_WORKSPACE_AUTHORITY },
+    { protocol: 1, runId, phase: "remote-workspace", ok: false, error: "failed", extra: true }
   ]) {
-    assert.throws(() => validateRemoteWorkspaceResult(JSON.stringify(result), { runId }), /correlated success result/u);
+    assert.throws(
+      () => validateRemoteWorkspaceResult(JSON.stringify(result), { runId }),
+      /correlated terminal result/u
+    );
+  }
+});
+
+test("Remote result leases retain the first strict terminal file through final validation", () => {
+  const root = privateRoot("ow-remote-result-lease-");
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const path = join(root, "result.json");
+  try {
+    assert.equal(openRemoteWorkspaceResultLeaseIfPresent(path, { runId }), undefined);
+    const contents = JSON.stringify({
+      protocol: 1,
+      runId,
+      phase: "remote-workspace",
+      ok: false,
+      error: "assertion failed"
+    });
+    writeFileSync(path, contents, { mode: 0o600 });
+    const lease = openRemoteWorkspaceResultLeaseIfPresent(path, { runId });
+    assert.equal(lease.outcome, "failure");
+    assert.equal(lease.bytes, Buffer.byteLength(contents));
+    assert.match(lease.sha256, /^[0-9a-f]{64}$/u);
+    assert.equal(lease.result.error, "assertion failed");
+    assert.equal(assertRemoteWorkspaceResultLease(lease), lease);
+    closeRemoteWorkspaceResultLease(lease);
+    assert.throws(() => assertRemoteWorkspaceResultLease(lease), /not active/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote result leases reject path replacement before, during, and after first observation", () => {
+  const runId = "11111111-1111-4111-8111-111111111111";
+  for (const timing of ["during-open", "after-read", "after-open"]) {
+    const root = privateRoot(`ow-remote-result-${timing}-`);
+    const path = join(root, "result.json");
+    const displaced = join(root, "displaced.json");
+    const replacement = join(root, "replacement.json");
+    const success = JSON.stringify({ protocol: 1, runId, phase: "remote-workspace", ok: true });
+    const failure = JSON.stringify({
+      protocol: 1,
+      runId,
+      phase: "remote-workspace",
+      ok: false,
+      error: "replacement"
+    });
+    try {
+      writeFileSync(path, success, { mode: 0o600 });
+      writeFileSync(replacement, failure, { mode: 0o600 });
+      if (timing !== "after-open") {
+        assert.throws(
+          () =>
+            openRemoteWorkspaceResultLeaseIfPresent(path, {
+              runId,
+              [timing === "during-open" ? "onDescriptorOpened" : "afterRead"]() {
+                renameSync(path, displaced);
+                renameSync(replacement, path);
+              }
+            }),
+          /changed/u
+        );
+      } else {
+        const lease = openRemoteWorkspaceResultLeaseIfPresent(path, { runId });
+        renameSync(path, displaced);
+        renameSync(replacement, path);
+        assert.throws(() => assertRemoteWorkspaceResultLease(lease), /changed after first observation/u);
+        assert.throws(() => closeRemoteWorkspaceResultLease(lease), /changed after first observation/u);
+        assert.throws(() => assertRemoteWorkspaceResultLease(lease), /not active/u);
+      }
+      assert.equal(readFileSync(displaced, "utf8"), success);
+      assert.equal(readFileSync(path, "utf8"), failure);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 
@@ -623,6 +718,9 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
     remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
     hostIsolationSha256,
+    outcome: "success",
+    resultBytes: 123,
+    resultSha256: "c".repeat(64),
     capabilities: zeroCapabilities()
   };
   assert.deepEqual(
@@ -633,6 +731,14 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     }),
     attestation
   );
+  assert.equal(
+    validateRemoteWorkspaceNamespaceAttestation(JSON.stringify({ ...attestation, outcome: "failure" }), {
+      runId,
+      ...candidate,
+      hostIsolationSha256
+    }).outcome,
+    "failure"
+  );
   for (const mutation of [
     { ...attestation, candidateSha256: "b".repeat(64) },
     { ...attestation, candidateBytes: 124 },
@@ -640,6 +746,9 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     { ...attestation, remoteSshBytes: PINNED_REMOTE_SSH_BYTES + 1 },
     { ...attestation, remoteSshSha256: "b".repeat(64) },
     { ...attestation, hostIsolationSha256: "b".repeat(64) },
+    { ...attestation, outcome: "unknown" },
+    { ...attestation, resultBytes: 0 },
+    { ...attestation, resultSha256: "C".repeat(64) },
     {
       ...attestation,
       capabilities: { ...attestation.capabilities, effective: 1 }

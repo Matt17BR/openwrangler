@@ -7,12 +7,49 @@ import test from "node:test";
 import { retainEditorAcceptanceEvidence } from "./editor-acceptance-evidence.mjs";
 import {
   assertEditorAcceptancePrivateRootReceipt,
+  cleanupPackagedCursorAcquisition,
   createEditorAcceptancePrivateRootReceipt,
   packagedEditorFailureLeaves,
   removeEditorAcceptancePrivateRoot,
   runPackagedEditorOrchestration,
   runWithRetainedFailure
 } from "./packaged-editor-orchestration.mjs";
+
+test("Cursor cleanup never inspects or launches an uninstaller under ownership uncertainty", async () => {
+  let propertyReads = 0;
+  const acquisition = new Proxy(
+    {},
+    {
+      get() {
+        propertyReads += 1;
+        throw new Error("the private acquisition must remain untouched");
+      }
+    }
+  );
+  assert.deepEqual(
+    await cleanupPackagedCursorAcquisition(acquisition, {
+      processTreeVerifiedStopped: false
+    }),
+    { cleaned: false, withheld: true }
+  );
+  assert.equal(propertyReads, 0);
+});
+
+test("Cursor cleanup invokes its private uninstaller once only after ownership is verified", async () => {
+  let cleanups = 0;
+  assert.deepEqual(
+    await cleanupPackagedCursorAcquisition(
+      {
+        async cleanup() {
+          cleanups += 1;
+        }
+      },
+      { processTreeVerifiedStopped: true }
+    ),
+    { cleaned: true, withheld: false }
+  );
+  assert.equal(cleanups, 1);
+});
 
 test("a packaged-editor failure is retained before its disposable profile is removed", async () => {
   const events = [];

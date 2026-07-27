@@ -22,6 +22,7 @@ import {
   createCursorAcquisitionRootReceipt,
   assertCursorAcquisitionRootReceipt,
   downloadPinnedCursorArtifact,
+  extractPinnedCursorTarget,
   PINNED_CURSOR_PRODUCT_COMMIT,
   PINNED_CURSOR_TARGETS,
   PINNED_CURSOR_VERSION,
@@ -218,6 +219,105 @@ test("Cursor artifact download stays bound to its no-follow descriptor across a 
     assert.equal(existsSync(join(directory, target.artifactName)), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Cursor artifact hashing rejects a same-path replacement before extraction", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-hash-race-")));
+  chmodSync(directory, 0o700);
+  try {
+    const body = Buffer.from("pinned-cursor-test-body", "utf8");
+    const target = testTarget(body);
+    const finalPath = join(directory, target.artifactName);
+    const displaced = join(directory, "displaced-artifact");
+    await assert.rejects(
+      downloadPinnedCursorArtifact(target, createCursorAcquisitionRootReceipt(directory), {
+        afterHashReadForTest({ path }) {
+          assert.equal(path, finalPath);
+          renameSync(path, displaced);
+          writeFileSync(path, "replacement", { mode: 0o600 });
+        },
+        openResponse: async () => cursorResponse(body),
+        timeoutMs: 1_000
+      }),
+      /changed while it was hashed/u
+    );
+    assert.deepEqual(readFileSync(displaced), body);
+    assert.equal(readFileSync(finalPath, "utf8"), "replacement");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Cursor extraction revalidates the artifact at every consuming command spawn", async () => {
+  for (const scenario of [
+    {
+      label: "darwin-attachment",
+      platform: "darwin",
+      swapAt: "Pinned Cursor DMG attachment"
+    },
+    {
+      label: "windows-authenticode",
+      platform: "win32",
+      swapAt: "Pinned Cursor Authenticode verification"
+    },
+    {
+      label: "windows-installer",
+      platform: "win32",
+      swapAt: "Pinned Cursor private installation"
+    }
+  ]) {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), `openwrangler-cursor-${scenario.label}-`)));
+    chmodSync(directory, 0o700);
+    try {
+      const body = Buffer.from(`pinned-cursor-${scenario.label}`, "utf8");
+      const target =
+        scenario.platform === "darwin"
+          ? {
+              ...testTarget(body),
+              architecture: "universal",
+              artifactName: "cursor-test.dmg",
+              format: "dmg",
+              platform: "darwin"
+            }
+          : testTarget(body);
+      const rootReceipt = createCursorAcquisitionRootReceipt(directory);
+      const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, {
+        openResponse: async () => cursorResponse(body),
+        timeoutMs: 1_000
+      });
+      const displaced = join(directory, `displaced-${scenario.label}`);
+      const commands = [];
+      let swapped = false;
+      await assert.rejects(
+        extractPinnedCursorTarget(target, artifact, rootReceipt, {
+          environment: scenario.platform === "win32" ? { SYSTEMROOT: "C:\\Windows" } : {},
+          beforeArtifactSpawnForTest({ label, path }) {
+            if (label !== scenario.swapAt) return;
+            assert.equal(swapped, false);
+            swapped = true;
+            renameSync(path, displaced);
+            writeFileSync(path, Buffer.alloc(body.length, 0x78), { mode: 0o600 });
+          },
+          async runCommand(command) {
+            command.beforeSpawnCheck?.();
+            commands.push(command.label);
+            return { stdout: "", stderr: "" };
+          }
+        }),
+        /changed at a command launch boundary/u
+      );
+      assert.equal(swapped, true);
+      assert.deepEqual(readFileSync(displaced), body);
+      assert.equal(commands.includes(scenario.swapAt), false);
+      if (scenario.swapAt === "Pinned Cursor private installation") {
+        assert.deepEqual(commands, ["Pinned Cursor Authenticode verification"]);
+      } else {
+        assert.deepEqual(commands, []);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   }
 });
 

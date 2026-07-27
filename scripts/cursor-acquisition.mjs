@@ -126,7 +126,12 @@ export async function acquirePinnedCursor(
 export async function downloadPinnedCursorArtifact(
   rawTarget,
   rootReceipt,
-  { afterTemporaryOpenForTest, openResponse = openPinnedCursorResponse, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}
+  {
+    afterHashReadForTest,
+    afterTemporaryOpenForTest,
+    openResponse = openPinnedCursorResponse,
+    timeoutMs = DOWNLOAD_TIMEOUT_MS
+  } = {}
 ) {
   const target = validatePinnedCursorTarget(rawTarget);
   assertPrivateDirectoryReceipt(rootReceipt);
@@ -135,6 +140,9 @@ export async function downloadPinnedCursorArtifact(
   }
   if (afterTemporaryOpenForTest !== undefined && typeof afterTemporaryOpenForTest !== "function") {
     throw new Error("Pinned Cursor acquisition received a malformed descriptor-race test hook.");
+  }
+  if (afterHashReadForTest !== undefined && typeof afterHashReadForTest !== "function") {
+    throw new Error("Pinned Cursor acquisition received a malformed hash-race test hook.");
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DOWNLOAD_TIMEOUT_MS) {
     throw new Error(`Pinned Cursor download timeout must be no larger than ${DOWNLOAD_TIMEOUT_MS} ms.`);
@@ -203,7 +211,10 @@ export async function downloadPinnedCursorArtifact(
     renameSync(temporaryPath, finalPath);
     publishedSnapshot = lstatSync(finalPath, { bigint: true });
     const receipt = immutableFileReceipt(finalPath, rootReceipt.canonicalPath);
-    if (receipt.snapshot.size !== BigInt(target.bytes) || (await hashReceipt(receipt)) !== target.sha256) {
+    if (
+      receipt.snapshot.size !== BigInt(target.bytes) ||
+      (await hashReceipt(receipt, { afterReadForTest: afterHashReadForTest })) !== target.sha256
+    ) {
       throw new Error("The published pinned Cursor artifact changed before extraction.");
     }
     completed = true;
@@ -358,29 +369,64 @@ export function validatePinnedCursorTarget(target) {
   return target;
 }
 
-async function extractPinnedCursorTarget(target, artifact, rootReceipt) {
+export async function extractPinnedCursorTarget(
+  target,
+  artifact,
+  rootReceipt,
+  {
+    beforeArtifactSpawnForTest,
+    environment = createEditorAcceptanceEnvironment(),
+    runCommand = runBoundedEditorCommand
+  } = {}
+) {
+  if (beforeArtifactSpawnForTest !== undefined && typeof beforeArtifactSpawnForTest !== "function") {
+    throw new Error("Pinned Cursor extraction received a malformed launch-race test hook.");
+  }
+  if (typeof runCommand !== "function") {
+    throw new Error("Pinned Cursor extraction requires a bounded command runner.");
+  }
   await assertImmutableArtifactReceipt(target, artifact, rootReceipt);
   const installationRoot = join(rootReceipt.path, "installation");
   mkdirSync(installationRoot, { mode: 0o700 });
   privateDirectoryReceipt(installationRoot, rootReceipt.canonicalPath);
   if (target.platform === "darwin") {
-    return extractDarwinTarget(target, artifact, rootReceipt, installationRoot);
+    return extractDarwinTarget(target, artifact, rootReceipt, installationRoot, {
+      beforeArtifactSpawnForTest,
+      environment,
+      runCommand
+    });
   }
-  return extractWindowsTarget(target, artifact, rootReceipt, installationRoot);
+  return extractWindowsTarget(target, artifact, rootReceipt, installationRoot, {
+    beforeArtifactSpawnForTest,
+    environment,
+    runCommand
+  });
 }
 
-async function extractDarwinTarget(target, artifact, rootReceipt, installationRoot) {
+async function extractDarwinTarget(
+  target,
+  artifact,
+  rootReceipt,
+  installationRoot,
+  { beforeArtifactSpawnForTest, environment, runCommand }
+) {
   const mountPoint = join(rootReceipt.path, "mount");
   mkdirSync(mountPoint, { mode: 0o700 });
   privateDirectoryReceipt(mountPoint, rootReceipt.canonicalPath);
-  const environment = createEditorAcceptanceEnvironment();
   let attached = false;
   let primaryError;
   try {
-    await runBoundedEditorCommand(
+    await runCommand(
       {
         executable: "/usr/bin/hdiutil",
         args: ["attach", artifact.path, "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mountPoint, "-quiet"],
+        beforeSpawnCheck: artifactPreSpawnCheck(
+          target,
+          artifact,
+          rootReceipt,
+          "Pinned Cursor DMG attachment",
+          beforeArtifactSpawnForTest
+        ),
         environment,
         label: "Pinned Cursor DMG attachment"
       },
@@ -392,7 +438,7 @@ async function extractDarwinTarget(target, artifact, rootReceipt, installationRo
     if (!sourceMetadata.isDirectory() || sourceMetadata.isSymbolicLink()) {
       throw new Error("The pinned Cursor DMG did not contain one regular Cursor.app bundle.");
     }
-    await runBoundedEditorCommand(
+    await runCommand(
       {
         executable: "/usr/bin/ditto",
         args: ["--rsrc", "--extattr", sourceApp, join(installationRoot, "Cursor.app")],
@@ -401,7 +447,7 @@ async function extractDarwinTarget(target, artifact, rootReceipt, installationRo
       },
       { timeoutMs: EXTRACTION_TIMEOUT_MS, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
     );
-    const signature = await runBoundedEditorCommand(
+    const signature = await runCommand(
       {
         executable: "/usr/bin/codesign",
         args: ["--display", "--verbose=4", "--verify", "--deep", "--strict", join(installationRoot, "Cursor.app")],
@@ -423,7 +469,7 @@ async function extractDarwinTarget(target, artifact, rootReceipt, installationRo
   let detachError;
   if (attached) {
     try {
-      await runBoundedEditorCommand(
+      await runCommand(
         {
           executable: "/usr/bin/hdiutil",
           args: ["detach", mountPoint, "-force", "-quiet"],
@@ -447,11 +493,16 @@ async function extractDarwinTarget(target, artifact, rootReceipt, installationRo
   return { installationRoot };
 }
 
-async function extractWindowsTarget(target, artifact, rootReceipt, installationRoot) {
-  const environment = createEditorAcceptanceEnvironment();
+async function extractWindowsTarget(
+  target,
+  artifact,
+  rootReceipt,
+  installationRoot,
+  { beforeArtifactSpawnForTest, environment, runCommand }
+) {
   const systemRoot = environment.SYSTEMROOT;
   if (!systemRoot) throw new Error("Pinned Cursor Windows acquisition requires the isolated system root.");
-  await runBoundedEditorCommand(
+  await runCommand(
     {
       executable: join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
       args: [
@@ -462,12 +513,19 @@ async function extractWindowsTarget(target, artifact, rootReceipt, installationR
         `$signature = Get-AuthenticodeSignature -LiteralPath $args[0]; if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*${CURSOR_WINDOWS_SIGNER}*') { exit 41 }`,
         artifact.path
       ],
+      beforeSpawnCheck: artifactPreSpawnCheck(
+        target,
+        artifact,
+        rootReceipt,
+        "Pinned Cursor Authenticode verification",
+        beforeArtifactSpawnForTest
+      ),
       environment,
       label: "Pinned Cursor Authenticode verification"
     },
     { timeoutMs: 60_000, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
   );
-  await runBoundedEditorCommand(
+  await runCommand(
     {
       executable: artifact.path,
       args: [
@@ -480,6 +538,13 @@ async function extractWindowsTarget(target, artifact, rootReceipt, installationR
         "/SP-",
         `/DIR=${installationRoot}`
       ],
+      beforeSpawnCheck: artifactPreSpawnCheck(
+        target,
+        artifact,
+        rootReceipt,
+        "Pinned Cursor private installation",
+        beforeArtifactSpawnForTest
+      ),
       environment,
       label: "Pinned Cursor private installation"
     },
@@ -490,7 +555,7 @@ async function extractWindowsTarget(target, artifact, rootReceipt, installationR
   return {
     installationRoot,
     cleanup: async () => {
-      await runBoundedEditorCommand(
+      await runCommand(
         {
           executable: uninstaller,
           args: ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
@@ -504,6 +569,33 @@ async function extractWindowsTarget(target, artifact, rootReceipt, installationR
 }
 
 async function assertImmutableArtifactReceipt(target, artifact, rootReceipt) {
+  assertArtifactReceiptShape(target, artifact, rootReceipt);
+  if ((await hashReceipt(artifact)) !== target.sha256) {
+    throw new Error("The pinned Cursor artifact receipt changed before extraction.");
+  }
+}
+
+function artifactPreSpawnCheck(target, artifact, rootReceipt, label, beforeArtifactSpawnForTest) {
+  return () => {
+    const hookResult = beforeArtifactSpawnForTest?.(Object.freeze({ label, path: artifact.path }));
+    if (hookResult !== undefined) {
+      throw new Error("Pinned Cursor extraction launch-race hooks must complete synchronously without a result.");
+    }
+    assertArtifactReceiptShape(target, artifact, rootReceipt);
+    const current = lstatSync(artifact.path, { bigint: true });
+    if (
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      current.nlink !== 1n ||
+      !sameSnapshot(fileSnapshot(current), artifact.snapshot) ||
+      realpathSync(artifact.path) !== artifact.canonicalPath
+    ) {
+      throw new Error("The pinned Cursor artifact changed at a command launch boundary.");
+    }
+  };
+}
+
+function assertArtifactReceiptShape(target, artifact, rootReceipt) {
   assertPrivateDirectoryReceipt(rootReceipt);
   if (
     !artifact ||
@@ -514,9 +606,6 @@ async function assertImmutableArtifactReceipt(target, artifact, rootReceipt) {
     throw new Error("The pinned Cursor artifact receipt changed before extraction.");
   }
   assertContainedPath(rootReceipt.canonicalPath, artifact.canonicalPath);
-  if ((await hashReceipt(artifact)) !== target.sha256) {
-    throw new Error("The pinned Cursor artifact receipt changed before extraction.");
-  }
 }
 
 export function createCursorAcquisitionRootReceipt(path, containedBy) {
@@ -578,20 +667,29 @@ function immutableFileReceipt(path, containedBy) {
   });
 }
 
-async function hashReceipt(receipt) {
+async function hashReceipt(receipt, { afterReadForTest } = {}) {
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
   const descriptor = openSync(receipt.path, flags);
   try {
     const opened = fstatSync(descriptor, { bigint: true });
-    if (!sameSnapshot(fileSnapshot(opened), receipt.snapshot)) {
+    if (
+      !sameSnapshot(fileSnapshot(opened), receipt.snapshot) ||
+      !sameSnapshot(fileSnapshot(lstatSync(receipt.path, { bigint: true })), receipt.snapshot) ||
+      realpathSync(receipt.path) !== receipt.canonicalPath
+    ) {
       throw new Error("The pinned Cursor artifact changed before it could be hashed.");
     }
     const digest = createHash("sha256");
     for await (const chunk of createReadStream(undefined, { fd: descriptor, autoClose: false })) {
       digest.update(chunk);
     }
+    afterReadForTest?.(Object.freeze({ descriptor, path: receipt.path }));
     const completed = fstatSync(descriptor, { bigint: true });
-    if (!sameSnapshot(fileSnapshot(completed), receipt.snapshot)) {
+    if (
+      !sameSnapshot(fileSnapshot(completed), receipt.snapshot) ||
+      !sameSnapshot(fileSnapshot(lstatSync(receipt.path, { bigint: true })), receipt.snapshot) ||
+      realpathSync(receipt.path) !== receipt.canonicalPath
+    ) {
       throw new Error("The pinned Cursor artifact changed while it was hashed.");
     }
     return digest.digest("hex");
