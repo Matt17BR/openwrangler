@@ -383,8 +383,10 @@ async function measureGridInteraction({
 }
 
 async function configureBenchmarkProfile(testPython: string): Promise<ProductConfiguration> {
+  await vscode.workspace
+    .getConfiguration("openWrangler")
+    .update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
-  await configuration.update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
   assert.equal(configuration.get("pythonPath"), testPython, "The benchmark must use its private Python interpreter.");
   const expected: ProductConfiguration = {
     defaultBackend: "auto",
