@@ -18,7 +18,9 @@ on:
       - "scripts/prepare-xvfb*.mjs"
       - "scripts/remote-jupyter/**"
       - "scripts/remote-jupyter-acceptance.mjs"
+      - "scripts/remote-jupyter-lock*.mjs"
       - "scripts/run-packaged-editor-tests.mjs"
+      - "scripts/update-remote-jupyter-lock.mjs"
       - "scripts/xvfb-packages.json"
       - "src/extension/**"
       - "src/shared/**"
@@ -53,6 +55,9 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install --no-deps "https://files.pythonhosted.org/packages/90/b0/114463d056b6b328d45557001e848b8ab15539bd8f4fa7a457ccb83e2b5d/uv-0.11.32-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=3da76cd4e2697de30928b8a8524bd39183ac1e08cb7e72833807c022b7cba6c4"
+      - run: npm run lock:remote-jupyter:check
+      - run: npm run audit:remote-jupyter
       - run: npm run package -- --pre-release --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - run: npm run build:test-extension
