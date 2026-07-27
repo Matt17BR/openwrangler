@@ -3,6 +3,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import ts from "typescript";
+import { loadXvfbManifest } from "./prepare-xvfb.mjs";
 import { readBoundedRemoteWorkspaceFile } from "./remote-workspace-contract.mjs";
 import {
   assertRemoteWorkspaceExactFileStage,
@@ -18,11 +19,15 @@ const PHASE_MODULE_NAMES = Object.freeze([
 ]);
 const PHASE_RUNTIME_FILE_NAMES = Object.freeze([...PHASE_MODULE_NAMES, "Xvfb"].sort());
 const MODULE_MAXIMUM_BYTES = 512 * 1024;
+const PINNED_XVFB_MAXIMUM_BYTES = Object.values(loadXvfbManifest().packages).reduce(
+  (maximum, record) => Math.max(maximum, record.executableSize),
+  0
+);
 const PHASE_RUNTIME_BOUNDS = Object.freeze({
   label: "Remote SSH phase-loader runtime",
-  maximumFiles: 8,
-  maximumBytes: 2 * 1024 * 1024,
-  maximumFileBytes: 1024 * 1024
+  maximumFiles: PHASE_RUNTIME_FILE_NAMES.length,
+  maximumBytes: PINNED_XVFB_MAXIMUM_BYTES + PHASE_MODULE_NAMES.length * MODULE_MAXIMUM_BYTES,
+  maximumFileBytes: Math.max(PINNED_XVFB_MAXIMUM_BYTES, MODULE_MAXIMUM_BYTES)
 });
 const NODE_BUILTINS = new Set(
   builtinModules.map((specifier) => (specifier.startsWith("node:") ? specifier : `node:${specifier}`))
