@@ -402,7 +402,7 @@ function remotePhaseDescriptor() {
     editor: "/ow/client/code",
     xvfb: "/ow/phase-runtime/Xvfb",
     displayMode: "xvfb",
-    testModule: "/ow/rh/test-module/test/extensionHost/index.js",
+    testModule: "/ow/rh/test-module/dist-test/test/extensionHost/index.js",
     python: "/ow/rh/python/bin/python",
     user: "openwrangler",
     sshConfig: "/ow/rh/ssh/config",

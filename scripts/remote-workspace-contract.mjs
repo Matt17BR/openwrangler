@@ -64,7 +64,7 @@ const FIXED_PHASE_PATHS = Object.freeze({
 });
 const FIXED_DESCRIPTOR_PATHS = Object.freeze({
   xvfb: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-runtime/Xvfb`,
-  testModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module/test/extensionHost/index.js`,
+  testModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module/dist-test/test/extensionHost/index.js`,
   python: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/python/bin/python`,
   sshConfig: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/config`,
   sshHostKey: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/host`,

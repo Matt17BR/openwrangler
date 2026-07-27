@@ -1,13 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   constants,
   copyFileSync,
-  cpSync,
   lstatSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -57,6 +55,12 @@ import {
   captureRemoteWorkspaceFileReceipt,
   stageRemoteWorkspaceCandidate
 } from "./remote-workspace-provenance.mjs";
+import {
+  assertRemoteWorkspaceExactFileStage,
+  assertRemoteWorkspaceTreeStage,
+  stageRemoteWorkspaceExactFile,
+  stageRemoteWorkspaceTree
+} from "./remote-workspace-staging.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,18 +112,26 @@ try {
   hostSentinel = join(privateParent, `.host-private-${runId}`);
   writeFileSync(hostSentinel, randomUUID(), { encoding: "utf8", flag: "wx", mode: 0o600 });
   hostSentinelReceipt = captureRemoteWorkspaceFileReceipt(hostSentinel);
-  const stagedChild = stageExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs"));
-  stageExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs"));
-  stageExactFile(processScript, join(layout.phaseRuntime, "remote-workspace-processes.mjs"));
-  const stagedXvfb = stageExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700);
-  const stagedTestModule = stageTestModuleTree(layout.remoteTestModule);
-  stageTestRuntimeDependency(playwrightCoreRoot, join(layout.remoteTestModule, "node_modules", "playwright-core"), {
-    name: "playwright-core",
-    version: pinnedPlaywrightCoreVersion,
-    maximumFiles: 256,
-    maximumBytes: 24 * 1024 * 1024,
-    maximumFileBytes: 8 * 1024 * 1024
-  });
+  const exactStages = [
+    stageRemoteWorkspaceExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs")),
+    stageRemoteWorkspaceExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs")),
+    stageRemoteWorkspaceExactFile(processScript, join(layout.phaseRuntime, "remote-workspace-processes.mjs")),
+    stageRemoteWorkspaceExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700)
+  ];
+  const [childStage, , , xvfbStage] = exactStages;
+  const testModuleStage = stageTestModuleTree(layout.remoteTestModule);
+  const playwrightStage = stageTestRuntimeDependency(
+    playwrightCoreRoot,
+    join(layout.remoteTestModule, "node_modules", "playwright-core"),
+    {
+      name: "playwright-core",
+      version: pinnedPlaywrightCoreVersion,
+      maximumFiles: 256,
+      maximumBytes: 24 * 1024 * 1024,
+      maximumFileBytes: 8 * 1024 * 1024
+    }
+  );
+  const treeStages = [testModuleStage.stage, playwrightStage];
   const acquisition = await acquirePinnedRemoteWorkspaceArtifacts(layout.root, {
     artifactPaths: artifactOverrides(process.env)
   });
@@ -255,8 +267,8 @@ try {
     runId,
     layout: namespaceLayout,
     editor: namespacePrivatePath(layout, installation.clientExecutable),
-    xvfb: namespacePrivatePath(layout, stagedXvfb),
-    testModule: namespacePrivatePath(layout, stagedTestModule),
+    xvfb: namespacePrivatePath(layout, xvfbStage.stagedPath),
+    testModule: namespacePrivatePath(layout, testModuleStage.entrypoint),
     python: namespacePrivatePath(layout, python.executable),
     user: namespaceSshUser,
     sshConfig: ssh.namespaceClientConfig,
@@ -279,7 +291,7 @@ try {
   const bwrapArguments = createRemoteWorkspaceBwrapArguments({
     root: layout.root,
     descriptor: layout.descriptor,
-    childScript: stagedChild,
+    childScript: childStage.stagedPath,
     systemPython,
     uid: tools.uid,
     gid: tools.gid,
@@ -293,6 +305,7 @@ try {
     candidateExpectation,
     remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
+  assertStagedRuntimeInputs(exactStages, treeStages);
   const attestation = await commandRunner.run(
     {
       executable: tools.bwrap,
@@ -307,6 +320,7 @@ try {
       killGraceMs: 5_000
     }
   );
+  assertStagedRuntimeInputs(exactStages, treeStages);
   await assertAcceptanceProvenance({
     candidatePath,
     candidateSourceReceipt,
@@ -399,27 +413,6 @@ function namespacePrivatePath(paths, value) {
   return join(REMOTE_WORKSPACE_NAMESPACE_ROOT, relation);
 }
 
-function stageExactFile(source, destination, mode = 0o600) {
-  const before = captureRemoteWorkspaceFileReceipt(source);
-  copyFileSync(source, destination, constants.COPYFILE_EXCL);
-  chmodSync(destination, mode);
-  const after = captureRemoteWorkspaceFileReceipt(source);
-  const staged = captureRemoteWorkspaceFileReceipt(destination);
-  const stagedMode = lstatSync(destination).mode & 0o777;
-  if (
-    before.dev !== after.dev ||
-    before.ino !== after.ino ||
-    before.size !== after.size ||
-    before.sha256 !== after.sha256 ||
-    before.size !== staged.size ||
-    before.sha256 !== staged.sha256 ||
-    stagedMode !== mode
-  ) {
-    throw new Error("A Remote SSH phase source changed while it was staged.");
-  }
-  return destination;
-}
-
 function stageTestModuleTree(destination) {
   const bounds = {
     label: "Remote SSH test module",
@@ -427,23 +420,12 @@ function stageTestModuleTree(destination) {
     maximumBytes: 4 * 1024 * 1024,
     maximumFileBytes: 2 * 1024 * 1024
   };
-  const before = captureBoundedTree(testModuleRoot, bounds);
-  cpSync(testModuleRoot, destination, {
-    recursive: true,
-    errorOnExist: true,
-    force: false,
-    preserveTimestamps: true,
-    verbatimSymlinks: true
+  const stagedRoot = join(destination, "dist-test");
+  const stage = stageRemoteWorkspaceTree(testModuleRoot, stagedRoot, bounds);
+  return Object.freeze({
+    entrypoint: join(stagedRoot, relative(testModuleRoot, testModule)),
+    stage
   });
-  const after = captureBoundedTree(testModuleRoot, bounds);
-  const staged = captureBoundedTree(destination, bounds);
-  if (
-    JSON.stringify(before) !== JSON.stringify(after) ||
-    JSON.stringify(before.files) !== JSON.stringify(staged.files)
-  ) {
-    throw new Error("The bounded Remote SSH test module changed while it was staged.");
-  }
-  return join(destination, relative(testModuleRoot, testModule));
 }
 
 function stageTestRuntimeDependency(source, destination, identity) {
@@ -459,63 +441,17 @@ function stageTestRuntimeDependency(source, destination, identity) {
   if (metadata.name !== identity.name || metadata.version !== identity.version) {
     throw new Error("The Remote SSH test dependency does not match its lockfile identity.");
   }
-  const bounds = { ...identity, label: `Remote SSH ${identity.name} dependency` };
-  const before = captureBoundedTree(source, bounds);
-  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
-  cpSync(source, destination, {
-    recursive: true,
-    errorOnExist: true,
-    force: false,
-    preserveTimestamps: true,
-    verbatimSymlinks: true
+  return stageRemoteWorkspaceTree(source, destination, {
+    label: `Remote SSH ${identity.name} dependency`,
+    maximumFiles: identity.maximumFiles,
+    maximumBytes: identity.maximumBytes,
+    maximumFileBytes: identity.maximumFileBytes
   });
-  const after = captureBoundedTree(source, bounds);
-  const staged = captureBoundedTree(destination, bounds);
-  if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(before) !== JSON.stringify(staged)) {
-    throw new Error(`The bounded Remote SSH ${identity.name} dependency changed while it was staged.`);
-  }
 }
 
-function captureBoundedTree(root, { label, maximumFiles, maximumBytes, maximumFileBytes }) {
-  const files = [];
-  const queue = [root];
-  let bytes = 0;
-  while (queue.length > 0) {
-    const directory = queue.shift();
-    const metadata = lstatSync(directory, { bigint: true });
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new Error(`${label} contains an unsafe directory.`);
-    }
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      const entryMetadata = lstatSync(path, { bigint: true });
-      if (entryMetadata.isSymbolicLink()) {
-        throw new Error(`${label} contains a symbolic link.`);
-      }
-      if (entry.isDirectory()) {
-        queue.push(path);
-      } else if (
-        entry.isFile() &&
-        entryMetadata.nlink === 1n &&
-        entryMetadata.size >= 0n &&
-        entryMetadata.size <= BigInt(maximumFileBytes)
-      ) {
-        bytes += Number(entryMetadata.size);
-        files.push({
-          path: relative(root, path),
-          size: Number(entryMetadata.size),
-          sha256: createHash("sha256").update(readFileSync(path)).digest("hex")
-        });
-      } else {
-        throw new Error(`${label} contains an unsafe file.`);
-      }
-      if (files.length > maximumFiles || bytes > maximumBytes) {
-        throw new Error(`${label} exceeded its fixed staging bounds.`);
-      }
-    }
-  }
-  files.sort((left, right) => left.path.localeCompare(right.path));
-  return { bytes, files };
+function assertStagedRuntimeInputs(exactStages, treeStages) {
+  for (const stage of exactStages) assertRemoteWorkspaceExactFileStage(stage);
+  for (const stage of treeStages) assertRemoteWorkspaceTreeStage(stage);
 }
 
 async function writeRemoteFixture(paths, python) {
