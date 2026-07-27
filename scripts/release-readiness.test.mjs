@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { inspectReleaseMetadata } from "./release-metadata.mjs";
 import { inspectStableReleaseReadiness, PRIMARY_PARITY_SCOPE } from "./release-readiness.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
@@ -58,6 +59,60 @@ function ready(overrides = {}) {
 
 test("accepts one internally consistent stable release candidate", () => {
   assert.deepEqual(inspectStableReleaseReadiness(ready()), []);
+});
+
+test("binds numeric release versions to their channel before workflow branching", () => {
+  for (const accepted of [
+    { releaseTag: "v0.3.0", version: "0.3.0", preview: true },
+    { releaseTag: "v1.0.0", version: "1.0.0", preview: false }
+  ]) {
+    assert.deepEqual(
+      inspectReleaseMetadata({
+        releaseTag: accepted.releaseTag,
+        packageJson: JSON.stringify({ version: accepted.version, preview: accepted.preview })
+      }).problems,
+      []
+    );
+  }
+
+  const stableNumberMarkedPreview = inspectReleaseMetadata({
+    releaseTag: "v1.0.0",
+    packageJson: JSON.stringify({ version: "1.0.0", preview: true })
+  });
+  assert.ok(
+    stableNumberMarkedPreview.problems.includes(
+      'Version 1.0.0 is not a permitted preview-channel number and requires package.json "preview" to be false.'
+    )
+  );
+
+  const previewNumberMarkedStable = inspectReleaseMetadata({
+    releaseTag: "v0.3.0",
+    packageJson: JSON.stringify({ version: "0.3.0", preview: false })
+  });
+  assert.ok(
+    previewNumberMarkedStable.problems.includes(
+      'Preview-channel version 0.3.0 requires package.json "preview" to be true.'
+    )
+  );
+
+  const evenZeroMinorMarkedPreview = inspectReleaseMetadata({
+    releaseTag: "v0.4.0",
+    packageJson: JSON.stringify({ version: "0.4.0", preview: true })
+  });
+  assert.ok(
+    evenZeroMinorMarkedPreview.problems.includes(
+      'Version 0.4.0 is not a permitted preview-channel number and requires package.json "preview" to be false.'
+    )
+  );
+});
+
+test("rejects duplicate release metadata keys before choosing a workflow branch", () => {
+  const result = inspectReleaseMetadata({
+    releaseTag: "v1.0.0",
+    packageJson: '{"version":"0.3.0","version":"1.0.0","preview":false}'
+  });
+  assert.ok(result.problems.includes("package.json must not contain duplicate object keys."));
+  assert.equal(result.prerelease, undefined);
 });
 
 test("requires every primary Pandas/Polars parity row to be Done", () => {
