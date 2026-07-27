@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   inspectNotebookRendererBundle,
@@ -50,6 +52,18 @@ describe("notebook renderer bundle validation", () => {
 });
 
 describe("VSIX production entry allowlist", () => {
+  it("excludes every root Vite configuration from production packages", () => {
+    const rootViteConfigs = readdirSync(process.cwd())
+      .filter((entry) => /^vite.*\.config\.ts$/u.test(entry))
+      .sort();
+    const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
+      .split(/\r?\n/u)
+      .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
+
+    expect(rootViteConfigs).toContain("vite.python-environment-smoke.config.ts");
+    expect(vscodeIgnore).toContain("vite*.config.ts");
+  });
+
   it("requires and narrowly permits the production webview assets", () => {
     const result = inspectVsixEntries([
       ...requiredVsixEntries,

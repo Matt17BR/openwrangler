@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import * as path from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import type {
@@ -17,6 +18,10 @@ import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 export { automaticBackends, isSupportedPythonVersion, requiredDependencies } from "./pythonEnvironmentModel";
 
 const execFileAsync = promisify(execFile);
+export const PYTHON_ENVIRONMENT_RESOLUTION_TIMEOUT_MS = 30_000;
+export const PYTHON_ENVIRONMENT_COMMAND_TIMEOUT_MS = 10_000;
+export const MAX_SYSTEM_PYTHON_CANDIDATES = 16;
+const RESOLUTION_GUARD_POLL_INTERVAL_MS = 25;
 
 export type PythonEnvironmentResource = Resource;
 export type PythonEnvironmentSelectionChangeEvent = ActiveEnvironmentPathChangeEvent;
@@ -26,7 +31,58 @@ type PythonEnvironmentsApi = Pick<
   "getActiveEnvironmentPath" | "resolveEnvironment" | "onDidChangeActiveEnvironmentPath"
 >;
 
-export class PythonEnvironmentApiBrokerDisposedError extends Error {
+export abstract class PythonEnvironmentResolutionTerminalError extends Error {
+  abstract readonly code: string;
+}
+
+export class PythonEnvironmentResolutionTimeoutError extends PythonEnvironmentResolutionTerminalError {
+  readonly code = "python_environment_resolution_timeout";
+
+  constructor() {
+    super(
+      `Python environment resolution exceeded its ${PYTHON_ENVIRONMENT_RESOLUTION_TIMEOUT_MS} ms aggregate deadline.`
+    );
+    this.name = "PythonEnvironmentResolutionTimeoutError";
+  }
+}
+
+export class PythonEnvironmentResolutionCancelledError extends PythonEnvironmentResolutionTerminalError {
+  readonly code = "python_environment_resolution_cancelled";
+
+  constructor() {
+    super("Python environment resolution was cancelled before an interpreter was selected.");
+    this.name = "PythonEnvironmentResolutionCancelledError";
+  }
+}
+
+export class PythonEnvironmentResolutionSupersededError extends PythonEnvironmentResolutionTerminalError {
+  readonly code = "python_environment_resolution_superseded";
+
+  constructor() {
+    super("Python environment resolution was superseded by a newer runtime selection.");
+    this.name = "PythonEnvironmentResolutionSupersededError";
+  }
+}
+
+export class PythonEnvironmentResolutionWorkspaceTrustError extends PythonEnvironmentResolutionTerminalError {
+  readonly code = "python_environment_resolution_workspace_untrusted";
+
+  constructor() {
+    super("Python environment resolution stopped because the workspace is no longer trusted.");
+    this.name = "PythonEnvironmentResolutionWorkspaceTrustError";
+  }
+}
+
+export class PythonEnvironmentResolutionDisposedError extends PythonEnvironmentResolutionTerminalError {
+  readonly code = "python_environment_resolution_disposed";
+
+  constructor() {
+    super("Python environment resolution stopped because its runtime bridge was disposed.");
+    this.name = "PythonEnvironmentResolutionDisposedError";
+  }
+}
+
+export class PythonEnvironmentApiBrokerDisposedError extends PythonEnvironmentResolutionTerminalError {
   readonly code = "python_environment_api_broker_disposed";
 
   constructor() {
@@ -35,31 +91,230 @@ export class PythonEnvironmentApiBrokerDisposedError extends Error {
   }
 }
 
+export function isPythonEnvironmentResolutionTerminalError(
+  error: unknown
+): error is PythonEnvironmentResolutionTerminalError {
+  return error instanceof PythonEnvironmentResolutionTerminalError;
+}
+
+export interface PythonEnvironmentResolutionClock {
+  now(): number;
+  setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+}
+
+export interface PythonEnvironmentProcessOptions {
+  readonly env: NodeJS.ProcessEnv;
+  readonly maxBuffer: number;
+  readonly shell: false;
+  readonly signal: AbortSignal;
+  readonly timeout: number;
+  readonly windowsHide: true;
+}
+
+export type PythonEnvironmentProcessExecutor = (
+  executable: string,
+  arguments_: readonly string[],
+  options: PythonEnvironmentProcessOptions
+) => Promise<{ stdout: string; stderr: string }>;
+
+export interface PythonEnvironmentResolutionControl {
+  readonly signal?: AbortSignal;
+  readonly isCurrent?: () => boolean;
+  readonly isTrusted?: () => boolean;
+  readonly clock?: PythonEnvironmentResolutionClock;
+  readonly executeProcess?: PythonEnvironmentProcessExecutor;
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly isExecutable?: (candidate: string) => boolean;
+  readonly pathExists?: (candidate: string) => boolean;
+  readonly platform?: NodeJS.Platform;
+}
+
+const defaultResolutionClock: PythonEnvironmentResolutionClock = {
+  now: () => performance.now(),
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (handle) => clearTimeout(handle)
+};
+
+const defaultProcessExecutor: PythonEnvironmentProcessExecutor = async (executable, arguments_, options) => {
+  const result = await execFileAsync(executable, [...arguments_], options);
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr
+  };
+};
+
+export class PythonEnvironmentResolutionAttempt {
+  private readonly deadline: number;
+  private readonly clock: PythonEnvironmentResolutionClock;
+
+  constructor(private readonly control: PythonEnvironmentResolutionControl) {
+    this.clock = control.clock ?? defaultResolutionClock;
+    this.deadline = this.clock.now() + PYTHON_ENVIRONMENT_RESOLUTION_TIMEOUT_MS;
+    this.assertActive();
+  }
+
+  get signal(): AbortSignal {
+    return this.control.signal ?? neverAbortedSignal;
+  }
+
+  get processExecutor(): PythonEnvironmentProcessExecutor {
+    return this.control.executeProcess ?? defaultProcessExecutor;
+  }
+
+  get environment(): NodeJS.ProcessEnv | undefined {
+    return this.control.environment;
+  }
+
+  get executableCheck(): (candidate: string) => boolean {
+    return this.control.isExecutable ?? isExecutableFile;
+  }
+
+  get pathExists(): (candidate: string) => boolean {
+    return this.control.pathExists ?? existsSync;
+  }
+
+  get platform(): NodeJS.Platform {
+    return this.control.platform ?? process.platform;
+  }
+
+  commandTimeout(): number {
+    this.assertActive();
+    return Math.max(1, Math.min(PYTHON_ENVIRONMENT_COMMAND_TIMEOUT_MS, Math.ceil(this.deadline - this.clock.now())));
+  }
+
+  assertActive(): void {
+    if (this.signal.aborted) throw terminalAbortReason(this.signal, new PythonEnvironmentResolutionCancelledError());
+    if (this.control.isTrusted?.() === false) {
+      throw new PythonEnvironmentResolutionWorkspaceTrustError();
+    }
+    if (this.control.isCurrent?.() === false) {
+      throw new PythonEnvironmentResolutionSupersededError();
+    }
+    if (this.clock.now() >= this.deadline) throw new PythonEnvironmentResolutionTimeoutError();
+  }
+
+  wait<T>(work: PromiseLike<T>, additionalSignal?: AbortSignal): Promise<T> {
+    const workPromise = Promise.resolve(work);
+    try {
+      this.assertActive();
+      if (additionalSignal?.aborted) {
+        throw terminalAbortReason(additionalSignal, new PythonEnvironmentApiBrokerDisposedError());
+      }
+    } catch (error) {
+      void workPromise.catch(() => undefined);
+      throw error;
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = (): void => {
+        if (timer !== undefined) this.clock.clearTimeout(timer);
+        this.signal.removeEventListener("abort", onControlAbort);
+        additionalSignal?.removeEventListener("abort", onAdditionalAbort);
+      };
+      const settle = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const rejectTerminal = (fallback: PythonEnvironmentResolutionTerminalError, signal?: AbortSignal): void => {
+        settle(() => reject(signal ? terminalAbortReason(signal, fallback) : fallback));
+      };
+      const onControlAbort = (): void => rejectTerminal(new PythonEnvironmentResolutionCancelledError(), this.signal);
+      const onAdditionalAbort = (): void =>
+        rejectTerminal(new PythonEnvironmentApiBrokerDisposedError(), additionalSignal);
+      const poll = (): void => {
+        if (settled) return;
+        try {
+          this.assertActive();
+          if (additionalSignal?.aborted) {
+            rejectTerminal(new PythonEnvironmentApiBrokerDisposedError(), additionalSignal);
+            return;
+          }
+          const remaining = Math.max(1, Math.ceil(this.deadline - this.clock.now()));
+          timer = this.clock.setTimeout(poll, Math.min(RESOLUTION_GUARD_POLL_INTERVAL_MS, remaining));
+        } catch (error) {
+          settle(() => reject(error));
+        }
+      };
+
+      this.signal.addEventListener("abort", onControlAbort, { once: true });
+      additionalSignal?.addEventListener("abort", onAdditionalAbort, { once: true });
+      poll();
+      void workPromise.then(
+        (value) => {
+          try {
+            this.assertActive();
+            if (additionalSignal?.aborted) {
+              rejectTerminal(new PythonEnvironmentApiBrokerDisposedError(), additionalSignal);
+              return;
+            }
+            settle(() => resolve(value));
+          } catch (error) {
+            settle(() => reject(error));
+          }
+        },
+        (error: unknown) => {
+          try {
+            this.assertActive();
+            if (additionalSignal?.aborted) {
+              rejectTerminal(new PythonEnvironmentApiBrokerDisposedError(), additionalSignal);
+              return;
+            }
+            settle(() => reject(error));
+          } catch (terminalError) {
+            settle(() => reject(terminalError));
+          }
+        }
+      );
+    });
+  }
+}
+
+const neverAbortedSignal = new AbortController().signal;
+
+function terminalAbortReason(
+  signal: AbortSignal,
+  fallback: PythonEnvironmentResolutionTerminalError
+): PythonEnvironmentResolutionTerminalError {
+  return isPythonEnvironmentResolutionTerminalError(signal.reason) ? signal.reason : fallback;
+}
+
 export class PythonEnvironmentApiBroker implements vscode.Disposable {
   private api: PythonEnvironmentsApi | undefined;
   private activation: Promise<PythonEnvironmentsApi | undefined> | undefined;
   private selectionSubscription: vscode.Disposable | undefined;
+  private readonly disposalController = new AbortController();
   private disposed = false;
 
   constructor(
     private readonly onDidChangeSelection: (event: PythonEnvironmentSelectionChangeEvent) => unknown = () => undefined
   ) {}
 
-  async resolveSelectedExecutable(resource?: PythonEnvironmentResource): Promise<string | undefined> {
+  async resolveSelectedExecutable(
+    resource?: PythonEnvironmentResource,
+    attempt: PythonEnvironmentResolutionAttempt = new PythonEnvironmentResolutionAttempt({})
+  ): Promise<string | undefined> {
     this.throwIfDisposed();
-    const api = await this.acquireApi();
+    attempt.assertActive();
+    const api = await attempt.wait(this.acquireApi(), this.disposalController.signal);
     this.throwIfDisposed();
     if (!api) return undefined;
 
     try {
+      attempt.assertActive();
       const selected: unknown = api.getActiveEnvironmentPath(resource);
       if (!isEnvironmentPath(selected)) return undefined;
-      const resolved = await api.resolveEnvironment(selected);
+      attempt.assertActive();
+      const resolved = await attempt.wait(api.resolveEnvironment(selected), this.disposalController.signal);
       this.throwIfDisposed();
       const executable = resolved?.executable?.uri?.fsPath;
       return typeof executable === "string" && executable.trim() ? executable : selected.path;
     } catch (error) {
-      if (error instanceof PythonEnvironmentApiBrokerDisposedError) throw error;
+      if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
       this.throwIfDisposed();
       return undefined;
     }
@@ -68,6 +323,7 @@ export class PythonEnvironmentApiBroker implements vscode.Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.disposalController.abort(new PythonEnvironmentApiBrokerDisposedError());
     const subscription = this.selectionSubscription;
     this.selectionSubscription = undefined;
     subscription?.dispose();
@@ -163,27 +419,31 @@ export interface DependencyProbe {
 export async function resolvePythonEnvironment(
   context: vscode.ExtensionContext,
   resource?: vscode.Uri,
-  apiBroker?: PythonEnvironmentApiBroker
+  apiBroker?: PythonEnvironmentApiBroker,
+  control: PythonEnvironmentResolutionControl = {}
 ): Promise<PythonEnvironment> {
+  const attempt = new PythonEnvironmentResolutionAttempt(control);
   const configured = getSetting("pythonPath", "", resource).trim();
   if (configured) {
+    attempt.assertActive();
     const executable = resolvePythonExecutable(
       configured,
       vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
       context.extensionPath,
-      existsSync
+      attempt.pathExists
     );
-    return probeEnvironment(executable, "configuration");
+    return probeEnvironment(executable, "configuration", attempt);
   }
 
   const broker = apiBroker ?? new PythonEnvironmentApiBroker();
   const ownsBroker = apiBroker === undefined;
   try {
-    const executable = await broker.resolveSelectedExecutable(resource);
+    const executable = await broker.resolveSelectedExecutable(resource, attempt);
     if (executable) {
       try {
-        return await probeEnvironment(executable, "pythonExtension");
-      } catch {
+        return await probeEnvironment(executable, "pythonExtension", attempt);
+      } catch (error) {
+        if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
         // Fall through to system interpreters. Diagnostics are surfaced if every candidate fails.
       }
     }
@@ -193,9 +453,10 @@ export async function resolvePythonEnvironment(
 
   let candidates: Array<{ executable: string; arguments: readonly string[] }>;
   try {
+    attempt.assertActive();
     candidates =
-      process.platform === "win32"
-        ? (await discoverWindowsSystemPythonExecutables()).map((executable) => ({
+      attempt.platform === "win32"
+        ? (await discoverWindowsSystemPythonExecutablesWithinAttempt(attempt)).map((executable) => ({
             executable,
             arguments: []
           }))
@@ -204,6 +465,7 @@ export async function resolvePythonEnvironment(
             { executable: "python", arguments: [] }
           ];
   } catch (error) {
+    if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
     throw new Error(
       `No compatible Python 3.10-3.14 interpreter was found. Windows Python discovery failed: ${
         error instanceof Error ? error.message : String(error)
@@ -212,12 +474,15 @@ export async function resolvePythonEnvironment(
   }
   const failures: string[] = [];
   for (const candidate of candidates) {
+    attempt.assertActive();
     try {
-      return await probeEnvironment(candidate.executable, "system", candidate.arguments);
+      return await probeEnvironment(candidate.executable, "system", attempt, candidate.arguments);
     } catch (error) {
+      if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
       failures.push(error instanceof Error ? error.message : String(error));
     }
   }
+  attempt.assertActive();
   throw new Error(`No compatible Python 3.10-3.14 interpreter was found. ${failures.join(" ")}`);
 }
 
@@ -231,6 +496,7 @@ export interface WindowsPythonDiscoveryOptions {
       env: NodeJS.ProcessEnv;
       maxBuffer: number;
       shell: false;
+      signal: AbortSignal;
       timeout: number;
       windowsHide: true;
     }
@@ -240,47 +506,63 @@ export interface WindowsPythonDiscoveryOptions {
 export async function discoverWindowsSystemPythonExecutables(
   options: WindowsPythonDiscoveryOptions = {}
 ): Promise<string[]> {
-  const environment = buildPythonProcessEnvironment(options.environment);
-  const executableCheck = options.isExecutable ?? isExecutableFile;
+  const attempt = new PythonEnvironmentResolutionAttempt({
+    environment: options.environment,
+    isExecutable: options.isExecutable,
+    executeProcess: options.executeLauncher
+  });
+  return discoverWindowsSystemPythonExecutablesWithinAttempt(attempt);
+}
+
+async function discoverWindowsSystemPythonExecutablesWithinAttempt(
+  attempt: PythonEnvironmentResolutionAttempt
+): Promise<string[]> {
+  attempt.assertActive();
+  const environment = buildPythonProcessEnvironment(attempt.environment);
+  const executableCheck = attempt.executableCheck;
   const launcher = resolvePythonCommandPath("py", environment, executableCheck, "win32");
   if (!launcher) return [];
-  const executeLauncher =
-    options.executeLauncher ??
-    (async (executable, arguments_, launchOptions) => {
-      const result = await execFileAsync(executable, [...arguments_], launchOptions);
-      return { stdout: result.stdout, stderr: result.stderr };
-    });
   let stdout: string;
   let stderr: string;
   try {
-    const result = await executeLauncher(launcher, ["-0p"], {
-      env: {
-        ...environment,
-        PYLAUNCHER_NO_SEARCH_PATH: "1",
-        PYTHON_MANAGER_AUTOMATIC_INSTALL: "0"
-      },
-      maxBuffer: 256 * 1024,
-      shell: false,
-      timeout: 10_000,
-      windowsHide: true
-    });
+    const result = await attempt.wait(
+      attempt.processExecutor(launcher, ["-0p"], {
+        env: {
+          ...environment,
+          PYLAUNCHER_NO_SEARCH_PATH: "1",
+          PYTHON_MANAGER_AUTOMATIC_INSTALL: "0"
+        },
+        maxBuffer: 256 * 1024,
+        shell: false,
+        signal: attempt.signal,
+        timeout: attempt.commandTimeout(),
+        windowsHide: true
+      })
+    );
     stdout = result.stdout;
     stderr = result.stderr;
   } catch (error) {
+    if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
     throw new Error(
       `the Python launcher could not list installed runtimes: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  return parseWindowsPythonLauncherOutput(`${stdout}\n${stderr}`).filter(executableCheck);
+  attempt.assertActive();
+  return parseWindowsPythonLauncherOutput(`${stdout}\n${stderr}`)
+    .slice(0, MAX_SYSTEM_PYTHON_CANDIDATES)
+    .filter((candidate) => {
+      attempt.assertActive();
+      return executableCheck(candidate);
+    });
 }
 
 export function parseWindowsPythonLauncherOutput(output: string): string[] {
-  const candidates: Array<{ executable: string; minor: number }> = [];
+  const candidates: Array<{ executable: string; minor: number; freeThreaded: boolean }> = [];
   for (const line of output.split(/\r?\n/)) {
     const match =
-      /^\s*-(?:V:)?(?:(?:PythonCore)[\\/])?3\.(10|11|12|13|14)t?(?:-[A-Za-z0-9]+)?(?:\s+\*)?\s+(.+?)\s*$/i.exec(line);
+      /^\s*-(?:V:)?(?:(?:PythonCore)[\\/])?3\.(10|11|12|13|14)(t?)(?:-[A-Za-z0-9]+)?(?:\s+\*)?\s+(.+?)\s*$/i.exec(line);
     if (!match) continue;
-    let executable = match[2]?.trim() ?? "";
+    let executable = match[3]?.trim() ?? "";
     if (executable.endsWith("*")) executable = executable.slice(0, -1).trimEnd();
     if (executable.startsWith('"') || executable.endsWith('"')) {
       const quoted = /^"([^"]+)"$/.exec(executable);
@@ -290,10 +572,16 @@ export function parseWindowsPythonLauncherOutput(output: string): string[] {
     if (!isFullyQualifiedWindowsExecutable(executable)) continue;
     candidates.push({
       executable: path.win32.normalize(executable),
-      minor: Number.parseInt(match[1] ?? "", 10)
+      minor: Number.parseInt(match[1] ?? "", 10),
+      freeThreaded: (match[2] ?? "").toLocaleLowerCase("en-US") === "t"
     });
   }
-  candidates.sort((left, right) => right.minor - left.minor);
+  candidates.sort(
+    (left, right) =>
+      right.minor - left.minor ||
+      Number(left.freeThreaded) - Number(right.freeThreaded) ||
+      compareWindowsPaths(left.executable, right.executable)
+  );
   const seen = new Set<string>();
   return candidates
     .map(({ executable }) => executable)
@@ -395,24 +683,26 @@ function compareVersions(observed: string | undefined, expected: string): number
 async function probeEnvironment(
   executable: string,
   source: PythonEnvironment["source"],
+  attempt: PythonEnvironmentResolutionAttempt,
   launcherArguments: readonly string[] = []
 ): Promise<PythonEnvironment> {
-  const processEnvironment = buildPythonProcessEnvironment();
+  attempt.assertActive();
+  const processEnvironment = buildPythonProcessEnvironment(attempt.environment);
   const resolvedExecutable = resolvePythonCommandPath(
     executable,
     processEnvironment,
-    isExecutableFile,
-    process.platform
+    attempt.executableCheck,
+    attempt.platform
   );
   if (!resolvedExecutable) {
     throw new Error(`${executable} could not be resolved to an absolute executable.`);
   }
-  const initial = await executeEnvironmentProbe(resolvedExecutable, processEnvironment, launcherArguments);
-  const reportedExecutable = path.normalize(initial.executable);
-  const result = sameExecutablePath(resolvedExecutable, reportedExecutable)
+  const initial = await executeEnvironmentProbe(resolvedExecutable, processEnvironment, attempt, launcherArguments);
+  const reportedExecutable = platformPath(attempt.platform).normalize(initial.executable);
+  const result = sameExecutablePath(resolvedExecutable, reportedExecutable, attempt.platform)
     ? initial
-    : await executeEnvironmentProbe(reportedExecutable, processEnvironment);
-  if (!sameExecutablePath(result.executable, reportedExecutable)) {
+    : await executeEnvironmentProbe(reportedExecutable, processEnvironment, attempt);
+  if (!sameExecutablePath(result.executable, reportedExecutable, attempt.platform)) {
     throw new Error(`${executable} did not resolve to a stable Python executable.`);
   }
   const { version, executableIdentity, packageRoot, packageRootIdentity } = result;
@@ -435,6 +725,7 @@ async function probeEnvironment(
 async function executeEnvironmentProbe(
   executable: string,
   processEnvironment: NodeJS.ProcessEnv,
+  attempt: PythonEnvironmentResolutionAttempt,
   launcherArguments: readonly string[] = []
 ): Promise<ReturnType<typeof decodePythonEnvironmentProbeOutput>> {
   let stdout: string;
@@ -463,20 +754,29 @@ async function executeEnvironmentProbe(
       " },",
       "},separators=(',',':')))"
     ].join("\n");
-    const result = await execFileAsync(executable, [...launcherArguments, "-I", "-c", program], {
-      env: processEnvironment,
-      shell: false,
-      timeout: 10_000,
-      windowsHide: true
-    });
+    const result = await attempt.wait(
+      attempt.processExecutor(executable, [...launcherArguments, "-I", "-c", program], {
+        env: processEnvironment,
+        maxBuffer: 1024 * 1024,
+        shell: false,
+        signal: attempt.signal,
+        timeout: attempt.commandTimeout(),
+        windowsHide: true
+      })
+    );
     stdout = result.stdout.trim();
   } catch (error) {
+    if (isPythonEnvironmentResolutionTerminalError(error)) throw error;
     throw new Error(`${executable} could not be started: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return decodePythonEnvironmentProbeOutput(stdout);
+  attempt.assertActive();
+  return decodePythonEnvironmentProbeOutput(stdout, attempt.platform);
 }
 
-export function decodePythonEnvironmentProbeOutput(stdout: string): {
+export function decodePythonEnvironmentProbeOutput(
+  stdout: string,
+  platform: NodeJS.Platform = process.platform
+): {
   executable: string;
   executableIdentity: PythonExecutableIdentity;
   version: [number, number, number];
@@ -506,7 +806,7 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   }
   if (
     typeof candidate.executable !== "string" ||
-    !isFullyQualifiedPythonPath(candidate.executable) ||
+    !isFullyQualifiedPythonPath(candidate.executable, platform) ||
     candidate.executable.includes("\0")
   ) {
     throw new Error("Python environment probe returned an invalid executable.");
@@ -523,14 +823,14 @@ export function decodePythonEnvironmentProbeOutput(stdout: string): {
   if (
     typeof candidate.packageRoot !== "string" ||
     candidate.packageRoot.trim().length === 0 ||
-    !isFullyQualifiedPythonPath(candidate.packageRoot) ||
+    !isFullyQualifiedPythonPath(candidate.packageRoot, platform) ||
     candidate.packageRoot.includes("\0")
   ) {
     throw new Error("Python environment probe returned an invalid package root.");
   }
   const packageRootIdentity = decodePythonPackageRootIdentity(candidate.packageRootIdentity);
   return {
-    executable: path.normalize(candidate.executable),
+    executable: platformPath(platform).normalize(candidate.executable),
     executableIdentity,
     version: [version[0] as number, version[1] as number, version[2] as number],
     packageRoot: candidate.packageRoot,
@@ -638,12 +938,25 @@ function isExecutableFile(candidate: string): boolean {
   }
 }
 
-function sameExecutablePath(left: string, right: string): boolean {
-  const normalizedLeft = path.normalize(left);
-  const normalizedRight = path.normalize(right);
-  return process.platform === "win32"
+function sameExecutablePath(left: string, right: string, platform: NodeJS.Platform): boolean {
+  const pathApi = platformPath(platform);
+  const normalizedLeft = pathApi.normalize(left);
+  const normalizedRight = pathApi.normalize(right);
+  return platform === "win32"
     ? normalizedLeft.toLocaleLowerCase("en-US") === normalizedRight.toLocaleLowerCase("en-US")
     : normalizedLeft === normalizedRight;
+}
+
+function platformPath(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function compareWindowsPaths(left: string, right: string): number {
+  const normalizedLeft = left.toLocaleLowerCase("en-US");
+  const normalizedRight = right.toLocaleLowerCase("en-US");
+  if (normalizedLeft < normalizedRight) return -1;
+  if (normalizedLeft > normalizedRight) return 1;
+  return 0;
 }
 
 function isFullyQualifiedWindowsExecutable(candidate: string): boolean {

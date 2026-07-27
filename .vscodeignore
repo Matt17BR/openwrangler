@@ -35,4 +35,4 @@ package-lock.json
 python/pyproject.toml
 tsconfig*.json
 dist-test/**
-vite.config.ts
+vite*.config.ts

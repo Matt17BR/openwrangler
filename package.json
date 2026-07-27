@@ -84,6 +84,7 @@
     "test": "npm run test:scripts && npm run test:ts && npm run test:python",
     "test:scripts": "node --test scripts/ci-workflow.test.mjs scripts/editor-acceptance.test.mjs scripts/editor-acceptance-evidence.test.mjs scripts/editor-acceptance-artifact.test.mjs scripts/jupyter-acceptance-environment.test.mjs scripts/packaged-editor-orchestration.test.mjs scripts/prepare-xvfb.test.mjs scripts/remote-jupyter-acceptance.test.mjs scripts/remote-jupyter-lock.test.mjs",
     "test:ts": "vitest run",
+    "test:python-environment-smoke": "vitest run --config vite.python-environment-smoke.config.ts",
     "test:python": "node scripts/run-python.mjs -m pytest python/tests -q",
     "test:extension-host": "npm run build && npm run build:test-extension && node scripts/run-extension-tests.mjs",
     "test:packaged-editors": "npm run build:test-extension && npm run test:packaged-editors:run",

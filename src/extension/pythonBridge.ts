@@ -34,6 +34,10 @@ import {
 import {
   automaticBackends,
   PythonEnvironmentApiBroker,
+  PythonEnvironmentResolutionCancelledError,
+  PythonEnvironmentResolutionDisposedError,
+  PythonEnvironmentResolutionSupersededError,
+  isPythonEnvironmentResolutionTerminalError,
   probeDependencies,
   requiredDependencies,
   resolvePythonEnvironment,
@@ -72,6 +76,7 @@ interface EnvironmentSelection {
   readonly resource: vscode.Uri | undefined;
   readonly workspaceFolder: vscode.WorkspaceFolder | undefined;
   readonly promise: Promise<PythonEnvironment>;
+  readonly resolutionController: AbortController;
   readonly dependencyKeys: Set<string>;
   resolvedEnvironment?: PythonEnvironment;
 }
@@ -330,12 +335,30 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         throw error;
       }
     } else {
-      const preparationRuntime = this.runtimeSlot(
-        pythonSelectionScope(request.kind === "openSession" ? sourceResource(request.source) : undefined).key
+      const preparationScope = pythonSelectionScope(
+        request.kind === "openSession" ? sourceResource(request.source) : undefined
       );
+      const preparationRuntime = this.runtimeSlot(preparationScope.key);
       requestLease = this.retainRuntime(preparationRuntime);
+      let resolutionCancellationRequested = false;
+      const cancelPendingResolution = (): void => {
+        resolutionCancellationRequested = true;
+        const selection = this.environmentSelections.get(preparationScope.key);
+        if (selection) {
+          this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionCancelledError());
+        }
+      };
+      const existingPreparationSelection = this.environmentSelections.get(preparationScope.key);
+      const resolutionCancellation =
+        !existingPreparationSelection?.resolvedEnvironment && options.cancellation
+          ? options.cancellation.onCancellationRequested(cancelPendingResolution)
+          : undefined;
       try {
-        const prepared = await this.prepareRequestForDispatch(request);
+        const preparation = this.prepareRequestForDispatch(request);
+        if (resolutionCancellationRequested || options.cancellation?.isCancellationRequested) {
+          cancelPendingResolution();
+        }
+        const prepared = await preparation;
         if (prepared.request.kind === "error") {
           releaseRequestLease();
           return prepared.request;
@@ -371,7 +394,21 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         }
       } catch (error) {
         releaseRequestLease();
+        if (error instanceof PythonEnvironmentResolutionCancelledError) {
+          return options.cancellation?.isCancellationRequested
+            ? { kind: "cancelled", targetRequestId: "not-started" }
+            : this.runtimeSelectionChangedError();
+        }
+        if (
+          isPythonEnvironmentResolutionTerminalError(error) &&
+          error.code !== "python_environment_resolution_timeout" &&
+          error.code !== "python_environment_resolution_workspace_untrusted"
+        ) {
+          return this.runtimeSelectionChangedError();
+        }
         throw error;
+      } finally {
+        resolutionCancellation?.dispose();
       }
     }
     if (options.cancellation?.isCancellationRequested) {
@@ -638,6 +675,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       const selection = this.environmentSelections.get(key);
       const hadActiveMissingTarget = this.lastMissingDependencies?.selection === selection;
       if (selection) {
+        this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionSupersededError());
         this.environmentSelections.delete(key);
         for (const dependencyKey of selection.dependencyKeys) {
           this.invalidateDependencyProbeKey(dependencyKey);
@@ -860,7 +898,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (!target || !this.isCurrentDependencyRecoveryTarget(operation, requireCurrentSelection)) return undefined;
     let environment: PythonEnvironment;
     try {
-      environment = await resolvePythonEnvironment(this.context, target.selection.resource, this.environmentApiBroker);
+      environment = await resolvePythonEnvironment(this.context, target.selection.resource, this.environmentApiBroker, {
+        isCurrent: () => this.isCurrentDependencyRecoveryTarget(operation, requireCurrentSelection),
+        isTrusted: () => vscode.workspace.isTrusted
+      });
     } catch {
       return undefined;
     }
@@ -899,7 +940,10 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     if (!target || !this.isAuthorizedDependencyRecoveryOperation(operation, target.environment)) return undefined;
     let environment: PythonEnvironment;
     try {
-      environment = await resolvePythonEnvironment(this.context, target.selection.resource, this.environmentApiBroker);
+      environment = await resolvePythonEnvironment(this.context, target.selection.resource, this.environmentApiBroker, {
+        isCurrent: () => this.isAuthorizedDependencyRecoveryOperation(operation, target.environment),
+        isTrusted: () => vscode.workspace.isTrusted
+      });
     } catch {
       return undefined;
     }
@@ -1303,7 +1347,13 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       currentEnvironment = await resolvePythonEnvironment(
         this.context,
         missing.selection.resource,
-        this.environmentApiBroker
+        this.environmentApiBroker,
+        {
+          isCurrent: () =>
+            authorizationEpoch !== undefined &&
+            this.isDependencyInstallOperationAuthorized(operation, executable, requirements, authorizationEpoch),
+          isTrusted: () => vscode.workspace.isTrusted
+        }
       );
     } catch {
       return false;
@@ -1378,6 +1428,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       for (const key of selectionKeys) {
         this.selectionEpochs.set(key, (this.selectionEpochs.get(key) ?? 0) + 1);
       }
+    }
+    for (const selection of this.environmentSelections.values()) {
+      this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionDisposedError());
     }
     this.environmentSelections.clear();
     this.invalidateAllDependencyProbes();
@@ -1530,6 +1583,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     const recency = this.scopeRecency.get(runtime.key);
     if (!this.runtimeSlots.delete(runtime.key)) return false;
     if (selection && this.environmentSelections.get(runtime.key) === selection) {
+      this.abortEnvironmentSelection(selection, new PythonEnvironmentResolutionSupersededError());
       this.environmentSelections.delete(runtime.key);
     }
     if (this.selectionEpochs.get(runtime.key) === selectionEpoch) {
@@ -2254,21 +2308,47 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     };
   }
 
+  private abortEnvironmentSelection(
+    selection: EnvironmentSelection,
+    reason:
+      | PythonEnvironmentResolutionCancelledError
+      | PythonEnvironmentResolutionDisposedError
+      | PythonEnvironmentResolutionSupersededError
+  ): boolean {
+    if (selection.resolvedEnvironment || selection.resolutionController.signal.aborted) return false;
+    selection.resolutionController.abort(reason);
+    return true;
+  }
+
   private environmentSelection(resource?: vscode.Uri): EnvironmentSelection {
     const scope = pythonSelectionScope(resource);
     const existing = this.environmentSelections.get(scope.key);
     if (existing) return existing;
 
-    const promise = resolvePythonEnvironment(this.context, resource, this.environmentApiBroker);
+    const resolutionController = new AbortController();
+    const owner: { selection?: EnvironmentSelection } = {};
+    let armed = false;
+    const promise = resolvePythonEnvironment(this.context, resource, this.environmentApiBroker, {
+      signal: resolutionController.signal,
+      isCurrent: () =>
+        !armed ||
+        (!this.disposed &&
+          this.environmentSelections.get(scope.key) === owner.selection &&
+          owner.selection?.epoch === (this.selectionEpochs.get(scope.key) ?? 0)),
+      isTrusted: () => vscode.workspace.isTrusted
+    });
     const selection: EnvironmentSelection = {
       key: scope.key,
       epoch: this.selectionEpochs.get(scope.key) ?? 0,
       resource,
       workspaceFolder: scope.workspaceFolder,
       promise,
+      resolutionController,
       dependencyKeys: new Set()
     };
+    owner.selection = selection;
     this.environmentSelections.set(scope.key, selection);
+    armed = true;
     void promise.then(
       (environment) => {
         if (!this.disposed && this.environmentSelections.get(scope.key) === selection) {

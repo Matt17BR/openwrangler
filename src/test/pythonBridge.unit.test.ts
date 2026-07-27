@@ -216,6 +216,99 @@ describe("PythonBridge cancellation", () => {
     expect(harness.writes()).toEqual([]);
   });
 
+  it("aborts an unresolved scope selection and returns the existing not-started cancellation", async () => {
+    const token = new ManualCancellation();
+    const source = remoteSourceAt("/resolution/cancelled.csv");
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+      .mockReset()
+      .mockImplementation(
+        (_context, _resource, _broker, control) =>
+          new Promise<pythonEnvironment.PythonEnvironment>((_resolve, reject) => {
+            control?.signal?.addEventListener("abort", () => reject(control.signal?.reason), { once: true });
+          })
+      );
+    const bridge = new PythonBridge(testExtensionContext());
+    const raw = bridge as unknown as RawBridgeInternals;
+
+    const response = bridge.request(openSessionRequest(source), { cancellation: token });
+    await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    const selection = raw.environmentSelections.get(source.uri!);
+    expect(selection?.resolvedEnvironment).toBeUndefined();
+
+    token.cancel();
+
+    await expect(response).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
+    expect(selection?.resolutionController.signal.reason).toBeInstanceOf(
+      pythonEnvironment.PythonEnvironmentResolutionCancelledError
+    );
+    await vi.waitFor(() => expect(raw.environmentSelections.has(source.uri!)).toBe(false));
+    await bridge.shutdown();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+  });
+
+  it("fails same-scope joiners stale when one caller cancels the shared unresolved selection", async () => {
+    const cancellingToken = new ManualCancellation();
+    const joinedToken = new ManualCancellation();
+    const source = remoteSourceAt("/resolution/joined.csv");
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment)
+      .mockReset()
+      .mockImplementation(
+        (_context, _resource, _broker, control) =>
+          new Promise<pythonEnvironment.PythonEnvironment>((_resolve, reject) => {
+            control?.signal?.addEventListener("abort", () => reject(control.signal?.reason), { once: true });
+          })
+      );
+    const bridge = new PythonBridge(testExtensionContext());
+
+    const cancelling = bridge.request(openSessionRequest(source), { cancellation: cancellingToken });
+    const joined = bridge.request(openSessionRequest(source), { cancellation: joinedToken });
+    await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+
+    cancellingToken.cancel();
+
+    await expect(cancelling).resolves.toEqual({ kind: "cancelled", targetRequestId: "not-started" });
+    await expect(joined).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed",
+      recoverable: true
+    });
+    expect(joinedToken.isCancellationRequested).toBe(false);
+    await bridge.shutdown();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+  });
+
+  it("does not abort or evict a confirmed environment when cancellation arrives later", async () => {
+    const token = new ManualCancellation();
+    const source = remoteSourceAt("/resolution/confirmed.csv");
+    const confirmedEnvironment: pythonEnvironment.PythonEnvironment = {
+      executable: testPythonExecutablePath("/env/bin/python"),
+      executableIdentity: TEST_EXECUTABLE_IDENTITY,
+      packageRoot: "/env",
+      packageRootIdentity: TEST_PACKAGE_ROOT_IDENTITY,
+      version: "3.12.4",
+      source: "configuration"
+    };
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset().mockResolvedValue(confirmedEnvironment);
+    vi.mocked(pythonEnvironment.probeDependencies).mockResolvedValue({ missing: [], available: ["polars"] });
+    const bridge = new PythonBridge(testExtensionContext());
+    const raw = bridge as unknown as RawBridgeInternals;
+    const confirmed = await raw.processSelectionFor(openSessionRequest(source));
+    await vi.waitFor(() => expect(confirmed.selection.resolvedEnvironment).toEqual(confirmedEnvironment));
+
+    token.cancel();
+    await expect(bridge.request(openSessionRequest(source), { cancellation: token })).resolves.toEqual({
+      kind: "cancelled",
+      targetRequestId: "not-started"
+    });
+
+    expect(confirmed.selection.resolutionController.signal.aborted).toBe(false);
+    expect(raw.environmentSelections.get(source.uri!)).toBe(confirmed.selection);
+    expect(confirmed.selection.resolvedEnvironment).toEqual(confirmedEnvironment);
+    await bridge.shutdown();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockReset();
+    vi.mocked(pythonEnvironment.probeDependencies).mockReset();
+  });
+
   it.each<SessionBoundRequest>([
     {
       kind: "closeSession",
@@ -3271,7 +3364,16 @@ describe("PythonBridge environment resource selection", () => {
     expect(resource?.scheme).toBe("vscode-remote");
     expect(resource?.authority).toBe("ssh-remote+example");
     expect(resource?.toString()).toBe(source.uri);
-    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource, undefined);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(
+      context,
+      resource,
+      undefined,
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        isCurrent: expect.any(Function),
+        isTrusted: expect.any(Function)
+      })
+    );
   });
 
   it("passes the exact remote source URI to process startup without rebuilding it as file://", async () => {
@@ -3289,7 +3391,16 @@ describe("PythonBridge environment resource selection", () => {
     expect(resource?.scheme).toBe("vscode-remote");
     expect(resource?.authority).toBe("ssh-remote+example");
     expect(resource?.toString()).toBe(source.uri);
-    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(context, resource, undefined);
+    expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledWith(
+      context,
+      resource,
+      undefined,
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        isCurrent: expect.any(Function),
+        isTrusted: expect.any(Function)
+      })
+    );
   });
 
   it("falls back to the concrete path when a persisted source URI is malformed", async () => {
@@ -4065,11 +4176,15 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    const selection = internals.environmentSelections.get(source.uri!);
     internals.handlePythonEnvironmentSelectionChange({
       id: "changed",
       path: "/changed/python",
       resource: vscode.Uri.parse(source.uri!, true)
     });
+    expect(selection?.resolutionController.signal.reason).toBeInstanceOf(
+      pythonEnvironment.PythonEnvironmentResolutionSupersededError
+    );
     resolution.resolve(environment);
 
     await expect(preparation).resolves.toMatchObject({
@@ -4090,7 +4205,11 @@ describe("PythonBridge environment resource selection", () => {
 
     const preparation = internals.prepareRequest(openSessionRequest(source));
     await vi.waitFor(() => expect(pythonEnvironment.resolvePythonEnvironment).toHaveBeenCalledOnce());
+    const selection = internals.environmentSelections.get(source.uri!);
     await bridge.shutdown();
+    expect(selection?.resolutionController.signal.reason).toBeInstanceOf(
+      pythonEnvironment.PythonEnvironmentResolutionDisposedError
+    );
     expect(internals.environmentSelections.size).toBe(0);
     expect(internals.dependencyCache.size).toBe(0);
     expect(internals.lastMissingDependencies).toBeUndefined();
@@ -4369,6 +4488,7 @@ describe("PythonBridge environment resource selection", () => {
       resource: vscode.Uri.parse("vscode-remote://ssh-remote+example/orphan.csv", true),
       workspaceFolder: undefined,
       promise: unresolved.promise,
+      resolutionController: new AbortController(),
       dependencyKeys: new Set()
     };
     raw.environmentSelections.set(orphanKey, orphan);
@@ -4504,6 +4624,7 @@ interface TestEnvironmentSelection {
   readonly resource: vscode.Uri | undefined;
   readonly workspaceFolder: vscode.WorkspaceFolder | undefined;
   readonly promise: Promise<TestPythonEnvironment>;
+  readonly resolutionController: AbortController;
   readonly dependencyKeys: Set<string>;
   resolvedEnvironment?: TestPythonEnvironment;
 }
@@ -5204,6 +5325,7 @@ function testEnvironmentSelection(
     resource: options.resource,
     workspaceFolder: options.workspaceFolder,
     promise: Promise.resolve(environment),
+    resolutionController: new AbortController(),
     dependencyKeys: new Set(),
     resolvedEnvironment: environment
   };
