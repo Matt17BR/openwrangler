@@ -3459,7 +3459,7 @@ async function exerciseRemoteWorkspace(
   const fixture = vscode.Uri.joinPath(workspace, "remote.csv");
   const sourceBytes = await vscode.workspace.fs.readFile(fixture);
   recordAcceptanceProgress("remote-workspace:open");
-  await vscode.commands.executeCommand("openWrangler.openFile", fixture);
+  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
   await waitFor(
     () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
