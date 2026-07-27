@@ -89,8 +89,6 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 ## Develop and contribute
 
-After the source setup above, use `npm run build` while iterating and `npm test` for the complete TypeScript and Python regression suites.
-
-Start with [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md). The [architecture guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md).
+Follow the setup in [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md), use `npm run build` while iterating, and run `npm test` for the complete TypeScript and Python regression suites. The [architecture guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md).
 
 Open Wrangler is an independent clean-room implementation inspired by the publicly documented behavior of Microsoft Data Wrangler. It does not use Microsoft code, branding, or assets and is not affiliated with Microsoft. Licensed under [MIT](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).

@@ -20,6 +20,7 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
 import {
   inspectPreviewReleaseMetadata,
   inspectReleaseMetadata,
@@ -678,7 +679,10 @@ test("requires one exact positive stable release and install section in both REA
 
 test("keeps the checked-in README release and install section generated for its current source channel", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const packageJson = parseStrictJson(readFileSync(new URL("../package.json", import.meta.url), "utf8"), {
+    maxBytes: 1024 * 1024
+  });
+  assert.equal(typeof packageJson?.preview, "boolean");
   if (packageJson.preview === true) {
     assert.deepEqual(inspectPreviewReadme(readme), []);
     assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
