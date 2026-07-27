@@ -2136,7 +2136,6 @@ export async function runBoundedEditorCommand(
   }
   let child;
   let launchPreparation;
-  let launchResourceFailure;
   try {
     if (beforeSpawn !== undefined) {
       if (platform === "win32" || typeof beforeSpawn !== "function") {
@@ -2174,12 +2173,6 @@ export async function runBoundedEditorCommand(
     }
     throw editorCommandError(label, "could not start", startedAt, "", "", error);
   }
-  try {
-    launchPreparation?.release();
-  } catch (error) {
-    launchResourceFailure = error;
-  }
-
   const remainingObservationTimeoutMs = Math.max(0, timeoutMs - Math.max(0, now() - startedAt));
 
   const output = createBoundedCommandOutput(maxOutputBytes);
@@ -2228,9 +2221,8 @@ export async function runBoundedEditorCommand(
   let timeout;
   let observation;
   try {
-    observation = launchResourceFailure
-      ? { kind: "launch-resource-failure", error: launchResourceFailure }
-      : remainingObservationTimeoutMs <= 0
+    observation =
+      remainingObservationTimeoutMs <= 0
         ? { kind: "timeout" }
         : await Promise.race([
             close.then((state) => ({ kind: "exit", state })),
@@ -2247,6 +2239,7 @@ export async function runBoundedEditorCommand(
   const isRunning = () => child.exitCode === null && child.signalCode === null && child.pid !== undefined;
   let terminationError;
   let stdioError;
+  let launchReleaseError;
   try {
     await terminateEditorChild(child, exit, isRunning, platform !== "win32", 0, {
       platform,
@@ -2266,6 +2259,11 @@ export async function runBoundedEditorCommand(
       destroyCapturedCommandStdio(child);
     } catch (error) {
       stdioError = error;
+    }
+    try {
+      launchPreparation?.release();
+    } catch (error) {
+      launchReleaseError = error;
     }
   }
 
@@ -2293,15 +2291,6 @@ export async function runBoundedEditorCommand(
     );
   } else if (observation.kind === "interrupted") {
     commandFailure = editorCommandError(label, `was interrupted by ${observation.signal}`, startedAt, stdout, stderr);
-  } else if (observation.kind === "launch-resource-failure") {
-    commandFailure = editorCommandError(
-      label,
-      "could not release its sealed launch inputs after spawn",
-      startedAt,
-      stdout,
-      stderr,
-      observation.error
-    );
   } else if (observation.state?.error) {
     commandFailure = editorCommandError(
       label,
@@ -2321,7 +2310,7 @@ export async function runBoundedEditorCommand(
     );
   }
 
-  const resourceFailures = [terminationError, stdioError].filter(Boolean);
+  const resourceFailures = [terminationError, stdioError, launchReleaseError].filter(Boolean);
   if (resourceFailures.length > 0) {
     if (supervisorReceipt && resourceFailures.some((error) => editorProcessTreeMayBeLive(error))) {
       unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);

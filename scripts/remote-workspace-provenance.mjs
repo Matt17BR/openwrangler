@@ -15,6 +15,7 @@ const FILE_SNAPSHOT_KEYS = Object.freeze([
   "uid"
 ]);
 const FILE_RECEIPT_KEYS = Object.freeze([...FILE_SNAPSHOT_KEYS, "sha256"].sort());
+const MAXIMUM_RECEIPT_BYTES = 4 * 1024 * 1024 * 1024;
 
 export function acceptRemoteWorkspaceCandidate(path, expectation) {
   const receipt = captureRemoteWorkspaceFileReceipt(path);
@@ -36,7 +37,18 @@ export function stageRemoteWorkspaceCandidate(source, destination, sourceReceipt
   return acceptRemoteWorkspaceCandidate(destination, expectation);
 }
 
-export function captureRemoteWorkspaceFileReceipt(path) {
+export function captureRemoteWorkspaceFileReceipt(
+  path,
+  { allowEmpty = false, maximumBytes = REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES } = {}
+) {
+  if (
+    typeof allowEmpty !== "boolean" ||
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes <= 0 ||
+    maximumBytes > MAXIMUM_RECEIPT_BYTES
+  ) {
+    throw new Error("Remote SSH acceptance requires one fixed bounded receipt-file policy.");
+  }
   let descriptor;
   try {
     descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -51,8 +63,8 @@ export function captureRemoteWorkspaceFileReceipt(path) {
       !openedMetadata.isFile() ||
       openedMetadata.isSymbolicLink() ||
       openedMetadata.nlink !== 1n ||
-      openedMetadata.size <= 0n ||
-      openedMetadata.size > BigInt(REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES)
+      openedMetadata.size < (allowEmpty ? 0n : 1n) ||
+      openedMetadata.size > BigInt(maximumBytes)
     ) {
       throw new Error("Remote SSH acceptance requires one bounded no-follow regular receipt file.");
     }
@@ -75,7 +87,7 @@ export function captureRemoteWorkspaceFileReceipt(path) {
       }
       if (bytesRead === 0) break;
       bytesReadTotal += bytesRead;
-      if (bytesReadTotal > Number(opened.size) || bytesReadTotal > REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES) {
+      if (bytesReadTotal > Number(opened.size) || bytesReadTotal > maximumBytes) {
         throw new Error("A Remote SSH receipt file exceeded its pinned read bound.");
       }
       digest.update(buffer.subarray(0, bytesRead));
@@ -97,8 +109,8 @@ export function captureRemoteWorkspaceFileReceipt(path) {
   }
 }
 
-export function assertRemoteWorkspaceFileReceipt(path, receipt) {
-  const current = captureRemoteWorkspaceFileReceipt(path);
+export function assertRemoteWorkspaceFileReceipt(path, receipt, policy) {
+  const current = captureRemoteWorkspaceFileReceipt(path, policy);
   if (
     !receipt ||
     current.sha256 !== receipt?.sha256 ||

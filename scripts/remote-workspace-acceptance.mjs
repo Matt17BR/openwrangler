@@ -30,6 +30,7 @@ import {
   REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
+  REMOTE_WORKSPACE_PHASE_CHILD_PATH,
   REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   REMOTE_WORKSPACE_PORT,
@@ -42,6 +43,7 @@ import {
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
+import { validateRemoteWorkspaceImmutableMounts } from "./remote-workspace-launch.mjs";
 
 export {
   createRemoteWorkspaceHostIsolationDigest,
@@ -55,6 +57,7 @@ export {
   REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
+  REMOTE_WORKSPACE_PHASE_CHILD_PATH,
   REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   REMOTE_WORKSPACE_PORT,
@@ -199,6 +202,16 @@ export async function assertRemoteWorkspaceHost(
     }
   }
   try {
+    const help = await runCommand(
+      {
+        executable: tools.bwrap,
+        args: ["--help"],
+        environment: createEditorAcceptanceEnvironment(),
+        label: "Remote SSH bubblewrap capability preflight"
+      },
+      { timeoutMs: 15_000, maxOutputBytes: HOST_COMMAND_OUTPUT_LIMIT_BYTES }
+    );
+    validateRemoteWorkspaceBwrapHelp(help.stdout);
     const probe = await runCommand(
       {
         executable: tools.bwrap,
@@ -255,6 +268,18 @@ export async function assertRemoteWorkspaceHost(
   return Object.freeze({ ...tools, uid, gid });
 }
 
+export function validateRemoteWorkspaceBwrapHelp(output) {
+  if (
+    typeof output !== "string" ||
+    Buffer.byteLength(output, "utf8") > HOST_COMMAND_OUTPUT_LIMIT_BYTES ||
+    !/^[ \t]+--bind-fd FD DEST[ \t]+Bind open directory or path fd on DEST[ \t]*$/mu.test(output) ||
+    !/^[ \t]+--ro-bind-fd FD DEST[ \t]+Bind open directory or path fd read-only on DEST[ \t]*$/mu.test(output)
+  ) {
+    throw new Error("The installed bubblewrap does not expose the required descriptor-bound mount interface.");
+  }
+  return Object.freeze({ bindFd: true, readOnlyBindFd: true });
+}
+
 export function validateRemoteWorkspaceNamespaceProbe(output, { uid, gid }) {
   if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > HOST_COMMAND_OUTPUT_LIMIT_BYTES) {
     throw new Error("The private namespace preflight returned malformed output.");
@@ -303,8 +328,9 @@ export function createRemoteWorkspaceLayout(parent) {
     acceptanceHarness: join(root, "harness"),
     python: join(root, "rh", "python"),
     candidate: join(root, "candidate.vsix"),
-    result: join(root, "result.json"),
-    progress: join(root, "progress.json"),
+    output: join(root, "out"),
+    result: join(root, "out", "result.json"),
+    progress: join(root, "out", "progress.json"),
     descriptor: join(root, "phase.json")
   };
   for (const path of [
@@ -320,7 +346,8 @@ export function createRemoteWorkspaceLayout(parent) {
     paths.sshRuntime,
     paths.phaseRuntime,
     paths.logs,
-    paths.acceptanceHarness
+    paths.acceptanceHarness,
+    paths.output
   ]) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
   }
@@ -377,16 +404,20 @@ export async function copyPrivatePythonEnvironment(
   });
 }
 
-export function createRemoteWorkspaceBwrapArguments({
-  root,
-  descriptor,
-  childScript,
-  systemPython,
-  systemRuntimeDirectories,
-  uid,
-  gid,
-  tools = REQUIRED_HOST_TOOLS
-}) {
+export function createRemoteWorkspaceBwrapArguments(
+  {
+    root,
+    descriptor,
+    childScript,
+    systemPython,
+    systemRuntimeDirectories,
+    immutableMounts,
+    uid,
+    gid,
+    tools = REQUIRED_HOST_TOOLS
+  },
+  { validateSystemRuntimeDirectory = validateRootOwnedSystemRuntimeDirectory } = {}
+) {
   for (const [label, value] of Object.entries({ root, descriptor, childScript, systemPython })) {
     if (typeof value !== "string" || !isAbsolute(value) || value.length > PATH_LIMIT) {
       throw new Error(`Remote SSH acceptance requires one bounded absolute ${label} path.`);
@@ -408,11 +439,19 @@ export function createRemoteWorkspaceBwrapArguments({
     if (!isContained(canonicalRoot, canonical)) throw new Error(`The Remote SSH ${label} escaped its private root.`);
     assertAbsoluteRegularFile(canonical, label);
   }
+  if (namespacePrivatePath(canonicalRoot, childScript) !== REMOTE_WORKSPACE_PHASE_CHILD_PATH) {
+    throw new Error("The Remote SSH phase child does not use its exact fixed private path.");
+  }
   const canonicalPython = realpathSync(assertAbsoluteRegularFile(systemPython, "system Python executable"));
   // Production resolves and probes the exact system Python before entering
   // this pure argument builder. Keeping this function path-agnostic lets its
   // structural contract run on CI images with different installed minors.
-  const runtimeDirectories = validateRemoteWorkspaceSystemRuntimeDirectories(systemRuntimeDirectories);
+  const runtimeDirectories = validateRemoteWorkspaceSystemRuntimeDirectories(systemRuntimeDirectories, {
+    validateDirectory: validateSystemRuntimeDirectory
+  });
+  const mounts = validateRemoteWorkspaceImmutableMounts(immutableMounts, {
+    commit: PINNED_REMOTE_VSCODE_COMMIT
+  });
   const args = [
     "--unshare-user",
     "--uid",
@@ -432,14 +471,11 @@ export function createRemoteWorkspaceBwrapArguments({
     "--tmpfs",
     "/",
     "--dir",
-    REMOTE_WORKSPACE_NAMESPACE_ROOT,
-    "--bind",
-    canonicalRoot,
-    REMOTE_WORKSPACE_NAMESPACE_ROOT,
-    "--ro-bind",
-    realpathSync(descriptor),
-    REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
+    REMOTE_WORKSPACE_NAMESPACE_ROOT
   ];
+  for (const mount of mounts) {
+    args.push(mount.access === "mutable" ? "--bind-fd" : "--ro-bind-fd", String(mount.descriptor), mount.destination);
+  }
   for (const directory of [
     "/usr",
     "/usr/bin",
@@ -503,9 +539,9 @@ export function createRemoteWorkspaceBwrapArguments({
     "os-release",
     "machine-id"
   ]) {
-    args.push("--ro-bind", join(canonicalRoot, "rh", "accounts", name), `/etc/${name}`);
+    args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/${name}`, `/etc/${name}`);
   }
-  args.push("--ro-bind", join(canonicalRoot, "rh", "accounts", "machine-id"), "/var/lib/dbus/machine-id");
+  args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/machine-id`, "/var/lib/dbus/machine-id");
   args.push("--symlink", `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/accounts/ld.so.cache`, "/etc/ld.so.cache");
   args.push(
     "--tmpfs",
@@ -555,7 +591,7 @@ export function createRemoteWorkspaceBwrapArguments({
     `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh/state`,
     "--",
     "/usr/bin/node",
-    namespacePrivatePath(canonicalRoot, childScript),
+    REMOTE_WORKSPACE_PHASE_CHILD_PATH,
     REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
     "/usr/bin/ip",
     "/usr/bin/ssh",
@@ -696,7 +732,10 @@ export function resolveRemoteWorkspaceSystemRuntimeDirectories(pythonDirectories
   ]);
 }
 
-export function validateRemoteWorkspaceSystemRuntimeDirectories(directories) {
+export function validateRemoteWorkspaceSystemRuntimeDirectories(
+  directories,
+  { validateDirectory = validateRootOwnedSystemRuntimeDirectory } = {}
+) {
   if (
     !Array.isArray(directories) ||
     directories.length <= 0 ||
@@ -705,9 +744,12 @@ export function validateRemoteWorkspaceSystemRuntimeDirectories(directories) {
   ) {
     throw new Error("Remote SSH acceptance requires one explicit unique system-runtime closure.");
   }
+  if (typeof validateDirectory !== "function") {
+    throw new Error("The Remote SSH system-runtime closure validator is malformed.");
+  }
   const validated = directories.map((directory) => {
     try {
-      return validateRootOwnedSystemRuntimeDirectory(directory);
+      return validateDirectory(directory);
     } catch (error) {
       throw new Error("A required Remote SSH system-runtime closure root is unavailable or unsafe.", {
         cause: error

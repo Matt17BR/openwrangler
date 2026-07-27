@@ -785,6 +785,7 @@ posixTest("bounded editor commands seal inherited inputs synchronously at the sp
         assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe", descriptor]);
         assert.equal(released, false);
         setImmediate(() => {
+          assert.equal(released, false);
           child.exitCode = 0;
           child.stdout.end("sealed\n");
           child.stderr.end();
@@ -820,6 +821,73 @@ posixTest("bounded editor commands fail before spawn on malformed launch seals",
       /could not start/u.test(error.message) && /malformed launch preparation/u.test(error.cause?.message ?? "")
   );
   assert.equal(spawned, false);
+});
+
+posixTest("bounded editor commands release sealed inputs when spawn fails", async () => {
+  const descriptor = openSync("/dev/null", "r");
+  let releases = 0;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/bwrap",
+        environment: {},
+        beforeSpawn() {
+          return {
+            args: ["--version"],
+            inheritedFileDescriptors: [descriptor],
+            release() {
+              releases += 1;
+              closeSync(descriptor);
+            }
+          };
+        }
+      },
+      {
+        spawnProcess() {
+          throw new Error("spawn rejected");
+        }
+      }
+    ),
+    /could not start/u
+  );
+  assert.equal(releases, 1);
+});
+
+posixTest("bounded editor commands retain sealed inputs through timeout termination", async () => {
+  const descriptor = openSync("/dev/null", "r");
+  const child = fakeStoppableCommandChild(7313);
+  let released = false;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/bwrap",
+        environment: {},
+        label: "sealed timeout command",
+        beforeSpawn() {
+          return {
+            args: ["--version"],
+            inheritedFileDescriptors: [descriptor],
+            release() {
+              closeSync(descriptor);
+              released = true;
+            }
+          };
+        }
+      },
+      {
+        timeoutMs: 5,
+        terminationGraceMs: 50,
+        killGraceMs: 50,
+        spawnProcess() {
+          assert.equal(released, false);
+          return child;
+        }
+      }
+    ),
+    /timed out after 5 ms/u
+  );
+  assert.equal(released, true);
+  assert.equal(child.signalCode, "SIGTERM");
 });
 
 test("editor downloads run each retry through the bounded isolated helper protocol", async () => {

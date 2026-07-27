@@ -26,9 +26,11 @@ import {
   readBoundedRemoteWorkspaceFile,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+  REMOTE_WORKSPACE_PHASE_CHILD_PATH,
   REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRootOwnedSystemRuntimeDirectory,
+  validateRemoteWorkspaceBwrapHelp,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
@@ -40,8 +42,11 @@ import {
   validateRemoteWorkspaceResult
 } from "./remote-workspace-acceptance.mjs";
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
+import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
 
-test("Remote workspace layout is short, private, and independently scoped", () => {
+const linuxTest = process.platform === "linux" ? test : test.skip;
+
+linuxTest("Remote workspace layout is short, private, and independently scoped", () => {
   const parent = privateRoot("ow-remote-layout-");
   try {
     const layout = createRemoteWorkspaceLayout(parent);
@@ -71,7 +76,7 @@ test("Remote command ownership uncertainty latches permanently across later comm
   assert.equal(runner.ownershipUncertain(), true);
 });
 
-test("Remote phase descriptors cannot execute a test module outside the private run root", () => {
+linuxTest("Remote phase descriptors cannot execute a test module outside the private run root", () => {
   const descriptor = remotePhaseDescriptor();
   assert.equal(validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: false }), descriptor);
   assert.throws(
@@ -126,7 +131,7 @@ test("Remote phase descriptors cannot execute a test module outside the private 
   );
 });
 
-test("Remote phase descriptor filesystem validation rejects linked leaves and precreated outputs", () => {
+linuxTest("Remote phase descriptor filesystem validation rejects linked leaves and precreated outputs", () => {
   const root = privateRoot("ow-remote-descriptor-filesystem-");
   try {
     const descriptor = createPhaseFilesystem(root);
@@ -148,7 +153,7 @@ test("Remote phase descriptor filesystem validation rejects linked leaves and pr
     const outputRoot = privateRoot(`ow-remote-descriptor-${output}-`);
     try {
       const descriptor = createPhaseFilesystem(outputRoot);
-      writeFileSync(join(outputRoot, output), "{}\n", { mode: 0o600 });
+      writeFileSync(join(outputRoot, "out", output), "{}\n", { mode: 0o600 });
       assert.throws(
         () => validateRemoteWorkspacePhaseDescriptor(descriptor, { filesystem: true, inspectionRoot: outputRoot }),
         /must be absent/u
@@ -159,7 +164,7 @@ test("Remote phase descriptor filesystem validation rejects linked leaves and pr
   }
 });
 
-test("Remote phase descriptor filesystem validation rejects a symlinked trusted leaf", () => {
+linuxTest("Remote phase descriptor filesystem validation rejects a symlinked trusted leaf", () => {
   const root = privateRoot("ow-remote-descriptor-symlink-");
   try {
     const descriptor = createPhaseFilesystem(root);
@@ -214,65 +219,89 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
     assertRemoteWorkspaceHost({ platform: "darwin", architecture: "arm64", tools: {} }),
     /only Linux x64/u
   );
-  const fakeTools = {
-    bash: "/usr/bin/true",
-    bwrap: "/usr/bin/true",
-    busybox: "/usr/bin/true",
-    dpkgDeb: "/usr/bin/true",
-    dynamicLoader: "/usr/bin/true",
-    getconf: "/usr/bin/true",
-    ip: "/usr/bin/true",
-    ldd: "/usr/bin/true",
-    ldconfig: "/usr/bin/true",
-    node: "/usr/bin/true",
-    ssh: "/usr/bin/true",
-    sshKeygen: "/usr/bin/true",
-    xkbcomp: "/usr/bin/true"
-  };
+  const fakeTools = Object.fromEntries(
+    [
+      "bash",
+      "bwrap",
+      "busybox",
+      "dpkgDeb",
+      "dynamicLoader",
+      "getconf",
+      "ip",
+      "ldd",
+      "ldconfig",
+      "node",
+      "ssh",
+      "sshKeygen",
+      "xkbcomp"
+    ].map((name) => [name, process.execPath])
+  );
   await assert.rejects(
     assertRemoteWorkspaceHost(
-      { platform: "linux", architecture: "x64", tools: fakeTools },
+      { platform: "linux", architecture: "x64", tools: fakeTools, uid: 1001, gid: 1001 },
       { runCommand: async () => Promise.reject(new Error("unprivileged user namespaces disabled")) }
     ),
     /no desktop-network fallback/u
   );
 });
 
-test("Bubblewrap arguments clear the environment and create zero-network PID isolation", () => {
+test("Bubblewrap preflight requires descriptor-bound mutable and read-only mounts", () => {
+  const help = [
+    "Usage:",
+    "    --bind-fd FD DEST            Bind open directory or path fd on DEST",
+    "    --ro-bind-fd FD DEST         Bind open directory or path fd read-only on DEST"
+  ].join("\n");
+  assert.deepEqual(validateRemoteWorkspaceBwrapHelp(help), { bindFd: true, readOnlyBindFd: true });
+  for (const unsupported of [
+    help.replace("--bind-fd FD DEST", "--bind SRC DEST"),
+    help.replace("--ro-bind-fd FD DEST", "--ro-bind SRC DEST"),
+    ""
+  ]) {
+    assert.throws(() => validateRemoteWorkspaceBwrapHelp(unsupported), /descriptor-bound mount interface/u);
+  }
+});
+
+linuxTest("Bubblewrap arguments clear the environment and create zero-network PID isolation", () => {
   const parent = privateRoot("ow-remote-bwrap-");
   try {
     const layout = createRemoteWorkspaceLayout(parent);
     const hostSentinel = join(parent, "host-private-sentinel");
     writeFileSync(hostSentinel, "private\n", { mode: 0o600 });
-    const child = join(layout.root, "child.mjs");
+    const child = join(layout.phaseRuntime, "remote-workspace-phase-child.mjs");
     writeFileSync(child, "export {};\n");
     const descriptor = layout.descriptor;
     writeFileSync(descriptor, "{}\n", { mode: 0o600 });
-    const args = createRemoteWorkspaceBwrapArguments({
-      root: layout.root,
-      descriptor,
-      childScript: child,
-      // This structural argument test never executes the phase. Use a
-      // platform-present regular executable instead of assuming one Python
-      // minor exists on every CI image.
-      systemPython: process.execPath,
-      systemRuntimeDirectories: ["/usr/lib/x86_64-linux-gnu"],
-      uid: 1001,
-      gid: 1001,
-      tools: {
-        bash: "/usr/bin/bash",
-        bwrap: "/usr/bin/bwrap",
-        busybox: "/usr/bin/busybox",
-        dynamicLoader: "/usr/lib64/ld-linux-x86-64.so.2",
-        getconf: "/usr/bin/getconf",
-        ip: "/usr/bin/ip",
-        ldd: "/usr/bin/ldd",
-        ldconfig: "/usr/sbin/ldconfig",
-        node: "/usr/bin/node",
-        ssh: "/usr/bin/ssh",
-        xkbcomp: "/usr/bin/xkbcomp"
+    const args = createRemoteWorkspaceBwrapArguments(
+      {
+        root: layout.root,
+        descriptor,
+        childScript: child,
+        // This structural argument test never executes the phase. Use a
+        // platform-present regular executable instead of assuming one Python
+        // minor exists on every CI image.
+        systemPython: process.execPath,
+        systemRuntimeDirectories: ["/usr"],
+        immutableMounts: createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT),
+        uid: 1001,
+        gid: 1001,
+        tools: {
+          bash: process.execPath,
+          bwrap: process.execPath,
+          busybox: process.execPath,
+          dynamicLoader: process.execPath,
+          getconf: process.execPath,
+          ip: process.execPath,
+          ldd: process.execPath,
+          ldconfig: process.execPath,
+          node: process.execPath,
+          ssh: process.execPath,
+          xkbcomp: process.execPath
+        }
+      },
+      {
+        validateSystemRuntimeDirectory: (path) => path
       }
-    });
+    );
     for (const required of [
       "--unshare-user",
       "--unshare-pid",
@@ -301,9 +330,10 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
     const mountSources = args
       .map((value, index) => (value === "--bind" || value === "--ro-bind" ? args[index + 1] : undefined))
       .filter(Boolean);
-    assert.equal(mountSources.includes("/"), false);
-    assert.equal(args.includes(hostSentinel), false);
     const canonicalRoot = realpathSync(layout.root);
+    assert.equal(mountSources.includes("/"), false);
+    assert.equal(mountSources.includes(canonicalRoot), false);
+    assert.equal(args.includes(hostSentinel), false);
     assert.equal(
       mountSources
         .filter((source) => source.startsWith(`${process.env.HOME}/`))
@@ -316,12 +346,21 @@ test("Bubblewrap arguments clear the environment and create zero-network PID iso
     assert.equal(args.includes("/usr/bin/ldd"), true);
     const descriptorBind = args.findIndex(
       (value, index) =>
-        value === "--ro-bind" &&
-        args[index + 1] === realpathSync(descriptor) &&
+        value === "--ro-bind-fd" &&
+        args[index + 1] ===
+          String(
+            createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
+              (mount) => mount.id === "descriptor"
+            ).descriptor
+          ) &&
         args[index + 2] === REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH
     );
     assert.notEqual(descriptorBind, -1);
+    assert.equal(args.includes("--bind-fd"), true);
+    assert.equal(args.includes("--ro-bind-fd"), true);
+    assert.equal(args.includes(layout.root), false);
     const commandSeparator = args.lastIndexOf("--");
+    assert.equal(args[commandSeparator + 2], REMOTE_WORKSPACE_PHASE_CHILD_PATH);
     assert.equal(args[commandSeparator + 3], REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH);
   } finally {
     rmSync(parent, { recursive: true, force: true });
@@ -343,7 +382,7 @@ test("Bubblewrap requires an explicit available system-runtime closure", () => {
   );
 });
 
-test("System runtime closure roots must be canonical, root-owned, and non-writable", () => {
+linuxTest("System runtime closure roots must be canonical, root-owned, and non-writable", () => {
   const canonical = "/usr/lib/openwrangler-runtime";
   const directory = (overrides = {}) => ({
     isDirectory: () => true,
@@ -523,7 +562,7 @@ test("Remote acceptance deadlines stay bounded and match native-editor ownership
 });
 
 function privateRoot(prefix) {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   chmodSync(root, 0o700);
   return root;
 }
@@ -573,8 +612,8 @@ function remotePhaseDescriptor() {
       localExtensions: "/ow/le",
       localHome: "/ow/lh",
       remoteHome: "/ow/rh",
-      result: "/ow/result.json",
-      progress: "/ow/progress.json"
+      result: "/ow/out/result.json",
+      progress: "/ow/out/progress.json"
     }
   };
 }
@@ -594,7 +633,8 @@ function createPhaseFilesystem(root) {
     "rh/ssh-runtime/runtime/lib",
     "ud",
     "le",
-    "lh"
+    "lh",
+    "out"
   ];
   for (const directory of directories) {
     const path = directory.length === 0 ? root : join(root, directory);

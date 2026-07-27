@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,7 +10,9 @@ import {
   stageRemoteWorkspaceTree
 } from "./remote-workspace-staging.mjs";
 
-test("exact staged harness files retain source, destination, bytes, and mode receipts", () => {
+const posixTest = process.platform === "win32" ? test.skip : test;
+
+posixTest("exact staged harness files retain source, destination, bytes, and mode receipts", () => {
   const root = privateRoot("ow-remote-stage-file-");
   try {
     const source = join(root, "source.mjs");
@@ -35,6 +37,7 @@ test("bounded staged trees retain independent source and destination manifests",
     const staged = join(root, "staged");
     mkdirSync(join(source, "nested"), { recursive: true, mode: 0o700 });
     writeFileSync(join(source, "index.js"), "export {};\n", { mode: 0o600 });
+    writeFileSync(join(source, "empty"), "", { mode: 0o600 });
     writeFileSync(join(source, "nested", "package.json"), '{"name":"fixture"}\n', { mode: 0o640 });
     const receipt = stageRemoteWorkspaceTree(source, staged, {
       label: "Remote SSH staging regression tree",
@@ -42,8 +45,8 @@ test("bounded staged trees retain independent source and destination manifests",
       maximumBytes: 1_024,
       maximumFileBytes: 512
     });
-    assert.equal(receipt.sourceManifest.files.length, 2);
-    assert.equal(receipt.stagedManifest.files.length, 2);
+    assert.equal(receipt.sourceManifest.files.length, 3);
+    assert.equal(receipt.stagedManifest.files.length, 3);
     assert.equal(assertRemoteWorkspaceTreeStage(receipt), receipt);
     writeFileSync(join(staged, "index.js"), "export const changed = true;\n");
     assert.throws(() => assertRemoteWorkspaceTreeStage(receipt), /changed after its provenance was pinned/u);
@@ -53,7 +56,7 @@ test("bounded staged trees retain independent source and destination manifests",
 });
 
 function privateRoot(prefix) {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   chmodSync(root, 0o700);
   return root;
 }

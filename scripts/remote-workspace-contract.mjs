@@ -15,6 +15,7 @@ export const REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const REMOTE_WORKSPACE_PORT = 49_321;
 export const REMOTE_WORKSPACE_NAMESPACE_ROOT = "/ow";
 export const REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase.json`;
+export const REMOTE_WORKSPACE_PHASE_CHILD_PATH = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-runtime/remote-workspace-phase-child.mjs`;
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
 const PATH_LIMIT = 16_384;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
@@ -62,8 +63,8 @@ const FIXED_PHASE_PATHS = Object.freeze({
   localExtensions: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/le`,
   localHome: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/lh`,
   remoteHome: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh`,
-  result: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/result.json`,
-  progress: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/progress.json`
+  result: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/out/result.json`,
+  progress: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/out/progress.json`
 });
 const FIXED_DESCRIPTOR_PATHS = Object.freeze({
   editor: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/client/code`,

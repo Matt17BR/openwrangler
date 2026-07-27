@@ -57,6 +57,11 @@ import {
   stageRemoteWorkspaceCandidate
 } from "./remote-workspace-provenance.mjs";
 import {
+  assertRemoteWorkspaceImmutableInputRegistry,
+  createRemoteWorkspaceImmutableInputRegistry,
+  openRemoteWorkspaceImmutableInputLeases
+} from "./remote-workspace-launch.mjs";
+import {
   assertRemoteWorkspaceExactFileStage,
   assertRemoteWorkspaceTreeStage,
   stageRemoteWorkspaceExactFile,
@@ -295,17 +300,40 @@ try {
     }
   });
   descriptorReceipt = captureRemoteWorkspaceFileReceipt(layout.descriptor);
-
-  const bwrapArguments = createRemoteWorkspaceBwrapArguments({
-    root: layout.root,
-    descriptor: layout.descriptor,
-    childScript: childStage.stagedPath,
-    systemPython,
-    systemRuntimeDirectories: python.systemRuntimeDirectories,
-    uid: tools.uid,
-    gid: tools.gid,
-    tools
-  });
+  const immutableInputs = createRemoteWorkspaceImmutableInputRegistry(
+    {
+      localHome: layout.localHome,
+      userData: layout.userData,
+      remoteHome: layout.remoteHome,
+      output: layout.output,
+      descriptor: layout.descriptor,
+      phaseRuntime: layout.phaseRuntime,
+      client: layout.client,
+      localExtensions: layout.localExtensions,
+      localSettings: join(layout.userData, "User", "settings.json"),
+      remoteCli: committedCli,
+      remoteServer: serverRoot,
+      remoteExtensions: layout.remoteExtensions,
+      remoteTestModule: layout.remoteTestModule,
+      python: layout.python,
+      sshRuntime: join(layout.sshRuntime, "runtime"),
+      ssh: layout.ssh,
+      workspace: layout.workspace,
+      "account:group": join(layout.accounts, "group"),
+      "account:hosts": join(layout.accounts, "hosts"),
+      "account:ld.so.cache": join(layout.accounts, "ld.so.cache"),
+      "account:ld.so.conf": join(layout.accounts, "ld.so.conf"),
+      "account:machine-id": join(layout.accounts, "machine-id"),
+      "account:nsswitch.conf": join(layout.accounts, "nsswitch.conf"),
+      "account:os-release": join(layout.accounts, "os-release"),
+      "account:passwd": join(layout.accounts, "passwd"),
+      "account:resolv.conf": join(layout.accounts, "resolv.conf"),
+      "account:shadow": join(layout.accounts, "shadow"),
+      hostHome,
+      hostSentinel
+    },
+    { commit: PINNED_REMOTE_VSCODE_COMMIT, uid: tools.uid, gid: tools.gid }
+  );
   await assertAcceptanceProvenance({
     candidatePath,
     candidateSourceReceipt,
@@ -321,9 +349,33 @@ try {
   const attestation = await commandRunner.run(
     {
       executable: tools.bwrap,
-      args: bwrapArguments,
+      args: [],
       environment: createEditorAcceptanceEnvironment(),
-      label: "Official VS Code Remote SSH packaged acceptance"
+      label: "Official VS Code Remote SSH packaged acceptance",
+      beforeSpawn() {
+        const leases = openRemoteWorkspaceImmutableInputLeases(immutableInputs);
+        try {
+          const args = createRemoteWorkspaceBwrapArguments({
+            root: layout.root,
+            descriptor: layout.descriptor,
+            childScript: childStage.stagedPath,
+            systemPython,
+            systemRuntimeDirectories: python.systemRuntimeDirectories,
+            immutableMounts: leases.mounts,
+            uid: tools.uid,
+            gid: tools.gid,
+            tools
+          });
+          return {
+            args,
+            inheritedFileDescriptors: leases.inheritedFileDescriptors,
+            release: leases.release
+          };
+        } catch (error) {
+          leases.release();
+          throw error;
+        }
+      }
     },
     {
       timeoutMs: REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
@@ -333,6 +385,7 @@ try {
     }
   );
   assertStagedRuntimeInputs(exactStages, treeStages);
+  assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
   assertRemoteWorkspaceFileReceipt(hostSentinel, hostSentinelReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
@@ -456,16 +509,21 @@ function stageTestRuntimeDependency(source, destination, identity) {
   ) {
     throw new Error("The Remote SSH test dependency is not pinned by the lockfile.");
   }
-  const metadata = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+  const packagePath = join(source, "package.json");
+  const packageReceipt = captureRemoteWorkspaceFileReceipt(packagePath);
+  const metadata = JSON.parse(readFileSync(packagePath, "utf8"));
+  assertRemoteWorkspaceFileReceipt(packagePath, packageReceipt);
   if (metadata.name !== identity.name || metadata.version !== identity.version) {
     throw new Error("The Remote SSH test dependency does not match its lockfile identity.");
   }
-  return stageRemoteWorkspaceTree(source, destination, {
+  const stage = stageRemoteWorkspaceTree(source, destination, {
     label: `Remote SSH ${identity.name} dependency`,
     maximumFiles: identity.maximumFiles,
     maximumBytes: identity.maximumBytes,
     maximumFileBytes: identity.maximumFileBytes
   });
+  assertRemoteWorkspaceFileReceipt(packagePath, packageReceipt);
+  return stage;
 }
 
 function assertStagedRuntimeInputs(exactStages, treeStages) {
@@ -512,7 +570,7 @@ function writePrivateAccountDatabase(directory, uid, gid, home, sshLibraryPath) 
     ["shadow", `${namespaceSshUser}:NP:20500:0:99999:7:::\n`, 0o600],
     ["nsswitch.conf", "passwd: files\ngroup: files\nshadow: files\nhosts: files\n", 0o600],
     ["hosts", "127.0.0.1 localhost openwrangler-remote-acceptance\n::1 localhost\n", 0o600],
-    ["resolv.conf", "", 0o600],
+    ["resolv.conf", "# Private network namespace: no resolver configured.\n", 0o600],
     ["machine-id", "6f70656e7772616e676c657274657374\n", 0o600],
     ["ld.so.conf", `${sshLibraryPath}\n/usr/lib/x86_64-linux-gnu\n`, 0o600],
     ["ld.so.cache", "", 0o600],
