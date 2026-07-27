@@ -1,25 +1,42 @@
-import { lstatSync, rmSync, type BigIntStats } from "node:fs";
+import { lstatSync, unlinkSync, type BigIntStats } from "node:fs";
 
-function sameOwnedRegularFile(actual: BigIntStats, expected: BigIntStats): boolean {
+interface IdentifiedFileRemovalOptions {
+  allowedLinkCounts?: readonly bigint[];
+  description?: string;
+}
+
+function sameOwnedRegularFile(
+  actual: BigIntStats,
+  expected: BigIntStats,
+  allowedLinkCounts: readonly bigint[]
+): boolean {
   return (
     actual.isFile() &&
     !actual.isSymbolicLink() &&
-    actual.nlink === 1n &&
+    allowedLinkCounts.includes(actual.nlink) &&
     actual.dev === expected.dev &&
     actual.ino === expected.ino
   );
 }
 
-export function removeIdentifiedTemporary(file: string, expected: BigIntStats): boolean {
+export function removeIdentifiedFile(
+  file: string,
+  expected: BigIntStats,
+  { allowedLinkCounts = [1n], description = "file" }: IdentifiedFileRemovalOptions = {}
+): boolean {
   try {
     const current = lstatSync(file, { bigint: true });
-    if (!sameOwnedRegularFile(current, expected)) {
-      throw new Error("Owned fragment temporary cleanup was withheld after an identity change.");
+    if (!sameOwnedRegularFile(current, expected, allowedLinkCounts)) {
+      throw new Error(`Owned fragment ${description} cleanup was withheld after an identity change.`);
     }
-    rmSync(file);
+    unlinkSync(file);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
+}
+
+export function removeIdentifiedTemporary(file: string, expected: BigIntStats): boolean {
+  return removeIdentifiedFile(file, expected, { description: "temporary" });
 }

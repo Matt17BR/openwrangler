@@ -53,6 +53,10 @@ import {
   writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
 
+async function canonicalTemporaryDirectory(prefix) {
+  return fs.realpathSync.native(await mkdtemp(join(tmpdir(), prefix)));
+}
+
 test("extension-test builds explicitly stage declaration-shadowed CommonJS runtime assets", async () => {
   assert.deepEqual(EXTENSION_TEST_RUNTIME_ASSETS, [
     {
@@ -66,6 +70,7 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
   ]);
   assert.deepEqual(EXTENSION_TEST_COMPILED_MODULES, [
     "dist-test/test/extensionHost/installedPerformance.js",
+    "dist-test/test/extensionHost/fragmentPublication.js",
     "dist-test/test/extensionHost/identifiedTemporary.js",
     "dist-test/test/extensionHost/progress.js"
   ]);
@@ -87,7 +92,7 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
     /for \(const phase of INSTALLED_PERFORMANCE_PHASES\) \{\s+verifyExtensionTestRuntimeAssets\(\);/u
   );
 
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-extension-test-assets-"));
+  const directory = await canonicalTemporaryDirectory("openwrangler-extension-test-assets-");
   try {
     for (const [index, asset] of EXTENSION_TEST_RUNTIME_ASSETS.entries()) {
       const source = join(directory, asset.source);
@@ -102,6 +107,7 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
       [
         'require("../../shared/installedPerformanceFixtureManifest.cjs");',
         'require("../../shared/strictJson.cjs");',
+        'require("./fragmentPublication");',
         'require("./identifiedTemporary");',
         'require("./progress");',
         "exports.run = async function run() {};",
@@ -194,7 +200,7 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
 });
 
 test("extension-test staging rejects linked output paths without touching their targets", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "openwrangler-extension-test-links-"));
+  const directory = await canonicalTemporaryDirectory("openwrangler-extension-test-links-");
   const alias = `${directory}-alias`;
   try {
     for (const [index, asset] of EXTENSION_TEST_RUNTIME_ASSETS.entries()) {
