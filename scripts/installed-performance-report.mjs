@@ -27,7 +27,9 @@ export const INSTALLED_PERFORMANCE_LIMITS = Object.freeze({
   parquetFirstUsableGridP95Ms: 5_000,
   cachedGridP95Ms: 100,
   uncachedGridP95Ms: 500,
-  interactionHeartbeatP95Ms: 100
+  interactionHeartbeatP95Ms: 100,
+  outstandingRendererHeartbeatMs: 100,
+  outstandingForegroundPageMs: 500
 });
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -459,13 +461,21 @@ function validateGridInteractionMeasurement(measurement) {
     assertDurationSamples(measurement[key], label);
   }
   for (const operation of ["filter", "sort"]) {
-    exactKeys(measurement[operation], ["completed", "latencyMs"], [], `${operation} evidence`);
+    exactKeys(measurement[operation], ["completed", "latencyMs", "responsiveness"], [], `${operation} evidence`);
     assertEqual(measurement[operation].completed, true, `${operation} completion`);
     assertFiniteNonnegative(measurement[operation].latencyMs, `${operation} latency`);
+    validateOutstandingResponsiveness(measurement[operation].responsiveness, `${operation} responsiveness`);
   }
   exactKeys(
     measurement.profiling,
-    ["activeObserved", "cancellationRequested", "cancelAcknowledged", "originalRequestSettled", "originalResponseKind"],
+    [
+      "activeObserved",
+      "cancellationRequested",
+      "cancelAcknowledged",
+      "originalRequestSettled",
+      "originalResponseKind",
+      "responsiveness"
+    ],
     [],
     "profiling cancellation evidence"
   );
@@ -473,6 +483,20 @@ function validateGridInteractionMeasurement(measurement) {
     assertEqual(measurement.profiling[key], true, `profiling ${key}`);
   }
   assertEqual(measurement.profiling.originalResponseKind, "cancelled", "profiling original response kind");
+  validateOutstandingResponsiveness(measurement.profiling.responsiveness, "profiling responsiveness");
+}
+
+function validateOutstandingResponsiveness(responsiveness, label) {
+  exactKeys(
+    responsiveness,
+    ["outstandingObserved", "rendererHeartbeatMs", "foregroundPageLatencyMs", "foregroundResponseKind"],
+    [],
+    label
+  );
+  assertEqual(responsiveness.outstandingObserved, true, `${label} outstanding observation`);
+  assertFiniteNonnegative(responsiveness.rendererHeartbeatMs, `${label} renderer heartbeat`);
+  assertFiniteNonnegative(responsiveness.foregroundPageLatencyMs, `${label} foreground page latency`);
+  assertEqual(responsiveness.foregroundResponseKind, "page", `${label} foreground response kind`);
 }
 
 function validateProvenance(provenance) {
@@ -701,6 +725,25 @@ function installedPerformanceFailures(
       interaction.profiling.originalResponseKind !== "cancelled"
     ) {
       failures.push(`${label} did not prove authoritative profile cancellation`);
+    }
+    for (const [operation, responsiveness] of [
+      ["filter", interaction.filter.responsiveness],
+      ["sort", interaction.sort.responsiveness],
+      ["profiling", interaction.profiling.responsiveness]
+    ]) {
+      if (!responsiveness.outstandingObserved || responsiveness.foregroundResponseKind !== "page") {
+        failures.push(`${label} ${operation} did not prove concurrent renderer and foreground responsiveness`);
+      }
+      if (!(responsiveness.rendererHeartbeatMs < INSTALLED_PERFORMANCE_LIMITS.outstandingRendererHeartbeatMs)) {
+        failures.push(
+          `${label} ${operation} outstanding renderer heartbeat ${responsiveness.rendererHeartbeatMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingRendererHeartbeatMs}ms`
+        );
+      }
+      if (!(responsiveness.foregroundPageLatencyMs < INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs)) {
+        failures.push(
+          `${label} ${operation} outstanding foreground page ${responsiveness.foregroundPageLatencyMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs}ms`
+        );
+      }
     }
   }
   return failures;

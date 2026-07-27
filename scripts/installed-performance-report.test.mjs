@@ -95,6 +95,23 @@ test("cache evidence retains every proof and rejects forged eviction verificatio
   );
 });
 
+test("release evidence gates responsiveness while filter, sort, and profiling remain outstanding", () => {
+  const run = editorRun("vscode");
+  const interaction = run.phases.at(-1).measurement;
+  interaction.filter.responsiveness.foregroundPageLatencyMs = 500;
+  interaction.sort.responsiveness.rendererHeartbeatMs = 100;
+  const report = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: candidate(),
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [run]
+  });
+
+  assert.ok(report.releaseGate.failures.includes("vscode filter outstanding foreground page 500ms >= 500ms"));
+  assert.ok(report.releaseGate.failures.includes("vscode sort outstanding renderer heartbeat 100ms >= 100ms"));
+});
+
 test("the aggregate report gates both editors and every cold/warm/grid case", () => {
   const report = passingReport();
   assert.equal(report.releaseGate.passed, true);
@@ -286,16 +303,26 @@ function interactionPhase(key) {
       cachedSamplesMs: sample(10),
       uncachedSamplesMs: sample(50),
       heartbeatSamplesMs: sample(5),
-      filter: { completed: true, latencyMs: 100 },
-      sort: { completed: true, latencyMs: 110 },
+      filter: { completed: true, latencyMs: 100, responsiveness: responsiveness() },
+      sort: { completed: true, latencyMs: 110, responsiveness: responsiveness() },
       profiling: {
         activeObserved: true,
         cancellationRequested: true,
         cancelAcknowledged: true,
         originalRequestSettled: true,
-        originalResponseKind: "cancelled"
+        originalResponseKind: "cancelled",
+        responsiveness: responsiveness()
       }
     }
+  };
+}
+
+function responsiveness() {
+  return {
+    outstandingObserved: true,
+    rendererHeartbeatMs: 5,
+    foregroundPageLatencyMs: 50,
+    foregroundResponseKind: "page"
   };
 }
 

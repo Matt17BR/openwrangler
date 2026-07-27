@@ -299,31 +299,58 @@ async function measureGridInteraction({
   const operator = frame.getByLabel("Predicate operator");
   await operator.selectOption("gte");
   await frame.getByLabel("gte predicate value").fill(String(Math.floor(fixture.rows / 2)));
-  await activateLocator(frame.getByRole("button", { name: "Add predicate", exact: true }));
   const filteredRows = fixture.rows - Math.floor(fixture.rows / 2);
-  await waitForGridState(frame, {
-    rows: filteredRows,
-    columns: fixture.columns,
-    row: 0,
-    column: 0,
-    value: Math.floor(fixture.rows / 2)
+  let filterSettled = false;
+  const filterOperation = (async () => {
+    await activateLocator(frame.getByRole("button", { name: "Add predicate", exact: true }));
+    await waitForGridState(frame, {
+      rows: filteredRows,
+      columns: fixture.columns,
+      row: 0,
+      column: 0,
+      value: Math.floor(fixture.rows / 2)
+    });
+  })().finally(() => {
+    filterSettled = true;
   });
-  const filter = { completed: true, latencyMs: roundMilliseconds(performance.now() - filterStarted) };
+  const [filterResponsiveness] = await Promise.all([
+    measureOutstandingResponsiveness(frame, testing, session.sessionId, () => filterSettled),
+    filterOperation
+  ]);
+  const filter = {
+    completed: true,
+    latencyMs: roundMilliseconds(performance.now() - filterStarted),
+    responsiveness: filterResponsiveness
+  };
   recordProgress("interaction:filter");
 
   const sortStarted = performance.now();
-  await openColumnAction(frame, "c00", "Sort descending");
-  await waitForGridState(frame, {
-    rows: filteredRows,
-    columns: fixture.columns,
-    row: 0,
-    column: 0,
-    value: fixture.rows - 1
+  const sortAction = await prepareColumnAction(frame, "c00", "Sort descending");
+  let sortSettled = false;
+  const sortOperation = (async () => {
+    await activateLocator(sortAction);
+    await waitForGridState(frame, {
+      rows: filteredRows,
+      columns: fixture.columns,
+      row: 0,
+      column: 0,
+      value: fixture.rows - 1
+    });
+  })().finally(() => {
+    sortSettled = true;
   });
-  const sort = { completed: true, latencyMs: roundMilliseconds(performance.now() - sortStarted) };
+  const [sortResponsiveness] = await Promise.all([
+    measureOutstandingResponsiveness(frame, testing, session.sessionId, () => sortSettled),
+    sortOperation
+  ]);
+  const sort = {
+    completed: true,
+    latencyMs: roundMilliseconds(performance.now() - sortStarted),
+    responsiveness: sortResponsiveness
+  };
   recordProgress("interaction:sort");
 
-  const profiling = await proveAuthoritativeProfileCancellation(testing, session.sessionId);
+  const profiling = await proveAuthoritativeProfileCancellation(testing, frame, session.sessionId);
   recordProgress("interaction:profiling-cancelled");
 
   assert.equal(cachedSamplesMs.length, SAMPLE_COUNT);
@@ -551,13 +578,17 @@ async function rendererNow(frame: Frame): Promise<number> {
 }
 
 async function openColumnAction(frame: Frame, column: string, action: string): Promise<void> {
+  await activateLocator(await prepareColumnAction(frame, column, action));
+}
+
+async function prepareColumnAction(frame: Frame, column: string, action: string): Promise<Locator> {
   const header = frame.locator(`th[data-column="${column}"]`).first();
   const details = header.locator("details.columnMenu").first();
   const summary = details.getByLabel(`Column actions for ${column}`);
   if (!(await details.evaluate((element) => element.hasAttribute("open")))) {
     await activateLocator(summary);
   }
-  await activateLocator(details.getByRole("button", { name: action, exact: true }));
+  return details.getByRole("button", { name: action, exact: true });
 }
 
 async function activateLocator(locator: Locator): Promise<void> {
@@ -598,6 +629,7 @@ async function waitForGridState(
 
 async function proveAuthoritativeProfileCancellation(
   testing: TestApi,
+  frame: Frame,
   expectedSessionId: string
 ): Promise<{
   activeObserved: true;
@@ -605,13 +637,13 @@ async function proveAuthoritativeProfileCancellation(
   cancelAcknowledged: true;
   originalRequestSettled: true;
   originalResponseKind: "cancelled";
+  responsiveness: OutstandingResponsiveness;
 }> {
   const active = testing.activeSession();
   assert.ok(active && active.sessionId === expectedSessionId, "The interaction session must remain active.");
   const { metadata } = active;
   const activeRequestId = `installed-profile-active-${randomUUID()}`;
   const cancelledRequestId = `installed-profile-cancelled-${randomUUID()}`;
-  const pageRequestId = `installed-profile-page-${randomUUID()}`;
   let activeSettled = false;
   const activeProfile = testing
     .request(
@@ -638,27 +670,18 @@ async function proveAuthoritativeProfileCancellation(
     },
     { priority: "background", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
   );
-  const interactivePage = testing.request(
-    {
-      kind: "getPage",
-      sessionId: expectedSessionId,
-      revision: metadata.revision,
-      viewRequestId: pageRequestId,
-      offset: 0,
-      limit: 200,
-      columnOffset: 0,
-      columnLimit: Math.min(16, metadata.schema.length),
-      filterModel: metadata.filterModel
-    },
-    { priority: "interactive", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
+  const responsivenessPromise = measureOutstandingResponsiveness(
+    frame,
+    testing,
+    expectedSessionId,
+    () => activeSettled
   );
 
   const activeObserved = !activeSettled;
   testing.cancelViewRequests(expectedSessionId, [cancelledRequestId]);
   const cancelledResponse = await cancelledProfile;
-  const [activeResponse, pageResponse] = await Promise.all([activeProfile, interactivePage]);
+  const [activeResponse, responsiveness] = await Promise.all([activeProfile, responsivenessPromise]);
   assert.equal(activeResponse.kind, "summary", "The accepted active profile must settle authoritatively.");
-  assert.equal(pageResponse.kind, "page", "A foreground page must complete while profiling uses its background lane.");
   assert.equal(cancelledResponse.kind, "cancelled", "The original queued profile must return its own cancellation.");
   assert.equal(cancelledResponse.viewRequestId, cancelledRequestId);
   assert.equal(activeObserved, true, "The cancelled profile must have queued behind accepted active profiling.");
@@ -668,8 +691,61 @@ async function proveAuthoritativeProfileCancellation(
     cancellationRequested: true,
     cancelAcknowledged: true,
     originalRequestSettled: true,
-    originalResponseKind: "cancelled"
+    originalResponseKind: "cancelled",
+    responsiveness
   };
+}
+
+interface OutstandingResponsiveness {
+  outstandingObserved: true;
+  rendererHeartbeatMs: number;
+  foregroundPageLatencyMs: number;
+  foregroundResponseKind: "page";
+}
+
+async function measureOutstandingResponsiveness(
+  frame: Frame,
+  testing: TestApi,
+  expectedSessionId: string,
+  settled: () => boolean
+): Promise<OutstandingResponsiveness> {
+  assert.equal(settled(), false, "The measured operation must still be outstanding when responsiveness probes start.");
+  const heartbeat = measureRendererHeartbeat(frame);
+  const foregroundPage = measureForegroundPage(testing, expectedSessionId);
+  const [rendererHeartbeatMs, page] = await Promise.all([heartbeat, foregroundPage]);
+  return {
+    outstandingObserved: true,
+    rendererHeartbeatMs,
+    foregroundPageLatencyMs: page.latencyMs,
+    foregroundResponseKind: page.responseKind
+  };
+}
+
+async function measureForegroundPage(
+  testing: TestApi,
+  expectedSessionId: string
+): Promise<{ latencyMs: number; responseKind: "page" }> {
+  const active = testing.activeSession();
+  assert.ok(active && active.sessionId === expectedSessionId, "The responsiveness session must remain active.");
+  const { metadata } = active;
+  assert.ok(metadata.schema.length > 0, "The responsiveness fixture must expose at least one column.");
+  const started = performance.now();
+  const response = await testing.request(
+    {
+      kind: "getPage",
+      sessionId: expectedSessionId,
+      revision: metadata.revision,
+      viewRequestId: `installed-foreground-page-${randomUUID()}`,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: Math.min(16, metadata.schema.length),
+      filterModel: metadata.filterModel
+    },
+    { priority: "interactive", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
+  );
+  assert.equal(response.kind, "page", "A foreground page must complete while the measured operation is outstanding.");
+  return { latencyMs: roundMilliseconds(performance.now() - started), responseKind: "page" };
 }
 
 async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: number }): Promise<boolean> {
