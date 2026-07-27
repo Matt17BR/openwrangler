@@ -27,6 +27,7 @@ jobs:
       - id: release_metadata
         name: Validate release tag and manifest channel
         env:
+          EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: node scripts/release-metadata.mjs
       - run: npm ci

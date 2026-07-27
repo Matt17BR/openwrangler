@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { linkSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { ZipFile } from "yazl";
 import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
@@ -12,7 +24,9 @@ import {
   inspectStableReleaseReadiness,
   PRIMARY_PARITY_SCOPE,
   readOwnedVsixSnapshot,
+  readReleaseSourceSnapshot,
   readStableVsixPayload,
+  revalidateStableReleaseArtifacts,
   STABLE_README_RELEASE_SECTION,
   writeStableReleaseArtifacts
 } from "./release-readiness.mjs";
@@ -571,13 +585,94 @@ test("inspects and checksums one owned immutable VSIX snapshot", async (context)
   assert.deepEqual(JSON.parse(payload.packagedPackageJson), stablePackage);
   assert.equal(payload.packagedPythonVersionFile, '__version__ = "1.0.0"\n');
 
-  writeStableReleaseArtifacts({ checksumOutput: checksum, snapshot, vsixOutput: published });
+  const receipts = writeStableReleaseArtifacts({
+    checksumOutput: checksum,
+    snapshot,
+    vsixOutput: published
+  });
   assert.deepEqual(readFileSync(published), original);
   assert.equal(readFileSync(checksum, "utf8"), `${expectedDigest}  openwrangler.vsix\n`);
+  revalidateStableReleaseArtifacts({
+    checksumOutput: checksum,
+    checksumReceipt: receipts.checksumReceipt,
+    snapshot,
+    vsixOutput: published,
+    vsixReceipt: receipts.vsixReceipt
+  });
   if (process.platform !== "win32") {
     assert.equal(statSync(published).mode & 0o222, 0);
     assert.equal(statSync(checksum).mode & 0o222, 0);
   }
+});
+
+test("reads release documentation from the exact immutable Git commit", () => {
+  const root = resolve(import.meta.dirname, "..");
+  const expectedCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8"
+  }).trim();
+  const source = readReleaseSourceSnapshot({ expectedCommit, root });
+  assert.equal(source.commit, expectedCommit);
+  assert.ok(source.trackedPaths.has("docs/testing.md"));
+  assert.match(source.files.get("package.json"), /"name": "openwrangler"/u);
+  const otherCommit = execFileSync("git", ["rev-parse", "HEAD^"], {
+    cwd: root,
+    encoding: "utf8"
+  }).trim();
+  assert.throws(
+    () => readReleaseSourceSnapshot({ expectedCommit: otherCommit, root }),
+    /exact checked-out event commit/u
+  );
+});
+
+test("revalidates published output content and parent identities", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-output-revalidation-"));
+  const movedRoot = `${root}-moved`;
+  context.after(() => {
+    rmSync(root, { force: true, recursive: true });
+    rmSync(movedRoot, { force: true, recursive: true });
+  });
+  const candidate = join(root, "candidate.vsix");
+  const published = join(root, "openwrangler.vsix");
+  const checksum = join(root, "openwrangler.vsix.sha256");
+  await createReleaseVsix(candidate);
+  const snapshot = readOwnedVsixSnapshot(candidate);
+  const receipts = writeStableReleaseArtifacts({
+    checksumOutput: checksum,
+    snapshot,
+    vsixOutput: published
+  });
+
+  chmodSync(published, 0o600);
+  const tampered = Buffer.from(snapshot.bytes);
+  tampered[0] ^= 0xff;
+  writeFileSync(published, tampered);
+  chmodSync(published, 0o444);
+  assert.throws(
+    () =>
+      revalidateStableReleaseArtifacts({
+        checksumOutput: checksum,
+        checksumReceipt: receipts.checksumReceipt,
+        snapshot,
+        vsixOutput: published,
+        vsixReceipt: receipts.vsixReceipt
+      }),
+    /content changed|does not match/u
+  );
+
+  renameSync(root, movedRoot);
+  mkdirSync(root, { mode: 0o700 });
+  assert.throws(
+    () =>
+      revalidateStableReleaseArtifacts({
+        checksumOutput: checksum,
+        checksumReceipt: receipts.checksumReceipt,
+        snapshot,
+        vsixOutput: published,
+        vsixReceipt: receipts.vsixReceipt
+      }),
+    /identity or parent changed/u
+  );
 });
 
 test("strictly streams and validates the complete shared VSIX inventory", async () => {
