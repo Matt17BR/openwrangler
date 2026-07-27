@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { flushSync } from "react-dom";
 import type {
   ColumnSummary,
   ColumnSchema,
@@ -106,6 +107,8 @@ export function App() {
   const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const operationReturnFocus = useRef<HTMLElement | null>(null);
+  const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
+  const importOptionsFocusFrame = useRef<number | undefined>(undefined);
   const operationWasOpen = useRef(false);
   const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
   const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
@@ -119,6 +122,31 @@ export function App() {
   const rememberOperationReturnFocus = useCallback(() => {
     operationReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   }, []);
+
+  const scheduleImportOptionsFocusRestoration = useCallback((returnTarget: HTMLButtonElement) => {
+    if (importOptionsFocusFrame.current !== undefined) {
+      window.cancelAnimationFrame(importOptionsFocusFrame.current);
+    }
+    importOptionsFocusFrame.current = scheduleWebviewFocusRestoration(() => {
+      importOptionsFocusFrame.current = undefined;
+      const targetIsAvailable = returnTarget.isConnected && !returnTarget.matches(":disabled");
+      if (targetIsAvailable) {
+        returnTarget.focus();
+        return;
+      }
+      document.querySelector<HTMLButtonElement>("[data-import-options-action]:not(:disabled)")?.focus();
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (importOptionsFocusFrame.current !== undefined) {
+        window.cancelAnimationFrame(importOptionsFocusFrame.current);
+      }
+      importOptionsReturnFocus.current = null;
+    },
+    []
+  );
 
   useEffect(() => {
     if (operationOpen) {
@@ -202,17 +230,25 @@ export function App() {
     setGridViewState(next);
   }, []);
 
-  const storeImportOptionsPending = useCallback((pending: boolean) => {
-    const wasPending = importOptionsPendingRef.current;
-    importOptionsPendingRef.current = pending;
-    setImportOptionsPending(pending);
-    if (pending) {
-      setOperationOpen(false);
-      setEditingStep(undefined);
-      setOperationKind(undefined);
-      setLoading(true);
-    } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
-  }, []);
+  const storeImportOptionsPending = useCallback(
+    (pending: boolean) => {
+      const wasPending = importOptionsPendingRef.current;
+      importOptionsPendingRef.current = pending;
+      setImportOptionsPending(pending);
+      if (pending) {
+        setOperationOpen(false);
+        setEditingStep(undefined);
+        setOperationKind(undefined);
+        setLoading(true);
+      } else if (wasPending && foregroundRequest.current === undefined) setLoading(false);
+      if (!pending && wasPending) {
+        const returnTarget = importOptionsReturnFocus.current;
+        importOptionsReturnFocus.current = null;
+        if (returnTarget) scheduleImportOptionsFocusRestoration(returnTarget);
+      }
+    },
+    [scheduleImportOptionsFocusRestoration]
+  );
 
   const flushGridViewState = useCallback(() => {
     if (gridViewStateTimer.current !== undefined) {
@@ -565,7 +601,7 @@ export function App() {
   }, [loading, mutationPending, projectionLoading]);
 
   const requestImportOptionsChange = useCallback(
-    (actionId?: string) => {
+    (actionId?: string, trigger?: HTMLButtonElement) => {
       flushGridViewState();
       cancelBackgroundRequests();
       clearDrawerSummaryScheduling();
@@ -577,7 +613,17 @@ export function App() {
       ) {
         return;
       }
-      storeImportOptionsPending(true);
+      if (importOptionsFocusFrame.current !== undefined) {
+        window.cancelAnimationFrame(importOptionsFocusFrame.current);
+        importOptionsFocusFrame.current = undefined;
+      }
+      const returnTarget =
+        trigger?.isConnected && document.hasFocus() && trigger === document.activeElement ? trigger : null;
+      importOptionsReturnFocus.current = returnTarget;
+      if (returnTarget) {
+        returnTarget.blur();
+      }
+      flushSync(() => storeImportOptionsPending(true));
       vscode.postMessage({
         kind: "changeImportOptions",
         ...(actionId === undefined ? {} : { actionId })
@@ -1723,8 +1769,9 @@ export function App() {
               className="toolbarButton"
               disabled={importOptionsDisabled}
               aria-busy={importOptionsPending || undefined}
+              data-import-options-action
               title="Change file import options"
-              onClick={() => requestImportOptionsChange()}
+              onClick={(event) => requestImportOptionsChange(undefined, event.currentTarget)}
             >
               <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
             </button>
@@ -1764,8 +1811,9 @@ export function App() {
                   className="toolbarButton"
                   disabled={importOptionsDisabled}
                   aria-busy={importOptionsPending || undefined}
+                  data-import-options-action
                   title="Change file import options"
-                  onClick={() => requestImportOptionsChange()}
+                  onClick={(event) => requestImportOptionsChange(undefined, event.currentTarget)}
                 >
                   <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
                 </button>
