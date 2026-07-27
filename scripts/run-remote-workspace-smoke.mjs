@@ -26,12 +26,16 @@ import {
 } from "./editor-acceptance.mjs";
 import {
   acquirePinnedRemoteWorkspaceArtifacts,
+  assertPinnedRemoteArtifactReceipt,
   extractPinnedDropbearRuntime,
   extractPinnedRemoteTar,
   PINNED_REMOTE_SSH_EXTENSION_ID,
+  PINNED_REMOTE_SSH_BYTES,
+  PINNED_REMOTE_SSH_SHA256,
   PINNED_REMOTE_SSH_VERSION,
   PINNED_REMOTE_VSCODE_COMMIT,
-  validatePinnedRemoteInstallations
+  validatePinnedRemoteInstallations,
+  validateRemoteSshVsix
 } from "./remote-workspace-acquisition.mjs";
 import {
   assertRemoteWorkspaceHost,
@@ -39,16 +43,24 @@ import {
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceLayout,
-  REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
-  REMOTE_WORKSPACE_PHASE,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+  validateRemoteWorkspaceCandidateExpectation,
+  validateRemoteWorkspaceNamespaceAttestation,
   writeRemoteWorkspacePhaseDescriptor
 } from "./remote-workspace-acceptance.mjs";
+import {
+  acceptRemoteWorkspaceCandidate,
+  assertRemoteWorkspaceCandidateReceipt,
+  assertRemoteWorkspaceFileReceipt,
+  captureRemoteWorkspaceFileReceipt,
+  stageRemoteWorkspaceCandidate
+} from "./remote-workspace-provenance.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const candidatePath = resolve(repositoryRoot, process.argv[2] ?? "openwrangler.vsix");
+const candidateArguments = process.argv.slice(2);
+const candidatePath = resolve(repositoryRoot, candidateArguments[0] ?? "");
 const childScript = resolve(repositoryRoot, "scripts", "remote-workspace-phase-child.mjs");
 const contractScript = resolve(repositoryRoot, "scripts", "remote-workspace-contract.mjs");
 const processScript = resolve(repositoryRoot, "scripts", "remote-workspace-processes.mjs");
@@ -66,6 +78,9 @@ let layout;
 let rootReceipt;
 let hostSentinel;
 let hostSentinelReceipt;
+let candidateExpectation;
+let candidateSourceReceipt;
+let stagedCandidateReceipt;
 const commandRunner = createRemoteWorkspaceCommandRunner();
 
 try {
@@ -74,9 +89,14 @@ try {
       "Remote SSH acceptance requires the explicit private Xvfb compatibility mode; set OPEN_WRANGLER_EDITOR_DISPLAY=xvfb."
     );
   }
-  assertRegularCandidate(candidatePath);
+  if (candidateArguments.length !== 3) {
+    throw new Error("Remote SSH acceptance requires exactly: <candidate.vsix> <lowercase-sha256> <byte-size>.");
+  }
+  candidateExpectation = validateRemoteWorkspaceCandidateExpectation(candidateArguments[1], candidateArguments[2]);
+  candidateSourceReceipt = assertRegularCandidate(candidatePath, candidateExpectation);
   const tools = await assertRemoteWorkspaceHost({}, { runCommand: commandRunner.run });
   const preparedXvfb = await prepareRepositoryLocalXvfb();
+  assertRemoteWorkspaceCandidateReceipt(candidatePath, candidateSourceReceipt, candidateExpectation);
   await verifyCandidate(candidatePath);
   const privateParent = preparePrivateParent(resolve(repositoryRoot, "tmp", "remote-workspace"));
   layout = createRemoteWorkspaceLayout(privateParent);
@@ -85,7 +105,7 @@ try {
   const runId = randomUUID();
   hostSentinel = join(privateParent, `.host-private-${runId}`);
   writeFileSync(hostSentinel, randomUUID(), { encoding: "utf8", flag: "wx", mode: 0o600 });
-  hostSentinelReceipt = immutableCandidateReceipt(hostSentinel);
+  hostSentinelReceipt = captureRemoteWorkspaceFileReceipt(hostSentinel);
   const stagedChild = stageExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs"));
   stageExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs"));
   stageExactFile(processScript, join(layout.phaseRuntime, "remote-workspace-processes.mjs"));
@@ -136,7 +156,13 @@ try {
     }
   );
 
-  stageCandidate(candidatePath, layout.candidate);
+  stagedCandidateReceipt = stageRemoteWorkspaceCandidate(
+    candidatePath,
+    layout.candidate,
+    candidateSourceReceipt,
+    candidateExpectation
+  );
+  assertRemoteWorkspaceCandidateReceipt(layout.candidate, stagedCandidateReceipt, candidateExpectation);
   await verifyCandidate(layout.candidate);
   const sourcePython = resolveSourcePython(process.env);
   const systemPython = realpathSync(sourcePython);
@@ -160,6 +186,8 @@ try {
   writeLocalEditorSettings(layout, ssh.namespaceClientConfig);
 
   const setupEnvironment = isolatedEnvironment(layout.localHome);
+  await assertPinnedRemoteArtifactReceipt(acquisition.artifacts.remoteSsh);
+  await validateRemoteSshVsix(acquisition.artifacts.remoteSsh.path);
   await runSetupCommand(
     installation.clientCli,
     [
@@ -194,14 +222,20 @@ try {
   }
 
   const remoteEnvironment = isolatedEnvironment(layout.remoteHome);
-  for (const vsix of [layout.candidate, harnessVsix]) {
-    await runSetupCommand(
-      installation.serverExecutable,
-      ["--extensions-dir", layout.remoteExtensions, "--install-extension", vsix, "--force"],
-      remoteEnvironment,
-      "Pinned remote extension installation"
-    );
-  }
+  assertRemoteWorkspaceCandidateReceipt(candidatePath, candidateSourceReceipt, candidateExpectation);
+  assertRemoteWorkspaceCandidateReceipt(layout.candidate, stagedCandidateReceipt, candidateExpectation);
+  await runSetupCommand(
+    installation.serverExecutable,
+    ["--extensions-dir", layout.remoteExtensions, "--install-extension", layout.candidate, "--force"],
+    remoteEnvironment,
+    "Pinned remote candidate installation"
+  );
+  await runSetupCommand(
+    installation.serverExecutable,
+    ["--extensions-dir", layout.remoteExtensions, "--install-extension", harnessVsix, "--force"],
+    remoteEnvironment,
+    "Pinned remote harness installation"
+  );
   const remoteExtensions = await listServerExtensions(
     installation.serverExecutable,
     layout.remoteExtensions,
@@ -231,7 +265,13 @@ try {
     hostHome: realpathSync(homedir()),
     hostSentinel,
     uid: tools.uid,
-    gid: tools.gid
+    gid: tools.gid,
+    candidateReceipt: candidateExpectation,
+    remoteSshReceipt: {
+      version: PINNED_REMOTE_SSH_VERSION,
+      bytes: PINNED_REMOTE_SSH_BYTES,
+      sha256: PINNED_REMOTE_SSH_SHA256
+    }
   });
 
   const bwrapArguments = createRemoteWorkspaceBwrapArguments({
@@ -242,6 +282,14 @@ try {
     uid: tools.uid,
     gid: tools.gid,
     tools
+  });
+  await assertAcceptanceProvenance({
+    candidatePath,
+    candidateSourceReceipt,
+    stagedCandidatePath: layout.candidate,
+    stagedCandidateReceipt,
+    candidateExpectation,
+    remoteSshArtifact: acquisition.artifacts.remoteSsh
   });
   const attestation = await commandRunner.run(
     {
@@ -257,7 +305,15 @@ try {
       killGraceMs: 5_000
     }
   );
-  validateNamespaceAttestation(attestation.stdout, runId);
+  await assertAcceptanceProvenance({
+    candidatePath,
+    candidateSourceReceipt,
+    stagedCandidatePath: layout.candidate,
+    stagedCandidateReceipt,
+    candidateExpectation,
+    remoteSshArtifact: acquisition.artifacts.remoteSsh
+  });
+  validateRemoteWorkspaceNamespaceAttestation(attestation.stdout, { runId, ...candidateExpectation });
   removePrivateRoot(layout.root, rootReceipt);
   removeHostSentinel(hostSentinel, hostSentinelReceipt);
   hostSentinel = undefined;
@@ -342,11 +398,11 @@ function namespacePrivatePath(paths, value) {
 }
 
 function stageExactFile(source, destination, mode = 0o600) {
-  const before = immutableCandidateReceipt(source);
+  const before = captureRemoteWorkspaceFileReceipt(source);
   copyFileSync(source, destination, constants.COPYFILE_EXCL);
   chmodSync(destination, mode);
-  const after = immutableCandidateReceipt(source);
-  const staged = immutableCandidateReceipt(destination);
+  const after = captureRemoteWorkspaceFileReceipt(source);
+  const staged = captureRemoteWorkspaceFileReceipt(destination);
   const stagedMode = lstatSync(destination).mode & 0o777;
   if (
     before.dev !== after.dev ||
@@ -680,47 +736,9 @@ function runSetupCommand(executable, args, environment, label) {
   );
 }
 
-function stageCandidate(source, destination) {
-  const before = immutableCandidateReceipt(source);
-  copyFileSync(source, destination, constants.COPYFILE_EXCL);
-  chmodSync(destination, 0o600);
-  const afterSource = immutableCandidateReceipt(source);
-  const copied = immutableCandidateReceipt(destination);
-  if (
-    before.sha256 !== afterSource.sha256 ||
-    before.sha256 !== copied.sha256 ||
-    before.size !== copied.size ||
-    before.dev !== afterSource.dev ||
-    before.ino !== afterSource.ino
-  ) {
-    throw new Error("The candidate VSIX changed while it was staged for Remote SSH acceptance.");
-  }
-}
-
 function removeHostSentinel(path, receipt) {
-  const current = immutableCandidateReceipt(path);
-  if (
-    current.dev !== receipt.dev ||
-    current.ino !== receipt.ino ||
-    current.size !== receipt.size ||
-    current.sha256 !== receipt.sha256
-  ) {
-    throw new Error("The host-private isolation sentinel changed before cleanup.");
-  }
+  assertRemoteWorkspaceFileReceipt(path, receipt);
   unlinkSync(path);
-}
-
-function immutableCandidateReceipt(path) {
-  const metadata = lstatSync(path, { bigint: true });
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1n || metadata.size <= 0n) {
-    throw new Error("Remote SSH acceptance requires one private regular candidate VSIX.");
-  }
-  return {
-    dev: metadata.dev,
-    ino: metadata.ino,
-    size: metadata.size,
-    sha256: createHash("sha256").update(readFileSync(path)).digest("hex")
-  };
 }
 
 async function verifyCandidate(path) {
@@ -732,13 +750,28 @@ async function verifyCandidate(path) {
   );
 }
 
-function assertRegularCandidate(path) {
+function assertRegularCandidate(path, expectation) {
   if (!isAbsolute(path)) throw new Error("The Remote SSH candidate VSIX must use an absolute path.");
-  immutableCandidateReceipt(path);
-  immutableCandidateReceipt(testModule);
-  immutableCandidateReceipt(childScript);
-  immutableCandidateReceipt(contractScript);
-  immutableCandidateReceipt(processScript);
+  const receipt = acceptRemoteWorkspaceCandidate(path, expectation);
+  captureRemoteWorkspaceFileReceipt(testModule);
+  captureRemoteWorkspaceFileReceipt(childScript);
+  captureRemoteWorkspaceFileReceipt(contractScript);
+  captureRemoteWorkspaceFileReceipt(processScript);
+  return receipt;
+}
+
+async function assertAcceptanceProvenance({
+  candidatePath,
+  candidateSourceReceipt,
+  stagedCandidatePath,
+  stagedCandidateReceipt,
+  candidateExpectation,
+  remoteSshArtifact
+}) {
+  assertRemoteWorkspaceCandidateReceipt(candidatePath, candidateSourceReceipt, candidateExpectation);
+  assertRemoteWorkspaceCandidateReceipt(stagedCandidatePath, stagedCandidateReceipt, candidateExpectation);
+  await assertPinnedRemoteArtifactReceipt(remoteSshArtifact);
+  await validateRemoteSshVsix(remoteSshArtifact.path);
 }
 
 function preparePrivateParent(path) {
@@ -778,32 +811,4 @@ function removePrivateRoot(path, receipt) {
     throw new Error("The Remote SSH private root changed identity before cleanup.");
   }
   rmSync(path, { recursive: true, force: true });
-}
-
-function validateNamespaceAttestation(contents, runId) {
-  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 16 * 1024) {
-    throw new Error("The Remote SSH PID-namespace attestation is oversized.");
-  }
-  const lines = contents.endsWith("\n") ? contents.slice(0, -1).split("\n") : contents.split("\n");
-  if (lines.length !== 1) throw new Error("The Remote SSH PID namespace published a malformed attestation.");
-  const value = JSON.parse(lines[0]);
-  if (
-    value?.protocol !== 1 ||
-    value.runId !== runId ||
-    value.phase !== REMOTE_WORKSPACE_PHASE ||
-    value.namespaceEmpty !== true ||
-    value.network !== "unshared" ||
-    value.ipc !== "unshared" ||
-    value.uts !== "unshared" ||
-    value.hostname !== "openwrangler-remote-acceptance" ||
-    value.display !== "xvfb" ||
-    value.displayEmpty !== true ||
-    value.remoteAuthority !== REMOTE_WORKSPACE_AUTHORITY ||
-    value.version !== "1.130.0" ||
-    value.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
-    Object.keys(value).sort().join(",") !==
-      "commit,display,displayEmpty,hostname,ipc,namespaceEmpty,network,phase,protocol,remoteAuthority,runId,uts,version"
-  ) {
-    throw new Error("The Remote SSH PID namespace did not attest empty owned process, display, and network state.");
-  }
 }

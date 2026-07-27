@@ -3,6 +3,9 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
 export const PINNED_REMOTE_VSCODE_VERSION = "1.130.0";
 export const PINNED_REMOTE_VSCODE_COMMIT = "1b6a188127eeaf9194f945eb6eb89a657e93c54c";
+export const PINNED_REMOTE_SSH_VERSION = "0.124.0";
+export const PINNED_REMOTE_SSH_BYTES = 742_378;
+export const PINNED_REMOTE_SSH_SHA256 = "1a891224e1291e89a405b90f5018555d6642ac66e2e68653970e4f155d766416";
 export const REMOTE_WORKSPACE_PHASE = "remote-workspace";
 export const REMOTE_WORKSPACE_AUTHORITY = "ssh-remote+ow-loopback";
 export const REMOTE_WORKSPACE_PROTOCOL = 1;
@@ -10,6 +13,7 @@ export const REMOTE_WORKSPACE_PHASE_TIMEOUT_MS = 300_000;
 export const REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS = 180_000;
 export const REMOTE_WORKSPACE_PORT = 49_321;
 export const REMOTE_WORKSPACE_NAMESPACE_ROOT = "/ow";
+export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
 const PATH_LIMIT = 16_384;
 
 export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { filesystem = true } = {}) {
@@ -24,6 +28,10 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
     value.authority !== REMOTE_WORKSPACE_AUTHORITY ||
     value.version !== PINNED_REMOTE_VSCODE_VERSION ||
     value.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
+    !isCandidateReceipt(value.candidateSha256, value.candidateBytes) ||
+    value.remoteSshVersion !== PINNED_REMOTE_SSH_VERSION ||
+    value.remoteSshBytes !== PINNED_REMOTE_SSH_BYTES ||
+    value.remoteSshSha256 !== PINNED_REMOTE_SSH_SHA256 ||
     value.displayMode !== "xvfb" ||
     !/^pid:\[[0-9]+\]$/u.test(value.hostPidNamespace) ||
     !/^net:\[[0-9]+\]$/u.test(value.hostNetworkNamespace) ||
@@ -78,6 +86,69 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
     assertAbsoluteRegularFile(value.xvfb, "private Xvfb executable");
   }
   return value;
+}
+
+export function validateRemoteWorkspaceCandidateExpectation(sha256, rawBytes) {
+  if (
+    typeof sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(sha256) ||
+    typeof rawBytes !== "string" ||
+    !/^[1-9][0-9]*$/u.test(rawBytes)
+  ) {
+    throw new Error("Remote SSH acceptance requires a lowercase SHA-256 and canonical byte-size expectation.");
+  }
+  const bytes = Number(rawBytes);
+  if (!isCandidateReceipt(sha256, bytes)) {
+    throw new Error(
+      `Remote SSH candidate size must be a safe positive integer no larger than ${REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES} bytes.`
+    );
+  }
+  return Object.freeze({ sha256, bytes });
+}
+
+export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) {
+  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 16 * 1024) {
+    throw new Error("The Remote SSH PID-namespace attestation is oversized.");
+  }
+  if (!/^[0-9a-f-]{36}$/u.test(expected?.runId ?? "")) {
+    throw new Error("The Remote SSH PID-namespace expectation is malformed.");
+  }
+  const candidate = validateRemoteWorkspaceCandidateExpectation(expected?.sha256, String(expected?.bytes ?? ""));
+  const lines = contents.endsWith("\n") ? contents.slice(0, -1).split("\n") : contents.split("\n");
+  if (lines.length !== 1) throw new Error("The Remote SSH PID namespace published a malformed attestation.");
+  let value;
+  try {
+    value = JSON.parse(lines[0]);
+  } catch (error) {
+    throw new Error("The Remote SSH PID namespace published a malformed attestation.", { cause: error });
+  }
+  if (
+    value?.protocol !== REMOTE_WORKSPACE_PROTOCOL ||
+    value.runId !== expected.runId ||
+    value.phase !== REMOTE_WORKSPACE_PHASE ||
+    value.namespaceEmpty !== true ||
+    value.network !== "unshared" ||
+    value.ipc !== "unshared" ||
+    value.uts !== "unshared" ||
+    value.hostname !== "openwrangler-remote-acceptance" ||
+    value.display !== "xvfb" ||
+    value.displayEmpty !== true ||
+    value.remoteAuthority !== REMOTE_WORKSPACE_AUTHORITY ||
+    value.version !== PINNED_REMOTE_VSCODE_VERSION ||
+    value.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
+    value.candidateSha256 !== candidate.sha256 ||
+    value.candidateBytes !== candidate.bytes ||
+    value.remoteSshVersion !== PINNED_REMOTE_SSH_VERSION ||
+    value.remoteSshBytes !== PINNED_REMOTE_SSH_BYTES ||
+    value.remoteSshSha256 !== PINNED_REMOTE_SSH_SHA256 ||
+    Object.keys(value).sort().join(",") !==
+      "candidateBytes,candidateSha256,commit,display,displayEmpty,hostname,ipc,namespaceEmpty,network,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,runId,uts,version"
+  ) {
+    throw new Error(
+      "The Remote SSH PID namespace did not attest its exact candidate, Remote SSH artifact, and empty owned state."
+    );
+  }
+  return Object.freeze(value);
 }
 
 export function validateRemoteSshLogAttestation(text) {
@@ -151,4 +222,14 @@ function assertAbsoluteRegularFile(path, label) {
 function isContained(parent, candidate) {
   const relation = relative(parent, candidate);
   return relation.length > 0 && relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation);
+}
+
+function isCandidateReceipt(sha256, bytes) {
+  return (
+    typeof sha256 === "string" &&
+    /^[0-9a-f]{64}$/u.test(sha256) &&
+    Number.isSafeInteger(bytes) &&
+    bytes > 0 &&
+    bytes <= REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES
+  );
 }

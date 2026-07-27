@@ -54,7 +54,11 @@ test("private display receipts reject socket replacement and PID drift", () => {
       throw new Error("unexpected path");
     },
     openSync: () => 17,
-    readFileSync: () => state.pid,
+    readSync(_descriptor, buffer) {
+      const value = Buffer.from(state.pid);
+      value.copy(buffer);
+      return value.length;
+    },
     readdirSync: () => ["X99"]
   };
   const receipt = captureRemoteWorkspaceDisplayReceipt(paths, filesystem);
@@ -93,9 +97,11 @@ test("private display lock reads reject a same-path replacement during the descr
       throw new Error("unexpected path");
     },
     openSync: () => 19,
-    readFileSync() {
+    readSync(_descriptor, buffer) {
       namedLock = metadata("file", 99n, { mode: 0o100600n, size: 3n, mtimeNs: 7n, ctimeNs: 8n });
-      return "73\n";
+      const value = Buffer.from("73\n");
+      value.copy(buffer);
+      return value.length;
     },
     readdirSync: () => ["X99"]
   };

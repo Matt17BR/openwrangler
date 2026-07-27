@@ -8,10 +8,15 @@ import {
   createRemoteWorkspaceCommandRunner,
   createRemoteWorkspaceBwrapArguments,
   createRemoteWorkspaceLayout,
+  PINNED_REMOTE_SSH_BYTES,
+  PINNED_REMOTE_SSH_SHA256,
+  PINNED_REMOTE_SSH_VERSION,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRootOwnedSystemRuntimeDirectory,
+  validateRemoteWorkspaceCandidateExpectation,
+  validateRemoteWorkspaceNamespaceAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
   validateRemoteSshLogAttestation,
@@ -63,6 +68,11 @@ test("Remote phase descriptors cannot execute a test module outside the private 
       authority: REMOTE_WORKSPACE_AUTHORITY,
       version: "1.130.0",
       commit: PINNED_REMOTE_VSCODE_COMMIT,
+      candidateSha256: "a".repeat(64),
+      candidateBytes: 123,
+      remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
+      remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
+      remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
       displayMode: "xvfb",
       hostPidNamespace: "pid:[1]",
       hostNetworkNamespace: "net:[1]",
@@ -308,6 +318,58 @@ test("Remote result validation rejects authority-loss failures and mis-correlati
     { protocol: 1, runId, phase: "remote-workspace", ok: true, authority: REMOTE_WORKSPACE_AUTHORITY }
   ]) {
     assert.throws(() => validateRemoteWorkspaceResult(JSON.stringify(result), { runId }), /correlated success result/u);
+  }
+});
+
+test("Remote namespace attestation binds caller candidate and pinned Remote SSH receipts", () => {
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const candidate = validateRemoteWorkspaceCandidateExpectation("a".repeat(64), "123");
+  assert.deepEqual(candidate, { sha256: "a".repeat(64), bytes: 123 });
+  for (const [sha256, bytes] of [
+    ["A".repeat(64), "123"],
+    ["a".repeat(63), "123"],
+    ["a".repeat(64), "0123"],
+    ["a".repeat(64), "0"],
+    ["a".repeat(64), String(64 * 1024 * 1024 + 1)]
+  ]) {
+    assert.throws(() => validateRemoteWorkspaceCandidateExpectation(sha256, bytes), /SHA-256|candidate size/u);
+  }
+  const attestation = {
+    protocol: 1,
+    runId,
+    phase: "remote-workspace",
+    namespaceEmpty: true,
+    network: "unshared",
+    ipc: "unshared",
+    uts: "unshared",
+    hostname: "openwrangler-remote-acceptance",
+    display: "xvfb",
+    displayEmpty: true,
+    remoteAuthority: REMOTE_WORKSPACE_AUTHORITY,
+    version: "1.130.0",
+    commit: PINNED_REMOTE_VSCODE_COMMIT,
+    candidateSha256: candidate.sha256,
+    candidateBytes: candidate.bytes,
+    remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
+    remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
+    remoteSshSha256: PINNED_REMOTE_SSH_SHA256
+  };
+  assert.deepEqual(
+    validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(attestation)}\n`, { runId, ...candidate }),
+    attestation
+  );
+  for (const mutation of [
+    { ...attestation, candidateSha256: "b".repeat(64) },
+    { ...attestation, candidateBytes: 124 },
+    { ...attestation, remoteSshVersion: "0.125.0" },
+    { ...attestation, remoteSshBytes: PINNED_REMOTE_SSH_BYTES + 1 },
+    { ...attestation, remoteSshSha256: "b".repeat(64) },
+    { ...attestation, extra: true }
+  ]) {
+    assert.throws(
+      () => validateRemoteWorkspaceNamespaceAttestation(JSON.stringify(mutation), { runId, ...candidate }),
+      /exact candidate, Remote SSH artifact/u
+    );
   }
 });
 

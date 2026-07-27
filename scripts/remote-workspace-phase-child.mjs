@@ -61,7 +61,12 @@ try {
       displayEmpty: true,
       remoteAuthority: descriptor.authority,
       version: descriptor.version,
-      commit: descriptor.commit
+      commit: descriptor.commit,
+      candidateSha256: descriptor.candidateSha256,
+      candidateBytes: descriptor.candidateBytes,
+      remoteSshVersion: descriptor.remoteSshVersion,
+      remoteSshBytes: descriptor.remoteSshBytes,
+      remoteSshSha256: descriptor.remoteSshSha256
     })}\n`
   );
 } catch (error) {

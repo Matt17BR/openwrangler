@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -8,6 +8,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import {
   assertRemoteAcquisitionRootReceipt,
+  assertPinnedRemoteArtifactReceipt,
   assertRemoteSshPackIsolation,
   createRemoteAcquisitionRootReceipt,
   downloadPinnedRemoteArtifact,
@@ -93,6 +94,9 @@ test("Remote artifact acquisition accepts only its exact redirect, length, and S
     });
     assert.equal(receipt.sha256, target.decodedSha256);
     assert.deepEqual(readFileSync(receipt.path), body);
+    await assertPinnedRemoteArtifactReceipt(receipt);
+    appendFileSync(receipt.path, "changed");
+    await assert.rejects(assertPinnedRemoteArtifactReceipt(receipt), /receipt changed before use/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

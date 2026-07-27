@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 
 const DISPLAY_LOCK_MAX_BYTES = 32n;
 
@@ -55,7 +55,7 @@ export function spawnMonitoredRemoteWorkspaceChild(label, executable, args, opti
 
 export function captureRemoteWorkspaceDisplayReceipt(
   { directoryPath, socketPath, lockPath, expectedEntry, uid, pid },
-  filesystem = { closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync }
+  filesystem = { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync }
 ) {
   if (
     typeof directoryPath !== "string" ||
@@ -149,10 +149,22 @@ function readPinnedDisplayLock(lockPath, filesystem) {
   const descriptor = filesystem.openSync(lockPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = filesystem.fstatSync(descriptor, { bigint: true });
-    if (!sameLockSnapshot(namedBefore, opened)) {
+    if (
+      !sameLockSnapshot(namedBefore, opened) ||
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1n ||
+      opened.size <= 0n ||
+      opened.size > DISPLAY_LOCK_MAX_BYTES
+    ) {
       throw new Error("The private Xvfb lock changed before its PID could be read.");
     }
-    const recordedPid = filesystem.readFileSync(descriptor, "utf8").trim();
+    const buffer = Buffer.alloc(Number(DISPLAY_LOCK_MAX_BYTES) + 1);
+    const bytesRead = filesystem.readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0 || bytesRead > Number(DISPLAY_LOCK_MAX_BYTES)) {
+      throw new Error("The private Xvfb lock PID exceeded its read bound.");
+    }
+    const recordedPid = buffer.subarray(0, bytesRead).toString("utf8").trim();
     const completed = filesystem.fstatSync(descriptor, { bigint: true });
     const namedAfter = filesystem.lstatSync(lockPath, { bigint: true });
     if (!sameLockSnapshot(opened, completed) || !sameLockSnapshot(opened, namedAfter)) {

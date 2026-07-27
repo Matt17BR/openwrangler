@@ -24,10 +24,21 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { open as openZip } from "yauzl";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
-import { PINNED_REMOTE_VSCODE_COMMIT, PINNED_REMOTE_VSCODE_VERSION } from "./remote-workspace-contract.mjs";
+import {
+  PINNED_REMOTE_SSH_BYTES,
+  PINNED_REMOTE_SSH_SHA256,
+  PINNED_REMOTE_SSH_VERSION,
+  PINNED_REMOTE_VSCODE_COMMIT,
+  PINNED_REMOTE_VSCODE_VERSION
+} from "./remote-workspace-contract.mjs";
 
-export { PINNED_REMOTE_VSCODE_COMMIT, PINNED_REMOTE_VSCODE_VERSION };
-export const PINNED_REMOTE_SSH_VERSION = "0.124.0";
+export {
+  PINNED_REMOTE_SSH_BYTES,
+  PINNED_REMOTE_SSH_SHA256,
+  PINNED_REMOTE_SSH_VERSION,
+  PINNED_REMOTE_VSCODE_COMMIT,
+  PINNED_REMOTE_VSCODE_VERSION
+};
 export const PINNED_REMOTE_SSH_EXTENSION_ID = "ms-vscode-remote.remote-ssh";
 export const PINNED_REMOTE_SSH_LICENSE_SHA256 = "75b72b0d3c48bd35d33641c731837be31ae2593f924abcdd296e8d57daf2f256";
 export const PINNED_DROPBEAR_VERSION = "2025.89";
@@ -103,8 +114,8 @@ export const PINNED_REMOTE_WORKSPACE_TARGETS = Object.freeze({
   remoteSsh: Object.freeze({
     archiveRoot: undefined,
     artifactName: "ms-vscode-remote.remote-ssh-0.124.0.vsix",
-    decodedBytes: 742_378,
-    decodedSha256: "1a891224e1291e89a405b90f5018555d6642ac66e2e68653970e4f155d766416",
+    decodedBytes: PINNED_REMOTE_SSH_BYTES,
+    decodedSha256: PINNED_REMOTE_SSH_SHA256,
     format: "gzip-vsix",
     identity: "remoteSsh",
     redirectUrl: undefined,
@@ -972,7 +983,7 @@ function immutableFileReceipt(path, containedBy) {
   return Object.freeze({ path, canonicalPath, snapshot: Object.freeze(fileSnapshot(metadata)) });
 }
 
-async function assertPinnedRemoteArtifactReceipt(artifact) {
+export async function assertPinnedRemoteArtifactReceipt(artifact) {
   const target = validatePinnedRemoteTarget(artifact.target);
   if (
     artifact.sha256 !== target.decodedSha256 ||
@@ -980,11 +991,11 @@ async function assertPinnedRemoteArtifactReceipt(artifact) {
     typeof artifact.canonicalPath !== "string" ||
     realpathSync(artifact.path) !== artifact.canonicalPath
   ) {
-    throw new Error("The pinned remote-workspace artifact receipt changed before extraction.");
+    throw new Error("The pinned remote-workspace artifact receipt changed before use.");
   }
   const receipt = immutableFileReceipt(artifact.path, dirname(artifact.canonicalPath));
   if (!sameFileSnapshot(receipt.snapshot, artifact.snapshot) || (await hashReceipt(receipt)) !== target.decodedSha256) {
-    throw new Error("The pinned remote-workspace artifact receipt changed before extraction.");
+    throw new Error("The pinned remote-workspace artifact receipt changed before use.");
   }
 }
 

@@ -6,7 +6,6 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readlinkSync,
   realpathSync,
   writeFileSync
@@ -18,30 +17,42 @@ import {
   runBoundedEditorCommand
 } from "./editor-acceptance.mjs";
 import {
+  PINNED_REMOTE_SSH_BYTES,
+  PINNED_REMOTE_SSH_SHA256,
+  PINNED_REMOTE_SSH_VERSION,
   PINNED_REMOTE_VSCODE_COMMIT,
   PINNED_REMOTE_VSCODE_VERSION,
   readBoundedRemoteWorkspaceFile,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+  REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   REMOTE_WORKSPACE_PORT,
   REMOTE_WORKSPACE_PROTOCOL,
+  validateRemoteWorkspaceCandidateExpectation,
+  validateRemoteWorkspaceNamespaceAttestation,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
 
 export {
+  PINNED_REMOTE_SSH_BYTES,
+  PINNED_REMOTE_SSH_SHA256,
+  PINNED_REMOTE_SSH_VERSION,
   readBoundedRemoteWorkspaceFile,
   REMOTE_WORKSPACE_AUTHORITY,
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+  REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES,
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   REMOTE_WORKSPACE_PORT,
   REMOTE_WORKSPACE_PROTOCOL,
+  validateRemoteWorkspaceCandidateExpectation,
+  validateRemoteWorkspaceNamespaceAttestation,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
@@ -568,7 +579,9 @@ export function writeRemoteWorkspacePhaseDescriptor(
     hostHome,
     hostSentinel,
     uid,
-    gid
+    gid,
+    candidateReceipt,
+    remoteSshReceipt
   }
 ) {
   const descriptor = {
@@ -580,6 +593,11 @@ export function writeRemoteWorkspacePhaseDescriptor(
     authority: REMOTE_WORKSPACE_AUTHORITY,
     version: PINNED_REMOTE_VSCODE_VERSION,
     commit: PINNED_REMOTE_VSCODE_COMMIT,
+    candidateSha256: candidateReceipt?.sha256,
+    candidateBytes: candidateReceipt?.bytes,
+    remoteSshVersion: remoteSshReceipt?.version,
+    remoteSshBytes: remoteSshReceipt?.bytes,
+    remoteSshSha256: remoteSshReceipt?.sha256,
     hostPidNamespace: readlinkSync("/proc/self/ns/pid"),
     hostNetworkNamespace: readlinkSync("/proc/self/ns/net"),
     hostIpcNamespace: readlinkSync("/proc/self/ns/ipc"),
