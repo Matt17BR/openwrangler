@@ -22,6 +22,7 @@ export interface OpenWranglerTestApi {
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  runtimeEnvironment(): Readonly<{ executable: string; source: string; version: string }> | undefined;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
   declineRuntimeDependencyRevalidation(): Promise<boolean>;
   shutdownRuntimeBridgeForTesting(): Promise<void>;
@@ -77,6 +78,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
+        runtimeEnvironment: () => bridge.runtimeEnvironmentForTesting(),
         declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
         declineRuntimeDependencyRevalidation: () => bridge.declineRuntimeDependencyRevalidationForTesting(),
         shutdownRuntimeBridgeForTesting: () => bridge.shutdown(),

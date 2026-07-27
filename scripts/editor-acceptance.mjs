@@ -2396,6 +2396,7 @@ export function writeEditorAcceptanceHarness(directory) {
       version: "0.0.0",
       publisher: "openwrangler-tests",
       engines: { vscode: "^1.105.0" },
+      extensionKind: ["workspace"],
       main: "./extension.js",
       files: ["extension.js"],
       activationEvents: ["*"],

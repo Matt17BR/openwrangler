@@ -1,14 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   createReadStream,
   createWriteStream,
+  copyFileSync,
   fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -36,6 +39,9 @@ const MAX_ARCHIVE_PATH_BYTES = 8 * 1024;
 const MAX_VSIX_ENTRIES = 2_048;
 const MAX_VSIX_ENTRY_BYTES = 32 * 1024 * 1024;
 const MAX_VSIX_TOTAL_BYTES = 128 * 1024 * 1024;
+const PINNED_VSCODE_CLIENT_LICENSE_SHA256 = "318c800dec8b7a7d4faa013f4d688680c6fdb591c3516c939f6214e702586b0c";
+const PINNED_VSCODE_SERVER_LICENSE_SHA256 = "b30dc57b522e7b728e453d0683dbc82982614c609f26225493bb21bb8518493d";
+const PINNED_VSCODE_CLI_SHA256 = "81e7391534d35c9bc0fb097386b68ace9ac61ee42a63fda807154e5fbd2fc1a9";
 const TARGET_KEYS = new Set([
   "archiveRoot",
   "artifactName",
@@ -118,7 +124,10 @@ export async function acquirePinnedRemoteWorkspaceArtifacts(parent, options = {}
   const rootReceipt = privateDirectoryReceipt(root, parentReceipt.canonicalPath);
   const artifacts = {};
   for (const key of ["vscode", "cli", "server", "remoteSsh"]) {
-    artifacts[key] = await downloadPinnedRemoteArtifact(PINNED_REMOTE_WORKSPACE_TARGETS[key], rootReceipt, options);
+    const sourcePath = options.artifactPaths?.[key];
+    artifacts[key] = sourcePath
+      ? await stagePinnedRemoteArtifact(sourcePath, PINNED_REMOTE_WORKSPACE_TARGETS[key], rootReceipt)
+      : await downloadPinnedRemoteArtifact(PINNED_REMOTE_WORKSPACE_TARGETS[key], rootReceipt, options);
   }
   await validateRemoteSshVsix(artifacts.remoteSsh.path);
   return Object.freeze({
@@ -127,6 +136,35 @@ export async function acquirePinnedRemoteWorkspaceArtifacts(parent, options = {}
     rootReceipt,
     cleanup: () => rmSync(root, { recursive: true, force: true })
   });
+}
+
+export async function stagePinnedRemoteArtifact(sourcePath, rawTarget, rootReceipt) {
+  const target = validatePinnedRemoteTarget(rawTarget);
+  assertPrivateDirectoryReceipt(rootReceipt);
+  if (typeof sourcePath !== "string" || !isAbsolute(sourcePath)) {
+    throw new Error("A cached pinned remote-workspace artifact must use an absolute path.");
+  }
+  const source = immutableFileReceipt(resolve(sourcePath), dirname(realpathSync(sourcePath)));
+  if (source.snapshot.size !== BigInt(target.decodedBytes) || (await hashReceipt(source)) !== target.decodedSha256) {
+    throw new Error("A cached pinned remote-workspace artifact did not match its exact receipt.");
+  }
+  const temporaryPath = join(rootReceipt.path, `.remote-cache-${randomUUID()}.tmp`);
+  const finalPath = join(rootReceipt.path, target.artifactName);
+  requireAbsentPath(finalPath);
+  copyFileSync(source.path, temporaryPath, constants.COPYFILE_EXCL);
+  chmodSync(temporaryPath, 0o600);
+  const copied = immutableFileReceipt(temporaryPath, rootReceipt.canonicalPath);
+  if (
+    !sameFileSnapshot(source.snapshot, immutableFileReceipt(source.path, dirname(source.canonicalPath)).snapshot) ||
+    copied.snapshot.size !== BigInt(target.decodedBytes) ||
+    (await hashReceipt(copied)) !== target.decodedSha256
+  ) {
+    removeIdentifiedTemporary(temporaryPath, copied.snapshot);
+    throw new Error("A cached pinned remote-workspace artifact changed while it was staged.");
+  }
+  renameSync(temporaryPath, finalPath);
+  const receipt = immutableFileReceipt(finalPath, rootReceipt.canonicalPath);
+  return Object.freeze({ ...receipt, sha256: target.decodedSha256, target });
 }
 
 export async function downloadPinnedRemoteArtifact(
@@ -415,6 +453,71 @@ export async function extractPinnedRemoteTar(
   return destinationReceipt;
 }
 
+export async function validatePinnedRemoteInstallations(
+  { clientRoot, cliPath, serverRoot },
+  { runCommand = runBoundedEditorCommand } = {}
+) {
+  const client = privateDirectoryReceipt(clientRoot);
+  const server = privateDirectoryReceipt(serverRoot);
+  const clientProduct = readBoundedJson(join(client.path, "resources", "app", "product.json"));
+  const clientPackage = readBoundedJson(join(client.path, "resources", "app", "package.json"));
+  const serverProduct = readBoundedJson(join(server.path, "product.json"));
+  assertVSCodeProduct(clientProduct);
+  assertVSCodeProduct(serverProduct);
+  if (clientPackage.name !== "Code" || clientPackage.version !== PINNED_REMOTE_VSCODE_VERSION) {
+    throw new Error("The pinned VS Code client package identity drifted.");
+  }
+  const clientExecutable = assertContainedRegularFile(client.canonicalPath, join(client.path, "code"));
+  const clientCli = assertContainedRegularFile(client.canonicalPath, join(client.path, "bin", "code"));
+  const serverExecutable = assertContainedRegularFile(server.canonicalPath, join(server.path, "bin", "code-server"));
+  const cli = immutableFileReceipt(cliPath, dirname(realpathSync(cliPath)));
+  if (
+    cli.snapshot.size !== 32_732_320n ||
+    (await hashReceipt(cli)) !== PINNED_VSCODE_CLI_SHA256 ||
+    hashBoundedFile(join(client.path, "resources", "app", "LICENSE.rtf"), 2 * 1024 * 1024) !==
+      PINNED_VSCODE_CLIENT_LICENSE_SHA256 ||
+    hashBoundedFile(join(server.path, "LICENSE"), 64 * 1024) !== PINNED_VSCODE_SERVER_LICENSE_SHA256
+  ) {
+    throw new Error("The pinned VS Code executable or license receipt drifted.");
+  }
+  const environment = createEditorAcceptanceEnvironment();
+  const [cliVersion, serverVersion] = await Promise.all([
+    runCommand(
+      {
+        executable: cli.path,
+        args: ["--version"],
+        environment,
+        label: "Pinned VS Code remote CLI identity"
+      },
+      { timeoutMs: 30_000, maxOutputBytes: COMMAND_OUTPUT_LIMIT_BYTES }
+    ),
+    runCommand(
+      {
+        executable: serverExecutable,
+        args: ["--version"],
+        environment,
+        label: "Pinned VS Code server identity"
+      },
+      { timeoutMs: 30_000, maxOutputBytes: COMMAND_OUTPUT_LIMIT_BYTES }
+    )
+  ]);
+  const expectedVersionLines = [PINNED_REMOTE_VSCODE_VERSION, PINNED_REMOTE_VSCODE_COMMIT, "x64"].join("\n");
+  if (
+    cliVersion.stdout.trim() !== `code ${PINNED_REMOTE_VSCODE_VERSION} (commit ${PINNED_REMOTE_VSCODE_COMMIT})` ||
+    serverVersion.stdout.trim() !== expectedVersionLines
+  ) {
+    throw new Error("The pinned VS Code CLI or server executable identity drifted.");
+  }
+  return Object.freeze({
+    clientExecutable,
+    clientCli,
+    cli: cli.path,
+    serverExecutable,
+    version: PINNED_REMOTE_VSCODE_VERSION,
+    commit: PINNED_REMOTE_VSCODE_COMMIT
+  });
+}
+
 async function inspectTarManifest(path, { archiveRoot, runCommand }) {
   const script = [
     "import json,sys,tarfile",
@@ -433,7 +536,7 @@ async function inspectTarManifest(path, { archiveRoot, runCommand }) {
       environment: createEditorAcceptanceEnvironment(),
       label: "Pinned remote-workspace tar inspection"
     },
-    { timeoutMs: COMMAND_TIMEOUT_MS, maxOutputBytes: 2 * 1024 * 1024 }
+    { timeoutMs: COMMAND_TIMEOUT_MS, maxOutputBytes: 1024 * 1024 }
   );
   const entries = result.stdout
     .split("\n")
@@ -528,6 +631,56 @@ function hasControlCharacters(value) {
     if (codePoint <= 0x1f || codePoint === 0x7f) return true;
   }
   return false;
+}
+
+function assertVSCodeProduct(product) {
+  if (
+    product?.nameLong !== "Visual Studio Code" ||
+    product?.nameShort !== "Code" ||
+    product?.applicationName !== "code" ||
+    product?.version !== PINNED_REMOTE_VSCODE_VERSION ||
+    product?.commit !== PINNED_REMOTE_VSCODE_COMMIT ||
+    product?.quality !== "stable"
+  ) {
+    throw new Error("The pinned VS Code product identity drifted.");
+  }
+}
+
+function readBoundedJson(path, maximumBytes = 2 * 1024 * 1024) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.size <= 0n ||
+    metadata.size > BigInt(maximumBytes)
+  ) {
+    throw new Error("Pinned VS Code metadata must be one bounded regular file.");
+  }
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function hashBoundedFile(path, maximumBytes) {
+  const metadata = lstatSync(path, { bigint: true });
+  if (
+    !metadata.isFile() ||
+    metadata.isSymbolicLink() ||
+    metadata.nlink !== 1n ||
+    metadata.size <= 0n ||
+    metadata.size > BigInt(maximumBytes)
+  ) {
+    throw new Error("A pinned VS Code license must be one bounded regular file.");
+  }
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function assertContainedRegularFile(root, path) {
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The pinned VS Code installation is incomplete.");
+  }
+  assertContainedPath(root, realpathSync(path));
+  return path;
 }
 
 function isExactHttpsUrl(url, raw) {

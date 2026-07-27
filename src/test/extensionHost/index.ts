@@ -86,6 +86,7 @@ interface TestApi {
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  runtimeEnvironment(): Readonly<{ executable: string; source: string; version: string }> | undefined;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
   shutdownRuntimeBridgeForTesting(): Promise<void>;
   disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined>;
@@ -534,6 +535,14 @@ export async function run(): Promise<void> {
     await exercisePackagedPlatformSmoke(testing, extension, fixture);
     recordAcceptanceProgress("platform-smoke:complete");
     console.log("Open Wrangler packaged platform smoke passed.");
+    return;
+  }
+  if (phase === "remote-workspace") {
+    assert.ok(testPython, "Remote-workspace acceptance requires the pre-provisioned private Python environment.");
+    recordAcceptanceProgress("remote-workspace:start");
+    await exerciseRemoteWorkspace(testing, extension, workspace, testPython);
+    recordAcceptanceProgress("remote-workspace:complete");
+    console.log("Open Wrangler real Remote SSH workspace acceptance passed.");
     return;
   }
   if (phase === "seed") {
@@ -3383,6 +3392,103 @@ async function exercisePackagedPlatformSmoke(
     "the pinned Cursor smoke session and Python runtime to terminate"
   );
   assert.deepEqual(testing.diagnostics().sessions, []);
+}
+
+async function exerciseRemoteWorkspace(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  workspace: vscode.Uri,
+  testPython: string
+): Promise<void> {
+  assert.equal(
+    process.env.OPEN_WRANGLER_TEST_EDITOR,
+    "vscode-remote-ssh",
+    "Remote-workspace acceptance is reserved for the pinned official VS Code and Remote SSH chain."
+  );
+  assert.equal(vscode.env.remoteName, "ssh-remote", "The acceptance extension host must execute over Remote SSH.");
+  assert.equal(workspace.scheme, "vscode-remote");
+  assert.equal(workspace.authority, "ssh-remote+ow-loopback");
+  assert.equal(extension.isActive, true);
+
+  const configuredPython = vscode.workspace.getConfiguration("openWrangler", workspace).inspect<string>("pythonPath");
+  assert.equal(
+    configuredPython?.workspaceFolderValue,
+    testPython,
+    "The remote workspace must pin its private Python through resource-scoped configuration."
+  );
+  assert.equal(vscode.workspace.getConfiguration("openWrangler", workspace).get<string>("pythonPath"), testPython);
+
+  const fixture = vscode.Uri.joinPath(workspace, "remote.parquet");
+  const sourceBytes = await vscode.workspace.fs.readFile(fixture);
+  recordAcceptanceProgress("remote-workspace:open");
+  await vscode.commands.executeCommand("openWrangler.openFile", fixture);
+  await waitFor(
+    () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the Remote SSH parquet source to open in the real Open Wrangler grid"
+  );
+  const active = testing.activeSession();
+  assert.ok(active, "The Remote SSH workspace must publish one active dataframe grid.");
+  assert.equal(active.metadata.backend, "polars");
+  assert.deepEqual(active.metadata.shape, { rows: 3, columns: 2 });
+  assert.equal(
+    await testing.synchronizePanel(active.metadata.sessionId),
+    true,
+    "The remote dataframe session must own a synchronized Open Wrangler grid panel."
+  );
+
+  const runtimeEnvironment = testing.runtimeEnvironment();
+  assert.ok(runtimeEnvironment, "The remote grid must start its Python runtime.");
+  assert.equal(runtimeEnvironment.executable, testPython);
+  assert.equal(runtimeEnvironment.source, "configuration");
+  assert.match(runtimeEnvironment.version, /^3\.(?:1[0-4])\./u);
+
+  const filterModel: FilterModel = {
+    logic: "and",
+    filters: [
+      {
+        column: "city",
+        type: "string",
+        logic: "and",
+        predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
+      }
+    ],
+    sort: []
+  };
+  recordAcceptanceProgress("remote-workspace:filter");
+  const filtered = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    viewRequestId: "remote-workspace-filter",
+    sessionId: active.metadata.sessionId,
+    revision: active.metadata.revision,
+    offset: 0,
+    limit: 20,
+    filterModel
+  });
+  assert.equal(filtered.kind, "page");
+  if (filtered.kind !== "page") return;
+  assert.equal(filtered.page.totalRows, 1);
+  assert.equal(filtered.page.rows.length, 1);
+  assert.equal(filtered.page.rows[0]?.values[0]?.display, "Milan");
+  assert.equal(filtered.page.rows[0]?.values[1]?.display, "42");
+  assert.deepEqual(testing.activeSession()?.viewState.filterModel, filterModel);
+  assert.deepEqual(
+    await vscode.workspace.fs.readFile(fixture),
+    sourceBytes,
+    "A remote viewing filter must leave the source parquet bytes unchanged."
+  );
+
+  recordAcceptanceProgress("remote-workspace:cleanup");
+  await testing.disposePanelForSession(active.metadata.sessionId);
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    15_000,
+    "the Remote SSH session and private Python runtime to terminate"
+  );
+  assert.deepEqual(testing.diagnostics().sessions, []);
+  assert.equal(testing.runtimeEnvironment(), undefined);
+  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
 }
 
 async function waitForOpenWranglerGridTarget(workbench: Page): Promise<OpenWranglerWebviewTarget> {

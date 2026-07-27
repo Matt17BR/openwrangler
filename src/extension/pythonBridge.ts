@@ -223,6 +223,21 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private readonly cancellationTargets = new Map<string, { targetRequestId: string; runtime: RuntimeSlot }>();
   private readonly output = vscode.window.createOutputChannel("Open Wrangler");
   private readonly spawnProcess = spawn;
+
+  public runtimeEnvironmentForTesting():
+    Readonly<Pick<PythonEnvironment, "executable" | "source" | "version">> | undefined {
+    for (const runtime of this.runtimeSlots.values()) {
+      const environment = runtime.processSelection?.environment;
+      if (runtime.process && environment) {
+        return Object.freeze({
+          executable: environment.executable,
+          source: environment.source,
+          version: environment.version
+        });
+      }
+    }
+    return undefined;
+  }
   private readonly launchDependencyInstall = startDependencyInstall;
   private readonly launchDependencyGuardStatus = startDependencyGuardStatus;
   private readonly launchDependencyGuardValidation = startDependencyGuardValidation;
