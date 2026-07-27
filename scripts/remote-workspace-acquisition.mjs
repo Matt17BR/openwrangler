@@ -11,7 +11,6 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -23,6 +22,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { open as openZip } from "yauzl";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 import {
   PINNED_REMOTE_SSH_BYTES,
@@ -621,9 +621,17 @@ export async function validatePinnedRemoteInstallations(
 ) {
   const client = privateDirectoryReceipt(clientRoot);
   const server = privateDirectoryReceipt(serverRoot);
-  const clientProduct = readBoundedJson(join(client.path, "resources", "app", "product.json"));
-  const clientPackage = readBoundedJson(join(client.path, "resources", "app", "package.json"));
-  const serverProduct = readBoundedJson(join(server.path, "product.json"));
+  const clientProduct = readBoundedJson(
+    join(client.path, "resources", "app", "product.json"),
+    2 * 1024 * 1024,
+    client.canonicalPath
+  );
+  const clientPackage = readBoundedJson(
+    join(client.path, "resources", "app", "package.json"),
+    2 * 1024 * 1024,
+    client.canonicalPath
+  );
+  const serverProduct = readBoundedJson(join(server.path, "product.json"), 2 * 1024 * 1024, server.canonicalPath);
   assertVSCodeProduct(clientProduct);
   assertVSCodeProduct(serverProduct);
   if (clientPackage.name !== "Code" || clientPackage.version !== PINNED_REMOTE_VSCODE_VERSION) {
@@ -636,9 +644,10 @@ export async function validatePinnedRemoteInstallations(
   if (
     cli.snapshot.size !== 32_732_320n ||
     (await hashReceipt(cli)) !== PINNED_VSCODE_CLI_SHA256 ||
-    hashBoundedFile(join(client.path, "resources", "app", "LICENSE.rtf"), 2 * 1024 * 1024) !==
+    hashBoundedFile(join(client.path, "resources", "app", "LICENSE.rtf"), 2 * 1024 * 1024, client.canonicalPath) !==
       PINNED_VSCODE_CLIENT_LICENSE_SHA256 ||
-    hashBoundedFile(join(server.path, "LICENSE"), 64 * 1024) !== PINNED_VSCODE_SERVER_LICENSE_SHA256
+    hashBoundedFile(join(server.path, "LICENSE"), 64 * 1024, server.canonicalPath) !==
+      PINNED_VSCODE_SERVER_LICENSE_SHA256
   ) {
     throw new Error("The pinned VS Code executable or license receipt drifted.");
   }
@@ -808,32 +817,24 @@ function assertVSCodeProduct(product) {
   }
 }
 
-function readBoundedJson(path, maximumBytes = 2 * 1024 * 1024) {
-  const metadata = lstatSync(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    metadata.size > BigInt(maximumBytes)
-  ) {
-    throw new Error("Pinned VS Code metadata must be one bounded regular file.");
-  }
-  return JSON.parse(readFileSync(path, "utf8"));
+function readBoundedJson(path, maximumBytes, containedBy) {
+  return JSON.parse(
+    readBoundedRegularFile(path, maximumBytes, {
+      containedBy,
+      label: "Pinned VS Code metadata"
+    }).toString("utf8")
+  );
 }
 
-function hashBoundedFile(path, maximumBytes) {
-  const metadata = lstatSync(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    metadata.size > BigInt(maximumBytes)
-  ) {
-    throw new Error("A pinned VS Code license must be one bounded regular file.");
-  }
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+function hashBoundedFile(path, maximumBytes, containedBy) {
+  return createHash("sha256")
+    .update(
+      readBoundedRegularFile(path, maximumBytes, {
+        containedBy,
+        label: "Pinned VS Code runtime or license"
+      })
+    )
+    .digest("hex");
 }
 
 function copyPinnedRuntimeFile({ source, sourceRoot, destination, bytes, sha256, mode }) {
@@ -842,7 +843,7 @@ function copyPinnedRuntimeFile({ source, sourceRoot, destination, bytes, sha256,
   if (
     sourceMetadata.nlink !== 1n ||
     sourceMetadata.size !== BigInt(bytes) ||
-    hashBoundedFile(sourcePath, bytes) !== sha256
+    hashBoundedFile(sourcePath, bytes, sourceRoot) !== sha256
   ) {
     throw new Error("A pinned Dropbear runtime file or license receipt drifted.");
   }
@@ -854,7 +855,7 @@ function copyPinnedRuntimeFile({ source, sourceRoot, destination, bytes, sha256,
     destinationMetadata.isSymbolicLink() ||
     destinationMetadata.nlink !== 1n ||
     destinationMetadata.size !== BigInt(bytes) ||
-    hashBoundedFile(destination, bytes) !== sha256
+    hashBoundedFile(destination, bytes, dirname(realpathSync(destination))) !== sha256
   ) {
     throw new Error("A pinned Dropbear runtime file changed while it was staged.");
   }

@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import {
   assertRemoteAcquisitionRootReceipt,
   assertPinnedRemoteArtifactReceipt,
@@ -75,6 +85,38 @@ test("Remote acquisition root receipts retain identity while owned children chan
   try {
     const receipt = createRemoteAcquisitionRootReceipt(root);
     assert.doesNotThrow(() => assertRemoteAcquisitionRootReceipt(receipt));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote metadata and license reads reject in-place mutation and linked leaves", () => {
+  const root = privateRoot("openwrangler-remote-bounded-read-");
+  try {
+    const metadata = join(root, "product.json");
+    const linked = join(root, "linked.json");
+    writeFileSync(metadata, '{"version":"1.130.0"}');
+    assert.throws(
+      () =>
+        readBoundedRegularFile(metadata, 1024, {
+          containedBy: root,
+          label: "Pinned VS Code metadata",
+          afterOpenForTest() {
+            writeFileSync(metadata, '{"version":"changed"}');
+          }
+        }),
+      /changed during its descriptor-bound read/u
+    );
+    writeFileSync(metadata, '{"version":"1.130.0"}');
+    linkSync(metadata, linked);
+    assert.throws(
+      () =>
+        readBoundedRegularFile(metadata, 1024, {
+          containedBy: root,
+          label: "Pinned VS Code runtime or license"
+        }),
+      /single-link regular file/u
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

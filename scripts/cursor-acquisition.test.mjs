@@ -6,13 +6,16 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import {
   createCursorAcquisitionRootReceipt,
   assertCursorAcquisitionRootReceipt,
@@ -72,6 +75,32 @@ test("Cursor private-root receipts retain identity while owned children are adde
   }
 });
 
+test("Cursor metadata reads reject a named-path replacement after descriptor open", () => {
+  const directory = mkdtempSync(join(tmpdir(), "openwrangler-cursor-metadata-race-"));
+  chmodSync(directory, 0o700);
+  try {
+    const path = join(directory, "product.json");
+    const displaced = join(directory, "displaced.json");
+    const replacement = join(directory, "replacement.json");
+    writeFileSync(path, '{"name":"Cursor"}');
+    writeFileSync(replacement, '{"name":"Attacker"}');
+    assert.throws(
+      () =>
+        readBoundedRegularFile(path, 1024, {
+          containedBy: directory,
+          label: "Extracted Cursor metadata",
+          afterOpenForTest() {
+            renameSync(path, displaced);
+            renameSync(replacement, path);
+          }
+        }),
+      /changed during its descriptor-bound read/u
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Cursor artifact download publishes only exact size and SHA-256 bytes", async () => {
   const directory = mkdtempSync(join(tmpdir(), "openwrangler-cursor-download-"));
   chmodSync(directory, 0o700);
@@ -79,11 +108,7 @@ test("Cursor artifact download publishes only exact size and SHA-256 bytes", asy
     const body = Buffer.from("pinned-cursor-test-body", "utf8");
     const target = testTarget(body);
     const receipt = await downloadPinnedCursorArtifact(target, createCursorAcquisitionRootReceipt(directory), {
-      fetchImpl: async () =>
-        new Response(body, {
-          status: 200,
-          headers: { "content-length": String(body.length) }
-        }),
+      openResponse: async () => cursorResponse(body),
       timeoutMs: 1_000
     });
     assert.equal(receipt.sha256, target.sha256);
@@ -105,10 +130,9 @@ test("Cursor artifact download fails closed on truncated or altered content", as
       const target = testTarget(declared);
       await assert.rejects(
         downloadPinnedCursorArtifact(target, createCursorAcquisitionRootReceipt(directory), {
-          fetchImpl: async () =>
-            new Response(body, {
-              status: 200,
-              headers: { "content-length": String(target.bytes) }
+          openResponse: async () =>
+            cursorResponse(body, {
+              "content-length": String(target.bytes)
             }),
           timeoutMs: 1_000
         }),
@@ -118,6 +142,32 @@ test("Cursor artifact download fails closed on truncated or altered content", as
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  }
+});
+
+test("Cursor artifact download stays bound to its no-follow descriptor across a path swap", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "openwrangler-cursor-download-race-"));
+  chmodSync(directory, 0o700);
+  try {
+    const body = Buffer.from("pinned-cursor-test-body", "utf8");
+    const target = testTarget(body);
+    let plantedPath;
+    await assert.rejects(
+      downloadPinnedCursorArtifact(target, createCursorAcquisitionRootReceipt(directory), {
+        afterTemporaryOpenForTest({ temporaryPath }) {
+          plantedPath = temporaryPath;
+          renameSync(temporaryPath, join(directory, "displaced-download"));
+          writeFileSync(temporaryPath, "planted", { mode: 0o600 });
+        },
+        openResponse: async () => cursorResponse(body),
+        timeoutMs: 1_000
+      }),
+      /changed while it was downloaded/u
+    );
+    assert.equal(readFileSync(plantedPath, "utf8"), "planted");
+    assert.equal(existsSync(join(directory, target.artifactName)), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -200,5 +250,16 @@ function testTarget(body) {
     bytes: body.length,
     sha256: createHash("sha256").update(body).digest("hex"),
     url: "https://downloads.cursor.com/acceptance/cursor-test.exe"
+  };
+}
+
+function cursorResponse(body, headers = {}) {
+  return {
+    statusCode: 200,
+    headers: {
+      "content-length": String(body.length),
+      ...headers
+    },
+    body: Readable.from([body])
   };
 }

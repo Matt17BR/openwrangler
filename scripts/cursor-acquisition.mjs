@@ -8,14 +8,15 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   realpathSync,
   renameSync,
   unlinkSync,
   writeSync
 } from "node:fs";
+import { request as httpsRequest } from "node:https";
 import { arch as hostArchitecture, platform as hostPlatform } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import { createEditorAcceptanceEnvironment, runBoundedEditorCommand } from "./editor-acceptance.mjs";
 
 export const PINNED_CURSOR_VERSION = "3.13.10";
@@ -82,7 +83,7 @@ export async function acquirePinnedCursor(
   {
     platform = hostPlatform(),
     architecture = hostArchitecture(),
-    fetchImpl = globalThis.fetch,
+    openResponse = openPinnedCursorResponse,
     extractTarget = extractPinnedCursorTarget
   } = {}
 ) {
@@ -91,7 +92,7 @@ export async function acquirePinnedCursor(
   const root = join(parentReceipt.path, `cursor-${randomUUID()}`);
   mkdirSync(root, { mode: 0o700 });
   const rootReceipt = privateDirectoryReceipt(root, parentReceipt.canonicalPath);
-  const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, { fetchImpl });
+  const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, { openResponse });
   const extracted = await extractTarget(target, artifact, rootReceipt);
   privateDirectoryReceipt(extracted.installationRoot, rootReceipt.canonicalPath);
   let editor;
@@ -125,11 +126,16 @@ export async function acquirePinnedCursor(
 export async function downloadPinnedCursorArtifact(
   rawTarget,
   rootReceipt,
-  { fetchImpl = globalThis.fetch, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}
+  { afterTemporaryOpenForTest, openResponse = openPinnedCursorResponse, timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}
 ) {
   const target = validatePinnedCursorTarget(rawTarget);
   assertPrivateDirectoryReceipt(rootReceipt);
-  if (typeof fetchImpl !== "function") throw new Error("Pinned Cursor acquisition requires a fetch implementation.");
+  if (typeof openResponse !== "function") {
+    throw new Error("Pinned Cursor acquisition requires an HTTPS response provider.");
+  }
+  if (afterTemporaryOpenForTest !== undefined && typeof afterTemporaryOpenForTest !== "function") {
+    throw new Error("Pinned Cursor acquisition received a malformed descriptor-race test hook.");
+  }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DOWNLOAD_TIMEOUT_MS) {
     throw new Error(`Pinned Cursor download timeout must be no larger than ${DOWNLOAD_TIMEOUT_MS} ms.`);
   }
@@ -144,36 +150,33 @@ export async function downloadPinnedCursorArtifact(
   const opened = fstatSync(descriptor, { bigint: true });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
-  let bytes = 0;
-  const digest = createHash("sha256");
   let completed = false;
+  let publishedSnapshot;
   try {
-    response = await fetchImpl(target.url, {
-      headers: { "User-Agent": `OpenWrangler-Cursor-Acceptance/${target.version}` },
-      redirect: "error",
-      signal: controller.signal
+    if (
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      opened.nlink !== 1n ||
+      opened.size !== 0n ||
+      (process.platform !== "win32" && (opened.mode & 0o777n) !== 0o600n)
+    ) {
+      throw new Error("The pinned Cursor artifact quarantine descriptor is malformed.");
+    }
+    assertPrivateDirectoryReceipt(rootReceipt);
+    afterTemporaryOpenForTest?.(Object.freeze({ descriptor, temporaryPath }));
+    const response = await openResponse(target.url, {
+      signal: controller.signal,
+      version: target.version
     });
-    if (!response?.ok || response.status !== 200 || !response.body) {
+    if (response?.statusCode !== 200 || !response.body) {
       throw new Error("The pinned Cursor artifact endpoint did not return one successful bounded body.");
     }
-    const contentLength = response.headers?.get?.("content-length");
-    if (contentLength !== null && contentLength !== String(target.bytes)) {
+    const contentLength = cursorHeaderValue(response.headers, "content-length");
+    if (contentLength !== undefined && contentLength !== String(target.bytes)) {
       throw new Error("The pinned Cursor artifact endpoint returned an unexpected content length.");
     }
-    for await (const rawChunk of response.body) {
-      const chunk = Buffer.from(rawChunk);
-      bytes += chunk.length;
-      if (bytes > target.bytes) {
-        throw new Error("The pinned Cursor artifact exceeded its exact byte receipt.");
-      }
-      digest.update(chunk);
-      let offset = 0;
-      while (offset < chunk.length) {
-        offset += writeSync(descriptor, chunk, offset, chunk.length - offset);
-      }
-    }
-    if (bytes !== target.bytes || digest.digest("hex") !== target.sha256) {
+    const received = await writePinnedCursorResponse(response.body, descriptor, target);
+    if (received.bytes !== target.bytes || received.digest.digest("hex") !== target.sha256) {
       throw new Error("The pinned Cursor artifact did not match its exact size and SHA-256 receipt.");
     }
     fsyncSync(descriptor);
@@ -189,8 +192,11 @@ export async function downloadPinnedCursorArtifact(
     ) {
       throw new Error("The pinned Cursor artifact changed while it was downloaded.");
     }
+    assertPrivateDirectoryReceipt(rootReceipt);
     closeSync(descriptor);
+    requireAbsentPath(finalPath);
     renameSync(temporaryPath, finalPath);
+    publishedSnapshot = lstatSync(finalPath, { bigint: true });
     const receipt = immutableFileReceipt(finalPath, rootReceipt.canonicalPath);
     if (receipt.snapshot.size !== BigInt(target.bytes) || (await hashReceipt(receipt)) !== target.sha256) {
       throw new Error("The published pinned Cursor artifact changed before extraction.");
@@ -206,8 +212,56 @@ export async function downloadPinnedCursorArtifact(
         // The original error remains authoritative.
       }
       removeIdentifiedTemporary(temporaryPath, opened);
+      if (publishedSnapshot) removeIdentifiedTemporary(finalPath, publishedSnapshot);
     }
   }
+}
+
+function openPinnedCursorResponse(url, { signal, version }) {
+  return new Promise((resolveResponse, reject) => {
+    const request = httpsRequest(
+      url,
+      {
+        headers: {
+          "Accept-Encoding": "identity",
+          "User-Agent": `OpenWrangler-Cursor-Acceptance/${version}`
+        },
+        method: "GET",
+        signal
+      },
+      (response) => resolveResponse({ statusCode: response.statusCode, headers: response.headers, body: response })
+    );
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+async function writePinnedCursorResponse(body, descriptor, target) {
+  const digest = createHash("sha256");
+  let bytes = 0;
+  for await (const rawChunk of body) {
+    const chunk = Buffer.from(rawChunk);
+    bytes += chunk.length;
+    if (bytes > target.bytes) {
+      throw new Error("The pinned Cursor artifact exceeded its exact byte receipt.");
+    }
+    digest.update(chunk);
+    let offset = 0;
+    while (offset < chunk.length) {
+      const written = writeSync(descriptor, chunk, offset, chunk.length - offset, null);
+      if (!Number.isSafeInteger(written) || written <= 0) {
+        throw new Error("The pinned Cursor artifact write made no progress.");
+      }
+      offset += written;
+    }
+  }
+  return Object.freeze({ bytes, digest });
+}
+
+function cursorHeaderValue(headers, name) {
+  const value = headers?.[name] ?? headers?.[name.toLowerCase()];
+  if (Array.isArray(value)) return value.length === 1 ? value[0] : undefined;
+  return value;
 }
 
 export function validatePinnedCursorInstallation(rawTarget, installationRoot) {
@@ -222,8 +276,8 @@ export function validatePinnedCursorInstallation(rawTarget, installationRoot) {
       ? join(rootReceipt.path, "Cursor.app", "Contents", "MacOS", "Cursor")
       : join(rootReceipt.path, "Cursor.exe");
   const cli = target.platform === "darwin" ? join(appRoot, "bin", "cursor") : join(appRoot, "bin", "cursor.cmd");
-  const packageJson = readBoundedJson(join(appRoot, "package.json"), 2 * 1024 * 1024);
-  const productJson = readBoundedJson(join(appRoot, "product.json"), 2 * 1024 * 1024);
+  const packageJson = readBoundedJson(join(appRoot, "package.json"), 2 * 1024 * 1024, rootReceipt.canonicalPath);
+  const productJson = readBoundedJson(join(appRoot, "product.json"), 2 * 1024 * 1024, rootReceipt.canonicalPath);
   if (
     packageJson.name !== "Cursor" ||
     packageJson.version !== target.version ||
@@ -521,18 +575,13 @@ async function hashReceipt(receipt) {
   }
 }
 
-function readBoundedJson(path, maximumBytes) {
-  const metadata = lstatSync(path, { bigint: true });
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1n ||
-    metadata.size <= 0n ||
-    metadata.size > BigInt(maximumBytes)
-  ) {
-    throw new Error("The extracted Cursor metadata is not one bounded regular file.");
-  }
-  return JSON.parse(readFileSync(path, "utf8"));
+function readBoundedJson(path, maximumBytes, containedBy) {
+  return JSON.parse(
+    readBoundedRegularFile(path, maximumBytes, {
+      containedBy,
+      label: "Extracted Cursor metadata"
+    }).toString("utf8")
+  );
 }
 
 function assertContainedRegularFile(root, path) {
