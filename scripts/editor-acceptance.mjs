@@ -1503,12 +1503,21 @@ export function resolveEditorCliLaunch(
   const executable = validateWindowsEditorCliPath(editor.executable, "executable");
   const wrapper = validateWindowsEditorCliPath(editor.cli, "CLI wrapper");
   const installationRoot = win32.dirname(executable);
-  const wrapperDirectory = win32.resolve(installationRoot, "bin");
+  const executableName = win32.basename(executable).toLowerCase();
+  const expectedWrapper =
+    editor.key === "cursor" && executableName === "cursor.exe"
+      ? win32.resolve(installationRoot, "resources", "app", "bin", "cursor.cmd")
+      : editor.key === "vscode" && executableName === "code.exe"
+        ? win32.resolve(installationRoot, "bin", "code.cmd")
+        : editor.key === "vscode" && executableName === "code - insiders.exe"
+          ? win32.resolve(installationRoot, "bin", "code-insiders.cmd")
+          : undefined;
   if (
-    win32.dirname(wrapper).toLowerCase() !== wrapperDirectory.toLowerCase() ||
+    expectedWrapper === undefined ||
+    wrapper.toLowerCase() !== expectedWrapper.toLowerCase() ||
     win32.extname(wrapper).toLowerCase() !== ".cmd"
   ) {
-    throw new Error("The Windows editor CLI wrapper must be a direct child of its installation's bin directory.");
+    throw new Error("The Windows editor executable and CLI wrapper must match one supported product layout.");
   }
   let canonicalRoot;
   let canonicalExecutable;

@@ -1262,10 +1262,18 @@ test("editor phases reject an unsafe macOS IPC path before reserving a port or s
   }
 });
 
-function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
-  const root = "C:\\Program Files\\Microsoft VS Code";
-  const executable = `${root}\\Code.exe`;
-  const cli = `${root}\\bin\\code.cmd`;
+function windowsEditorCliLayout({ canonicalEntryPoint, product = "vscode", versionFolder } = {}) {
+  const cursorLayout = product === "cursor";
+  const insidersLayout = product === "vscode-insiders";
+  const root = cursorLayout
+    ? "C:\\Program Files\\Cursor"
+    : insidersLayout
+      ? "C:\\Program Files\\Microsoft VS Code Insiders"
+      : "C:\\Program Files\\Microsoft VS Code";
+  const executable = `${root}\\${cursorLayout ? "Cursor" : insidersLayout ? "Code - Insiders" : "Code"}.exe`;
+  const cli = cursorLayout
+    ? `${root}\\resources\\app\\bin\\cursor.cmd`
+    : `${root}\\bin\\${insidersLayout ? "code-insiders" : "code"}.cmd`;
   const entryPoint = versionFolder
     ? `${root}\\${versionFolder}\\resources\\app\\out\\cli.js`
     : `${root}\\resources\\app\\out\\cli.js`;
@@ -1274,7 +1282,12 @@ function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
     [root, ...(versionFolder ? [`${root}\\${versionFolder}`] : [])].map((value) => value.toLowerCase())
   );
   return {
-    editor: { name: "VS Code", key: "vscode", executable, cli },
+    editor: {
+      name: cursorLayout ? "Cursor" : "VS Code",
+      key: cursorLayout ? "cursor" : "vscode",
+      executable,
+      cli
+    },
     entryPoint,
     lstatPath(path) {
       if (knownDirectories.has(path.toLowerCase())) {
@@ -1334,6 +1347,37 @@ test("Windows editor CLI launches use the verified cli.js entry point and an exa
   assert.equal(sourceEnvironment.ELECTRON_RUN_AS_NODE, "0", "the caller's environment must remain immutable");
 });
 
+test("Windows editor CLI launches accept Cursor's exact application-bin wrapper layout", () => {
+  const layout = windowsEditorCliLayout({ product: "cursor" });
+  const launch = resolveEditorCliLaunch(
+    layout.editor,
+    { SystemRoot: "C:\\Windows" },
+    {
+      platform: "win32",
+      lstatPath: layout.lstatPath,
+      realpathPath: layout.realpathPath,
+      readInstallationEntries: layout.readInstallationEntries
+    }
+  );
+  assert.equal(layout.editor.cli, "C:\\Program Files\\Cursor\\resources\\app\\bin\\cursor.cmd");
+  assert.deepEqual(launch.argsPrefix, [layout.entryPoint]);
+
+  const insidersLayout = windowsEditorCliLayout({ product: "vscode-insiders" });
+  assert.deepEqual(
+    resolveEditorCliLaunch(
+      insidersLayout.editor,
+      { SystemRoot: "C:\\Windows" },
+      {
+        platform: "win32",
+        lstatPath: insidersLayout.lstatPath,
+        realpathPath: insidersLayout.realpathPath,
+        readInstallationEntries: insidersLayout.readInstallationEntries
+      }
+    ).argsPrefix,
+    [insidersLayout.entryPoint]
+  );
+});
+
 test("Windows editor CLI launch validation rejects wrappers and canonical entry points outside one installation", () => {
   const layout = windowsEditorCliLayout();
   assert.throws(
@@ -1366,8 +1410,53 @@ test("Windows editor CLI launch validation rejects wrappers and canonical entry 
           readInstallationEntries: layout.readInstallationEntries
         }
       ),
-    /direct child of its installation's bin directory/u
+    /supported product layout/u
   );
+  const cursorLayout = windowsEditorCliLayout({ product: "cursor" });
+  for (const cli of [
+    "C:\\Program Files\\Cursor\\resources\\other\\bin\\cursor.cmd",
+    "C:\\Program Files\\Cursor\\resources\\app\\nested\\bin\\cursor.cmd",
+    "C:\\other-product\\resources\\app\\bin\\cursor.cmd"
+  ]) {
+    assert.throws(
+      () =>
+        resolveEditorCliLaunch(
+          { ...cursorLayout.editor, cli },
+          { SYSTEMROOT: "C:\\Windows" },
+          {
+            platform: "win32",
+            lstatPath: cursorLayout.lstatPath,
+            realpathPath: cursorLayout.realpathPath,
+            readInstallationEntries: cursorLayout.readInstallationEntries
+          }
+        ),
+      /supported product layout/u
+    );
+  }
+  for (const editor of [
+    { ...cursorLayout.editor, key: "vscode" },
+    { ...cursorLayout.editor, executable: "C:\\Program Files\\Cursor\\Code.exe" },
+    { ...cursorLayout.editor, cli: "C:\\Program Files\\Cursor\\resources\\app\\bin\\code.cmd" },
+    {
+      ...layout.editor,
+      cli: "C:\\Program Files\\Microsoft VS Code\\resources\\app\\bin\\cursor.cmd"
+    }
+  ]) {
+    assert.throws(
+      () =>
+        resolveEditorCliLaunch(
+          editor,
+          { SYSTEMROOT: "C:\\Windows" },
+          {
+            platform: "win32",
+            lstatPath: cursorLayout.lstatPath,
+            realpathPath: cursorLayout.realpathPath,
+            readInstallationEntries: cursorLayout.readInstallationEntries
+          }
+        ),
+      /supported product layout/u
+    );
+  }
 
   const escaped = windowsEditorCliLayout({ canonicalEntryPoint: "C:\\outside\\cli.js" });
   assert.throws(
@@ -1517,7 +1606,7 @@ test("Windows editor CLI launch accepts exactly one verified legacy or 10-hex ve
 });
 
 test("bounded Windows CLI commands prepend cli.js without invoking a command shell", async () => {
-  const layout = windowsEditorCliLayout();
+  const layout = windowsEditorCliLayout({ product: "cursor" });
   const child = fakeCommandChild(17310);
   let invocation;
   const running = runBoundedEditorCliCommand(
