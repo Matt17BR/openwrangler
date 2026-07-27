@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cross-platform-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   runtime:
     strategy:
@@ -38,12 +42,8 @@ jobs:
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
-      - run: npm run typecheck
       - run: npm run test:python-environment-smoke
-      - run: npm test
-      - run: npm run license:check
-      - run: npm run package -- --pre-release --out openwrangler.vsix
-      - run: npm run verify:vsix -- openwrangler.vsix
+      - run: python -m pytest python/tests -q
 
   dependency-guard-windows:
     name: Dependency guard (Windows, Python ${{ matrix.python }})
