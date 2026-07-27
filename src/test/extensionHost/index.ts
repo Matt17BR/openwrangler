@@ -731,6 +731,7 @@ async function exerciseReleasedJupyterExtension(
     );
     const warmKernel = releasedNotebookJsonResult(notebook.cellAt(3), RELEASED_JUPYTER_RESTART_RESULT, "kernel warmup");
     assert.equal(warmKernel.runtime, false, "The private kernel must not inherit Open Wrangler before bootstrap.");
+    assert.equal(warmKernel.bootstrap, false, "The private kernel must not inherit Open Wrangler bootstrap state.");
     assert.equal(warmKernel.setup, null, "The private kernel warmup must run before the dataframe setup cell.");
     if (kernelTarget.remote) {
       assert.equal(warmKernel.remoteRunId, kernelTarget.remote.runId);
@@ -1351,10 +1352,11 @@ function writeReleasedJupyterNotebook(
           metadata: {},
           outputs: [],
           source: [
-            "import importlib.util, json, os, socket\n",
+            "import importlib.util, json, os, socket, sys\n",
             `print(${JSON.stringify(RELEASED_JUPYTER_RESTART_RESULT)} + json.dumps({` +
               "'pid': os.getpid(), " +
               "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
+              "'bootstrap': ('__ow_bundle_root' in globals() and str(globals().get('__ow_bundle_root')) in sys.path), " +
               "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
               "'hostname': socket.gethostname(), " +
               `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}), ` +
@@ -3007,8 +3009,8 @@ async function exerciseReleasedJupyterRestartReplay(
   assert.equal(replacement.setup, null, "The replacement kernel must not retain the prior setup marker.");
   assert.equal(
     replacement.runtime,
-    false,
-    "The replacement kernel must require Open Wrangler to transfer its runtime bundle again."
+    replacement.bootstrap,
+    "Runtime availability in the replacement process must come from its own Open Wrangler bootstrap."
   );
   if (target.remote) {
     assert.equal(replacement.remoteRunId, target.remote.runId);
