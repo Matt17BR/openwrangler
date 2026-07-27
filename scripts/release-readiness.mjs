@@ -23,7 +23,7 @@ import {
   inspectStableReadme,
   STABLE_README_RELEASE_SECTION
 } from "./release-documents.mjs";
-import { NUMERIC_RELEASE_VERSION } from "./release-metadata.mjs";
+import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixEntries, inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
@@ -200,8 +200,13 @@ export function inspectStableReleaseReadiness({
     problems
   );
 
-  if (sourceVersion === undefined || !NUMERIC_RELEASE_VERSION.test(sourceVersion)) {
+  const sourceVersionClassification = classifyNumericReleaseVersion(sourceVersion);
+  if (sourceVersionClassification === undefined) {
     problems.push("Source package.json version must use stable major.minor.patch syntax.");
+  } else if (sourceVersionClassification.channel !== "stable") {
+    problems.push(
+      `Source package.json version ${sourceVersion} is reserved for preview releases and cannot pass stable readiness.`
+    );
   }
   for (const [field, expected] of Object.entries(STABLE_PACKAGE_IDENTITY)) {
     if (sourceManifest?.[field] !== expected) {

@@ -347,6 +347,26 @@ test("requires explicit stable channel metadata in source, package, and VSIX", (
   assert.ok(problems.includes("Stable packages must not contain Microsoft.VisualStudio.Code.PreRelease."));
 });
 
+test("rejects preview-channel numbers in direct stable readiness calls", () => {
+  const previewNumberMarkedStable = { ...stablePackage, version: "0.3.0" };
+  const problems = inspectStableReleaseReadiness(
+    ready({
+      releaseTag: "v0.3.0",
+      sourcePackageJson: JSON.stringify(previewNumberMarkedStable),
+      pythonVersionFile: '__version__ = "0.3.0"\n',
+      packagedPackageJson: JSON.stringify(previewNumberMarkedStable),
+      packagedPythonVersionFile: '__version__ = "0.3.0"\n',
+      vsixManifest: manifest({ version: "0.3.0" })
+    })
+  );
+
+  assert.ok(
+    problems.includes(
+      "Source package.json version 0.3.0 is reserved for preview releases and cannot pass stable readiness."
+    )
+  );
+});
+
 test("requires one real dated changelog heading for the stable version", () => {
   for (const changelog of [
     "# Changelog\n\n## [1.0.0] - Unreleased\n",

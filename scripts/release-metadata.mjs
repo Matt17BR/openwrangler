@@ -5,6 +5,19 @@ import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
 
 export const NUMERIC_RELEASE_VERSION = /^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)$/u;
 
+export function classifyNumericReleaseVersion(version) {
+  const match = typeof version === "string" ? NUMERIC_RELEASE_VERSION.exec(version) : null;
+  if (match === null) {
+    return undefined;
+  }
+  const major = BigInt(match.groups?.major ?? "");
+  const minor = BigInt(match.groups?.minor ?? "");
+  return Object.freeze({
+    channel: major === 0n && minor % 2n === 1n ? "preview" : "stable",
+    version
+  });
+}
+
 export function inspectReleaseMetadata({ releaseTag, packageJson }) {
   const problems = [];
   let manifest;
@@ -25,8 +38,8 @@ export function inspectReleaseMetadata({ releaseTag, packageJson }) {
   }
 
   const version = typeof manifest.version === "string" ? manifest.version : undefined;
-  const versionMatch = version === undefined ? null : NUMERIC_RELEASE_VERSION.exec(version);
-  if (versionMatch === null) {
+  const classification = classifyNumericReleaseVersion(version);
+  if (classification === undefined) {
     problems.push(
       `Release versions must use Marketplace-compatible major.minor.patch numbers; received ${String(
         manifest.version
@@ -37,10 +50,8 @@ export function inspectReleaseMetadata({ releaseTag, packageJson }) {
     problems.push('package.json "preview" must be an explicit boolean for every release.');
   }
 
-  if (versionMatch !== null && typeof manifest.preview === "boolean") {
-    const major = BigInt(versionMatch.groups?.major ?? "");
-    const minor = BigInt(versionMatch.groups?.minor ?? "");
-    const isPreviewVersion = major === 0n && minor % 2n === 1n;
+  if (classification !== undefined && typeof manifest.preview === "boolean") {
+    const isPreviewVersion = classification.channel === "preview";
     if (manifest.preview !== isPreviewVersion) {
       problems.push(
         isPreviewVersion
