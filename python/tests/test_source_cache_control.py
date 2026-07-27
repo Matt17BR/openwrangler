@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mmap
 import os
 import stat
 import subprocess
@@ -29,11 +30,11 @@ def test_cold_source_cache_syncs_once_then_advises_once_and_verifies(
     resident_counts = iter([32, 0])
 
     monkeypatch.setattr(source_cache_control, "_linux_cache_proof_available", lambda: True)
-    monkeypatch.setattr(source_cache_control.os, "fdatasync", lambda _descriptor: events.append("fdatasync"))
+    monkeypatch.setattr(source_cache_control, "_sync_file_data", lambda _descriptor: events.append("fdatasync"))
     monkeypatch.setattr(
-        source_cache_control.os,
-        "posix_fadvise",
-        lambda _descriptor, _offset, _length, _advice: events.append("fadvise"),
+        source_cache_control,
+        "_advise_dont_need",
+        lambda _descriptor: events.append("fadvise"),
     )
 
     def residency(_descriptor: int, _size: int, _total_pages: int) -> int:
@@ -51,8 +52,8 @@ def test_cold_source_cache_syncs_once_then_advises_once_and_verifies(
         "fdatasyncApplied": True,
         "adviceAccepted": True,
         "verification": "linux-mincore",
-        "pageSizeBytes": os.sysconf("SC_PAGE_SIZE"),
-        "totalPages": (source.stat().st_size + os.sysconf("SC_PAGE_SIZE") - 1) // os.sysconf("SC_PAGE_SIZE"),
+        "pageSizeBytes": mmap.PAGESIZE,
+        "totalPages": (source.stat().st_size + mmap.PAGESIZE - 1) // mmap.PAGESIZE,
         "residentPagesBefore": 32,
         "residentPagesAfter": 0,
         "identityStable": True,
@@ -63,10 +64,11 @@ def test_cold_source_cache_syncs_once_then_advises_once_and_verifies(
 def test_warm_source_cache_reads_the_complete_owned_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "fixture.csv"
     source.write_bytes((b"open-wrangler\n" * 100_000) + b"complete")
-    total_pages = (source.stat().st_size + os.sysconf("SC_PAGE_SIZE") - 1) // os.sysconf("SC_PAGE_SIZE")
+    total_pages = (source.stat().st_size + mmap.PAGESIZE - 1) // mmap.PAGESIZE
     resident_counts = iter([0, total_pages])
 
     monkeypatch.setattr(source_cache_control, "_linux_cache_proof_available", lambda: True)
+    monkeypatch.setattr(source_cache_control, "_sync_file_data", lambda _descriptor: None)
     monkeypatch.setattr(source_cache_control, "_resident_page_count", lambda *_arguments: next(resident_counts))
 
     result = prepare_source_cache(source, "warm")
@@ -87,6 +89,8 @@ def test_residual_cold_pages_are_retained_as_unverified_evidence(
     resident_counts = iter([32, 1])
 
     monkeypatch.setattr(source_cache_control, "_linux_cache_proof_available", lambda: True)
+    monkeypatch.setattr(source_cache_control, "_sync_file_data", lambda _descriptor: None)
+    monkeypatch.setattr(source_cache_control, "_advise_dont_need", lambda _descriptor: None)
     monkeypatch.setattr(source_cache_control, "_resident_page_count", lambda *_arguments: next(resident_counts))
 
     result = prepare_source_cache(source, "cold")
@@ -110,11 +114,11 @@ def test_cache_control_faults_fail_without_retry(
         if name == failing_operation:
             raise OSError(f"{name} failed")
 
-    monkeypatch.setattr(source_cache_control.os, "fdatasync", lambda _descriptor: operation("fdatasync"))
+    monkeypatch.setattr(source_cache_control, "_sync_file_data", lambda _descriptor: operation("fdatasync"))
     monkeypatch.setattr(
-        source_cache_control.os,
-        "posix_fadvise",
-        lambda _descriptor, _offset, _length, _advice: operation("fadvise"),
+        source_cache_control,
+        "_advise_dont_need",
+        lambda _descriptor: operation("fadvise"),
     )
 
     def residency(*_arguments: object) -> int:
@@ -135,11 +139,66 @@ def test_identity_drift_fails_cache_preparation(tmp_path: Path, monkeypatch: pyt
     resident_counts = iter([32, 0])
 
     monkeypatch.setattr(source_cache_control, "_linux_cache_proof_available", lambda: True)
+    monkeypatch.setattr(source_cache_control, "_sync_file_data", lambda _descriptor: None)
+    monkeypatch.setattr(source_cache_control, "_advise_dont_need", lambda _descriptor: None)
     monkeypatch.setattr(source_cache_control, "_resident_page_count", lambda *_arguments: next(resident_counts))
     monkeypatch.setattr(source_cache_control, "_source_identity_stable", lambda *_arguments: False)
 
     with pytest.raises(ValueError, match="changed identity"):
         prepare_source_cache(source, "cold")
+
+
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+@pytest.mark.parametrize("mode,requested_state", [("cold", "evicted"), ("warm", "resident")])
+def test_non_linux_hosts_return_unavailable_without_calling_linux_cache_apis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    mode: str,
+    requested_state: str,
+) -> None:
+    source = tmp_path / "fixture.parquet"
+    source.write_bytes(b"deterministic" * 10_000)
+
+    def forbidden(*_arguments: object) -> None:
+        raise AssertionError("A non-Linux unavailable proof must not call Linux cache APIs.")
+
+    monkeypatch.setattr(source_cache_control.sys, "platform", platform)
+    monkeypatch.setattr(source_cache_control, "_sync_file_data", forbidden)
+    monkeypatch.setattr(source_cache_control, "_advise_dont_need", forbidden)
+    monkeypatch.setattr(source_cache_control, "_resident_page_count", forbidden)
+
+    result = prepare_source_cache(source, mode)
+
+    assert result == {
+        "protocol": "openwrangler-source-cache-proof-v1",
+        "requestedState": requested_state,
+        "fdatasyncApplied": False,
+        "adviceAccepted": False,
+        "verification": "unavailable",
+        "pageSizeBytes": mmap.PAGESIZE,
+        "totalPages": (source.stat().st_size + mmap.PAGESIZE - 1) // mmap.PAGESIZE,
+        "residentPagesBefore": None,
+        "residentPagesAfter": None,
+        "identityStable": True,
+        "verified": False,
+    }
+
+
+@pytest.mark.skipif(sys.platform == "linux", reason="The native unavailable contract is exercised on macOS/Windows.")
+def test_native_non_linux_host_reports_unavailable(tmp_path: Path) -> None:
+    source = tmp_path / "fixture.csv"
+    source.write_bytes(b"value\n1\n")
+
+    result = prepare_source_cache(source, "warm")
+
+    assert result["verification"] == "unavailable"
+    assert result["fdatasyncApplied"] is False
+    assert result["adviceAccepted"] is False
+    assert result["residentPagesBefore"] is None
+    assert result["residentPagesAfter"] is None
+    assert result["identityStable"] is True
+    assert result["verified"] is False
 
 
 def test_source_cache_rejects_symlinks_and_hard_links(tmp_path: Path) -> None:

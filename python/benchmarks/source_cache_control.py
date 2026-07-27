@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import mmap
 import os
 import stat
 import sys
@@ -53,9 +54,7 @@ def prepare_source_cache(source: Path, mode: str) -> CacheControlResult:
         if not _same_identity(opened, metadata):
             raise ValueError("The source changed identity during cache preparation.")
 
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        if not isinstance(page_size, int) or page_size <= 0:
-            raise OSError("The host reported an invalid page size.")
+        page_size = _page_size_bytes()
         total_pages = (opened.st_size + page_size - 1) // page_size
         requested_state: Literal["evicted", "resident"] = "evicted" if mode == "cold" else "resident"
 
@@ -77,11 +76,11 @@ def prepare_source_cache(source: Path, mode: str) -> CacheControlResult:
                 "verified": False,
             }
 
-        os.fdatasync(descriptor)
+        _sync_file_data(descriptor)
         resident_before = _resident_page_count(descriptor, opened.st_size, total_pages)
         advice_accepted = False
         if mode == "cold":
-            os.posix_fadvise(descriptor, 0, 0, os.POSIX_FADV_DONTNEED)
+            _advise_dont_need(descriptor)
             advice_accepted = True
         else:
             total = 0
@@ -117,10 +116,32 @@ def prepare_source_cache(source: Path, mode: str) -> CacheControlResult:
 def _linux_cache_proof_available() -> bool:
     return (
         sys.platform == "linux"
-        and hasattr(os, "fdatasync")
-        and hasattr(os, "posix_fadvise")
-        and hasattr(os, "POSIX_FADV_DONTNEED")
+        and callable(getattr(os, "fdatasync", None))
+        and callable(getattr(os, "posix_fadvise", None))
+        and isinstance(getattr(os, "POSIX_FADV_DONTNEED", None), int)
     )
+
+
+def _page_size_bytes() -> int:
+    page_size = mmap.PAGESIZE
+    if not isinstance(page_size, int) or page_size <= 0:
+        raise OSError("The host reported an invalid page size.")
+    return page_size
+
+
+def _sync_file_data(descriptor: int) -> None:
+    fdatasync = getattr(os, "fdatasync", None)
+    if not callable(fdatasync):
+        raise OSError("fdatasync is unavailable on this platform.")
+    fdatasync(descriptor)
+
+
+def _advise_dont_need(descriptor: int) -> None:
+    posix_fadvise = getattr(os, "posix_fadvise", None)
+    dont_need = getattr(os, "POSIX_FADV_DONTNEED", None)
+    if not callable(posix_fadvise) or not isinstance(dont_need, int):
+        raise OSError("POSIX_FADV_DONTNEED is unavailable on this platform.")
+    posix_fadvise(descriptor, 0, 0, dont_need)
 
 
 def _resident_page_count(descriptor: int, size: int, total_pages: int) -> int:
