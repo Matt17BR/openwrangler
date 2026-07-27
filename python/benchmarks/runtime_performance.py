@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
@@ -20,6 +19,12 @@ from time import perf_counter, perf_counter_ns
 from typing import Any, Literal, cast
 
 import polars as pl
+from fixture_contract import (
+    FixtureSpec,
+    assert_fixture_contract,
+    create_fixtures,
+    fixture_specs,
+)
 
 from openwrangler_runtime.session import PAGE_CACHE_BYTE_LIMIT, PAGE_CACHE_LIMIT, SessionManager
 
@@ -105,22 +110,15 @@ RELEASE_GATE_METRICS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class FixtureSpec:
-    kind: Literal["csv", "parquet"]
-    rows: int
-    columns: int
-
-    @property
-    def names(self) -> list[str]:
-        return [f"c{column:02d}" for column in range(self.columns)]
-
-    @property
-    def sentinel_rows(self) -> tuple[int, ...]:
-        return tuple(sorted({0, self.rows // 2, self.rows - 1}))
-
-
 _TRANSPORT_EOF = object()
+
+
+def _fixture_specs(smoke: bool) -> dict[str, FixtureSpec]:
+    return fixture_specs(smoke)
+
+
+def _assert_fixture_contract(path: Path, spec: FixtureSpec) -> None:
+    assert_fixture_contract(path, spec)
 
 
 def _process_memory_snapshot(pid: int) -> dict[str, Any]:
@@ -497,87 +495,6 @@ class StdioRuntimeClient:
     def _runtime_failure(self, message: str) -> str:
         detail = "".join(self._stderr).strip()
         return f"{message}{f' stderr: {detail}' if detail else ''}"
-
-
-def _fixture_specs(smoke: bool) -> dict[str, FixtureSpec]:
-    return {
-        "csv": FixtureSpec("csv", 2_000 if smoke else 100_000, 8 if smoke else 50),
-        "parquet": FixtureSpec("parquet", 5_000 if smoke else 1_000_000, 8 if smoke else 20),
-    }
-
-
-def create_fixtures(directory: Path, smoke: bool = False) -> dict[str, Path]:
-    directory.mkdir(parents=True, exist_ok=True)
-    fixtures: dict[str, Path] = {}
-    for kind, spec in _fixture_specs(smoke).items():
-        path = directory / f"{spec.rows}-{spec.columns}.{kind}"
-        _ensure_fixture(path, spec)
-        fixtures[kind] = path
-    return fixtures
-
-
-def _ensure_fixture(path: Path, spec: FixtureSpec) -> None:
-    if path.is_file():
-        try:
-            _assert_fixture_contract(path, spec)
-            return
-        except Exception:
-            # A stale partial fixture must never make benchmark numbers look
-            # valid. Regenerate and validate a replacement before publishing it.
-            pass
-
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
-        prefix=f".{path.name}.",
-        suffix=path.suffix,
-        dir=path.parent,
-        delete=False,
-    ) as temporary_file:
-        temporary = Path(temporary_file.name)
-    try:
-        _write_fixture(temporary, spec)
-        _assert_fixture_contract(temporary, spec)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _write_fixture(path: Path, spec: FixtureSpec) -> None:
-    if spec.kind == "csv":
-        pl.DataFrame(
-            {name: pl.int_range(column, spec.rows + column, eager=True) for column, name in enumerate(spec.names)}
-        ).write_csv(path)
-        return
-    (
-        pl.LazyFrame()
-        .select(pl.int_range(0, spec.rows).alias("c00"))
-        .with_columns([(pl.col("c00") + column).alias(name) for column, name in enumerate(spec.names[1:], start=1)])
-        .sink_parquet(path)
-    )
-
-
-def _assert_fixture_contract(path: Path, spec: FixtureSpec) -> None:
-    frame = pl.scan_csv(path) if spec.kind == "csv" else pl.scan_parquet(path)
-    schema = frame.collect_schema()
-    if schema.names() != spec.names:
-        raise AssertionError(f"Fixture {path.name} has unexpected columns: {schema.names()!r}.")
-    wrong_types = {
-        name: str(dtype) for name, dtype in zip(schema.names(), schema.dtypes(), strict=True) if dtype != pl.Int64
-    }
-    if wrong_types:
-        raise AssertionError(f"Fixture {path.name} has non-Int64 columns: {wrong_types!r}.")
-    row_count = int(frame.select(pl.len()).collect(engine="streaming").item())
-    if row_count != spec.rows:
-        raise AssertionError(f"Fixture {path.name} has {row_count} rows; expected {spec.rows}.")
-
-    for row_index in spec.sentinel_rows:
-        sentinel = frame.slice(row_index, 1).collect(engine="streaming")
-        if sentinel.height != 1:
-            raise AssertionError(f"Fixture {path.name} is missing sentinel row {row_index}.")
-        values = sentinel.row(0)
-        incorrect = {spec.names[column]: value for column, value in enumerate(values) if value != row_index + column}
-        if incorrect:
-            raise AssertionError(f"Fixture {path.name} has invalid values at sentinel row {row_index}: {incorrect!r}.")
 
 
 def _drop_source_file_cache(path: Path) -> dict[str, Any]:

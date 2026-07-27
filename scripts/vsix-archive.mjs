@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { fromBuffer as openZipBuffer } from "yauzl";
 import { parseStrictJson } from "./strict-json.mjs";
@@ -207,9 +208,11 @@ function readEntry(archive, entry, captureLimit) {
       const chunks = [];
       let actualSize = 0;
       let crc = 0xffffffff;
+      const sha256 = createHash("sha256");
       stream.on("data", (chunk) => {
         actualSize += chunk.length;
         crc = updateCrc32(crc, chunk);
+        sha256.update(chunk);
         if (captureLimit !== undefined) {
           if (actualSize > captureLimit) {
             stream.destroy(new Error(`VSIX entry ${entry.fileName} exceeds its capture limit.`));
@@ -231,7 +234,8 @@ function readEntry(archive, entry, captureLimit) {
         }
         resolveEntry({
           bytes: captureLimit === undefined ? undefined : Buffer.concat(chunks, actualSize),
-          size: actualSize
+          size: actualSize,
+          sha256: sha256.digest("hex")
         });
       });
     });
@@ -312,6 +316,7 @@ export async function inspectVsixArchive(bytes) {
   const entries = [];
   const entryKinds = new Map();
   const entrySizes = new Map();
+  const entryDigests = new Map();
   const contents = new Map();
   let totalCompressedBytes = 0;
   let totalUncompressedBytes = 0;
@@ -349,6 +354,7 @@ export async function inspectVsixArchive(bytes) {
         const captureLimit = REQUIRED_CAPTURE_LIMITS.get(entry.fileName);
         const result = await readEntry(archive, entry, captureLimit);
         entrySizes.set(entry.fileName, result.size);
+        entryDigests.set(entry.fileName, result.sha256);
         if (result.bytes !== undefined) {
           contents.set(entry.fileName, result.bytes);
         }
@@ -414,6 +420,7 @@ export async function inspectVsixArchive(bytes) {
   };
   return Object.freeze({
     archiveEntries: Object.freeze([...entries]),
+    entryDigests: Object.freeze([...entryDigests].map(([entry, sha256]) => Object.freeze([entry, sha256]))),
     entryCount: entries.length,
     packagedPackageJson: text("extension/package.json"),
     packagedPythonVersionFile: text("extension/python/openwrangler_runtime/version.py"),

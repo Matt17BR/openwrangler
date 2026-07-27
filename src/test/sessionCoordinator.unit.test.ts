@@ -1489,6 +1489,66 @@ describe("SessionCoordinator", () => {
     expect(executionOrder).toEqual(["profile-1", "page", "profile-2"]);
   });
 
+  it("distinguishes an accepted active profile from an unresolved queued profile", async () => {
+    const activeProfile = deferred<OpenWranglerResponse>();
+    const queuedProfile = deferred<OpenWranglerResponse>();
+    const executionOrder: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "getSummary") {
+        executionOrder.push(request.viewRequestId);
+        return request.viewRequestId === "checkpoint-active" ? activeProfile.promise : queuedProfile.promise;
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    const requestSummary = (viewRequestId: string) =>
+      bridge.request({
+        kind: "getSummary",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId,
+        filterModel: opened.metadata.filterModel
+      });
+
+    const active = requestSummary("checkpoint-active");
+    await vi.waitFor(() => expect(executionOrder).toEqual(["checkpoint-active"]));
+    const queued = requestSummary("checkpoint-queued");
+
+    expect(
+      coordinator.testingRequestExecutionCheckpoint(opened.metadata.sessionId, "getSummary", "checkpoint-active")
+    ).toEqual({
+      sessionId: opened.metadata.sessionId,
+      state: "active",
+      lane: "background",
+      requestKind: "getSummary",
+      viewRequestId: "checkpoint-active"
+    });
+    expect(
+      coordinator.testingRequestExecutionCheckpoint(opened.metadata.sessionId, "getSummary", "checkpoint-queued")
+    ).toEqual({
+      sessionId: opened.metadata.sessionId,
+      state: "queued",
+      lane: "background",
+      requestKind: "getSummary",
+      viewRequestId: "checkpoint-queued"
+    });
+    expect(executionOrder).toEqual(["checkpoint-active"]);
+
+    activeProfile.resolve(summaryResponse("checkpoint-active"));
+    await expect(active).resolves.toMatchObject({ kind: "summary", viewRequestId: "checkpoint-active" });
+    await vi.waitFor(() =>
+      expect(
+        coordinator.testingRequestExecutionCheckpoint(opened.metadata.sessionId, "getSummary", "checkpoint-queued")
+      ).toMatchObject({ state: "active", lane: "background" })
+    );
+    queuedProfile.resolve(summaryResponse("checkpoint-queued"));
+    await expect(queued).resolves.toMatchObject({ kind: "summary", viewRequestId: "checkpoint-queued" });
+  });
+
   it("honors an explicit priority override", async () => {
     const activeProfile = deferred<OpenWranglerResponse>();
     const executionOrder: string[] = [];

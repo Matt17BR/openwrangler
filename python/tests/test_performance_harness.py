@@ -11,9 +11,12 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-runtime_performance = SimpleNamespace(
-    **runpy.run_path(str(Path(__file__).parents[1] / "benchmarks" / "runtime_performance.py"))
-)
+benchmark_directory = Path(__file__).parents[1] / "benchmarks"
+sys.path.insert(0, str(benchmark_directory))
+try:
+    runtime_performance = SimpleNamespace(**runpy.run_path(str(benchmark_directory / "runtime_performance.py")))
+finally:
+    sys.path.remove(str(benchmark_directory))
 
 
 def test_performance_harness_smoke(tmp_path: Path) -> None:

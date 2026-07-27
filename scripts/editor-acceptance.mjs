@@ -37,6 +37,7 @@ import {
   createEditorAcceptancePrivateRootReceipt,
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
 
 const DISPLAY_MODE_ENV = "OPEN_WRANGLER_EDITOR_DISPLAY";
 const XVFB_EXECUTABLE_ENV = "OPEN_WRANGLER_XVFB_EXECUTABLE";
@@ -75,6 +76,7 @@ export const EDITOR_ACCEPTANCE_PROGRESS_PROTOCOL = 1;
 export const EDITOR_COMMAND_OUTPUT_MAX_BYTES = 1024 * 1024;
 export const EDITOR_HARNESS_ERROR_MAX_CHARACTERS = 16_000;
 export const EDITOR_HARNESS_RESULT_MAX_BYTES = 128 * 1024;
+export const EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL = "openwrangler-editor-acceptance-artifact-receipt-v1";
 export const EDITOR_DOWNLOAD_ATTEMPT_TIMEOUT_MS = 300_000;
 export const EDITOR_DOWNLOAD_RESULT_MAX_BYTES = 32 * 1024;
 const EDITOR_ACCEPTANCE_POLL_INTERVAL_MS = 100;
@@ -699,6 +701,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_EDITOR_CDP_PORT",
   "OPEN_WRANGLER_EXTENSION_TESTS",
   "OPEN_WRANGLER_TEST_EDITOR",
+  "OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION",
   "OPEN_WRANGLER_TEST_MODULE",
   "OPEN_WRANGLER_TEST_PHASE",
   "OPEN_WRANGLER_TEST_PROGRESS",
@@ -2466,8 +2469,8 @@ exports.activate = async function (context) {
   }));
   let outcome;
   try {
-    await require(process.env.OPEN_WRANGLER_TEST_MODULE).run();
-    outcome = { ...envelope, ok: true };
+    const evidence = await require(process.env.OPEN_WRANGLER_TEST_MODULE).run();
+    outcome = evidence === undefined ? { ...envelope, ok: true } : { ...envelope, ok: true, evidence };
   } catch (error) {
     const description = describeFailure(error);
     outcome = { ...envelope, ok: false, error: description };
@@ -2862,6 +2865,7 @@ export async function runEditorAcceptancePhase(
     python,
     phase,
     resultPath,
+    editorProductVersion,
     workspaceTrust = "trusted",
     requiresWorkbenchCdp = false,
     jupyterEnvironment,
@@ -2889,6 +2893,13 @@ export async function runEditorAcceptancePhase(
   }
   if (typeof requiresWorkbenchCdp !== "boolean") {
     throw new Error("An editor acceptance phase requiresWorkbenchCdp value must be a boolean.");
+  }
+  if (
+    editorProductVersion !== undefined &&
+    (typeof editorProductVersion !== "string" ||
+      !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(editorProductVersion))
+  ) {
+    throw new Error("An editor acceptance phase product version must be numeric major.minor.patch.");
   }
   const jupyterEnvironmentOverrides = resolveEditorAcceptanceJupyterEnvironment(
     jupyterEnvironment,
@@ -3074,6 +3085,7 @@ export async function runEditorAcceptancePhase(
         OPEN_WRANGLER_EXTENSION_TESTS: "1",
         OPEN_WRANGLER_TEST_PHASE: phase,
         OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
+        OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION: editorProductVersion,
         ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
         OPEN_WRANGLER_TEST_PYTHON: python,
         OPEN_WRANGLER_TEST_MODULE: testModule,
@@ -3316,10 +3328,11 @@ export async function runEditorAcceptancePhase(
       };
     } else {
       try {
-        outcome = JSON.parse(
+        outcome = parseStrictJson(
           readBoundedAcceptanceText(resultPath, EDITOR_ACCEPTANCE_RESULT_MAX_BYTES, "acceptance result", {
             expectedPathSnapshot: resultContext.resultSnapshot
-          })
+          }),
+          { maxBytes: EDITOR_ACCEPTANCE_RESULT_MAX_BYTES }
         );
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -3395,6 +3408,7 @@ export async function runEditorAcceptancePhase(
   }
 
   if (cleanupFailure) throw cleanupFailure;
+  return outcome?.evidence;
 }
 
 export async function waitForEditorAcceptanceObservation({
@@ -3591,8 +3605,11 @@ function validateEditorAcceptanceOutcome(outcome, runId, phase) {
   if (outcome.runId !== runId) return "the run ID does not match the launched phase";
   if (outcome.phase !== phase) return "the phase does not match the launched phase";
   if (typeof outcome.ok !== "boolean") return "the outcome flag is not boolean";
+  const hasEvidence = Object.hasOwn(outcome, "evidence");
   const expectedKeys = outcome.ok
-    ? ["ok", "phase", "protocol", "runId"]
+    ? hasEvidence
+      ? ["evidence", "ok", "phase", "protocol", "runId"]
+      : ["ok", "phase", "protocol", "runId"]
     : ["error", "ok", "phase", "protocol", "runId"];
   const actualKeys = Object.keys(outcome).sort();
   if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
@@ -3605,6 +3622,33 @@ function validateEditorAcceptanceOutcome(outcome, runId, phase) {
       outcome.error.length > EDITOR_HARNESS_ERROR_MAX_CHARACTERS + 64)
   ) {
     return "the failure detail is absent, non-text, or oversized";
+  }
+  if (hasEvidence) {
+    const evidence = outcome.evidence;
+    if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+      return "the success evidence is not an object";
+    }
+    const evidenceKeys = Object.keys(evidence).sort();
+    const expectedEvidenceKeys = ["bytes", "protocol", "sha256"];
+    if (
+      evidenceKeys.length !== expectedEvidenceKeys.length ||
+      evidenceKeys.some((key, index) => key !== expectedEvidenceKeys[index])
+    ) {
+      return "the success evidence contains missing or unexpected fields";
+    }
+    if (evidence.protocol !== EDITOR_ACCEPTANCE_ARTIFACT_RECEIPT_PROTOCOL) {
+      return "the success evidence protocol is unsupported";
+    }
+    if (
+      !Number.isSafeInteger(evidence.bytes) ||
+      evidence.bytes <= 0 ||
+      evidence.bytes > EDITOR_HARNESS_RESULT_MAX_BYTES
+    ) {
+      return "the success evidence byte count is invalid";
+    }
+    if (typeof evidence.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(evidence.sha256)) {
+      return "the success evidence digest is invalid";
+    }
   }
   return undefined;
 }

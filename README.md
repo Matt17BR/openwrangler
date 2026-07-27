@@ -6,7 +6,7 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 <!-- open-wrangler-release-status:start -->
 
-> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](docs/feature-parity.md) remains open.
+> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md) remains open.
 
 ## Install
 
@@ -67,8 +67,8 @@ Open Wrangler itself remains a preview and does not yet claim complete Microsoft
     <th width="50%">Transform</th>
   </tr>
   <tr>
-    <td><img src="docs/images/grid-view.png" alt="Virtualized dataframe grid with column insights"></td>
-    <td><img src="docs/images/acceptance/draft-preview-dark-1280.png" alt="Transformation preview with data diff and generated code"></td>
+    <td><img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/grid-view.png" alt="Virtualized dataframe grid with column insights"></td>
+    <td><img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/acceptance/draft-preview-dark-1280.png" alt="Transformation preview with data diff and generated code"></td>
   </tr>
   <tr>
     <td>Filter, sort, profile, and navigate without changing the cleaning plan.</td>
@@ -93,7 +93,7 @@ Open Wrangler itself remains a preview and does not yet claim complete Microsoft
 3. Check the draft grid, diff, and generated code.
 4. Apply or discard the draft, then export the committed plan when ready.
 
-Applied steps form a replayable history. The latest step can be edited, steps can be undone, and viewing filters remain independent. The [generated reference](docs/reference.md) lists every operation, command, setting, and shortcut.
+Applied steps form a replayable history. The latest step can be edited, steps can be undone, and viewing filters remain independent. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every operation, command, setting, and shortcut.
 
 ## Current limits
 
@@ -106,6 +106,6 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 After the source setup above, use `npm run build` while iterating and `npm test` for the complete TypeScript and Python regression suites.
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). The [architecture guide](docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](SECURITY.md).
+Start with [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md). The [architecture guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md).
 
-Open Wrangler is an independent clean-room implementation inspired by the publicly documented behavior of Microsoft Data Wrangler. It does not use Microsoft code, branding, or assets and is not affiliated with Microsoft. Licensed under [MIT](LICENSE).
+Open Wrangler is an independent clean-room implementation inspired by the publicly documented behavior of Microsoft Data Wrangler. It does not use Microsoft code, branding, or assets and is not affiliated with Microsoft. Licensed under [MIT](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
