@@ -3433,8 +3433,12 @@ async function exerciseRemoteWorkspace(
     "Remote-workspace acceptance is reserved for the pinned official VS Code and Remote SSH chain."
   );
   assert.equal(vscode.env.remoteName, "ssh-remote", "The acceptance extension host must execute over Remote SSH.");
-  assert.equal(workspace.scheme, "vscode-remote");
-  assert.equal(workspace.authority, "ssh-remote+ow-loopback");
+  assert.equal(
+    workspace.scheme,
+    "file",
+    "A workspace-extension process must receive its Remote SSH filesystem as a host-local file URI."
+  );
+  assert.equal(workspace.authority, "");
   assert.equal(extension.isActive, true);
   for (const loaderVariable of ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_BIND_NOW", "LD_AUDIT"]) {
     assert.equal(
