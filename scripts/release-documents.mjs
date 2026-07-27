@@ -13,6 +13,14 @@ const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start --
 const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
 const FEATURE_PARITY_URL = "https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md";
+const README_EDITOR_SUPPORT = `| Editor                                          | Support      | Release coverage                                       |
+| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
+| VS Code                                         | First-class  | Full automated and release matrix                      |
+| Cursor                                          | First-class  | Full automated and release matrix                      |
+| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
+| Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
+
+Google documents [one Open VSX-hosted extension used with Antigravity](https://developers.google.com/workspace/guides/developer-tools). That establishes a distribution precedent; Open Wrangler availability requires separate publication, and compatibility requires an isolated functional smoke. Experimental editors do not inherit the VS Code/Cursor support guarantee.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -29,14 +37,7 @@ export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
 Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
-| Editor                                          | Support      | Release coverage                                       |
-| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
-| VS Code                                         | First-class  | Full automated and release matrix                      |
-| Cursor                                          | First-class  | Full automated and release matrix                      |
-| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
-| Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
-
-Google documents [Antigravity using Open VSX-hosted extensions](https://developers.google.com/workspace/guides/developer-tools). That confirms the registry path, but Open Wrangler has not been published or functionally smoke-tested there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
+${README_EDITOR_SUPPORT}
 
 To try the current preview from a clone of this repository:
 
@@ -67,9 +68,9 @@ export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
 Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
-Download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
+${README_EDITOR_SUPPORT}
 
-VS Code and Cursor are first-class release targets. Other VS Code-based desktop IDEs are experimental, and browser-hosted \`vscode.dev\` is unsupported because it has no local Python/runtime extension host.
+Download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
 
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
 
