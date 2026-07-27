@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { inspectStableReleaseReadiness } from "./release-readiness.mjs";
+import { inspectStableReleaseReadiness, PRIMARY_PARITY_SCOPE } from "./release-readiness.mjs";
 
 const namespace = "http://schemas.microsoft.com/developer/vsx-schema/2011";
 const stablePackage = {
@@ -22,13 +22,15 @@ function manifest({ id = "openwrangler", publisher = "Matt17BR", version = "1.0.
 </PackageManifest>`;
 }
 
-function parity(status = "Done") {
+function parity(status = "Done", scope = PRIMARY_PARITY_SCOPE) {
+  const rows = scope
+    .map(([surface, pandas, polars]) => `| ${surface} | ${pandas} | ${polars} | ${status} | Exact package |`)
+    .join("\n");
   return `# Feature parity matrix
 
 | Surface | Pandas | Polars | Status | Required evidence |
 | --- | ---: | ---: | --- | --- |
-| Grid | Yes | Yes | ${status} | Exact package |
-| Accessibility | N/A | N/A | Done | Exact package |
+${rows}
 
 ## DuckDB file-backed preview matrix
 
@@ -60,7 +62,7 @@ test("accepts one internally consistent stable release candidate", () => {
 
 test("requires every primary Pandas/Polars parity row to be Done", () => {
   const problems = inspectStableReleaseReadiness(ready({ featureParity: parity("Partial") }));
-  assert.ok(problems.includes('Parity row "Grid" is Partial, not Done.'));
+  assert.ok(problems.includes('Parity row "CSV/TSV/Parquet/Excel/JSONL entry points" is Partial, not Done.'));
 
   const malformed = inspectStableReleaseReadiness(
     ready({
@@ -71,6 +73,44 @@ broken
     })
   );
   assert.ok(malformed.some((problem) => problem.includes("malformed row")));
+});
+
+test("binds the primary parity table to the exact ordered release scope", () => {
+  const missing = inspectStableReleaseReadiness(
+    ready({ featureParity: parity("Done", PRIMARY_PARITY_SCOPE.slice(1)) })
+  );
+  assert.ok(missing.some((problem) => problem.includes("must contain exactly 30 release rows; found 29")));
+  assert.ok(missing.some((problem) => problem.includes('must be "CSV/TSV/Parquet/Excel/JSONL entry points"')));
+
+  const duplicatedScope = [PRIMARY_PARITY_SCOPE[0], PRIMARY_PARITY_SCOPE[0], ...PRIMARY_PARITY_SCOPE.slice(1)];
+  const duplicated = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", duplicatedScope) }));
+  assert.ok(duplicated.some((problem) => problem.includes("must contain exactly 30 release rows; found 31")));
+  assert.ok(
+    duplicated.some((problem) => problem.includes('Parity row 2 must be "Notebook variable viewer and toolbar"'))
+  );
+
+  const reorderedScope = [PRIMARY_PARITY_SCOPE[1], PRIMARY_PARITY_SCOPE[0], ...PRIMARY_PARITY_SCOPE.slice(2)];
+  const reordered = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", reorderedScope) }));
+  assert.ok(
+    reordered.some((problem) => problem.includes('Parity row 1 must be "CSV/TSV/Parquet/Excel/JSONL entry points"'))
+  );
+  assert.ok(
+    reordered.some((problem) => problem.includes('Parity row 2 must be "Notebook variable viewer and toolbar"'))
+  );
+
+  const extraScope = [...PRIMARY_PARITY_SCOPE, ["Unexpected surface", "Yes", "Yes"]];
+  const extra = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", extraScope) }));
+  assert.ok(extra.some((problem) => problem.includes("must contain exactly 30 release rows; found 31")));
+  assert.ok(extra.includes('Unexpected parity row "Unexpected surface" at position 31.'));
+
+  const wrongScope = PRIMARY_PARITY_SCOPE.map((row) => [...row]);
+  wrongScope[26] = [wrongScope[26][0], "Yes", "Yes"];
+  const wrongEngines = inspectStableReleaseReadiness(ready({ featureParity: parity("Done", wrongScope) }));
+  assert.ok(
+    wrongEngines.some((problem) =>
+      problem.includes('Parity row 27 must be "Duplicate/non-string Pandas column operations" (Yes/N/A)')
+    )
+  );
 });
 
 test("binds the release tag, source package, Python runtime, and packaged versions", () => {
@@ -164,6 +204,26 @@ test("binds the VSIX identity to the extension package identity", () => {
   );
   assert.ok(problems.includes("VSIX identity ID does not match source package.json name."));
   assert.ok(problems.includes("VSIX identity publisher does not match source package.json publisher."));
+});
+
+test("pins the stable source identity even when source, package, and VSIX agree on a rename", () => {
+  const renamedPackage = {
+    ...stablePackage,
+    name: "renamed-wrangler",
+    displayName: "Renamed Wrangler",
+    publisher: "OtherPublisher"
+  };
+  const problems = inspectStableReleaseReadiness(
+    ready({
+      sourcePackageJson: JSON.stringify(renamedPackage),
+      packagedPackageJson: JSON.stringify(renamedPackage),
+      vsixManifest: manifest({ id: renamedPackage.name, publisher: renamedPackage.publisher })
+    })
+  );
+
+  assert.ok(problems.includes('Source package.json name must be "openwrangler" for a stable release.'));
+  assert.ok(problems.includes('Source package.json displayName must be "Open Wrangler" for a stable release.'));
+  assert.ok(problems.includes('Source package.json publisher must be "Matt17BR" for a stable release.'));
 });
 
 test("the tag workflow gates stable artifacts before checksums, upload, and release creation", () => {

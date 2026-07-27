@@ -10,6 +10,43 @@ const NUMERIC_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PYTHON_VERSION = /^__version__\s*=\s*"([^"\r\n]+)"\s*$/gmu;
 const CHANGELOG_HEADING = /^## \[([^\]\r\n]+)\] - ([^\r\n]+)$/gmu;
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
+const STABLE_PACKAGE_IDENTITY = Object.freeze({
+  name: "openwrangler",
+  displayName: "Open Wrangler",
+  publisher: "Matt17BR"
+});
+export const PRIMARY_PARITY_SCOPE = Object.freeze([
+  ["CSV/TSV/Parquet/Excel/JSONL entry points", "Yes", "Yes"],
+  ["Notebook variable viewer and toolbar", "Yes", "Yes"],
+  ["Inline notebook renderer and full-view expansion", "Yes", "Yes"],
+  ["Virtual grid, column sizing, navigation", "Yes", "Yes"],
+  ["Dataset summary and quick insights", "Yes", "Yes"],
+  ["Basic and advanced viewing filters", "Yes", "Yes"],
+  ["Multi-column viewing sorts", "Yes", "Yes"],
+  ["Editing mode and operation catalog", "Yes", "Yes"],
+  ["Draft preview and data diff", "Yes", "Yes"],
+  ["Cleaning-step history, edit, discard, undo", "Yes", "Yes"],
+  ["Generated code preview and editing", "Yes", "Yes"],
+  ["Sort/filter cleaning steps", "Yes", "Yes"],
+  ["Select/drop/rename/clone/cast/formula/length", "Yes", "Yes"],
+  ["Missing/duplicate row operations", "Yes", "Yes"],
+  ["One-hot and multi-label binarization", "Yes", "Yes"],
+  ["Find/replace/strip/split/case transforms", "Yes", "Yes"],
+  ["Scale/round/floor/ceiling/datetime format", "Yes", "Yes"],
+  ["Group and aggregate", "Yes", "Yes"],
+  ["Custom engine-native code", "Yes", "Yes"],
+  ["String/datetime/new-column by example", "Yes", "Yes"],
+  ["Copy/script/notebook code export", "Yes", "Yes"],
+  ["CSV and Parquet data export", "Yes", "Yes"],
+  ["Runtime selection, setup, change, clear", "Yes", "Yes"],
+  ["Original icons, native views, themes, accessibility", "N/A", "N/A"],
+  ["Runtime crash/reload/session replay", "Yes", "Yes"],
+  ["Column-projected grid-block transport", "Yes", "Yes"],
+  ["Duplicate/non-string Pandas column operations", "Yes", "N/A"],
+  ["Restricted Mode and trust-gated execution", "N/A", "N/A"],
+  ["Installed-editor first-usable-grid performance", "Yes", "Yes"],
+  ["Cross-platform first-class editor package acceptance", "N/A", "N/A"]
+]);
 const README_PREVIEW_CLAIMS = [
   { pattern: /\bactive preview\b/iu, label: 'README still describes Open Wrangler as an "active preview".' },
   {
@@ -84,7 +121,7 @@ function inspectPrimaryParityMatrix(contents) {
     return ["The canonical Pandas/Polars parity table has a malformed separator row."];
   }
 
-  let rowCount = 0;
+  const rows = [];
   for (let index = headerIndex + 2; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (line.trim().length === 0) {
@@ -96,22 +133,41 @@ function inspectPrimaryParityMatrix(contents) {
       continue;
     }
 
-    rowCount += 1;
+    rows.push({ cells, line: index + 1 });
     const [surface, pandas, polars, status] = cells;
     if (!surface || !pandas || !polars || !status) {
       problems.push(`The canonical Pandas/Polars parity table has an empty required cell at line ${index + 1}.`);
       continue;
-    }
-    if (!["Yes", "N/A"].includes(pandas) || !["Yes", "N/A"].includes(polars)) {
-      problems.push(`Parity row "${surface}" has an invalid Pandas/Polars scope.`);
     }
     if (status !== "Done") {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
     }
   }
 
-  if (rowCount === 0) {
-    problems.push("The canonical Pandas/Polars parity table must contain at least one release row.");
+  if (rows.length !== PRIMARY_PARITY_SCOPE.length) {
+    problems.push(
+      `The canonical Pandas/Polars parity table must contain exactly ${PRIMARY_PARITY_SCOPE.length} release rows; found ${rows.length}.`
+    );
+  }
+  const comparisonLength = Math.max(rows.length, PRIMARY_PARITY_SCOPE.length);
+  for (let index = 0; index < comparisonLength; index += 1) {
+    const actual = rows[index];
+    const expected = PRIMARY_PARITY_SCOPE[index];
+    if (expected === undefined) {
+      problems.push(`Unexpected parity row "${actual?.cells[0] ?? ""}" at position ${index + 1}.`);
+      continue;
+    }
+    if (actual === undefined) {
+      problems.push(`Missing parity row "${expected[0]}" at position ${index + 1}.`);
+      continue;
+    }
+
+    const [surface, pandas, polars] = actual.cells;
+    if (surface !== expected[0] || pandas !== expected[1] || polars !== expected[2]) {
+      problems.push(
+        `Parity row ${index + 1} must be "${expected[0]}" (${expected[1]}/${expected[2]}), received "${surface}" (${pandas}/${polars}) at line ${actual.line}.`
+      );
+    }
   }
   return problems;
 }
@@ -231,6 +287,11 @@ export function inspectStableReleaseReadiness({
 
   if (sourceVersion === undefined || !NUMERIC_VERSION.test(sourceVersion)) {
     problems.push("Source package.json version must use stable major.minor.patch syntax.");
+  }
+  for (const [field, expected] of Object.entries(STABLE_PACKAGE_IDENTITY)) {
+    if (sourceManifest?.[field] !== expected) {
+      problems.push(`Source package.json ${field} must be ${JSON.stringify(expected)} for a stable release.`);
+    }
   }
   if (sourceManifest?.preview !== false) {
     problems.push("Source package.json preview must be false for a stable release.");
