@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   parseInstalledPerformanceArguments,
   stageInstalledPerformanceVsix,
-  writeInstalledFirstGridRun
+  writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
 
 test("installed performance arguments default to both first-class editors", () => {
@@ -15,7 +15,7 @@ test("installed performance arguments default to both first-class editors", () =
   assert.equal(parsed.smoke, false);
   assert.deepEqual(parsed.editors, ["vscode", "cursor"]);
   assert.match(parsed.vsix, /candidate\.vsix$/u);
-  assert.match(parsed.output, /tmp[/\\]performance[/\\]installed-first-grid\.json$/u);
+  assert.match(parsed.output, /tmp[/\\]performance[/\\]installed-performance\.json$/u);
 });
 
 test("installed performance arguments support explicit smoke editor sharding", () => {
@@ -81,19 +81,19 @@ test("the VSIX snapshot rejects symbolic and hard-linked candidates", async () =
   }
 });
 
-test("the first-grid result writer replaces only a regular destination", async () => {
+test("the installed performance result writer replaces only a regular destination", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
   try {
-    const destination = join(directory, "results", "first-grid.json");
-    writeInstalledFirstGridRun(destination, { protocol: "test", value: 1 });
-    writeInstalledFirstGridRun(destination, { protocol: "test", value: 2 });
+    const destination = join(directory, "results", "installed-performance.json");
+    writeInstalledPerformanceRun(destination, { protocol: "test", value: 1 });
+    writeInstalledPerformanceRun(destination, { protocol: "test", value: 2 });
     assert.deepEqual(JSON.parse(await readFile(destination, "utf8")), { protocol: "test", value: 2 });
 
     const linked = join(directory, "linked.json");
     await mkdir(join(directory, "target"));
     await symlink(destination, linked);
     assert.throws(
-      () => writeInstalledFirstGridRun(linked, { protocol: "test" }),
+      () => writeInstalledPerformanceRun(linked, { protocol: "test" }),
       /absent or a single-link regular file/u
     );
   } finally {

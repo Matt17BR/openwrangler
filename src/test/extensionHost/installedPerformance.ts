@@ -18,8 +18,9 @@ import {
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as vscode from "vscode";
-import { chromium, type Browser, type Frame, type Page } from "playwright-core";
-import type { SessionMetadata } from "../../shared/protocol";
+import { chromium, type Browser, type Frame, type Locator, type Page } from "playwright-core";
+import type { BridgeRequestOptions } from "../../extension/dataBridge";
+import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v1";
@@ -29,11 +30,14 @@ const FIRST_GRID_BOUNDARY =
 const SAMPLE_COUNT = 10;
 const GRID_DISCOVERY_TIMEOUT_MS = 60_000;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
-const PHASE_PATTERN = /^perf-(csv|parquet)-(cold|warm)$/u;
+const FIRST_GRID_PHASE_PATTERN = /^perf-(csv|parquet)-(cold|warm)$/u;
+const GRID_INTERACTION_PHASE = "perf-grid-interaction";
 const SHA256 = /^[0-9a-f]{64}$/u;
 
 interface TestApi {
   activeSession(): { sessionId: string; metadata: SessionMetadata } | undefined;
+  request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
+  cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
   diagnostics(): { sessionCount: number };
   runtimeRunning(): boolean;
   synchronizePanel(sessionId: string): Promise<boolean>;
@@ -71,10 +75,13 @@ interface CacheControl {
 
 export async function run(): Promise<void> {
   const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
-  const match = PHASE_PATTERN.exec(phase);
-  assert.ok(match, "The installed first-grid phase must identify its format and source-cache mode.");
-  const format = match[1] as "csv" | "parquet";
-  const sourceCache = match[2] as "cold" | "warm";
+  const firstGridMatch = FIRST_GRID_PHASE_PATTERN.exec(phase);
+  assert.ok(
+    firstGridMatch || phase === GRID_INTERACTION_PHASE,
+    "The installed performance phase must identify a first-grid cache case or the grid-interaction case."
+  );
+  const format = firstGridMatch ? (firstGridMatch[1] as "csv" | "parquet") : "parquet";
+  const sourceCache = firstGridMatch ? (firstGridMatch[2] as "cold" | "warm") : undefined;
   const runId = requiredEnvironment("OPEN_WRANGLER_TEST_RUN_ID");
   const testPython = requiredEnvironment("OPEN_WRANGLER_TEST_PYTHON");
   const workspace = soleFileWorkspace();
@@ -99,59 +106,25 @@ export async function run(): Promise<void> {
   };
   recordProgress("activation:complete");
 
-  const warmup = vscode.Uri.file(path.join(workspace, "warmup.csv"));
   const sourceUri = vscode.Uri.file(source);
-  const samplesMs: number[] = [];
-  let cacheControl: CacheControl | undefined;
+  let measurement: Record<string, unknown> | undefined;
   try {
     const workbench = await connectToEditorWorkbench();
     await waitForWorkbenchReady(workbench);
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
-    recordProgress("warmup:open");
-    await vscode.commands.executeCommand("vscode.openWith", warmup, "openWrangler.viewer", vscode.ViewColumn.One);
-    const warmupSession = await waitForHostSession(
-      testing,
-      (metadata) => metadata.source.kind === "file" && metadata.source.path === warmup.fsPath,
-      GRID_DISCOVERY_TIMEOUT_MS,
-      "the runtime warm-up session"
-    );
-    recordProgress("warmup:host-session");
-    await waitForPanelSynchronization(testing, warmupSession.sessionId);
-    recordProgress("warmup:renderer-synchronized");
-    await waitForUsableGrid(workbench, { rows: 2, columns: 2 });
-    recordProgress("warmup:complete");
-
-    for (let sample = 0; sample < SAMPLE_COUNT; sample += 1) {
-      recordProgress(`sample-${sample + 1}:cache`);
-      const prepared = prepareSourceCache(testPython, workspace, source, sourceCache);
-      if (cacheControl === undefined) cacheControl = prepared;
-      else assert.deepEqual(prepared, cacheControl, "Source-cache preparation must remain stable across samples.");
-
-      const started = performance.now();
-      await vscode.commands.executeCommand("vscode.openWith", sourceUri, "openWrangler.viewer", vscode.ViewColumn.One);
-      await waitForHostSession(
-        testing,
-        (metadata) =>
-          metadata.source.kind === "file" &&
-          metadata.source.path === sourceUri.fsPath &&
-          metadata.backend === "polars" &&
-          metadata.shape.rows === fixture.rows &&
-          metadata.shape.columns === fixture.columns,
-        GRID_DISCOVERY_TIMEOUT_MS,
-        `sample ${sample + 1} host session`
-      );
-      await waitForUsableGrid(workbench, { rows: fixture.rows, columns: fixture.columns });
-      samplesMs.push(roundMilliseconds(performance.now() - started));
-      recordProgress(`sample-${sample + 1}:visible`);
-
-      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
-      await waitFor(
-        () => testing.diagnostics().sessionCount === 1,
-        SESSION_CLOSE_TIMEOUT_MS,
-        `sample ${sample + 1} session cleanup`
-      );
-    }
+    measurement = firstGridMatch
+      ? await measureFirstUsableGrid({
+          testing,
+          workbench,
+          testPython,
+          workspace,
+          source,
+          sourceUri,
+          fixture,
+          sourceCache: sourceCache as "cold" | "warm"
+        })
+      : await measureGridInteraction({ testing, workbench, sourceUri, fixture });
   } finally {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await waitFor(
@@ -161,8 +134,7 @@ export async function run(): Promise<void> {
     );
   }
 
-  assert.equal(samplesMs.length, SAMPLE_COUNT);
-  assert.ok(cacheControl, "The first-grid phase must apply source-cache preparation.");
+  assert.ok(measurement, "The installed performance phase must publish one completed measurement.");
   const fragment = {
     protocol: PHASE_PROTOCOL,
     runId,
@@ -175,16 +147,188 @@ export async function run(): Promise<void> {
       columns: fixture.columns,
       sha256: fixture.sha256
     },
-    measurement: {
-      kind: "first-grid",
-      boundary: FIRST_GRID_BOUNDARY,
-      sourceCache,
-      cacheControl,
-      samplesMs
-    }
+    measurement
   };
   publishFragment(path.join(workspace, "results", `${phase}.json`), fragment);
   recordProgress("fragment:published");
+}
+
+async function measureFirstUsableGrid({
+  testing,
+  workbench,
+  testPython,
+  workspace,
+  source,
+  sourceUri,
+  fixture,
+  sourceCache
+}: {
+  testing: TestApi;
+  workbench: Page;
+  testPython: string;
+  workspace: string;
+  source: string;
+  sourceUri: vscode.Uri;
+  fixture: FixtureEntry;
+  sourceCache: "cold" | "warm";
+}): Promise<Record<string, unknown>> {
+  const warmup = vscode.Uri.file(path.join(workspace, "warmup.csv"));
+  const samplesMs: number[] = [];
+  let cacheControl: CacheControl | undefined;
+
+  recordProgress("warmup:open");
+  await vscode.commands.executeCommand("vscode.openWith", warmup, "openWrangler.viewer", vscode.ViewColumn.One);
+  const warmupSession = await waitForHostSession(
+    testing,
+    (metadata) => metadata.source.kind === "file" && metadata.source.path === warmup.fsPath,
+    GRID_DISCOVERY_TIMEOUT_MS,
+    "the runtime warm-up session"
+  );
+  recordProgress("warmup:host-session");
+  await waitForPanelSynchronization(testing, warmupSession.sessionId);
+  recordProgress("warmup:renderer-synchronized");
+  await waitForUsableGrid(workbench, { rows: 2, columns: 2 });
+  recordProgress("warmup:complete");
+
+  for (let sample = 0; sample < SAMPLE_COUNT; sample += 1) {
+    recordProgress(`sample-${sample + 1}:cache`);
+    const prepared = prepareSourceCache(testPython, workspace, source, sourceCache);
+    if (cacheControl === undefined) cacheControl = prepared;
+    else assert.deepEqual(prepared, cacheControl, "Source-cache preparation must remain stable across samples.");
+
+    const started = performance.now();
+    await vscode.commands.executeCommand("vscode.openWith", sourceUri, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitForHostSession(
+      testing,
+      (metadata) =>
+        metadata.source.kind === "file" &&
+        metadata.source.path === sourceUri.fsPath &&
+        metadata.backend === "polars" &&
+        metadata.shape.rows === fixture.rows &&
+        metadata.shape.columns === fixture.columns,
+      GRID_DISCOVERY_TIMEOUT_MS,
+      `sample ${sample + 1} host session`
+    );
+    await waitForUsableGrid(workbench, { rows: fixture.rows, columns: fixture.columns });
+    samplesMs.push(roundMilliseconds(performance.now() - started));
+    recordProgress(`sample-${sample + 1}:visible`);
+
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 1,
+      SESSION_CLOSE_TIMEOUT_MS,
+      `sample ${sample + 1} session cleanup`
+    );
+  }
+
+  assert.equal(samplesMs.length, SAMPLE_COUNT);
+  assert.ok(cacheControl, "The first-grid phase must apply source-cache preparation.");
+  return {
+    kind: "first-grid",
+    boundary: FIRST_GRID_BOUNDARY,
+    sourceCache,
+    cacheControl,
+    samplesMs
+  };
+}
+
+async function measureGridInteraction({
+  testing,
+  workbench,
+  sourceUri,
+  fixture
+}: {
+  testing: TestApi;
+  workbench: Page;
+  sourceUri: vscode.Uri;
+  fixture: FixtureEntry;
+}): Promise<Record<string, unknown>> {
+  recordProgress("interaction:open");
+  await vscode.commands.executeCommand("vscode.openWith", sourceUri, "openWrangler.viewer", vscode.ViewColumn.One);
+  const session = await waitForHostSession(
+    testing,
+    (metadata) =>
+      metadata.source.kind === "file" &&
+      metadata.source.path === sourceUri.fsPath &&
+      metadata.backend === "polars" &&
+      metadata.shape.rows === fixture.rows &&
+      metadata.shape.columns === fixture.columns,
+    GRID_DISCOVERY_TIMEOUT_MS,
+    "the grid-interaction host session"
+  );
+  await waitForPanelSynchronization(testing, session.sessionId);
+  const frame = await waitForUsableGrid(workbench, { rows: fixture.rows, columns: fixture.columns });
+  recordProgress("interaction:usable-grid");
+
+  const cachedRows = [0, 400];
+  for (const row of cachedRows) {
+    await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row);
+  }
+  const cachedSamplesMs: number[] = [];
+  for (let sample = 0; sample < SAMPLE_COUNT; sample += 1) {
+    const row = cachedRows[(sample + 1) % cachedRows.length];
+    cachedSamplesMs.push(await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row));
+    recordProgress(`interaction:cached-${sample + 1}`);
+  }
+
+  const uncachedRows = Array.from({ length: SAMPLE_COUNT }, (_, index) => 800 + index * 400);
+  assert.ok(
+    uncachedRows.every((row) => row < fixture.rows),
+    "The interaction fixture must contain every deterministic uncached target block."
+  );
+  const uncachedSamplesMs: number[] = [];
+  const heartbeatSamplesMs: number[] = [];
+  for (const [index, row] of uncachedRows.entries()) {
+    uncachedSamplesMs.push(await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row));
+    heartbeatSamplesMs.push(await measureRendererHeartbeat(frame));
+    recordProgress(`interaction:uncached-${index + 1}`);
+  }
+
+  await scrollGridToRow(frame, 0, fixture.rows, fixture.columns, 0);
+  const filterStarted = performance.now();
+  await openColumnAction(frame, "c00", "Filter…");
+  const operator = frame.getByLabel("Predicate operator");
+  await operator.selectOption("gte");
+  await frame.getByLabel("gte predicate value").fill(String(Math.floor(fixture.rows / 2)));
+  await activateLocator(frame.getByRole("button", { name: "Add predicate", exact: true }));
+  const filteredRows = fixture.rows - Math.floor(fixture.rows / 2);
+  await waitForGridState(frame, {
+    rows: filteredRows,
+    columns: fixture.columns,
+    row: 0,
+    column: 0,
+    value: Math.floor(fixture.rows / 2)
+  });
+  const filter = { completed: true, latencyMs: roundMilliseconds(performance.now() - filterStarted) };
+  recordProgress("interaction:filter");
+
+  const sortStarted = performance.now();
+  await openColumnAction(frame, "c00", "Sort descending");
+  await waitForGridState(frame, {
+    rows: filteredRows,
+    columns: fixture.columns,
+    row: 0,
+    column: 0,
+    value: fixture.rows - 1
+  });
+  const sort = { completed: true, latencyMs: roundMilliseconds(performance.now() - sortStarted) };
+  recordProgress("interaction:sort");
+
+  const profiling = await proveAuthoritativeProfileCancellation(testing, session.sessionId);
+  recordProgress("interaction:profiling-cancelled");
+
+  assert.equal(cachedSamplesMs.length, SAMPLE_COUNT);
+  assert.equal(uncachedSamplesMs.length, SAMPLE_COUNT);
+  assert.equal(heartbeatSamplesMs.length, SAMPLE_COUNT);
+  return {
+    kind: "grid-interaction",
+    cachedSamplesMs,
+    uncachedSamplesMs,
+    heartbeatSamplesMs,
+    filter,
+    sort,
+    profiling
+  };
 }
 
 async function configureBenchmarkProfile(testPython: string): Promise<void> {
@@ -296,14 +440,14 @@ async function waitForPanelSynchronization(testing: TestApi, sessionId: string):
   throw new Error("The installed warm-up renderer did not acknowledge its authoritative host snapshot.");
 }
 
-async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns: number }): Promise<void> {
+async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns: number }): Promise<Frame> {
   const deadline = Date.now() + GRID_DISCOVERY_TIMEOUT_MS;
   do {
     const browser = workbench.context().browser();
     assertWorkbenchAlive(workbench, browser);
     for (const frame of rendererFrames(workbench, browser)) {
       try {
-        if (await frameHasUsableGrid(frame, shape)) return;
+        if (await frameHasUsableGrid(frame, shape)) return frame;
       } catch {
         // A custom-editor frame can retire while the next sample replaces it.
       }
@@ -316,6 +460,170 @@ async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns
   throw new Error(
     `The installed production grid did not become usable for shape ${shape.rows}x${shape.columns} within ${GRID_DISCOVERY_TIMEOUT_MS} ms: ${JSON.stringify(diagnostics)}`
   );
+}
+
+async function scrollGridToRow(
+  frame: Frame,
+  row: number,
+  totalRows: number,
+  totalColumns: number,
+  expectedValue: number
+): Promise<number> {
+  const started = await rendererNow(frame);
+  await frame.getByTestId("data-grid-scroller").evaluate((element, targetRow) => {
+    (element as unknown as { scrollTop: number }).scrollTop = targetRow * 29;
+  }, row);
+  await waitForGridState(frame, {
+    rows: totalRows,
+    columns: totalColumns,
+    row,
+    column: 0,
+    value: expectedValue
+  });
+  return roundMilliseconds((await rendererNow(frame)) - started);
+}
+
+async function measureRendererHeartbeat(frame: Frame): Promise<number> {
+  const duration = await frame.evaluate(() => {
+    const browser = globalThis as unknown as {
+      performance: { now(): number };
+      requestAnimationFrame(callback: () => void): number;
+    };
+    return new Promise<number>((resolve) => {
+      const started = browser.performance.now();
+      browser.requestAnimationFrame(() => resolve(browser.performance.now() - started));
+    });
+  });
+  return roundMilliseconds(duration);
+}
+
+async function rendererNow(frame: Frame): Promise<number> {
+  return frame.evaluate(() => {
+    const browser = globalThis as unknown as { performance: { now(): number } };
+    return browser.performance.now();
+  });
+}
+
+async function openColumnAction(frame: Frame, column: string, action: string): Promise<void> {
+  const header = frame.locator(`th[data-column="${column}"]`).first();
+  const details = header.locator("details.columnMenu").first();
+  const summary = details.getByLabel(`Column actions for ${column}`);
+  if (!(await details.evaluate((element) => element.hasAttribute("open")))) {
+    await activateLocator(summary);
+  }
+  await activateLocator(details.getByRole("button", { name: action, exact: true }));
+}
+
+async function activateLocator(locator: Locator): Promise<void> {
+  await locator.evaluate((element) => {
+    (element as unknown as { click(): void }).click();
+  });
+}
+
+async function waitForGridState(
+  frame: Frame,
+  expected: { rows: number; columns: number; row: number; column: number; value: number }
+): Promise<void> {
+  const deadline = Date.now() + GRID_DISCOVERY_TIMEOUT_MS;
+  do {
+    try {
+      const grid = frame.locator('table[role="grid"]').first();
+      const cell = frame.locator(`[data-grid-row="${expected.row}"][data-grid-column="${expected.column}"]`).first();
+      if (
+        (await grid.count()) > 0 &&
+        (await grid.getAttribute("aria-busy")) === "false" &&
+        (await grid.getAttribute("aria-rowcount")) === String(expected.rows + 1) &&
+        (await grid.getAttribute("aria-colcount")) === String(expected.columns + 1) &&
+        (await cell.count()) > 0 &&
+        (await cell.isVisible()) &&
+        (await cell.textContent()) === String(expected.value)
+      ) {
+        return;
+      }
+    } catch {
+      // The renderer can briefly replace its virtualized rows while a view query commits.
+    }
+    await delay(20);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `The production grid did not commit ${expected.rows} rows with value ${expected.value} at ${expected.row},${expected.column}.`
+  );
+}
+
+async function proveAuthoritativeProfileCancellation(
+  testing: TestApi,
+  expectedSessionId: string
+): Promise<{
+  activeObserved: true;
+  cancellationRequested: true;
+  cancelAcknowledged: true;
+  originalRequestSettled: true;
+  originalResponseKind: "cancelled";
+}> {
+  const active = testing.activeSession();
+  assert.ok(active && active.sessionId === expectedSessionId, "The interaction session must remain active.");
+  const { metadata } = active;
+  const activeRequestId = `installed-profile-active-${randomUUID()}`;
+  const cancelledRequestId = `installed-profile-cancelled-${randomUUID()}`;
+  const pageRequestId = `installed-profile-page-${randomUUID()}`;
+  let activeSettled = false;
+  const activeProfile = testing
+    .request(
+      {
+        kind: "getSummary",
+        sessionId: expectedSessionId,
+        revision: metadata.revision,
+        viewRequestId: activeRequestId,
+        filterModel: metadata.filterModel,
+        columns: metadata.schema.map((column) => column.name)
+      },
+      { priority: "background", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
+    )
+    .finally(() => {
+      activeSettled = true;
+    });
+  const cancelledProfile = testing.request(
+    {
+      kind: "getDatasetStats",
+      sessionId: expectedSessionId,
+      revision: metadata.revision,
+      viewRequestId: cancelledRequestId,
+      filterModel: metadata.filterModel
+    },
+    { priority: "background", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
+  );
+  const interactivePage = testing.request(
+    {
+      kind: "getPage",
+      sessionId: expectedSessionId,
+      revision: metadata.revision,
+      viewRequestId: pageRequestId,
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: Math.min(16, metadata.schema.length),
+      filterModel: metadata.filterModel
+    },
+    { priority: "interactive", timeoutMs: GRID_DISCOVERY_TIMEOUT_MS, restartRuntimeOnTimeout: false }
+  );
+
+  const activeObserved = !activeSettled;
+  testing.cancelViewRequests(expectedSessionId, [cancelledRequestId]);
+  const cancelledResponse = await cancelledProfile;
+  const [activeResponse, pageResponse] = await Promise.all([activeProfile, interactivePage]);
+  assert.equal(activeResponse.kind, "summary", "The accepted active profile must settle authoritatively.");
+  assert.equal(pageResponse.kind, "page", "A foreground page must complete while profiling uses its background lane.");
+  assert.equal(cancelledResponse.kind, "cancelled", "The original queued profile must return its own cancellation.");
+  assert.equal(cancelledResponse.viewRequestId, cancelledRequestId);
+  assert.equal(activeObserved, true, "The cancelled profile must have queued behind accepted active profiling.");
+
+  return {
+    activeObserved: true,
+    cancellationRequested: true,
+    cancelAcknowledged: true,
+    originalRequestSettled: true,
+    originalResponseKind: "cancelled"
+  };
 }
 
 async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: number }): Promise<boolean> {

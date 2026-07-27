@@ -49,8 +49,14 @@ import {
 } from "./installed-performance-report.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const FIRST_GRID_RUN_PROTOCOL = "openwrangler-installed-performance-first-grid-run-v1";
-const FIRST_GRID_PHASES = ["perf-csv-cold", "perf-csv-warm", "perf-parquet-cold", "perf-parquet-warm"];
+const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v1";
+const INSTALLED_PERFORMANCE_PHASES = [
+  "perf-csv-cold",
+  "perf-csv-warm",
+  "perf-parquet-cold",
+  "perf-parquet-warm",
+  "perf-grid-interaction"
+];
 const EXPECTED_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const VSIX_MAX_BYTES = 512 * 1024 * 1024;
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
@@ -62,7 +68,7 @@ export function parseInstalledPerformanceArguments(arguments_) {
     vsix: undefined,
     smoke: false,
     editors: ["vscode", "cursor"],
-    output: resolve(root, "tmp", "performance", "installed-first-grid.json")
+    output: resolve(root, "tmp", "performance", "installed-performance.json")
   };
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -199,14 +205,14 @@ export async function readInstalledPerformanceCandidate(vsix, snapshot) {
   };
 }
 
-export function writeInstalledFirstGridRun(destination, result) {
+export function writeInstalledPerformanceRun(destination, result) {
   const serialized = `${JSON.stringify(result, null, 2)}\n`;
   if (Buffer.byteLength(serialized, "utf8") > OUTPUT_MAX_BYTES) {
-    throw new Error("The installed first-grid result exceeded its fixed 1 MiB limit.");
+    throw new Error("The installed performance result exceeded its fixed 1 MiB limit.");
   }
   const target = resolve(destination);
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  assertReplaceableRegularFile(target, "installed first-grid result");
+  assertReplaceableRegularFile(target, "installed performance result");
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   let descriptor;
   let identity;
@@ -219,17 +225,17 @@ export function writeInstalledFirstGridRun(destination, result) {
     );
     identity = fstatSync(descriptor, { bigint: true });
     if (!identity.isFile() || identity.nlink !== 1n) {
-      throw new Error("The installed first-grid result temporary is not exclusively owned.");
+      throw new Error("The installed performance result temporary is not exclusively owned.");
     }
     writeFileSync(descriptor, serialized, "utf8");
     fsyncSync(descriptor);
     const complete = fstatSync(descriptor, { bigint: true });
-    requireSameFileIdentity(complete, identity, "The installed first-grid result changed while it was written.");
+    requireSameFileIdentity(complete, identity, "The installed performance result changed while it was written.");
     closeSync(descriptor);
     descriptor = undefined;
-    assertReplaceableRegularFile(target, "installed first-grid result");
+    assertReplaceableRegularFile(target, "installed performance result");
     const atPath = lstatSync(temporary, { bigint: true });
-    requireSameRegularFile(atPath, complete, "The installed first-grid result temporary path changed.");
+    requireSameRegularFile(atPath, complete, "The installed performance result temporary path changed.");
     renameSync(temporary, target);
     published = true;
   } finally {
@@ -284,7 +290,7 @@ export async function runInstalledPerformance(options, environment = process.env
     const editorRuns = [];
     for (const editor of editors) {
       editorRuns.push(
-        await runEditorFirstGridPhases({
+        await runEditorPerformancePhases({
           editor,
           stagedVsix: staged.path,
           candidate,
@@ -297,7 +303,7 @@ export async function runInstalledPerformance(options, environment = process.env
       );
     }
     result = {
-      protocol: FIRST_GRID_RUN_PROTOCOL,
+      protocol: INSTALLED_RUN_PROTOCOL,
       generatedAtUtc: new Date().toISOString(),
       smoke: options.smoke,
       candidate,
@@ -335,11 +341,11 @@ export async function runInstalledPerformance(options, environment = process.env
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
   }
   if (!result) throw new Error("Installed performance completed without a result.");
-  writeInstalledFirstGridRun(options.output, result);
+  writeInstalledPerformanceRun(options.output, result);
   return result;
 }
 
-async function runEditorFirstGridPhases({
+async function runEditorPerformancePhases({
   editor,
   stagedVsix,
   candidate,
@@ -432,7 +438,7 @@ async function runEditorFirstGridPhases({
   }
 
   const phases = [];
-  for (const phase of FIRST_GRID_PHASES) {
+  for (const phase of INSTALLED_PERFORMANCE_PHASES) {
     const runId = randomUUID();
     const resultPath = resolve(profile, `${phase}-result.json`);
     await runEditorAcceptancePhase({
@@ -725,10 +731,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       relativeOutput && relativeOutput !== ".." && !relativeOutput.startsWith(`..${sep}`) && !isAbsolute(relativeOutput)
         ? relativeOutput.replaceAll("\\", "/")
         : "the requested output file";
-    console.log(`Installed first-grid performance passed; path-free results were written to ${label}.`);
+    console.log(`Installed performance passed; path-free results were written to ${label}.`);
     if (result.smoke) console.log("Smoke-sized fixtures were used; this is not release evidence.");
   } catch (error) {
-    console.error(`Installed first-grid performance failed: ${sanitizeEditorAcceptanceDiagnostic(error)}`);
+    console.error(`Installed performance failed: ${sanitizeEditorAcceptanceDiagnostic(error)}`);
     process.exitCode = 1;
   }
 }

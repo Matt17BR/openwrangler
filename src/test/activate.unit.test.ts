@@ -10,6 +10,10 @@ const lifecycle = vi.hoisted(() => ({
   coordinator: {
     shutdown: vi.fn(),
     createBridge: vi.fn()
+  },
+  coordinatedBridge: {
+    request: vi.fn(),
+    cancelViewRequests: vi.fn()
   }
 }));
 
@@ -46,7 +50,9 @@ describe("extension deactivation", () => {
     lifecycle.bridge.reportDiagnostic.mockReset();
     lifecycle.bridge.declineRuntimeDependencyRevalidationForTesting.mockReset().mockResolvedValue(false);
     lifecycle.coordinator.shutdown.mockReset().mockResolvedValue(undefined);
-    lifecycle.coordinator.createBridge.mockReset().mockReturnValue({ request: vi.fn() });
+    lifecycle.coordinatedBridge.request.mockReset();
+    lifecycle.coordinatedBridge.cancelViewRequests.mockReset();
+    lifecycle.coordinator.createBridge.mockReset().mockReturnValue(lifecycle.coordinatedBridge);
     await activate({ subscriptions: [], workspaceState: {} } as unknown as vscode.ExtensionContext);
   });
 
@@ -114,6 +120,19 @@ describe("extension deactivation", () => {
     await expect(api?.testing?.shutdownRuntimeBridgeForTesting()).resolves.toBeUndefined();
 
     expect(lifecycle.bridge.shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("exposes coordinator-owned queued view cancellation only through the environment-gated test API", async () => {
+    await deactivate();
+    process.env.OPEN_WRANGLER_EXTENSION_TESTS = "1";
+
+    const api = await activate({
+      subscriptions: [],
+      workspaceState: {}
+    } as unknown as vscode.ExtensionContext);
+    api?.testing?.cancelViewRequests("session-a", ["profile-a"]);
+
+    expect(lifecycle.coordinatedBridge.cancelViewRequests).toHaveBeenCalledWith("session-a", ["profile-a"]);
   });
 
   it("exposes only a decline path for dependency revalidation through the environment-gated test API", async () => {

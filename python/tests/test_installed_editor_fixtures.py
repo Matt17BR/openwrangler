@@ -5,6 +5,29 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import TypedDict, cast
+
+
+class _FixtureEvidence(TypedDict):
+    fileName: str
+    rows: int
+    columns: int
+    bytes: int
+    sha256: str
+
+
+class _GeneratorEvidence(TypedDict):
+    contractVersion: int
+    implementation: str
+    implementationVersion: str
+
+
+class _FixtureManifest(TypedDict):
+    protocol: str
+    smoke: bool
+    generator: _GeneratorEvidence
+    license: str
+    fixtures: dict[str, _FixtureEvidence]
 
 
 def test_installed_editor_fixture_manifest_is_deterministic_and_path_free(tmp_path: Path) -> None:
@@ -66,7 +89,7 @@ def test_installed_editor_fixture_generation_rejects_a_symlink_target(tmp_path: 
     assert not manifest.exists()
 
 
-def _generate(root: Path) -> dict[str, object]:
+def _generate(root: Path) -> _FixtureManifest:
     fixture_directory = root / "fixtures"
     manifest = root / "manifest.json"
     result = subprocess.run(
@@ -84,7 +107,7 @@ def _generate(root: Path) -> dict[str, object]:
         text=True,
         timeout=30,
     )
-    payload = json.loads(result.stdout)
+    payload = cast(_FixtureManifest, json.loads(result.stdout))
     assert json.loads(manifest.read_text(encoding="utf-8")) == payload
     return payload
 
