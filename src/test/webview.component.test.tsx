@@ -486,6 +486,85 @@ describe("DataGrid", () => {
     expect(props.onPage).not.toHaveBeenCalled();
   });
 
+  it("keeps one scroll listener across busy rerenders and reconciles with the latest page callback", async () => {
+    const addEventListener = vi.spyOn(HTMLDivElement.prototype, "addEventListener");
+    const removeEventListener = vi.spyOn(HTMLDivElement.prototype, "removeEventListener");
+    const firstOnPage = vi.fn();
+    const latestOnPage = vi.fn();
+    const scrollMetadata = {
+      ...metadata,
+      shape: { rows: 6, columns: 2 },
+      filteredShape: { rows: 6, columns: 2 }
+    };
+    const scrollPage = { ...page, totalRows: 6 };
+    const props = {
+      metadata: scrollMetadata,
+      page: scrollPage,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} busy={false} onPage={firstOnPage} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    const scrollListenerCalls = () =>
+      addEventListener.mock.calls.filter(
+        ([type], index) =>
+          type === "scroll" &&
+          (addEventListener.mock.instances[index] as HTMLDivElement | undefined) === scroller
+      ).length;
+    const removedScrollListenerCalls = () =>
+      removeEventListener.mock.calls.filter(
+        ([type], index) =>
+          type === "scroll" &&
+          (removeEventListener.mock.instances[index] as HTMLDivElement | undefined) === scroller
+      ).length;
+    const installed = scrollListenerCalls();
+
+    rerender(<DataGrid {...props} summaries={[]} busy onPage={() => undefined} />);
+    scroller.scrollTop = 4 * 29;
+    fireEvent.scroll(scroller);
+    expect(firstOnPage).not.toHaveBeenCalled();
+
+    rerender(<DataGrid {...props} summaries={[]} busy={false} onPage={latestOnPage} />);
+    await waitFor(() => expect(latestOnPage).toHaveBeenCalledTimes(1));
+    expect(latestOnPage).toHaveBeenCalledWith(4);
+    expect(firstOnPage).not.toHaveBeenCalled();
+    expect(scrollListenerCalls()).toBe(installed);
+    expect(removedScrollListenerCalls()).toBe(0);
+  });
+
+  it("does not republish unchanged scroll geometry", () => {
+    const onViewStateChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onViewStateChange={onViewStateChange}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    onViewStateChange.mockClear();
+    scroller.scrollTop = 29;
+    scroller.scrollLeft = 7;
+    fireEvent.scroll(scroller);
+    expect(onViewStateChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.scroll(scroller);
+    expect(onViewStateChange).toHaveBeenCalledTimes(1);
+  });
+
   it("carries the scroll-requested row into the next block's roving focus", async () => {
     const onPage = vi.fn();
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
