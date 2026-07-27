@@ -983,7 +983,7 @@ function immutableFileReceipt(path, containedBy) {
   return Object.freeze({ path, canonicalPath, snapshot: Object.freeze(fileSnapshot(metadata)) });
 }
 
-export async function assertPinnedRemoteArtifactReceipt(artifact) {
+export async function assertPinnedRemoteArtifactReceipt(artifact, { afterHashOpen } = {}) {
   const target = validatePinnedRemoteTarget(artifact.target);
   if (
     artifact.sha256 !== target.decodedSha256 ||
@@ -994,23 +994,39 @@ export async function assertPinnedRemoteArtifactReceipt(artifact) {
     throw new Error("The pinned remote-workspace artifact receipt changed before use.");
   }
   const receipt = immutableFileReceipt(artifact.path, dirname(artifact.canonicalPath));
-  if (!sameFileSnapshot(receipt.snapshot, artifact.snapshot) || (await hashReceipt(receipt)) !== target.decodedSha256) {
+  if (
+    !sameFileSnapshot(receipt.snapshot, artifact.snapshot) ||
+    (await hashReceipt(receipt, { afterOpen: afterHashOpen })) !== target.decodedSha256
+  ) {
     throw new Error("The pinned remote-workspace artifact receipt changed before use.");
   }
 }
 
-async function hashReceipt(receipt) {
+async function hashReceipt(receipt, { afterOpen } = {}) {
   const descriptor = openSync(receipt.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = fileSnapshot(fstatSync(descriptor, { bigint: true }));
     if (!sameFileSnapshot(opened, receipt.snapshot)) {
       throw new Error("The pinned remote-workspace artifact changed before hashing.");
     }
+    if (afterOpen !== undefined) {
+      if (typeof afterOpen !== "function") {
+        throw new Error("The pinned remote-workspace artifact hash hook is malformed.");
+      }
+      await afterOpen();
+    }
     const digest = createHash("sha256");
     for await (const chunk of createReadStream(undefined, { fd: descriptor, autoClose: false })) {
       digest.update(chunk);
     }
-    if (!sameFileSnapshot(fileSnapshot(fstatSync(descriptor, { bigint: true })), receipt.snapshot)) {
+    const completed = fileSnapshot(fstatSync(descriptor, { bigint: true }));
+    const named = lstatSync(receipt.path, { bigint: true });
+    if (
+      !sameFileSnapshot(completed, receipt.snapshot) ||
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      !sameFileSnapshot(fileSnapshot(named), receipt.snapshot)
+    ) {
       throw new Error("The pinned remote-workspace artifact changed while hashing.");
     }
     return digest.digest("hex");

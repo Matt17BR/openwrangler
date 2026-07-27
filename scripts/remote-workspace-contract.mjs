@@ -106,6 +106,19 @@ export function validateRemoteWorkspaceCandidateExpectation(sha256, rawBytes) {
   return Object.freeze({ sha256, bytes });
 }
 
+export function validateRemoteWorkspaceCandidatePath(path) {
+  if (
+    typeof path !== "string" ||
+    !isAbsolute(path) ||
+    path.length <= 0 ||
+    path.length > PATH_LIMIT ||
+    /[\0\r\n]/u.test(path)
+  ) {
+    throw new Error("Remote SSH acceptance requires one bounded absolute caller candidate path.");
+  }
+  return path;
+}
+
 export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) {
   if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 16 * 1024) {
     throw new Error("The Remote SSH PID-namespace attestation is oversized.");

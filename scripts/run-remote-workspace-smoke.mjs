@@ -46,6 +46,7 @@ import {
   REMOTE_WORKSPACE_NAMESPACE_ROOT,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRemoteWorkspaceCandidateExpectation,
+  validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
   writeRemoteWorkspacePhaseDescriptor
 } from "./remote-workspace-acceptance.mjs";
@@ -60,7 +61,7 @@ import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateArguments = process.argv.slice(2);
-const candidatePath = resolve(repositoryRoot, candidateArguments[0] ?? "");
+let candidatePath;
 const childScript = resolve(repositoryRoot, "scripts", "remote-workspace-phase-child.mjs");
 const contractScript = resolve(repositoryRoot, "scripts", "remote-workspace-contract.mjs");
 const processScript = resolve(repositoryRoot, "scripts", "remote-workspace-processes.mjs");
@@ -92,6 +93,7 @@ try {
   if (candidateArguments.length !== 3) {
     throw new Error("Remote SSH acceptance requires exactly: <candidate.vsix> <lowercase-sha256> <byte-size>.");
   }
+  candidatePath = validateRemoteWorkspaceCandidatePath(candidateArguments[0]);
   candidateExpectation = validateRemoteWorkspaceCandidateExpectation(candidateArguments[1], candidateArguments[2]);
   candidateSourceReceipt = assertRegularCandidate(candidatePath, candidateExpectation);
   const tools = await assertRemoteWorkspaceHost({}, { runCommand: commandRunner.run });

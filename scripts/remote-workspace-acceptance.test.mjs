@@ -16,6 +16,7 @@ import {
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRootOwnedSystemRuntimeDirectory,
   validateRemoteWorkspaceCandidateExpectation,
+  validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
@@ -370,6 +371,13 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
       () => validateRemoteWorkspaceNamespaceAttestation(JSON.stringify(mutation), { runId, ...candidate }),
       /exact candidate, Remote SSH artifact/u
     );
+  }
+});
+
+test("Remote candidate paths reject relative caller arguments before resolution", () => {
+  assert.equal(validateRemoteWorkspaceCandidatePath("/tmp/openwrangler.vsix"), "/tmp/openwrangler.vsix");
+  for (const path of ["openwrangler.vsix", "./openwrangler.vsix", "../openwrangler.vsix", "", "bad\0path"]) {
+    assert.throws(() => validateRemoteWorkspaceCandidatePath(path), /absolute caller candidate path/u);
   }
 });
 

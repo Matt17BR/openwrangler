@@ -24,6 +24,10 @@ test("candidate receipts bind caller bytes across staging and later source mutat
       bytes: contents.length
     };
     const sourceReceipt = acceptRemoteWorkspaceCandidate(source, expectation);
+    assert.throws(
+      () => assertRemoteWorkspaceFileReceipt(source, { ...sourceReceipt, extra: true }),
+      /changed after its identity was pinned/u
+    );
     const stagedReceipt = stageRemoteWorkspaceCandidate(source, staged, sourceReceipt, expectation);
     assert.equal(lstatSync(staged).mode & 0o777, 0o600);
     assert.deepEqual(readFileSync(staged), contents);
@@ -50,7 +54,7 @@ test("generic provenance receipts reject symlinks and same-path replacement", ()
     writeFileSync(path, "second", { mode: 0o600 });
     assert.throws(() => assertRemoteWorkspaceFileReceipt(path, receipt), /changed after its identity was pinned/u);
     symlinkSync(path, link);
-    assert.throws(() => captureRemoteWorkspaceFileReceipt(link), /bounded regular receipt file/u);
+    assert.throws(() => captureRemoteWorkspaceFileReceipt(link), /bounded no-follow regular receipt file/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -97,6 +106,31 @@ test("Remote artifact acquisition accepts only its exact redirect, length, and S
     await assertPinnedRemoteArtifactReceipt(receipt);
     appendFileSync(receipt.path, "changed");
     await assert.rejects(assertPinnedRemoteArtifactReceipt(receipt), /receipt changed before use/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Remote artifact revalidation rejects same-path replacement after its descriptor opens", async () => {
+  const body = Buffer.from("pinned-remote-cli-body", "utf8");
+  const target = testTarTarget(body);
+  const root = privateRoot("openwrangler-remote-hash-swap-");
+  try {
+    const receipt = await downloadPinnedRemoteArtifact(target, createRemoteAcquisitionRootReceipt(root), {
+      openResponse: responseSequence([
+        response(302, Buffer.alloc(0), { location: target.redirectUrl }),
+        response(200, body, { "content-length": String(body.length), "content-encoding": "identity" })
+      ]),
+      timeoutMs: 1_000
+    });
+    const replacement = join(root, "replacement");
+    writeFileSync(replacement, Buffer.alloc(body.length, 0x78), { mode: 0o600 });
+    await assert.rejects(
+      assertPinnedRemoteArtifactReceipt(receipt, {
+        afterHashOpen: () => renameSync(replacement, receipt.path)
+      }),
+      /changed while hashing/u
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

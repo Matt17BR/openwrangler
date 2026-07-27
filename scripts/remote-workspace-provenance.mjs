@@ -2,6 +2,20 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, constants, copyFileSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES } from "./remote-workspace-contract.mjs";
 
+const FILE_SNAPSHOT_KEYS = Object.freeze([
+  "birthtimeNs",
+  "ctimeNs",
+  "dev",
+  "gid",
+  "ino",
+  "mode",
+  "mtimeNs",
+  "nlink",
+  "size",
+  "uid"
+]);
+const FILE_RECEIPT_KEYS = Object.freeze([...FILE_SNAPSHOT_KEYS, "sha256"].sort());
+
 export function acceptRemoteWorkspaceCandidate(path, expectation) {
   const receipt = captureRemoteWorkspaceFileReceipt(path);
   assertExpectedCandidate(receipt, expectation, "did not match");
@@ -23,20 +37,32 @@ export function stageRemoteWorkspaceCandidate(source, destination, sourceReceipt
 }
 
 export function captureRemoteWorkspaceFileReceipt(path) {
-  const namedBefore = lstatSync(path, { bigint: true });
-  if (
-    !namedBefore.isFile() ||
-    namedBefore.isSymbolicLink() ||
-    namedBefore.nlink !== 1n ||
-    namedBefore.size <= 0n ||
-    namedBefore.size > BigInt(REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES)
-  ) {
-    throw new Error("Remote SSH acceptance requires one bounded regular receipt file.");
-  }
-  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let descriptor;
   try {
-    const opened = fileReceiptSnapshot(fstatSync(descriptor, { bigint: true }));
-    if (!sameFileReceiptSnapshot(fileReceiptSnapshot(namedBefore), opened)) {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  } catch (error) {
+    throw new Error("Remote SSH acceptance requires one bounded no-follow regular receipt file.", {
+      cause: error
+    });
+  }
+  try {
+    const openedMetadata = fstatSync(descriptor, { bigint: true });
+    if (
+      !openedMetadata.isFile() ||
+      openedMetadata.isSymbolicLink() ||
+      openedMetadata.nlink !== 1n ||
+      openedMetadata.size <= 0n ||
+      openedMetadata.size > BigInt(REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES)
+    ) {
+      throw new Error("Remote SSH acceptance requires one bounded no-follow regular receipt file.");
+    }
+    const opened = fileReceiptSnapshot(openedMetadata);
+    const namedBefore = lstatSync(path, { bigint: true });
+    if (
+      !namedBefore.isFile() ||
+      namedBefore.isSymbolicLink() ||
+      !sameFileReceiptSnapshot(fileReceiptSnapshot(namedBefore), opened)
+    ) {
       throw new Error("A Remote SSH receipt path changed before it could be opened.");
     }
     const digest = createHash("sha256");
@@ -77,7 +103,7 @@ export function assertRemoteWorkspaceFileReceipt(path, receipt) {
     !receipt ||
     current.sha256 !== receipt?.sha256 ||
     !sameFileReceiptSnapshot(current, receipt) ||
-    Object.keys(current).some((key) => !(key in receipt))
+    Object.keys(receipt).sort().join(",") !== FILE_RECEIPT_KEYS.join(",")
   ) {
     throw new Error("A Remote SSH receipt file changed after its identity was pinned.");
   }
@@ -106,9 +132,5 @@ function fileReceiptSnapshot(metadata) {
 }
 
 function sameFileReceiptSnapshot(left, right) {
-  return (
-    left !== undefined &&
-    right !== undefined &&
-    Object.keys(fileReceiptSnapshot(left)).every((key) => left[key] === right[key])
-  );
+  return left !== undefined && right !== undefined && FILE_SNAPSHOT_KEYS.every((key) => left[key] === right[key]);
 }
