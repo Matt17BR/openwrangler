@@ -441,6 +441,65 @@ def test_stdio_server_reports_backend_preparation_failure(monkeypatch) -> None:
     assert response["response"]["message"] == "native import failed"
 
 
+def test_stdio_server_reports_ambiguous_view_columns_with_a_structured_code(monkeypatch) -> None:
+    class AmbiguousManager:
+        def get_page(self, *_args: Any) -> dict[str, Any]:
+            raise server.AmbiguousViewColumnError("two Pandas columns share the displayed name '7'")
+
+        def close_all(self) -> None:
+            return None
+
+    response_written = threading.Event()
+
+    class SignallingOutput(StringIO):
+        def write(self, value: str) -> int:
+            result = super().write(value)
+            if value.endswith("\n"):
+                response_written.set()
+            return result
+
+    envelope = {
+        "protocolVersion": 2,
+        "requestId": "ambiguous-page",
+        "priority": "interactive",
+        "request": {
+            "kind": "getPage",
+            "sessionId": "session",
+            "revision": 0,
+            "viewRequestId": "view-ambiguous",
+            "offset": 0,
+            "limit": 20,
+            "columnOffset": 0,
+            "columnLimit": 64,
+            "filterModel": {"filters": [], "sort": []},
+        },
+    }
+
+    def input_lines():
+        yield f"{json.dumps(envelope)}\n"
+        assert response_written.wait(5)
+
+    output = SignallingOutput()
+    monkeypatch.setattr(server, "SessionManager", AmbiguousManager)
+    monkeypatch.setattr(server.sys, "stdin", input_lines())
+    monkeypatch.setattr(server.sys, "stdout", output)
+
+    server.main()
+
+    response = json.loads(output.getvalue())
+    assert response == {
+        "protocolVersion": 2,
+        "requestId": "ambiguous-page",
+        "response": {
+            "kind": "error",
+            "code": "ambiguous_view_column",
+            "message": "two Pandas columns share the displayed name '7'",
+            "recoverable": True,
+            "viewRequestId": "view-ambiguous",
+        },
+    }
+
+
 def test_stdio_server_closes_all_sessions_when_input_ends(monkeypatch) -> None:
     class TrackingManager:
         def __init__(self) -> None:

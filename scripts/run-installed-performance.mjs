@@ -45,6 +45,7 @@ import {
   removeEditorAcceptancePrivateRoot
 } from "./packaged-editor-orchestration.mjs";
 import {
+  assertInstalledPerformanceEvidenceGate,
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
   revalidateInstalledPerformanceReport,
@@ -58,6 +59,8 @@ import {
   readInstalledStorageProvenance
 } from "./installed-performance-system.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
+import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
+import { acquirePinnedVSCodeClient } from "./remote-workspace-acquisition.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import {
@@ -87,6 +90,12 @@ const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
 const INSTALLED_CHECKSUM_MAX_BYTES = 512;
 const INSTALLED_PROVENANCE_MAX_BYTES = 4096;
 export const CANONICAL_RELEASE_ARTIFACT_PROTOCOL = "openwrangler-canonical-release-artifact-v1";
+export const PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL = "openwrangler-performance-evidence-artifact-v1";
+export const PERFORMANCE_EVIDENCE_ARTIFACT_ROLE = "installed-performance-evidence-only";
+export const STABLE_RELEASE_ARTIFACT_KIND = "stable-release";
+export const PERFORMANCE_EVIDENCE_ARTIFACT_KIND = "performance-evidence";
+const CANONICAL_RELEASE_BUILD_METHOD = "canonical-release-artifact-v1";
+const PERFORMANCE_EVIDENCE_BUILD_METHOD = "performance-evidence-artifact-v1";
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
@@ -105,6 +114,8 @@ const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
 export function parseInstalledPerformanceArguments(arguments_) {
   const options = {
     smoke: false,
+    pinnedEditors: false,
+    artifactKind: STABLE_RELEASE_ARTIFACT_KIND,
     editors: ["vscode", "cursor"],
     candidateOutput: resolve(root, "tmp", "performance", "openwrangler-installed-candidate.vsix"),
     output: resolve(root, "tmp", "performance", "installed-performance.json")
@@ -115,6 +126,18 @@ export function parseInstalledPerformanceArguments(arguments_) {
     const argument = arguments_[index];
     if (argument === "--smoke") {
       options.smoke = true;
+      continue;
+    }
+    if (argument === "--pinned-editors") {
+      if (options.pinnedEditors) throw new Error("--pinned-editors may be provided only once.");
+      options.pinnedEditors = true;
+      continue;
+    }
+    if (argument === "--performance-evidence") {
+      if (options.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+        throw new Error("--performance-evidence may be provided only once.");
+      }
+      options.artifactKind = PERFORMANCE_EVIDENCE_ARTIFACT_KIND;
       continue;
     }
     if (argument === "--editors") {
@@ -201,6 +224,9 @@ export function parseInstalledPerformanceArguments(arguments_) {
   if (consumesCandidate && editorsExplicit) {
     throw new Error("Canonical candidate consumption always runs both first-class editors and cannot use --editors.");
   }
+  if (consumesCandidate && !options.pinnedEditors) {
+    throw new Error("Canonical candidate consumption requires --pinned-editors.");
+  }
   if (consumesCandidate) {
     const canonicalPaths = [
       options.candidateInput,
@@ -214,12 +240,27 @@ export function parseInstalledPerformanceArguments(arguments_) {
     options.candidateOutput = undefined;
     options.mode = "consume";
   } else {
+    if (options.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+      throw new Error("--performance-evidence is reserved for canonical candidate consumption.");
+    }
+    if (options.pinnedEditors) {
+      throw new Error("--pinned-editors is reserved for canonical stable candidate consumption.");
+    }
     if (options.output === options.candidateOutput) {
       throw new Error("The preview candidate and installed-performance report must use different paths.");
     }
     options.mode = "package";
   }
   return options;
+}
+
+export function installedPerformanceReportGateForOptions(
+  options,
+  { releaseGate = assertInstalledPerformanceReleaseGate, evidenceGate = assertInstalledPerformanceEvidenceGate } = {}
+) {
+  if (options?.artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND) return evidenceGate;
+  if (options?.artifactKind === STABLE_RELEASE_ARTIFACT_KIND) return releaseGate;
+  throw new TypeError("Installed performance options contain an unknown artifact kind.");
 }
 
 export function assertInstalledPerformanceArtifactPathSeparation({
@@ -403,7 +444,7 @@ export function readInstalledPerformanceChecksum(checksumPath, candidatePath, ho
   }
 }
 
-export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
+function readPerformanceProvenanceWithValidator(provenancePath, hooks, validateProvenance) {
   const path = resolve(provenancePath);
   if (basename(path) !== "openwrangler.vsix.provenance.json") {
     throw new Error(
@@ -438,7 +479,7 @@ export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
     const namedAfter = lstatSync(path, { bigint: true });
     requireSameRegularFile(after, before, "The installed-performance provenance changed while it was read.");
     requireSameRegularFile(namedAfter, before, "The installed-performance provenance path changed while it was read.");
-    const value = validateInstalledPerformanceProvenance(
+    const value = validateProvenance(
       parseStrictJson(bytes.toString("utf8"), { maxBytes: INSTALLED_PROVENANCE_MAX_BYTES })
     );
     return Object.freeze({
@@ -451,6 +492,14 @@ export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
+}
+
+export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
+  return readPerformanceProvenanceWithValidator(provenancePath, hooks, validateInstalledPerformanceProvenance);
+}
+
+export function readPerformanceEvidenceProvenance(provenancePath, hooks = {}) {
+  return readPerformanceProvenanceWithValidator(provenancePath, hooks, validatePerformanceEvidenceProvenance);
 }
 
 export function validateInstalledPerformanceProvenance(value) {
@@ -498,6 +547,54 @@ export function validateInstalledPerformanceProvenance(value) {
   });
 }
 
+export function validatePerformanceEvidenceProvenance(value) {
+  const expectedKeys = [
+    "artifactRole",
+    "extensionId",
+    "extensionVersion",
+    "preview",
+    "protocol",
+    "releaseTag",
+    "sourceCommit",
+    "vsixBytes",
+    "vsixSha256"
+  ];
+  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error("Performance-evidence provenance must contain exactly its evidence-only artifact fields.");
+  }
+  if (
+    value.protocol !== PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL ||
+    value.artifactRole !== PERFORMANCE_EVIDENCE_ARTIFACT_ROLE ||
+    value.extensionId !== "Matt17BR.openwrangler" ||
+    typeof value.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(value.extensionVersion)?.channel !== "stable" ||
+    value.extensionVersion.startsWith("0.") ||
+    value.preview !== false ||
+    value.releaseTag !== `v${value.extensionVersion}` ||
+    typeof value.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(value.sourceCommit) ||
+    typeof value.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.vsixSha256) ||
+    !Number.isSafeInteger(value.vsixBytes) ||
+    value.vsixBytes <= 0 ||
+    value.vsixBytes > VSIX_MAX_BYTES
+  ) {
+    throw new Error("Performance-evidence provenance does not describe one evidence-only stable candidate.");
+  }
+  return Object.freeze({
+    protocol: value.protocol,
+    artifactRole: value.artifactRole,
+    extensionId: value.extensionId,
+    extensionVersion: value.extensionVersion,
+    preview: value.preview,
+    releaseTag: value.releaseTag,
+    sourceCommit: value.sourceCommit,
+    vsixSha256: value.vsixSha256,
+    vsixBytes: value.vsixBytes
+  });
+}
+
 export async function readInstalledPerformanceCandidate(receipt) {
   if (!guardedCandidateReceipts.has(receipt)) {
     throw new Error("Installed performance candidate metadata requires one guarded candidate receipt.");
@@ -511,9 +608,11 @@ export async function readInstalledPerformanceCandidate(receipt) {
   if (JSON.stringify(packagedManifest) !== JSON.stringify(receipt.sourceManifest)) {
     throw new Error("The staged VSIX manifest does not match its guarded source manifest.");
   }
-  const expectedBuildMethod =
-    packagedManifest.channel === "stable" ? "canonical-release-artifact-v1" : "guarded-clean-head-v1";
-  if (receipt.buildMethod !== expectedBuildMethod) {
+  const allowedBuildMethods =
+    packagedManifest.channel === "stable"
+      ? new Set([CANONICAL_RELEASE_BUILD_METHOD, PERFORMANCE_EVIDENCE_BUILD_METHOD])
+      : new Set(["guarded-clean-head-v1"]);
+  if (!allowedBuildMethods.has(receipt.buildMethod)) {
     throw new Error("The staged VSIX release channel does not match its guarded candidate provenance.");
   }
   return {
@@ -621,6 +720,7 @@ export async function packageInstalledPerformanceCandidate({
 }
 
 export async function acceptInstalledPerformanceCandidate({
+  artifactKind = STABLE_RELEASE_ARTIFACT_KIND,
   candidatePath,
   checksumPath,
   provenancePath,
@@ -632,15 +732,24 @@ export async function acceptInstalledPerformanceCandidate({
   readSourceManifest = readInstalledPerformanceSourceManifest,
   readExternalCandidate = readInstalledPerformanceVsixReceipt,
   readChecksum = readInstalledPerformanceChecksum,
-  readProvenance = readInstalledPerformanceProvenance,
+  readProvenance,
   readReleaseTagCommit = readInstalledPerformanceReleaseTagCommit,
   stageCandidate = stageInstalledPerformanceVsix,
   verifyCandidate = verifyInstalledPerformanceVsix,
   readCandidate = readInstalledPerformanceCandidate,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
-  revalidateProvenance = revalidateInstalledPerformanceProvenance
+  revalidateProvenance
 }) {
+  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+    throw new TypeError("Installed-performance artifact kind must be stable-release or performance-evidence.");
+  }
+  const evidenceOnly = artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND;
+  const provenanceReader =
+    readProvenance ?? (evidenceOnly ? readPerformanceEvidenceProvenance : readInstalledPerformanceProvenance);
+  const provenanceRevalidator =
+    revalidateProvenance ??
+    (evidenceOnly ? revalidatePerformanceEvidenceProvenance : revalidateInstalledPerformanceProvenance);
   if (
     typeof candidatePath !== "string" ||
     candidatePath.length === 0 ||
@@ -694,8 +803,14 @@ export async function acceptInstalledPerformanceCandidate({
   if (checksum?.candidateSha256 !== externalCandidate.sha256) {
     throw new Error("The canonical candidate does not match its transferred checksum.");
   }
-  const provenance = await readProvenance(resolvedProvenance);
-  requireProvenanceReceipt(provenance);
+  const provenance = await provenanceReader(resolvedProvenance);
+  requireAcceptedProvenanceReceipt(provenance);
+  if (
+    provenance.protocol !==
+    (evidenceOnly ? PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL : CANONICAL_RELEASE_ARTIFACT_PROTOCOL)
+  ) {
+    throw new Error("The candidate provenance does not match its requested publication kind.");
+  }
   if (
     provenance.path !== resolvedProvenance ||
     provenance.extensionId !== `${sourceManifest.publisher}.${sourceManifest.name}` ||
@@ -710,7 +825,7 @@ export async function acceptInstalledPerformanceCandidate({
   }
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
-  revalidateProvenance(provenance);
+  provenanceRevalidator(provenance);
   const staged = await stageCandidate(externalCandidate.path, resolvedPrivate);
   requireVsixReceipt(staged);
   if (
@@ -722,7 +837,7 @@ export async function acceptInstalledPerformanceCandidate({
   }
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
-  revalidateProvenance(provenance);
+  provenanceRevalidator(provenance);
   const privateReceipt = Object.freeze({
     path: staged.path,
     sha256: staged.sha256,
@@ -734,13 +849,13 @@ export async function acceptInstalledPerformanceCandidate({
   revalidateCandidate(privateReceipt);
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
-  revalidateProvenance(provenance);
+  provenanceRevalidator(provenance);
 
   const candidateReceipt = Object.freeze({
     ...privateReceipt,
     source: Object.freeze({ ...sourceBefore }),
     sourceManifest,
-    buildMethod: "canonical-release-artifact-v1",
+    buildMethod: evidenceOnly ? PERFORMANCE_EVIDENCE_BUILD_METHOD : CANONICAL_RELEASE_BUILD_METHOD,
     releaseTag,
     provenanceSha256: provenance.sha256
   });
@@ -749,7 +864,7 @@ export async function acceptInstalledPerformanceCandidate({
   revalidateCandidate(candidateReceipt);
   revalidateCandidate(externalCandidate);
   revalidateChecksum(checksum, resolvedCandidate);
-  revalidateProvenance(provenance);
+  provenanceRevalidator(provenance);
   return Object.freeze({
     candidate,
     candidateReceipt,
@@ -772,10 +887,14 @@ export async function prepareInstalledPerformanceCandidate({
   readSource = readSourceProvenance,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
-  revalidateProvenance = revalidateInstalledPerformanceProvenance
+  revalidateProvenance = revalidateAcceptedPerformanceProvenance
 }) {
   if (!options || typeof options !== "object" || typeof privateRoot !== "string" || privateRoot.length === 0) {
     throw new TypeError("Installed performance candidate preparation requires options and one private root.");
+  }
+  const artifactKind = options.artifactKind ?? STABLE_RELEASE_ARTIFACT_KIND;
+  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+    throw new Error("Installed performance candidate preparation received an inconsistent artifact kind.");
   }
   if (options.mode === "consume") {
     if (
@@ -789,6 +908,7 @@ export async function prepareInstalledPerformanceCandidate({
       throw new Error("Canonical candidate consumption received an inconsistent option set.");
     }
     const accepted = await acceptCandidate({
+      artifactKind,
       candidatePath: options.candidateInput,
       checksumPath: options.candidateChecksum,
       provenancePath: options.candidateProvenance,
@@ -805,6 +925,7 @@ export async function prepareInstalledPerformanceCandidate({
   }
   if (
     options.mode !== "package" ||
+    artifactKind !== STABLE_RELEASE_ARTIFACT_KIND ||
     options.candidateInput !== undefined ||
     options.candidateChecksum !== undefined ||
     options.candidateProvenance !== undefined ||
@@ -926,6 +1047,35 @@ export function revalidateInstalledPerformanceProvenance(receipt) {
   return receipt;
 }
 
+export function revalidatePerformanceEvidenceProvenance(receipt) {
+  requirePerformanceEvidenceProvenanceReceipt(receipt);
+  const current = readPerformanceEvidenceProvenance(receipt.path);
+  if (
+    current.path !== receipt.path ||
+    current.protocol !== receipt.protocol ||
+    current.artifactRole !== receipt.artifactRole ||
+    current.extensionId !== receipt.extensionId ||
+    current.extensionVersion !== receipt.extensionVersion ||
+    current.preview !== receipt.preview ||
+    current.releaseTag !== receipt.releaseTag ||
+    current.sourceCommit !== receipt.sourceCommit ||
+    current.vsixSha256 !== receipt.vsixSha256 ||
+    current.vsixBytes !== receipt.vsixBytes ||
+    current.sha256 !== receipt.sha256 ||
+    current.bytes !== receipt.bytes ||
+    !sameFileIdentityReceipt(current.fileIdentity, receipt.fileIdentity)
+  ) {
+    throw new Error("The performance-evidence provenance receipt changed.");
+  }
+  return receipt;
+}
+
+export function revalidateAcceptedPerformanceProvenance(receipt) {
+  return receipt?.protocol === PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL
+    ? revalidatePerformanceEvidenceProvenance(receipt)
+    : revalidateInstalledPerformanceProvenance(receipt);
+}
+
 function readInstalledPerformanceVsixSnapshot(receipt) {
   requireVsixReceipt(receipt);
   const snapshot = readBoundedVsixFileSnapshot(receipt.path, { requireOwner: true });
@@ -954,7 +1104,7 @@ export async function collectInstalledPerformanceEditorRuns({
   runEditor,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
-  revalidateProvenance = revalidateInstalledPerformanceProvenance
+  revalidateProvenance = revalidateAcceptedPerformanceProvenance
 }) {
   const runs = [];
   for (const editor of editors) runs.push(await runEditor(editor));
@@ -967,10 +1117,71 @@ export async function collectInstalledPerformanceEditorRuns({
   return runs;
 }
 
+export async function acquirePinnedInstalledPerformanceEditors(
+  privateRoot,
+  environment,
+  {
+    acquireVscode = acquirePinnedVSCodeClient,
+    acquireCursor = (root) => acquirePinnedCursor(root, { platform: "linux", architecture: "x64" })
+  } = {}
+) {
+  if (
+    typeof privateRoot !== "string" ||
+    !isAbsolute(privateRoot) ||
+    environment === null ||
+    typeof environment !== "object" ||
+    typeof acquireVscode !== "function" ||
+    typeof acquireCursor !== "function"
+  ) {
+    throw new TypeError("Pinned installed-performance editor acquisition arguments are malformed.");
+  }
+  if (typeof environment.DBUS_SESSION_BUS_ADDRESS !== "string" || environment.DBUS_SESSION_BUS_ADDRESS.length === 0) {
+    throw new Error(
+      "Pinned Cursor performance requires one isolated D-Bus session; run the canonical benchmark through dbus-run-session."
+    );
+  }
+  const acquisitions = await Promise.allSettled([acquireVscode(privateRoot), acquireCursor(privateRoot)]);
+  const failures = acquisitions.filter((result) => result.status === "rejected").map((result) => result.reason);
+  if (failures.length > 0) {
+    throw failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "Pinned VS Code and Cursor acquisition failed.");
+  }
+  const [vscode, cursor] = acquisitions.map((result) => result.value);
+  if (
+    vscode?.editor?.key !== "vscode" ||
+    cursor?.editor?.key !== "cursor" ||
+    !isAbsolute(vscode.editor.executable) ||
+    !isAbsolute(vscode.editor.cli) ||
+    !isAbsolute(cursor.editor.executable) ||
+    !isAbsolute(cursor.editor.cli)
+  ) {
+    throw new Error("Pinned editor acquisition returned a malformed VS Code or Cursor installation.");
+  }
+  environment.OPEN_WRANGLER_VSCODE_EXECUTABLE = vscode.editor.executable;
+  environment.OPEN_WRANGLER_VSCODE_CLI = vscode.editor.cli;
+  environment.OPEN_WRANGLER_CURSOR_EXECUTABLE = cursor.editor.executable;
+  environment.OPEN_WRANGLER_CURSOR_CLI = cursor.editor.cli;
+  return Object.freeze([vscode, cursor]);
+}
+
 export async function runInstalledPerformance(options, environment = process.env) {
   validateEditorAcceptancePrivatePathOverrides();
   if (process.platform !== "linux") {
     throw new Error("Strict installed performance evidence currently requires a Linux reference machine.");
+  }
+  if (options?.mode === "consume" && options.pinnedEditors !== true) {
+    throw new Error("Stable installed performance requires the exact pinned VS Code and Cursor artifacts.");
+  }
+  if (options?.mode !== "consume" && options?.pinnedEditors === true) {
+    throw new Error("Pinned editor acquisition is reserved for stable candidate consumption.");
+  }
+  const artifactKind = options?.artifactKind ?? STABLE_RELEASE_ARTIFACT_KIND;
+  if (artifactKind !== STABLE_RELEASE_ARTIFACT_KIND && artifactKind !== PERFORMANCE_EVIDENCE_ARTIFACT_KIND) {
+    throw new Error("Installed performance received an invalid artifact kind.");
+  }
+  if (artifactKind === PERFORMANCE_EVIDENCE_ARTIFACT_KIND && options?.mode !== "consume") {
+    throw new Error("Performance-evidence provenance is valid only for canonical candidate consumption.");
   }
   assertInstalledPerformanceArtifactPathSeparation(options);
   const privateParent = resolve(root, "tmp", "ow");
@@ -1027,6 +1238,8 @@ export async function runInstalledPerformance(options, environment = process.env
       }
     );
     const fixtureManifest = validateInstalledFixtureManifest(readBoundedJson(fixtureManifestPath, 64 * 1024));
+
+    if (options.pinnedEditors) await acquirePinnedInstalledPerformanceEditors(privateRoot, environment);
 
     const editors = await resolveInstalledPerformanceEditors(options.editors, environment, {
       mode: options.mode
@@ -1096,7 +1309,7 @@ export async function runInstalledPerformance(options, environment = process.env
       revalidateInstalledPerformanceChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
     }
     if (publicProvenanceReceipt !== undefined) {
-      revalidateInstalledPerformanceProvenance(publicProvenanceReceipt);
+      revalidateAcceptedPerformanceProvenance(publicProvenanceReceipt);
     }
     assertInstalledPerformanceArtifactPathSeparation(options);
   } catch (error) {
@@ -1111,7 +1324,8 @@ export async function runInstalledPerformance(options, environment = process.env
       result,
       publicCandidateReceipt,
       publicChecksumReceipt,
-      publicProvenanceReceipt
+      publicProvenanceReceipt,
+      assertGate: installedPerformanceReportGateForOptions(options)
     });
   }
   return result;
@@ -1127,7 +1341,7 @@ export function publishInstalledPerformanceReleaseResult({
   assertGate = assertInstalledPerformanceReleaseGate,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
-  revalidateProvenance = revalidateInstalledPerformanceProvenance,
+  revalidateProvenance = revalidateAcceptedPerformanceProvenance,
   revalidateReport = revalidateInstalledPerformanceReport
 }) {
   assertInstalledPerformanceArtifactPathSeparation({
@@ -2195,6 +2409,48 @@ function requireProvenanceReceipt(receipt) {
     receipt.fileIdentity.size !== BigInt(receipt.bytes)
   ) {
     throw new Error("The installed-performance provenance receipt is invalid.");
+  }
+}
+
+function requirePerformanceEvidenceProvenanceReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.path !== "string" ||
+    receipt.path.length === 0 ||
+    receipt.protocol !== PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL ||
+    receipt.artifactRole !== PERFORMANCE_EVIDENCE_ARTIFACT_ROLE ||
+    receipt.extensionId !== "Matt17BR.openwrangler" ||
+    typeof receipt.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(receipt.extensionVersion)?.channel !== "stable" ||
+    receipt.preview !== false ||
+    receipt.releaseTag !== `v${receipt.extensionVersion}` ||
+    typeof receipt.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(receipt.sourceCommit) ||
+    typeof receipt.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.vsixSha256) ||
+    !Number.isSafeInteger(receipt.vsixBytes) ||
+    receipt.vsixBytes <= 0 ||
+    receipt.vsixBytes > VSIX_MAX_BYTES ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256) ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    receipt.bytes > INSTALLED_PROVENANCE_MAX_BYTES ||
+    !receipt.fileIdentity ||
+    typeof receipt.fileIdentity !== "object" ||
+    !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof receipt.fileIdentity[key] === "bigint") ||
+    receipt.fileIdentity.size !== BigInt(receipt.bytes)
+  ) {
+    throw new Error("The performance-evidence provenance receipt is invalid.");
+  }
+}
+
+function requireAcceptedProvenanceReceipt(receipt) {
+  if (receipt?.protocol === PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL) {
+    requirePerformanceEvidenceProvenanceReceipt(receipt);
+  } else {
+    requireProvenanceReceipt(receipt);
   }
 }
 

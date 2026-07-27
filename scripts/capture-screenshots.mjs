@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import pixelmatch from "pixelmatch";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
+import { stringifyForInlineScript } from "./capture-screenshots-json.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tmpDir = resolve(root, "tmp", "screenshots");
@@ -490,28 +491,28 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     body { background: var(--vscode-editor-background); color: var(--vscode-foreground); zoom: ${zoom}; }
   </style>
   <script>
-    const sessionPayload = ${JSON.stringify(sessionPayload)};
+    const sessionPayload = ${stringifyForInlineScript(sessionPayload)};
     window.openWranglerSessionPayload = sessionPayload;
     const profileSummaries = sessionPayload.harnessSummaries ?? sessionPayload.summaries ?? [];
-    const columnValues = ${JSON.stringify(columnValues)};
-    const pages = ${JSON.stringify(suppliedPages)};
-    const stepInspections = ${JSON.stringify(stepInspections)};
-    const strictProjectedPages = ${JSON.stringify(strictProjectedPages)};
+    const columnValues = ${stringifyForInlineScript(columnValues)};
+    const pages = ${stringifyForInlineScript(suppliedPages)};
+    const stepInspections = ${stringifyForInlineScript(stepInspections)};
+    const strictProjectedPages = ${stringifyForInlineScript(strictProjectedPages)};
     window.openWranglerMessages = [];
     window.openWranglerHarnessErrors = [];
     window.openWranglerProjectedResponses = [];
-    window.openWranglerColumnBlockSize = ${JSON.stringify(fetchColumnBlockSize)};
+    window.openWranglerColumnBlockSize = ${stringifyForInlineScript(fetchColumnBlockSize)};
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
         window.openWranglerMessages.push(message);
         if (message.kind === "ready") {
           ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload, origin: window.location.origin })), 20);'}
-          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(editorAction)}, origin: window.location.origin })), 90);` : ""}
-          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${JSON.stringify(appearance.followupMessage)}, origin: window.location.origin })), 120);` : ""}
+          ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${stringifyForInlineScript(editorAction)}, origin: window.location.origin })), 90);` : ""}
+          ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${stringifyForInlineScript(appearance.followupMessage)}, origin: window.location.origin })), 120);` : ""}
           ${
             openColumnFilter
               ? `setTimeout(() => {
-            const header = document.querySelector(${JSON.stringify(`th[data-column="${openColumnFilter}"]`)});
+            const header = document.querySelector(${stringifyForInlineScript(`th[data-column="${openColumnFilter}"]`)});
             const menu = header?.querySelector("details");
             if (menu) menu.open = true;
             const filter = [...(header?.querySelectorAll("button") ?? [])]
@@ -668,7 +669,7 @@ show(df, label="sample.csv")</div>
     const renderer = activate({
       postMessage(message) { window.openWranglerNotebookMessages.push(message); }
     });
-    renderer.renderOutputItem({ json: () => (${JSON.stringify(payload)}) }, document.getElementById("notebook-output"));
+    renderer.renderOutputItem({ json: () => (${stringifyForInlineScript(payload)}) }, document.getElementById("notebook-output"));
   </script>
 </body>
 </html>`;
@@ -694,7 +695,7 @@ function writeCodePreviewHarness(fileName, code, outputName) {
       postMessage(message) {
         if (message.kind === "ready") {
           setTimeout(() => window.dispatchEvent(new MessageEvent("message", {
-            data: { kind: "codePreview", code: ${JSON.stringify(code)}, editable: true },
+            data: { kind: "codePreview", code: ${stringifyForInlineScript(code)}, editable: true },
             origin: window.location.origin
           })), 20);
         }

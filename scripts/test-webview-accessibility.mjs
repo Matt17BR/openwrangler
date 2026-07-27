@@ -229,8 +229,9 @@ async function verifyInsightsDrawerWorkflow(browser) {
     }
     const close = page.getByRole("button", { name: "Close panel" });
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Close panel");
-    await page.getByText("value (column 1)", { exact: true }).waitFor();
-    await page.getByText("value (column 2)", { exact: true }).waitFor();
+    const summaryPanel = panel.locator("section.summaryPanel");
+    await summaryPanel.getByText("value (column 1)", { exact: true }).waitFor();
+    await summaryPanel.getByText("value (column 2)", { exact: true }).waitFor();
     await close.press("Escape");
     await panel.waitFor({ state: "detached" });
     await page.waitForFunction(

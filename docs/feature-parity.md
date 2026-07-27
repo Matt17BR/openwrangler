@@ -6,7 +6,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
 
-VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google documents one Open VSX-hosted Antigravity extension, which is a distribution precedent rather than proof of a general registry path; Open Wrangler publication, discovery/installation, and functional smoke evidence there remain outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
+VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity), so publication there can make Open Wrangler discoverable; discovery is not compatibility evidence, and its isolated functional smoke remains outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
 | Surface                                              | Pandas | Polars | Status  | Required evidence                                                              |
 | ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------------------------------ |
@@ -641,6 +641,12 @@ First-class editor platform and Remote SSH acceptance, 2026-07-27:
 - The exact head also passed [cross-platform runtime run 30277495296](https://github.com/Matt17BR/openwrangler/actions/runs/30277495296), [released-Jupyter run 30277497874](https://github.com/Matt17BR/openwrangler/actions/runs/30277497874), and [CodeQL run 30277495873](https://github.com/Matt17BR/openwrangler/actions/runs/30277495873). No editor phase or Remote SSH attempt was retried, and successful editor/Remote phases produced no failure-diagnostic artifact.
 
 This advances only **Original icons, native views, themes, accessibility** and **Cross-platform first-class editor package acceptance** to **Done**. Native Cursor on macOS/Windows is a bounded platform smoke, and Remote SSH evidence is the pinned Linux-x64 loopback fixture rather than every remote provider or host. Installed-editor first-usable-grid performance and virtual-grid timing remain **Partial**; experimental VS Code forks, DuckDB completion, parity completion, and 1.0 readiness are not implied.
+
+Ambiguous Pandas viewing-name hardening, 2026-07-27:
+
+- Live Pandas filters, sorts, and distinct-value lookup now reject both duplicate raw labels and distinct raw labels whose string forms collide, matching the existing saved-snapshot fail-closed behavior. Standalone and notebook transports preserve request and view correlation while returning the structured `ambiguous_view_column` diagnostic.
+- The grid and Filters / Sorts drawer explain the ambiguity, distinguish selector entries by position, and disable only controls that would emit a name-addressed query. Stable-ID cleaning operations, paging, profiling, resizing, selection, and clear actions remain usable.
+- Focused Pandas runtime, standalone protocol, kernel protocol, and React tests cover true duplicates and integer-`7`/string-`"7"` collisions. This closes a silent-first-column correctness gap without changing the status of any parity row or replacing packaged-editor evidence.
 
 ## Explicitly deferred from 1.0
 

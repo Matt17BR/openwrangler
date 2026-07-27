@@ -11,7 +11,7 @@ import pytest
 
 import openwrangler_runtime.engines.pandas_engine as pandas_engine_module
 from openwrangler_runtime._column_binding import bind_step
-from openwrangler_runtime.engines import PandasEngine
+from openwrangler_runtime.engines import AmbiguousViewColumnError, PandasEngine
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 from openwrangler_runtime.session import SessionManager
@@ -190,6 +190,51 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
         {"column": "duplicate", "count": 1},
         {"column": "7", "count": 0},
     ]
+
+
+@pytest.mark.parametrize(
+    ("labels", "display_name"),
+    [
+        (["duplicate", "duplicate"], "duplicate"),
+        ([7, "7"], "7"),
+    ],
+)
+def test_pandas_name_addressed_view_queries_fail_closed_for_ambiguous_display_names(
+    labels: list[object], display_name: str
+) -> None:
+    engine = PandasEngine()
+    frame = engine.ensure_row_ids(
+        pd.DataFrame([[1, 100], [2, 200]], columns=pd.Index(labels, dtype="object")),
+        "ambiguous",
+    )
+    message = rf"Pandas view .* column {display_name!r} is ambiguous because 2 dataframe columns share"
+
+    with pytest.raises(AmbiguousViewColumnError, match=message):
+        engine.apply_filter_model(
+            frame,
+            {
+                "filters": [
+                    {
+                        "column": display_name,
+                        "type": "integer",
+                        "predicates": [{"kind": "predicate", "operator": "gt", "value": 50}],
+                    }
+                ],
+                "sort": [],
+            },
+        )
+
+    with pytest.raises(AmbiguousViewColumnError, match=message):
+        engine.apply_filter_model(
+            frame,
+            {
+                "filters": [],
+                "sort": [{"column": display_name, "direction": "asc", "nulls": "last"}],
+            },
+        )
+
+    with pytest.raises(AmbiguousViewColumnError, match=message):
+        engine.column_values(frame, display_name)
 
 
 def test_pandas_page_projection_addresses_duplicate_columns_by_position() -> None:

@@ -189,6 +189,52 @@ export async function acquirePinnedRemoteWorkspaceArtifacts(parent, options = {}
   });
 }
 
+export async function acquirePinnedVSCodeClient(
+  parent,
+  {
+    downloadArtifact = downloadPinnedRemoteArtifact,
+    extractTar = extractPinnedRemoteTar,
+    openResponse,
+    runCommand,
+    validateInstallation = validatePinnedVSCodeClientInstallation
+  } = {}
+) {
+  if (process.platform !== "linux" || process.arch !== "x64") {
+    throw new Error("Pinned VS Code client acquisition supports only Linux x64.");
+  }
+  if (
+    typeof downloadArtifact !== "function" ||
+    typeof extractTar !== "function" ||
+    typeof validateInstallation !== "function"
+  ) {
+    throw new TypeError(
+      "Pinned VS Code client acquisition requires bounded download, extraction, and validation functions."
+    );
+  }
+  const parentReceipt = privateDirectoryReceipt(parent);
+  const root = join(parentReceipt.path, `vscode-client-${randomUUID()}`);
+  mkdirSync(root, { mode: 0o700 });
+  const rootReceipt = privateDirectoryReceipt(root, parentReceipt.canonicalPath);
+  const target = PINNED_REMOTE_WORKSPACE_TARGETS.vscode;
+  const artifact = await downloadArtifact(target, rootReceipt, { openResponse });
+  const installationRoot = join(rootReceipt.path, "installation");
+  mkdirSync(installationRoot, { mode: 0o700 });
+  await extractTar(artifact, installationRoot, { archiveRoot: target.archiveRoot, runCommand });
+  const editor = validateInstallation(installationRoot);
+  return Object.freeze({
+    editor: Object.freeze({
+      name: "VS Code",
+      key: "vscode",
+      executable: editor.executable,
+      cli: editor.cli,
+      sharedDataDir: true
+    }),
+    root,
+    target,
+    cleanup: () => rmSync(root, { recursive: true, force: true })
+  });
+}
+
 export async function stagePinnedRemoteArtifact(sourcePath, rawTarget, rootReceipt) {
   const target = validatePinnedRemoteTarget(rawTarget);
   assertPrivateDirectoryReceipt(rootReceipt);
@@ -580,14 +626,23 @@ export async function validateRemoteSshVsix(path) {
 export async function extractPinnedRemoteTar(
   artifact,
   destination,
-  { archiveRoot = artifact?.target?.archiveRoot, runCommand = runBoundedEditorCommand } = {}
+  { archiveRoot = artifact?.target?.archiveRoot, runCommand = runBoundedEditorCommand, beforeArtifactSpawnForTest } = {}
 ) {
   if (!artifact?.path || artifact.target?.format !== "tar.gz") {
     throw new Error("Pinned remote extraction requires a validated tar artifact receipt.");
   }
   await assertPinnedRemoteArtifactReceipt(artifact);
   const destinationReceipt = privateDirectoryReceipt(destination);
-  const listing = await inspectTarManifest(artifact.path, { archiveRoot, runCommand });
+  const listing = await inspectTarManifest(artifact.path, {
+    archiveRoot,
+    runCommand,
+    beforeSpawnCheck: pinnedRemoteArtifactPreSpawnCheck(
+      artifact,
+      "Pinned remote-workspace tar inspection",
+      beforeArtifactSpawnForTest
+    )
+  });
+  await assertPinnedRemoteArtifactReceipt(artifact);
   validateTarManifest(listing, { archiveRoot });
   const args = [
     "--extract",
@@ -607,10 +662,16 @@ export async function extractPinnedRemoteTar(
       executable: "/usr/bin/tar",
       args,
       environment: createEditorAcceptanceEnvironment(),
-      label: `Pinned ${artifact.target.identity} extraction`
+      label: `Pinned ${artifact.target.identity} extraction`,
+      beforeSpawnCheck: pinnedRemoteArtifactPreSpawnCheck(
+        artifact,
+        `Pinned ${artifact.target.identity} extraction`,
+        beforeArtifactSpawnForTest
+      )
     },
     { timeoutMs: COMMAND_TIMEOUT_MS, maxOutputBytes: COMMAND_OUTPUT_LIMIT_BYTES }
   );
+  await assertPinnedRemoteArtifactReceipt(artifact);
   assertPrivateDirectoryReceipt(destinationReceipt);
   return destinationReceipt;
 }
@@ -689,7 +750,38 @@ export async function validatePinnedRemoteInstallations(
   });
 }
 
-async function inspectTarManifest(path, { archiveRoot, runCommand }) {
+export function validatePinnedVSCodeClientInstallation(clientRoot) {
+  const client = privateDirectoryReceipt(clientRoot);
+  const product = readBoundedJson(
+    join(client.path, "resources", "app", "product.json"),
+    2 * 1024 * 1024,
+    client.canonicalPath
+  );
+  const packageJson = readBoundedJson(
+    join(client.path, "resources", "app", "package.json"),
+    2 * 1024 * 1024,
+    client.canonicalPath
+  );
+  assertVSCodeProduct(product);
+  if (packageJson.name !== "Code" || packageJson.version !== PINNED_REMOTE_VSCODE_VERSION) {
+    throw new Error("The pinned VS Code client package identity drifted.");
+  }
+  if (
+    hashBoundedFile(join(client.path, "resources", "app", "LICENSE.rtf"), 2 * 1024 * 1024, client.canonicalPath) !==
+    PINNED_VSCODE_CLIENT_LICENSE_SHA256
+  ) {
+    throw new Error("The pinned VS Code client license receipt drifted.");
+  }
+  return Object.freeze({
+    executable: assertContainedRegularFile(client.canonicalPath, join(client.path, "code")),
+    cli: assertContainedRegularFile(client.canonicalPath, join(client.path, "bin", "code")),
+    installationRoot: client.path,
+    version: PINNED_REMOTE_VSCODE_VERSION,
+    commit: PINNED_REMOTE_VSCODE_COMMIT
+  });
+}
+
+async function inspectTarManifest(path, { archiveRoot, runCommand, beforeSpawnCheck }) {
   const script = [
     "import json,sys,tarfile",
     "p=sys.argv[1]",
@@ -705,7 +797,8 @@ async function inspectTarManifest(path, { archiveRoot, runCommand }) {
       executable: process.env.OPEN_WRANGLER_REMOTE_INSPECTION_PYTHON ?? "python3",
       args: ["-I", "-c", script, path],
       environment: createEditorAcceptanceEnvironment(),
-      label: "Pinned remote-workspace tar inspection"
+      label: "Pinned remote-workspace tar inspection",
+      beforeSpawnCheck
     },
     { timeoutMs: COMMAND_TIMEOUT_MS, maxOutputBytes: 1024 * 1024 }
   );
@@ -985,15 +1078,7 @@ function immutableFileReceipt(path, containedBy) {
 }
 
 export async function assertPinnedRemoteArtifactReceipt(artifact, { afterHashOpen } = {}) {
-  const target = validatePinnedRemoteTarget(artifact.target);
-  if (
-    artifact.sha256 !== target.decodedSha256 ||
-    artifact.snapshot?.size !== BigInt(target.decodedBytes) ||
-    typeof artifact.canonicalPath !== "string" ||
-    realpathSync(artifact.path) !== artifact.canonicalPath
-  ) {
-    throw new Error("The pinned remote-workspace artifact receipt changed before use.");
-  }
+  const target = assertPinnedRemoteArtifactIdentity(artifact);
   const receipt = immutableFileReceipt(artifact.path, dirname(artifact.canonicalPath));
   if (
     !sameFileSnapshot(receipt.snapshot, artifact.snapshot) ||
@@ -1001,6 +1086,38 @@ export async function assertPinnedRemoteArtifactReceipt(artifact, { afterHashOpe
   ) {
     throw new Error("The pinned remote-workspace artifact receipt changed before use.");
   }
+}
+
+function assertPinnedRemoteArtifactIdentity(artifact) {
+  const target = validatePinnedRemoteTarget(artifact?.target);
+  if (
+    !artifact ||
+    typeof artifact !== "object" ||
+    artifact.sha256 !== target.decodedSha256 ||
+    artifact.snapshot?.size !== BigInt(target.decodedBytes) ||
+    typeof artifact.path !== "string" ||
+    typeof artifact.canonicalPath !== "string" ||
+    realpathSync(artifact.path) !== artifact.canonicalPath
+  ) {
+    throw new Error("The pinned remote-workspace artifact receipt changed before use.");
+  }
+  const receipt = immutableFileReceipt(artifact.path, dirname(artifact.canonicalPath));
+  if (!sameFileSnapshot(receipt.snapshot, artifact.snapshot)) {
+    throw new Error("The pinned remote-workspace artifact receipt changed before use.");
+  }
+  return target;
+}
+
+function pinnedRemoteArtifactPreSpawnCheck(artifact, label, beforeArtifactSpawnForTest) {
+  return () => {
+    const hookResult = beforeArtifactSpawnForTest?.(Object.freeze({ label, path: artifact.path }));
+    if (hookResult !== undefined) {
+      throw new Error(
+        "Pinned remote-workspace extraction launch-race hooks must complete synchronously without a result."
+      );
+    }
+    assertPinnedRemoteArtifactIdentity(artifact);
+  };
 }
 
 async function hashReceipt(receipt, { afterOpen } = {}) {

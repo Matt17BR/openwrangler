@@ -5,6 +5,7 @@ import {
   chmodSync,
   existsSync,
   linkSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -18,11 +19,13 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 import { readBoundedRegularFile } from "./bounded-file-read.mjs";
 import {
+  acquirePinnedVSCodeClient,
   assertRemoteAcquisitionRootReceipt,
   assertPinnedRemoteArtifactReceipt,
   assertRemoteSshPackIsolation,
   createRemoteAcquisitionRootReceipt,
   downloadPinnedRemoteArtifact,
+  extractPinnedRemoteTar,
   PINNED_REMOTE_SSH_EXTENSION_ID,
   PINNED_REMOTE_SSH_VERSION,
   PINNED_DROPBEAR_VERSION,
@@ -32,6 +35,8 @@ import {
   validatePinnedRemoteTarget,
   validateTarManifest
 } from "./remote-workspace-acquisition.mjs";
+
+const linuxX64Test = process.platform === "linux" && process.arch === "x64" ? test : test.skip;
 
 test("Remote SSH acceptance pins one exact official VS Code artifact chain", () => {
   assert.equal(PINNED_REMOTE_VSCODE_VERSION, "1.130.0");
@@ -89,6 +94,51 @@ test("Remote acquisition root receipts retain identity while owned children chan
     assert.doesNotThrow(() => assertRemoteAcquisitionRootReceipt(receipt));
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+linuxX64Test("Pinned VS Code client acquisition stages only the exact desktop artifact in a private root", async () => {
+  const parent = privateRoot("openwrangler-vscode-client-parent-");
+  try {
+    const calls = [];
+    const acquired = await acquirePinnedVSCodeClient(parent, {
+      async downloadArtifact(target, rootReceipt) {
+        calls.push(["download", target, rootReceipt.path]);
+        return { path: join(rootReceipt.path, target.artifactName), target };
+      },
+      async extractTar(artifact, destination, options) {
+        calls.push(["extract", artifact.target, destination, options.archiveRoot]);
+        assert.equal(options.runCommand, undefined);
+        mkdirSync(join(destination, "bin"), { recursive: true });
+      },
+      validateInstallation(installationRoot) {
+        calls.push(["validate", installationRoot]);
+        return {
+          executable: join(installationRoot, "code"),
+          cli: join(installationRoot, "bin", "code")
+        };
+      }
+    });
+    assert.equal(acquired.target, PINNED_REMOTE_WORKSPACE_TARGETS.vscode);
+    assert.deepEqual(acquired.editor, {
+      name: "VS Code",
+      key: "vscode",
+      executable: join(acquired.root, "installation", "code"),
+      cli: join(acquired.root, "installation", "bin", "code"),
+      sharedDataDir: true
+    });
+    assert.deepEqual(
+      calls.map(([operation]) => operation),
+      ["download", "extract", "validate"]
+    );
+    assert.equal(calls[0][1], PINNED_REMOTE_WORKSPACE_TARGETS.vscode);
+    assert.equal(calls[1][1], PINNED_REMOTE_WORKSPACE_TARGETS.vscode);
+    assert.equal(calls[1][3], "VSCode-linux-x64");
+    assert.equal(calls[2][1], join(acquired.root, "installation"));
+    acquired.cleanup();
+    assert.equal(existsSync(acquired.root), false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 
@@ -169,6 +219,88 @@ test("Remote artifact revalidation rejects in-place mutation after its descripto
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Pinned tar extraction revalidates its artifact at both command boundaries", async () => {
+  const body = Buffer.from("pinned-tar-command-boundary-fixture", "utf8");
+  const target = testTarTarget(body);
+  const root = privateRoot("openwrangler-remote-extract-boundaries-");
+  try {
+    const receipt = await downloadPinnedRemoteArtifact(target, createRemoteAcquisitionRootReceipt(root), {
+      openResponse: responseSequence([
+        response(302, Buffer.alloc(0), { location: target.redirectUrl }),
+        response(200, body)
+      ]),
+      timeoutMs: 1_000
+    });
+    const destination = join(root, "installation");
+    mkdirSync(destination, { mode: 0o700 });
+    const labels = [];
+    const extracted = await extractPinnedRemoteTar(receipt, destination, {
+      async runCommand(command) {
+        command.beforeSpawnCheck?.();
+        labels.push(command.label);
+        return command.label === "Pinned remote-workspace tar inspection"
+          ? {
+              stdout: '{"name":"bin","type":"directory"}\n{"name":"bin/code","type":"file"}\n',
+              stderr: ""
+            }
+          : { stdout: "", stderr: "" };
+      }
+    });
+    assert.equal(extracted.path, destination);
+    assert.deepEqual(labels, ["Pinned remote-workspace tar inspection", `Pinned ${target.identity} extraction`]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Pinned tar extraction rejects artifact mutation before or during either command", async () => {
+  for (const stage of ["inspection-pre", "inspection-post", "extraction-pre", "extraction-post"]) {
+    const body = Buffer.from(`pinned-tar-race-fixture-${stage}`.padEnd(48, "."), "utf8");
+    const target = testTarTarget(body);
+    const root = privateRoot(`openwrangler-remote-extract-${stage}-`);
+    try {
+      const receipt = await downloadPinnedRemoteArtifact(target, createRemoteAcquisitionRootReceipt(root), {
+        openResponse: responseSequence([
+          response(302, Buffer.alloc(0), { location: target.redirectUrl }),
+          response(200, body)
+        ]),
+        timeoutMs: 1_000
+      });
+      const destination = join(root, "installation");
+      mkdirSync(destination, { mode: 0o700 });
+      const mutate = () => writeFileSync(receipt.path, Buffer.alloc(body.length, 0x78), { mode: 0o600 });
+      await assert.rejects(
+        extractPinnedRemoteTar(receipt, destination, {
+          beforeArtifactSpawnForTest({ label }) {
+            if (
+              (stage === "inspection-pre" && label === "Pinned remote-workspace tar inspection") ||
+              (stage === "extraction-pre" && label === `Pinned ${target.identity} extraction`)
+            ) {
+              mutate();
+            }
+          },
+          async runCommand(command) {
+            command.beforeSpawnCheck?.();
+            if (
+              (stage === "inspection-post" && command.label === "Pinned remote-workspace tar inspection") ||
+              (stage === "extraction-post" && command.label === `Pinned ${target.identity} extraction`)
+            ) {
+              mutate();
+            }
+            return command.label === "Pinned remote-workspace tar inspection"
+              ? { stdout: '{"name":"bin","type":"directory"}\n', stderr: "" }
+              : { stdout: "", stderr: "" };
+          }
+        }),
+        /artifact receipt changed before use/u,
+        stage
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

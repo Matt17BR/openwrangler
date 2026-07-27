@@ -173,6 +173,18 @@ describe("App progressive profiling and view correlation", () => {
     expect(within(headers[0]!).getByText("Min 1")).toBeVisible();
     expect(within(headers[1]!).getByText("Distinct 100%")).toBeVisible();
     expect(within(headers[1]!).getByText("Max 20")).toBeVisible();
+    for (const header of headers) {
+      fireEvent.click(within(header).getByLabelText("Column actions for duplicate"));
+      expect(
+        within(header).getByText(
+          'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.'
+        )
+      ).toBeVisible();
+      expect(within(header).getByRole("button", { name: "Filter…" })).toBeDisabled();
+      expect(within(header).getByRole("button", { name: "Sort ascending" })).toBeDisabled();
+      expect(within(header).getByRole("button", { name: "Sort descending" })).toBeDisabled();
+      expect(within(header).getByRole("button", { name: "Resize duplicate column" })).toBeEnabled();
+    }
 
     postMessage.mockClear();
     const secondDuplicateCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
@@ -188,10 +200,21 @@ describe("App progressive profiling and view correlation", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
-    expect(screen.getAllByText(/duplicate \(column [12]\)/u).map((node) => node.textContent)).toEqual([
-      "duplicate (column 1)",
-      "duplicate (column 2)"
-    ]);
+    const drawer = screen.getByRole("complementary", { name: "Insights and filters" });
+    const columnSelects = within(drawer).getAllByLabelText("Column");
+    expect(columnSelects).toHaveLength(2);
+    for (const select of columnSelects) {
+      expect(within(select).getByRole("option", { name: "duplicate (column 1)" })).toBeInTheDocument();
+      expect(within(select).getByRole("option", { name: "duplicate (column 2)" })).toBeInTheDocument();
+    }
+    expect(
+      screen.getAllByText(
+        'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.'
+      )
+    ).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+    expect(requestsOfKind("getColumnValues")).toHaveLength(0);
   });
 
   it.each(["mouse", "keyboard"] as const)(

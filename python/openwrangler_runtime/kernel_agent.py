@@ -5,7 +5,7 @@ import traceback
 from collections.abc import Mapping
 from concurrent.futures import CancelledError
 
-from .engines import EngineError
+from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
 from .server import dispatch
 from .session import SessionManager
@@ -29,6 +29,8 @@ def dispatch_json(payload: str) -> str:
         response = {"kind": "cancelled", "targetRequestId": request_id}
     except ProtocolError as error:
         response = error_response(str(error), code="invalid_request", recoverable=False)
+    except AmbiguousViewColumnError as error:
+        response = error_response(str(error), code="ambiguous_view_column")
     except EngineError as error:
         response = error_response(str(error), code="engine_error")
     except Exception as error:

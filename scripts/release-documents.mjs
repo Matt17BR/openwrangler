@@ -20,7 +20,7 @@ const README_EDITOR_SUPPORT = `| Editor                                         
 | Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
 | Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
 
-Google documents [one Open VSX-hosted extension used with Antigravity](https://developers.google.com/workspace/guides/developer-tools). That establishes a distribution precedent; Open Wrangler availability requires separate publication, and compatibility requires an isolated functional smoke. Experimental editors do not inherit the VS Code/Cursor support guarantee.`;
+Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -75,6 +75,22 @@ Download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the ma
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
 
 This stable release satisfies every in-scope row in the checked-in [feature parity matrix](${FEATURE_PARITY_URL}).
+
+${README_RELEASE_SECTION_END}`;
+
+export const PERFORMANCE_EVIDENCE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
+
+> **Release status:** 1.0 validation candidate, not a stable release. The final two installed-editor performance rows remain open in the [feature parity matrix](${FEATURE_PARITY_URL}).
+
+## Install
+
+Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+
+${README_EDITOR_SUPPORT}
+
+There is no public installation for this evidence-only candidate. It is built and installed only inside isolated hosted validation and must not be published to GitHub Releases, the Visual Studio Marketplace, or Open VSX.
+
+After the hosted evidence is green, the two remaining rows must be marked complete and a fresh all-green stable candidate must be built. The evidence-only VSIX is never renamed or promoted.
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -187,7 +203,13 @@ function inspectEvidence(evidence, trackedEvidencePaths) {
   });
 }
 
-export function inspectPrimaryParityMatrix(contents, expectedScope, trackedEvidencePaths) {
+export function inspectPrimaryParityMatrix(
+  contents,
+  expectedScope,
+  trackedEvidencePaths,
+  allowedIncompleteRows = new Map(),
+  requiredIncompleteRows = new Map()
+) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
     return [parsed.problem];
@@ -245,11 +267,17 @@ export function inspectPrimaryParityMatrix(contents, expectedScope, trackedEvide
     }
 
     const [surface, pandas, polars, status, evidence] = actual;
-    if (status !== "Done") {
+    const allowedIncompleteStatus = allowedIncompleteRows.get(surface);
+    const requiredIncompleteStatus = requiredIncompleteRows.get(surface);
+    if (status !== "Done" && status !== allowedIncompleteStatus) {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
+    } else if (requiredIncompleteStatus !== undefined && status !== requiredIncompleteStatus) {
+      problems.push(
+        `Parity row "${surface}" must remain ${requiredIncompleteStatus} while authoring performance evidence; received ${status}.`
+      );
     } else if (!inspectEvidence(evidence, trackedEvidencePaths)) {
       problems.push(
-        `Parity row "${surface}" must record human acceptance evidence plus a valid tracked test:, workflow:, or record: reference.`
+        `Parity row "${surface}" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.`
       );
     }
     if (surface !== expected[0] || pandas !== expected[1] || polars !== expected[2]) {
@@ -415,4 +443,13 @@ export function inspectPreviewReadme(contents, label = "README.md") {
 
 export function inspectStableReadme(contents, label = "README.md") {
   return inspectReadmeReleaseRegion(contents, label, STABLE_README_RELEASE_SECTION, "stable");
+}
+
+export function inspectPerformanceEvidenceReadme(contents, label = "README.md") {
+  return inspectReadmeReleaseRegion(
+    contents,
+    label,
+    PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
+    "performance-evidence candidate"
+  );
 }

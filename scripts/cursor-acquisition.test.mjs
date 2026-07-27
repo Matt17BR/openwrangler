@@ -31,7 +31,7 @@ import {
   validatePinnedCursorTarget
 } from "./cursor-acquisition.mjs";
 
-test("Cursor acceptance pins official macOS and Windows artifacts exactly", () => {
+test("Cursor acceptance pins official macOS, Linux, and Windows artifacts exactly", () => {
   const mac = resolvePinnedCursorTarget("darwin", "arm64");
   assert.equal(mac, PINNED_CURSOR_TARGETS["darwin-universal"]);
   assert.equal(mac.version, "3.13.10");
@@ -39,13 +39,20 @@ test("Cursor acceptance pins official macOS and Windows artifacts exactly", () =
   assert.equal(mac.sha256, "42b1edea8912eb0b2fc686ea89a4a0047aaaf43da4f7d8eb34a4bafa35d477b1");
   assert.equal(new URL(mac.url).hostname, "downloads.cursor.com");
 
+  const linux = resolvePinnedCursorTarget("linux", "x64");
+  assert.equal(linux, PINNED_CURSOR_TARGETS["linux-x64"]);
+  assert.equal(linux.bytes, 209_277_476);
+  assert.equal(linux.sha256, "8a5b734be3bccc3de6daf96c536daa644c715e5fe3e5eaf21721538072ea104c");
+  assert.equal(linux.format, "deb");
+  assert.equal(linux.productCommit, PINNED_CURSOR_PRODUCT_COMMIT);
+
   const windows = resolvePinnedCursorTarget("win32", "x64");
   assert.equal(windows, PINNED_CURSOR_TARGETS["win32-x64"]);
   assert.equal(windows.bytes, 199_233_712);
   assert.equal(windows.sha256, "2f99ebb41bcce62cd6c8e4611e56a613b9abaf2399a8ce02e7925798e0f64522");
   assert.equal(windows.productCommit, PINNED_CURSOR_PRODUCT_COMMIT);
   assert.throws(() => resolvePinnedCursorTarget("win32", "arm64"), /does not support/u);
-  assert.throws(() => resolvePinnedCursorTarget("linux", "x64"), /does not support/u);
+  assert.throws(() => resolvePinnedCursorTarget("linux", "arm64"), /does not support/u);
 });
 
 test("Cursor target validation rejects moving, credentialed, and malformed acquisition inputs", () => {
@@ -257,6 +264,11 @@ test("Cursor extraction revalidates the artifact at every consuming command spaw
       swapAt: "Pinned Cursor DMG attachment"
     },
     {
+      label: "linux-package",
+      platform: "linux",
+      swapAt: "Pinned Cursor Debian package extraction"
+    },
+    {
       label: "windows-authenticode",
       platform: "win32",
       swapAt: "Pinned Cursor Authenticode verification"
@@ -280,7 +292,9 @@ test("Cursor extraction revalidates the artifact at every consuming command spaw
               format: "dmg",
               platform: "darwin"
             }
-          : testTarget(body);
+          : scenario.platform === "linux"
+            ? testLinuxTarget(body)
+            : testTarget(body);
       const rootReceipt = createCursorAcquisitionRootReceipt(directory);
       const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, {
         openResponse: async () => cursorResponse(body),
@@ -387,6 +401,46 @@ test("Cursor macOS extraction separates integrity verification from exact signin
   }
 });
 
+test("Cursor Linux extraction uses dpkg-deb without package scripts and returns only the application root", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-linux-package-")));
+  chmodSync(directory, 0o700);
+  try {
+    const body = Buffer.from("pinned-cursor-linux-package", "utf8");
+    const target = testLinuxTarget(body);
+    const rootReceipt = createCursorAcquisitionRootReceipt(directory);
+    const artifact = await downloadPinnedCursorArtifact(target, rootReceipt, {
+      openResponse: async () => cursorResponse(body),
+      timeoutMs: 1_000
+    });
+    const commands = [];
+    const extraction = await extractPinnedCursorTarget(target, artifact, rootReceipt, {
+      environment: {},
+      async runCommand(command, options) {
+        command.beforeSpawnCheck?.();
+        commands.push({ command, options });
+        const destination = command.args.at(-1);
+        mkdirSync(join(destination, "usr", "share", "cursor"), { recursive: true });
+        return { stdout: "", stderr: "" };
+      }
+    });
+    assert.equal(extraction.installationRoot, join(directory, "installation", "usr", "share", "cursor"));
+    assert.deepEqual(commands, [
+      {
+        command: {
+          executable: "/usr/bin/dpkg-deb",
+          args: ["--extract", artifact.path, join(directory, "installation")],
+          beforeSpawnCheck: commands[0].command.beforeSpawnCheck,
+          environment: {},
+          label: "Pinned Cursor Debian package extraction"
+        },
+        options: { timeoutMs: 300_000, maxOutputBytes: 16 * 1024 }
+      }
+    ]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Cursor Windows extraction binds the artifact and exact leaf identity inside bounded Authenticode verification", async () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-windows-signature-")));
   chmodSync(directory, 0o700);
@@ -453,12 +507,16 @@ test("Cursor Windows extraction binds the artifact and exact leaf identity insid
 });
 
 test("Cursor installation validation binds product, version, commit, target files, and containment", () => {
-  for (const platform of ["darwin", "win32"]) {
+  for (const platform of ["darwin", "linux", "win32"]) {
     const directory = mkdtempSync(join(tmpdir(), `openwrangler-cursor-${platform}-`));
     chmodSync(directory, 0o700);
     try {
       const target =
-        platform === "darwin" ? PINNED_CURSOR_TARGETS["darwin-universal"] : PINNED_CURSOR_TARGETS["win32-x64"];
+        platform === "darwin"
+          ? PINNED_CURSOR_TARGETS["darwin-universal"]
+          : platform === "linux"
+            ? PINNED_CURSOR_TARGETS["linux-x64"]
+            : PINNED_CURSOR_TARGETS["win32-x64"];
       const appRoot =
         platform === "darwin"
           ? join(directory, "Cursor.app", "Contents", "Resources", "app")
@@ -466,10 +524,18 @@ test("Cursor installation validation binds product, version, commit, target file
       const executable =
         platform === "darwin"
           ? join(directory, "Cursor.app", "Contents", "MacOS", "Cursor")
-          : join(directory, "Cursor.exe");
-      const cli = platform === "darwin" ? join(appRoot, "bin", "cursor") : join(appRoot, "bin", "cursor.cmd");
+          : platform === "linux"
+            ? join(directory, "cursor")
+            : join(directory, "Cursor.exe");
+      const cli =
+        platform === "darwin"
+          ? join(appRoot, "bin", "cursor")
+          : platform === "linux"
+            ? join(directory, "bin", "cursor")
+            : join(appRoot, "bin", "cursor.cmd");
       mkdirSync(join(appRoot, "bin"), { recursive: true });
       mkdirSync(join(executable, ".."), { recursive: true });
+      mkdirSync(join(cli, ".."), { recursive: true });
       writeFileSync(executable, "binary");
       writeFileSync(cli, "cli");
       writeFileSync(join(appRoot, "package.json"), JSON.stringify({ name: "Cursor", version: PINNED_CURSOR_VERSION }));
@@ -531,6 +597,16 @@ function testTarget(body) {
     bytes: body.length,
     sha256: createHash("sha256").update(body).digest("hex"),
     url: "https://downloads.cursor.com/acceptance/cursor-test.exe"
+  };
+}
+
+function testLinuxTarget(body) {
+  return {
+    ...PINNED_CURSOR_TARGETS["linux-x64"],
+    artifactName: "cursor-test.deb",
+    bytes: body.length,
+    sha256: createHash("sha256").update(body).digest("hex"),
+    url: "https://downloads.cursor.com/acceptance/cursor-test.deb"
   };
 }
 

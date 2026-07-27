@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   createReadStream,
@@ -52,6 +53,17 @@ export const PINNED_CURSOR_TARGETS = Object.freeze({
     url: "https://downloads.cursor.com/production/4f02290ccd9304f0e6bf8ee85f6e9106f02ac1f7/darwin/universal/Cursor-darwin-universal.dmg",
     version: PINNED_CURSOR_VERSION
   }),
+  "linux-x64": Object.freeze({
+    architecture: "x64",
+    artifactName: "cursor_3.13.10_amd64.deb",
+    bytes: 209_277_476,
+    format: "deb",
+    platform: "linux",
+    productCommit: PINNED_CURSOR_PRODUCT_COMMIT,
+    sha256: "8a5b734be3bccc3de6daf96c536daa644c715e5fe3e5eaf21721538072ea104c",
+    url: "https://downloads.cursor.com/production/4f02290ccd9304f0e6bf8ee85f6e9106f02ac1f7/linux/x64/deb/amd64/deb/cursor_3.13.10_amd64.deb",
+    version: PINNED_CURSOR_VERSION
+  }),
   "win32-x64": Object.freeze({
     architecture: "x64",
     artifactName: "CursorUserSetup-x64-3.13.10.exe",
@@ -69,9 +81,11 @@ export function resolvePinnedCursorTarget(platform = hostPlatform(), architectur
   const key =
     platform === "darwin" && (architecture === "arm64" || architecture === "x64")
       ? "darwin-universal"
-      : platform === "win32" && architecture === "x64"
-        ? "win32-x64"
-        : undefined;
+      : platform === "linux" && architecture === "x64"
+        ? "linux-x64"
+        : platform === "win32" && architecture === "x64"
+          ? "win32-x64"
+          : undefined;
   if (!key) {
     throw new Error(
       `Pinned Cursor acceptance does not support ${JSON.stringify(platform)} ${JSON.stringify(architecture)}.`
@@ -312,8 +326,15 @@ export function validatePinnedCursorInstallation(rawTarget, installationRoot) {
   const executable =
     target.platform === "darwin"
       ? join(rootReceipt.path, "Cursor.app", "Contents", "MacOS", "Cursor")
-      : join(rootReceipt.path, "Cursor.exe");
-  const cli = target.platform === "darwin" ? join(appRoot, "bin", "cursor") : join(appRoot, "bin", "cursor.cmd");
+      : target.platform === "linux"
+        ? join(rootReceipt.path, "cursor")
+        : join(rootReceipt.path, "Cursor.exe");
+  const cli =
+    target.platform === "darwin"
+      ? join(appRoot, "bin", "cursor")
+      : target.platform === "linux"
+        ? join(rootReceipt.path, "bin", "cursor")
+        : join(appRoot, "bin", "cursor.cmd");
   const packageJson = readBoundedJson(join(appRoot, "package.json"), 2 * 1024 * 1024, rootReceipt.canonicalPath);
   const productJson = readBoundedJson(join(appRoot, "product.json"), 2 * 1024 * 1024, rootReceipt.canonicalPath);
   if (
@@ -363,6 +384,7 @@ export function validatePinnedCursorTarget(target) {
     !/^[0-9a-f]{40}$/u.test(target.productCommit) ||
     !(
       (target.platform === "darwin" && target.architecture === "universal" && target.format === "dmg") ||
+      (target.platform === "linux" && target.architecture === "x64" && target.format === "deb") ||
       (target.platform === "win32" && target.architecture === "x64" && target.format === "inno")
     )
   ) {
@@ -398,11 +420,52 @@ export async function extractPinnedCursorTarget(
       runCommand
     });
   }
+  if (target.platform === "linux") {
+    return extractLinuxTarget(target, artifact, rootReceipt, installationRoot, {
+      beforeArtifactSpawnForTest,
+      environment,
+      runCommand
+    });
+  }
   return extractWindowsTarget(target, artifact, rootReceipt, installationRoot, {
     beforeArtifactSpawnForTest,
     environment,
     runCommand
   });
+}
+
+async function extractLinuxTarget(
+  target,
+  artifact,
+  rootReceipt,
+  installationRoot,
+  { beforeArtifactSpawnForTest, environment, runCommand }
+) {
+  await runCommand(
+    {
+      executable: "/usr/bin/dpkg-deb",
+      args: ["--extract", artifact.path, installationRoot],
+      beforeSpawnCheck: artifactPreSpawnCheck(
+        target,
+        artifact,
+        rootReceipt,
+        "Pinned Cursor Debian package extraction",
+        beforeArtifactSpawnForTest
+      ),
+      environment,
+      label: "Pinned Cursor Debian package extraction"
+    },
+    { timeoutMs: EXTRACTION_TIMEOUT_MS, maxOutputBytes: DOWNLOAD_OUTPUT_LIMIT_BYTES }
+  );
+  await assertImmutableArtifactReceipt(target, artifact, rootReceipt);
+  const applicationRoot = join(installationRoot, "usr", "share", "cursor");
+  const applicationMetadata = lstatSync(applicationRoot);
+  if (!applicationMetadata.isDirectory() || applicationMetadata.isSymbolicLink()) {
+    throw new Error("The pinned Cursor Debian package did not contain one regular application root.");
+  }
+  chmodSync(applicationRoot, 0o700);
+  privateDirectoryReceipt(applicationRoot, rootReceipt.canonicalPath);
+  return { installationRoot: applicationRoot };
 }
 
 async function extractDarwinTarget(

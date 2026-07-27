@@ -26,9 +26,19 @@ import {
   inspectWorkflowReleaseMetadata
 } from "./release-metadata.mjs";
 import { inspectReleaseWorkflow } from "./release-workflow.mjs";
-import { inspectPreviewReadme, PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
+  inspectPerformanceEvidenceReadme,
+  inspectPreviewReadme,
+  PREVIEW_README_RELEASE_SECTION
+} from "./release-documents.mjs";
+import {
+  inspectPerformanceEvidenceCandidateReadiness,
+  inspectPerformanceEvidenceSourceReadiness,
   inspectStableReleaseReadiness,
+  inspectStableSourceReadiness,
+  PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
+  PERFORMANCE_EVIDENCE_PARTIAL_ROWS,
+  PERFORMANCE_EVIDENCE_VERSION,
   PRIMARY_PARITY_SCOPE,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
@@ -63,7 +73,10 @@ function parity(
   evidence = "Exact package acceptance; test:scripts/release-readiness.test.mjs"
 ) {
   const rows = scope
-    .map(([surface, pandas, polars]) => `| ${surface} | ${pandas} | ${polars} | ${status} | ${evidence} |`)
+    .map(([surface, pandas, polars]) => {
+      const rowStatus = typeof status === "function" ? status(surface) : status;
+      return `| ${surface} | ${pandas} | ${polars} | ${rowStatus} | ${evidence} |`;
+    })
     .join("\n");
   return `# Feature parity matrix
 
@@ -98,6 +111,16 @@ function ready(overrides = {}) {
     vsixManifest: manifest(),
     ...overrides
   };
+}
+
+function performanceEvidenceReady(overrides = {}) {
+  const performanceRows = new Set(PERFORMANCE_EVIDENCE_PARTIAL_ROWS);
+  return ready({
+    featureParity: parity((surface) => (performanceRows.has(surface) ? "Partial" : "Done")),
+    readme: `# Open Wrangler\n\n${PERFORMANCE_EVIDENCE_README_RELEASE_SECTION}\n`,
+    packagedReadme: `# Open Wrangler\n\n${PERFORMANCE_EVIDENCE_README_RELEASE_SECTION}\n`,
+    ...overrides
+  });
 }
 
 function releaseVsixEntries(packageJson = stablePackage) {
@@ -173,6 +196,141 @@ function patchZipEntry(bytes, entryName, patch) {
 
 test("accepts one internally consistent stable release candidate", () => {
   assert.deepEqual(inspectStableReleaseReadiness(ready()), []);
+});
+
+test("performance-evidence readiness permits only the two exact performance rows to remain Partial", () => {
+  const performanceRows = new Set(PERFORMANCE_EVIDENCE_PARTIAL_ROWS);
+  const featureParity = parity((surface) => (performanceRows.has(surface) ? "Partial" : "Done"));
+
+  assert.deepEqual(inspectPerformanceEvidenceCandidateReadiness(performanceEvidenceReady({ featureParity })), []);
+  assert.deepEqual(
+    inspectStableReleaseReadiness(ready({ featureParity })).filter((problem) =>
+      /^Parity row ".+" is Partial, not Done\.$/u.test(problem)
+    ),
+    PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => `Parity row "${surface}" is Partial, not Done.`)
+  );
+
+  const unrelatedPartial = parity((surface) =>
+    surface === "Dataset summary and quick insights" || performanceRows.has(surface) ? "Partial" : "Done"
+  );
+  assert.ok(
+    inspectPerformanceEvidenceCandidateReadiness(
+      performanceEvidenceReady({ featureParity: unrelatedPartial })
+    ).includes('Parity row "Dataset summary and quick insights" is Partial, not Done.')
+  );
+
+  for (const surface of PERFORMANCE_EVIDENCE_PARTIAL_ROWS) {
+    const planned = parity((candidate) => (candidate === surface ? "Planned" : "Done"));
+    assert.ok(
+      inspectPerformanceEvidenceCandidateReadiness(performanceEvidenceReady({ featureParity: planned })).includes(
+        `Parity row "${surface}" is Planned, not Done.`
+      )
+    );
+  }
+
+  const missingProgressEvidence = featureParity.replace(
+    "| Virtual grid, column sizing, navigation | Yes | Yes | Partial | Exact package acceptance; test:scripts/release-readiness.test.mjs |",
+    "| Virtual grid, column sizing, navigation | Yes | Yes | Partial | TODO |"
+  );
+  assert.ok(
+    inspectPerformanceEvidenceCandidateReadiness(
+      performanceEvidenceReady({ featureParity: missingProgressEvidence })
+    ).includes(
+      'Parity row "Virtual grid, column sizing, navigation" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.'
+    )
+  );
+
+  const invalidMetadata = inspectPerformanceEvidenceCandidateReadiness(
+    performanceEvidenceReady({
+      featureParity,
+      sourcePackageJson: JSON.stringify({ ...stablePackage, preview: true })
+    })
+  );
+  assert.ok(invalidMetadata.includes("Source package.json preview must be false for a stable release."));
+});
+
+test("keeps performance evidence truthful and non-interchangeable with stable readiness", () => {
+  assert.deepEqual(inspectPerformanceEvidenceCandidateReadiness(performanceEvidenceReady()), []);
+
+  const stableReadmeInEvidenceMode = inspectPerformanceEvidenceCandidateReadiness(
+    performanceEvidenceReady({
+      readme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`,
+      packagedReadme: `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n`
+    })
+  );
+  assert.ok(
+    stableReadmeInEvidenceMode.some((problem) =>
+      problem.includes("exact generated performance-evidence candidate release/install region")
+    )
+  );
+
+  const evidenceReadmeInStableMode = inspectStableReleaseReadiness(
+    ready({
+      readme: `# Open Wrangler\n\n${PERFORMANCE_EVIDENCE_README_RELEASE_SECTION}\n`,
+      packagedReadme: `# Open Wrangler\n\n${PERFORMANCE_EVIDENCE_README_RELEASE_SECTION}\n`
+    })
+  );
+  assert.ok(
+    evidenceReadmeInStableMode.some((problem) => problem.includes("exact generated stable release/install region"))
+  );
+
+  const completedRows = performanceEvidenceReady({ featureParity: parity() });
+  const completedProblems = inspectPerformanceEvidenceCandidateReadiness(completedRows);
+  for (const surface of PERFORMANCE_EVIDENCE_PARTIAL_ROWS) {
+    assert.ok(
+      completedProblems.includes(
+        `Parity row "${surface}" must remain Partial while authoring performance evidence; received Done.`
+      )
+    );
+  }
+
+  assert.deepEqual(
+    inspectPerformanceEvidenceSourceReadiness({
+      featureParity: performanceEvidenceReady().featureParity,
+      readme: performanceEvidenceReady().readme,
+      trackedEvidencePaths: performanceEvidenceReady().trackedEvidencePaths,
+      version: PERFORMANCE_EVIDENCE_VERSION
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspectStableSourceReadiness({
+      featureParity: ready().featureParity,
+      readme: ready().readme,
+      trackedEvidencePaths: ready().trackedEvidencePaths
+    }),
+    []
+  );
+  assert.deepEqual(
+    inspectPerformanceEvidenceReadme(`# Open Wrangler\n\n${PERFORMANCE_EVIDENCE_README_RELEASE_SECTION}\n`),
+    []
+  );
+});
+
+test("limits the temporary performance-evidence narrative and workflow to 1.0.0", () => {
+  for (const version of ["1.1.0", "2.0.0"]) {
+    const candidate = performanceEvidenceReady({
+      releaseTag: `v${version}`,
+      sourcePackageJson: JSON.stringify({ ...stablePackage, version }),
+      pythonVersionFile: `__version__ = "${version}"\n`,
+      packagedPackageJson: JSON.stringify({ ...stablePackage, version }),
+      packagedPythonVersionFile: `__version__ = "${version}"\n`,
+      vsixManifest: manifest({ version })
+    });
+    assert.ok(
+      inspectPerformanceEvidenceCandidateReadiness(candidate).includes(
+        `Performance-evidence authoring is limited to version ${PERFORMANCE_EVIDENCE_VERSION}.`
+      )
+    );
+    assert.ok(
+      inspectPerformanceEvidenceSourceReadiness({
+        featureParity: candidate.featureParity,
+        readme: candidate.readme,
+        trackedEvidencePaths: candidate.trackedEvidencePaths,
+        version
+      }).includes(`Performance-evidence authoring is limited to version ${PERFORMANCE_EVIDENCE_VERSION}.`)
+    );
+  }
 });
 
 test("binds numeric release versions to their channel before workflow branching", () => {
@@ -338,8 +496,7 @@ test("requires substantive completed evidence for every Done parity row", () => 
     );
     assert.ok(
       problems.some(
-        (problem) =>
-          problem.includes("empty or malformed row") || problem.includes("must record human acceptance evidence")
+        (problem) => problem.includes("empty or malformed row") || problem.includes("must record acceptance progress")
       )
     );
   }
@@ -525,14 +682,22 @@ test("keeps the checked-in preview README release and install section generated"
   assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
 });
 
-test("keeps the same compact editor support tiers in preview and stable README generation", () => {
-  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+test("keeps the same compact editor support tiers in every README channel", () => {
+  for (const section of [
+    PREVIEW_README_RELEASE_SECTION,
+    PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
+    STABLE_README_RELEASE_SECTION
+  ]) {
     assert.match(section, /\| VS Code\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
     assert.match(section, /\| Cursor\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
     assert.match(section, /\| Other VS Code-based IDEs, including Antigravity\s+\| Experimental\s+\|/u);
     assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
-    assert.match(section, /availability requires separate publication, and compatibility requires/u);
-    assert.match(section, /Experimental editors do not inherit the VS Code\/Cursor support guarantee/u);
+    assert.match(section, /Open VSX publication can make Open Wrangler discoverable there/u);
+    assert.match(section, /it does not certify compatibility/u);
+    assert.match(
+      section,
+      /Experimental editors receive isolated functional smokes and do not inherit the VS Code\/Cursor support guarantee/u
+    );
   }
 });
 

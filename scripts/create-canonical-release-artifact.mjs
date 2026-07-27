@@ -21,12 +21,16 @@ import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
+  PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL,
+  PERFORMANCE_EVIDENCE_ARTIFACT_ROLE,
   assertInstalledPerformancePackageInventory,
   assertNoPackageableUntrackedFiles,
   assertSameInstalledPerformancePackageSources,
-  validateInstalledPerformanceProvenance
+  validateInstalledPerformanceProvenance,
+  validatePerformanceEvidenceProvenance
 } from "./run-installed-performance.mjs";
 import {
+  inspectPerformanceEvidenceCandidateReadiness,
   inspectStableReleaseReadiness,
   readOwnedVsixSnapshot,
   readReleaseSourceSnapshot,
@@ -41,6 +45,8 @@ const FULL_COMMIT_ID = /^[0-9a-f]{40}$/u;
 const STABLE_RELEASE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PROVENANCE_MAX_BYTES = 4096;
 const CHECKSUM_MAX_BYTES = 512;
+export const CANONICAL_RELEASE_PUBLICATION_MODE = "stable-release";
+export const PERFORMANCE_EVIDENCE_PUBLICATION_MODE = "performance-evidence";
 const CANONICAL_FILES = Object.freeze([
   "openwrangler.vsix",
   "openwrangler.vsix.sha256",
@@ -48,6 +54,8 @@ const CANONICAL_FILES = Object.freeze([
 ]);
 export { CANONICAL_RELEASE_ARTIFACT_PROTOCOL };
 export const validateCanonicalReleaseProvenance = validateInstalledPerformanceProvenance;
+export { PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL, PERFORMANCE_EVIDENCE_ARTIFACT_ROLE };
+export const validatePerformanceEvidenceCandidateProvenance = validatePerformanceEvidenceProvenance;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -203,9 +211,29 @@ function parseStableSourceManifest(sourcePackageJson) {
   });
 }
 
-function provenanceBytes({ expectedCommit, manifest, releaseTag, snapshot }) {
-  const provenance = validateCanonicalReleaseProvenance({
-    protocol: CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
+function publicationContract(publicationMode) {
+  if (publicationMode === CANONICAL_RELEASE_PUBLICATION_MODE) {
+    return Object.freeze({
+      inspectReadiness: inspectStableReleaseReadiness,
+      readinessLabel: "Canonical stable release",
+      validateProvenance: validateCanonicalReleaseProvenance
+    });
+  }
+  if (publicationMode === PERFORMANCE_EVIDENCE_PUBLICATION_MODE) {
+    return Object.freeze({
+      inspectReadiness: inspectPerformanceEvidenceCandidateReadiness,
+      readinessLabel: "Performance-evidence candidate",
+      validateProvenance: validatePerformanceEvidenceCandidateProvenance
+    });
+  }
+  throw new TypeError("Canonical artifact publication mode must be stable-release or performance-evidence.");
+}
+
+function provenanceBytes({ contract, expectedCommit, manifest, publicationMode, releaseTag, snapshot }) {
+  const evidenceOnly = publicationMode === PERFORMANCE_EVIDENCE_PUBLICATION_MODE;
+  const provenance = contract.validateProvenance({
+    protocol: evidenceOnly ? PERFORMANCE_EVIDENCE_ARTIFACT_PROTOCOL : CANONICAL_RELEASE_ARTIFACT_PROTOCOL,
+    ...(evidenceOnly ? { artifactRole: PERFORMANCE_EVIDENCE_ARTIFACT_ROLE } : {}),
     extensionId: manifest.extensionId,
     extensionVersion: manifest.version,
     preview: manifest.preview,
@@ -218,7 +246,7 @@ function provenanceBytes({ expectedCommit, manifest, releaseTag, snapshot }) {
   if (bytes.length <= 0 || bytes.length > PROVENANCE_MAX_BYTES) {
     throw new Error("Canonical release provenance exceeds its byte budget.");
   }
-  validateCanonicalReleaseProvenance(parseStrictJson(bytes.toString("utf8"), { maxBytes: PROVENANCE_MAX_BYTES }));
+  contract.validateProvenance(parseStrictJson(bytes.toString("utf8"), { maxBytes: PROVENANCE_MAX_BYTES }));
   return bytes;
 }
 
@@ -489,7 +517,7 @@ function readAndValidatePublishedFiles(directory, directoryReceipt, fileReceipts
         throw new Error(`Published canonical file changed during final verification: ${name}.`);
       }
       if (name.endsWith(".json")) {
-        validateCanonicalReleaseProvenance(parseStrictJson(bytes.toString("utf8"), { maxBytes: PROVENANCE_MAX_BYTES }));
+        expected.validateProvenance(parseStrictJson(bytes.toString("utf8"), { maxBytes: PROVENANCE_MAX_BYTES }));
       }
     } finally {
       closeSync(descriptor);
@@ -548,9 +576,11 @@ export async function createCanonicalReleaseArtifact({
   expectedCommit,
   hooks = {},
   outputDirectory,
+  publicationMode = CANONICAL_RELEASE_PUBLICATION_MODE,
   releaseTag,
   root = repositoryRoot
 }) {
+  const contract = publicationContract(publicationMode);
   if (
     typeof candidatePath !== "string" ||
     candidatePath.length === 0 ||
@@ -581,7 +611,7 @@ export async function createCanonicalReleaseArtifact({
   await hooks.afterCandidateRead?.({ candidatePath: resolvedCandidate, snapshot });
   const packaged = await readStableVsixPayload(snapshot.bytes);
   dependencies.assertPackageInventory(packageSources, packaged.archiveEntries, packaged.entryDigests);
-  const problems = inspectStableReleaseReadiness({
+  const problems = contract.inspectReadiness({
     releaseTag,
     sourcePackageJson: sourceBefore.files.get("package.json"),
     pythonVersionFile: sourceBefore.files.get("python/openwrangler_runtime/version.py"),
@@ -595,14 +625,21 @@ export async function createCanonicalReleaseArtifact({
     vsixManifest: packaged.vsixManifest
   });
   if (problems.length > 0) {
-    throw new Error(`Canonical stable release readiness failed:\n- ${problems.join("\n- ")}`);
+    throw new Error(`${contract.readinessLabel} readiness failed:\n- ${problems.join("\n- ")}`);
   }
   const manifest = parseStableSourceManifest(sourceBefore.files.get("package.json"));
   if (releaseTag !== `v${manifest.version}`) {
     throw new Error("RELEASE_TAG must exactly match the stable source package version.");
   }
   const checksum = Buffer.from(`${snapshot.sha256}  ${CANONICAL_FILES[0]}\n`, "utf8");
-  const provenance = provenanceBytes({ expectedCommit, manifest, releaseTag, snapshot });
+  const provenance = provenanceBytes({
+    contract,
+    expectedCommit,
+    manifest,
+    publicationMode,
+    releaseTag,
+    snapshot
+  });
   revalidateCandidate(resolvedCandidate, snapshot);
   const sourceBeforeStaging = readCanonicalReleaseSourceBinding({ expectedCommit, releaseTag, root });
   sameSourceBinding(sourceBeforeStaging, sourceBefore);
@@ -654,7 +691,8 @@ export async function createCanonicalReleaseArtifact({
     readAndValidatePublishedFiles(destination.outputPath, directoryReceipt, fileReceipts, {
       checksum,
       provenance,
-      snapshot
+      snapshot,
+      validateProvenance: contract.validateProvenance
     });
     revalidateCandidate(resolvedCandidate, snapshot);
     const sourceAfter = readCanonicalReleaseSourceBinding({ expectedCommit, releaseTag, root });
@@ -662,7 +700,8 @@ export async function createCanonicalReleaseArtifact({
     readAndValidatePublishedFiles(destination.outputPath, directoryReceipt, fileReceipts, {
       checksum,
       provenance,
-      snapshot
+      snapshot,
+      validateProvenance: contract.validateProvenance
     });
     return Object.freeze({
       directory: destination.outputPath,
@@ -675,6 +714,7 @@ export async function createCanonicalReleaseArtifact({
           })
         )
       ),
+      publicationMode,
       releaseTag,
       sourceCommit: expectedCommit,
       vsixSha256: snapshot.sha256
@@ -696,33 +736,40 @@ export async function createCanonicalReleaseArtifact({
   throw failure;
 }
 
-function parseCliArguments(arguments_) {
+export function parseCanonicalReleaseArtifactArguments(arguments_) {
+  const evidenceOnly = arguments_.at(-1) === "--performance-evidence";
+  const positional = evidenceOnly ? arguments_.slice(0, -1) : arguments_;
   if (
-    arguments_.length !== 3 ||
-    arguments_[1] !== "--out-dir" ||
-    typeof arguments_[0] !== "string" ||
-    arguments_[0].length === 0 ||
-    typeof arguments_[2] !== "string" ||
-    arguments_[2].length === 0
+    positional.length !== 3 ||
+    positional[1] !== "--out-dir" ||
+    typeof positional[0] !== "string" ||
+    positional[0].length === 0 ||
+    typeof positional[2] !== "string" ||
+    positional[2].length === 0
   ) {
     throw new Error(
-      "Pass one prebuilt stable candidate and a new output directory: <candidate.vsix> --out-dir <directory>."
+      "Pass one prebuilt stable candidate and a new output directory: <candidate.vsix> --out-dir <directory> [--performance-evidence]."
     );
   }
-  return Object.freeze({ candidatePath: arguments_[0], outputDirectory: arguments_[2] });
+  return Object.freeze({
+    candidatePath: positional[0],
+    outputDirectory: positional[2],
+    publicationMode: evidenceOnly ? PERFORMANCE_EVIDENCE_PUBLICATION_MODE : CANONICAL_RELEASE_PUBLICATION_MODE
+  });
 }
 
 async function runCli() {
-  const options = parseCliArguments(process.argv.slice(2));
+  const options = parseCanonicalReleaseArtifactArguments(process.argv.slice(2));
   const result = await createCanonicalReleaseArtifact({
     candidatePath: resolve(repositoryRoot, options.candidatePath),
     expectedCommit: process.env.EXPECTED_SHA,
     outputDirectory: resolve(repositoryRoot, options.outputDirectory),
+    publicationMode: options.publicationMode,
     releaseTag: process.env.RELEASE_TAG,
     root: repositoryRoot
   });
   console.log(
-    `Published canonical stable artifact ${result.releaseTag} (${result.vsixSha256}) to ${basename(result.directory)}.`
+    `Published ${result.publicationMode} artifact ${result.releaseTag} (${result.vsixSha256}) to ${basename(result.directory)}.`
   );
 }
 

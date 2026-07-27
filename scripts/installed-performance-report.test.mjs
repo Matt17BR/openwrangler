@@ -6,9 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   INSTALLED_PERFORMANCE_BOUNDARY,
+  INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL,
   INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL,
   INSTALLED_PERFORMANCE_OUTLIER_POLICY,
   INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
+  assertInstalledPerformanceEvidenceGate,
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
   revalidateInstalledPerformanceReport,
@@ -317,6 +319,32 @@ test("candidate build provenance is bound to its release channel", () => {
   });
   assert.equal(report.candidate.channel, "stable");
   assert.equal(report.candidate.buildMethod, "canonical-release-artifact-v1");
+
+  const stableCursorRun = editorRun("cursor");
+  stableCursorRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
+  for (const phase of stableCursorRun.phases) phase.runtime.openWranglerRuntimeVersion = "1.0.0";
+  const evidenceReport = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: {
+      ...stableCandidate,
+      buildMethod: "performance-evidence-artifact-v1"
+    },
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [stableRun, stableCursorRun]
+  });
+  assert.equal(evidenceReport.protocol, INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL);
+  assert.equal(evidenceReport.candidate.buildMethod, "performance-evidence-artifact-v1");
+  assert.equal(evidenceReport.evidenceGate.passed, true);
+  assert.equal("releaseGate" in evidenceReport, false);
+  assert.equal(assertInstalledPerformanceEvidenceGate(evidenceReport), evidenceReport);
+  assert.throws(() => assertInstalledPerformanceReleaseGate(evidenceReport), /missing or unknown fields/u);
+  const forgedReleaseReport = structuredClone(evidenceReport);
+  delete forgedReleaseReport.evidenceGate;
+  forgedReleaseReport.protocol = "openwrangler-installed-performance-report-v6";
+  forgedReleaseReport.releaseGate = evidenceReport.evidenceGate;
+  assert.throws(() => assertInstalledPerformanceReleaseGate(forgedReleaseReport), /incompatible candidate provenance/u);
+  assert.throws(() => assertInstalledPerformanceEvidenceGate(report), /missing or unknown fields/u);
 });
 
 test("aggregate verdicts retain dirty-source and missing-editor release failures", () => {

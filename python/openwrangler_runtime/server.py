@@ -8,7 +8,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, wait
 from time import monotonic
 from typing import Any
 
-from .engines import EngineError
+from .engines import AmbiguousViewColumnError, EngineError
 from .protocol import ProtocolError, decode_envelope, error_response, response_envelope
 from .session import SessionManager
 
@@ -165,6 +165,8 @@ def main() -> None:
             response = {"kind": "cancelled", "targetRequestId": request_id}
         except ProtocolError as error:
             response = error_response(str(error), code="invalid_request", recoverable=False)
+        except AmbiguousViewColumnError as error:
+            response = error_response(str(error), code="ambiguous_view_column")
         except EngineError as error:
             response = error_response(str(error), code="engine_error")
         except Exception as error:
@@ -209,6 +211,11 @@ def main() -> None:
                 )
             except ProtocolError as error:
                 response = error_response(str(error), code="invalid_request", recoverable=False)
+                if view_request_id:
+                    response["viewRequestId"] = view_request_id
+                write(response_envelope(request_id, response))
+            except AmbiguousViewColumnError as error:
+                response = error_response(str(error), code="ambiguous_view_column")
                 if view_request_id:
                     response["viewRequestId"] = view_request_id
                 write(response_envelope(request_id, response))
