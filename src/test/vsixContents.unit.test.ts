@@ -65,12 +65,7 @@ describe("VSIX production entry allowlist", () => {
   });
 
   it("requires and narrowly permits the production webview assets", () => {
-    const result = inspectVsixEntries([
-      ...requiredVsixEntries,
-      "[Content_Types].xml",
-      "extension.vsixmanifest",
-      "extension/media/codePreview.js"
-    ]);
+    const result = inspectVsixEntries(requiredVsixEntries);
 
     expect(result).toEqual({ forbidden: [], missing: [], duplicates: [] });
   });

@@ -871,6 +871,37 @@ test("structurally gates tag-workflow packaging, readiness, upload, and release"
     unpinnedReleaseDownload.includes("release.yml release job must begin with the pinned canonical artifact download.")
   );
 
+  const unpinnedReleaseAction = mutate((workflow) => {
+    workflow.jobs.release.steps[2].uses = "softprops/action-gh-release@v2";
+  });
+  assert.ok(
+    unpinnedReleaseAction.includes(
+      "release.yml final checksum verification must be followed immediately by GitHub Release creation."
+    )
+  );
+
+  const workflowWorkingDirectory = mutate((workflow) => {
+    workflow.defaults = { run: { "working-directory": "decoy" } };
+  });
+  assert.ok(workflowWorkingDirectory.includes("release.yml must not override workflow environment or run defaults."));
+
+  const buildEnvironment = mutate((workflow) => {
+    workflow.jobs.build.env = { NODE_OPTIONS: "--require ./mutate.cjs" };
+  });
+  assert.ok(buildEnvironment.includes("release.yml build job must not override environment or run defaults."));
+
+  const releaseWorkingDirectory = mutate((workflow) => {
+    workflow.jobs.release.defaults = { run: { "working-directory": "decoy" } };
+  });
+  assert.ok(releaseWorkingDirectory.includes("release.yml release job must not override environment or run defaults."));
+
+  const escalatedBuildPermissions = mutate((workflow) => {
+    workflow.jobs.build.permissions = { contents: "write" };
+  });
+  assert.ok(
+    escalatedBuildPermissions.includes("release.yml build job must inherit the read-only workflow permissions.")
+  );
+
   const postChecksumMutation = mutate((workflow) => {
     workflow.jobs.release.steps.splice(2, 0, { name: "Rewrite release files", run: "node mutate.mjs" });
   });

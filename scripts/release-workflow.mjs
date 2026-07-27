@@ -7,7 +7,7 @@ const EVENT_SHA = "${{ github.sha }}";
 const EVENT_TAG = "${{ github.ref_name }}";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
-const RELEASE_ACTION = "softprops/action-gh-release@v2";
+const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
 const PREVIEW_CHECKSUM_RUN = `const { createHash } = require("node:crypto");
 const { readFileSync, writeFileSync } = require("node:fs");
 const digest = createHash("sha256").update(readFileSync("openwrangler.vsix")).digest("hex");
@@ -116,6 +116,35 @@ function requireDefaultActionControls(step, label, problems) {
   }
 }
 
+function hasExactPermissions(value, expected) {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === Object.keys(expected).length &&
+    Object.entries(expected).every(([key, expectedValue]) => value[key] === expectedValue)
+  );
+}
+
+function inspectJobExecutionControls(job, name, { allowContentsWrite = false } = {}) {
+  const problems = [];
+  if (job["runs-on"] !== "ubuntu-latest") {
+    problems.push(`release.yml ${name} job must run on canonical ubuntu-latest.`);
+  }
+  if (hasOwn(job, "env") || hasOwn(job, "defaults")) {
+    problems.push(`release.yml ${name} job must not override environment or run defaults.`);
+  }
+  if (hasOwn(job, "if")) {
+    problems.push(`release.yml ${name} job must use the default successful dependency condition.`);
+  }
+  if (allowContentsWrite) {
+    if (!hasExactPermissions(job.permissions, { contents: "write" })) {
+      problems.push(`release.yml ${name} job permissions must be exactly contents: write.`);
+    }
+  } else if (hasOwn(job, "permissions")) {
+    problems.push(`release.yml ${name} job must inherit the read-only workflow permissions.`);
+  }
+  return problems;
+}
+
 export function inspectReleaseWorkflow(contents) {
   if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > MAX_WORKFLOW_BYTES) {
     return ["release.yml must be bounded YAML text."];
@@ -139,9 +168,13 @@ export function inspectReleaseWorkflow(contents) {
   ) {
     problems.push('release.yml must trigger only from pushed "v*" tags.');
   }
-  if (!isRecord(workflow.permissions) || workflow.permissions.contents !== "read") {
-    problems.push("release.yml default contents permission must remain read-only.");
+  if (!hasExactPermissions(workflow.permissions, { contents: "read" })) {
+    problems.push("release.yml default permissions must be exactly contents: read.");
   }
+  if (hasOwn(workflow, "env") || hasOwn(workflow, "defaults")) {
+    problems.push("release.yml must not override workflow environment or run defaults.");
+  }
+  problems.push(...inspectJobExecutionControls(workflow.jobs.build, "build"));
   const steps = workflow.jobs.build.steps;
   if (!Array.isArray(steps) || steps.length === 0 || steps.length > 128) {
     return [...problems, "release.yml build job must contain a bounded non-empty steps array."];
@@ -278,14 +311,16 @@ git diff-index --quiet HEAD --`
 
   const releaseJob = workflow.jobs.release;
   const releaseSteps = isRecord(releaseJob) && Array.isArray(releaseJob.steps) ? releaseJob.steps : [];
+  if (isRecord(releaseJob)) {
+    problems.push(...inspectJobExecutionControls(releaseJob, "release", { allowContentsWrite: true }));
+  }
   if (
     !isRecord(releaseJob) ||
     !Array.isArray(releaseJob.needs) ||
     releaseJob.needs.join("\n") !== "build\nvalidate\nrelease-acceptance" ||
-    !isRecord(releaseJob.permissions) ||
-    releaseJob.permissions.contents !== "write"
+    !hasExactPermissions(releaseJob.permissions, { contents: "write" })
   ) {
-    problems.push("release.yml release job must depend on all validation jobs and scope contents: write locally.");
+    problems.push("release.yml release job must depend on all validation jobs with only local contents: write.");
   }
   if (releaseSteps.length !== 3 || releaseSteps.some((step) => !isRecord(step))) {
     problems.push("release.yml release job must contain exactly download, checksum, and release steps.");
