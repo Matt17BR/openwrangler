@@ -16,7 +16,8 @@ import {
   readBoundedRemoteWorkspaceFile,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
-  validateRemoteWorkspaceResult
+  validateRemoteWorkspaceResult,
+  validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
 import {
   assertRemoteWorkspaceDisplayReceipt,
@@ -48,6 +49,7 @@ try {
     throw new Error("The Remote SSH phase did not enter private user, PID, network, IPC, and UTS namespaces.");
   }
   await runPhase(descriptor, ipExecutable, sshExecutable, ldconfigExecutable);
+  const capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
   process.stdout.write(
     `${JSON.stringify({
       protocol: 1,
@@ -68,7 +70,8 @@ try {
       remoteSshVersion: descriptor.remoteSshVersion,
       remoteSshBytes: descriptor.remoteSshBytes,
       remoteSshSha256: descriptor.remoteSshSha256,
-      hostIsolationSha256: descriptor.hostIsolationSha256
+      hostIsolationSha256: descriptor.hostIsolationSha256,
+      capabilities
     })}\n`
   );
 } catch (error) {
@@ -290,10 +293,7 @@ function assertPrivateNamespace(config) {
     throw new Error("The private user namespace exposed more than one user or group identity.");
   }
   const status = readFileSync("/proc/self/status", "utf8");
-  const capability = status.match(/^CapEff:\s*([0-9a-fA-F]+)$/mu);
-  if (!capability || !/^0+$/u.test(capability[1])) {
-    throw new Error("The private Remote SSH phase retained an effective capability.");
-  }
+  validateRemoteWorkspaceZeroCapabilities(status);
   const privateRoot = lstatSync(config.paths.root);
   const systemNode = lstatSync("/usr/bin/node");
   if (privateRoot.uid !== config.uid || systemNode.uid !== 65_534) {

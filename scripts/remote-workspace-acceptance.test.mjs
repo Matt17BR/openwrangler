@@ -47,6 +47,7 @@ import {
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
+  validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspaceSystemRuntimeDirectories,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceResult
@@ -283,6 +284,29 @@ test("Remote host preflight is Linux-only and fails closed without user namespac
     ),
     /no desktop-network fallback/u
   );
+  const commands = [];
+  const host = await assertRemoteWorkspaceHost(
+    { platform: "linux", architecture: "x64", tools: fakeTools, uid: 1001, gid: 1001 },
+    {
+      async runCommand(command) {
+        commands.push(command);
+        return commands.length === 1
+          ? {
+              stdout: [
+                "    --bind-fd FD DEST            Bind open directory or path fd on DEST",
+                "    --ro-bind-fd FD DEST         Bind open directory or path fd read-only on DEST"
+              ].join("\n"),
+              stderr: ""
+            }
+          : { stdout: namespaceProbeOutput(), stderr: "" };
+      }
+    }
+  );
+  assert.equal(host.uid, 1001);
+  assert.equal(host.gid, 1001);
+  assert.equal(commands.length, 2);
+  assert.match(commands[1].args.at(-1), /echo CAPABILITIES/u);
+  assert.match(commands[1].args.at(-1), /grep '\^Cap'/u);
 });
 
 test("Bubblewrap preflight requires descriptor-bound mutable and read-only mounts", () => {
@@ -480,29 +504,44 @@ test("The system-runtime resolver rejects a malformed injected directory validat
   );
 });
 
-test("Namespace probe requires one ID row and zero effective capabilities", () => {
-  assert.deepEqual(
-    validateRemoteWorkspaceNamespaceProbe(
-      [
-        "1: lo: <LOOPBACK> inet 127.0.0.1/8",
-        "UID_MAP",
-        "1001 0 1",
-        "GID_MAP",
-        "1001 0 1",
-        "CAP_EFF",
-        "CapEff:\t0000000000000000"
-      ].join("\n"),
-      { uid: 1001, gid: 1001 }
-    ),
-    {
-      uidMap: [1001, 0, 1],
-      gidMap: [1001, 0, 1],
-      capabilityEffective: 0
-    }
-  );
+test("Linux capability status requires all five exact capability sets to be uniquely zero", () => {
+  const status = zeroCapabilityStatus();
+  assert.deepEqual(validateRemoteWorkspaceZeroCapabilities(status), zeroCapabilities());
+  for (const field of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]) {
+    assert.throws(
+      () =>
+        validateRemoteWorkspaceZeroCapabilities(
+          status.replace(`${field}:\t${"0".repeat(16)}`, `${field}:\t${"0".repeat(15)}1`)
+        ),
+      /retained a Linux capability/u
+    );
+  }
+  for (const mutation of [
+    status
+      .split("\n")
+      .filter((line) => !line.startsWith("CapAmb:"))
+      .join("\n"),
+    `${status}\nCapEff:\t${"0".repeat(16)}`,
+    `${status}\nCapFuture:\t${"0".repeat(16)}`,
+    status.replace(`CapEff:\t${"0".repeat(16)}`, "CapEff:\tnot-hex"),
+    status.replace(`CapEff:\t${"0".repeat(16)}`, `capeff:\t${"0".repeat(16)}`)
+  ]) {
+    assert.throws(
+      () => validateRemoteWorkspaceZeroCapabilities(mutation),
+      /capability status is (?:malformed|incomplete)/u
+    );
+  }
+});
+
+test("Namespace probe requires one ID row and all-zero Linux capabilities", () => {
+  assert.deepEqual(validateRemoteWorkspaceNamespaceProbe(namespaceProbeOutput(), { uid: 1001, gid: 1001 }), {
+    uidMap: [1001, 0, 1],
+    gidMap: [1001, 0, 1],
+    capabilities: zeroCapabilities()
+  });
   assert.throws(
     () =>
-      validateRemoteWorkspaceNamespaceProbe("127.0.0.1\nUID_MAP\n1001 0 2\nGID_MAP\n1001 0 1\nCAP_EFF\nCapEff: 1\n", {
+      validateRemoteWorkspaceNamespaceProbe(namespaceProbeOutput().replace("1001 0 1", "1001 0 2"), {
         uid: 1001,
         gid: 1001
       }),
@@ -583,7 +622,8 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
     remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
     remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
-    hostIsolationSha256
+    hostIsolationSha256,
+    capabilities: zeroCapabilities()
   };
   assert.deepEqual(
     validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(attestation)}\n`, {
@@ -600,6 +640,19 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     { ...attestation, remoteSshBytes: PINNED_REMOTE_SSH_BYTES + 1 },
     { ...attestation, remoteSshSha256: "b".repeat(64) },
     { ...attestation, hostIsolationSha256: "b".repeat(64) },
+    {
+      ...attestation,
+      capabilities: { ...attestation.capabilities, effective: 1 }
+    },
+    {
+      ...attestation,
+      capabilities: {
+        inheritable: 0,
+        permitted: 0,
+        effective: 0,
+        bounding: 0
+      }
+    },
     { ...attestation, extra: true }
   ]) {
     assert.throws(
@@ -851,6 +904,38 @@ function privateRoot(prefix) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   chmodSync(root, 0o700);
   return root;
+}
+
+function zeroCapabilityStatus() {
+  return [
+    `CapInh:\t${"0".repeat(16)}`,
+    `CapPrm:\t${"0".repeat(16)}`,
+    `CapEff:\t${"0".repeat(16)}`,
+    `CapBnd:\t${"0".repeat(16)}`,
+    `CapAmb:\t${"0".repeat(16)}`
+  ].join("\n");
+}
+
+function zeroCapabilities() {
+  return {
+    inheritable: 0,
+    permitted: 0,
+    effective: 0,
+    bounding: 0,
+    ambient: 0
+  };
+}
+
+function namespaceProbeOutput() {
+  return [
+    "1: lo: <LOOPBACK> inet 127.0.0.1/8",
+    "UID_MAP",
+    "1001 0 1",
+    "GID_MAP",
+    "1001 0 1",
+    "CAPABILITIES",
+    zeroCapabilityStatus()
+  ].join("\n");
 }
 
 function createTinyPythonEnvironment(root) {

@@ -19,6 +19,13 @@ export const REMOTE_WORKSPACE_PHASE_CHILD_PATH = `${REMOTE_WORKSPACE_NAMESPACE_R
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
 const PATH_LIMIT = 16_384;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
+const LINUX_CAPABILITY_FIELDS = Object.freeze([
+  ["CapInh", "inheritable"],
+  ["CapPrm", "permitted"],
+  ["CapEff", "effective"],
+  ["CapBnd", "bounding"],
+  ["CapAmb", "ambient"]
+]);
 const PHASE_DESCRIPTOR_KEYS = Object.freeze([
   "authority",
   "candidateBytes",
@@ -281,6 +288,36 @@ export function validateRemoteWorkspaceCandidatePath(path) {
   return path;
 }
 
+export function validateRemoteWorkspaceZeroCapabilities(contents) {
+  if (
+    typeof contents !== "string" ||
+    Buffer.byteLength(contents, "utf8") <= 0 ||
+    Buffer.byteLength(contents, "utf8") > PHASE_DESCRIPTOR_LIMIT_BYTES ||
+    contents.includes("\r")
+  ) {
+    throw new Error("The Remote SSH Linux capability status is malformed.");
+  }
+  const expectedNames = new Set(LINUX_CAPABILITY_FIELDS.map(([name]) => name));
+  const observed = new Map();
+  for (const line of contents.split("\n").filter((candidate) => candidate.startsWith("Cap"))) {
+    const match = /^(Cap[A-Za-z]+):[ \t]+([0-9a-fA-F]{16})$/u.exec(line);
+    if (!match || !expectedNames.has(match[1]) || observed.has(match[1])) {
+      throw new Error("The Remote SSH Linux capability status is malformed.");
+    }
+    if (!/^0{16}$/u.test(match[2])) {
+      throw new Error("The Remote SSH private namespace retained a Linux capability.");
+    }
+    observed.set(match[1], match[2]);
+  }
+  if (
+    observed.size !== LINUX_CAPABILITY_FIELDS.length ||
+    LINUX_CAPABILITY_FIELDS.some(([name]) => !observed.has(name))
+  ) {
+    throw new Error("The Remote SSH Linux capability status is incomplete.");
+  }
+  return Object.freeze(Object.fromEntries(LINUX_CAPABILITY_FIELDS.map(([, property]) => [property, 0])));
+}
+
 export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) {
   if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 16 * 1024) {
     throw new Error("The Remote SSH PID-namespace attestation is oversized.");
@@ -320,14 +357,18 @@ export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) 
     value.remoteSshBytes !== PINNED_REMOTE_SSH_BYTES ||
     value.remoteSshSha256 !== PINNED_REMOTE_SSH_SHA256 ||
     value.hostIsolationSha256 !== expected.hostIsolationSha256 ||
+    !isZeroCapabilityAttestation(value.capabilities) ||
     Object.keys(value).sort().join(",") !==
-      "candidateBytes,candidateSha256,commit,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,runId,uts,version"
+      "candidateBytes,candidateSha256,capabilities,commit,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,runId,uts,version"
   ) {
     throw new Error(
       "The Remote SSH PID namespace did not attest its exact candidate, Remote SSH artifact, and empty owned state."
     );
   }
-  return Object.freeze(value);
+  return Object.freeze({
+    ...value,
+    capabilities: Object.freeze({ ...value.capabilities })
+  });
 }
 
 export function validateRemoteSshLogAttestation(text) {
@@ -477,6 +518,17 @@ function canonicalPhaseDescriptor(value) {
       progress: value.paths.progress
     }
   };
+}
+
+function isZeroCapabilityAttestation(value) {
+  const properties = LINUX_CAPABILITY_FIELDS.map(([, property]) => property).sort();
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).sort().join(",") === properties.join(",") &&
+    properties.every((property) => value[property] === 0)
+  );
 }
 
 function canonicalInspectionRoot(path) {

@@ -46,6 +46,7 @@ import {
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
@@ -78,6 +79,7 @@ export {
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
+  validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspacePhaseDescriptorPath,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspacePhaseDescriptor,
@@ -281,8 +283,8 @@ export async function assertRemoteWorkspaceHost(
             "/usr/bin/busybox cat /proc/self/uid_map",
             "/usr/bin/busybox echo GID_MAP",
             "/usr/bin/busybox cat /proc/self/gid_map",
-            "/usr/bin/busybox echo CAP_EFF",
-            "/usr/bin/busybox grep '^CapEff:' /proc/self/status"
+            "/usr/bin/busybox echo CAPABILITIES",
+            "/usr/bin/busybox grep '^Cap' /proc/self/status"
           ].join("; ")
         ],
         environment: createEditorAcceptanceEnvironment(),
@@ -317,25 +319,30 @@ export function validateRemoteWorkspaceNamespaceProbe(output, { uid, gid }) {
     throw new Error("The private namespace preflight returned malformed output.");
   }
   const uidMatch = output.match(/UID_MAP\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+GID_MAP/u);
-  const gidMatch = output.match(/GID_MAP\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+CAP_EFF/u);
-  const capabilityMatch = output.match(/CAP_EFF\s+CapEff:\s*([0-9a-fA-F]+)/u);
+  const gidMatch = output.match(/GID_MAP\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+CAPABILITIES/u);
+  let capabilities;
+  try {
+    capabilities = validateRemoteWorkspaceZeroCapabilities(output);
+  } catch (error) {
+    throw new Error("The private namespace preflight did not prove all-zero Linux capabilities.", {
+      cause: error
+    });
+  }
   if (
     !output.includes("127.0.0.1") ||
     !uidMatch ||
     !gidMatch ||
-    !capabilityMatch ||
     Number(uidMatch[1]) !== uid ||
     Number(gidMatch[1]) !== gid ||
     uidMatch[3] !== "1" ||
-    gidMatch[3] !== "1" ||
-    !/^0+$/u.test(capabilityMatch[1])
+    gidMatch[3] !== "1"
   ) {
     throw new Error("The private namespace preflight did not prove loopback, one-ID maps, and zero capabilities.");
   }
   return Object.freeze({
     uidMap: uidMatch.slice(1).map(Number),
     gidMap: gidMatch.slice(1).map(Number),
-    capabilityEffective: 0
+    capabilities
   });
 }
 
