@@ -212,3 +212,31 @@ updates:
 `
   );
 });
+
+test("required Linux Python 3.10 owns real environment discovery before its legacy cell is retired", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const job = workflow?.jobs?.["python-matrix"];
+  assert.equal(job?.["runs-on"], "ubuntu-latest");
+  assert.deepEqual(job?.strategy?.matrix?.python, ["3.10", "3.14"]);
+  assert.equal(job?.env, undefined, "The real-discovery job must not inject an interpreter override.");
+
+  const steps = job?.steps;
+  assert.ok(Array.isArray(steps), "CI must retain the required Python compatibility matrix.");
+  const python310Only = "matrix.python == '3.10'";
+  const node = steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-node@"));
+  assert.equal(node?.if, python310Only);
+  assert.equal(node?.with?.["node-version"], 22);
+  assert.equal(node?.with?.cache, "npm");
+
+  const npmInstall = steps.find((step) => step?.run === "npm ci");
+  assert.equal(npmInstall?.if, python310Only);
+  assert.equal(npmInstall?.env, undefined);
+  const environmentSmoke = steps.find((step) => step?.run === "npm run test:python-environment-smoke");
+  assert.equal(environmentSmoke?.if, python310Only);
+  assert.equal(environmentSmoke?.env, undefined);
+
+  const runtimeSuite = steps.filter((step) => step?.run === "python -m pytest python/tests -q");
+  assert.equal(runtimeSuite.length, 1);
+  assert.equal(runtimeSuite[0]?.if, undefined, "The runtime suite must execute on both matrix cells.");
+});
