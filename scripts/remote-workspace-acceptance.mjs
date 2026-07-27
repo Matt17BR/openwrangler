@@ -460,10 +460,18 @@ export function namespaceRemoteWorkspaceImmutablePath(paths, value) {
 export async function copyPrivatePythonEnvironment(
   sourcePython,
   destination,
-  { copy = cpSync, dependencyGuardPath = DEFAULT_DEPENDENCY_GUARD_PATH, runCommand = runBoundedEditorCommand } = {}
+  {
+    copy = cpSync,
+    dependencyGuardPath = DEFAULT_DEPENDENCY_GUARD_PATH,
+    resolveSystemRuntimeDirectories = resolveRemoteWorkspaceSystemRuntimeDirectories,
+    runCommand = runBoundedEditorCommand
+  } = {}
 ) {
   if (process.platform !== "linux") {
     throw new Error("Remote SSH private Python copying is supported only by the Linux acceptance runner.");
+  }
+  if (typeof resolveSystemRuntimeDirectories !== "function") {
+    throw new Error("The Remote SSH copied-Python system-runtime resolver is malformed.");
   }
   const executable = assertAbsoluteRegularFile(sourcePython, "source Python");
   const sourceProbe = await probePython(executable, runCommand);
@@ -555,15 +563,22 @@ export async function copyPrivatePythonEnvironment(
   ) {
     throw new Error("The copied Python dependency guard did not report one exact clean status.");
   }
+  const pythonSystemRuntimeDirectories = Object.freeze(
+    sourceProbe.systemRuntimeDirectories.filter(
+      (directory) => directory !== sourcePrefix && !isContained(sourcePrefix, directory)
+    )
+  );
+  const expectedSystemRuntimeDirectories = [...REQUIRED_SYSTEM_RUNTIME_DIRECTORIES, ...pythonSystemRuntimeDirectories];
+  const resolvedSystemRuntimeDirectories = resolveSystemRuntimeDirectories(pythonSystemRuntimeDirectories);
+  if (!isDeepStrictEqual(resolvedSystemRuntimeDirectories, expectedSystemRuntimeDirectories)) {
+    throw new Error("The Remote SSH copied-Python system-runtime resolver altered its exact required closure.");
+  }
+  const systemRuntimeDirectories = Object.freeze([...resolvedSystemRuntimeDirectories]);
   return Object.freeze({
     executable: destinationPython,
     version: copiedProbe.version,
     packages: copiedProbe.packages,
-    systemRuntimeDirectories: resolveRemoteWorkspaceSystemRuntimeDirectories(
-      sourceProbe.systemRuntimeDirectories.filter(
-        (directory) => directory !== sourcePrefix && !isContained(sourcePrefix, directory)
-      )
-    )
+    systemRuntimeDirectories
   });
 }
 
@@ -1220,7 +1235,10 @@ async function probePython(executable, runCommand) {
   return probe;
 }
 
-export function resolveRemoteWorkspaceSystemRuntimeDirectories(pythonDirectories) {
+export function resolveRemoteWorkspaceSystemRuntimeDirectories(
+  pythonDirectories,
+  { validateDirectory = validateRootOwnedSystemRuntimeDirectory } = {}
+) {
   if (
     !Array.isArray(pythonDirectories) ||
     pythonDirectories.length <= 0 ||
@@ -1229,10 +1247,10 @@ export function resolveRemoteWorkspaceSystemRuntimeDirectories(pythonDirectories
   ) {
     throw new Error("The Remote SSH Python probe did not provide one explicit system-runtime closure.");
   }
-  return validateRemoteWorkspaceSystemRuntimeDirectories([
-    ...REQUIRED_SYSTEM_RUNTIME_DIRECTORIES,
-    ...pythonDirectories
-  ]);
+  return validateRemoteWorkspaceSystemRuntimeDirectories(
+    [...REQUIRED_SYSTEM_RUNTIME_DIRECTORIES, ...pythonDirectories],
+    { validateDirectory }
+  );
 }
 
 export function validateRemoteWorkspaceSystemRuntimeDirectories(

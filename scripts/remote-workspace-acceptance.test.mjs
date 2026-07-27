@@ -38,6 +38,7 @@ import {
   REMOTE_WORKSPACE_PHASE_CHILD_PATH,
   REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+  resolveRemoteWorkspaceSystemRuntimeDirectories,
   validateRootOwnedSystemRuntimeDirectory,
   validateRemoteWorkspaceBwrapHelp,
   validateRemoteWorkspaceCandidateExpectation,
@@ -454,6 +455,31 @@ linuxTest("System runtime closure roots must be canonical, root-owned, and non-w
   }
 });
 
+test("The system-runtime resolver constructs its complete closure before delegated validation", () => {
+  const validated = [];
+  const directories = resolveRemoteWorkspaceSystemRuntimeDirectories(["/usr/lib"], {
+    validateDirectory(directory) {
+      validated.push(directory);
+      return directory;
+    }
+  });
+  assert.equal(Object.isFrozen(directories), true);
+  assert.deepEqual(validated, directories);
+  assert.equal(directories.at(-1), "/usr/lib");
+  assert.equal(directories.includes("/usr/lib/x86_64-linux-gnu"), true);
+  assert.equal(directories.includes("/etc/ssl/certs"), true);
+});
+
+test("The system-runtime resolver rejects a malformed injected directory validator", () => {
+  assert.throws(
+    () =>
+      resolveRemoteWorkspaceSystemRuntimeDirectories(["/usr/lib"], {
+        validateDirectory: null
+      }),
+    /validator is malformed/u
+  );
+});
+
 test("Namespace probe requires one ID row and zero effective capabilities", () => {
   assert.deepEqual(
     validateRemoteWorkspaceNamespaceProbe(
@@ -600,7 +626,16 @@ linuxTest("copied Python accepts an absent journal only after the product guard 
   try {
     const source = createTinyPythonEnvironment(root);
     const destination = join(root, "copied");
-    const copied = await copyPrivatePythonEnvironment(source.executable, destination);
+    let resolverInput;
+    const copied = await copyPrivatePythonEnvironment(source.executable, destination, {
+      resolveSystemRuntimeDirectories(pythonDirectories) {
+        resolverInput = pythonDirectories;
+        return resolveUnitSystemRuntimeDirectories(pythonDirectories);
+      }
+    });
+    assert.equal(Object.isFrozen(resolverInput), true);
+    assert.deepEqual(copied.systemRuntimeDirectories, resolveUnitSystemRuntimeDirectories(resolverInput));
+    assert.equal(Object.isFrozen(copied.systemRuntimeDirectories), true);
     assert.equal(copied.executable, join(destination, "bin", "python"));
     assert.throws(() => lstatSync(join(source.prefix, ".openwrangler-dependency-journal-v1")), {
       code: "ENOENT"
@@ -631,7 +666,8 @@ linuxTest("copied Python repairs only the copied clean journal under umask 0002"
       copy(sourcePath, destinationPath, options) {
         cpSync(sourcePath, destinationPath, options);
         modeAfterRealCopy = lstatSync(join(destinationPath, ".openwrangler-dependency-journal-v1")).mode & 0o777;
-      }
+      },
+      resolveSystemRuntimeDirectories: resolveUnitSystemRuntimeDirectories
     });
     assert.equal(modeAfterRealCopy, 0o775);
     assert.deepEqual(dependencyJournalTestReceipt(sourceJournal), sourceBefore);
@@ -739,6 +775,32 @@ linuxTest("copied Python rejects source journal drift observed after the real co
         }
       }),
       /source Python dependency journal changed/u
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("copied Python rejects a malformed injected final system-runtime resolver before source access", async () => {
+  await assert.rejects(
+    copyPrivatePythonEnvironment("/not-used", "/not-used", {
+      resolveSystemRuntimeDirectories: null
+    }),
+    /system-runtime resolver is malformed/u
+  );
+});
+
+linuxTest("copied Python rejects a final resolver that alters the exact required closure", async () => {
+  const root = privateRoot("ow-remote-python-runtime-closure-");
+  try {
+    const source = createTinyPythonEnvironment(root);
+    await assert.rejects(
+      copyPrivatePythonEnvironment(source.executable, join(root, "copied"), {
+        resolveSystemRuntimeDirectories(pythonDirectories) {
+          return resolveUnitSystemRuntimeDirectories(pythonDirectories).slice(1);
+        }
+      }),
+      /altered its exact required closure/u
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -863,6 +925,12 @@ function resolveTinyPythonBootstrap(
     throw new Error("The tiny Python fixture bootstrap is not an existing regular file.");
   }
   return configured;
+}
+
+function resolveUnitSystemRuntimeDirectories(pythonDirectories) {
+  return resolveRemoteWorkspaceSystemRuntimeDirectories(pythonDirectories, {
+    validateDirectory: (directory) => directory
+  });
 }
 
 function dependencyGuardTestEnvironment({ executable, prefix, version }) {
