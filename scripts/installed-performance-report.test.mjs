@@ -71,6 +71,14 @@ test("phase validation rejects provenance drift and source data disclosure", () 
       }),
     /missing or unknown fields/u
   );
+  assert.throws(
+    () =>
+      validateInstalledPerformancePhase({
+        ...phase,
+        productConfiguration: { ...phase.productConfiguration, fileStartMode: "viewing" }
+      }),
+    /shipped product configuration/u
+  );
 });
 
 test("cache evidence retains every proof and rejects forged eviction verification", () => {
@@ -207,6 +215,7 @@ function editorRun(key) {
     provenance: {
       editor: editor(key),
       runtime: runtime(),
+      productConfiguration: productConfiguration(),
       platform: {
         operatingSystem: "Linux",
         operatingSystemRelease: "6.8.0",
@@ -261,6 +270,7 @@ function firstGridPhase(key, format, sourceCache, duration) {
     phase: `first-grid-${format}-${sourceCache}`,
     editor: editor(key),
     runtime: runtime(),
+    productConfiguration: productConfiguration(),
     fixture: { format, rows: fixture.rows, columns: fixture.columns, sha256: fixture.sha256 },
     measurement: {
       kind: "first-grid",
@@ -297,6 +307,7 @@ function interactionPhase(key) {
     phase: "grid-interaction-parquet",
     editor: editor(key),
     runtime: runtime(),
+    productConfiguration: productConfiguration(),
     fixture: { format: "parquet", rows: fixture.rows, columns: fixture.columns, sha256: fixture.sha256 },
     measurement: {
       kind: "grid-interaction",
@@ -323,6 +334,16 @@ function responsiveness() {
     rendererHeartbeatMs: 5,
     foregroundPageLatencyMs: 50,
     foregroundResponseKind: "page"
+  };
+}
+
+function productConfiguration() {
+  return {
+    defaultBackend: "auto",
+    fileStartMode: "editing",
+    insightsOnOpen: true,
+    fetchBlockSize: 200,
+    fetchColumnBlockSize: 16
   };
 }
 

@@ -23,7 +23,7 @@ import type { BridgeRequestOptions } from "../../extension/dataBridge";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 
-const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v2";
+const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v3";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 const FIRST_GRID_BOUNDARY =
@@ -82,6 +82,14 @@ interface CacheProof {
   verified: boolean;
 }
 
+interface ProductConfiguration {
+  defaultBackend: "auto";
+  fileStartMode: "editing";
+  insightsOnOpen: true;
+  fetchBlockSize: 200;
+  fetchColumnBlockSize: 16;
+}
+
 export async function run(): Promise<void> {
   const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
   const firstGridMatch = FIRST_GRID_PHASE_PATTERN.exec(phase);
@@ -106,7 +114,7 @@ export async function run(): Promise<void> {
   const api = await extension.activate();
   const testing = api?.testing;
   assert.ok(testing, "The isolated performance phase requires the environment-gated test API.");
-  await configureBenchmarkProfile(testPython);
+  const productConfiguration = await configureBenchmarkProfile(testPython);
   const runtime = await runtimeProvenance(testPython, String(extension.packageJSON.version));
   const editor = {
     key: editorKey(),
@@ -151,6 +159,7 @@ export async function run(): Promise<void> {
     phase,
     editor,
     runtime,
+    productConfiguration,
     fixture: {
       format,
       rows: fixture.rows,
@@ -190,7 +199,11 @@ async function measureFirstUsableGrid({
   await vscode.commands.executeCommand("vscode.openWith", warmup, "openWrangler.viewer", vscode.ViewColumn.One);
   const warmupSession = await waitForHostSession(
     testing,
-    (metadata) => metadata.source.kind === "file" && metadata.source.path === warmup.fsPath,
+    (metadata) =>
+      metadata.source.kind === "file" &&
+      metadata.source.path === warmup.fsPath &&
+      metadata.backend === "polars" &&
+      metadata.mode === "editing",
     GRID_DISCOVERY_TIMEOUT_MS,
     "the runtime warm-up session"
   );
@@ -213,6 +226,7 @@ async function measureFirstUsableGrid({
         metadata.source.kind === "file" &&
         metadata.source.path === sourceUri.fsPath &&
         metadata.backend === "polars" &&
+        metadata.mode === "editing" &&
         metadata.shape.rows === fixture.rows &&
         metadata.shape.columns === fixture.columns,
       GRID_DISCOVERY_TIMEOUT_MS,
@@ -260,6 +274,7 @@ async function measureGridInteraction({
       metadata.source.kind === "file" &&
       metadata.source.path === sourceUri.fsPath &&
       metadata.backend === "polars" &&
+      metadata.mode === "editing" &&
       metadata.shape.rows === fixture.rows &&
       metadata.shape.columns === fixture.columns,
     GRID_DISCOVERY_TIMEOUT_MS,
@@ -367,18 +382,27 @@ async function measureGridInteraction({
   };
 }
 
-async function configureBenchmarkProfile(testPython: string): Promise<void> {
+async function configureBenchmarkProfile(testPython: string): Promise<ProductConfiguration> {
   const configuration = vscode.workspace.getConfiguration("openWrangler");
-  for (const [key, value] of [
-    ["pythonPath", testPython],
-    ["defaultBackend", "polars"],
-    ["fileStartMode", "viewing"],
-    ["insightsOnOpen", false],
-    ["fetchBlockSize", 200],
-    ["fetchColumnBlockSize", 16]
-  ] as const) {
-    await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+  await configuration.update("pythonPath", testPython, vscode.ConfigurationTarget.Global);
+  assert.equal(configuration.get("pythonPath"), testPython, "The benchmark must use its private Python interpreter.");
+  const expected: ProductConfiguration = {
+    defaultBackend: "auto",
+    fileStartMode: "editing",
+    insightsOnOpen: true,
+    fetchBlockSize: 200,
+    fetchColumnBlockSize: 16
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    const inspection = configuration.inspect(key);
+    assert.ok(inspection, `The packaged extension must contribute ${key}.`);
+    assert.equal(inspection.defaultValue, value, `${key} must retain its shipped default.`);
+    assert.equal(inspection.globalValue, undefined, `${key} must not have a benchmark override.`);
+    assert.equal(inspection.workspaceValue, undefined, `${key} must not have a workspace override.`);
+    assert.equal(inspection.workspaceFolderValue, undefined, `${key} must not have a workspace-folder override.`);
+    assert.equal(configuration.get(key), value, `${key} must resolve to its shipped default.`);
   }
+  return expected;
 }
 
 function readFixtureManifest(manifestPath: string): FixtureManifest {
@@ -772,6 +796,8 @@ async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: 
     if ((await cell.count()) === 0 || !(await cell.isVisible())) return false;
     if ((await cell.textContent()) !== String(row + column)) return false;
   }
+  const insightsToggle = frame.getByRole("button", { name: "Hide insights", exact: true });
+  if ((await insightsToggle.count()) === 0 || !(await insightsToggle.isVisible())) return false;
   return true;
 }
 

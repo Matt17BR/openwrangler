@@ -14,8 +14,8 @@ import {
 import { dirname, resolve } from "node:path";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v2";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v2";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v3";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v3";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
@@ -87,7 +87,7 @@ export function validateInstalledFixtureManifest(manifest) {
 export function validateInstalledPerformancePhase(fragment, expected = {}) {
   exactKeys(
     fragment,
-    ["protocol", "runId", "phase", "editor", "runtime", "fixture", "measurement"],
+    ["protocol", "runId", "phase", "editor", "runtime", "productConfiguration", "fixture", "measurement"],
     [],
     "installed performance phase"
   );
@@ -98,6 +98,7 @@ export function validateInstalledPerformancePhase(fragment, expected = {}) {
   if (expected.phase !== undefined) assertEqual(fragment.phase, expected.phase, "installed performance phase name");
   validateEditor(fragment.editor);
   validateRuntime(fragment.runtime);
+  validateProductConfiguration(fragment.productConfiguration);
   validatePhaseFixture(fragment.fixture);
 
   const kind = fragment.measurement?.kind;
@@ -145,7 +146,8 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
         phase.editor.vscodeApiVersion !== run.provenance.editor.vscodeApiVersion ||
         phase.runtime.pythonVersion !== run.provenance.runtime.pythonVersion ||
         phase.runtime.pythonExecutableSha256 !== run.provenance.runtime.pythonExecutableSha256 ||
-        phase.runtime.polarsVersion !== run.provenance.runtime.polarsVersion
+        phase.runtime.polarsVersion !== run.provenance.runtime.polarsVersion ||
+        JSON.stringify(phase.productConfiguration) !== JSON.stringify(run.provenance.productConfiguration)
       ) {
         throw new TypeError("Installed performance phase provenance does not match its editor run.");
       }
@@ -354,6 +356,25 @@ function validateRuntime(runtime) {
   assertMatch(runtime.openWranglerRuntimeVersion, VERSION, "Open Wrangler runtime version");
 }
 
+function validateProductConfiguration(configuration) {
+  exactKeys(
+    configuration,
+    ["defaultBackend", "fileStartMode", "insightsOnOpen", "fetchBlockSize", "fetchColumnBlockSize"],
+    [],
+    "shipped product configuration"
+  );
+  const expected = {
+    defaultBackend: "auto",
+    fileStartMode: "editing",
+    insightsOnOpen: true,
+    fetchBlockSize: 200,
+    fetchColumnBlockSize: 16
+  };
+  if (Object.entries(expected).some(([key, value]) => configuration[key] !== value)) {
+    throw new TypeError("Installed performance must use the shipped product configuration.");
+  }
+}
+
 function validatePhaseFixture(fixture) {
   exactKeys(fixture, ["format", "rows", "columns", "sha256"], [], "phase fixture");
   if (!["csv", "parquet"].includes(fixture.format)) {
@@ -500,9 +521,15 @@ function validateOutstandingResponsiveness(responsiveness, label) {
 }
 
 function validateProvenance(provenance) {
-  exactKeys(provenance, ["editor", "runtime", "platform", "storage"], [], "editor-run provenance");
+  exactKeys(
+    provenance,
+    ["editor", "runtime", "productConfiguration", "platform", "storage"],
+    [],
+    "editor-run provenance"
+  );
   validateEditor(provenance.editor);
   validateRuntime(provenance.runtime);
+  validateProductConfiguration(provenance.productConfiguration);
   exactKeys(
     provenance.platform,
     [

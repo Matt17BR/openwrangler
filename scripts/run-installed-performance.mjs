@@ -59,7 +59,7 @@ import {
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v2";
+const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v3";
 const INSTALLED_PERFORMANCE_PHASES = [
   "perf-csv-cold",
   "perf-csv-warm",
@@ -657,10 +657,15 @@ async function runEditorPerformancePhases({
   if (phases.some((phase) => JSON.stringify(phase.runtime) !== JSON.stringify(runtime))) {
     throw new Error(`${identifiedEditor.name} changed Python runtime provenance between performance phases.`);
   }
+  const productConfiguration = phases[0].productConfiguration;
+  if (phases.some((phase) => JSON.stringify(phase.productConfiguration) !== JSON.stringify(productConfiguration))) {
+    throw new Error(`${identifiedEditor.name} changed shipped product configuration between performance phases.`);
+  }
   return {
     provenance: {
       editor: phases[0].editor,
       runtime,
+      productConfiguration,
       platform: readInstalledPlatformProvenance({ editorDisplayMode }),
       storage: readInstalledStorageProvenance(fixtureRoot)
     },
