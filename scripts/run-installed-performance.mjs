@@ -15,6 +15,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync
 } from "node:fs";
@@ -83,6 +84,9 @@ const INSTALLED_PERFORMANCE_PHASES = [
 ];
 const EXPECTED_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
+const INSTALLED_CHECKSUM_MAX_BYTES = 512;
+const INSTALLED_PROVENANCE_MAX_BYTES = 4096;
+const INSTALLED_PROVENANCE_PROTOCOL = "openwrangler-canonical-release-artifact-v1";
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
@@ -105,6 +109,8 @@ export function parseInstalledPerformanceArguments(arguments_) {
     candidateOutput: resolve(root, "tmp", "performance", "openwrangler-installed-candidate.vsix"),
     output: resolve(root, "tmp", "performance", "installed-performance.json")
   };
+  let candidateOutputExplicit = false;
+  let editorsExplicit = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (argument === "--smoke") {
@@ -112,6 +118,7 @@ export function parseInstalledPerformanceArguments(arguments_) {
       continue;
     }
     if (argument === "--editors") {
+      editorsExplicit = true;
       const value = arguments_[++index];
       if (!value) throw new Error("--editors requires vscode, cursor, or vscode,cursor.");
       const editors = value
@@ -135,17 +142,115 @@ export function parseInstalledPerformanceArguments(arguments_) {
       continue;
     }
     if (argument === "--candidate-out") {
+      candidateOutputExplicit = true;
       const value = arguments_[++index];
       if (!value) throw new Error("--candidate-out requires one filesystem path.");
       options.candidateOutput = resolve(root, value);
       continue;
     }
+    if (argument === "--candidate-in") {
+      const value = arguments_[++index];
+      if (!value) throw new Error("--candidate-in requires one filesystem path.");
+      if (options.candidateInput !== undefined) throw new Error("--candidate-in may be provided only once.");
+      options.candidateInput = resolve(root, value);
+      continue;
+    }
+    if (argument === "--candidate-checksum") {
+      const value = arguments_[++index];
+      if (!value) throw new Error("--candidate-checksum requires one filesystem path.");
+      if (options.candidateChecksum !== undefined) {
+        throw new Error("--candidate-checksum may be provided only once.");
+      }
+      options.candidateChecksum = resolve(root, value);
+      continue;
+    }
+    if (argument === "--candidate-provenance") {
+      const value = arguments_[++index];
+      if (!value) throw new Error("--candidate-provenance requires one filesystem path.");
+      if (options.candidateProvenance !== undefined) {
+        throw new Error("--candidate-provenance may be provided only once.");
+      }
+      options.candidateProvenance = resolve(root, value);
+      continue;
+    }
     if (argument?.startsWith("--")) throw new Error(`Unknown installed-performance option ${argument}.`);
     throw new Error(
-      "Installed performance packages its own clean-HEAD candidate; use --candidate-out to choose its destination."
+      "Installed performance requires named candidate options; use --candidate-out or --candidate-in with --candidate-checksum and --candidate-provenance."
     );
   }
+  const consumesCandidate =
+    options.candidateInput !== undefined ||
+    options.candidateChecksum !== undefined ||
+    options.candidateProvenance !== undefined;
+  if (
+    consumesCandidate &&
+    (options.candidateInput === undefined ||
+      options.candidateChecksum === undefined ||
+      options.candidateProvenance === undefined)
+  ) {
+    throw new Error("--candidate-in, --candidate-checksum, and --candidate-provenance are required together.");
+  }
+  if (consumesCandidate && candidateOutputExplicit) {
+    throw new Error(
+      "--candidate-in/--candidate-checksum/--candidate-provenance cannot be combined with --candidate-out."
+    );
+  }
+  if (consumesCandidate && options.smoke) {
+    throw new Error("Canonical candidate consumption is stable release evidence and cannot use --smoke.");
+  }
+  if (consumesCandidate && editorsExplicit) {
+    throw new Error("Canonical candidate consumption always runs both first-class editors and cannot use --editors.");
+  }
+  if (consumesCandidate) {
+    const canonicalPaths = [
+      options.candidateInput,
+      options.candidateChecksum,
+      options.candidateProvenance,
+      options.output
+    ];
+    if (new Set(canonicalPaths).size !== canonicalPaths.length) {
+      throw new Error("Canonical candidate inputs and the installed-performance report must use different paths.");
+    }
+    options.candidateOutput = undefined;
+    options.mode = "consume";
+  } else {
+    if (options.output === options.candidateOutput) {
+      throw new Error("The preview candidate and installed-performance report must use different paths.");
+    }
+    options.mode = "package";
+  }
   return options;
+}
+
+export function assertInstalledPerformanceArtifactPathSeparation({
+  output,
+  candidateInput,
+  candidateChecksum,
+  candidateProvenance,
+  candidateOutput
+}) {
+  if (typeof output !== "string" || output.length === 0) {
+    throw new TypeError("Installed performance requires one report output path.");
+  }
+  const protectedPaths = [candidateInput, candidateChecksum, candidateProvenance, candidateOutput].filter(
+    (path) => typeof path === "string" && path.length > 0
+  );
+  if (protectedPaths.length === 0) {
+    throw new TypeError("Installed performance requires at least one protected candidate artifact path.");
+  }
+  const resolvedOutput = resolve(output);
+  const outputTarget = canonicalProspectivePath(resolvedOutput);
+  const outputIdentity = existingPathIdentity(resolvedOutput);
+  for (const protectedPath of protectedPaths) {
+    const resolvedProtected = resolve(protectedPath);
+    if (
+      resolvedProtected === resolvedOutput ||
+      canonicalProspectivePath(resolvedProtected) === outputTarget ||
+      sameExistingPathIdentity(existingPathIdentity(resolvedProtected), outputIdentity)
+    ) {
+      throw new Error("The installed-performance report path aliases a protected candidate artifact.");
+    }
+  }
 }
 
 export function stageInstalledPerformanceVsix(source, destination, hooks = {}) {
@@ -233,9 +338,168 @@ export function stageInstalledPerformanceVsix(source, destination, hooks = {}) {
   }
 }
 
+export function readInstalledPerformanceVsixReceipt(candidatePath) {
+  const path = resolve(candidatePath);
+  const snapshot = readBoundedVsixFileSnapshot(path, { requireOwner: true });
+  return Object.freeze({
+    path,
+    sha256: createHash("sha256").update(snapshot.bytes).digest("hex"),
+    bytes: snapshot.bytes.length,
+    fileIdentity: fileIdentityReceipt(snapshot.identity)
+  });
+}
+
+export function readInstalledPerformanceChecksum(checksumPath, candidatePath, hooks = {}) {
+  const path = resolve(checksumPath);
+  const resolvedCandidate = resolve(candidatePath);
+  const candidateName = basename(resolvedCandidate);
+  if (candidateName !== "openwrangler.vsix") {
+    throw new Error("Canonical installed performance requires the candidate filename openwrangler.vsix.");
+  }
+  let descriptor;
+  try {
+    descriptor = openReadOnlyNoFollow(path, "The installed-performance checksum must be a single-link regular file.");
+    const before = fstatSync(descriptor, { bigint: true });
+    const namedBefore = lstatSync(path, { bigint: true });
+    requireSameRegularFile(namedBefore, before, "The installed-performance checksum changed before it was read.");
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size <= 0n ||
+      before.size > BigInt(INSTALLED_CHECKSUM_MAX_BYTES) ||
+      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("The installed-performance checksum must be one bounded current-user-owned regular file.");
+    }
+    hooks.afterOpen?.(path);
+    const bytes = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (count === 0) throw new Error("The installed-performance checksum ended before its validated byte size.");
+      offset += count;
+    }
+    hooks.afterRead?.(path);
+    const after = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(path, { bigint: true });
+    requireSameRegularFile(after, before, "The installed-performance checksum changed while it was read.");
+    requireSameRegularFile(namedAfter, before, "The installed-performance checksum path changed while it was read.");
+    const match = /^([0-9a-f]{64}) {2}openwrangler\.vsix\n$/u.exec(bytes.toString("utf8"));
+    if (!match || Buffer.byteLength(match[0], "utf8") !== bytes.length) {
+      throw new Error(
+        "The installed-performance checksum must contain exactly one lowercase SHA-256 line for openwrangler.vsix."
+      );
+    }
+    return Object.freeze({
+      path,
+      candidatePath: resolvedCandidate,
+      candidateSha256: match[1],
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.length,
+      fileIdentity: fileIdentityReceipt(after)
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+export function readInstalledPerformanceProvenance(provenancePath, hooks = {}) {
+  const path = resolve(provenancePath);
+  if (basename(path) !== "openwrangler.vsix.provenance.json") {
+    throw new Error(
+      "Canonical installed performance requires the provenance filename openwrangler.vsix.provenance.json."
+    );
+  }
+  let descriptor;
+  try {
+    descriptor = openReadOnlyNoFollow(path, "The installed-performance provenance must be a single-link regular file.");
+    const before = fstatSync(descriptor, { bigint: true });
+    const namedBefore = lstatSync(path, { bigint: true });
+    requireSameRegularFile(namedBefore, before, "The installed-performance provenance changed before it was read.");
+    if (
+      !before.isFile() ||
+      before.nlink !== 1n ||
+      before.size <= 0n ||
+      before.size > BigInt(INSTALLED_PROVENANCE_MAX_BYTES) ||
+      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("The installed-performance provenance must be one bounded current-user-owned regular file.");
+    }
+    hooks.afterOpen?.(path);
+    const bytes = Buffer.alloc(Number(before.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (count === 0) throw new Error("The installed-performance provenance ended before its validated byte size.");
+      offset += count;
+    }
+    hooks.afterRead?.(path);
+    const after = fstatSync(descriptor, { bigint: true });
+    const namedAfter = lstatSync(path, { bigint: true });
+    requireSameRegularFile(after, before, "The installed-performance provenance changed while it was read.");
+    requireSameRegularFile(namedAfter, before, "The installed-performance provenance path changed while it was read.");
+    const value = validateInstalledPerformanceProvenance(
+      parseStrictJson(bytes.toString("utf8"), { maxBytes: INSTALLED_PROVENANCE_MAX_BYTES })
+    );
+    return Object.freeze({
+      path,
+      ...value,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.length,
+      fileIdentity: fileIdentityReceipt(after)
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+export function validateInstalledPerformanceProvenance(value) {
+  const expectedKeys = [
+    "extensionId",
+    "extensionVersion",
+    "preview",
+    "protocol",
+    "releaseTag",
+    "sourceCommit",
+    "vsixBytes",
+    "vsixSha256"
+  ];
+  const keys = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error("The installed-performance provenance must contain exactly the canonical artifact fields.");
+  }
+  if (
+    value.protocol !== INSTALLED_PROVENANCE_PROTOCOL ||
+    value.extensionId !== "Matt17BR.openwrangler" ||
+    typeof value.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(value.extensionVersion)?.channel !== "stable" ||
+    value.preview !== false ||
+    value.releaseTag !== `v${value.extensionVersion}` ||
+    typeof value.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(value.sourceCommit) ||
+    typeof value.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(value.vsixSha256) ||
+    !Number.isSafeInteger(value.vsixBytes) ||
+    value.vsixBytes <= 0 ||
+    value.vsixBytes > VSIX_MAX_BYTES
+  ) {
+    throw new Error("The installed-performance provenance does not describe one canonical stable artifact.");
+  }
+  return Object.freeze({
+    protocol: value.protocol,
+    extensionId: value.extensionId,
+    extensionVersion: value.extensionVersion,
+    preview: value.preview,
+    releaseTag: value.releaseTag,
+    sourceCommit: value.sourceCommit,
+    vsixSha256: value.vsixSha256,
+    vsixBytes: value.vsixBytes
+  });
+}
+
 export async function readInstalledPerformanceCandidate(receipt) {
   if (!guardedCandidateReceipts.has(receipt)) {
-    throw new Error("Installed performance candidate metadata requires one guarded build receipt.");
+    throw new Error("Installed performance candidate metadata requires one guarded candidate receipt.");
   }
   const snapshot = readInstalledPerformanceVsixSnapshot(receipt);
   const archive = await inspectVsixArchive(snapshot.bytes);
@@ -246,12 +510,19 @@ export async function readInstalledPerformanceCandidate(receipt) {
   if (JSON.stringify(packagedManifest) !== JSON.stringify(receipt.sourceManifest)) {
     throw new Error("The staged VSIX manifest does not match its guarded source manifest.");
   }
+  const expectedBuildMethod =
+    packagedManifest.channel === "stable" ? "canonical-release-artifact-v1" : "guarded-clean-head-v1";
+  if (receipt.buildMethod !== expectedBuildMethod) {
+    throw new Error("The staged VSIX release channel does not match its guarded candidate provenance.");
+  }
   return {
     extensionId: `${packagedManifest.publisher}.${packagedManifest.name}`,
     extensionVersion: packagedManifest.version,
     preview: packagedManifest.preview,
     channel: packagedManifest.channel,
-    buildMethod: "guarded-clean-head-v1",
+    buildMethod: receipt.buildMethod,
+    releaseTag: receipt.releaseTag ?? null,
+    provenanceSha256: receipt.provenanceSha256 ?? null,
     sourceCommit: receipt.source.commit,
     vsixSha256: receipt.sha256,
     vsixBytes: receipt.bytes
@@ -315,6 +586,9 @@ export async function packageInstalledPerformanceCandidate({
   const before = readSource();
   requireCleanSource(before, "before candidate build");
   const sourceManifest = validateInstalledPerformanceSourceManifest(await readSourceManifest());
+  if (sourceManifest.channel === "stable") {
+    throw new Error("Stable installed-performance evidence must consume the canonical release artifact.");
+  }
   await build(environment);
   requireSameSource(readSource(), before, "during candidate build");
   const packageSource = await assertPackageSource();
@@ -338,10 +612,225 @@ export async function packageInstalledPerformanceCandidate({
   const receipt = Object.freeze({
     ...snapshotReceipt,
     source: Object.freeze({ ...before }),
-    sourceManifest
+    sourceManifest,
+    buildMethod: "guarded-clean-head-v1"
   });
   guardedCandidateReceipts.add(receipt);
   return receipt;
+}
+
+export async function acceptInstalledPerformanceCandidate({
+  candidatePath,
+  checksumPath,
+  provenancePath,
+  privateDestination,
+  environment = process.env,
+  expectedCommit = environment.EXPECTED_SHA,
+  releaseTag = environment.RELEASE_TAG,
+  readSource = readSourceProvenance,
+  readSourceManifest = readInstalledPerformanceSourceManifest,
+  readExternalCandidate = readInstalledPerformanceVsixReceipt,
+  readChecksum = readInstalledPerformanceChecksum,
+  readProvenance = readInstalledPerformanceProvenance,
+  readReleaseTagCommit = readInstalledPerformanceReleaseTagCommit,
+  stageCandidate = stageInstalledPerformanceVsix,
+  verifyCandidate = verifyInstalledPerformanceVsix,
+  readCandidate = readInstalledPerformanceCandidate,
+  revalidateCandidate = revalidateInstalledPerformanceVsix,
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance
+}) {
+  if (
+    typeof candidatePath !== "string" ||
+    candidatePath.length === 0 ||
+    typeof checksumPath !== "string" ||
+    checksumPath.length === 0 ||
+    typeof provenancePath !== "string" ||
+    provenancePath.length === 0 ||
+    typeof privateDestination !== "string" ||
+    privateDestination.length === 0
+  ) {
+    throw new TypeError(
+      "Canonical installed performance requires candidate, checksum, provenance, and private destination paths."
+    );
+  }
+  const resolvedCandidate = resolve(candidatePath);
+  const resolvedChecksum = resolve(checksumPath);
+  const resolvedProvenance = resolve(provenancePath);
+  const resolvedPrivate = resolve(privateDestination);
+  if (new Set([resolvedCandidate, resolvedChecksum, resolvedProvenance, resolvedPrivate]).size !== 4) {
+    throw new Error("Canonical candidate, checksum, provenance, and private destination paths must be different.");
+  }
+  if (typeof expectedCommit !== "string" || !/^[0-9a-f]{40}$/u.test(expectedCommit)) {
+    throw new Error("EXPECTED_SHA must be one full lowercase hexadecimal Git commit ID.");
+  }
+  if (typeof releaseTag !== "string" || !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(releaseTag)) {
+    throw new Error("RELEASE_TAG must be one stable vmajor.minor.patch tag.");
+  }
+
+  const sourceBefore = readSource();
+  requireCleanSource(sourceBefore, "before canonical candidate intake");
+  if (sourceBefore.commit !== expectedCommit) {
+    throw new Error("Canonical installed performance must inspect the exact expected source commit.");
+  }
+  const sourceManifest = validateInstalledPerformanceSourceManifest(await readSourceManifest());
+  if (sourceManifest.channel !== "stable" || sourceManifest.preview !== false) {
+    throw new Error("Canonical candidate consumption requires stable package metadata.");
+  }
+  if (releaseTag !== `v${sourceManifest.version}`) {
+    throw new Error("RELEASE_TAG must exactly match the stable source package version.");
+  }
+  if ((await readReleaseTagCommit(releaseTag)) !== expectedCommit) {
+    throw new Error("RELEASE_TAG must resolve to the exact expected source commit.");
+  }
+
+  const externalCandidate = await readExternalCandidate(resolvedCandidate);
+  requireVsixReceipt(externalCandidate);
+  if (externalCandidate.path !== resolvedCandidate) {
+    throw new Error("The canonical candidate receipt does not match its requested path.");
+  }
+  const checksum = await readChecksum(resolvedChecksum, resolvedCandidate);
+  if (checksum?.candidateSha256 !== externalCandidate.sha256) {
+    throw new Error("The canonical candidate does not match its transferred checksum.");
+  }
+  const provenance = await readProvenance(resolvedProvenance);
+  requireProvenanceReceipt(provenance);
+  if (
+    provenance.path !== resolvedProvenance ||
+    provenance.extensionId !== `${sourceManifest.publisher}.${sourceManifest.name}` ||
+    provenance.extensionVersion !== sourceManifest.version ||
+    provenance.preview !== sourceManifest.preview ||
+    provenance.releaseTag !== releaseTag ||
+    provenance.sourceCommit !== expectedCommit ||
+    provenance.vsixSha256 !== externalCandidate.sha256 ||
+    provenance.vsixBytes !== externalCandidate.bytes
+  ) {
+    throw new Error("The canonical candidate does not match its trusted build provenance.");
+  }
+  revalidateCandidate(externalCandidate);
+  revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
+  const staged = await stageCandidate(externalCandidate.path, resolvedPrivate);
+  requireVsixReceipt(staged);
+  if (
+    staged.path !== resolvedPrivate ||
+    staged.sha256 !== externalCandidate.sha256 ||
+    staged.bytes !== externalCandidate.bytes
+  ) {
+    throw new Error("The private installed-performance candidate does not match the canonical input.");
+  }
+  revalidateCandidate(externalCandidate);
+  revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
+  const privateReceipt = Object.freeze({
+    path: staged.path,
+    sha256: staged.sha256,
+    bytes: staged.bytes,
+    fileIdentity: Object.freeze({ ...staged.fileIdentity })
+  });
+  await verifyCandidate(privateReceipt, environment);
+  requireSameSource(readSource(), sourceBefore, "during canonical candidate intake");
+  revalidateCandidate(privateReceipt);
+  revalidateCandidate(externalCandidate);
+  revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
+
+  const candidateReceipt = Object.freeze({
+    ...privateReceipt,
+    source: Object.freeze({ ...sourceBefore }),
+    sourceManifest,
+    buildMethod: "canonical-release-artifact-v1",
+    releaseTag,
+    provenanceSha256: provenance.sha256
+  });
+  guardedCandidateReceipts.add(candidateReceipt);
+  const candidate = await readCandidate(candidateReceipt);
+  revalidateCandidate(candidateReceipt);
+  revalidateCandidate(externalCandidate);
+  revalidateChecksum(checksum, resolvedCandidate);
+  revalidateProvenance(provenance);
+  return Object.freeze({
+    candidate,
+    candidateReceipt,
+    publicCandidateReceipt: externalCandidate,
+    publicChecksumReceipt: checksum,
+    publicProvenanceReceipt: provenance,
+    sourceBefore: candidateReceipt.source
+  });
+}
+
+export async function prepareInstalledPerformanceCandidate({
+  options,
+  privateRoot,
+  environment = process.env,
+  acceptCandidate = acceptInstalledPerformanceCandidate,
+  packageCandidate = packageInstalledPerformanceCandidate,
+  readCandidate = readInstalledPerformanceCandidate,
+  stageCandidate = stageInstalledPerformanceVsix,
+  buildHarness = runInstalledPerformanceHarnessBuild,
+  readSource = readSourceProvenance,
+  revalidateCandidate = revalidateInstalledPerformanceVsix,
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance
+}) {
+  if (!options || typeof options !== "object" || typeof privateRoot !== "string" || privateRoot.length === 0) {
+    throw new TypeError("Installed performance candidate preparation requires options and one private root.");
+  }
+  if (options.mode === "consume") {
+    if (
+      typeof options.candidateInput !== "string" ||
+      typeof options.candidateChecksum !== "string" ||
+      typeof options.candidateProvenance !== "string" ||
+      options.candidateOutput !== undefined ||
+      options.smoke !== false ||
+      JSON.stringify(options.editors) !== JSON.stringify(["vscode", "cursor"])
+    ) {
+      throw new Error("Canonical candidate consumption received an inconsistent option set.");
+    }
+    const accepted = await acceptCandidate({
+      candidatePath: options.candidateInput,
+      checksumPath: options.candidateChecksum,
+      provenancePath: options.candidateProvenance,
+      privateDestination: resolve(privateRoot, "candidate.vsix"),
+      environment
+    });
+    await buildHarness(environment);
+    requireSameSource(readSource(), accepted.sourceBefore, "during the acceptance-harness build");
+    revalidateCandidate(accepted.candidateReceipt);
+    revalidateCandidate(accepted.publicCandidateReceipt);
+    revalidateChecksum(accepted.publicChecksumReceipt, accepted.publicCandidateReceipt.path);
+    revalidateProvenance(accepted.publicProvenanceReceipt);
+    return accepted;
+  }
+  if (
+    options.mode !== "package" ||
+    options.candidateInput !== undefined ||
+    options.candidateChecksum !== undefined ||
+    options.candidateProvenance !== undefined ||
+    typeof options.candidateOutput !== "string"
+  ) {
+    throw new Error("Self-packaged installed performance received an inconsistent option set.");
+  }
+  const guardedCandidate = await packageCandidate({
+    destination: resolve(privateRoot, "built-candidate.vsix"),
+    snapshotDestination: resolve(privateRoot, "candidate.vsix"),
+    environment
+  });
+  const sourceBefore = guardedCandidate.source;
+  const candidate = await readCandidate(guardedCandidate);
+  const published = await stageCandidate(guardedCandidate.path, options.candidateOutput);
+  if (published.sha256 !== guardedCandidate.sha256 || published.bytes !== guardedCandidate.bytes) {
+    throw new Error("The published installed-performance candidate does not match its private snapshot.");
+  }
+  requireSameSource(readSource(), sourceBefore, "after candidate publication");
+  return Object.freeze({
+    candidate,
+    candidateReceipt: guardedCandidate,
+    publicCandidateReceipt: published,
+    publicChecksumReceipt: undefined,
+    publicProvenanceReceipt: undefined,
+    sourceBefore
+  });
 }
 
 export function writeInstalledPerformanceRun(destination, result) {
@@ -398,6 +887,44 @@ export function revalidateInstalledPerformanceVsix(receipt) {
   return receipt;
 }
 
+export function revalidateInstalledPerformanceChecksum(receipt, candidatePath = receipt?.candidatePath) {
+  requireChecksumReceipt(receipt);
+  const current = readInstalledPerformanceChecksum(receipt.path, candidatePath);
+  if (
+    current.path !== receipt.path ||
+    current.candidatePath !== receipt.candidatePath ||
+    current.candidateSha256 !== receipt.candidateSha256 ||
+    current.sha256 !== receipt.sha256 ||
+    current.bytes !== receipt.bytes ||
+    !sameFileIdentityReceipt(current.fileIdentity, receipt.fileIdentity)
+  ) {
+    throw new Error("The installed-performance checksum receipt changed.");
+  }
+  return receipt;
+}
+
+export function revalidateInstalledPerformanceProvenance(receipt) {
+  requireProvenanceReceipt(receipt);
+  const current = readInstalledPerformanceProvenance(receipt.path);
+  if (
+    current.path !== receipt.path ||
+    current.protocol !== receipt.protocol ||
+    current.extensionId !== receipt.extensionId ||
+    current.extensionVersion !== receipt.extensionVersion ||
+    current.preview !== receipt.preview ||
+    current.releaseTag !== receipt.releaseTag ||
+    current.sourceCommit !== receipt.sourceCommit ||
+    current.vsixSha256 !== receipt.vsixSha256 ||
+    current.vsixBytes !== receipt.vsixBytes ||
+    current.sha256 !== receipt.sha256 ||
+    current.bytes !== receipt.bytes ||
+    !sameFileIdentityReceipt(current.fileIdentity, receipt.fileIdentity)
+  ) {
+    throw new Error("The installed-performance provenance receipt changed.");
+  }
+  return receipt;
+}
+
 function readInstalledPerformanceVsixSnapshot(receipt) {
   requireVsixReceipt(receipt);
   const snapshot = readBoundedVsixFileSnapshot(receipt.path, { requireOwner: true });
@@ -421,13 +948,21 @@ export async function collectInstalledPerformanceEditorRuns({
   editors,
   candidateReceipt,
   publicCandidateReceipt,
+  publicChecksumReceipt,
+  publicProvenanceReceipt,
   runEditor,
-  revalidateCandidate = revalidateInstalledPerformanceVsix
+  revalidateCandidate = revalidateInstalledPerformanceVsix,
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance
 }) {
   const runs = [];
   for (const editor of editors) runs.push(await runEditor(editor));
   revalidateCandidate(candidateReceipt);
   if (publicCandidateReceipt !== undefined) revalidateCandidate(publicCandidateReceipt);
+  if (publicChecksumReceipt !== undefined) {
+    revalidateChecksum(publicChecksumReceipt, publicCandidateReceipt?.path);
+  }
+  if (publicProvenanceReceipt !== undefined) revalidateProvenance(publicProvenanceReceipt);
   return runs;
 }
 
@@ -436,31 +971,36 @@ export async function runInstalledPerformance(options, environment = process.env
   if (process.platform !== "linux") {
     throw new Error("Strict installed performance evidence currently requires a Linux reference machine.");
   }
+  assertInstalledPerformanceArtifactPathSeparation(options);
   const privateParent = resolve(root, "tmp", "ow");
   mkdirSync(privateParent, { recursive: true, mode: 0o700 });
   const privateRoot = mkdtempSync(join(privateParent, "x-"));
   const privateRootReceipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: privateParent });
   configureEditorAcceptanceTempRoot(privateRoot, environment);
-  const privatePaths = [privateRoot, options.candidateOutput];
+  const privatePaths = [
+    privateRoot,
+    ...[options.candidateOutput, options.candidateInput, options.candidateChecksum, options.candidateProvenance].filter(
+      (path) => typeof path === "string"
+    )
+  ];
   let processTreeUncertain = false;
   let primaryError;
   let result;
   let publicCandidateReceipt;
+  let publicChecksumReceipt;
+  let publicProvenanceReceipt;
   try {
-    const builtCandidate = resolve(privateRoot, "built-candidate.vsix");
-    const guardedCandidate = await packageInstalledPerformanceCandidate({
-      destination: builtCandidate,
-      snapshotDestination: resolve(privateRoot, "candidate.vsix"),
+    const prepared = await prepareInstalledPerformanceCandidate({
+      options,
+      privateRoot,
       environment
     });
-    const sourceBefore = guardedCandidate.source;
-    const candidate = await readInstalledPerformanceCandidate(guardedCandidate);
-    const published = stageInstalledPerformanceVsix(guardedCandidate.path, options.candidateOutput);
-    if (published.sha256 !== guardedCandidate.sha256 || published.bytes !== guardedCandidate.bytes) {
-      throw new Error("The published installed-performance candidate does not match its private snapshot.");
-    }
-    publicCandidateReceipt = published;
-    requireSameSource(readSourceProvenance(), sourceBefore, "after candidate publication");
+    const guardedCandidate = prepared.candidateReceipt;
+    const sourceBefore = prepared.sourceBefore;
+    const candidate = prepared.candidate;
+    publicCandidateReceipt = prepared.publicCandidateReceipt;
+    publicChecksumReceipt = prepared.publicChecksumReceipt;
+    publicProvenanceReceipt = prepared.publicProvenanceReceipt;
     const python = resolveTestPython(environment);
     const fixtureRoot = resolve(privateRoot, "f");
     const fixtureDirectory = resolve(fixtureRoot, "fixtures");
@@ -492,6 +1032,8 @@ export async function runInstalledPerformance(options, environment = process.env
       editors,
       candidateReceipt: guardedCandidate,
       publicCandidateReceipt,
+      publicChecksumReceipt,
+      publicProvenanceReceipt,
       runEditor: (editor) =>
         runEditorPerformanceWithIsolatedDisplay({
           editor,
@@ -547,6 +1089,13 @@ export async function runInstalledPerformance(options, environment = process.env
   if (!publicCandidateReceipt) throw new Error("Installed performance completed without a public candidate receipt.");
   try {
     revalidateInstalledPerformanceVsix(publicCandidateReceipt);
+    if (publicChecksumReceipt !== undefined) {
+      revalidateInstalledPerformanceChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
+    }
+    if (publicProvenanceReceipt !== undefined) {
+      revalidateInstalledPerformanceProvenance(publicProvenanceReceipt);
+    }
+    assertInstalledPerformanceArtifactPathSeparation(options);
   } catch (error) {
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
   }
@@ -557,7 +1106,9 @@ export async function runInstalledPerformance(options, environment = process.env
     publishInstalledPerformanceReleaseResult({
       output: options.output,
       result,
-      publicCandidateReceipt
+      publicCandidateReceipt,
+      publicChecksumReceipt,
+      publicProvenanceReceipt
     });
   }
   return result;
@@ -567,25 +1118,60 @@ export function publishInstalledPerformanceReleaseResult({
   output,
   result,
   publicCandidateReceipt,
+  publicChecksumReceipt,
+  publicProvenanceReceipt,
   writeReport = writeInstalledPerformanceReport,
   assertGate = assertInstalledPerformanceReleaseGate,
   revalidateCandidate = revalidateInstalledPerformanceVsix,
+  revalidateChecksum = revalidateInstalledPerformanceChecksum,
+  revalidateProvenance = revalidateInstalledPerformanceProvenance,
   revalidateReport = revalidateInstalledPerformanceReport
 }) {
-  const reportReceipt = writeReport(output, result);
-  assertGate(result);
-  revalidateCandidate(publicCandidateReceipt);
-  let candidateValidatedWhileReportOpen = false;
-  revalidateReport(reportReceipt, {
-    afterOpen() {
-      revalidateCandidate(publicCandidateReceipt);
-      candidateValidatedWhileReportOpen = true;
-    }
+  assertInstalledPerformanceArtifactPathSeparation({
+    output,
+    candidateInput: publicCandidateReceipt?.path,
+    candidateChecksum: publicChecksumReceipt?.path,
+    candidateProvenance: publicProvenanceReceipt?.path
   });
-  if (!candidateValidatedWhileReportOpen) {
-    throw new Error("Installed-performance publication could not jointly validate its candidate and report.");
+  const reportReceipt = writeReport(output, result);
+  let gateError;
+  try {
+    assertGate(result);
+  } catch (error) {
+    gateError = error;
   }
-  revalidateCandidate(publicCandidateReceipt);
+  let validationError;
+  try {
+    const revalidateArtifacts = () => {
+      revalidateCandidate(publicCandidateReceipt);
+      if (publicChecksumReceipt !== undefined) {
+        revalidateChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
+      }
+      if (publicProvenanceReceipt !== undefined) revalidateProvenance(publicProvenanceReceipt);
+    };
+    revalidateArtifacts();
+    let artifactsValidatedWhileReportOpen = false;
+    revalidateReport(reportReceipt, {
+      afterOpen() {
+        revalidateArtifacts();
+        artifactsValidatedWhileReportOpen = true;
+      }
+    });
+    if (!artifactsValidatedWhileReportOpen) {
+      throw new Error("Installed-performance publication could not jointly validate its candidate and report.");
+    }
+    revalidateArtifacts();
+  } catch (error) {
+    validationError = error;
+  }
+  if (gateError !== undefined && validationError !== undefined) {
+    throw new AggregateError(
+      [gateError, validationError],
+      "Installed-performance release gate and retained evidence validation both failed."
+    );
+  }
+  if (validationError !== undefined) throw validationError;
+  if (gateError !== undefined) throw gateError;
   return reportReceipt;
 }
 
@@ -1031,6 +1617,19 @@ function readSourceProvenance() {
   return { commit, trackedWorktreeDirty: trackedStatus.trim().length > 0 };
 }
 
+function readInstalledPerformanceReleaseTagCommit(releaseTag) {
+  const commit = execFileSync("git", ["rev-parse", "--verify", "--end-of-options", `${releaseTag}^{commit}`], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 4 * 1024,
+    timeout: 10_000
+  }).trim();
+  if (!/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error("RELEASE_TAG did not resolve to one full Git commit ID.");
+  }
+  return commit;
+}
+
 function readTrackedSourceFiles() {
   const output = execFileSync("git", ["ls-files", "-z"], {
     cwd: root,
@@ -1365,6 +1964,17 @@ function runInstalledPerformanceBuild(environment) {
   }
 }
 
+function runInstalledPerformanceHarnessBuild(environment) {
+  execFileSync("npm", ["run", "build:test-extension"], {
+    cwd: root,
+    env: environment,
+    maxBuffer: 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+    windowsHide: true
+  });
+}
+
 async function createInstalledPerformanceVsix(destination, { preRelease }) {
   if (typeof preRelease !== "boolean") {
     throw new TypeError("Guarded installed-performance packaging requires an explicit release channel.");
@@ -1501,6 +2111,97 @@ function requireVsixReceipt(receipt) {
   ) {
     throw new Error("The installed-performance VSIX receipt is invalid.");
   }
+}
+
+function requireChecksumReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.path !== "string" ||
+    receipt.path.length === 0 ||
+    typeof receipt.candidatePath !== "string" ||
+    receipt.candidatePath.length === 0 ||
+    typeof receipt.candidateSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.candidateSha256) ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256) ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    receipt.bytes > INSTALLED_CHECKSUM_MAX_BYTES ||
+    !receipt.fileIdentity ||
+    typeof receipt.fileIdentity !== "object" ||
+    !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof receipt.fileIdentity[key] === "bigint") ||
+    receipt.fileIdentity.size !== BigInt(receipt.bytes)
+  ) {
+    throw new Error("The installed-performance checksum receipt is invalid.");
+  }
+}
+
+function requireProvenanceReceipt(receipt) {
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    typeof receipt.path !== "string" ||
+    receipt.path.length === 0 ||
+    receipt.protocol !== INSTALLED_PROVENANCE_PROTOCOL ||
+    receipt.extensionId !== "Matt17BR.openwrangler" ||
+    typeof receipt.extensionVersion !== "string" ||
+    classifyNumericReleaseVersion(receipt.extensionVersion)?.channel !== "stable" ||
+    receipt.preview !== false ||
+    receipt.releaseTag !== `v${receipt.extensionVersion}` ||
+    typeof receipt.sourceCommit !== "string" ||
+    !/^[0-9a-f]{40}$/u.test(receipt.sourceCommit) ||
+    typeof receipt.vsixSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.vsixSha256) ||
+    !Number.isSafeInteger(receipt.vsixBytes) ||
+    receipt.vsixBytes <= 0 ||
+    receipt.vsixBytes > VSIX_MAX_BYTES ||
+    typeof receipt.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(receipt.sha256) ||
+    !Number.isSafeInteger(receipt.bytes) ||
+    receipt.bytes <= 0 ||
+    receipt.bytes > INSTALLED_PROVENANCE_MAX_BYTES ||
+    !receipt.fileIdentity ||
+    typeof receipt.fileIdentity !== "object" ||
+    !["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => typeof receipt.fileIdentity[key] === "bigint") ||
+    receipt.fileIdentity.size !== BigInt(receipt.bytes)
+  ) {
+    throw new Error("The installed-performance provenance receipt is invalid.");
+  }
+}
+
+function sameFileIdentityReceipt(actual, expected) {
+  return ["dev", "ino", "size", "mtimeNs", "ctimeNs"].every((key) => actual[key] === expected[key]);
+}
+
+function canonicalProspectivePath(path) {
+  let cursor = resolve(path);
+  const suffix = [];
+  while (true) {
+    try {
+      return resolve(realpathSync.native(cursor), ...suffix);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      suffix.unshift(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function existingPathIdentity(path) {
+  try {
+    const identity = statSync(path, { bigint: true });
+    return Object.freeze({ dev: identity.dev, ino: identity.ino });
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function sameExistingPathIdentity(first, second) {
+  return first !== undefined && second !== undefined && first.dev === second.dev && first.ino === second.ino;
 }
 
 function openReadOnlyNoFollow(file, symlinkMessage) {

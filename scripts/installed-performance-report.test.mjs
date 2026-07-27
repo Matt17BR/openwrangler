@@ -146,7 +146,7 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
   assert.equal(assertInstalledPerformanceReleaseGate(report), report);
   assert.throws(
     () =>
-      assertInstalledPerformanceReleaseGate({ ...report, protocol: "openwrangler-installed-performance-report-v4" }),
+      assertInstalledPerformanceReleaseGate({ ...report, protocol: "openwrangler-installed-performance-report-v5" }),
     /installed performance report protocol/u
   );
   assert.throws(
@@ -205,23 +205,118 @@ test("candidate provenance enforces numeric versions and a matching release chan
       expectedError
     );
   }
+});
+
+test("candidate provenance requires channel-specific release artifact attestations", () => {
+  const previewReport = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: candidate(),
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [editorRun("vscode")]
+  });
+  assert.equal(previewReport.candidate.releaseTag, null);
+  assert.equal(previewReport.candidate.provenanceSha256, null);
 
   const stableRun = editorRun("vscode");
   stableRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
   for (const phase of stableRun.phases) phase.runtime.openWranglerRuntimeVersion = "1.0.0";
+  const stableCandidate = {
+    ...candidate(),
+    extensionVersion: "1.0.0",
+    preview: false,
+    channel: "stable",
+    buildMethod: "canonical-release-artifact-v1",
+    releaseTag: "v1.0.0",
+    provenanceSha256: sha("f")
+  };
+  const stableReport = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: stableCandidate,
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [stableRun]
+  });
+  assert.equal(stableReport.candidate.releaseTag, "v1.0.0");
+  assert.equal(stableReport.candidate.provenanceSha256, sha("f"));
+
+  const missingReleaseTag = { ...candidate() };
+  delete missingReleaseTag.releaseTag;
+  const missingProvenance = { ...candidate() };
+  delete missingProvenance.provenanceSha256;
+  for (const [invalidCandidate, expectedError] of [
+    [missingReleaseTag, /candidate provenance has missing or unknown fields/u],
+    [missingProvenance, /candidate provenance has missing or unknown fields/u],
+    [{ ...candidate(), releaseTag: "v0.3.0" }, /preview candidate release tag must be null/u],
+    [{ ...candidate(), provenanceSha256: sha("f") }, /preview candidate provenance SHA-256 must be null/u],
+    [{ ...stableCandidate, releaseTag: null }, /stable candidate release tag must be "v1\.0\.0"/u],
+    [{ ...stableCandidate, provenanceSha256: null }, /stable candidate provenance SHA-256 is invalid/u],
+    [{ ...stableCandidate, releaseTag: "v1.0.1" }, /stable candidate release tag must be "v1\.0\.0"/u],
+    [{ ...stableCandidate, provenanceSha256: "F".repeat(64) }, /stable candidate provenance SHA-256 is invalid/u]
+  ]) {
+    assert.throws(
+      () =>
+        buildInstalledPerformanceReport({
+          generatedAtUtc: "2026-07-27T00:00:00.000Z",
+          candidate: invalidCandidate,
+          source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+          fixtureManifest: fixtureManifest(),
+          editorRuns: [stableRun]
+        }),
+      expectedError
+    );
+  }
+});
+
+test("candidate build provenance is bound to its release channel", () => {
+  const previewRun = editorRun("vscode");
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: { ...candidate(), buildMethod: "canonical-release-artifact-v1" },
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [previewRun]
+      }),
+    /candidate build method must be "guarded-clean-head-v1"/u
+  );
+
+  const stableRun = editorRun("vscode");
+  stableRun.provenance.runtime.openWranglerRuntimeVersion = "1.0.0";
+  for (const phase of stableRun.phases) phase.runtime.openWranglerRuntimeVersion = "1.0.0";
+  const stableCandidate = {
+    ...candidate(),
+    extensionVersion: "1.0.0",
+    preview: false,
+    channel: "stable",
+    releaseTag: "v1.0.0",
+    provenanceSha256: sha("f")
+  };
+  assert.throws(
+    () =>
+      buildInstalledPerformanceReport({
+        generatedAtUtc: "2026-07-27T00:00:00.000Z",
+        candidate: stableCandidate,
+        source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
+        fixtureManifest: fixtureManifest(),
+        editorRuns: [stableRun]
+      }),
+    /candidate build method must be "canonical-release-artifact-v1"/u
+  );
+
   const report = buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
     candidate: {
-      ...candidate(),
-      extensionVersion: "1.0.0",
-      preview: false,
-      channel: "stable"
+      ...stableCandidate,
+      buildMethod: "canonical-release-artifact-v1"
     },
     source: { commit: "b".repeat(40), trackedWorktreeDirty: false },
     fixtureManifest: fixtureManifest(),
     editorRuns: [stableRun]
   });
   assert.equal(report.candidate.channel, "stable");
+  assert.equal(report.candidate.buildMethod, "canonical-release-artifact-v1");
 });
 
 test("aggregate verdicts retain dirty-source and missing-editor release failures", () => {
@@ -421,6 +516,8 @@ function candidate() {
     preview: true,
     channel: "preview",
     buildMethod: "guarded-clean-head-v1",
+    releaseTag: null,
+    provenanceSha256: null,
     sourceCommit: "b".repeat(40),
     vsixSha256: sha("a"),
     vsixBytes: 1_000_000
