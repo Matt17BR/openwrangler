@@ -20,7 +20,11 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
-import { inspectReleaseMetadata } from "./release-metadata.mjs";
+import {
+  inspectPreviewReleaseMetadata,
+  inspectReleaseMetadata,
+  inspectWorkflowReleaseMetadata
+} from "./release-metadata.mjs";
 import { inspectReleaseWorkflow } from "./release-workflow.mjs";
 import { inspectPreviewReadme, PREVIEW_README_RELEASE_SECTION } from "./release-documents.mjs";
 import {
@@ -213,6 +217,43 @@ test("binds numeric release versions to their channel before workflow branching"
     evenZeroMinorMarkedPreview.problems.includes(
       'Version 0.4.0 is not a permitted preview-channel number and requires package.json "preview" to be false.'
     )
+  );
+});
+
+test("accepts only preview metadata in the tag-release workflow gate", () => {
+  assert.deepEqual(
+    inspectPreviewReleaseMetadata({
+      releaseTag: "v0.3.0",
+      packageJson: JSON.stringify({ version: "0.3.0", preview: true })
+    }).problems,
+    []
+  );
+
+  const stable = inspectPreviewReleaseMetadata({
+    releaseTag: "v1.0.0",
+    packageJson: JSON.stringify({ version: "1.0.0", preview: false })
+  });
+  assert.ok(
+    stable.problems.includes(
+      "The tag release workflow is preview-only; stable publication must promote provenance-bound tested artifacts without rebuilding them."
+    )
+  );
+});
+
+test("retains canonical stable-candidate metadata mode beside the exact preview-only mode", () => {
+  const stable = {
+    releaseTag: "v1.0.0",
+    packageJson: JSON.stringify({ version: "1.0.0", preview: false })
+  };
+  assert.deepEqual(inspectWorkflowReleaseMetadata(stable, undefined).problems, []);
+  assert.ok(
+    inspectWorkflowReleaseMetadata(stable, "--preview-only").problems.includes(
+      "The tag release workflow is preview-only; stable publication must promote provenance-bound tested artifacts without rebuilding them."
+    )
+  );
+  assert.throws(
+    () => inspectWorkflowReleaseMetadata(stable, "--stable-only"),
+    /accepts only its stable-candidate mode or the exact --preview-only tag mode/u
   );
 });
 
@@ -875,7 +916,7 @@ test("rejects symlinked and hard-linked stable VSIX candidates", async (context)
   }
 });
 
-test("structurally gates tag-workflow packaging, readiness, upload, and release", () => {
+test("structurally gates preview-only tag workflow before build, upload, and release", () => {
   const source = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.deepEqual(inspectReleaseWorkflow(source), []);
 
@@ -884,50 +925,164 @@ test("structurally gates tag-workflow packaging, readiness, upload, and release"
     change(workflow);
     return inspectReleaseWorkflow(dumpYaml(workflow));
   };
-  const namedStep = (workflow, name) => workflow.jobs.build.steps.find((step) => step.name === name);
-
-  const movedReadiness = mutate((workflow) => {
-    const index = workflow.jobs.build.steps.findIndex(
-      (step) => step.name === "Enforce stable release readiness and publish immutable snapshot"
+  const buildStep = (workflow, name) => workflow.jobs.build.steps.find((step) => step.name === name);
+  const metadataStep = (workflow) =>
+    workflow.jobs["preview-metadata"].steps.find(
+      (step) => step.name === "Validate preview release tag and manifest channel"
     );
-    const [step] = workflow.jobs.build.steps.splice(index, 1);
-    workflow.jobs.decoy = { "runs-on": "ubuntu-latest", steps: [step] };
+
+  const missingMetadataGate = mutate((workflow) => {
+    delete workflow.jobs["preview-metadata"];
+  });
+  assert.ok(missingMetadataGate.includes("release.yml must contain one preview-only metadata gate job."));
+
+  const extraWriteCapableReleaseJob = mutate((workflow) => {
+    workflow.jobs["publish-decoy"] = {
+      "runs-on": "ubuntu-latest",
+      permissions: { contents: "write" },
+      steps: [
+        {
+          name: "Package hidden release",
+          run: "npm run package -- --out hidden.vsix"
+        },
+        {
+          name: "Publish hidden release",
+          uses: "softprops/action-gh-release@v2",
+          env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+          with: { files: "hidden.vsix" }
+        }
+      ]
+    };
   });
   assert.ok(
-    movedReadiness.includes(
-      'release.yml build job must contain exactly one "Enforce stable release readiness and publish immutable snapshot" step; found 0.'
+    extraWriteCapableReleaseJob.includes(
+      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, and release."
     )
   );
 
-  const duplicateReadiness = mutate((workflow) => {
-    workflow.jobs.build.steps.push({
-      ...namedStep(workflow, "Enforce stable release readiness and publish immutable snapshot")
+  const unpinnedMetadataCheckout = mutate((workflow) => {
+    workflow.jobs["preview-metadata"].steps[0].uses = "actions/checkout@v6";
+  });
+  assert.ok(
+    unpinnedMetadataCheckout.includes(
+      "release.yml preview-metadata job must begin with only canonical checkout and Node setup actions."
+    )
+  );
+
+  const unpinnedMetadataNode = mutate((workflow) => {
+    workflow.jobs["preview-metadata"].steps[1].uses = "actions/setup-node@v6";
+  });
+  assert.ok(
+    unpinnedMetadataNode.includes(
+      "release.yml preview-metadata job must begin with only canonical checkout and Node setup actions."
+    )
+  );
+
+  const unpinnedBuildCheckout = mutate((workflow) => {
+    workflow.jobs.build.steps[0].uses = "actions/checkout@v6";
+  });
+  assert.ok(
+    unpinnedBuildCheckout.includes(
+      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
+    )
+  );
+
+  const buildBeforeMetadata = mutate((workflow) => {
+    workflow.jobs["preview-metadata"].steps.splice(2, 0, {
+      name: "Build before metadata",
+      run: "npm run build"
     });
   });
-  assert.ok(duplicateReadiness.some((problem) => problem.endsWith("step; found 2.")));
+  assert.ok(
+    buildBeforeMetadata.includes(
+      "release.yml preview-metadata job must contain exactly checkout, Node setup, and the preview-only metadata gate."
+    )
+  );
 
-  const wrongEnvironment = mutate((workflow) => {
-    delete namedStep(workflow, "Enforce stable release readiness and publish immutable snapshot").env.EXPECTED_SHA;
+  const genericMetadataMode = mutate((workflow) => {
+    metadataStep(workflow).run = "node scripts/release-metadata.mjs";
   });
-  assert.ok(wrongEnvironment.some((problem) => problem.includes("must bind EXPECTED_SHA")));
+  assert.ok(genericMetadataMode.some((problem) => problem.includes("must run only its canonical release command")));
 
-  const hostileShell = mutate((workflow) => {
-    namedStep(workflow, "Enforce stable release readiness and publish immutable snapshot").shell = "bash {0}";
+  const ignoredMetadataFailure = mutate((workflow) => {
+    metadataStep(workflow)["continue-on-error"] = true;
   });
-  assert.ok(hostileShell.some((problem) => problem.includes("must use its canonical command shell")));
+  assert.ok(ignoredMetadataFailure.some((problem) => problem.includes("must not override command execution controls")));
 
-  const ignoredFailure = mutate((workflow) => {
-    namedStep(workflow, "Verify stable VSIX candidate")["continue-on-error"] = true;
+  const detachedBuild = mutate((workflow) => {
+    delete workflow.jobs.build.needs;
   });
-  assert.ok(ignoredFailure.some((problem) => problem.includes("must not override command execution controls")));
+  assert.ok(
+    detachedBuild.includes(
+      "release.yml build job must depend only on the successful preview-metadata gate and publish no channel outputs."
+    )
+  );
 
-  const skippedVerification = mutate((workflow) => {
-    namedStep(workflow, "Verify stable VSIX candidate").if = "${{ false }}";
+  const renamedMutablePublisher = mutate((workflow) => {
+    const packageIndex = workflow.jobs.build.steps.findIndex((step) => step.name === "Package canonical preview VSIX");
+    workflow.jobs.build.steps.splice(packageIndex, 0, {
+      name: "Restore preview cache",
+      uses: "softprops/action-gh-release@v2",
+      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+      with: { files: "hidden.vsix" }
+    });
   });
-  assert.ok(skippedVerification.some((problem) => problem.includes("wrong release-channel condition")));
+  assert.ok(
+    renamedMutablePublisher.includes(
+      "release.yml build job must retain exactly its canonical controls and ordered preview-only step/action allowlist."
+    )
+  );
+
+  const writeCapableValidatePublisher = mutate((workflow) => {
+    workflow.jobs.validate.permissions = { contents: "write" };
+    workflow.jobs.validate.steps.push({
+      name: "Publish validation decoy",
+      uses: "softprops/action-gh-release@v2",
+      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+      with: { files: "release/openwrangler.vsix", prerelease: false }
+    });
+  });
+  assert.ok(
+    writeCapableValidatePublisher.includes(
+      "release.yml validate job must retain exactly its canonical read-only controls, matrix, and ordered step/action allowlist."
+    )
+  );
+
+  const writeCapableAcceptancePublisher = mutate((workflow) => {
+    workflow.jobs["release-acceptance"].permissions = { contents: "write" };
+    workflow.jobs["release-acceptance"].steps.push({
+      name: "Publish acceptance decoy",
+      uses: "softprops/action-gh-release@v2",
+      env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+      with: { files: "release/openwrangler.vsix", prerelease: false }
+    });
+  });
+  assert.ok(
+    writeCapableAcceptancePublisher.includes(
+      "release.yml release-acceptance job must retain exactly its canonical read-only controls and ordered step/action allowlist."
+    )
+  );
+
+  const restoredStableBranch = mutate((workflow) => {
+    workflow.jobs.build.steps.splice(5, 0, {
+      name: "Package stable VSIX candidate",
+      run: "npm run package -- --out openwrangler.candidate.vsix"
+    });
+  });
+  assert.ok(
+    restoredStableBranch.includes(
+      "release.yml preview build must not contain stable packaging, verification, or readiness steps."
+    )
+  );
+
+  const conditionalPreviewPackage = mutate((workflow) => {
+    buildStep(workflow, "Package canonical preview VSIX").if =
+      "${{ steps.release_metadata.outputs.prerelease == 'true' }}";
+  });
+  assert.ok(conditionalPreviewPackage.some((problem) => problem.includes("wrong release-channel condition")));
 
   const commentedCommandDecoy = mutate((workflow) => {
-    namedStep(workflow, "Verify exact tagged source after packaging").run =
+    buildStep(workflow, "Verify exact tagged source after packaging").run =
       "# git diff-index --quiet HEAD --\necho skipped";
   });
   assert.ok(commentedCommandDecoy.some((problem) => problem.includes("must run only its canonical release command")));
@@ -941,13 +1096,13 @@ test("structurally gates tag-workflow packaging, readiness, upload, and release"
   });
   assert.ok(movedUpload.includes("release.yml build job must contain exactly one canonical release upload; found 0."));
 
-  const postReadinessMutation = mutate((workflow) => {
+  const postVerificationMutation = mutate((workflow) => {
     const index = workflow.jobs.build.steps.findIndex((step) => step.name === "Create canonical preview checksum");
-    workflow.jobs.build.steps.splice(index, 0, { name: "Rewrite stable outputs", run: "node mutate.mjs" });
+    workflow.jobs.build.steps.splice(index, 0, { name: "Rewrite preview output", run: "node mutate.mjs" });
   });
   assert.ok(
-    postReadinessMutation.includes(
-      "release.yml readiness, preview checksum, and canonical upload must be one exact final chain."
+    postVerificationMutation.includes(
+      "release.yml preview verification, checksum, and canonical upload must be one exact final chain."
     )
   );
 
@@ -970,6 +1125,13 @@ test("structurally gates tag-workflow packaging, readiness, upload, and release"
     unpinnedReleaseAction.includes(
       "release.yml final checksum verification must be followed immediately by GitHub Release creation."
     )
+  );
+
+  const dynamicReleaseChannel = mutate((workflow) => {
+    workflow.jobs.release.steps[2].with.prerelease = "${{ needs.build.outputs.prerelease == 'true' }}";
+  });
+  assert.ok(
+    dynamicReleaseChannel.includes("release.yml GitHub Release action must publish only the validated canonical files.")
   );
 
   const workflowWorkingDirectory = mutate((workflow) => {
