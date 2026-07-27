@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -617,13 +618,93 @@ test("reads release documentation from the exact immutable Git commit", () => {
   assert.equal(source.commit, expectedCommit);
   assert.ok(source.trackedPaths.has("docs/testing.md"));
   assert.match(source.files.get("package.json"), /"name": "openwrangler"/u);
-  const otherCommit = execFileSync("git", ["rev-parse", "HEAD^"], {
-    cwd: root,
-    encoding: "utf8"
-  }).trim();
+
+  const repository = mkdtempSync(join(tmpdir(), "ow-release-source-commit-"));
+  try {
+    execFileSync("git", ["init", "--quiet"], { cwd: repository });
+    writeFileSync(join(repository, "marker.txt"), "first\n");
+    execFileSync("git", ["add", "marker.txt"], { cwd: repository });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Open Wrangler Tests",
+        "-c",
+        "user.email=tests@openwrangler.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "first"
+      ],
+      { cwd: repository }
+    );
+    const otherCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repository,
+      encoding: "utf8"
+    }).trim();
+    writeFileSync(join(repository, "marker.txt"), "second\n");
+    execFileSync("git", ["add", "marker.txt"], { cwd: repository });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Open Wrangler Tests",
+        "-c",
+        "user.email=tests@openwrangler.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "second"
+      ],
+      { cwd: repository }
+    );
+    assert.throws(
+      () => readReleaseSourceSnapshot({ expectedCommit: otherCommit, root: repository }),
+      /exact checked-out event commit/u
+    );
+  } finally {
+    rmSync(repository, { force: true, recursive: true });
+  }
+});
+
+test("pins a canonical output parent while allowing symlinked ancestry", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "ow-release-parent-alias-"));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const firstParent = join(root, "first");
+  const secondParent = join(root, "second");
+  const alias = join(root, "alias");
+  mkdirSync(firstParent, { mode: 0o700 });
+  mkdirSync(secondParent, { mode: 0o700 });
+  symlinkSync(firstParent, alias, process.platform === "win32" ? "junction" : "dir");
+
+  const candidate = join(root, "candidate.vsix");
+  const published = join(alias, "openwrangler.vsix");
+  const checksum = join(alias, "openwrangler.vsix.sha256");
+  await createReleaseVsix(candidate);
+  const snapshot = readOwnedVsixSnapshot(candidate);
+  const receipts = writeStableReleaseArtifacts({
+    checksumOutput: checksum,
+    snapshot,
+    vsixOutput: published
+  });
+  assert.deepEqual(readFileSync(join(firstParent, "openwrangler.vsix")), snapshot.bytes);
+
+  unlinkSync(alias);
+  symlinkSync(secondParent, alias, process.platform === "win32" ? "junction" : "dir");
   assert.throws(
-    () => readReleaseSourceSnapshot({ expectedCommit: otherCommit, root }),
-    /exact checked-out event commit/u
+    () =>
+      revalidateStableReleaseArtifacts({
+        checksumOutput: checksum,
+        checksumReceipt: receipts.checksumReceipt,
+        snapshot,
+        vsixOutput: published,
+        vsixReceipt: receipts.vsixReceipt
+      }),
+    /identity or parent changed/u
   );
 });
 

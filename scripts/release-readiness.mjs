@@ -13,7 +13,7 @@ import {
   unlinkSync,
   writeSync
 } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
@@ -414,11 +414,8 @@ export async function readStableVsixPayload(bytes) {
 }
 
 function readParentIdentity(path) {
-  const parentPath = dirname(path);
-  const canonicalParent = realpathSync.native(parentPath);
-  if (canonicalParent !== resolve(parentPath)) {
-    throw new Error(`Release output parent must not traverse a symbolic link: ${basename(path)}.`);
-  }
+  const absolutePath = resolve(path);
+  const parentPath = realpathSync.native(dirname(absolutePath));
   const parent = lstatSync(parentPath, { bigint: true });
   if (!parent.isDirectory()) {
     throw new Error(`Release output parent must be a directory: ${basename(path)}.`);
@@ -426,18 +423,23 @@ function readParentIdentity(path) {
   return Object.freeze({
     parentDev: parent.dev,
     parentIno: parent.ino,
-    parentPath
+    parentPath,
+    outputName: basename(absolutePath),
+    outputPath: join(parentPath, basename(absolutePath))
   });
 }
 
-function sameParent(receipt) {
+function sameParent(path, receipt) {
   try {
+    const absolutePath = resolve(path);
     const current = lstatSync(receipt.parentPath, { bigint: true });
     return (
+      basename(absolutePath) === receipt.outputName &&
+      realpathSync.native(dirname(absolutePath)) === receipt.parentPath &&
       current.isDirectory() &&
       current.dev === receipt.parentDev &&
       current.ino === receipt.parentIno &&
-      realpathSync.native(receipt.parentPath) === resolve(receipt.parentPath)
+      realpathSync.native(receipt.parentPath) === receipt.parentPath
     );
   } catch {
     return false;
@@ -446,9 +448,9 @@ function sameParent(receipt) {
 
 function sameReceipt(path, receipt) {
   try {
-    const current = lstatSync(path, { bigint: true });
+    const current = lstatSync(receipt.outputPath, { bigint: true });
     return (
-      sameParent(receipt) &&
+      sameParent(path, receipt) &&
       current.isFile() &&
       current.nlink === 1n &&
       sameFileIdentity(current, receipt) &&
@@ -466,18 +468,23 @@ function removeOwnedOutput(path, receipt) {
   if (!sameReceipt(path, receipt)) {
     throw new Error(`Refusing to clean an unverified release output: ${basename(path)}.`);
   }
-  unlinkSync(path);
+  unlinkSync(receipt.outputPath);
 }
 
 function writeExclusiveOwnedOutput(path, contents) {
   const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents, "utf8");
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   const parentReceipt = readParentIdentity(path);
+  const outputPath = parentReceipt.outputPath;
   let descriptor;
   let receipt;
   let failure;
   try {
-    descriptor = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
+    descriptor = openSync(
+      outputPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow,
+      0o600
+    );
     const opened = fstatSync(descriptor, { bigint: true });
     if (
       !opened.isFile() ||
@@ -542,7 +549,7 @@ function readVerifiedOutput(path, receipt) {
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   let descriptor;
   try {
-    descriptor = openSync(path, fsConstants.O_RDONLY | noFollow);
+    descriptor = openSync(receipt.outputPath, fsConstants.O_RDONLY | noFollow);
     const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile() || before.nlink !== 1n || !sameFileIdentity(before, receipt) || before.size !== receipt.size) {
       throw new Error(`Release output changed before final content verification: ${basename(path)}.`);
