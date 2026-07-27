@@ -78,6 +78,22 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 
 ${README_RELEASE_SECTION_END}`;
 
+export const PERFORMANCE_EVIDENCE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
+
+> **Release status:** 1.0 validation candidate, not a stable release. The final two installed-editor performance rows remain open in the [feature parity matrix](${FEATURE_PARITY_URL}).
+
+## Install
+
+Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+
+${README_EDITOR_SUPPORT}
+
+There is no public installation for this evidence-only candidate. It is built and installed only inside isolated hosted validation and must not be published to GitHub Releases, the Visual Studio Marketplace, or Open VSX.
+
+After the hosted evidence is green, the two remaining rows must be marked complete and a fresh all-green stable candidate must be built. The evidence-only VSIX is never renamed or promoted.
+
+${README_RELEASE_SECTION_END}`;
+
 function parseMarkdown(contents, label) {
   if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
     return { problem: `${label} must be bounded UTF-8 Markdown.`, tokens: undefined };
@@ -191,7 +207,8 @@ export function inspectPrimaryParityMatrix(
   contents,
   expectedScope,
   trackedEvidencePaths,
-  allowedIncompleteRows = new Map()
+  allowedIncompleteRows = new Map(),
+  requiredIncompleteRows = new Map()
 ) {
   const parsed = parseMarkdown(contents, "docs/feature-parity.md");
   if (parsed.problem !== undefined || parsed.tokens === undefined) {
@@ -251,8 +268,13 @@ export function inspectPrimaryParityMatrix(
 
     const [surface, pandas, polars, status, evidence] = actual;
     const allowedIncompleteStatus = allowedIncompleteRows.get(surface);
+    const requiredIncompleteStatus = requiredIncompleteRows.get(surface);
     if (status !== "Done" && status !== allowedIncompleteStatus) {
       problems.push(`Parity row "${surface}" is ${status}, not Done.`);
+    } else if (requiredIncompleteStatus !== undefined && status !== requiredIncompleteStatus) {
+      problems.push(
+        `Parity row "${surface}" must remain ${requiredIncompleteStatus} while authoring performance evidence; received ${status}.`
+      );
     } else if (!inspectEvidence(evidence, trackedEvidencePaths)) {
       problems.push(
         `Parity row "${surface}" must record acceptance progress plus a valid tracked test:, workflow:, or record: reference.`
@@ -421,4 +443,13 @@ export function inspectPreviewReadme(contents, label = "README.md") {
 
 export function inspectStableReadme(contents, label = "README.md") {
   return inspectReadmeReleaseRegion(contents, label, STABLE_README_RELEASE_SECTION, "stable");
+}
+
+export function inspectPerformanceEvidenceReadme(contents, label = "README.md") {
+  return inspectReadmeReleaseRegion(
+    contents,
+    label,
+    PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
+    "performance-evidence candidate"
+  );
 }

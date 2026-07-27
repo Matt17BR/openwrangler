@@ -59,20 +59,28 @@ test("manual stable evidence packages once and consumes the same canonical artif
   assert.ok(Array.isArray(packaging.steps));
 
   const sourceGuard = packaging.steps[0];
-  assert.equal(sourceGuard?.name, "Require protected main source");
+  assert.equal(sourceGuard?.name, "Require dedicated evidence branch source");
   assert.deepEqual(sourceGuard?.env, {
     EVENT_REF: "${{ github.ref }}",
-    EVENT_REF_PROTECTED: "${{ github.ref_protected }}"
+    EVENT_REF_TYPE: "${{ github.ref_type }}",
+    EXPECTED_SHA: "${{ github.sha }}"
   });
   assert.equal(
     normalizedCommand(sourceGuard?.run),
-    'test "$EVENT_REF" = "refs/heads/main" test "$EVENT_REF_PROTECTED" = "true"'
+    'test "$EVENT_REF_TYPE" = "branch" case "$EVENT_REF" in refs/heads/release/1.0-evidence-*) ;; *) exit 1 ;; esac case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac test "${#EXPECTED_SHA}" -eq 40'
   );
   const packageCheckout = packaging.steps.find((step) => step.uses === CHECKOUT_ACTION);
   assert.deepEqual(packageCheckout?.with, {
+    ref: "${{ github.sha }}",
     "fetch-depth": 0,
     "persist-credentials": false
   });
+  const ancestryGuard = packaging.steps.find((step) => step.name === "Require exact protected-main descendant");
+  assert.deepEqual(ancestryGuard?.env, { EXPECTED_SHA: "${{ github.sha }}" });
+  assert.equal(
+    normalizedCommand(ancestryGuard?.run),
+    'test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA" test -z "$(git status --porcelain --untracked-files=no)" git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null git merge-base --is-ancestor refs/remotes/origin/main "$EXPECTED_SHA"'
+  );
   assert.equal(packaging.steps.filter((step) => step.uses === SETUP_NODE_ACTION).length, 1);
   assert.equal(packaging.steps.filter((step) => step.uses === SETUP_PYTHON_ACTION).length, 1);
   const metadata = packaging.steps.find((step) => step.id === "release_metadata");
@@ -211,6 +219,16 @@ test("stable evidence workflow inspector rejects source, artifact, and consumer 
   );
   assert.ok(
     inspect((candidate) => {
+      candidate.jobs.package.steps[0].run = 'test "$EVENT_REF_TYPE" = "branch"';
+    }).some((problem) => problem.includes("dedicated 1.0 evidence branch"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs.package.steps[2].run = "true";
+    }).some((problem) => problem.includes("descends from protected main"))
+  );
+  assert.ok(
+    inspect((candidate) => {
       candidate.jobs.package.steps.at(-1).with.path += "canonical-release/untrusted.txt\n";
     }).some((problem) => problem.includes("exact three-file"))
   );
@@ -284,6 +302,14 @@ test("PR workflows replace only superseded pending runs", () => {
 test("native VS Code and Cursor smoke consume the same downloaded canonical VSIX", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
+  assert.equal(
+    workflow?.jobs?.["canonical-vsix"]?.steps?.some(
+      (step) => step?.run === "npm run package:prepared -- --out openwrangler.vsix"
+    ),
+    true,
+    "CI must let package.json select the canonical VSIX channel."
+  );
+  assert.doesNotMatch(source, /package:prepared -- --pre-release/u);
   const steps = workflow?.jobs?.["native-editor-matrix"]?.steps;
   assert.ok(Array.isArray(steps), "CI must retain the native editor matrix.");
 
@@ -503,6 +529,13 @@ test("released-Jupyter PR paths include every consumed dependency manifest", () 
   for (const manifest of ["package.json", "package-lock.json", "python/pyproject.toml"]) {
     assert.equal(paths.includes(manifest), true, `Released Jupyter acceptance must run when ${manifest} changes.`);
   }
+  assert.equal(paths.includes("scripts/package-current-channel*.mjs"), true);
+  assert.equal(
+    workflow?.jobs?.vscode?.steps?.some((step) => step?.run === "npm run package -- --out openwrangler.vsix"),
+    true,
+    "Released Jupyter acceptance must let package.json select the VSIX channel."
+  );
+  assert.doesNotMatch(source, /npm run package -- --pre-release/u);
   assert.equal(
     workflow?.jobs?.vscode?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
     true

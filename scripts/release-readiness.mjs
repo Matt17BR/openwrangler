@@ -19,8 +19,10 @@ import { isDeepStrictEqual } from "node:util";
 import { SaxesParser } from "saxes";
 import {
   inspectChangelog,
+  inspectPerformanceEvidenceReadme,
   inspectPrimaryParityMatrix,
   inspectStableReadme,
+  PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
   STABLE_README_RELEASE_SECTION
 } from "./release-documents.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
@@ -38,7 +40,7 @@ const RELEASE_SOURCE_FILES = new Map([
   ["CHANGELOG.md", 2 * 1024 * 1024],
   ["README.md", 2 * 1024 * 1024]
 ]);
-export { STABLE_README_RELEASE_SECTION };
+export { PERFORMANCE_EVIDENCE_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION };
 const STABLE_PACKAGE_IDENTITY = Object.freeze({
   name: "openwrangler",
   displayName: "Open Wrangler",
@@ -80,6 +82,7 @@ export const PERFORMANCE_EVIDENCE_PARTIAL_ROWS = Object.freeze([
   "Virtual grid, column sizing, navigation",
   "Installed-editor first-usable-grid performance"
 ]);
+export const PERFORMANCE_EVIDENCE_VERSION = "1.0.0";
 const PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS = new Map(
   PERFORMANCE_EVIDENCE_PARTIAL_ROWS.map((surface) => [surface, "Partial"])
 );
@@ -192,7 +195,12 @@ function inspectReleaseReadiness(
     vsixManifest,
     trackedEvidencePaths = new Set()
   },
-  allowedIncompleteRows
+  {
+    allowedIncompleteRows = new Map(),
+    inspectReadme = inspectStableReadme,
+    requiredIncompleteRows = new Map(),
+    requiredVersion
+  } = {}
 ) {
   const problems = [];
   const sourceManifest = parseJsonObject(sourcePackageJson, "Source package.json", problems);
@@ -216,6 +224,9 @@ function inspectReleaseReadiness(
     problems.push(
       `Source package.json version ${sourceVersion} is reserved for preview releases and cannot pass stable readiness.`
     );
+  }
+  if (requiredVersion !== undefined && sourceVersion !== requiredVersion) {
+    problems.push(`Performance-evidence authoring is limited to version ${requiredVersion}.`);
   }
   for (const [field, expected] of Object.entries(STABLE_PACKAGE_IDENTITY)) {
     if (sourceManifest?.[field] !== expected) {
@@ -241,10 +252,16 @@ function inspectReleaseReadiness(
     problems.push(...inspectChangelog(changelog, sourceVersion));
   }
   problems.push(
-    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths, allowedIncompleteRows)
+    ...inspectPrimaryParityMatrix(
+      featureParity,
+      PRIMARY_PARITY_SCOPE,
+      trackedEvidencePaths,
+      allowedIncompleteRows,
+      requiredIncompleteRows
+    )
   );
-  problems.push(...inspectStableReadme(readme, "README.md"));
-  problems.push(...inspectStableReadme(packagedReadme, "Packaged README"));
+  problems.push(...inspectReadme(readme, "README.md"));
+  problems.push(...inspectReadme(packagedReadme, "Packaged README"));
 
   if (packagedManifest?.preview !== false) {
     problems.push("Packaged package.json preview must be false for a stable release.");
@@ -289,11 +306,44 @@ function inspectReleaseReadiness(
 }
 
 export function inspectStableReleaseReadiness(options) {
-  return inspectReleaseReadiness(options, new Map());
+  return inspectReleaseReadiness(options);
+}
+
+export function inspectStableSourceReadiness({ featureParity, readme, trackedEvidencePaths = new Set() }) {
+  return [
+    ...inspectPrimaryParityMatrix(featureParity, PRIMARY_PARITY_SCOPE, trackedEvidencePaths),
+    ...inspectStableReadme(readme, "README.md")
+  ];
 }
 
 export function inspectPerformanceEvidenceCandidateReadiness(options) {
-  return inspectReleaseReadiness(options, PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS);
+  return inspectReleaseReadiness(options, {
+    allowedIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
+    inspectReadme: inspectPerformanceEvidenceReadme,
+    requiredIncompleteRows: PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
+    requiredVersion: PERFORMANCE_EVIDENCE_VERSION
+  });
+}
+
+export function inspectPerformanceEvidenceSourceReadiness({
+  featureParity,
+  readme,
+  trackedEvidencePaths = new Set(),
+  version
+}) {
+  return [
+    ...(version === PERFORMANCE_EVIDENCE_VERSION
+      ? []
+      : [`Performance-evidence authoring is limited to version ${PERFORMANCE_EVIDENCE_VERSION}.`]),
+    ...inspectPrimaryParityMatrix(
+      featureParity,
+      PRIMARY_PARITY_SCOPE,
+      trackedEvidencePaths,
+      PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS,
+      PERFORMANCE_EVIDENCE_ALLOWED_INCOMPLETE_ROWS
+    ),
+    ...inspectPerformanceEvidenceReadme(readme, "README.md")
+  ];
 }
 
 function sameFileIdentity(left, right) {

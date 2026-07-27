@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { inspectPreviewReadme, inspectStableReadme } from "./release-documents.mjs";
+import { inspectPreviewReadme } from "./release-documents.mjs";
+import { inspectPerformanceEvidenceSourceReadiness, inspectStableSourceReadiness } from "./release-readiness.mjs";
 import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -24,7 +26,42 @@ if (missing.length > 0) {
 
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
-const readmeProblems = packageJson.preview ? inspectPreviewReadme(readme) : inspectStableReadme(readme);
+const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
+const trackedEvidencePaths = new Set(
+  execFileSync("git", ["ls-files", "-z", "--"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true
+  })
+    .split("\0")
+    .filter(Boolean)
+);
+const readmeProblems = packageJson.preview
+  ? inspectPreviewReadme(readme)
+  : (() => {
+      const stableProblems = inspectStableSourceReadiness({
+        featureParity,
+        readme,
+        trackedEvidencePaths
+      });
+      if (stableProblems.length === 0) {
+        return [];
+      }
+      const evidenceProblems = inspectPerformanceEvidenceSourceReadiness({
+        featureParity,
+        readme,
+        trackedEvidencePaths,
+        version: packageJson.version
+      });
+      return evidenceProblems.length === 0
+        ? []
+        : [
+            "Non-preview documentation must be either an all-green stable source or the exact two-row performance-evidence source.",
+            ...stableProblems,
+            ...evidenceProblems
+          ];
+    })();
 if (readmeProblems.length > 0) {
   throw new Error(`README release/install region is stale:\n- ${readmeProblems.join("\n- ")}`);
 }

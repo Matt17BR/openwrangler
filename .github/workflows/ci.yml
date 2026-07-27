@@ -24,7 +24,7 @@ jobs:
       - run: npm ci
       - run: npm run clean
       - run: npm run build
-      - run: npm run package:prepared -- --pre-release --out openwrangler.vsix
+      - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - name: Create canonical PR checksum
         shell: node {0}

@@ -20,19 +20,36 @@ const STABLE_REPORT_PATH =
   "${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json";
 const STABLE_PACKAGE_STEPS = [
   {
-    name: "Require protected main source",
+    name: "Require dedicated evidence branch source",
     env: {
       EVENT_REF: "${{ github.ref }}",
-      EVENT_REF_PROTECTED: "${{ github.ref_protected }}"
+      EVENT_REF_TYPE: "${{ github.ref_type }}",
+      EXPECTED_SHA: EVENT_SHA
     },
-    run: 'test "$EVENT_REF" = "refs/heads/main"\ntest "$EVENT_REF_PROTECTED" = "true"\n'
+    run: `test "$EVENT_REF_TYPE" = "branch"
+case "$EVENT_REF" in refs/heads/release/1.0-evidence-*) ;; *) exit 1 ;; esac
+case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac
+test "\${#EXPECTED_SHA}" -eq 40
+`
   },
   {
     uses: CHECKOUT_ACTION,
     with: {
+      ref: EVENT_SHA,
       "fetch-depth": 0,
       "persist-credentials": false
     }
+  },
+  {
+    name: "Require exact protected-main descendant",
+    env: {
+      EXPECTED_SHA: EVENT_SHA
+    },
+    run: `test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
+test -z "$(git status --porcelain --untracked-files=no)"
+git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null
+git merge-base --is-ancestor refs/remotes/origin/main "$EXPECTED_SHA"
+`
   },
   {
     uses: SETUP_NODE_ACTION,
@@ -943,21 +960,22 @@ export function inspectStableCandidateWorkflow(contents) {
   }
   const sourceGuard = stableCandidateStep(
     packageSteps,
-    (step) => step.name === "Require protected main source",
-    "protected-main guard",
+    (step) => step.name === "Require dedicated evidence branch source",
+    "dedicated evidence-branch guard",
     problems
   );
   if (
     sourceGuard?.index !== 0 ||
     !exactRecord(sourceGuard?.step.env, {
       EVENT_REF: "${{ github.ref }}",
-      EVENT_REF_PROTECTED: "${{ github.ref_protected }}"
+      EVENT_REF_TYPE: "${{ github.ref_type }}",
+      EXPECTED_SHA: EVENT_SHA
     }) ||
     normalizeRun(sourceGuard?.step.run) !==
-      'test "$EVENT_REF" = "refs/heads/main" test "$EVENT_REF_PROTECTED" = "true"' ||
+      'test "$EVENT_REF_TYPE" = "branch" case "$EVENT_REF" in refs/heads/release/1.0-evidence-*) ;; *) exit 1 ;; esac case "$EXPECTED_SHA" in *[!0-9a-f]*|"") exit 1 ;; esac test "${#EXPECTED_SHA}" -eq 40' ||
     !defaultStableStepControls(sourceGuard?.step)
   ) {
-    problems.push("stable-candidate.yml must fail first unless the dispatch uses protected main.");
+    problems.push("stable-candidate.yml must fail first unless dispatch uses a dedicated 1.0 evidence branch.");
   }
   const packageCheckout = stableCandidateStep(
     packageSteps,
@@ -967,13 +985,34 @@ export function inspectStableCandidateWorkflow(contents) {
   );
   if (
     !exactRecord(packageCheckout?.step.with, {
+      ref: EVENT_SHA,
       "fetch-depth": 0,
       "persist-credentials": false
     }) ||
     !defaultStableStepControls(packageCheckout?.step) ||
     hasOwn(packageCheckout?.step ?? {}, "env")
   ) {
-    problems.push("stable-candidate.yml package checkout must fetch all tags without push credentials.");
+    problems.push(
+      "stable-candidate.yml package checkout must pin the event SHA and fetch history without credentials."
+    );
+  }
+  const ancestry = stableCandidateStep(
+    packageSteps,
+    (step) => step.name === "Require exact protected-main descendant",
+    "exact protected-main ancestry guard",
+    problems
+  );
+  if (
+    ancestry?.step.run !==
+      'test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"\ntest -z "$(git status --porcelain --untracked-files=no)"\ngit rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null\ngit merge-base --is-ancestor refs/remotes/origin/main "$EXPECTED_SHA"\n' ||
+    !exactRecord(ancestry?.step.env, { EXPECTED_SHA: EVENT_SHA }) ||
+    !defaultStableStepControls(ancestry?.step) ||
+    packageCheckout === undefined ||
+    ancestry?.index !== packageCheckout.index + 1
+  ) {
+    problems.push(
+      "stable-candidate.yml must prove the exact clean event SHA descends from protected main immediately after checkout."
+    );
   }
   const metadata = stableCandidateStep(
     packageSteps,
