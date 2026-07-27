@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 import {
   assertRemoteWorkspaceHost,
@@ -67,9 +67,12 @@ import {
 } from "./remote-workspace-acceptance.mjs";
 import { PINNED_REMOTE_VSCODE_COMMIT } from "./remote-workspace-acquisition.mjs";
 import {
+  assertRemoteWorkspaceDropbearNoReexecPath,
+  createRemoteWorkspaceDropbearLoaderArguments,
   finalizeRemoteWorkspaceControllerFailure,
   getRemoteWorkspaceControllerFailureMessage,
   publishRemoteWorkspaceControllerFailureResult,
+  REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0,
   validateRemoteWorkspaceDropbearLoaderResolution
 } from "./remote-workspace-contract.mjs";
 import { createRemoteWorkspaceImmutableMountTemplate } from "./remote-workspace-launch.mjs";
@@ -193,6 +196,120 @@ test("Dropbear default-loader listings resolve only the independently pinned lib
     `${listing}${"x".repeat(64 * 1024)}`
   ]) {
     assert.throws(() => validateRemoteWorkspaceDropbearLoaderResolution(mutation), /Dropbear loader/u);
+  }
+});
+
+test("Dropbear private-loader arguments pin one absent fork-only argv0 inside the immutable runtime", () => {
+  const descriptor = remotePhaseDescriptor();
+  const inspected = [];
+  const dropbearArguments = ["-V"];
+  const args = createRemoteWorkspaceDropbearLoaderArguments(
+    {
+      sshServer: descriptor.sshServer,
+      sshLibraryPath: descriptor.sshLibraryPath,
+      dropbearArguments
+    },
+    {
+      lstat(path) {
+        inspected.push(path);
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+    }
+  );
+  assert.deepEqual(args, [
+    "--argv0",
+    REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0,
+    "--library-path",
+    descriptor.sshLibraryPath,
+    descriptor.sshServer,
+    "-V"
+  ]);
+  assert.equal(Object.isFrozen(args), true);
+  assert.deepEqual(inspected, [REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0]);
+  dropbearArguments[0] = "--changed";
+  assert.equal(args.at(-1), "-V");
+  assert.equal(basename(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0), "dropbear");
+  assert.equal(dirname(dirname(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0)), dirname(descriptor.sshServer));
+  const sshRuntime = createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT).find(
+    (mount) => mount.id === "sshRuntime"
+  );
+  assert.equal(sshRuntime?.access, "immutable");
+  assert.equal(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0.startsWith(`${sshRuntime?.destination}/`), true);
+});
+
+test("Dropbear fork-only argv0 proof rejects existing, linked, inaccessible, and arbitrary paths", () => {
+  const root = privateRoot("ow-remote-dropbear-no-reexec-");
+  try {
+    const existing = join(root, "existing");
+    const linked = join(root, "linked");
+    writeFileSync(existing, "present\n", { mode: 0o600 });
+    symlinkSync(existing, linked);
+    for (const path of [existing, linked]) {
+      assert.throws(
+        () =>
+          assertRemoteWorkspaceDropbearNoReexecPath(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0, {
+            lstat: () => lstatSync(path)
+          }),
+        /must remain absent/u
+      );
+    }
+    assert.throws(
+      () =>
+        assertRemoteWorkspaceDropbearNoReexecPath(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0, {
+          lstat() {
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          }
+        }),
+      /could not be proven absent/u
+    );
+    let arbitraryInspected = false;
+    assert.throws(
+      () =>
+        assertRemoteWorkspaceDropbearNoReexecPath("/tmp/arbitrary/dropbear", {
+          lstat() {
+            arbitraryInspected = true;
+            throw Object.assign(new Error("missing"), { code: "ENOENT" });
+          }
+        }),
+      /fixed immutable no-reexec path/u
+    );
+    assert.equal(arbitraryInspected, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Dropbear private-loader arguments reject request and absence-boundary drift", () => {
+  const descriptor = remotePhaseDescriptor();
+  const valid = {
+    sshServer: descriptor.sshServer,
+    sshLibraryPath: descriptor.sshLibraryPath,
+    dropbearArguments: ["-V"]
+  };
+  const absent = {
+    lstat() {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    }
+  };
+  for (const mutation of [
+    {},
+    { ...valid, sshServer: "/tmp/dropbear" },
+    { ...valid, sshLibraryPath: "/tmp/lib" },
+    { ...valid, dropbearArguments: [] },
+    { ...valid, dropbearArguments: [null] },
+    { ...valid, dropbearArguments: ["-V\n"] },
+    { ...valid, extra: true }
+  ]) {
+    assert.throws(
+      () => createRemoteWorkspaceDropbearLoaderArguments(mutation, absent),
+      /private-loader request is malformed/u
+    );
+  }
+  for (const boundary of [null, {}, { lstat: null }, { lstat: absent.lstat, extra: true }]) {
+    assert.throws(
+      () => createRemoteWorkspaceDropbearLoaderArguments(valid, boundary),
+      /absence boundary is malformed/u
+    );
   }
 });
 

@@ -15,6 +15,7 @@ import {
   assertRemoteWorkspaceResultLease,
   classifyRemoteWorkspaceResultWaitObservation,
   closeRemoteWorkspaceResultLease,
+  createRemoteWorkspaceDropbearLoaderArguments,
   finalizeRemoteWorkspaceControllerFailure,
   inspectRemoteWorkspaceLogTopology,
   openRemoteWorkspaceResultLeaseIfPresent,
@@ -189,8 +190,12 @@ function assertBootstrapExecutables(config, ip, ssh, loader) {
   }
   runSync(
     loader,
-    ["--library-path", config.sshLibraryPath, config.sshServer, "-V"],
-    "private bootstrap Dropbear dynamic-loader probe"
+    createRemoteWorkspaceDropbearLoaderArguments({
+      sshServer: config.sshServer,
+      sshLibraryPath: config.sshLibraryPath,
+      dropbearArguments: ["-V"]
+    }),
+    "private bootstrap Dropbear fork-only dynamic-loader probe"
   );
   validateRemoteWorkspaceDropbearLoaderResolution(
     runSync(loader, ["--list", config.sshServer], "private bootstrap Dropbear default-loader listing").stdout
@@ -202,7 +207,7 @@ function assertBootstrapExecutables(config, ip, ssh, loader) {
       "private bootstrap VS Code CLI compatibility-library probe"
     ).stdout
   );
-  runSync(config.sshServer, ["-V"], "private bootstrap Dropbear re-exec loader probe");
+  runSync(config.sshServer, ["-V"], "private bootstrap Dropbear default-loader probe");
 }
 
 async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingResultReceipt) {
@@ -229,7 +234,15 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
   if (!loopback.stdout.includes("127.0.0.1")) {
     throw new Error("The private loopback network was not initialized.");
   }
-  runSync(dynamicLoader, ["--library-path", sshLibraryPath, sshServer, "-V"], "private Dropbear dynamic-loader probe");
+  runSync(
+    dynamicLoader,
+    createRemoteWorkspaceDropbearLoaderArguments({
+      sshServer,
+      sshLibraryPath,
+      dropbearArguments: ["-V"]
+    }),
+    "private Dropbear fork-only dynamic-loader probe"
+  );
   validateRemoteWorkspaceDropbearLoaderResolution(
     runSync(dynamicLoader, ["--list", sshServer], "private Dropbear default-loader listing").stdout
   );
@@ -237,7 +250,7 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     runSync("/usr/bin/readlink", ["-f", PRIVATE_VSCODE_LIBSTDCXX], "private VS Code CLI compatibility-library probe")
       .stdout
   );
-  runSync(sshServer, ["-V"], "private Dropbear re-exec loader probe");
+  runSync(sshServer, ["-V"], "private Dropbear default-loader probe");
 
   markFailureStage("phase-display-failed");
   const xvfb = await startPrivateXvfb(config);
@@ -255,26 +268,27 @@ async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingRe
     sshd = spawnMonitoredRemoteWorkspaceChild(
       "The private loopback SSH daemon",
       dynamicLoader,
-      [
-        "--library-path",
-        sshLibraryPath,
+      createRemoteWorkspaceDropbearLoaderArguments({
         sshServer,
-        "-F",
-        "-E",
-        "-e",
-        "-s",
-        "-g",
-        "-m",
-        "-z",
-        "-p",
-        "127.0.0.1:49321",
-        "-P",
-        join(config.paths.remoteHome, "dropbear.pid"),
-        "-r",
-        sshHostKey,
-        "-D",
-        sshAuthorizedKeys
-      ],
+        sshLibraryPath,
+        dropbearArguments: [
+          "-F",
+          "-E",
+          "-e",
+          "-s",
+          "-g",
+          "-m",
+          "-z",
+          "-p",
+          "127.0.0.1:49321",
+          "-P",
+          join(config.paths.remoteHome, "dropbear.pid"),
+          "-r",
+          sshHostKey,
+          "-D",
+          sshAuthorizedKeys
+        ]
+      }),
       {
         detached: true,
         env: remoteServerEnvironment(config),

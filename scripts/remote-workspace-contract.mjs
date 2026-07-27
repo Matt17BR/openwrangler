@@ -32,6 +32,10 @@ export const REMOTE_WORKSPACE_PHASE_CHILD_PATH = `${REMOTE_WORKSPACE_NAMESPACE_R
 export const REMOTE_WORKSPACE_PHASE_NODE_PATH = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/phase-node`;
 export const REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES = 256 * 1024 * 1024;
 export const REMOTE_WORKSPACE_MAX_CANDIDATE_BYTES = 64 * 1024 * 1024;
+const REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT = `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime`;
+const REMOTE_WORKSPACE_DROPBEAR_SERVER = `${REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT}/bin/dropbear`;
+const REMOTE_WORKSPACE_DROPBEAR_LIBRARY_PATH = `${REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT}/lib`;
+export const REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0 = `${REMOTE_WORKSPACE_DROPBEAR_RUNTIME_ROOT}/bin/.openwrangler-no-reexec/dropbear`;
 const PATH_LIMIT = 16_384;
 const DROPBEAR_LOADER_LIST_LIMIT_BYTES = 64 * 1024;
 const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
@@ -342,11 +346,57 @@ const FIXED_DESCRIPTOR_PATHS = Object.freeze({
   testModule: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/test-module/dist-test/test/extensionHost/index.js`,
   python: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/python/bin/openwrangler-python`,
   sshConfig: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/config`,
-  sshServer: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime/bin/dropbear`,
-  sshLibraryPath: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh-runtime/runtime/lib`,
+  sshServer: REMOTE_WORKSPACE_DROPBEAR_SERVER,
+  sshLibraryPath: REMOTE_WORKSPACE_DROPBEAR_LIBRARY_PATH,
   sshHostKey: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh/host`,
   sshAuthorizedKeys: `${REMOTE_WORKSPACE_NAMESPACE_ROOT}/rh/ssh`
 });
+
+export function assertRemoteWorkspaceDropbearNoReexecPath(path, boundary) {
+  if (path !== REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0) {
+    throw new Error("The Remote SSH Dropbear argv0 does not use its fixed immutable no-reexec path.");
+  }
+  const lstat = remoteWorkspaceDropbearAbsenceBoundary(boundary);
+  try {
+    lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return path;
+    throw new Error("The Remote SSH Dropbear no-reexec argv0 could not be proven absent.", { cause: error });
+  }
+  throw new Error("The Remote SSH Dropbear no-reexec argv0 must remain absent.");
+}
+
+export function createRemoteWorkspaceDropbearLoaderArguments(value, boundary) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== "dropbearArguments,sshLibraryPath,sshServer" ||
+    value.sshServer !== REMOTE_WORKSPACE_DROPBEAR_SERVER ||
+    value.sshLibraryPath !== REMOTE_WORKSPACE_DROPBEAR_LIBRARY_PATH ||
+    !Array.isArray(value.dropbearArguments) ||
+    value.dropbearArguments.length === 0 ||
+    value.dropbearArguments.length > 64 ||
+    value.dropbearArguments.some(
+      (argument) =>
+        typeof argument !== "string" ||
+        argument.length === 0 ||
+        argument.length > PATH_LIMIT ||
+        /[\0\r\n]/u.test(argument)
+    )
+  ) {
+    throw new Error("The Remote SSH Dropbear private-loader request is malformed.");
+  }
+  const argv0 = assertRemoteWorkspaceDropbearNoReexecPath(REMOTE_WORKSPACE_DROPBEAR_NO_REEXEC_ARGV0, boundary);
+  return Object.freeze([
+    "--argv0",
+    argv0,
+    "--library-path",
+    value.sshLibraryPath,
+    value.sshServer,
+    ...value.dropbearArguments
+  ]);
+}
 
 export function createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel) {
   for (const value of [hostHome, hostSentinel]) {
@@ -366,6 +416,20 @@ export function createRemoteWorkspaceHostIsolationDigest(hostHome, hostSentinel)
     .update("\0", "utf8")
     .update(hostSentinel, "utf8")
     .digest("hex");
+}
+
+function remoteWorkspaceDropbearAbsenceBoundary(value) {
+  if (value === undefined) return lstatSync;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).join(",") !== "lstat" ||
+    typeof value.lstat !== "function"
+  ) {
+    throw new Error("The Remote SSH Dropbear absence boundary is malformed.");
+  }
+  return value.lstat;
 }
 
 export function validateRemoteWorkspacePhaseDescriptorPath(path) {
