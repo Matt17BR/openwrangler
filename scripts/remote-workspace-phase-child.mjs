@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -17,6 +17,11 @@ import {
   validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceResult
 } from "./remote-workspace-contract.mjs";
+import {
+  assertRemoteWorkspaceDisplayReceipt,
+  captureRemoteWorkspaceDisplayReceipt,
+  spawnMonitoredRemoteWorkspaceChild
+} from "./remote-workspace-processes.mjs";
 
 const POLL_MS = 250;
 const STOP_GRACE_MS = 5_000;
@@ -100,9 +105,10 @@ async function runPhase(config, ip, ssh, ldconfig) {
   );
   runSync(sshServer, ["-V"], "private Dropbear cache probe");
 
-  const xvfbChild = await startPrivateXvfb(config);
+  const xvfb = await startPrivateXvfb(config);
   const sshdOutput = boundedOutput();
-  const sshdChild = spawn(
+  const sshd = spawnMonitoredRemoteWorkspaceChild(
+    "The private loopback SSH daemon",
     dynamicLoader,
     [
       "--library-path",
@@ -130,15 +136,18 @@ async function runPhase(config, ip, ssh, ldconfig) {
       stdio: ["ignore", "ignore", "pipe"]
     }
   );
-  sshdChild.stderr.on("data", (chunk) => sshdOutput.append(chunk));
+  sshd.child.stderr.on("data", (chunk) => sshdOutput.append(chunk));
   const editorOutput = boundedOutput();
   let editor;
   let phaseError;
   try {
     await wait(350);
-    if (sshdChild.exitCode !== null || sshdChild.signalCode !== null || sshdChild.pid === undefined) {
+    try {
+      sshd.assertRunning();
+    } catch (error) {
       throw new Error(
-        `The private loopback SSH daemon exited before Remote SSH connected.${sshdOutput.text() ? ` ${sshdOutput.text()}` : ""}`
+        `The private loopback SSH daemon exited before Remote SSH connected.${sshdOutput.text() ? ` ${sshdOutput.text()}` : ""}`,
+        { cause: error }
       );
     }
     runSync(
@@ -162,7 +171,8 @@ async function runPhase(config, ip, ssh, ldconfig) {
       "private loopback SSH probe",
       config.paths.remoteHome
     );
-    editor = spawn(
+    editor = spawnMonitoredRemoteWorkspaceChild(
+      "Official VS Code",
       config.editor,
       [
         "--remote",
@@ -194,8 +204,8 @@ async function runPhase(config, ip, ssh, ldconfig) {
         stdio: ["ignore", "pipe", "pipe"]
       }
     );
-    editor.stdout.on("data", (chunk) => editorOutput.append(chunk));
-    editor.stderr.on("data", (chunk) => editorOutput.append(chunk));
+    editor.child.stdout.on("data", (chunk) => editorOutput.append(chunk));
+    editor.child.stderr.on("data", (chunk) => editorOutput.append(chunk));
     await observeAcceptance(config, editor);
   } catch (error) {
     const editorDiagnostic = sanitizeFailure(editorOutput.text(), config.paths.root);
@@ -205,13 +215,28 @@ async function runPhase(config, ip, ssh, ldconfig) {
         })
       : error;
   }
-  let cleanupError;
+  const cleanupErrors = [];
   try {
-    await stopNamespaceChildren([editor, sshdChild, xvfbChild].filter(Boolean));
+    assertRemoteWorkspaceDisplayReceipt(xvfb.displayReceipt);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await stopNamespaceChildren([editor, sshd, xvfb.monitor].filter(Boolean));
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
     assertPrivateDisplayEmpty();
   } catch (error) {
-    cleanupError = error;
+    cleanupErrors.push(error);
   }
+  const cleanupError =
+    cleanupErrors.length === 0
+      ? undefined
+      : cleanupErrors.length === 1
+        ? cleanupErrors[0]
+        : new AggregateError(cleanupErrors, "Private namespace cleanup had multiple failures.");
   if (phaseError && cleanupError) {
     throw new AggregateError([phaseError, cleanupError], "The Remote SSH phase and namespace cleanup both failed.");
   }
@@ -296,23 +321,39 @@ async function startPrivateXvfb(config) {
   mkdirSync(PRIVATE_DISPLAY_DIRECTORY, { mode: 0o1777 });
   chmodSync(PRIVATE_DISPLAY_DIRECTORY, 0o1777);
   const output = boundedOutput();
-  const child = spawn(config.xvfb, [PRIVATE_DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"], {
-    detached: true,
-    env: privateDisplayEnvironment(config.paths.localHome),
-    stdio: ["ignore", "ignore", "pipe"]
-  });
-  child.stderr.on("data", (chunk) => output.append(chunk));
+  const monitor = spawnMonitoredRemoteWorkspaceChild(
+    "The private Xvfb",
+    config.xvfb,
+    [PRIVATE_DISPLAY, "-screen", "0", "1280x720x24", "-nolisten", "tcp", "-noreset"],
+    {
+      detached: true,
+      env: privateDisplayEnvironment(config.paths.localHome),
+      stdio: ["ignore", "ignore", "pipe"]
+    }
+  );
+  monitor.child.stderr.on("data", (chunk) => output.append(chunk));
   try {
     const deadline = Date.now() + 10_000;
     do {
-      if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) {
+      let pid;
+      try {
+        pid = monitor.assertRunning();
+      } catch (error) {
         throw new Error(
-          `The private Xvfb exited before its display became ready.${output.text() ? ` ${output.text()}` : ""}`
+          `The private Xvfb exited before its display became ready.${output.text() ? ` ${output.text()}` : ""}`,
+          { cause: error }
         );
       }
       if (existsSync(PRIVATE_DISPLAY_SOCKET) && existsSync(PRIVATE_DISPLAY_LOCK)) {
-        assertPrivateDisplayOwned(config, child.pid);
-        return child;
+        const displayReceipt = captureRemoteWorkspaceDisplayReceipt({
+          directoryPath: PRIVATE_DISPLAY_DIRECTORY,
+          socketPath: PRIVATE_DISPLAY_SOCKET,
+          lockPath: PRIVATE_DISPLAY_LOCK,
+          expectedEntry: "X99",
+          uid: config.uid,
+          pid
+        });
+        return Object.freeze({ monitor, displayReceipt });
       }
       await wait(50);
     } while (Date.now() < deadline);
@@ -320,7 +361,7 @@ async function startPrivateXvfb(config) {
   } catch (error) {
     let cleanupError;
     try {
-      await stopNamespaceChildren([child]);
+      await stopNamespaceChildren([monitor]);
       assertPrivateDisplayEmpty();
     } catch (candidate) {
       cleanupError = candidate;
@@ -329,31 +370,6 @@ async function startPrivateXvfb(config) {
       throw new AggregateError([error, cleanupError], "Private Xvfb startup and cleanup both failed.");
     }
     throw error;
-  }
-}
-
-function assertPrivateDisplayOwned(config, expectedPid) {
-  const directory = lstatSync(PRIVATE_DISPLAY_DIRECTORY);
-  const socket = lstatSync(PRIVATE_DISPLAY_SOCKET);
-  const lock = lstatSync(PRIVATE_DISPLAY_LOCK);
-  const entries = readdirSync(PRIVATE_DISPLAY_DIRECTORY).sort();
-  const recordedPid = Number(readFileSync(PRIVATE_DISPLAY_LOCK, "utf8").trim());
-  if (
-    !directory.isDirectory() ||
-    directory.isSymbolicLink() ||
-    directory.uid !== config.uid ||
-    entries.length !== 1 ||
-    entries[0] !== "X99" ||
-    !socket.isSocket() ||
-    socket.isSymbolicLink() ||
-    socket.uid !== config.uid ||
-    !lock.isFile() ||
-    lock.isSymbolicLink() ||
-    lock.nlink !== 1 ||
-    lock.uid !== config.uid ||
-    recordedPid !== expectedPid
-  ) {
-    throw new Error("The private Xvfb display lost its isolated process, lock, or socket identity.");
   }
 }
 
@@ -383,8 +399,12 @@ async function observeAcceptance(config, editor) {
       }
     }
     if (existsSync(config.paths.result)) return;
-    if (editor.exitCode !== null || editor.signalCode !== null || editor.pid === undefined) {
-      throw new Error("Official VS Code exited before the remote extension host published a result.");
+    try {
+      editor.assertRunning();
+    } catch (error) {
+      throw new Error("Official VS Code exited before the remote extension host published a result.", {
+        cause: error
+      });
     }
     const now = Date.now();
     if (now - startedAt >= config.timeoutMs) {
@@ -416,21 +436,54 @@ function validateProgress(contents, config) {
   }
 }
 
-async function stopNamespaceChildren(children) {
-  for (const child of children) signalGroup(child, "SIGTERM");
-  await waitUntilNoLiveNamespaceChildren(STOP_GRACE_MS);
-  for (const child of children) signalGroup(child, "SIGKILL");
-  for (const pid of liveNamespaceChildren()) {
+async function stopNamespaceChildren(monitors) {
+  const errors = [];
+  for (const monitor of monitors) {
     try {
-      process.kill(pid, "SIGKILL");
+      signalGroup(monitor.child, "SIGTERM");
     } catch (error) {
-      if (error?.code !== "ESRCH") throw error;
+      errors.push(error);
     }
   }
-  await waitUntilNoLiveNamespaceChildren(STOP_GRACE_MS);
-  const remaining = liveNamespaceChildren();
-  if (remaining.length !== 0) {
-    throw new Error("The private PID namespace could not prove all editor, SSH, and runtime processes stopped.");
+  try {
+    await waitUntilNoLiveNamespaceChildren(STOP_GRACE_MS);
+  } catch (error) {
+    errors.push(error);
+  }
+  for (const monitor of monitors) {
+    try {
+      signalGroup(monitor.child, "SIGKILL");
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    for (const pid of liveNamespaceChildren()) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        if (error?.code !== "ESRCH") throw error;
+      }
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await waitUntilNoLiveNamespaceChildren(STOP_GRACE_MS);
+    const remaining = liveNamespaceChildren();
+    if (remaining.length !== 0) {
+      throw new Error("The private PID namespace could not prove all editor, SSH, and runtime processes stopped.");
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  const settlements = await Promise.allSettled(monitors.map((monitor) => monitor.waitForClose(STOP_GRACE_MS)));
+  for (const settlement of settlements) {
+    if (settlement.status === "rejected") errors.push(settlement.reason);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Private namespace process shutdown had multiple failures.");
   }
 }
 

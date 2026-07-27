@@ -51,6 +51,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const candidatePath = resolve(repositoryRoot, process.argv[2] ?? "openwrangler.vsix");
 const childScript = resolve(repositoryRoot, "scripts", "remote-workspace-phase-child.mjs");
 const contractScript = resolve(repositoryRoot, "scripts", "remote-workspace-contract.mjs");
+const processScript = resolve(repositoryRoot, "scripts", "remote-workspace-processes.mjs");
 const testModule = resolve(repositoryRoot, "dist-test", "test", "extensionHost", "index.js");
 const testModuleRoot = resolve(repositoryRoot, "dist-test");
 const playwrightCoreRoot = resolve(repositoryRoot, "node_modules", "playwright-core");
@@ -87,6 +88,7 @@ try {
   hostSentinelReceipt = immutableCandidateReceipt(hostSentinel);
   const stagedChild = stageExactFile(childScript, join(layout.phaseRuntime, "remote-workspace-phase-child.mjs"));
   stageExactFile(contractScript, join(layout.phaseRuntime, "remote-workspace-contract.mjs"));
+  stageExactFile(processScript, join(layout.phaseRuntime, "remote-workspace-processes.mjs"));
   const stagedXvfb = stageExactFile(preparedXvfb, join(layout.phaseRuntime, "Xvfb"), 0o700);
   const stagedTestModule = stageTestModuleTree(layout.remoteTestModule);
   stageTestRuntimeDependency(playwrightCoreRoot, join(layout.remoteTestModule, "node_modules", "playwright-core"), {
@@ -736,6 +738,7 @@ function assertRegularCandidate(path) {
   immutableCandidateReceipt(testModule);
   immutableCandidateReceipt(childScript);
   immutableCandidateReceipt(contractScript);
+  immutableCandidateReceipt(processScript);
 }
 
 function preparePrivateParent(path) {
