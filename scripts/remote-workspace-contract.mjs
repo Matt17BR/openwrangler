@@ -36,8 +36,53 @@ const PHASE_DESCRIPTOR_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_LIMIT_BYTES = 64 * 1024;
 const REMOTE_WORKSPACE_RESULT_ERROR_LIMIT_CHARACTERS = 16_000;
 const REMOTE_WORKSPACE_CONTROLLER_FAILURES = new Map([
-  ["phase-failed", "controller:phase-failed: the isolated Remote SSH controller exited after verified cleanup."]
+  ["phase-failed", "controller:phase-failed: the isolated Remote SSH controller exited after verified cleanup."],
+  [
+    "phase-setup-failed",
+    "controller:phase-setup-failed: the isolated Remote SSH controller failed during private setup."
+  ],
+  [
+    "phase-display-failed",
+    "controller:phase-display-failed: the isolated Remote SSH display failed before editor launch."
+  ],
+  [
+    "phase-ssh-daemon-failed",
+    "controller:phase-ssh-daemon-failed: the isolated Remote SSH daemon failed before its client probe."
+  ],
+  [
+    "phase-ssh-probe-failed",
+    "controller:phase-ssh-probe-failed: the isolated Remote SSH client probe failed before editor launch."
+  ],
+  [
+    "phase-editor-start-failed",
+    "controller:phase-editor-start-failed: the isolated VS Code client failed during launch."
+  ],
+  [
+    "phase-result-wait-failed",
+    "controller:phase-result-wait-failed: the isolated extension host failed before publishing a result."
+  ],
+  [
+    "phase-cleanup-failed",
+    "controller:phase-cleanup-failed: the isolated Remote SSH process or display cleanup failed."
+  ],
+  [
+    "phase-result-validation-failed",
+    "controller:phase-result-validation-failed: the isolated Remote SSH terminal evidence failed validation."
+  ]
 ]);
+const REMOTE_WORKSPACE_POST_RESULT_CONTROLLER_FAILURES = new Set([
+  "phase-cleanup-failed",
+  "phase-result-validation-failed"
+]);
+
+export function getRemoteWorkspaceControllerFailureMessage(code) {
+  const message = REMOTE_WORKSPACE_CONTROLLER_FAILURES.get(code);
+  if (typeof code !== "string" || message === undefined) {
+    throw new Error("The Remote SSH controller failure code is malformed.");
+  }
+  return message;
+}
+
 const REMOTE_WORKSPACE_RESULT_LEASES = new WeakMap();
 const LINUX_CAPABILITY_FIELDS = Object.freeze([
   ["CapInh", "inheritable"],
@@ -339,8 +384,15 @@ export function validateRemoteWorkspaceZeroCapabilities(contents) {
 }
 
 export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) {
-  if (typeof contents !== "string" || Buffer.byteLength(contents, "utf8") > 16 * 1024) {
-    throw new Error("The Remote SSH PID-namespace attestation is oversized.");
+  if (
+    typeof contents !== "string" ||
+    Buffer.byteLength(contents, "utf8") <= 0 ||
+    Buffer.byteLength(contents, "utf8") > 16 * 1024 ||
+    !contents.endsWith("\n") ||
+    contents.slice(0, -1).includes("\n") ||
+    contents.includes("\r")
+  ) {
+    throw new Error("The Remote SSH PID namespace did not publish one bounded canonical attestation.");
   }
   if (!/^[0-9a-f-]{36}$/u.test(expected?.runId ?? "")) {
     throw new Error("The Remote SSH PID-namespace expectation is malformed.");
@@ -349,14 +401,16 @@ export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) 
     throw new Error("The Remote SSH PID-namespace host-isolation expectation is malformed.");
   }
   const candidate = validateRemoteWorkspaceCandidateExpectation(expected?.sha256, String(expected?.bytes ?? ""));
-  const lines = contents.endsWith("\n") ? contents.slice(0, -1).split("\n") : contents.split("\n");
-  if (lines.length !== 1) throw new Error("The Remote SSH PID namespace published a malformed attestation.");
   let value;
   try {
-    value = JSON.parse(lines[0]);
+    value = JSON.parse(contents.slice(0, -1));
   } catch (error) {
     throw new Error("The Remote SSH PID namespace published a malformed attestation.", { cause: error });
   }
+  const controllerFailure = value?.controllerCode !== undefined || value?.resultOutcome !== undefined;
+  const exactKeys = controllerFailure
+    ? "candidateBytes,candidateSha256,capabilities,commit,controllerCode,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,outcome,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,resultBytes,resultOutcome,resultSha256,runId,uts,version"
+    : "candidateBytes,candidateSha256,capabilities,commit,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,outcome,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,resultBytes,resultSha256,runId,uts,version";
   if (
     value?.protocol !== REMOTE_WORKSPACE_PROTOCOL ||
     value.runId !== expected.runId ||
@@ -378,22 +432,62 @@ export function validateRemoteWorkspaceNamespaceAttestation(contents, expected) 
     value.remoteSshSha256 !== PINNED_REMOTE_SSH_SHA256 ||
     value.hostIsolationSha256 !== expected.hostIsolationSha256 ||
     !["success", "failure"].includes(value.outcome) ||
+    (controllerFailure &&
+      (value.outcome !== "failure" ||
+        !REMOTE_WORKSPACE_CONTROLLER_FAILURES.has(value.controllerCode) ||
+        !REMOTE_WORKSPACE_POST_RESULT_CONTROLLER_FAILURES.has(value.controllerCode) ||
+        !["success", "failure"].includes(value.resultOutcome))) ||
     !Number.isSafeInteger(value.resultBytes) ||
     value.resultBytes <= 0 ||
     value.resultBytes > REMOTE_WORKSPACE_RESULT_LIMIT_BYTES ||
     typeof value.resultSha256 !== "string" ||
     !/^[0-9a-f]{64}$/u.test(value.resultSha256) ||
     !isZeroCapabilityAttestation(value.capabilities) ||
-    Object.keys(value).sort().join(",") !==
-      "candidateBytes,candidateSha256,capabilities,commit,display,displayEmpty,hostIsolationSha256,hostname,ipc,namespaceEmpty,network,outcome,phase,protocol,remoteAuthority,remoteSshBytes,remoteSshSha256,remoteSshVersion,resultBytes,resultSha256,runId,uts,version"
+    Object.keys(value).sort().join(",") !== exactKeys
   ) {
     throw new Error(
       "The Remote SSH PID namespace did not attest its exact candidate, Remote SSH artifact, and empty owned state."
     );
   }
+  const canonical = {
+    protocol: REMOTE_WORKSPACE_PROTOCOL,
+    runId: value.runId,
+    phase: REMOTE_WORKSPACE_PHASE,
+    namespaceEmpty: true,
+    network: "unshared",
+    ipc: "unshared",
+    uts: "unshared",
+    hostname: "openwrangler-remote-acceptance",
+    display: "xvfb",
+    displayEmpty: true,
+    remoteAuthority: REMOTE_WORKSPACE_AUTHORITY,
+    version: PINNED_REMOTE_VSCODE_VERSION,
+    commit: PINNED_REMOTE_VSCODE_COMMIT,
+    candidateSha256: candidate.sha256,
+    candidateBytes: candidate.bytes,
+    remoteSshVersion: PINNED_REMOTE_SSH_VERSION,
+    remoteSshBytes: PINNED_REMOTE_SSH_BYTES,
+    remoteSshSha256: PINNED_REMOTE_SSH_SHA256,
+    hostIsolationSha256: expected.hostIsolationSha256,
+    outcome: value.outcome,
+    ...(controllerFailure
+      ? {
+          controllerCode: value.controllerCode,
+          resultOutcome: value.resultOutcome
+        }
+      : {}),
+    resultBytes: value.resultBytes,
+    resultSha256: value.resultSha256,
+    capabilities: Object.fromEntries(
+      LINUX_CAPABILITY_FIELDS.map(([, property]) => [property, value.capabilities[property]])
+    )
+  };
+  if (`${JSON.stringify(canonical)}\n` !== contents) {
+    throw new Error("The Remote SSH PID namespace attestation is not canonical JSON.");
+  }
   return Object.freeze({
-    ...value,
-    capabilities: Object.freeze({ ...value.capabilities })
+    ...canonical,
+    capabilities: Object.freeze({ ...canonical.capabilities })
   });
 }
 
@@ -452,17 +546,76 @@ export function validateRemoteWorkspaceResult(contents, { runId }) {
   throw new Error("The Remote SSH acceptance phase did not publish one correlated terminal result.");
 }
 
+export function validateRemoteWorkspaceBootstrapAttestation(contents, { runId }) {
+  if (
+    typeof runId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(runId) ||
+    typeof contents !== "string" ||
+    Buffer.byteLength(contents, "utf8") <= 0 ||
+    Buffer.byteLength(contents, "utf8") > PHASE_DESCRIPTOR_LIMIT_BYTES ||
+    !contents.endsWith("\n") ||
+    contents.slice(0, -1).includes("\n") ||
+    contents.includes("\r")
+  ) {
+    throw new Error("The Remote SSH bootstrap attestation is not one bounded canonical JSON line.");
+  }
+  let attestation;
+  try {
+    attestation = JSON.parse(contents.slice(0, -1));
+  } catch (error) {
+    throw new Error("The Remote SSH bootstrap attestation is malformed.", { cause: error });
+  }
+  if (
+    !attestation ||
+    typeof attestation !== "object" ||
+    Array.isArray(attestation) ||
+    Object.keys(attestation).sort().join(",") !== "capabilities,filesystem,kind,namespaceEmpty,phase,protocol,runId" ||
+    attestation.protocol !== REMOTE_WORKSPACE_PROTOCOL ||
+    attestation.runId !== runId ||
+    attestation.phase !== REMOTE_WORKSPACE_PHASE ||
+    attestation.kind !== "bootstrap-preflight" ||
+    attestation.filesystem !== "validated" ||
+    attestation.namespaceEmpty !== true ||
+    !isZeroCapabilityAttestation(attestation.capabilities)
+  ) {
+    throw new Error("The Remote SSH bootstrap attestation lost its exact private correlation.");
+  }
+  const canonical = {
+    protocol: REMOTE_WORKSPACE_PROTOCOL,
+    runId,
+    phase: REMOTE_WORKSPACE_PHASE,
+    kind: "bootstrap-preflight",
+    filesystem: "validated",
+    namespaceEmpty: true,
+    capabilities: Object.fromEntries(
+      LINUX_CAPABILITY_FIELDS.map(([, property]) => [property, attestation.capabilities[property]])
+    )
+  };
+  if (`${JSON.stringify(canonical)}\n` !== contents) {
+    throw new Error("The Remote SSH bootstrap attestation is not canonical JSON.");
+  }
+  return Object.freeze({
+    ...canonical,
+    capabilities: Object.freeze({ ...canonical.capabilities })
+  });
+}
+
 export async function finalizeRemoteWorkspaceControllerFailure({
   stopChildren,
   assertDisplayEmpty,
   assertNamespace,
   captureCapabilities,
-  publishResult
+  observedResultReceipt,
+  publishResult,
+  code = "phase-failed"
 }) {
   for (const operation of [stopChildren, assertDisplayEmpty, assertNamespace, captureCapabilities, publishResult]) {
     if (typeof operation !== "function") {
       throw new Error("The Remote SSH controller failure boundary is malformed.");
     }
+  }
+  if (!REMOTE_WORKSPACE_CONTROLLER_FAILURES.has(code)) {
+    throw new Error("The Remote SSH controller failure boundary is malformed.");
   }
   await stopChildren();
   assertDisplayEmpty();
@@ -471,7 +624,33 @@ export async function finalizeRemoteWorkspaceControllerFailure({
   if (!isZeroCapabilityAttestation(capabilities)) {
     throw new Error("The Remote SSH controller failure boundary did not retain zero capabilities.");
   }
-  const result = publishResult("phase-failed");
+  const existingResult = observedResultReceipt;
+  if (existingResult !== undefined) {
+    if (
+      !REMOTE_WORKSPACE_POST_RESULT_CONTROLLER_FAILURES.has(code) ||
+      !existingResult ||
+      typeof existingResult !== "object" ||
+      Array.isArray(existingResult) ||
+      !["success", "failure"].includes(existingResult.outcome) ||
+      !Number.isSafeInteger(existingResult.resultBytes) ||
+      existingResult.resultBytes <= 0 ||
+      existingResult.resultBytes > REMOTE_WORKSPACE_RESULT_LIMIT_BYTES ||
+      typeof existingResult.resultSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/u.test(existingResult.resultSha256) ||
+      Object.keys(existingResult).sort().join(",") !== "outcome,resultBytes,resultSha256"
+    ) {
+      throw new Error("The Remote SSH existing controller result receipt is malformed.");
+    }
+    return Object.freeze({
+      outcome: "failure",
+      controllerCode: code,
+      resultOutcome: existingResult.outcome,
+      resultBytes: existingResult.resultBytes,
+      resultSha256: existingResult.resultSha256,
+      capabilities: Object.freeze({ ...capabilities })
+    });
+  }
+  const result = publishResult(code);
   if (
     !result ||
     typeof result !== "object" ||
@@ -496,7 +675,12 @@ export function publishRemoteWorkspaceControllerFailureResult(path, { runId, cod
   if (process.platform !== "linux") {
     throw new Error("Remote SSH controller failure publication is supported only by the Linux acceptance runner.");
   }
-  const error = REMOTE_WORKSPACE_CONTROLLER_FAILURES.get(code);
+  let error;
+  try {
+    error = getRemoteWorkspaceControllerFailureMessage(code);
+  } catch {
+    throw new Error("The Remote SSH controller failure result is malformed.");
+  }
   if (
     typeof path !== "string" ||
     !isAbsolute(path) ||
@@ -710,7 +894,7 @@ export function openRemoteWorkspaceResultLeaseIfPresent(path, { runId, onDescrip
       sha256: createHash("sha256").update(bytes).digest("hex"),
       result
     });
-    REMOTE_WORKSPACE_RESULT_LEASES.set(token, { descriptor, path, snapshot, bytes });
+    REMOTE_WORKSPACE_RESULT_LEASES.set(token, { descriptor, path, snapshot, bytes, invalidated: false });
     leased = true;
     return token;
   } finally {
@@ -721,11 +905,19 @@ export function openRemoteWorkspaceResultLeaseIfPresent(path, { runId, onDescrip
 export function assertRemoteWorkspaceResultLease(lease) {
   const state = REMOTE_WORKSPACE_RESULT_LEASES.get(lease);
   if (!state) throw new Error("The Remote SSH result lease is not active.");
-  assertResultLeaseDescriptorAndPath(state.descriptor, state.path, state.snapshot);
-  const bytes = readExactResultLeaseBytes(state.descriptor, state.snapshot);
-  assertResultLeaseDescriptorAndPath(state.descriptor, state.path, state.snapshot);
-  if (!bytes.equals(state.bytes) || createHash("sha256").update(bytes).digest("hex") !== lease.sha256) {
+  if (state.invalidated) {
     throw new Error("The Remote SSH result changed after first observation.");
+  }
+  try {
+    assertResultLeaseDescriptorAndPath(state.descriptor, state.path, state.snapshot);
+    const bytes = readExactResultLeaseBytes(state.descriptor, state.snapshot);
+    assertResultLeaseDescriptorAndPath(state.descriptor, state.path, state.snapshot);
+    if (!bytes.equals(state.bytes) || createHash("sha256").update(bytes).digest("hex") !== lease.sha256) {
+      throw new Error("The Remote SSH result changed after first observation.");
+    }
+  } catch (error) {
+    state.invalidated = true;
+    throw error;
   }
   return lease;
 }

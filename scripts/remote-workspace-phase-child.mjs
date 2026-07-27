@@ -20,6 +20,8 @@ import {
   publishRemoteWorkspaceControllerFailureResult,
   readBoundedRemoteWorkspaceFile,
   validateRemoteWorkspacePhaseDescriptorPath,
+  validateRemoteWorkspacePhaseDescriptor,
+  validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceZeroCapabilities
 } from "./remote-workspace-contract.mjs";
@@ -38,45 +40,95 @@ const PRIVATE_DISPLAY = ":99";
 const PRIVATE_DISPLAY_DIRECTORY = "/tmp/.X11-unix";
 const PRIVATE_DISPLAY_SOCKET = `${PRIVATE_DISPLAY_DIRECTORY}/X99`;
 const PRIVATE_DISPLAY_LOCK = "/tmp/.X99-lock";
-const [descriptorPath, ipExecutable, sshExecutable, dynamicLoader] = process.argv.slice(2);
+const [descriptorPath, ipExecutable, sshExecutable, dynamicLoader, mode] = process.argv.slice(2);
 let descriptor;
 
 try {
-  descriptor = readDescriptor(descriptorPath);
-  assertPrivateNamespace(descriptor);
-  let terminal;
-  try {
-    terminal = await runPhase(descriptor, ipExecutable, sshExecutable);
-  } catch {
-    terminal = await recoverRemoteWorkspaceControllerFailure(descriptor);
+  if (mode !== undefined && mode !== "--bootstrap-preflight") {
+    throw new Error("The Remote SSH phase child received an unknown launch mode.");
   }
-  process.stdout.write(
-    `${JSON.stringify({
+  descriptor = readDescriptor(descriptorPath, { filesystem: false });
+  if (mode === "--bootstrap-preflight") {
+    validateRemoteWorkspacePhaseDescriptor(descriptor);
+    assertPrivateNamespace(descriptor);
+    assertBootstrapExecutables(descriptor, ipExecutable, sshExecutable, dynamicLoader);
+    assertPrivateDisplayEmpty();
+    if (liveNamespaceChildren().length !== 0) {
+      throw new Error("The Remote SSH bootstrap preflight retained a namespace child.");
+    }
+    const capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
+    const attestation = `${JSON.stringify({
       protocol: 1,
       runId: descriptor.runId,
       phase: descriptor.phase,
+      kind: "bootstrap-preflight",
+      filesystem: "validated",
       namespaceEmpty: true,
-      network: "unshared",
-      ipc: "unshared",
-      uts: "unshared",
-      hostname: "openwrangler-remote-acceptance",
-      display: "xvfb",
-      displayEmpty: true,
-      remoteAuthority: descriptor.authority,
-      version: descriptor.version,
-      commit: descriptor.commit,
-      candidateSha256: descriptor.candidateSha256,
-      candidateBytes: descriptor.candidateBytes,
-      remoteSshVersion: descriptor.remoteSshVersion,
-      remoteSshBytes: descriptor.remoteSshBytes,
-      remoteSshSha256: descriptor.remoteSshSha256,
-      hostIsolationSha256: descriptor.hostIsolationSha256,
-      outcome: terminal.outcome,
-      resultBytes: terminal.resultBytes,
-      resultSha256: terminal.resultSha256,
-      capabilities: terminal.capabilities
-    })}\n`
-  );
+      capabilities
+    })}\n`;
+    validateRemoteWorkspaceBootstrapAttestation(attestation, { runId: descriptor.runId });
+    process.stdout.write(attestation);
+  } else {
+    // Filesystem state and namespace identity are launch authority. Any
+    // mismatch remains non-publishable even if a later observation passes.
+    validateRemoteWorkspacePhaseDescriptor(descriptor);
+    assertPrivateNamespace(descriptor);
+    let controllerFailureCode = "phase-setup-failed";
+    let existingResultReceipt;
+    let terminal;
+    try {
+      terminal = await runPhase(
+        descriptor,
+        ipExecutable,
+        sshExecutable,
+        (code) => {
+          controllerFailureCode = code;
+        },
+        (receipt) => {
+          existingResultReceipt = receipt;
+        }
+      );
+    } catch {
+      terminal = await recoverRemoteWorkspaceControllerFailure(
+        descriptor,
+        controllerFailureCode,
+        existingResultReceipt
+      );
+    }
+    process.stdout.write(
+      `${JSON.stringify({
+        protocol: 1,
+        runId: descriptor.runId,
+        phase: descriptor.phase,
+        namespaceEmpty: true,
+        network: "unshared",
+        ipc: "unshared",
+        uts: "unshared",
+        hostname: "openwrangler-remote-acceptance",
+        display: "xvfb",
+        displayEmpty: true,
+        remoteAuthority: descriptor.authority,
+        version: descriptor.version,
+        commit: descriptor.commit,
+        candidateSha256: descriptor.candidateSha256,
+        candidateBytes: descriptor.candidateBytes,
+        remoteSshVersion: descriptor.remoteSshVersion,
+        remoteSshBytes: descriptor.remoteSshBytes,
+        remoteSshSha256: descriptor.remoteSshSha256,
+        hostIsolationSha256: descriptor.hostIsolationSha256,
+        outcome: terminal.outcome,
+        ...(terminal.controllerCode
+          ? {
+              controllerCode: terminal.controllerCode,
+              resultOutcome: terminal.resultOutcome
+            }
+          : {}),
+        resultBytes: terminal.resultBytes,
+        resultSha256: terminal.resultSha256,
+        capabilities: terminal.capabilities
+      })}\n`
+    );
+  }
 } catch (error) {
   const root = descriptor?.paths?.root;
   const raw = error instanceof Error ? error.message : String(error);
@@ -85,12 +137,14 @@ try {
   process.exitCode = 1;
 }
 
-async function recoverRemoteWorkspaceControllerFailure(config) {
+async function recoverRemoteWorkspaceControllerFailure(config, code, existingResultReceipt) {
   return finalizeRemoteWorkspaceControllerFailure({
     stopChildren: () => stopNamespaceChildren([]),
     assertDisplayEmpty: assertPrivateDisplayEmpty,
     assertNamespace: () => assertPrivateNamespace(config),
     captureCapabilities: () => validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8")),
+    observedResultReceipt: existingResultReceipt,
+    code,
     publishResult: (code) =>
       publishRemoteWorkspaceControllerFailureResult(config.paths.result, {
         runId: config.runId,
@@ -99,7 +153,32 @@ async function recoverRemoteWorkspaceControllerFailure(config) {
   });
 }
 
-async function runPhase(config, ip, ssh) {
+function assertBootstrapExecutables(config, ip, ssh, loader) {
+  assertExecutable(ip, "private-network setup");
+  assertExecutable(ssh, "private SSH client");
+  assertExecutable(loader, "private SSH dynamic loader");
+  assertExecutable(config.xvfb, "private Xvfb executable");
+  assertExecutable(config.editor, "private editor executable");
+  assertExecutable(config.python, "private Python executable");
+  assertExecutable(config.sshServer, "private SSH daemon");
+  const loopback = runSync(ip, ["address", "show", "lo"], "private bootstrap loopback setup");
+  if (!loopback.stdout.includes("127.0.0.1")) {
+    throw new Error("The private bootstrap loopback network was not initialized.");
+  }
+  runSync(
+    loader,
+    ["--library-path", config.sshLibraryPath, config.sshServer, "-V"],
+    "private bootstrap Dropbear dynamic-loader probe"
+  );
+}
+
+async function runPhase(config, ip, ssh, setControllerFailureCode, setExistingResultReceipt) {
+  let currentFailureCode;
+  const markFailureStage = (code) => {
+    currentFailureCode = code;
+    setControllerFailureCode(code);
+  };
+  markFailureStage("phase-setup-failed");
   assertExecutable(ip, "private-network setup");
   assertExecutable(ssh, "private SSH client");
   assertExecutable(dynamicLoader, "private SSH dynamic loader");
@@ -119,6 +198,7 @@ async function runPhase(config, ip, ssh) {
   }
   runSync(dynamicLoader, ["--library-path", sshLibraryPath, sshServer, "-V"], "private Dropbear dynamic-loader probe");
 
+  markFailureStage("phase-display-failed");
   const xvfb = await startPrivateXvfb(config);
   const sshdOutput = boundedOutput();
   const editorOutput = boundedOutput();
@@ -126,7 +206,9 @@ async function runPhase(config, ip, ssh) {
   let editor;
   let resultLease;
   let phaseError;
+  let phaseFailureCode;
   try {
+    markFailureStage("phase-ssh-daemon-failed");
     sshd = spawnMonitoredRemoteWorkspaceChild(
       "The private loopback SSH daemon",
       dynamicLoader,
@@ -166,6 +248,7 @@ async function runPhase(config, ip, ssh) {
         { cause: error }
       );
     }
+    markFailureStage("phase-ssh-probe-failed");
     runSync(
       ssh,
       [
@@ -187,6 +270,7 @@ async function runPhase(config, ip, ssh) {
       "private loopback SSH probe",
       config.paths.remoteHome
     );
+    markFailureStage("phase-editor-start-failed");
     editor = spawnMonitoredRemoteWorkspaceChild(
       "Official VS Code",
       config.editor,
@@ -222,8 +306,10 @@ async function runPhase(config, ip, ssh) {
     );
     editor.child.stdout.on("data", (chunk) => editorOutput.append(chunk));
     editor.child.stderr.on("data", (chunk) => editorOutput.append(chunk));
+    markFailureStage("phase-result-wait-failed");
     resultLease = await observeAcceptance(config, editor);
   } catch (error) {
+    phaseFailureCode = currentFailureCode;
     const editorDiagnostic = sanitizeFailure(editorOutput.text(), config.paths.root);
     phaseError = editorDiagnostic
       ? new Error(`${error instanceof Error ? error.message : String(error)} Editor: ${editorDiagnostic}`, {
@@ -235,16 +321,19 @@ async function runPhase(config, ip, ssh) {
   try {
     assertRemoteWorkspaceDisplayReceipt(xvfb.displayReceipt);
   } catch (error) {
+    markFailureStage("phase-cleanup-failed");
     cleanupErrors.push(error);
   }
   try {
     await stopNamespaceChildren([editor, sshd, xvfb.monitor].filter(Boolean));
   } catch (error) {
+    markFailureStage("phase-cleanup-failed");
     cleanupErrors.push(error);
   }
   try {
     assertPrivateDisplayEmpty();
   } catch (error) {
+    markFailureStage("phase-cleanup-failed");
     cleanupErrors.push(error);
   }
   let terminalError =
@@ -264,6 +353,9 @@ async function runPhase(config, ip, ssh) {
     terminalError = terminalError
       ? new AggregateError([phaseError, terminalError], "The Remote SSH phase and namespace cleanup both failed.")
       : phaseError;
+    if (cleanupErrors.length === 0 && phaseFailureCode) {
+      markFailureStage(phaseFailureCode);
+    }
   }
 
   let capabilities;
@@ -274,14 +366,24 @@ async function runPhase(config, ip, ssh) {
       capabilities = validateRemoteWorkspaceZeroCapabilities(readFileSync("/proc/self/status", "utf8"));
       assertRemoteWorkspaceResultLease(resultLease);
     } catch (error) {
+      markFailureStage("phase-result-validation-failed");
       terminalError = error;
     }
   }
 
   if (resultLease) {
+    const receipt = Object.freeze({
+      outcome: resultLease.outcome,
+      resultBytes: resultLease.bytes,
+      resultSha256: resultLease.sha256
+    });
     try {
       closeRemoteWorkspaceResultLease(resultLease);
+      setExistingResultReceipt(receipt);
     } catch (error) {
+      if (cleanupErrors.length === 0) {
+        markFailureStage("phase-result-validation-failed");
+      }
       terminalError = terminalError
         ? new AggregateError([terminalError, error], "Remote SSH terminal validation and result close both failed.")
         : error;
@@ -289,6 +391,7 @@ async function runPhase(config, ip, ssh) {
   }
   if (terminalError) throw terminalError;
   if (!resultLease || !capabilities) {
+    markFailureStage("phase-result-wait-failed");
     throw new Error("The Remote SSH phase ended without one validated terminal result.");
   }
   return Object.freeze({
@@ -613,9 +716,9 @@ function findRemoteSshLog(userData) {
   return matches[0];
 }
 
-function readDescriptor(path) {
+function readDescriptor(path, { filesystem = true } = {}) {
   validateRemoteWorkspacePhaseDescriptorPath(path);
-  return parseRemoteWorkspacePhaseDescriptor(readBoundedRemoteWorkspaceFile(path, 64 * 1024));
+  return parseRemoteWorkspacePhaseDescriptor(readBoundedRemoteWorkspaceFile(path, 64 * 1024), { filesystem });
 }
 
 function runSync(executable, args, label, expectedOutput) {

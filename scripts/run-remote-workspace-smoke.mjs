@@ -44,6 +44,7 @@ import {
   namespaceRemoteWorkspaceImmutablePath,
   REMOTE_WORKSPACE_PHASE_NODE_MAXIMUM_BYTES,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+  validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   writeRemoteWorkspacePhaseDescriptor
@@ -357,7 +358,7 @@ try {
   assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
   assertRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinelReceipt);
   assertDirectoryReceipt(hostHome, hostHomeReceipt);
-  const sealPhaseLaunch = () => {
+  const sealPhaseLaunch = (bootstrapPreflight = false) => {
     assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
     const leases = openRemoteWorkspaceImmutableInputLeases(immutableInputs);
     try {
@@ -370,6 +371,7 @@ try {
         immutableMounts: leases.mounts,
         uid: tools.uid,
         gid: tools.gid,
+        bootstrapPreflight,
         tools
       });
       return {
@@ -382,8 +384,33 @@ try {
       throw error;
     }
   };
-  const preflightLaunch = sealPhaseLaunch();
-  preflightLaunch.release();
+  const bootstrap = await commandRunner.run(
+    {
+      executable: tools.bwrap,
+      args: [],
+      environment: createEditorAcceptanceEnvironment(),
+      label: "Remote SSH exact private-layout bootstrap preflight",
+      beforeSpawn() {
+        return sealPhaseLaunch(true);
+      }
+    },
+    {
+      timeoutMs: 60_000,
+      maxOutputBytes: setupOutputLimit,
+      terminationGraceMs: 5_000,
+      killGraceMs: 5_000
+    }
+  );
+  if (bootstrap.stderr !== "") {
+    throw new Error("The Remote SSH exact private-layout bootstrap preflight emitted unexpected diagnostics.");
+  }
+  validateRemoteWorkspaceBootstrapAttestation(bootstrap.stdout, { runId });
+  assertStagedRuntimeInputs(phaseNodeStage, phaseLoaderStage, treeStages);
+  assertRemoteWorkspaceImmutableInputRegistry(immutableInputs);
+  assertEditorAcceptancePrivateRootReceipt(rootReceipt);
+  assertRemoteWorkspaceFileReceipt(layout.descriptor, descriptorReceipt);
+  assertRemoteWorkspaceOwnedFileCleanupReceipt(hostSentinelReceipt);
+  assertDirectoryReceipt(hostHome, hostHomeReceipt);
   phaseCleanupAuthorized = false;
   const phaseResult = await commandRunner.run(
     {

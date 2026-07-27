@@ -60,6 +60,63 @@ for (const outcome of ["success", "failure"]) {
   });
 }
 
+for (const [controllerCode, controllerError] of [
+  [
+    "phase-cleanup-failed",
+    "controller:phase-cleanup-failed: the isolated Remote SSH process or display cleanup failed."
+  ],
+  [
+    "phase-result-validation-failed",
+    "controller:phase-result-validation-failed: the isolated Remote SSH terminal evidence failed validation."
+  ]
+]) {
+  for (const resultOutcome of ["success", "failure"]) {
+    test(`Remote SSH host terminal validation preserves an existing ${resultOutcome} result after ${controllerCode}`, async () => {
+      const fixture = realpathSync(await mkdtemp(join(tmpdir(), `ow-remote-terminal-controller-${resultOutcome}-`)));
+      const resultPath = join(fixture, "result.json");
+      const result =
+        resultOutcome === "success"
+          ? { protocol: 1, runId: RUN_ID, phase: "remote-workspace", ok: true }
+          : {
+              protocol: 1,
+              runId: RUN_ID,
+              phase: "remote-workspace",
+              ok: false,
+              error: "underlying harness failure"
+            };
+      const contents = JSON.stringify(result);
+      let revalidated = 0;
+      try {
+        await writeFile(resultPath, contents, { mode: 0o600, flag: "wx" });
+        const terminal = await validateRemoteWorkspaceTerminal({
+          stdout: `${JSON.stringify(controllerAttestation(controllerCode, resultOutcome, contents))}\n`,
+          stderr: "",
+          resultPath,
+          expected: EXPECTED,
+          async revalidate() {
+            revalidated += 1;
+            assert.equal(await readFile(resultPath, "utf8"), contents);
+          }
+        });
+        assert.equal(revalidated, 1);
+        assert.equal(await readFile(resultPath, "utf8"), contents);
+        assert.equal(terminal.attestation.outcome, "failure");
+        assert.equal(terminal.attestation.resultOutcome, resultOutcome);
+        assert.deepEqual(terminal.result, {
+          protocol: 1,
+          runId: RUN_ID,
+          phase: "remote-workspace",
+          ok: false,
+          error: controllerError,
+          outcome: "failure"
+        });
+      } finally {
+        await rm(fixture, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test("Remote SSH host terminal validation rejects stderr before touching a result path", async () => {
   let revalidated = false;
   await assert.rejects(
@@ -97,6 +154,32 @@ test("Remote SSH host terminal validation rejects result receipt drift before fi
       /did not match/u
     );
     assert.equal(revalidated, false);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("Remote SSH controller terminal validation rejects its underlying outcome before final provenance", async () => {
+  const fixture = realpathSync(await mkdtemp(join(tmpdir(), "ow-remote-terminal-controller-mismatch-")));
+  const resultPath = join(fixture, "result.json");
+  const contents = JSON.stringify({ protocol: 1, runId: RUN_ID, phase: "remote-workspace", ok: true });
+  let revalidated = false;
+  try {
+    await writeFile(resultPath, contents, { mode: 0o600, flag: "wx" });
+    await assert.rejects(
+      validateRemoteWorkspaceTerminal({
+        stdout: `${JSON.stringify(controllerAttestation("phase-result-validation-failed", "failure", contents))}\n`,
+        stderr: "",
+        resultPath,
+        expected: EXPECTED,
+        revalidate() {
+          revalidated = true;
+        }
+      }),
+      /did not match/u
+    );
+    assert.equal(revalidated, false);
+    assert.equal(await readFile(resultPath, "utf8"), contents);
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -169,5 +252,17 @@ function attestation(outcome, resultContents) {
       bounding: 0,
       ambient: 0
     }
+  };
+}
+
+function controllerAttestation(controllerCode, resultOutcome, resultContents) {
+  const { resultBytes, resultSha256, capabilities, ...prefix } = attestation("failure", resultContents);
+  return {
+    ...prefix,
+    controllerCode,
+    resultOutcome,
+    resultBytes,
+    resultSha256,
+    capabilities
   };
 }

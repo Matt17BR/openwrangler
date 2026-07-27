@@ -46,6 +46,7 @@ import {
   resolveRemoteWorkspaceSystemRuntimeDirectories,
   validateRootOwnedSystemRuntimeDirectory,
   validateRemoteWorkspaceBwrapHelp,
+  validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
   validateRemoteWorkspaceNamespaceAttestation,
@@ -344,35 +345,33 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     writeFileSync(child, "export {};\n");
     const descriptor = layout.descriptor;
     writeFileSync(descriptor, "{}\n", { mode: 0o600 });
-    const args = createRemoteWorkspaceBwrapArguments(
-      {
-        root: layout.root,
-        descriptor,
-        childScript: child,
-        // This structural argument test never executes the phase. Use a
-        // platform-present regular executable that stays distinct from the
-        // staged phase-Node destination on system-Node layouts.
-        systemPython: realpathSync("/usr/bin/true"),
-        systemRuntimeDirectories: ["/usr"],
-        immutableMounts: createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT),
-        uid: 1001,
-        gid: 1001,
-        tools: {
-          bash: process.execPath,
-          bwrap: process.execPath,
-          busybox: process.execPath,
-          dynamicLoader: process.execPath,
-          getconf: process.execPath,
-          ip: process.execPath,
-          ldd: process.execPath,
-          ssh: process.execPath,
-          xkbcomp: process.execPath
-        }
-      },
-      {
-        validateSystemRuntimeDirectory: (path) => path
+    const builderInput = {
+      root: layout.root,
+      descriptor,
+      childScript: child,
+      // This structural argument test never executes the phase. Use a
+      // platform-present regular executable that stays distinct from the
+      // staged phase-Node destination on system-Node layouts.
+      systemPython: realpathSync("/usr/bin/true"),
+      systemRuntimeDirectories: ["/usr"],
+      immutableMounts: createRemoteWorkspaceImmutableMountTemplate(PINNED_REMOTE_VSCODE_COMMIT),
+      uid: 1001,
+      gid: 1001,
+      tools: {
+        bash: process.execPath,
+        bwrap: process.execPath,
+        busybox: process.execPath,
+        dynamicLoader: process.execPath,
+        getconf: process.execPath,
+        ip: process.execPath,
+        ldd: process.execPath,
+        ssh: process.execPath,
+        xkbcomp: process.execPath
       }
-    );
+    };
+    const args = createRemoteWorkspaceBwrapArguments(builderInput, {
+      validateSystemRuntimeDirectory: (path) => path
+    });
     for (const required of [
       "--unshare-user",
       "--unshare-pid",
@@ -461,6 +460,27 @@ linuxTest("Bubblewrap arguments clear the environment and create zero-network PI
     const commandSeparator = args.lastIndexOf("--");
     assert.equal(args[commandSeparator + 2], REMOTE_WORKSPACE_PHASE_CHILD_PATH);
     assert.equal(args[commandSeparator + 3], REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH);
+    assert.equal(args.includes("--bootstrap-preflight"), false);
+    const bootstrapArgs = createRemoteWorkspaceBwrapArguments(
+      { ...builderInput, bootstrapPreflight: true },
+      { validateSystemRuntimeDirectory: (path) => path }
+    );
+    assert.deepEqual(bootstrapArgs.slice(-6), [
+      REMOTE_WORKSPACE_PHASE_CHILD_PATH,
+      REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
+      "/usr/bin/ip",
+      "/usr/bin/ssh",
+      "/usr/lib64/ld-linux-x86-64.so.2",
+      "--bootstrap-preflight"
+    ]);
+    assert.throws(
+      () =>
+        createRemoteWorkspaceBwrapArguments(
+          { ...builderInput, bootstrapPreflight: "yes" },
+          { validateSystemRuntimeDirectory: (path) => path }
+        ),
+      /bootstrap-preflight policy/u
+    );
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
@@ -664,8 +684,40 @@ test("Remote result validation accepts strict correlated success and failure out
   }
 });
 
+test("Remote bootstrap attestation accepts only one canonical correlated private-layout proof", () => {
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const attestation = {
+    protocol: 1,
+    runId,
+    phase: "remote-workspace",
+    kind: "bootstrap-preflight",
+    filesystem: "validated",
+    namespaceEmpty: true,
+    capabilities: zeroCapabilities()
+  };
+  const contents = `${JSON.stringify(attestation)}\n`;
+  assert.deepEqual(validateRemoteWorkspaceBootstrapAttestation(contents, { runId }), attestation);
+  for (const mutation of [
+    contents.trimEnd(),
+    `\n${contents}`,
+    `${JSON.stringify({ ...attestation, runId: "22222222-2222-4222-8222-222222222222" })}\n`,
+    `${JSON.stringify({ ...attestation, filesystem: "unchecked" })}\n`,
+    `${JSON.stringify({ ...attestation, capabilities: { ...zeroCapabilities(), effective: 1 } })}\n`,
+    `${JSON.stringify({
+      ...attestation,
+      capabilities: Object.fromEntries(Object.entries(zeroCapabilities()).reverse())
+    })}\n`,
+    `${JSON.stringify({ ...attestation, rawDiagnostic: "/host/private" })}\n`
+  ]) {
+    assert.throws(() => validateRemoteWorkspaceBootstrapAttestation(mutation, { runId }), /bootstrap attestation/u);
+  }
+  assert.throws(
+    () => validateRemoteWorkspaceBootstrapAttestation(contents, { runId: "not-a-run-id" }),
+    /bootstrap attestation/u
+  );
+});
+
 test("Remote controller failure finalization proves cleanup and isolation before fixed publication", async () => {
-  const calls = [];
   const capabilities = {
     inheritable: 0,
     permitted: 0,
@@ -673,32 +725,133 @@ test("Remote controller failure finalization proves cleanup and isolation before
     bounding: 0,
     ambient: 0
   };
-  const result = await finalizeRemoteWorkspaceControllerFailure({
-    async stopChildren() {
-      calls.push("stop");
-    },
-    assertDisplayEmpty() {
-      calls.push("display");
-    },
-    assertNamespace() {
-      calls.push("namespace");
-    },
-    captureCapabilities() {
-      calls.push("capabilities");
-      return capabilities;
-    },
-    publishResult(code) {
-      calls.push(`publish:${code}`);
-      return { outcome: "failure", resultBytes: 123, resultSha256: "a".repeat(64) };
+  for (const code of ["phase-failed", "phase-result-wait-failed"]) {
+    const calls = [];
+    const result = await finalizeRemoteWorkspaceControllerFailure({
+      async stopChildren() {
+        calls.push("stop");
+      },
+      assertDisplayEmpty() {
+        calls.push("display");
+      },
+      assertNamespace() {
+        calls.push("namespace");
+      },
+      captureCapabilities() {
+        calls.push("capabilities");
+        return capabilities;
+      },
+      publishResult(publishedCode) {
+        calls.push(`publish:${publishedCode}`);
+        return { outcome: "failure", resultBytes: 123, resultSha256: "a".repeat(64) };
+      },
+      code
+    });
+    assert.deepEqual(calls, ["stop", "display", "namespace", "capabilities", `publish:${code}`]);
+    assert.deepEqual(result, {
+      outcome: "failure",
+      resultBytes: 123,
+      resultSha256: "a".repeat(64),
+      capabilities
+    });
+  }
+  await assert.rejects(
+    finalizeRemoteWorkspaceControllerFailure({
+      stopChildren() {
+        assert.fail("An unknown failure code must be rejected before cleanup.");
+      },
+      assertDisplayEmpty() {},
+      assertNamespace() {},
+      captureCapabilities() {
+        return capabilities;
+      },
+      publishResult() {},
+      code: "raw secret-bearing diagnostic"
+    }),
+    /failure boundary is malformed/u
+  );
+});
+
+test("Remote controller failure finalization attests a first-observed result without overwriting it", async () => {
+  const capabilities = zeroCapabilities();
+  for (const code of ["phase-cleanup-failed", "phase-result-validation-failed"]) {
+    for (const resultOutcome of ["success", "failure"]) {
+      const calls = [];
+      const result = await finalizeRemoteWorkspaceControllerFailure({
+        async stopChildren() {
+          calls.push("stop");
+        },
+        assertDisplayEmpty() {
+          calls.push("display");
+        },
+        assertNamespace() {
+          calls.push("namespace");
+        },
+        captureCapabilities() {
+          calls.push("capabilities");
+          return capabilities;
+        },
+        observedResultReceipt: {
+          outcome: resultOutcome,
+          resultBytes: 123,
+          resultSha256: "a".repeat(64)
+        },
+        publishResult() {
+          assert.fail("An existing result must never be overwritten.");
+        },
+        code
+      });
+      assert.deepEqual(calls, ["stop", "display", "namespace", "capabilities"]);
+      assert.deepEqual(result, {
+        outcome: "failure",
+        controllerCode: code,
+        resultOutcome,
+        resultBytes: 123,
+        resultSha256: "a".repeat(64),
+        capabilities
+      });
     }
-  });
-  assert.deepEqual(calls, ["stop", "display", "namespace", "capabilities", "publish:phase-failed"]);
-  assert.deepEqual(result, {
-    outcome: "failure",
-    resultBytes: 123,
-    resultSha256: "a".repeat(64),
-    capabilities
-  });
+  }
+  await assert.rejects(
+    finalizeRemoteWorkspaceControllerFailure({
+      async stopChildren() {},
+      assertDisplayEmpty() {},
+      assertNamespace() {},
+      captureCapabilities() {
+        return capabilities;
+      },
+      observedResultReceipt: {
+        outcome: "success",
+        resultBytes: 123,
+        resultSha256: "a".repeat(64),
+        rawDiagnostic: "/host/private"
+      },
+      publishResult() {
+        assert.fail("A malformed existing result must never be replaced.");
+      }
+    }),
+    /existing controller result receipt is malformed/u
+  );
+  await assert.rejects(
+    finalizeRemoteWorkspaceControllerFailure({
+      async stopChildren() {},
+      assertDisplayEmpty() {},
+      assertNamespace() {},
+      captureCapabilities() {
+        return capabilities;
+      },
+      observedResultReceipt: {
+        outcome: "success",
+        resultBytes: 123,
+        resultSha256: "a".repeat(64)
+      },
+      publishResult() {
+        assert.fail("A late result must never expand an earlier-stage failure contract.");
+      },
+      code: "phase-result-wait-failed"
+    }),
+    /existing controller result receipt is malformed/u
+  );
 });
 
 test("Remote controller failure finalization never publishes across cleanup or isolation uncertainty", async () => {
@@ -782,6 +935,15 @@ linuxTest("Remote controller failures publish one exclusive correlated result af
     );
     assert.match(readFileSync(path, "utf8"), /controller:phase-failed/u);
     assert.doesNotMatch(readFileSync(path, "utf8"), /secret-token|example\.test|host\/private/u);
+    const stagedFailurePath = join(root, "stage-failure.json");
+    publishRemoteWorkspaceControllerFailureResult(stagedFailurePath, {
+      runId,
+      code: "phase-result-wait-failed"
+    });
+    assert.equal(
+      validateRemoteWorkspaceResult(readFileSync(stagedFailurePath, "utf8"), { runId }).error,
+      "controller:phase-result-wait-failed: the isolated extension host failed before publishing a result."
+    );
     writeFileSync(protectedPath, "protected\n", { mode: 0o600 });
     symlinkSync(protectedPath, linkedPath);
     linkSync(protectedPath, hardLinkedPath);
@@ -1006,6 +1168,29 @@ test("Remote result leases reject path replacement before, during, and after fir
   }
 });
 
+test("Remote result lease identity uncertainty stays latched after the original path is restored", () => {
+  const root = privateRoot("ow-remote-result-restored-");
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const path = join(root, "result.json");
+  const displaced = join(root, "displaced.json");
+  const contents = JSON.stringify({ protocol: 1, runId, phase: "remote-workspace", ok: true });
+  try {
+    writeFileSync(path, contents, { mode: 0o600 });
+    const lease = openRemoteWorkspaceResultLeaseIfPresent(path, { runId });
+    renameSync(path, displaced);
+    writeFileSync(path, contents, { mode: 0o600 });
+    assert.throws(() => assertRemoteWorkspaceResultLease(lease), /changed after first observation/u);
+    rmSync(path);
+    renameSync(displaced, path);
+    assert.equal(readFileSync(path, "utf8"), contents);
+    assert.throws(() => assertRemoteWorkspaceResultLease(lease), /changed after first observation/u);
+    assert.throws(() => closeRemoteWorkspaceResultLease(lease), /changed after first observation/u);
+    assert.throws(() => assertRemoteWorkspaceResultLease(lease), /not active/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Remote namespace attestation binds caller candidate and pinned Remote SSH receipts", () => {
   const runId = "11111111-1111-4111-8111-111111111111";
   const candidate = validateRemoteWorkspaceCandidateExpectation("a".repeat(64), "123");
@@ -1054,13 +1239,75 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
     attestation
   );
   assert.equal(
-    validateRemoteWorkspaceNamespaceAttestation(JSON.stringify({ ...attestation, outcome: "failure" }), {
+    validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify({ ...attestation, outcome: "failure" })}\n`, {
       runId,
       ...candidate,
       hostIsolationSha256
     }).outcome,
     "failure"
   );
+  const {
+    resultBytes: controllerResultBytes,
+    resultSha256: controllerResultSha256,
+    capabilities: controllerCapabilities,
+    ...controllerPrefix
+  } = attestation;
+  const controllerAttestation = {
+    ...controllerPrefix,
+    outcome: "failure",
+    controllerCode: "phase-result-validation-failed",
+    resultOutcome: "success",
+    resultBytes: controllerResultBytes,
+    resultSha256: controllerResultSha256,
+    capabilities: controllerCapabilities
+  };
+  assert.deepEqual(
+    validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(controllerAttestation)}\n`, {
+      runId,
+      ...candidate,
+      hostIsolationSha256
+    }),
+    controllerAttestation
+  );
+  for (const mutation of [
+    { ...controllerAttestation, controllerCode: "raw diagnostic" },
+    { ...controllerAttestation, controllerCode: "phase-result-wait-failed" },
+    { ...controllerAttestation, resultOutcome: "unknown" },
+    { ...controllerAttestation, outcome: "success" },
+    Object.fromEntries(Object.entries(controllerAttestation).filter(([key]) => key !== "resultOutcome"))
+  ]) {
+    assert.throws(
+      () =>
+        validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(mutation)}\n`, {
+          runId,
+          ...candidate,
+          hostIsolationSha256
+        }),
+      /exact candidate, Remote SSH artifact/u
+    );
+  }
+  const canonicalAttestation = JSON.stringify(attestation);
+  for (const malformed of [
+    canonicalAttestation,
+    `${canonicalAttestation}\n\n`,
+    `${canonicalAttestation}\r\n`,
+    `${JSON.stringify(Object.fromEntries(Object.entries(attestation).reverse()))}\n`,
+    `${JSON.stringify({
+      ...attestation,
+      capabilities: Object.fromEntries(Object.entries(attestation.capabilities).reverse())
+    })}\n`,
+    `${canonicalAttestation.replace('{"protocol":1,', '{"protocol":1,"protocol":1,')}\n`
+  ]) {
+    assert.throws(
+      () =>
+        validateRemoteWorkspaceNamespaceAttestation(malformed, {
+          runId,
+          ...candidate,
+          hostIsolationSha256
+        }),
+      /canonical attestation|canonical JSON/u
+    );
+  }
   for (const mutation of [
     { ...attestation, candidateSha256: "b".repeat(64) },
     { ...attestation, candidateBytes: 124 },
@@ -1088,7 +1335,7 @@ test("Remote namespace attestation binds caller candidate and pinned Remote SSH 
   ]) {
     assert.throws(
       () =>
-        validateRemoteWorkspaceNamespaceAttestation(JSON.stringify(mutation), {
+        validateRemoteWorkspaceNamespaceAttestation(`${JSON.stringify(mutation)}\n`, {
           runId,
           ...candidate,
           hostIsolationSha256

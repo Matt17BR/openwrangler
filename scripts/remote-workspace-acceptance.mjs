@@ -50,6 +50,7 @@ import {
   REMOTE_WORKSPACE_PROTOCOL,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
+  validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceNamespaceAttestation,
   validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspacePhaseDescriptorPath,
@@ -88,6 +89,7 @@ export {
   REMOTE_WORKSPACE_PROTOCOL,
   validateRemoteWorkspaceCandidateExpectation,
   validateRemoteWorkspaceCandidatePath,
+  validateRemoteWorkspaceBootstrapAttestation,
   validateRemoteWorkspaceNamespaceAttestation,
   validateRemoteWorkspaceZeroCapabilities,
   validateRemoteWorkspacePhaseDescriptorPath,
@@ -958,6 +960,7 @@ export function createRemoteWorkspaceBwrapArguments(
     immutableMounts,
     uid,
     gid,
+    bootstrapPreflight = false,
     tools = REQUIRED_HOST_TOOLS
   },
   { validateSystemRuntimeDirectory = validateRootOwnedSystemRuntimeDirectory } = {}
@@ -976,6 +979,9 @@ export function createRemoteWorkspaceBwrapArguments(
     gid > 2_147_483_647
   ) {
     throw new Error("Remote SSH acceptance requires one bounded non-root namespace identity.");
+  }
+  if (typeof bootstrapPreflight !== "boolean") {
+    throw new Error("Remote SSH acceptance requires one explicit bootstrap-preflight policy.");
   }
   const canonicalRoot = realpathSync(root);
   for (const [label, value] of Object.entries({ descriptor, childScript })) {
@@ -1138,7 +1144,8 @@ export function createRemoteWorkspaceBwrapArguments(
     REMOTE_WORKSPACE_PHASE_DESCRIPTOR_PATH,
     "/usr/bin/ip",
     "/usr/bin/ssh",
-    "/usr/lib64/ld-linux-x86-64.so.2"
+    "/usr/lib64/ld-linux-x86-64.so.2",
+    ...(bootstrapPreflight ? ["--bootstrap-preflight"] : [])
   );
   return Object.freeze(args);
 }

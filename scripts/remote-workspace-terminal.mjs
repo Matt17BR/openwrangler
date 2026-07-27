@@ -1,6 +1,7 @@
 import {
   assertRemoteWorkspaceResultLease,
   closeRemoteWorkspaceResultLease,
+  getRemoteWorkspaceControllerFailureMessage,
   openRemoteWorkspaceResultLeaseIfPresent,
   validateRemoteWorkspaceNamespaceAttestation
 } from "./remote-workspace-contract.mjs";
@@ -15,11 +16,12 @@ export async function validateRemoteWorkspaceTerminal({ stdout, stderr, resultPa
   const attestation = validateRemoteWorkspaceNamespaceAttestation(stdout, expected);
   const lease = openRemoteWorkspaceResultLeaseIfPresent(resultPath, { runId: expected?.runId });
   if (!lease) throw new Error("The Remote SSH terminal result disappeared before host validation.");
+  const expectedResultOutcome = attestation.controllerCode ? attestation.resultOutcome : attestation.outcome;
 
   let validationError;
   try {
     if (
-      lease.outcome !== attestation.outcome ||
+      lease.outcome !== expectedResultOutcome ||
       lease.bytes !== attestation.resultBytes ||
       lease.sha256 !== attestation.resultSha256
     ) {
@@ -45,5 +47,15 @@ export async function validateRemoteWorkspaceTerminal({ stdout, stderr, resultPa
   }
   if (validationError) throw validationError;
   if (closeError) throw closeError;
-  return Object.freeze({ attestation, result: lease.result });
+  const result = attestation.controllerCode
+    ? Object.freeze({
+        protocol: attestation.protocol,
+        runId: attestation.runId,
+        phase: attestation.phase,
+        ok: false,
+        error: getRemoteWorkspaceControllerFailureMessage(attestation.controllerCode),
+        outcome: "failure"
+      })
+    : lease.result;
+  return Object.freeze({ attestation, result });
 }
