@@ -268,3 +268,82 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+
+  remote-workspace:
+    name: Remote SSH acceptance
+    needs: canonical-vsix
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Require the canonical PR artifact
+        if: ${{ needs.canonical-vsix.result != 'success' }}
+        run: exit 1
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Prepare namespace-capable acceptance host
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bubblewrap \
+            busybox-static \
+            iproute2 \
+            openssh-client \
+            python3-venv \
+            x11-xkb-utils
+          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl --write kernel.unprivileged_userns_clone=1
+          test "$(sysctl --values kernel.apparmor_restrict_unprivileged_userns)" = "0"
+          test "$(sysctl --values kernel.unprivileged_userns_clone)" = "1"
+          test "$(sysctl --values user.max_user_namespaces)" -gt 0
+      - run: npm ci
+      - run: /usr/bin/python3 -m venv .remote-venv
+      - run: .remote-venv/bin/python -m pip install --upgrade pip
+      - run: .remote-venv/bin/python -m pip install ./python
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: openwrangler-vsix
+          path: canonical-vsix
+      - id: candidate
+        name: Verify exact Remote SSH candidate
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { appendFileSync, readFileSync, statSync } = require("node:fs");
+          const { resolve } = require("node:path");
+
+          const candidatePath = resolve("canonical-vsix/openwrangler.vsix");
+          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
+          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
+          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
+          const bytes = readFileSync(candidatePath);
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          if (sha256 !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
+          const size = statSync(candidatePath).size;
+          if (!Number.isSafeInteger(size) || size <= 0) {
+            throw new Error("The canonical PR VSIX size is invalid.");
+          }
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `path=${candidatePath}\nsha256=${sha256}\nsize=${size}\n`,
+            "utf8"
+          );
+      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
+      - id: remote_workspace
+        name: Test packaged VS Code over Remote SSH
+        run: >-
+          npm run test:remote-workspace --
+          ${{ steps.candidate.outputs.path }}
+          ${{ steps.candidate.outputs.sha256 }}
+          ${{ steps.candidate.outputs.size }}
+        env:
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
