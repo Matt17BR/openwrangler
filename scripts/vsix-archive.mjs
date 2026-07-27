@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { basename, resolve } from "node:path";
 import { fromBuffer as openZipBuffer } from "yauzl";
 import { parseStrictJson } from "./strict-json.mjs";
 import { inspectVsixEntries, requiredVsixEntries } from "./vsix-contents.mjs";
@@ -7,6 +9,98 @@ export const MAX_VSIX_ENTRIES = 4096;
 export const MAX_VSIX_ENTRY_NAME_BYTES = 1024;
 export const MAX_VSIX_ENTRY_BYTES = 32 * 1024 * 1024;
 export const MAX_VSIX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function unchangedFileSnapshot(before, after) {
+  return (
+    sameFileIdentity(before, after) &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs
+  );
+}
+
+function namedPathMatchesDescriptor(pathIdentity, descriptorIdentity) {
+  return (
+    pathIdentity.isFile() &&
+    pathIdentity.nlink === 1n &&
+    descriptorIdentity.isFile() &&
+    descriptorIdentity.nlink === 1n &&
+    sameFileIdentity(pathIdentity, descriptorIdentity)
+  );
+}
+
+export function readBoundedVsixFileSnapshot(vsixPath, { requireOwner = false } = {}) {
+  if (typeof requireOwner !== "boolean") {
+    throw new TypeError("VSIX snapshot ownership policy must be boolean.");
+  }
+  const absolutePath = resolve(vsixPath);
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  let descriptor;
+  try {
+    try {
+      descriptor = fs.openSync(absolutePath, fs.constants.O_RDONLY | noFollow);
+    } catch (error) {
+      throw new Error(
+        error?.code === "ELOOP"
+          ? "VSIX candidate must be one regular, unlinked file."
+          : `VSIX candidate cannot be inspected: ${basename(absolutePath)}.`,
+        { cause: error }
+      );
+    }
+
+    const before = fs.fstatSync(descriptor, { bigint: true });
+    let namedBefore;
+    try {
+      namedBefore = fs.lstatSync(absolutePath, { bigint: true });
+    } catch (error) {
+      throw new Error("VSIX candidate path changed before its descriptor was validated.", { cause: error });
+    }
+    if (
+      !namedPathMatchesDescriptor(namedBefore, before) ||
+      (requireOwner && typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+    ) {
+      throw new Error("VSIX candidate must be one regular, unlinked file with the required ownership.");
+    }
+    if (before.size <= 0n || before.size > BigInt(MAX_VSIX_BYTES)) {
+      throw new Error(`VSIX candidate must be between 1 and ${MAX_VSIX_BYTES} bytes.`);
+    }
+
+    const bytes = fs.readFileSync(descriptor);
+    const after = fs.fstatSync(descriptor, { bigint: true });
+    let namedAfter;
+    try {
+      namedAfter = fs.lstatSync(absolutePath, { bigint: true });
+    } catch (error) {
+      throw new Error("VSIX candidate path changed while its descriptor snapshot was read.", { cause: error });
+    }
+    if (
+      bytes.length !== Number(before.size) ||
+      !unchangedFileSnapshot(before, after) ||
+      !namedPathMatchesDescriptor(namedAfter, after)
+    ) {
+      throw new Error("VSIX candidate changed while its descriptor snapshot was read.");
+    }
+
+    return Object.freeze({
+      bytes,
+      identity: Object.freeze({
+        ctimeNs: after.ctimeNs,
+        dev: after.dev,
+        ino: after.ino,
+        mtimeNs: after.mtimeNs,
+        size: after.size
+      })
+    });
+  } finally {
+    if (descriptor !== undefined) {
+      fs.closeSync(descriptor);
+    }
+  }
+}
 
 const UNIX_CREATOR = 3;
 const UNIX_FILE_TYPE = 0o170000;

@@ -25,7 +25,7 @@ import {
 } from "./release-documents.mjs";
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 import { DuplicateJsonKeyError, parseStrictJson } from "./strict-json.mjs";
-import { inspectVsixArchive, MAX_VSIX_BYTES } from "./vsix-archive.mjs";
+import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 const VSIX_MANIFEST_NAMESPACE = "http://schemas.microsoft.com/developer/vsx-schema/2011";
@@ -364,49 +364,12 @@ export function readReleaseSourceSnapshot({ expectedCommit, root }) {
 }
 
 export function readOwnedVsixSnapshot(vsixPath) {
-  const absolutePath = resolve(vsixPath);
-  let pathIdentity;
-  try {
-    pathIdentity = lstatSync(absolutePath, { bigint: true });
-  } catch (error) {
-    throw new Error(`Stable VSIX candidate cannot be inspected: ${basename(absolutePath)}.`, { cause: error });
-  }
-  if (!pathIdentity.isFile() || pathIdentity.nlink !== 1n) {
-    throw new Error("Stable VSIX candidate must be one regular, unlinked file.");
-  }
-
-  const noFollow = fsConstants.O_NOFOLLOW ?? 0;
-  let descriptor;
-  try {
-    descriptor = openSync(absolutePath, fsConstants.O_RDONLY | noFollow);
-    const before = fstatSync(descriptor, { bigint: true });
-    if (
-      !before.isFile() ||
-      before.nlink !== 1n ||
-      !sameFileIdentity(pathIdentity, before) ||
-      (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
-    ) {
-      throw new Error("Stable VSIX candidate identity or ownership changed before inspection.");
-    }
-    if (before.size <= 0n || before.size > BigInt(MAX_VSIX_BYTES)) {
-      throw new Error(`Stable VSIX candidate must be between 1 and ${MAX_VSIX_BYTES} bytes.`);
-    }
-
-    const bytes = readFileSync(descriptor);
-    const after = fstatSync(descriptor, { bigint: true });
-    if (bytes.length !== Number(before.size) || !unchangedFileSnapshot(before, after)) {
-      throw new Error("Stable VSIX candidate changed while its immutable snapshot was read.");
-    }
-    return Object.freeze({
-      bytes,
-      sha256: sha256(bytes),
-      sourceIdentity: Object.freeze({ dev: before.dev, ino: before.ino, size: before.size })
-    });
-  } finally {
-    if (descriptor !== undefined) {
-      closeSync(descriptor);
-    }
-  }
+  const snapshot = readBoundedVsixFileSnapshot(vsixPath, { requireOwner: true });
+  return Object.freeze({
+    bytes: snapshot.bytes,
+    sha256: sha256(snapshot.bytes),
+    sourceIdentity: snapshot.identity
+  });
 }
 
 export async function readStableVsixPayload(bytes) {

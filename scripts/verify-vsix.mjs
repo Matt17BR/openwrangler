@@ -1,6 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { inspectVsixArchive, MAX_VSIX_BYTES } from "./vsix-archive.mjs";
+import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 import {
   inspectNotebookRendererBundle,
   inspectReadmeSourceSrcsets,
@@ -13,16 +12,8 @@ if (!requested) {
   throw new Error("Pass the exact VSIX path to verify; implicit artifact selection is intentionally disabled.");
 }
 const vsix = resolve(root, requested);
-
-if (!existsSync(vsix)) {
-  throw new Error(`VSIX not found: ${requested}`);
-}
-
-const file = statSync(vsix);
-if (!file.isFile() || file.size <= 0 || file.size > MAX_VSIX_BYTES) {
-  throw new Error(`Invalid ${basename(vsix)}. VSIX must be a bounded regular file.`);
-}
-const payload = await inspectVsixArchive(readFileSync(vsix));
+const snapshot = readBoundedVsixFileSnapshot(vsix);
+const payload = await inspectVsixArchive(snapshot.bytes);
 const {
   archiveEntries,
   packagedPackageJson,
