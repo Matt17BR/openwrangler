@@ -43,6 +43,7 @@ export function validateRemoteWorkspacePhaseDescriptor(value, privateRoot, { fil
   for (const candidate of [
     value.editor,
     value.xvfb,
+    value.testModule,
     value.python,
     value.sshConfig,
     value.sshServer,

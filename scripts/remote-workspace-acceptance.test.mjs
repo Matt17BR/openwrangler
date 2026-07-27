@@ -11,6 +11,7 @@ import {
   REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
   REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
   validateRootOwnedSystemRuntimeDirectory,
+  validateRemoteWorkspacePhaseDescriptor,
   validateRemoteWorkspaceNamespaceProbe,
   validateRemoteSshLogAttestation,
   validateRemoteWorkspaceResult
@@ -26,6 +27,58 @@ test("Remote workspace layout is short, private, and independently scoped", () =
     assert.equal(layout.remoteExtensions.startsWith(layout.remoteHome), true);
     assert.notEqual(layout.localHome, layout.remoteHome);
     assert.notEqual(layout.localExtensions, layout.remoteExtensions);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("Remote phase descriptors cannot execute a test module outside the private run root", () => {
+  const parent = privateRoot("ow-remote-descriptor-");
+  try {
+    const layout = createRemoteWorkspaceLayout(parent);
+    const internal = (name) => join(layout.root, name);
+    const descriptor = {
+      protocol: 1,
+      phase: "remote-workspace",
+      runId: "11111111-1111-4111-8111-111111111111",
+      timeoutMs: REMOTE_WORKSPACE_PHASE_TIMEOUT_MS,
+      inactivityTimeoutMs: REMOTE_WORKSPACE_INACTIVITY_TIMEOUT_MS,
+      authority: REMOTE_WORKSPACE_AUTHORITY,
+      version: "1.130.0",
+      commit: PINNED_REMOTE_VSCODE_COMMIT,
+      displayMode: "xvfb",
+      hostPidNamespace: "pid:[1]",
+      hostNetworkNamespace: "net:[1]",
+      hostUserNamespace: "user:[1]",
+      user: "openwrangler",
+      uid: 1001,
+      gid: 1001,
+      editor: internal("editor"),
+      xvfb: internal("Xvfb"),
+      testModule: internal("test-module"),
+      python: internal("python"),
+      sshConfig: internal("ssh-config"),
+      sshServer: internal("dropbear"),
+      sshLibraryPath: internal("ssh-libraries"),
+      sshHostKey: internal("host-key"),
+      sshAuthorizedKeys: internal("authorized-keys"),
+      paths: { root: layout.root },
+      hostHome: join(parent, "host-home"),
+      hostSentinel: join(parent, "host-sentinel")
+    };
+    assert.equal(
+      validateRemoteWorkspacePhaseDescriptor(descriptor, layout.root, { filesystem: false }),
+      descriptor
+    );
+    assert.throws(
+      () =>
+        validateRemoteWorkspacePhaseDescriptor(
+          { ...descriptor, testModule: join(parent, "host-test-module.mjs") },
+          layout.root,
+          { filesystem: false }
+        ),
+      /escaped its private root/u
+    );
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
