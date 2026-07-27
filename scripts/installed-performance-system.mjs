@@ -207,7 +207,10 @@ export function createInstalledResourceSampler(options = {}) {
       active = undefined;
       if (failure) throw failure;
       if (readLinuxProcessGroupSample(completed.processGroupId, { procRoot })) {
-        throw new Error("Installed performance resource sampling found a surviving editor process group.");
+        const error = new Error("Installed performance resource sampling found a surviving editor process group.");
+        error.code = "EDITOR_PROCESS_TREE_UNVERIFIED";
+        error.details = Object.freeze({ treeVerifiedStopped: false });
+        throw error;
       }
     },
     finish() {

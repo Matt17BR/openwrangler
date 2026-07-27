@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
   createInstalledResourceSampler,
   decodeLinuxDevice,
@@ -93,7 +94,16 @@ test("the resource sampler rejects a surviving process group", async () => {
     await writeProcess(procRoot, 301, 277, 120, ["code", "--wait"]);
     const sampler = createInstalledResourceSampler({ procRoot, platform: "linux", intervalMs: 60_000 });
     sampler.begin("perf-csv-cold", 277);
-    assert.throws(() => sampler.end(), /surviving editor process group/u);
+    assert.throws(
+      () => sampler.end(),
+      (error) => {
+        assert.match(error.message, /surviving editor process group/u);
+        assert.equal(error.code, "EDITOR_PROCESS_TREE_UNVERIFIED");
+        assert.deepEqual(error.details, { treeVerifiedStopped: false });
+        assert.equal(editorProcessTreeMayBeLive(error), true);
+        return true;
+      }
+    );
   } finally {
     await rm(procRoot, { recursive: true, force: true });
   }

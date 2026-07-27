@@ -3,7 +3,9 @@ import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { editorProcessTreeMayBeLive } from "./editor-acceptance.mjs";
 import {
+  cleanupInstalledPerformancePrivateRoot,
   installedPerformanceDisplayMode,
   packageInstalledPerformanceCandidate,
   parseInstalledPerformanceArguments,
@@ -24,6 +26,33 @@ test("installed performance assigns unfocused release display modes per editor",
     () => installedPerformanceDisplayMode({ key: "vscode" }, { OPEN_WRANGLER_EDITOR_DISPLAY: "invalid" }),
     /headless.*xvfb.*current/u
   );
+});
+
+test("process-tree uncertainty prevents every private-root receipt access and cleanup", () => {
+  const error = new Error("surviving editor process group");
+  error.details = { treeVerifiedStopped: false };
+  const receipt = new Proxy(
+    {},
+    {
+      get() {
+        assert.fail("uncertain cleanup must not inspect the private-root receipt");
+      }
+    }
+  );
+  let cleanupCalls = 0;
+
+  assert.equal(editorProcessTreeMayBeLive(error), true);
+  assert.equal(
+    cleanupInstalledPerformancePrivateRoot({
+      processTreeUncertain: editorProcessTreeMayBeLive(error),
+      receipt,
+      removePrivateRoot() {
+        cleanupCalls += 1;
+      }
+    }),
+    false
+  );
+  assert.equal(cleanupCalls, 0);
 });
 
 test("installed performance arguments default to both first-class editors", () => {

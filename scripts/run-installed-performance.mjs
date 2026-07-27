@@ -299,6 +299,16 @@ export function writeInstalledPerformanceRun(destination, result) {
   }
 }
 
+export function cleanupInstalledPerformancePrivateRoot({
+  processTreeUncertain,
+  receipt,
+  removePrivateRoot = removeEditorAcceptancePrivateRoot
+}) {
+  if (processTreeUncertain) return false;
+  removePrivateRoot(receipt);
+  return true;
+}
+
 export async function runInstalledPerformance(options, environment = process.env) {
   validateEditorAcceptancePrivatePathOverrides();
   if (process.platform !== "linux") {
@@ -394,12 +404,13 @@ export async function runInstalledPerformance(options, environment = process.env
   }
 
   let cleanupError;
-  if (!processTreeUncertain) {
-    try {
-      removeEditorAcceptancePrivateRoot(privateRootReceipt);
-    } catch (error) {
-      cleanupError = error;
-    }
+  try {
+    cleanupInstalledPerformancePrivateRoot({
+      processTreeUncertain,
+      receipt: privateRootReceipt
+    });
+  } catch (error) {
+    cleanupError = error;
   }
 
   const failures = [primaryError, cleanupError].filter((error) => error !== undefined);
