@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { renameSync, writeFileSync } from "node:fs";
+import fs, { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -336,7 +336,9 @@ test("source manifest validation rejects ambiguous identity, version, and releas
     [previewSourceManifest({ name: "another-extension" }), /canonical Matt17BR\.openwrangler/u],
     [previewSourceManifest({ version: "1.0.0-alpha.1" }), /numeric major\.minor\.patch/u],
     [previewSourceManifest({ preview: "true" }), /explicit boolean package preview flag/u],
-    [previewSourceManifest({ version: "0.9.0", preview: false }), /1\.0\.0 or newer/u]
+    [previewSourceManifest({ version: "0.9.0", preview: false }), /Preview-channel version 0\.9\.0/u],
+    [previewSourceManifest({ version: "1.0.0", preview: true }), /stable channel/u],
+    [previewSourceManifest({ version: "0.2.0", preview: false }), /1\.0\.0 or newer/u]
   ];
   for (const [manifest, expectedError] of invalid) {
     assert.throws(() => validateInstalledPerformanceSourceManifest(manifest), expectedError);
@@ -425,6 +427,39 @@ test("the VSIX receipt rejects path substitution after editor installation", asy
 
     assert.throws(() => revalidateInstalledPerformanceVsix(receipt), /VSIX (receipt|path) changed/u);
     assert.equal(await readFile(destination, "utf8"), "substituted candidate");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the VSIX receipt rejects checksum drift and a same-path swap during its descriptor snapshot", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
+  try {
+    const source = join(directory, "candidate.vsix");
+    const destination = join(directory, "private", "candidate.vsix");
+    const retained = join(directory, "retained.vsix");
+    await writeFile(source, "deterministic candidate");
+    const receipt = stageInstalledPerformanceVsix(source, destination);
+
+    assert.throws(
+      () => revalidateInstalledPerformanceVsix({ ...receipt, sha256: "0".repeat(64) }),
+      /checksum receipt/u
+    );
+
+    const originalReadFileSync = readFileSync;
+    let swapped = false;
+    context.mock.method(fs, "readFileSync", (...arguments_) => {
+      if (!swapped && typeof arguments_[0] === "number") {
+        swapped = true;
+        renameSync(destination, retained);
+        writeFileSync(destination, "replacement candidate", { flag: "wx", mode: 0o600 });
+      }
+      return originalReadFileSync(...arguments_);
+    });
+
+    assert.throws(() => revalidateInstalledPerformanceVsix(receipt), /changed while its descriptor snapshot was read/u);
+    assert.equal(swapped, true);
+    assert.equal(await readFile(destination, "utf8"), "replacement candidate");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -538,6 +573,18 @@ test("bounded JSON reads reject a same-inode rewrite after descriptor validation
         }),
       /changed while it was read/u
     );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded JSON reads use the shared strict parser and reject duplicate envelope keys", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-performance-"));
+  try {
+    const source = join(directory, "phase.json");
+    await writeFile(source, '{"protocol":"openwrangler-installed-performance-phase-v4","protocol":"drifted"}');
+
+    assert.throws(() => readBoundedJson(source, 1024), /must not contain duplicate keys/u);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

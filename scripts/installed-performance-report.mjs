@@ -12,6 +12,7 @@ import {
   writeSync
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = "openwrangler-installed-performance-fixtures-v1";
 export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
@@ -345,8 +346,15 @@ function validateCandidate(candidate) {
   assertEqual(candidate.extensionId, "Matt17BR.openwrangler", "candidate extension ID");
   assertMatch(candidate.extensionVersion, VERSION, "candidate extension version");
   assertBoolean(candidate.preview, "candidate preview flag");
-  if (candidate.channel !== (candidate.preview ? "preview" : "stable")) {
-    throw new TypeError("Candidate release channel does not match its preview flag.");
+  const classification = classifyNumericReleaseVersion(candidate.extensionVersion);
+  if (classification === undefined) {
+    throw new TypeError("Candidate extension version must use a numeric major.minor.patch release version.");
+  }
+  if (candidate.channel !== classification.channel) {
+    throw new TypeError("Candidate release channel does not match its numeric release version.");
+  }
+  if (candidate.preview !== (classification.channel === "preview")) {
+    throw new TypeError("Candidate preview flag does not match its numeric release channel.");
   }
   if (!candidate.preview && candidate.extensionVersion.startsWith("0.")) {
     throw new TypeError("A stable installed-performance candidate requires extension version 1.0.0 or newer.");

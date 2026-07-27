@@ -57,6 +57,14 @@ test("phase validation rejects provenance drift and source data disclosure", () 
   const phase = firstGridPhase("vscode", "csv", "cold", 100);
   assert.equal(validateInstalledPerformancePhase(phase, { runId: phase.runId, phase: phase.phase }), phase);
   assert.throws(
+    () => validateInstalledPerformancePhase({ ...phase, protocol: "openwrangler-installed-performance-phase-v3" }),
+    /installed performance phase protocol/u
+  );
+  assert.throws(
+    () => validateInstalledPerformancePhase({ ...phase, envelopeRevision: 2 }),
+    /missing or unknown fields/u
+  );
+  assert.throws(
     () =>
       validateInstalledPerformancePhase({
         ...phase,
@@ -168,7 +176,12 @@ test("candidate provenance enforces numeric versions and a matching release chan
   for (const [invalidCandidate, expectedError] of [
     [{ ...candidate(), channel: "stable" }, /release channel does not match/u],
     [{ ...candidate(), extensionVersion: "0.3.0-alpha.1" }, /candidate extension version/u],
-    [{ ...candidate(), extensionVersion: "0.9.0", preview: false, channel: "stable" }, /version 1\.0\.0 or newer/u]
+    [{ ...candidate(), preview: false }, /preview flag does not match/u],
+    [
+      { ...candidate(), extensionVersion: "0.9.0", preview: false, channel: "stable" },
+      /release channel does not match/u
+    ],
+    [{ ...candidate(), extensionVersion: "0.2.0", preview: false, channel: "stable" }, /version 1\.0\.0 or newer/u]
   ]) {
     assert.throws(
       () =>

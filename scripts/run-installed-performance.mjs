@@ -21,7 +21,6 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createVSIX } from "@vscode/vsce";
-import { open as openZip } from "yauzl";
 import {
   configureEditorAcceptanceTempRoot,
   createEditorAcceptanceEnvironment,
@@ -56,6 +55,9 @@ import {
   readInstalledStorageProvenance
 } from "./installed-performance-system.mjs";
 import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
+import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
+import { inspectVsixArchive, MAX_VSIX_BYTES as VSIX_MAX_BYTES, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v5";
@@ -67,11 +69,8 @@ const INSTALLED_PERFORMANCE_PHASES = [
   "perf-grid-interaction"
 ];
 const EXPECTED_HARNESS = "openwrangler-tests.openwrangler-packaged-test-harness@0.0.0";
-const VSIX_MAX_BYTES = 512 * 1024 * 1024;
 const VSIX_PACKAGE_JSON_MAX_BYTES = 1024 * 1024;
-const VSIX_MAX_ENTRIES = 100_000;
 const OUTPUT_MAX_BYTES = 1024 * 1024;
-const NUMERIC_EXTENSION_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const guardedCandidateReceipts = new WeakSet();
 
 export function parseInstalledPerformanceArguments(arguments_) {
@@ -213,7 +212,11 @@ export async function readInstalledPerformanceCandidate(receipt) {
   if (!guardedCandidateReceipts.has(receipt)) {
     throw new Error("Installed performance candidate metadata requires one guarded build receipt.");
   }
-  const packageJson = await readVsixPackageJson(receipt.path);
+  const snapshot = readInstalledPerformanceVsixSnapshot(receipt);
+  const archive = await inspectVsixArchive(snapshot.bytes);
+  const packageJson = parseStrictJson(archive.packagedPackageJson, {
+    maxBytes: VSIX_PACKAGE_JSON_MAX_BYTES
+  });
   const packagedManifest = validateInstalledPerformanceSourceManifest(packageJson);
   if (JSON.stringify(packagedManifest) !== JSON.stringify(receipt.sourceManifest)) {
     throw new Error("The staged VSIX manifest does not match its guarded source manifest.");
@@ -241,11 +244,20 @@ export function validateInstalledPerformanceSourceManifest(manifest) {
   if (manifest.publisher !== "Matt17BR" || manifest.name !== "openwrangler") {
     throw new TypeError("Installed performance requires the canonical Matt17BR.openwrangler package identity.");
   }
-  if (typeof manifest.version !== "string" || !NUMERIC_EXTENSION_VERSION.test(manifest.version)) {
+  const classification = classifyNumericReleaseVersion(manifest.version);
+  if (classification === undefined) {
     throw new TypeError("Installed performance requires a numeric major.minor.patch package version.");
   }
   if (typeof manifest.preview !== "boolean") {
     throw new TypeError("Installed performance requires an explicit boolean package preview flag.");
+  }
+  const expectedPreview = classification.channel === "preview";
+  if (manifest.preview !== expectedPreview) {
+    throw new TypeError(
+      expectedPreview
+        ? `Preview-channel version ${manifest.version} requires the package preview flag to be true.`
+        : `Version ${manifest.version} belongs to the stable channel and requires the package preview flag to be false.`
+    );
   }
   if (!manifest.preview && manifest.version.startsWith("0.")) {
     throw new TypeError("A stable installed-performance candidate requires package version 1.0.0 or newer.");
@@ -255,7 +267,7 @@ export function validateInstalledPerformanceSourceManifest(manifest) {
     name: manifest.name,
     version: manifest.version,
     preview: manifest.preview,
-    channel: manifest.preview ? "preview" : "stable"
+    channel: classification.channel
   });
 }
 
@@ -347,39 +359,27 @@ export function cleanupInstalledPerformancePrivateRoot({
 }
 
 export function revalidateInstalledPerformanceVsix(receipt) {
+  readInstalledPerformanceVsixSnapshot(receipt);
+  return receipt;
+}
+
+function readInstalledPerformanceVsixSnapshot(receipt) {
   requireVsixReceipt(receipt);
-  let descriptor;
-  try {
-    descriptor = openReadOnlyNoFollow(receipt.path, "The installed-performance VSIX receipt became a symlink.");
-    const opened = fstatSync(descriptor, { bigint: true });
-    requireSameRegularFile(opened, receipt.fileIdentity, "The installed-performance VSIX receipt changed.");
-    const openedPath = lstatSync(receipt.path, { bigint: true });
-    requireSameRegularFile(openedPath, receipt.fileIdentity, "The installed-performance VSIX path changed.");
-    const digest = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    let total = 0;
-    while (true) {
-      const count = readSync(descriptor, buffer, 0, buffer.length, null);
-      if (count === 0) break;
-      total += count;
-      if (total > VSIX_MAX_BYTES) throw new Error("The installed-performance VSIX receipt exceeded its byte limit.");
-      digest.update(buffer.subarray(0, count));
-    }
-    const completed = fstatSync(descriptor, { bigint: true });
-    const completedPath = lstatSync(receipt.path, { bigint: true });
-    requireSameRegularFile(completed, receipt.fileIdentity, "The installed-performance VSIX changed while read.");
-    requireSameRegularFile(
-      completedPath,
-      receipt.fileIdentity,
-      "The installed-performance VSIX path changed while read."
-    );
-    if (total !== receipt.bytes || digest.digest("hex") !== receipt.sha256) {
-      throw new Error("The installed-performance VSIX no longer matches its checksum receipt.");
-    }
-    return receipt;
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
+  const snapshot = readBoundedVsixFileSnapshot(receipt.path, { requireOwner: true });
+  if (
+    snapshot.identity.dev !== receipt.fileIdentity.dev ||
+    snapshot.identity.ino !== receipt.fileIdentity.ino ||
+    snapshot.identity.size !== receipt.fileIdentity.size ||
+    snapshot.identity.mtimeNs !== receipt.fileIdentity.mtimeNs ||
+    snapshot.identity.ctimeNs !== receipt.fileIdentity.ctimeNs
+  ) {
+    throw new Error("The installed-performance VSIX receipt changed.");
   }
+  const sha256 = createHash("sha256").update(snapshot.bytes).digest("hex");
+  if (snapshot.bytes.length !== receipt.bytes || sha256 !== receipt.sha256) {
+    throw new Error("The installed-performance VSIX no longer matches its checksum receipt.");
+  }
+  return snapshot;
 }
 
 export async function collectInstalledPerformanceEditorRuns({
@@ -944,76 +944,10 @@ export function readBoundedJson(file, maxBytes, hooks = {}) {
     const completedPath = lstatSync(file, { bigint: true });
     requireSameRegularFile(completed, identity, "Installed performance JSON changed while it was read.");
     requireSameRegularFile(completedPath, identity, "Installed performance JSON path changed while it was read.");
-    return JSON.parse(contents.toString("utf8"));
+    return parseStrictJson(contents.toString("utf8"), { maxBytes });
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
-}
-
-function readVsixPackageJson(vsix) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    openZip(vsix, { autoClose: true, lazyEntries: true, validateEntrySizes: true }, (openError, archive) => {
-      if (openError || !archive) {
-        rejectPromise(openError ?? new Error("The installed-performance VSIX could not be opened."));
-        return;
-      }
-      let entries = 0;
-      let found = false;
-      let settled = false;
-      const settle = (error, value) => {
-        if (settled) return;
-        settled = true;
-        archive.close();
-        if (error) rejectPromise(error);
-        else resolvePromise(value);
-      };
-      archive.on("error", (error) => settle(error));
-      archive.on("entry", (entry) => {
-        entries += 1;
-        if (entries > VSIX_MAX_ENTRIES) {
-          settle(new Error("The installed-performance VSIX exceeded the entry-count limit."));
-          return;
-        }
-        if (entry.fileName !== "extension/package.json") {
-          archive.readEntry();
-          return;
-        }
-        if (found || entry.uncompressedSize <= 0 || entry.uncompressedSize > VSIX_PACKAGE_JSON_MAX_BYTES) {
-          settle(new Error("The installed-performance VSIX has an invalid package manifest."));
-          return;
-        }
-        found = true;
-        archive.openReadStream(entry, (streamError, stream) => {
-          if (streamError || !stream) {
-            settle(streamError ?? new Error("The installed-performance package manifest could not be read."));
-            return;
-          }
-          const chunks = [];
-          let bytes = 0;
-          stream.on("data", (chunk) => {
-            bytes += chunk.length;
-            if (bytes > VSIX_PACKAGE_JSON_MAX_BYTES) {
-              stream.destroy(new Error("The installed-performance package manifest exceeded its byte limit."));
-              return;
-            }
-            chunks.push(chunk);
-          });
-          stream.once("error", (error) => settle(error));
-          stream.once("end", () => {
-            try {
-              settle(undefined, JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")));
-            } catch (error) {
-              settle(error);
-            }
-          });
-        });
-      });
-      archive.on("end", () => {
-        if (!found) settle(new Error("The installed-performance VSIX is missing extension/package.json."));
-      });
-      archive.readEntry();
-    });
-  });
 }
 
 function requireSameRegularFile(actual, expected, message) {
