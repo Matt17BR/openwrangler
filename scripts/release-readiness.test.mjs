@@ -484,6 +484,17 @@ test("keeps the checked-in preview README release and install section generated"
   assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
 });
 
+test("keeps the same compact editor support tiers in preview and stable README generation", () => {
+  for (const section of [PREVIEW_README_RELEASE_SECTION, STABLE_README_RELEASE_SECTION]) {
+    assert.match(section, /\| VS Code\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
+    assert.match(section, /\| Cursor\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
+    assert.match(section, /\| Other VS Code-based IDEs, including Antigravity\s+\| Experimental\s+\|/u);
+    assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
+    assert.match(section, /availability requires separate publication, and compatibility requires/u);
+    assert.match(section, /Experimental editors do not inherit the VS Code\/Cursor support guarantee/u);
+  }
+});
+
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {
   const problems = inspectStableReleaseReadiness(
     ready({

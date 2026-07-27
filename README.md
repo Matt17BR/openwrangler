@@ -1,6 +1,6 @@
 # Open Wrangler
 
-Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family desktop editors. VS Code and Cursor are first-class targets; other compatible forks are experimental. Open a file or notebook dataframe, explore it in a fast virtualized grid, build a repeatable cleaning plan, and export engine-native Python or cleaned data—all without changing the source.
+Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family desktop editors. VS Code and Cursor are first-class targets; other VS Code-based desktop forks may work, but support is experimental. Open a file or notebook dataframe, explore it in a fast virtualized grid, build a repeatable cleaning plan, and export engine-native Python or cleaned data—all without changing the source.
 
 Polars and Pandas are first-class backends. DuckDB provides a native file-backed path for larger local datasets.
 
@@ -19,7 +19,7 @@ Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 | Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
 | Browser-hosted `vscode.dev`                     | Unsupported  | No local Python/runtime extension host                 |
 
-Google documents [Antigravity using Open VSX-hosted extensions](https://developers.google.com/workspace/guides/developer-tools). That confirms the registry path, but Open Wrangler has not been published or functionally smoke-tested there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
+Google documents [one Open VSX-hosted extension used with Antigravity](https://developers.google.com/workspace/guides/developer-tools). That establishes a distribution precedent; Open Wrangler availability requires separate publication, and compatibility requires an isolated functional smoke. Experimental editors do not inherit the VS Code/Cursor support guarantee.
 
 To try the current preview from a clone of this repository:
 
