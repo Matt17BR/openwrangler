@@ -1173,6 +1173,97 @@ describe("App file import options", () => {
     expect(action).not.toHaveAttribute("aria-busy");
   });
 
+  it("commits and blurs a pointer-triggered import action before dispatch, then restores it after completion", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const previousImplementation = webviewPostMessage.getMockImplementation();
+    let stateAtDispatch:
+      | {
+          activeElement: Element | null;
+          disabled: boolean;
+          ariaBusy: string | null;
+        }
+      | undefined;
+    try {
+      render(<App />);
+      dispatchAppMessage({
+        kind: "error",
+        code: "invalid_import_options",
+        message: "Choose a valid delimiter.",
+        recoverable: true
+      });
+
+      const action = await screen.findByRole<HTMLButtonElement>("button", { name: "Import options" });
+      act(() => action.focus());
+      expect(document.activeElement).toBe(action);
+      webviewPostMessage.mockClear();
+      webviewPostMessage.mockImplementation((message) => {
+        if (message?.kind !== "changeImportOptions") return;
+        stateAtDispatch = {
+          activeElement: document.activeElement,
+          disabled: action.disabled,
+          ariaBusy: action.getAttribute("aria-busy")
+        };
+      });
+
+      fireEvent.click(action);
+
+      expect(stateAtDispatch).toEqual({
+        activeElement: document.body,
+        disabled: true,
+        ariaBusy: "true"
+      });
+      expect(outboundImportOptionMessages()).toEqual([{ kind: "changeImportOptions" }]);
+
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      expect(frames).toHaveLength(1);
+      act(() => frames[0](performance.now()));
+      expect(document.activeElement).toBe(action);
+    } finally {
+      webviewPostMessage.mockImplementation(previousImplementation ?? (() => undefined));
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("does not restore an import action after the host takes focus before the completion frame", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      render(<App />);
+      dispatchAppMessage({
+        kind: "error",
+        code: "invalid_import_options",
+        message: "Choose a valid delimiter.",
+        recoverable: true
+      });
+
+      const action = await screen.findByRole<HTMLButtonElement>("button", { name: "Import options" });
+      act(() => action.focus());
+      fireEvent.click(action);
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+      expect(frames).toHaveLength(1);
+
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+      focus.mockClear();
+      hasFocus.mockReturnValue(false);
+      act(() => frames[0](performance.now()));
+      expect(focus).not.toHaveBeenCalled();
+      focus.mockRestore();
+    } finally {
+      hasFocus.mockRestore();
+      requestFrame.mockRestore();
+    }
+  });
+
   it("keeps confirmed data on reconfiguration failure and accepts a later successful replacement", async () => {
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
