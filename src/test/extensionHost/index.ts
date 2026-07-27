@@ -78,6 +78,7 @@ interface TestApi {
     | undefined;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  panelHydrated(sessionId: string): boolean;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
     activeSessionId?: string;
@@ -3476,6 +3477,11 @@ async function exerciseRemoteWorkspace(
   assert.ok(active, "The Remote SSH workspace must publish one active dataframe grid.");
   assert.equal(active.metadata.backend, "polars");
   assert.deepEqual(active.metadata.shape, { rows: 3, columns: 2 });
+  await waitFor(
+    () => testing.panelHydrated(active.metadata.sessionId),
+    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    "the exact Remote SSH panel to finish opening and acknowledge its current renderer snapshot"
+  );
   assert.equal(
     await testing.synchronizePanel(active.metadata.sessionId),
     true,
