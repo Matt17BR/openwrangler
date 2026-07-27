@@ -26,7 +26,8 @@ const EXTRACTION_TIMEOUT_MS = 5 * 60_000;
 const DOWNLOAD_OUTPUT_LIMIT_BYTES = 16 * 1024;
 const WINDOWS_AUTHENTICODE_TIMEOUT_MS = 2 * 60_000;
 const CURSOR_MACOS_TEAM_IDENTIFIER = "VDXQ22DGB9";
-const CURSOR_WINDOWS_SIGNER = "CN=Anysphere, Inc.";
+const CURSOR_WINDOWS_SIGNER_NAME = "Anysphere, Inc.";
+const CURSOR_WINDOWS_SIGNER_CERTIFICATE_SHA256 = "A64BA881C8D4EEAA0E9556856B750CB3C658E0C9765BABFDCEAB3A2797B905AB";
 const TARGET_KEYS = new Set([
   "architecture",
   "artifactName",
@@ -517,7 +518,13 @@ async function extractWindowsTarget(
     "$ErrorActionPreference = 'Stop'",
     `$literalPath = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encodedArtifactPath}'))`,
     "$signature = Get-AuthenticodeSignature -LiteralPath $literalPath",
-    `if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*${CURSOR_WINDOWS_SIGNER}*') { exit 41 }`
+    "$certificate = $signature.SignerCertificate",
+    "if ($null -eq $certificate) { exit 41 }",
+    "if ($signature.Status -ne 'Valid') { exit 42 }",
+    `$simpleName = $certificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false); if ($simpleName -cne '${CURSOR_WINDOWS_SIGNER_NAME}') { exit 43 }`,
+    "$sha256 = [System.Security.Cryptography.SHA256]::Create()",
+    "try { $leafSha256 = [BitConverter]::ToString($sha256.ComputeHash($certificate.RawData)).Replace('-', '') } finally { $sha256.Dispose() }",
+    `if ($leafSha256 -cne '${CURSOR_WINDOWS_SIGNER_CERTIFICATE_SHA256}') { exit 44 }`
   ].join("; ");
   await runCommand(
     {

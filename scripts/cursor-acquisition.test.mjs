@@ -387,7 +387,7 @@ test("Cursor macOS extraction separates integrity verification from exact signin
   }
 });
 
-test("Cursor Windows extraction binds the artifact path inside the encoded Authenticode command", async () => {
+test("Cursor Windows extraction binds the artifact and exact leaf identity inside bounded Authenticode verification", async () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "openwrangler-cursor-windows-signature-")));
   chmodSync(directory, 0o700);
   try {
@@ -425,8 +425,19 @@ test("Cursor Windows extraction binds the artifact path inside the encoded Authe
     const decodedCommand = Buffer.from(signature.args.at(-1), "base64").toString("utf16le");
     const encodedArtifactPath = Buffer.from(artifact.path, "utf16le").toString("base64");
     assert.match(decodedCommand, /Get-AuthenticodeSignature -LiteralPath \$literalPath/u);
+    assert.match(decodedCommand, /\$null -eq \$certificate/u);
     assert.match(decodedCommand, /Status -ne 'Valid'/u);
-    assert.match(decodedCommand, /CN=Anysphere, Inc\./u);
+    assert.match(decodedCommand, /X509NameType\]::SimpleName/u);
+    assert.match(decodedCommand, /\$simpleName -cne 'Anysphere, Inc\.'/u);
+    assert.match(decodedCommand, /SHA256\]::Create\(\)/u);
+    assert.match(decodedCommand, /ComputeHash\(\$certificate\.RawData\)/u);
+    assert.match(decodedCommand, /A64BA881C8D4EEAA0E9556856B750CB3C658E0C9765BABFDCEAB3A2797B905AB/u);
+    assert.match(decodedCommand, /finally \{ \$sha256\.Dispose\(\) \}/u);
+    assert.deepEqual(
+      [...decodedCommand.matchAll(/\bexit (4[1-4])\b/gu)].map((match) => match[1]),
+      ["41", "42", "43", "44"]
+    );
+    assert.doesNotMatch(decodedCommand, /SignerCertificate\.Subject|-notlike|Write-(?:Error|Host|Output)/u);
     assert.equal(decodedCommand.includes(encodedArtifactPath), true);
     assert.doesNotMatch(decodedCommand, /\$args/u);
     assert.equal(signature.args.includes(artifact.path), false);
