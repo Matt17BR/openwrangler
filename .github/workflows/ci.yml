@@ -252,3 +252,133 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: cursor_smoke
+        name: Test pinned Cursor platform smoke
+        run: node scripts/run-packaged-editor-tests.mjs canonical-vsix/openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: cursor
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+      - name: Upload Cursor-smoke failure diagnostics
+        if: ${{ always() && steps.cursor_smoke.outcome == 'failure' && steps.cursor_smoke.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: packaged-editor-diagnostics-cursor-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.cursor_smoke.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+
+  remote-workspace:
+    name: Remote SSH acceptance
+    needs: canonical-vsix
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'acceptance:remote-ssh')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Require the canonical PR artifact
+        if: ${{ needs.canonical-vsix.result != 'success' }}
+        run: exit 1
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Prepare namespace-capable acceptance host
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            bubblewrap \
+            busybox-static \
+            coreutils \
+            iproute2 \
+            libtomcrypt1 \
+            libtommath1 \
+            openssh-client \
+            procps \
+            python3-venv \
+            x11-xkb-utils
+          system_runtime_roots=(
+            /usr/share/fontconfig
+            /usr/share/fonts
+            /usr/share/glib-2.0
+            /usr/share/icons
+            /usr/share/mime
+            /usr/share/X11
+            /usr/share/zoneinfo
+          )
+          test ! -L /usr/share
+          test "$(realpath /usr/share)" = "/usr/share"
+          test "$(stat --format='%u' /usr/share)" = "0"
+          sudo chmod go-w -- /usr/share
+          test ! -w /usr/share
+          for directory in "${system_runtime_roots[@]}"; do
+            test ! -L "$directory"
+            test "$(realpath "$directory")" = "$directory"
+            test "$(stat --format='%u' "$directory")" = "0"
+          done
+          sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"
+          for directory in "${system_runtime_roots[@]}"; do
+            test ! -L "$directory"
+            test "$(realpath "$directory")" = "$directory"
+            test "$(stat --format='%u' "$directory")" = "0"
+            unsafe_owner="$(find "$directory" -xdev ! -user root -print -quit)"
+            unsafe_mode="$(find "$directory" -xdev \( -type d -o -type f \) -perm /022 -print -quit)"
+            unsafe_type="$(find "$directory" -xdev ! -type d ! -type f ! -type l -print -quit)"
+            test -z "$unsafe_owner"
+            test -z "$unsafe_mode"
+            test -z "$unsafe_type"
+          done
+          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl --write kernel.unprivileged_userns_clone=1
+          test "$(sysctl --values kernel.apparmor_restrict_unprivileged_userns)" = "0"
+          test "$(sysctl --values kernel.unprivileged_userns_clone)" = "1"
+          test "$(sysctl --values user.max_user_namespaces)" -gt 0
+      - run: npm ci
+      - run: /usr/bin/python3 -m venv .remote-venv
+      - run: .remote-venv/bin/python -m pip install --upgrade pip
+      - run: .remote-venv/bin/python -m pip install ./python
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: openwrangler-vsix
+          path: canonical-vsix
+      - id: candidate
+        name: Verify exact Remote SSH candidate
+        shell: node {0}
+        run: |
+          const { createHash } = require("node:crypto");
+          const { appendFileSync, readFileSync, statSync } = require("node:fs");
+          const { resolve } = require("node:path");
+
+          const candidatePath = resolve("canonical-vsix/openwrangler.vsix");
+          const receipt = readFileSync("canonical-vsix/openwrangler.vsix.sha256", "utf8");
+          const match = /^([0-9a-f]{64})  openwrangler\.vsix\n$/u.exec(receipt);
+          if (!match) throw new Error("The canonical PR checksum receipt is malformed.");
+          const bytes = readFileSync(candidatePath);
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          if (sha256 !== match[1]) throw new Error("The canonical PR VSIX checksum does not match.");
+          const size = statSync(candidatePath).size;
+          if (!Number.isSafeInteger(size) || size <= 0) {
+            throw new Error("The canonical PR VSIX size is invalid.");
+          }
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `path=${candidatePath}\nsha256=${sha256}\nsize=${size}\n`,
+            "utf8"
+          );
+      - run: npm run verify:vsix -- canonical-vsix/openwrangler.vsix
+      - id: remote_workspace
+        name: Test packaged VS Code over Remote SSH
+        run: >-
+          npm run test:remote-workspace --
+          ${{ steps.candidate.outputs.path }}
+          ${{ steps.candidate.outputs.sha256 }}
+          ${{ steps.candidate.outputs.size }}
+        env:
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python

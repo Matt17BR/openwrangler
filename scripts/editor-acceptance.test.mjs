@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { createWriteStream, linkSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  createWriteStream,
+  linkSync,
+  openSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync
+} from "node:fs";
 import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, posix, relative, resolve } from "node:path";
@@ -743,6 +753,240 @@ test(
   }
 );
 
+posixTest("bounded editor commands deliver one exact bounded input buffer", async () => {
+  const input = Buffer.from('{"kind":"status"}\n', "ascii");
+  const result = await runBoundedEditorCommand(
+    {
+      executable: process.execPath,
+      args: [
+        "-e",
+        "const chunks=[];process.stdin.on('data',(chunk)=>chunks.push(chunk));process.stdin.on('end',()=>process.stdout.write(Buffer.concat(chunks)))"
+      ],
+      environment: createEditorAcceptanceEnvironment(),
+      input,
+      label: "bounded input command"
+    },
+    { timeoutMs: 2_000 }
+  );
+  assert.deepEqual(result, { stdout: input.toString("ascii"), stderr: "" });
+});
+
+test("bounded editor commands reject malformed or Windows input before spawn", async () => {
+  let spawned = false;
+  for (const [input, platform] of [
+    ["not-a-buffer", process.platform],
+    [Buffer.alloc(0), process.platform],
+    [Buffer.alloc(65_537), process.platform],
+    [Buffer.from("frame\n", "ascii"), "win32"]
+  ]) {
+    await assert.rejects(
+      runBoundedEditorCommand(
+        {
+          executable: process.execPath,
+          environment: {},
+          input
+        },
+        {
+          platform,
+          spawnProcess() {
+            spawned = true;
+            return fakeCommandChild(7310);
+          }
+        }
+      ),
+      /non-empty POSIX Buffer/u
+    );
+  }
+  assert.equal(spawned, false);
+});
+
+posixTest("bounded editor commands seal inherited inputs synchronously at the spawn boundary", async () => {
+  const descriptor = openSync("/dev/null", "r");
+  const events = [];
+  let released = false;
+  const child = fakeCommandChild(7311);
+  const result = runBoundedEditorCommand(
+    {
+      executable: "/private/bwrap",
+      args: ["stale"],
+      environment: {},
+      label: "sealed editor command",
+      beforeSpawn() {
+        events.push("before");
+        return {
+          args: ["--ro-bind", "/proc/self/fd/3", "/ow/phase.json"],
+          inheritedFileDescriptors: [descriptor],
+          release() {
+            closeSync(descriptor);
+            released = true;
+            events.push("release");
+          }
+        };
+      }
+    },
+    {
+      spawnProcess(executable, args, options) {
+        events.push("spawn");
+        assert.equal(executable, "/private/bwrap");
+        assert.deepEqual(args, ["--ro-bind", "/proc/self/fd/3", "/ow/phase.json"]);
+        assert.deepEqual(options.stdio, ["ignore", "pipe", "pipe", descriptor]);
+        assert.equal(released, false);
+        setImmediate(() => {
+          assert.equal(released, false);
+          child.exitCode = 0;
+          child.stdout.end("sealed\n");
+          child.stderr.end();
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        });
+        return child;
+      }
+    }
+  );
+  assert.deepEqual(await result, { stdout: "sealed\n", stderr: "" });
+  assert.deepEqual(events, ["before", "spawn", "release"]);
+  assert.equal(released, true);
+});
+
+posixTest("bounded editor commands fail before spawn on malformed launch seals", async () => {
+  let spawned = false;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/bwrap",
+        environment: {},
+        beforeSpawn: () => Promise.resolve({})
+      },
+      {
+        spawnProcess() {
+          spawned = true;
+          return fakeCommandChild(7312);
+        }
+      }
+    ),
+    (error) =>
+      /could not start/u.test(error.message) && /malformed launch preparation/u.test(error.cause?.message ?? "")
+  );
+  assert.equal(spawned, false);
+});
+
+posixTest("bounded editor commands release sealed inputs when spawn fails", async () => {
+  const descriptor = openSync("/dev/null", "r");
+  let releases = 0;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/bwrap",
+        environment: {},
+        beforeSpawn() {
+          return {
+            args: ["--version"],
+            inheritedFileDescriptors: [descriptor],
+            release() {
+              releases += 1;
+              closeSync(descriptor);
+            }
+          };
+        }
+      },
+      {
+        spawnProcess() {
+          throw new Error("spawn rejected");
+        }
+      }
+    ),
+    /could not start/u
+  );
+  assert.equal(releases, 1);
+});
+
+posixTest("bounded editor commands retain sealed inputs through timeout termination", async () => {
+  const descriptor = openSync("/dev/null", "r");
+  const child = fakeStoppableCommandChild(7313);
+  let released = false;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/bwrap",
+        environment: {},
+        label: "sealed timeout command",
+        beforeSpawn() {
+          return {
+            args: ["--version"],
+            inheritedFileDescriptors: [descriptor],
+            release() {
+              closeSync(descriptor);
+              released = true;
+            }
+          };
+        }
+      },
+      {
+        timeoutMs: 5,
+        terminationGraceMs: 50,
+        killGraceMs: 50,
+        spawnProcess() {
+          assert.equal(released, false);
+          return child;
+        }
+      }
+    ),
+    /timed out after 5 ms/u
+  );
+  assert.equal(released, true);
+  assert.equal(child.signalCode, "SIGTERM");
+});
+
+test("bounded editor commands run cross-platform path checks at the synchronous spawn boundary", async () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const events = [];
+    await assert.rejects(
+      runBoundedEditorCommand(
+        {
+          executable: "/private/editor",
+          environment: {},
+          label: "checked editor command",
+          beforeSpawnCheck() {
+            events.push("check");
+          }
+        },
+        {
+          platform,
+          spawnProcess() {
+            events.push("spawn");
+            throw new Error("test spawn stopped");
+          }
+        }
+      ),
+      /could not start/u
+    );
+    assert.deepEqual(events, ["check", "spawn"]);
+  }
+});
+
+test("bounded editor commands reject asynchronous path checks before spawn", async () => {
+  let spawned = false;
+  await assert.rejects(
+    runBoundedEditorCommand(
+      {
+        executable: "/private/editor",
+        environment: {},
+        beforeSpawnCheck: () => Promise.resolve()
+      },
+      {
+        spawnProcess() {
+          spawned = true;
+          return fakeCommandChild(7315);
+        }
+      }
+    ),
+    (error) =>
+      /could not start/u.test(error.message) &&
+      /must complete synchronously without a result/u.test(error.cause?.message ?? "")
+  );
+  assert.equal(spawned, false);
+});
+
 test("editor downloads run each retry through the bounded isolated helper protocol", async () => {
   const calls = [];
   const waits = [];
@@ -1018,10 +1262,18 @@ test("editor phases reject an unsafe macOS IPC path before reserving a port or s
   }
 });
 
-function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
-  const root = "C:\\Program Files\\Microsoft VS Code";
-  const executable = `${root}\\Code.exe`;
-  const cli = `${root}\\bin\\code.cmd`;
+function windowsEditorCliLayout({ canonicalEntryPoint, product = "vscode", versionFolder } = {}) {
+  const cursorLayout = product === "cursor";
+  const insidersLayout = product === "vscode-insiders";
+  const root = cursorLayout
+    ? "C:\\Program Files\\Cursor"
+    : insidersLayout
+      ? "C:\\Program Files\\Microsoft VS Code Insiders"
+      : "C:\\Program Files\\Microsoft VS Code";
+  const executable = `${root}\\${cursorLayout ? "Cursor" : insidersLayout ? "Code - Insiders" : "Code"}.exe`;
+  const cli = cursorLayout
+    ? `${root}\\resources\\app\\bin\\cursor.cmd`
+    : `${root}\\bin\\${insidersLayout ? "code-insiders" : "code"}.cmd`;
   const entryPoint = versionFolder
     ? `${root}\\${versionFolder}\\resources\\app\\out\\cli.js`
     : `${root}\\resources\\app\\out\\cli.js`;
@@ -1030,7 +1282,12 @@ function windowsEditorCliLayout({ canonicalEntryPoint, versionFolder } = {}) {
     [root, ...(versionFolder ? [`${root}\\${versionFolder}`] : [])].map((value) => value.toLowerCase())
   );
   return {
-    editor: { name: "VS Code", key: "vscode", executable, cli },
+    editor: {
+      name: cursorLayout ? "Cursor" : "VS Code",
+      key: cursorLayout ? "cursor" : "vscode",
+      executable,
+      cli
+    },
     entryPoint,
     lstatPath(path) {
       if (knownDirectories.has(path.toLowerCase())) {
@@ -1090,6 +1347,37 @@ test("Windows editor CLI launches use the verified cli.js entry point and an exa
   assert.equal(sourceEnvironment.ELECTRON_RUN_AS_NODE, "0", "the caller's environment must remain immutable");
 });
 
+test("Windows editor CLI launches accept Cursor's exact application-bin wrapper layout", () => {
+  const layout = windowsEditorCliLayout({ product: "cursor" });
+  const launch = resolveEditorCliLaunch(
+    layout.editor,
+    { SystemRoot: "C:\\Windows" },
+    {
+      platform: "win32",
+      lstatPath: layout.lstatPath,
+      realpathPath: layout.realpathPath,
+      readInstallationEntries: layout.readInstallationEntries
+    }
+  );
+  assert.equal(layout.editor.cli, "C:\\Program Files\\Cursor\\resources\\app\\bin\\cursor.cmd");
+  assert.deepEqual(launch.argsPrefix, [layout.entryPoint]);
+
+  const insidersLayout = windowsEditorCliLayout({ product: "vscode-insiders" });
+  assert.deepEqual(
+    resolveEditorCliLaunch(
+      insidersLayout.editor,
+      { SystemRoot: "C:\\Windows" },
+      {
+        platform: "win32",
+        lstatPath: insidersLayout.lstatPath,
+        realpathPath: insidersLayout.realpathPath,
+        readInstallationEntries: insidersLayout.readInstallationEntries
+      }
+    ).argsPrefix,
+    [insidersLayout.entryPoint]
+  );
+});
+
 test("Windows editor CLI launch validation rejects wrappers and canonical entry points outside one installation", () => {
   const layout = windowsEditorCliLayout();
   assert.throws(
@@ -1122,8 +1410,53 @@ test("Windows editor CLI launch validation rejects wrappers and canonical entry 
           readInstallationEntries: layout.readInstallationEntries
         }
       ),
-    /direct child of its installation's bin directory/u
+    /supported product layout/u
   );
+  const cursorLayout = windowsEditorCliLayout({ product: "cursor" });
+  for (const cli of [
+    "C:\\Program Files\\Cursor\\resources\\other\\bin\\cursor.cmd",
+    "C:\\Program Files\\Cursor\\resources\\app\\nested\\bin\\cursor.cmd",
+    "C:\\other-product\\resources\\app\\bin\\cursor.cmd"
+  ]) {
+    assert.throws(
+      () =>
+        resolveEditorCliLaunch(
+          { ...cursorLayout.editor, cli },
+          { SYSTEMROOT: "C:\\Windows" },
+          {
+            platform: "win32",
+            lstatPath: cursorLayout.lstatPath,
+            realpathPath: cursorLayout.realpathPath,
+            readInstallationEntries: cursorLayout.readInstallationEntries
+          }
+        ),
+      /supported product layout/u
+    );
+  }
+  for (const editor of [
+    { ...cursorLayout.editor, key: "vscode" },
+    { ...cursorLayout.editor, executable: "C:\\Program Files\\Cursor\\Code.exe" },
+    { ...cursorLayout.editor, cli: "C:\\Program Files\\Cursor\\resources\\app\\bin\\code.cmd" },
+    {
+      ...layout.editor,
+      cli: "C:\\Program Files\\Microsoft VS Code\\resources\\app\\bin\\cursor.cmd"
+    }
+  ]) {
+    assert.throws(
+      () =>
+        resolveEditorCliLaunch(
+          editor,
+          { SYSTEMROOT: "C:\\Windows" },
+          {
+            platform: "win32",
+            lstatPath: cursorLayout.lstatPath,
+            realpathPath: cursorLayout.realpathPath,
+            readInstallationEntries: cursorLayout.readInstallationEntries
+          }
+        ),
+      /supported product layout/u
+    );
+  }
 
   const escaped = windowsEditorCliLayout({ canonicalEntryPoint: "C:\\outside\\cli.js" });
   assert.throws(
@@ -1273,7 +1606,7 @@ test("Windows editor CLI launch accepts exactly one verified legacy or 10-hex ve
 });
 
 test("bounded Windows CLI commands prepend cli.js without invoking a command shell", async () => {
-  const layout = windowsEditorCliLayout();
+  const layout = windowsEditorCliLayout({ product: "cursor" });
   const child = fakeCommandChild(17310);
   let invocation;
   const running = runBoundedEditorCliCommand(

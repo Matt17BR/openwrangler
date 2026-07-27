@@ -6,7 +6,7 @@ Status values: **Done** has automated and editor acceptance evidence; **Partial*
 
 The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
 
-VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their registry path and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
+VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google documents Antigravity's Open VSX path, but Open Wrangler publication and functional smoke evidence there remain outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
 | Surface                                              | Pandas | Polars | Status  | Required evidence                                                              |
 | ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------------------------------ |
@@ -33,13 +33,13 @@ VS Code and Cursor are the first-class, release-blocking editor targets. Other V
 | Copy/script/notebook code export                     |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green; record:docs/testing.md    |
 | CSV and Parquet data export                          |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green; record:docs/testing.md         |
 | Runtime selection, setup, change, clear              |    Yes |    Yes | Done    | Resolver, released-Python A→B→A, decline flow green; record:docs/testing.md    |
-| Original icons, native views, themes, accessibility  |    N/A |    N/A | Partial | Record packaged UI on every release platform; record:docs/testing.md           |
+| Original icons, native views, themes, accessibility  |    N/A |    N/A | Done    | Exact-head axe plus native VS Code/Cursor gates; record:docs/testing.md        |
 | Runtime crash/reload/session replay                  |    Yes |    Yes | Done    | Packaged injected recovery/replay green; record:docs/testing.md                |
 | Column-projected grid-block transport                |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green; record:docs/testing.md   |
 | Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done    | All ID-backed families packaged and replayed; record:docs/testing.md           |
 | Restricted Mode and trust-gated execution            |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green; record:docs/testing.md |
 | Installed-editor first-usable-grid performance       |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings; record:docs/testing.md          |
-| Cross-platform first-class editor package acceptance |    N/A |    N/A | Partial | Add Cursor on macOS/Windows and remote-host gates; record:docs/testing.md      |
+| Cross-platform first-class editor package acceptance |    N/A |    N/A | Done    | Exact VS Code/Cursor OS + Remote SSH green; record:docs/testing.md             |
 
 ## DuckDB file-backed preview matrix
 
@@ -632,6 +632,15 @@ Bounded aggregate Python environment resolution, 2026-07-27:
 - Strict formatting, linting, type, protocol, reference, documentation, and license checks are green. The complete local suites pass 265 of 266 cross-platform runner tests with only the native-Windows supervisor smoke skipped, 1,274 of 1,275 TypeScript tests with one intentional platform skip, and all 1,027 Python tests with 17 optional-engine skips. The final product code passes the isolated zero-window VS Code 1.130.0 extension-host seed/verify flow without opening or focusing a desktop window.
 
 This implements the local foundation hardening for [issue #84](https://github.com/Matt17BR/openwrangler/issues/84) and strengthens the existing **Done** runtime-selection row without changing parity status. Hosted Linux/macOS/Windows smoke plus minimum/current extension-host evidence remain required on the final pull-request commit. This is not a new engine, parity-complete, or 1.0 claim.
+
+First-class editor platform and Remote SSH acceptance, 2026-07-27:
+
+- [CI run 30277495429](https://github.com/Matt17BR/openwrangler/actions/runs/30277495429) for PR head `32706d60d55e9dde18c09d1a94c440358f9fcf42`, tested as synthetic merge `5d461d7e95366451586338868f7e40c613a30047` into base `10e55225172253c32fd8268cb50e384232ba4fed`, produced one 70-entry, 605,541-byte canonical VSIX with SHA-256 `66b62609899286ab3590f900588cf9afee9afe293b52bb4f1372ae7420397715`. CI reused those bytes for Linux packaged VS Code validation, native editor jobs, and Remote SSH without rebuilding the package; separate minimum/current extension-host jobs tested the same PR head.
+- Stable VS Code passed the full isolated packaged harness on macOS 26.4 arm64 and Windows Server 2025 x64. Cursor 3.13.10 then passed the bounded platform smoke using its signed official macOS-universal and Windows-x64 artifacts in the same [macOS job](https://github.com/Matt17BR/openwrangler/actions/runs/30277495429/job/90016714183) and [Windows job](https://github.com/Matt17BR/openwrangler/actions/runs/30277495429/job/90016714101). The smoke covered gallery and Activity Bar icons, all four native views, VS Code theme tokens, file launch, grid keyboard navigation, source immutability, and terminal cleanup; the previously recorded Linux Cursor suite remains the deeper functional gate.
+- The same candidate passed one [Remote SSH job](https://github.com/Matt17BR/openwrangler/actions/runs/30277495429/job/90016714005) on Ubuntu 24.04 Linux x64 with official VS Code 1.130.0 (`1b6a188127eeaf9194f945eb6eb89a657e93c54c`) and Remote SSH 0.124.0 (742,378 bytes; SHA-256 `1a891224e1291e89a405b90f5018555d6642ac66e2e68653970e4f155d766416`). The one-shot loopback fixture retained the remote authority and source, opened/paged/filtered through resource-scoped Python and Polars, preserved source bytes, ended with zero sessions or runtime, and verified complete editor, SSH, display, namespace, and private-root cleanup.
+- The exact head also passed [cross-platform runtime run 30277495296](https://github.com/Matt17BR/openwrangler/actions/runs/30277495296), [released-Jupyter run 30277497874](https://github.com/Matt17BR/openwrangler/actions/runs/30277497874), and [CodeQL run 30277495873](https://github.com/Matt17BR/openwrangler/actions/runs/30277495873). No editor phase or Remote SSH attempt was retried, and successful editor/Remote phases produced no failure-diagnostic artifact.
+
+This advances only **Original icons, native views, themes, accessibility** and **Cross-platform first-class editor package acceptance** to **Done**. Native Cursor on macOS/Windows is a bounded platform smoke, and Remote SSH evidence is the pinned Linux-x64 loopback fixture rather than every remote provider or host. Installed-editor first-usable-grid performance and virtual-grid timing remain **Partial**; experimental VS Code forks, DuckDB completion, parity completion, and 1.0 readiness are not implied.
 
 ## Explicitly deferred from 1.0
 

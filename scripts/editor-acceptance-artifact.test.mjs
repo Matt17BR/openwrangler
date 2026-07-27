@@ -31,6 +31,7 @@ import {
   sealEditorAcceptanceEvidence,
   sealEditorAcceptanceEvidenceForTest
 } from "./editor-acceptance-artifact.mjs";
+import { createEditorAcceptancePrivatePathIdentityLatch } from "./packaged-editor-orchestration.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -46,10 +47,36 @@ test("prelaunch staging receipts reject planted entries and root replacement", a
     );
     await rm(receipt.root, { recursive: true, force: true });
     await mkdir(receipt.root, { mode: 0o700 });
+    let identityLoss;
     assert.throws(
       () => assertEditorAcceptanceEvidenceStagingRoot(receipt),
-      /no longer matches its prelaunch identity/u
+      (error) => {
+        identityLoss = error;
+        assert.equal(error.code, "EDITOR_PRIVATE_ROOT_IDENTITY_LOST");
+        assert.equal(error.details.privateRootCheckpoint, "evidence-staging-identity");
+        assert.match(error.message, /no longer matches its prelaunch identity/u);
+        return true;
+      }
     );
+    const latch = createEditorAcceptancePrivatePathIdentityLatch({ reporter: () => undefined });
+    assert.equal(latch.latch(identityLoss, { scope: "evidence-staging", editor: "orchestration" }), true);
+    let publicationCalls = 0;
+    assert.equal(
+      latch.publishIfSafe(
+        {
+          processTreeMayBeLive: false,
+          evidenceCollectionSafe: true,
+          hasTemporaryRootReceipt: true,
+          evidenceReceiptCount: 1
+        },
+        () => {
+          publicationCalls += 1;
+          return "must-not-publish";
+        }
+      ),
+      undefined
+    );
+    assert.equal(publicationCalls, 0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

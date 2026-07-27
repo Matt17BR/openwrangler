@@ -1423,10 +1423,18 @@ def _prepare_status_lock(journal: Path) -> None:
 
 
 class _JournalLock:
-    def __init__(self, journal: Path, journal_identity: tuple[int, int], *, create: bool) -> None:
+    def __init__(
+        self,
+        journal: Path,
+        journal_identity: tuple[int, int],
+        *,
+        create: bool,
+        allow_read_only_existing: bool = False,
+    ) -> None:
         self._journal = journal
         self._journal_identity = journal_identity
         self._create = create
+        self._allow_read_only_existing = allow_read_only_existing
         self._descriptor = -1
         self._windows_journal_descriptor = -1
         self._windows_overlapped: Any | None = None
@@ -1451,15 +1459,15 @@ class _JournalLock:
                         created = True
                     except FileExistsError:
                         before = _lstat_private_file(path, code="malformed_state")
-                        self._descriptor = os.open(path, base_flags)
+                        self._descriptor = self._open_existing_posix_lock(path, base_flags)
                 except OSError:
                     _fail("malformed_state")
                 else:
                     before = _lstat_private_file(path, code="malformed_state")
-                    self._descriptor = os.open(path, base_flags)
+                    self._descriptor = self._open_existing_posix_lock(path, base_flags)
             else:
                 before = _lstat_private_file(path, code="malformed_state")
-                self._descriptor = os.open(path, base_flags)
+                self._descriptor = self._open_existing_posix_lock(path, base_flags)
             if created:
                 os.fchmod(self._descriptor, 0o600)
             opened = os.fstat(self._descriptor)
@@ -1486,6 +1494,15 @@ class _JournalLock:
         except BaseException:
             self._close(suppress_errors=True)
             raise
+
+    def _open_existing_posix_lock(self, path: Path, read_write_flags: int) -> int:
+        try:
+            return os.open(path, read_write_flags)
+        except OSError as error:
+            if not self._allow_read_only_existing or error.errno != errno.EROFS:
+                raise
+        read_only_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, read_only_flags)
 
     def _enter_windows(self) -> _JournalLock:
         path = self._journal / LOCK_NAME
@@ -2278,7 +2295,7 @@ def _run_status(request: dict[str, Any]) -> int:
         _emit({"kind": "status", "protocol": PROTOCOL, "state": "clean", "token": None})
         return EXIT_SUCCESS
     _prepare_status_lock(journal)
-    with _JournalLock(journal, journal_identity, create=True):
+    with _JournalLock(journal, journal_identity, create=True, allow_read_only_existing=True):
         _revalidate_actual_environment(environment)
         markers = _scan_markers(journal, journal_identity, clean_temps=True)
         if not markers:

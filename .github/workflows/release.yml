@@ -154,6 +154,23 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - if: ${{ runner.os != 'Linux' }}
+        id: cursor_smoke
+        name: Test pinned Cursor platform smoke
+        run: node scripts/run-packaged-editor-tests.mjs release/openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: cursor
+          OPEN_WRANGLER_PACKAGED_MODE: platform-smoke
+      - name: Upload Cursor-smoke failure diagnostics
+        if: ${{ always() && runner.os != 'Linux' && steps.cursor_smoke.outcome == 'failure' && steps.cursor_smoke.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-packaged-editor-diagnostics-cursor-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.cursor_smoke.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
 
   release-acceptance:
     needs: [build, validate]

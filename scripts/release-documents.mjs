@@ -36,7 +36,7 @@ Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 | Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
 | Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
 
-Google documents an [Open VSX-hosted extension working in Antigravity](https://developers.google.com/workspace/guides/developer-tools), but Open Wrangler has not verified Antigravity's registry or completed a functional smoke there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
+Google documents [Antigravity using Open VSX-hosted extensions](https://developers.google.com/workspace/guides/developer-tools). That confirms the registry path, but Open Wrangler has not been published or functionally smoke-tested there yet. Experimental editors do not inherit the VS Code/Cursor support guarantee.
 
 To try the current preview from a clone of this repository:
 

@@ -1503,12 +1503,21 @@ export function resolveEditorCliLaunch(
   const executable = validateWindowsEditorCliPath(editor.executable, "executable");
   const wrapper = validateWindowsEditorCliPath(editor.cli, "CLI wrapper");
   const installationRoot = win32.dirname(executable);
-  const wrapperDirectory = win32.resolve(installationRoot, "bin");
+  const executableName = win32.basename(executable).toLowerCase();
+  const expectedWrapper =
+    editor.key === "cursor" && executableName === "cursor.exe"
+      ? win32.resolve(installationRoot, "resources", "app", "bin", "cursor.cmd")
+      : editor.key === "vscode" && executableName === "code.exe"
+        ? win32.resolve(installationRoot, "bin", "code.cmd")
+        : editor.key === "vscode" && executableName === "code - insiders.exe"
+          ? win32.resolve(installationRoot, "bin", "code-insiders.cmd")
+          : undefined;
   if (
-    win32.dirname(wrapper).toLowerCase() !== wrapperDirectory.toLowerCase() ||
+    expectedWrapper === undefined ||
+    wrapper.toLowerCase() !== expectedWrapper.toLowerCase() ||
     win32.extname(wrapper).toLowerCase() !== ".cmd"
   ) {
-    throw new Error("The Windows editor CLI wrapper must be a direct child of its installation's bin directory.");
+    throw new Error("The Windows editor executable and CLI wrapper must match one supported product layout.");
   }
   let canonicalRoot;
   let canonicalExecutable;
@@ -2076,7 +2085,15 @@ function abandonUnverifiedWindowsSupervisor(child, message) {
 }
 
 export async function runBoundedEditorCommand(
-  { executable, args = [], environment = createEditorAcceptanceEnvironment(), label = "Editor command" },
+  {
+    executable,
+    args = [],
+    environment = createEditorAcceptanceEnvironment(),
+    label = "Editor command",
+    beforeSpawn,
+    beforeSpawnCheck,
+    input
+  },
   {
     platform = process.platform,
     spawnProcess,
@@ -2090,6 +2107,12 @@ export async function runBoundedEditorCommand(
     now = () => performance.now()
   } = {}
 ) {
+  if (
+    input !== undefined &&
+    (!Buffer.isBuffer(input) || input.length <= 0 || input.length > 65_536 || platform === "win32")
+  ) {
+    throw new Error("A bounded editor command input must be one non-empty POSIX Buffer no larger than 65536 bytes.");
+  }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new Error("An editor command timeout must be a positive safe integer.");
   }
@@ -2135,26 +2158,55 @@ export async function runBoundedEditorCommand(
     );
   }
   let child;
+  let launchPreparation;
   try {
+    if (beforeSpawnCheck !== undefined && typeof beforeSpawnCheck !== "function") {
+      throw new Error("An editor command pre-spawn check must be one synchronous callback.");
+    }
+    if (beforeSpawn !== undefined) {
+      if (platform === "win32" || typeof beforeSpawn !== "function") {
+        throw new Error("An editor command pre-spawn seal must be one synchronous POSIX callback.");
+      }
+      launchPreparation = normalizeEditorCommandLaunchPreparation(beforeSpawn());
+    }
+    if (beforeSpawnCheck?.() !== undefined) {
+      throw new Error("An editor command pre-spawn check must complete synchronously without a result.");
+    }
     const launchProcess = spawnProcess ?? spawnOwnedEditorProcess;
     child = launchProcess(
       executable,
-      args,
+      launchPreparation?.args ?? args,
       {
         detached: platform !== "win32",
         env: environment,
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"]
+        stdio: [
+          input === undefined ? "ignore" : "pipe",
+          "pipe",
+          "pipe",
+          ...(launchPreparation?.inheritedFileDescriptors ?? [])
+        ]
       },
       { platform, supervisorReceipt }
     );
   } catch (error) {
+    try {
+      launchPreparation?.release();
+    } catch (releaseError) {
+      throw editorCommandError(
+        label,
+        "could not start or release its sealed launch inputs",
+        startedAt,
+        "",
+        "",
+        new AggregateError([error, releaseError], "Editor launch preparation failed.")
+      );
+    }
     if (supervisorReceipt && editorProcessTreeMayBeLive(error)) {
       unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
     }
     throw editorCommandError(label, "could not start", startedAt, "", "", error);
   }
-
   const remainingObservationTimeoutMs = Math.max(0, timeoutMs - Math.max(0, now() - startedAt));
 
   const output = createBoundedCommandOutput(maxOutputBytes);
@@ -2171,6 +2223,28 @@ export async function runBoundedEditorCommand(
   const capturedStderr = capturedEditorStderr(child);
   child.stdout?.on("data", onStdout);
   capturedStderr?.on("data", onStderr);
+
+  let inputError;
+  let resolveInputFailure;
+  const inputFailure = new Promise((resolve) => {
+    resolveInputFailure = resolve;
+  });
+  if (input !== undefined) {
+    const recordInputFailure = (error) => {
+      inputError ??= error instanceof Error ? error : new Error("The bounded command input stream failed.");
+      resolveInputFailure({ kind: "input-error" });
+    };
+    if (!child.stdin || typeof child.stdin.end !== "function") {
+      recordInputFailure(new Error("The bounded command did not expose its owned input stream."));
+    } else {
+      child.stdin.once("error", recordInputFailure);
+      try {
+        child.stdin.end(input);
+      } catch (error) {
+        recordInputFailure(error);
+      }
+    }
+  }
 
   let exitState;
   const exit = childExit(child).then((state) => (exitState ??= state));
@@ -2209,6 +2283,7 @@ export async function runBoundedEditorCommand(
         : await Promise.race([
             close.then((state) => ({ kind: "exit", state })),
             overflow,
+            inputFailure,
             interruption,
             new Promise((resolveTimeout) => {
               timeout = setTimeout(() => resolveTimeout({ kind: "timeout" }), remainingObservationTimeoutMs);
@@ -2221,6 +2296,7 @@ export async function runBoundedEditorCommand(
   const isRunning = () => child.exitCode === null && child.signalCode === null && child.pid !== undefined;
   let terminationError;
   let stdioError;
+  let launchReleaseError;
   try {
     await terminateEditorChild(child, exit, isRunning, platform !== "win32", 0, {
       platform,
@@ -2241,13 +2317,27 @@ export async function runBoundedEditorCommand(
     } catch (error) {
       stdioError = error;
     }
+    try {
+      launchPreparation?.release();
+    } catch (error) {
+      launchReleaseError = error;
+    }
   }
 
   const outputExceeded = output.exceeded();
   const stdout = outputExceeded ? "" : output.text("stdout");
   const stderr = outputExceeded ? "" : output.text("stderr");
   let commandFailure;
-  if (observation.kind === "exit" && outputExceeded) {
+  if (inputError || observation.kind === "input-error") {
+    commandFailure = editorCommandError(
+      label,
+      "could not write its bounded input",
+      startedAt,
+      stdout,
+      stderr,
+      inputError
+    );
+  } else if (observation.kind === "exit" && outputExceeded) {
     commandFailure = editorCommandError(
       label,
       `exceeded its ${maxOutputBytes}-byte combined output limit`,
@@ -2286,7 +2376,7 @@ export async function runBoundedEditorCommand(
     );
   }
 
-  const resourceFailures = [terminationError, stdioError].filter(Boolean);
+  const resourceFailures = [terminationError, stdioError, launchReleaseError].filter(Boolean);
   if (resourceFailures.length > 0) {
     if (supervisorReceipt && resourceFailures.some((error) => editorProcessTreeMayBeLive(error))) {
       unsafeWindowsJobSupervisorRoots.add(supervisorReceipt.buildRoot);
@@ -2300,6 +2390,37 @@ export async function runBoundedEditorCommand(
   }
   if (commandFailure) throw commandFailure;
   return { stdout, stderr };
+}
+
+function normalizeEditorCommandLaunchPreparation(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== "args,inheritedFileDescriptors,release" ||
+    !Array.isArray(value.args) ||
+    value.args.length > 16_384 ||
+    !value.args.every(
+      (entry) => typeof entry === "string" && Buffer.byteLength(entry, "utf8") <= 16_384 && !/[\0\r\n]/u.test(entry)
+    ) ||
+    !Array.isArray(value.inheritedFileDescriptors) ||
+    value.inheritedFileDescriptors.length > 256 ||
+    !value.inheritedFileDescriptors.every(
+      (descriptor, index, descriptors) =>
+        Number.isSafeInteger(descriptor) &&
+        descriptor >= 3 &&
+        descriptor <= 2_147_483_647 &&
+        descriptors.indexOf(descriptor) === index
+    ) ||
+    typeof value.release !== "function"
+  ) {
+    throw new Error("An editor command pre-spawn seal returned a malformed launch preparation.");
+  }
+  return Object.freeze({
+    args: Object.freeze([...value.args]),
+    inheritedFileDescriptors: Object.freeze([...value.inheritedFileDescriptors]),
+    release: value.release
+  });
 }
 
 export async function runBoundedEditorCliCommand(
@@ -2396,6 +2517,7 @@ export function writeEditorAcceptanceHarness(directory) {
       version: "0.0.0",
       publisher: "openwrangler-tests",
       engines: { vscode: "^1.105.0" },
+      extensionKind: ["workspace"],
       main: "./extension.js",
       files: ["extension.js"],
       activationEvents: ["*"],

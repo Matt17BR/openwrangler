@@ -22,6 +22,11 @@ import {
   runRemoteJupyterAcceptanceLifecycle,
   startRemoteJupyterAcceptanceFixture
 } from "./remote-jupyter-acceptance.mjs";
+import {
+  createEditorAcceptancePrivatePathIdentityLatch,
+  createEditorAcceptancePrivatePathSafetyPolicy,
+  removeEditorAcceptancePrivateRoot
+} from "./packaged-editor-orchestration.mjs";
 
 const OWNER_ID = "12345678-1234-4123-8123-123456789abc";
 const RUN_ID = "abcdef12-3456-4789-8abc-def012345678";
@@ -370,6 +375,64 @@ test("remote-Jupyter lifecycle skips cleanup immediately when editor ownership i
   assert.equal(cleanupCalls, 0);
   assert.deepEqual(latched, [phaseError]);
   assert.deepEqual(cleanupCheckpoints, []);
+});
+
+test("remote-Jupyter lifecycle never touches cleanup state after the phase latches private-path identity loss", async () => {
+  const reports = [];
+  const latch = createEditorAcceptancePrivatePathIdentityLatch({
+    reporter: (message) => reports.push(message)
+  });
+  const policy = createEditorAcceptancePrivatePathSafetyPolicy({
+    identityLatch: latch,
+    processTreeMayBeLive: () => false
+  });
+  let identityLoss;
+  try {
+    removeEditorAcceptancePrivateRoot(undefined, { privatePathsVerified: false });
+  } catch (error) {
+    identityLoss = error;
+  }
+  let cleanupCalls = 0;
+  let processInspectorCalls = 0;
+  const cleanupCheckpoints = [];
+  let caught;
+  try {
+    await runRemoteJupyterAcceptanceLifecycle(
+      {
+        cleanup: async () => {
+          cleanupCalls += 1;
+        }
+      },
+      async () => {
+        assert.equal(
+          latch.latch(identityLoss, {
+            scope: "editor-profile",
+            editor: "cursor",
+            cleanupOfPhase: "jupyter-remote"
+          }),
+          true
+        );
+        throw identityLoss;
+      },
+      {
+        phaseProcessTreeMayBeLive: (error) =>
+          policy.failureOwnershipMayBeUnsafe(error, () => {
+            processInspectorCalls += 1;
+            return false;
+          }),
+        onOwnershipUncertain: () => latch.reportWithheld(),
+        onCleanupCheckpoint: (checkpoint) => cleanupCheckpoints.push(checkpoint)
+      }
+    );
+  } catch (error) {
+    caught = error;
+  }
+
+  assert.equal(caught, identityLoss);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(processInspectorCalls, 0);
+  assert.deepEqual(cleanupCheckpoints, []);
+  assert.equal(reports.length, 1);
 });
 
 test("remote-Jupyter lifecycle latches remote cleanup uncertainty", async () => {

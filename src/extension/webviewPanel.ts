@@ -136,6 +136,17 @@ export class OpenWranglerPanel {
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
 
+  static panelHydratedForSession(sessionId: string): boolean {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
+    return Boolean(
+      target && !target.disposed && !target.opening && target.sessionId === sessionId && target.hasHydratedRenderer()
+    );
+  }
+
+  static openResponseForTesting(): OpenWranglerResponse | undefined {
+    return OpenWranglerPanel.activePanel?.openResponse ?? [...OpenWranglerPanel.panels].at(-1)?.openResponse;
+  }
+
   static changeActiveImportOptions(): Promise<boolean> {
     const active = OpenWranglerPanel.activePanel;
     if (!active?.panel.active || !canChangeImportOptions(active.source)) return Promise.resolve(false);

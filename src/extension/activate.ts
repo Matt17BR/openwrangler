@@ -16,12 +16,15 @@ export interface OpenWranglerTestApi {
   activeSession: SessionCoordinator["activeSession"];
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  panelHydrated(sessionId: string): boolean;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
   requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
+  panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
   runtimeGeneration(): number;
   runtimeRunning(): boolean;
+  runtimeEnvironment(): Readonly<{ executable: string; source: string; version: string }> | undefined;
   declineRuntimeDependencyInstallation(): Promise<boolean>;
   declineRuntimeDependencyRevalidation(): Promise<boolean>;
   shutdownRuntimeBridgeForTesting(): Promise<void>;
@@ -69,14 +72,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         activeSession: () => coordinator.activeSession(),
         updateViewState: async (sessionId, state) => coordinatedBridge.updateViewState?.(sessionId, state),
         synchronizePanel: (sessionId) => OpenWranglerPanel.synchronizePanelForSession(sessionId),
+        panelHydrated: (sessionId) => OpenWranglerPanel.panelHydratedForSession(sessionId),
         cancelViewRequests: (sessionId, viewRequestIds) =>
           coordinatedBridge.cancelViewRequests?.(sessionId, viewRequestIds),
         requestExecutionCheckpoint: (sessionId, requestKind, viewRequestId) =>
           coordinator.testingRequestExecutionCheckpoint(sessionId, requestKind, viewRequestId),
+        panelOpenResponse: () => OpenWranglerPanel.openResponseForTesting(),
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
         runtimeGeneration: () => bridge.runtimeGeneration,
         runtimeRunning: () => bridge.runtimeRunning,
+        runtimeEnvironment: () => bridge.runtimeEnvironmentForTesting(),
         declineRuntimeDependencyInstallation: () => bridge.declineMissingDependencyInstallForTesting(),
         declineRuntimeDependencyRevalidation: () => bridge.declineRuntimeDependencyRevalidationForTesting(),
         shutdownRuntimeBridgeForTesting: () => bridge.shutdown(),
