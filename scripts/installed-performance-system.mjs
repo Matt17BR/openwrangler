@@ -30,10 +30,17 @@ const LINUX_FILESYSTEM_TYPES = new Map([
   [0x0000_ef53n, "ext"]
 ]);
 
-export function readInstalledPlatformProvenance() {
+export function readInstalledPlatformProvenance({ editorDisplayMode } = {}) {
   const processors = cpus();
   const cpuModel = processors.map((processor) => processor.model.trim()).find(Boolean);
-  if (!cpuModel || processors.length === 0 || !Number.isSafeInteger(totalmem()) || totalmem() <= 0) {
+  const totalMemoryBytes = totalmem();
+  if (
+    !cpuModel ||
+    processors.length === 0 ||
+    !Number.isSafeInteger(totalMemoryBytes) ||
+    totalMemoryBytes <= 0 ||
+    !["headless", "xvfb", "current"].includes(editorDisplayMode)
+  ) {
     throw new Error("Installed performance could not establish bounded platform provenance.");
   }
   return {
@@ -42,7 +49,8 @@ export function readInstalledPlatformProvenance() {
     architecture: arch(),
     cpuModel,
     logicalCpuCount: processors.length,
-    totalMemoryBytes: totalmem()
+    totalMemoryBytes,
+    editorDisplayMode
   };
 }
 

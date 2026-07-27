@@ -135,7 +135,8 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     for (const phase of phases) {
       if (
         phase.editor.key !== run.provenance.editor.key ||
-        phase.editor.version !== run.provenance.editor.version ||
+        phase.editor.productVersion !== run.provenance.editor.productVersion ||
+        phase.editor.vscodeApiVersion !== run.provenance.editor.vscodeApiVersion ||
         phase.runtime.pythonVersion !== run.provenance.runtime.pythonVersion ||
         phase.runtime.pythonExecutableSha256 !== run.provenance.runtime.pythonExecutableSha256 ||
         phase.runtime.polarsVersion !== run.provenance.runtime.polarsVersion
@@ -319,12 +320,13 @@ function validateSource(source) {
 }
 
 function validateEditor(editor) {
-  exactKeys(editor, ["key", "appName", "version"], [], "editor provenance");
+  exactKeys(editor, ["key", "appName", "productVersion", "vscodeApiVersion"], [], "editor provenance");
   if (!["vscode", "cursor"].includes(editor.key)) {
     throw new TypeError("Installed performance editor must be VS Code or Cursor.");
   }
   assertBoundedString(editor.appName, "editor application name");
-  assertMatch(editor.version, VERSION, "editor version");
+  assertMatch(editor.productVersion, VERSION, "editor product version");
+  assertMatch(editor.vscodeApiVersion, VERSION, "editor VS Code API version");
 }
 
 function validateRuntime(runtime) {
@@ -409,7 +411,15 @@ function validateProvenance(provenance) {
   validateRuntime(provenance.runtime);
   exactKeys(
     provenance.platform,
-    ["operatingSystem", "operatingSystemRelease", "architecture", "cpuModel", "logicalCpuCount", "totalMemoryBytes"],
+    [
+      "operatingSystem",
+      "operatingSystemRelease",
+      "architecture",
+      "cpuModel",
+      "logicalCpuCount",
+      "totalMemoryBytes",
+      "editorDisplayMode"
+    ],
     [],
     "platform provenance"
   );
@@ -418,6 +428,9 @@ function validateProvenance(provenance) {
   }
   if (!positiveInteger(provenance.platform.logicalCpuCount) || !positiveInteger(provenance.platform.totalMemoryBytes)) {
     throw new TypeError("Platform CPU and memory counts must be positive.");
+  }
+  if (!["headless", "xvfb", "current"].includes(provenance.platform.editorDisplayMode)) {
+    throw new TypeError("Platform editor display mode is invalid.");
   }
   exactKeys(
     provenance.storage,
@@ -572,6 +585,10 @@ function installedPerformanceFailures(
     const label = editor.provenance.editor.key;
     if (requireLinuxReference && editor.provenance.platform.operatingSystem !== "Linux") {
       failures.push(`${label} did not run on the Linux reference platform`);
+    }
+    const expectedDisplayMode = label === "cursor" ? "xvfb" : "headless";
+    if (requireLinuxReference && editor.provenance.platform.editorDisplayMode !== expectedDisplayMode) {
+      failures.push(`${label} did not use the required ${expectedDisplayMode} editor display mode`);
     }
     if (
       requireLinuxReference &&

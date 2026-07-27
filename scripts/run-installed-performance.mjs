@@ -56,6 +56,7 @@ import {
   readInstalledPlatformProvenance,
   readInstalledStorageProvenance
 } from "./installed-performance-system.mjs";
+import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const INSTALLED_RUN_PROTOCOL = "openwrangler-installed-performance-run-v1";
@@ -264,7 +265,6 @@ export async function runInstalledPerformance(options, environment = process.env
   const privateRootReceipt = createEditorAcceptancePrivateRootReceipt(privateRoot, { containedBy: privateParent });
   configureEditorAcceptanceTempRoot(privateRoot, environment);
   const privatePaths = [privateRoot, options.vsix];
-  let display;
   let processTreeUncertain = false;
   let primaryError;
   let result;
@@ -298,12 +298,11 @@ export async function runInstalledPerformance(options, environment = process.env
     );
     const fixtureManifest = validateInstalledFixtureManifest(readBoundedJson(fixtureManifestPath, 64 * 1024));
 
-    display = await startIsolatedEditorDisplay({ environment });
     const editors = await resolveEditors(options.editors, environment);
     const editorRuns = [];
     for (const editor of editors) {
       editorRuns.push(
-        await runEditorPerformancePhases({
+        await runEditorPerformanceWithIsolatedDisplay({
           editor,
           stagedVsix: staged.path,
           candidate,
@@ -341,16 +340,6 @@ export async function runInstalledPerformance(options, environment = process.env
     processTreeUncertain ||= editorProcessTreeMayBeLive(error);
   }
 
-  let displayError;
-  if (display) {
-    try {
-      await display.stop({ preservePrivateFiles: processTreeUncertain });
-    } catch (error) {
-      displayError = error;
-      processTreeUncertain ||= editorProcessTreeMayBeLive(error);
-    }
-  }
-
   let cleanupError;
   if (!processTreeUncertain) {
     try {
@@ -360,7 +349,7 @@ export async function runInstalledPerformance(options, environment = process.env
     }
   }
 
-  const failures = [primaryError, displayError, cleanupError].filter((error) => error !== undefined);
+  const failures = [primaryError, cleanupError].filter((error) => error !== undefined);
   if (failures.length > 0) {
     const error = failures.length === 1 ? failures[0] : new AggregateError(failures, "Installed performance failed.");
     throw new Error(sanitizeEditorAcceptanceDiagnostic(error, privatePaths));
@@ -371,6 +360,53 @@ export async function runInstalledPerformance(options, environment = process.env
     writeInstalledPerformanceReport(options.output, result);
     assertInstalledPerformanceReleaseGate(result);
   }
+  return result;
+}
+
+export function installedPerformanceDisplayMode(editor, environment = process.env) {
+  const explicit = environment.OPEN_WRANGLER_EDITOR_DISPLAY;
+  const mode = explicit ?? (editor?.key === "cursor" ? "xvfb" : "headless");
+  if (!["headless", "xvfb", "current"].includes(mode)) {
+    throw new Error('OPEN_WRANGLER_EDITOR_DISPLAY must be "headless", "xvfb", or "current".');
+  }
+  return mode;
+}
+
+async function runEditorPerformanceWithIsolatedDisplay(options) {
+  const mode = installedPerformanceDisplayMode(options.editor, options.environment);
+  const environment = { ...options.environment, OPEN_WRANGLER_EDITOR_DISPLAY: mode };
+  if (mode === "xvfb" && !environment.OPEN_WRANGLER_XVFB_EXECUTABLE) {
+    environment.OPEN_WRANGLER_XVFB_EXECUTABLE = await prepareRepositoryLocalXvfb();
+  }
+  let display;
+  let result;
+  let primaryError;
+  let processTreeUncertain = false;
+  try {
+    display = await startIsolatedEditorDisplay({ environment });
+    result = await runEditorPerformancePhases({
+      ...options,
+      environment,
+      editorDisplayMode: display.mode
+    });
+  } catch (error) {
+    primaryError = error;
+    processTreeUncertain = editorProcessTreeMayBeLive(error);
+  }
+  let displayError;
+  if (display) {
+    try {
+      await display.stop({ preservePrivateFiles: processTreeUncertain });
+    } catch (error) {
+      displayError = error;
+    }
+  }
+  const failures = [primaryError, displayError].filter((error) => error !== undefined);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, `${options.editor.name} performance or display cleanup failed.`);
+  }
+  if (!result) throw new Error(`${options.editor.name} performance completed without a result.`);
   return result;
 }
 
@@ -426,7 +462,8 @@ async function runEditorPerformancePhases({
   privateRoot,
   fixtureRoot,
   fixtureManifest,
-  environment
+  environment,
+  editorDisplayMode
 }) {
   const profile = mkdtempSync(join(privateRoot, `p-${editor.key.slice(0, 1)}-`));
   const workspace = resolve(profile, "workspace");
@@ -530,6 +567,7 @@ async function runEditorPerformancePhases({
             python,
             phase,
             resultPath,
+            editorProductVersion: identifiedEditor.version,
             runId,
             progressPath: editorAcceptanceProgressPath(resultPath, runId, phase),
             requiresWorkbenchCdp: true
@@ -544,7 +582,7 @@ async function runEditorPerformancePhases({
     const expectedFixture = fixtureManifest.fixtures[fragment.fixture.format];
     if (
       fragment.editor.key !== identifiedEditor.key ||
-      fragment.editor.version !== identifiedEditor.version ||
+      fragment.editor.productVersion !== identifiedEditor.version ||
       fragment.fixture.sha256 !== expectedFixture.sha256
     ) {
       throw new Error(`${identifiedEditor.name} ${phase} fragment does not match its installed run.`);
@@ -559,7 +597,7 @@ async function runEditorPerformancePhases({
     provenance: {
       editor: phases[0].editor,
       runtime,
-      platform: readInstalledPlatformProvenance(),
+      platform: readInstalledPlatformProvenance({ editorDisplayMode }),
       storage: readInstalledStorageProvenance(fixtureRoot)
     },
     resources: sampler.finish(),

@@ -4,11 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  installedPerformanceDisplayMode,
   parseInstalledPerformanceArguments,
   runInstalledMeasuredEditorPhase,
   stageInstalledPerformanceVsix,
   writeInstalledPerformanceRun
 } from "./run-installed-performance.mjs";
+
+test("installed performance assigns unfocused release display modes per editor", () => {
+  assert.equal(installedPerformanceDisplayMode({ key: "vscode" }, {}), "headless");
+  assert.equal(installedPerformanceDisplayMode({ key: "cursor" }, {}), "xvfb");
+  assert.equal(
+    installedPerformanceDisplayMode({ key: "cursor" }, { OPEN_WRANGLER_EDITOR_DISPLAY: "current" }),
+    "current"
+  );
+  assert.throws(
+    () => installedPerformanceDisplayMode({ key: "vscode" }, { OPEN_WRANGLER_EDITOR_DISPLAY: "invalid" }),
+    /headless.*xvfb.*current/u
+  );
+});
 
 test("installed performance arguments default to both first-class editors", () => {
   const parsed = parseInstalledPerformanceArguments(["candidate.vsix"]);

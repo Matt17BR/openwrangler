@@ -178,7 +178,8 @@ function editorRun(key) {
         architecture: "x64",
         cpuModel: "Acceptance CPU",
         logicalCpuCount: 8,
-        totalMemoryBytes: 16_000_000_000
+        totalMemoryBytes: 16_000_000_000,
+        editorDisplayMode: key === "cursor" ? "xvfb" : "headless"
       },
       storage: {
         filesystemType: "ext4",
@@ -256,7 +257,12 @@ function interactionPhase(key) {
 }
 
 function editor(key) {
-  return { key, appName: key === "vscode" ? "Visual Studio Code" : "Cursor", version: "1.130.0" };
+  return {
+    key,
+    appName: key === "vscode" ? "Visual Studio Code" : "Cursor",
+    productVersion: key === "vscode" ? "1.130.0" : "3.13.10",
+    vscodeApiVersion: key === "vscode" ? "1.130.0" : "1.109.5"
+  };
 }
 
 function runtime() {

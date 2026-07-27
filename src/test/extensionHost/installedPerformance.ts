@@ -102,7 +102,8 @@ export async function run(): Promise<void> {
   const editor = {
     key: editorKey(),
     appName: vscode.env.appName,
-    version: vscode.version
+    productVersion: requiredEnvironment("OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION"),
+    vscodeApiVersion: vscode.version
   };
   recordProgress("activation:complete");
 

@@ -699,6 +699,7 @@ const CONTROLLED_EDITOR_ENVIRONMENT_KEYS = new Set([
   "OPEN_WRANGLER_EDITOR_CDP_PORT",
   "OPEN_WRANGLER_EXTENSION_TESTS",
   "OPEN_WRANGLER_TEST_EDITOR",
+  "OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION",
   "OPEN_WRANGLER_TEST_MODULE",
   "OPEN_WRANGLER_TEST_PHASE",
   "OPEN_WRANGLER_TEST_PROGRESS",
@@ -2862,6 +2863,7 @@ export async function runEditorAcceptancePhase(
     python,
     phase,
     resultPath,
+    editorProductVersion,
     workspaceTrust = "trusted",
     requiresWorkbenchCdp = false,
     jupyterEnvironment,
@@ -2889,6 +2891,13 @@ export async function runEditorAcceptancePhase(
   }
   if (typeof requiresWorkbenchCdp !== "boolean") {
     throw new Error("An editor acceptance phase requiresWorkbenchCdp value must be a boolean.");
+  }
+  if (
+    editorProductVersion !== undefined &&
+    (typeof editorProductVersion !== "string" ||
+      !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(editorProductVersion))
+  ) {
+    throw new Error("An editor acceptance phase product version must be numeric major.minor.patch.");
   }
   const jupyterEnvironmentOverrides = resolveEditorAcceptanceJupyterEnvironment(
     jupyterEnvironment,
@@ -3074,6 +3083,7 @@ export async function runEditorAcceptancePhase(
         OPEN_WRANGLER_EXTENSION_TESTS: "1",
         OPEN_WRANGLER_TEST_PHASE: phase,
         OPEN_WRANGLER_TEST_EDITOR: editor.key ?? editor.name.toLowerCase().replaceAll(" ", "-"),
+        OPEN_WRANGLER_TEST_EDITOR_PRODUCT_VERSION: editorProductVersion,
         ...(cdpPort ? { OPEN_WRANGLER_EDITOR_CDP_PORT: String(cdpPort) } : {}),
         OPEN_WRANGLER_TEST_PYTHON: python,
         OPEN_WRANGLER_TEST_MODULE: testModule,
