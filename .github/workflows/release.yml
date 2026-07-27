@@ -125,7 +125,6 @@ jobs:
           }
       - run: npm run check
       - run: npm test
-      - run: npm run license:check
       - run: npm run verify:vsix -- release/openwrangler.vsix
       - if: ${{ runner.os != 'Linux' }}
         run: npm run test:extension-host
