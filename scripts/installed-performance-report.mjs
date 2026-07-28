@@ -1023,7 +1023,10 @@ function assertPublicEvidence(value, key = "") {
       /(?:^|[^\p{L}\p{N}])~[^\s]*/u.test(pathCandidate) ||
       /(?:^|[^\p{L}\p{N}])\.{1,2}(?=$|[^\p{L}\p{N}])/u.test(pathCandidate) ||
       /(?:^|[^\p{L}\p{N}])[A-Za-z]:[^\s]*/u.test(pathCandidate) ||
-      /(?:^|[^\p{L}\p{N}])(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}\s]+\}|%[^%\s]+%)(?:[\\/]|$)/u.test(pathCandidate)
+      /(?:^|[^\p{L}\p{N}])(?:\$[A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?|\$\{[^}\s]+\}|%[^%\s]+%)(?=$|[^\p{L}\p{N}_])/iu.test(
+        pathCandidate
+      ) ||
+      /%[0-9A-Fa-f]{2}/u.test(pathCandidate)
     ) {
       throw new TypeError(`Installed performance evidence field ${key} contains a private path.`);
     }
