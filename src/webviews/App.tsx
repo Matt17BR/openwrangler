@@ -2214,7 +2214,7 @@ export function App() {
               <summary>
                 Generated{" "}
                 {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
-                code · edit in Code Preview panel
+                {" code · edit in Code Preview panel"}
               </summary>
               <pre tabIndex={0} aria-label="Generated Python code preview">
                 <code>{generatedCode}</code>

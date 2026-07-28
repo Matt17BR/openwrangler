@@ -12,6 +12,7 @@ interface TestTreeNode {
   label: string;
   description?: string;
   command?: unknown;
+  tooltip?: unknown;
 }
 interface TestTreeProvider {
   getChildren(): TestTreeNode[];
@@ -250,6 +251,12 @@ describe("native operation commands", () => {
     register(snapshotWithDraft());
     nativeMocks.showInformationMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));
 
+    const operations = treeChildren("openWrangler.operations");
+    expect(operations.every((node) => node.description !== "Apply or discard the current draft")).toBe(true);
+    expect(operations.every((node) => String(node.tooltip).includes("Apply or discard the current draft first"))).toBe(
+      true
+    );
+
     await command("openWrangler.editLatestStep")();
 
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
@@ -295,7 +302,8 @@ describe("native operation commands", () => {
 
     const operations = treeChildren("openWrangler.operations");
     expect(operations.length).toBeGreaterThan(0);
-    expect(operations.every((node) => node.description === "Viewing mode" && node.command === undefined)).toBe(true);
+    expect(operations.every((node) => node.description !== "Viewing mode" && node.command === undefined)).toBe(true);
+    expect(operations.every((node) => String(node.tooltip).includes("Available in editing mode"))).toBe(true);
     expect(treeChildren("openWrangler.summary").map(nodePresentation)).toEqual([
       ["Saved sales preview", "polars · viewing"],
       ["Shape", "4 × 3"],
@@ -305,11 +313,9 @@ describe("native operation commands", () => {
       ["Duplicate rows", "Profiling…"]
     ]);
     expect(treeChildren("openWrangler.filters").map(nodePresentation)).toEqual([
-      ["No filters or sorts", "Viewing state is separate from cleaning steps"]
+      ["No filters or sorts", "Current view"]
     ]);
-    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([
-      ["Original data", "Selected · confirmed dataframe view"]
-    ]);
+    expect(treeChildren("openWrangler.cleaningSteps").map(nodePresentation)).toEqual([["Original data", "Selected"]]);
 
     const provider = nativeMocks.webviewViewProviders.get("openWrangler.codePreview");
     if (!provider) throw new Error("Expected the Code Preview provider to be registered.");
