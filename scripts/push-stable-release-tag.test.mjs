@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -69,11 +79,23 @@ function createRunner({ expectedCommit, initialRemote = "", postPushRemote } = {
       assert.ok(helper);
       const credentialPath = helper.slice("credential.helper=store --file=".length);
       credentialPaths.push(credentialPath);
-      assert.equal(lstatSync(credentialPath).mode & 0o777, 0o600);
-      assert.equal(
-        readFileSync(credentialPath, "utf8"),
-        `https://x-access-token:${encodeURIComponent(token)}@github.com\n`
-      );
+      const credentialDescriptor = openSync(credentialPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const beforeRead = fstatSync(credentialDescriptor);
+        assert.equal(beforeRead.isFile(), true);
+        assert.equal(beforeRead.nlink, 1);
+        assert.equal(beforeRead.mode & 0o777, 0o600);
+        assert.equal(
+          readFileSync(credentialDescriptor, "utf8"),
+          `https://x-access-token:${encodeURIComponent(token)}@github.com\n`
+        );
+        const afterRead = fstatSync(credentialDescriptor);
+        assert.equal(afterRead.dev, beforeRead.dev);
+        assert.equal(afterRead.ino, beforeRead.ino);
+        assert.equal(afterRead.size, beforeRead.size);
+      } finally {
+        closeSync(credentialDescriptor);
+      }
       assert.equal(
         options.args.some((argument) => argument.includes(token)),
         false
