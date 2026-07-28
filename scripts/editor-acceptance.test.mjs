@@ -3053,6 +3053,97 @@ test("editor phases pass only runner-owned test values through the environment",
   }
 });
 
+posixTest("Linux editor phases keep oversized IPC sockets inside the owned private root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-linux-ipc-"));
+  const privateRoot = join(directory, "nested-checkout-component".repeat(5));
+  const runtimeDirectory = join(privateRoot, "r-owned");
+  const resultPath = join(directory, "result.json");
+  let launchedOptions;
+  try {
+    await mkdir(privateRoot, { mode: 0o700 });
+    await mkdir(runtimeDirectory, { mode: 0o700 });
+    assert.ok(
+      Buffer.byteLength(runtimeDirectory, "utf8") > 64,
+      "the fixture must exercise an absolute IPC path that needs shortening"
+    );
+    await runEditorAcceptancePhase(
+      {
+        editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+        workspace: directory,
+        userData: SYNTHETIC_EDITOR_USER_DATA,
+        extensions: join(directory, "extensions"),
+        developmentPaths: [],
+        testModule: join(directory, "acceptance.js"),
+        python: "python3",
+        phase: "seed",
+        resultPath,
+        runId: PROGRESS_RUN_ID
+      },
+      {
+        platform: "linux",
+        environment: {
+          PATH: "/safe/bin",
+          OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot,
+          XDG_RUNTIME_DIR: runtimeDirectory
+        },
+        spawnProcess(_executable, _arguments, options) {
+          launchedOptions = options;
+          return fakeEditorChild({ code: 0, resultPath, result: acceptanceResult(options.env, { ok: true }) });
+        }
+      }
+    );
+
+    assert.equal(launchedOptions.cwd, privateRoot);
+    assert.equal(launchedOptions.env.XDG_RUNTIME_DIR, "r-owned");
+    assert.equal(resolve(launchedOptions.cwd, launchedOptions.env.XDG_RUNTIME_DIR), runtimeDirectory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+posixTest("Linux editor phases reject oversized runtime paths outside the owned private root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-linux-ipc-reject-"));
+  const privateRoot = join(directory, "owned-root");
+  const outsideRuntime = join(directory, "outside-runtime-component".repeat(5));
+  let spawnCalls = 0;
+  try {
+    await mkdir(privateRoot, { mode: 0o700 });
+    await mkdir(outsideRuntime, { mode: 0o700 });
+    await assert.rejects(
+      runEditorAcceptancePhase(
+        {
+          editor: { name: "VS Code", key: "vscode", version: "1.130.0", executable: "fake-editor" },
+          workspace: directory,
+          userData: SYNTHETIC_EDITOR_USER_DATA,
+          extensions: join(directory, "extensions"),
+          developmentPaths: [],
+          testModule: join(directory, "acceptance.js"),
+          python: "python3",
+          phase: "seed",
+          resultPath: join(directory, "result.json"),
+          runId: PROGRESS_RUN_ID
+        },
+        {
+          platform: "linux",
+          environment: {
+            PATH: "/safe/bin",
+            OPEN_WRANGLER_EDITOR_TEMP_ROOT: privateRoot,
+            XDG_RUNTIME_DIR: outsideRuntime
+          },
+          spawnProcess() {
+            spawnCalls += 1;
+            return fakeEditorChild();
+          }
+        }
+      ),
+      /oversized runtime directory to be one direct child/u
+    );
+    assert.equal(spawnCalls, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("editor phases reserve workbench CDP only when the phase explicitly needs it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "openwrangler-phase-cdp-"));
   const baseInput = {
