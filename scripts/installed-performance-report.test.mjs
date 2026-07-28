@@ -187,6 +187,8 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     "///root/private-release",
     "/ root/private-release",
     "release at /etc/os-release",
+    "release;/root/private-release",
+    String.raw`release|\Users\alice\private-release`,
     "root:////private-release",
     "//server",
     "//server/share/private-release",
@@ -255,6 +257,23 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     }
   );
   assert.equal(isInstalledPerformanceNumericGateError(labeledUrlError), true);
+
+  for (const urlFollowedByPrivatePath of [
+    "https://example.test,/root/private-release",
+    String.raw`x://example.test;|\Users\alice\private-release`
+  ]) {
+    const mixedUrlReport = structuredClone(failed);
+    mixedUrlReport.editors[1].provenance.platform.operatingSystemRelease = urlFollowedByPrivatePath;
+    let mixedUrlError;
+    assert.throws(
+      () => assertInstalledPerformanceReleaseGate(mixedUrlReport),
+      (error) => {
+        mixedUrlError = error;
+        return /contains a private path/u.test(error.message);
+      }
+    );
+    assert.equal(isInstalledPerformanceNumericGateError(mixedUrlError), false);
+  }
 });
 
 test("numeric-only publication emits one final jointly revalidated report receipt", async () => {
