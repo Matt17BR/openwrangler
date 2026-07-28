@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "44d9129686541d8f66158ee77a0c016a86871adad12796326bc27f4507028694";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "ebd0b8da11b630c21c0a02bd5f456a435146aefa3eb50998de4a0786adc48f64";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -13,6 +13,7 @@ const STABLE_PUBLISH_COMMAND =
   "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate";
 const PREVIEW_PUBLISH_COMMAND =
   "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate";
+const PROFILE_ID_COMMAND = "node scripts/marketplace-identity-profile.mjs";
 const VERIFY_IDENTITY_COMMAND = "npx --no-install vsce verify-pat Matt17BR --azure-credential";
 const VERIFY_ARTIFACT_COMMAND = "node scripts/verify-registry-release-artifact.mjs canonical-release";
 
@@ -231,6 +232,7 @@ export function inspectMarketplacePromotionPipeline(source) {
     JSON.stringify(azureLines) !==
       JSON.stringify([
         "set -euo pipefail",
+        PROFILE_ID_COMMAND,
         VERIFY_IDENTITY_COMMAND,
         VERIFY_ARTIFACT_COMMAND,
         'if [ "$RELEASE_PRERELEASE" = "true" ]; then',
@@ -252,6 +254,7 @@ export function inspectMarketplacePromotionPipeline(source) {
     commands.filter((command) => command === "npm ci --ignore-scripts").length !== 1 ||
     commands.filter((command) => command === STABLE_PUBLISH_COMMAND).length !== 1 ||
     commands.filter((command) => command === PREVIEW_PUBLISH_COMMAND).length !== 1 ||
+    commands.filter((command) => command === PROFILE_ID_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_IDENTITY_COMMAND).length !== 1 ||
     commands.filter((command) => command === VERIFY_ARTIFACT_COMMAND).length !== 2 ||
     commands.filter((command) => command === "node scripts/download-canonical-github-release.mjs canonical-release")

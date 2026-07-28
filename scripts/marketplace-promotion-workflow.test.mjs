@@ -35,6 +35,11 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
       "azureSubscription: arbitraryServiceConnection"
     ),
     source.replace("addSpnToEnvironment: false", "addSpnToEnvironment: true"),
+    source.replace("node scripts/marketplace-identity-profile.mjs", "echo unknown-marketplace-profile"),
+    source.replace(
+      "node scripts/marketplace-identity-profile.mjs\n                      npx --no-install vsce verify-pat Matt17BR --azure-credential",
+      "npx --no-install vsce verify-pat Matt17BR --azure-credential\n                      node scripts/marketplace-identity-profile.mjs"
+    ),
     source.replace(
       "npx --no-install vsce verify-pat Matt17BR --azure-credential",
       "npx --no-install vsce verify-pat Matt17BR --pat $(VSCE_PAT)"

@@ -79,6 +79,26 @@ export function inspectMarketplaceReleaseIntake({
   const problems = [];
   const tagMatch = typeof sourceBranch === "string" ? TAG_REF.exec(sourceBranch) : null;
   const historical = existingReleaseTag !== "";
+  const defaultManualRun = existingReleaseTag === "" && buildReason === "Manual" && sourceBranch === MAIN_REF;
+  if (defaultManualRun) {
+    if (
+      typeof sourceCommit !== "string" ||
+      !FULL_COMMIT.test(sourceCommit) ||
+      typeof checkedOutCommit !== "string" ||
+      checkedOutCommit !== sourceCommit
+    ) {
+      problems.push("The Azure Pipeline automation checkout must equal its exact event commit.");
+    }
+    return Object.freeze({
+      eligible: false,
+      prerelease: undefined,
+      problems: Object.freeze(problems),
+      promote: false,
+      releaseCommit: undefined,
+      releaseTag: undefined,
+      version: undefined
+    });
+  }
   let releaseTag;
   if (historical) {
     if (
@@ -140,10 +160,38 @@ export function inspectMarketplaceReleaseIntake({
     eligible,
     prerelease: metadata.prerelease,
     problems: Object.freeze(problems),
+    promote: eligible,
     releaseCommit: resolvedTagCommit,
     releaseTag,
     version: metadata.version
   });
+}
+
+export function marketplaceReleaseIntakeOutput(result) {
+  if (result.problems.length > 0) {
+    throw new Error(`Marketplace release intake failed:\n- ${result.problems.join("\n- ")}`);
+  }
+  if (result.promote === false) {
+    return Object.freeze([
+      "##vso[task.setvariable variable=promote;isOutput=true]false",
+      "No release tag was selected; the default manual main run completed without Marketplace promotion."
+    ]);
+  }
+  if (
+    !result.eligible ||
+    result.promote !== true ||
+    result.releaseTag === undefined ||
+    result.releaseCommit === undefined
+  ) {
+    throw new Error("Marketplace release intake did not produce one promotable release.");
+  }
+  return Object.freeze([
+    "##vso[task.setvariable variable=promote;isOutput=true]true",
+    `##vso[task.setvariable variable=releaseTag;isOutput=true]${result.releaseTag}`,
+    `##vso[task.setvariable variable=releaseCommit;isOutput=true]${result.releaseCommit}`,
+    `##vso[task.setvariable variable=releasePrerelease;isOutput=true]${String(result.prerelease)}`,
+    `Accepted ${result.prerelease ? "pre-release" : "stable"} Marketplace promotion ${result.releaseTag}.`
+  ]);
 }
 
 function runCli() {
@@ -167,17 +215,9 @@ function runCli() {
     sourceBranch: process.env.BUILD_SOURCEBRANCH,
     sourceCommit: process.env.BUILD_SOURCEVERSION
   });
-  if (result.problems.length > 0) {
-    throw new Error(`Marketplace release intake failed:\n- ${result.problems.join("\n- ")}`);
+  for (const line of marketplaceReleaseIntakeOutput(result)) {
+    console.log(line);
   }
-  if (!result.eligible || result.releaseTag === undefined || result.releaseCommit === undefined) {
-    throw new Error("Marketplace release intake did not produce one promotable release.");
-  }
-  console.log("##vso[task.setvariable variable=promote;isOutput=true]true");
-  console.log(`##vso[task.setvariable variable=releaseTag;isOutput=true]${result.releaseTag}`);
-  console.log(`##vso[task.setvariable variable=releaseCommit;isOutput=true]${result.releaseCommit}`);
-  console.log(`##vso[task.setvariable variable=releasePrerelease;isOutput=true]${String(result.prerelease)}`);
-  console.log(`Accepted ${result.prerelease ? "pre-release" : "stable"} Marketplace promotion ${result.releaseTag}.`);
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
