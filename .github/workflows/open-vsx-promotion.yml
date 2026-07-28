@@ -29,7 +29,7 @@ jobs:
     name: Promote exact public GitHub release
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     environment: publishing
     env:
       RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}

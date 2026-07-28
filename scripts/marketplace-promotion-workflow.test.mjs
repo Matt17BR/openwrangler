@@ -54,6 +54,7 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
     ),
     source.replace("BUILD_REASON: $(Build.Reason)", "BUILD_REASON: Manual"),
     source.replace("EXPECTED_SHA: $(releaseCommit)", "EXPECTED_SHA: $(Build.SourceVersion)"),
+    source.replace("OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 40", "OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 39"),
     source.replace("node scripts/verify-marketplace-publication.mjs canonical-release", "echo published"),
     source.replace(
       "condition: and(succeeded(), eq(dependencies.Intake.outputs['Bind.release_intake.promote'], 'true'))",

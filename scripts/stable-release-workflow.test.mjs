@@ -11,7 +11,7 @@ test("ordinary stable release packages once and gates publishing behind exact-ar
 
 test("stable release inspector rejects unsafe publication and artifact drift", () => {
   const mutations = [
-    source.replace("Publish the accepted stable release to GitHub and Open VSX", "Validation-only workflow"),
+    source.replace("Publish to GitHub and Open VSX and trigger Marketplace promotion", "Validation-only workflow"),
     source.replace("default: false", "default: true"),
     source.replace("permissions:\n  contents: read", "permissions:\n  contents: write"),
     source.replace("\njobs:\n", "\nenv:\n  OPEN_WRANGLER_EDITOR_DISPLAY: current\n\njobs:\n"),
@@ -29,8 +29,8 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "  package:\n    container:\n      image: node:22\n      env:\n        NODE_OPTIONS: --require=/tmp/release-hook.cjs\n    runs-on: ubuntu-24.04"
     ),
     source.replace(
-      "  release:\n    name: Publish GitHub and Open VSX stable release\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: ubuntu-24.04",
-      "  release:\n    name: Publish GitHub and Open VSX stable release\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: self-hosted"
+      "  release:\n    name: Publish GitHub/Open VSX and trigger Marketplace\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: ubuntu-24.04",
+      "  release:\n    name: Publish GitHub/Open VSX and trigger Marketplace\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: self-hosted"
     ),
     source.replace(
       "  acceptance-gate:\n    name: Require every stable acceptance result",
@@ -115,6 +115,20 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     source.replace(
       "      - name: Publish or verify the exact GitHub stable release",
       "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - name: Publish or verify the exact GitHub stable release"
+    ),
+    source.replace("    timeout-minutes: 40", "    timeout-minutes: 20"),
+    source.replace(
+      "      - name: Publish or verify the exact lightweight release tag\n        env:\n          EXPECTED_SHA: ${{ github.sha }}\n          GITHUB_REPOSITORY: ${{ github.repository }}\n          GITHUB_TOKEN: ${{ github.token }}\n          RELEASE_TAG: ${{ inputs.release_tag }}\n        run: node scripts/push-stable-release-tag.mjs\n",
+      ""
+    ),
+    source.replace(
+      "        run: node scripts/push-stable-release-tag.mjs",
+      "        run: git push --force origin ${{ inputs.release_tag }}"
+    ),
+    source.replace("          GITHUB_TOKEN: ${{ github.token }}", "          GITHUB_TOKEN: literal-token"),
+    source.replace(
+      "        run: node scripts/push-stable-release-tag.mjs\n      - name: Publish or verify the exact GitHub stable release",
+      "        run: node scripts/push-stable-release-tag.mjs\n      - run: echo intervening\n      - name: Publish or verify the exact GitHub stable release"
     ),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),

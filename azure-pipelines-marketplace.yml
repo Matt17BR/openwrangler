@@ -133,5 +133,6 @@ stages:
                   env:
                     AUTOMATION_SHA: $(Build.SourceVersion)
                     EXPECTED_SHA: $(releaseCommit)
+                    OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 40
                     RELEASE_PRERELEASE: $(releasePrerelease)
                     RELEASE_TAG: $(releaseTag)
