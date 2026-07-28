@@ -4832,11 +4832,27 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     do {
       measurement = await app.evaluate(
         (root, expected) => {
-          const workspace = root.querySelector<HTMLElement>('[data-testid="app-workspace"]');
-          const scroller = root.querySelector<HTMLElement>('[data-testid="data-grid-scroller"]');
+          type ScreenshotRect = {
+            readonly left: number;
+            readonly right: number;
+          };
+          type ScreenshotElement = {
+            readonly className: string;
+            readonly clientWidth: number;
+            readonly dataset: Readonly<Record<string, string | undefined>>;
+            readonly innerText: string;
+            readonly scrollLeft: number;
+            readonly scrollWidth: number;
+            getBoundingClientRect(): ScreenshotRect;
+            querySelector(selector: string): ScreenshotElement | null;
+            querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
+          };
+          const appRoot = root as unknown as ScreenshotElement;
+          const workspace = appRoot.querySelector('[data-testid="app-workspace"]');
+          const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
           if (!workspace || !scroller) throw new Error("The packaged screenshot layout is incomplete.");
           const scrollerBounds = scroller.getBoundingClientRect();
-          const headers = Array.from(root.querySelectorAll<HTMLElement>("th[data-column]"));
+          const headers = Array.from(appRoot.querySelectorAll("th[data-column]"));
           const renderedColumns = headers.map((header) => header.dataset.column ?? "");
           const featuredHeaders = expected.featured.map((name) =>
             headers.find((header) => header.dataset.column === name)
@@ -4857,27 +4873,25 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             }
           }
           const clippedColumnTitles = featuredHeaders.flatMap((header, index) => {
-            const title = header?.querySelector<HTMLElement>(".columnTitle");
+            const title = header?.querySelector(".columnTitle");
             return title && title.scrollWidth > title.clientWidth + 1 ? [expected.featured[index] ?? ""] : [];
           });
           const clippedColumnStats = featuredHeaders.flatMap((header, index) => {
-            const clipped = Array.from(header?.querySelectorAll<HTMLElement>(".exactSummaryStats span") ?? []).some(
+            const clipped = Array.from(header?.querySelectorAll(".exactSummaryStats span") ?? []).some(
               (item) => item.scrollWidth > item.clientWidth + 1
             );
             return clipped ? [expected.featured[index] ?? ""] : [];
           });
-          const visibleCells = Array.from(root.querySelectorAll<HTMLElement>("td[data-grid-column]")).filter((cell) => {
+          const visibleCells = Array.from(appRoot.querySelectorAll("td[data-grid-column]")).filter((cell) => {
             const bounds = cell.getBoundingClientRect();
             return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
           });
-          const controls = Array.from(
-            root.querySelectorAll<HTMLElement>(".toolbar, .cleaningBar, .gridControls, .draftPanel")
-          );
+          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .cleaningBar, .gridControls, .draftPanel"));
           const clippedControls = controls
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
           const revenueHeader = headers.find((header) => header.dataset.column === "revenue");
-          const draft = root.querySelector<HTMLElement>('.draftPanel[aria-label="Draft preview"]');
+          const draft = appRoot.querySelector('.draftPanel[aria-label="Draft preview"]');
           return {
             workspaceOverflow: workspace.scrollWidth - workspace.clientWidth,
             gridOverflow: scroller.scrollWidth - scroller.clientWidth,
@@ -4889,10 +4903,10 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             clippedColumnStats,
             clippedCells: visibleCells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length,
             clippedControls,
-            revenueSummary: revenueHeader?.querySelector<HTMLElement>(".exactSummaryStats")?.innerText ?? "",
+            revenueSummary: revenueHeader?.querySelector(".exactSummaryStats")?.innerText ?? "",
             draftVisible: Boolean(draft),
             draftActionLabels: Array.from(
-              root.querySelectorAll<HTMLButtonElement>('.cleaningBar button:not([aria-hidden="true"])')
+              appRoot.querySelectorAll('.cleaningBar button:not([aria-hidden="true"])')
             ).map((button) => button.innerText.trim())
           };
         },
