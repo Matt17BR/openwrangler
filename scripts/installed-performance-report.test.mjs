@@ -462,9 +462,7 @@ test("failure output stays absent for structural, private, uncertain, unsafe, an
             return revalidateInstalledPerformanceReport(receipt, {
               afterOpen(path) {
                 hooks.afterOpen(path);
-                const replacement = `${path}.replacement`;
-                writeFileSync(replacement, "{}\n", { mode: 0o600 });
-                renameSync(replacement, path);
+                writeFileSync(path, "{}\n", { mode: 0o600 });
                 finalWindowMutated = true;
               }
             });
