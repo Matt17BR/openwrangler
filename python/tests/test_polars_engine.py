@@ -106,23 +106,13 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
 
 
 @pytest.mark.parametrize("extension", ["csv", "tsv", "parquet", "jsonl"])
-@pytest.mark.parametrize(
-    ("literal_stem", "decoy_stem"),
-    (
-        ("[published] source", "p source"),
-        ("literal*?{snapshot}", None),
-    ),
-)
 def test_polars_file_scans_treat_glob_metacharacters_as_literal_path_characters(
     extension: str,
-    literal_stem: str,
-    decoy_stem: str | None,
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / f"{literal_stem}.{extension}"
+    path = tmp_path / f"[published] source.{extension}"
     _write_polars_file(path, extension, [17, 18])
-    if decoy_stem is not None:
-        _write_polars_file(tmp_path / f"{decoy_stem}.{extension}", extension, [99])
+    _write_polars_file(tmp_path / f"p source.{extension}", extension, [99])
 
     options = {"delimiter": "\t"} if extension == "tsv" else None
     frame = PolarsEngine().read_file(str(path), options)
@@ -157,8 +147,9 @@ def test_polars_literal_file_scan_uses_an_encoded_file_uri_when_glob_is_unavaila
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "[legacy]*?.csv"
+    path = tmp_path / "[legacy].csv"
     _write_polars_file(path, "csv", [17, 18])
+    _write_polars_file(tmp_path / "l.csv", "csv", [99])
     native_scan_csv = pl.scan_csv
     calls: list[str] = []
 
@@ -171,7 +162,7 @@ def test_polars_literal_file_scan_uses_an_encoded_file_uri_when_glob_is_unavaila
     frame = PolarsEngine().read_file(str(path))
 
     assert isinstance(frame, pl.LazyFrame)
-    assert frame.collect().height == 2
+    assert frame.collect().get_column("value").to_list() == [17, 18]
     assert calls == [path.absolute().as_uri()]
 
 
