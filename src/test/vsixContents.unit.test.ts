@@ -96,6 +96,15 @@ describe("VSIX production entry allowlist", () => {
     expect(result.duplicates).toEqual([]);
   });
 
+  it("rejects Python wheel-build residue even if selection regresses", () => {
+    const residue = "extension/python/build/lib/openwrangler_runtime/server.py";
+    const result = inspectVsixEntries([...requiredVsixEntries, residue]);
+
+    expect(result.forbidden).toEqual([residue]);
+    expect(result.missing).toEqual([]);
+    expect(result.duplicates).toEqual([]);
+  });
+
   it("rejects duplicate archive paths even when every path is otherwise allowed", () => {
     const result = inspectVsixEntries([...requiredVsixEntries, "extension/package.json"]);
 

@@ -5,6 +5,7 @@ import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { listFiles } from "@vscode/vsce";
 import {
   assertExtensionTestOutputTreeSafe,
   copyExtensionTestRuntimeAssets,
@@ -842,6 +843,49 @@ test("package source guard rejects packageable untracked files, including ignore
   );
   assert.deepEqual(tracked, ["package.json", "python/openwrangler_runtime/server.py"]);
   assert.equal(scratchFile, "scratch.txt");
+});
+
+test("VSCE excludes Python wheel-build residue before canonical source pinning", async () => {
+  const directory = await canonicalTemporaryDirectory("openwrangler-vsce-ignore-");
+  try {
+    await writeFile(
+      join(directory, "package.json"),
+      JSON.stringify({
+        name: "fixture",
+        displayName: "Fixture",
+        description: "fixture",
+        version: "1.0.0",
+        publisher: "audit",
+        engines: { vscode: "^1.105.0" }
+      }),
+      { flag: "wx", mode: 0o600 }
+    );
+    await writeFile(join(directory, ".vscodeignore"), readFileSync(new URL("../.vscodeignore", import.meta.url)), {
+      flag: "wx",
+      mode: 0o600
+    });
+    await mkdir(join(directory, "python/openwrangler_runtime"), { recursive: true, mode: 0o700 });
+    await mkdir(join(directory, "python/build/lib/openwrangler_runtime"), { recursive: true, mode: 0o700 });
+    await writeFile(join(directory, "python/openwrangler_runtime/server.py"), "source\n", {
+      flag: "wx",
+      mode: 0o600
+    });
+    await writeFile(join(directory, "python/build/lib/openwrangler_runtime/server.py"), "duplicate\n", {
+      flag: "wx",
+      mode: 0o600
+    });
+
+    const files = (await listFiles({ cwd: directory })).sort();
+
+    assert.ok(files.includes("python/openwrangler_runtime/server.py"));
+    assert.equal(files.includes("python/build/lib/openwrangler_runtime/server.py"), false);
+    assert.equal(
+      files.some((entry) => entry.startsWith("python/build/")),
+      false
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
 
 test("package source guard pins every exact tracked and generated input", async () => {
