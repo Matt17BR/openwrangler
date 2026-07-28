@@ -18,7 +18,15 @@ interface Pick {
 
 const importOptionMocks = vi.hoisted(() => ({
   showQuickPick: vi.fn<(items: readonly unknown[], options?: PromptOptions) => Promise<unknown>>(async () => undefined),
-  showInputBox: vi.fn<(options?: PromptOptions) => Promise<string | undefined>>(async () => undefined)
+  showInputBox: vi.fn<(options?: PromptOptions) => Promise<string | undefined>>(async () => undefined),
+  read: vi.fn(),
+  close: vi.fn(async () => undefined),
+  open: vi.fn()
+}));
+
+vi.mock("node:fs/promises", () => ({
+  default: { open: importOptionMocks.open },
+  open: importOptionMocks.open
 }));
 
 vi.mock("vscode", () => ({
@@ -38,7 +46,13 @@ vi.mock("vscode", () => ({
 }));
 
 import * as vscode from "vscode";
-import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "../extension/files/importOptions";
+import {
+  defaultImportOptions,
+  detectImportOptions,
+  ImportCancelledError,
+  promptImportOptions
+} from "../extension/files/importOptions";
+import { IMPORT_DETECTION_SAMPLE_BYTES } from "../extension/files/importDetection";
 
 describe("import option defaults", () => {
   it.each(["workbook.xlsx", "legacy.xls", "UPPER.XLS"])("uses the public zero-based sheet index for %s", (name) => {
@@ -47,6 +61,78 @@ describe("import option defaults", () => {
 
   it("does not invent options for formats without interactive import settings", () => {
     expect(defaultImportOptions(vscode.Uri.file("/tmp/data.parquet"))).toBeUndefined();
+  });
+});
+
+describe("automatic import option sampling", () => {
+  beforeEach(() => {
+    importOptionMocks.read.mockReset();
+    importOptionMocks.close.mockClear();
+    importOptionMocks.open.mockReset();
+    importOptionMocks.open.mockResolvedValue({
+      read: importOptionMocks.read,
+      close: importOptionMocks.close
+    });
+  });
+
+  it("performs one bounded positional local read and closes the descriptor", async () => {
+    const bytes = new TextEncoder().encode("name\tvalue\none\t1\ntwo\t2\n");
+    importOptionMocks.read.mockImplementationOnce(
+      async (buffer: Uint8Array, offset: number, _length: number, position: number) => {
+        expect(position).toBe(0);
+        buffer.set(bytes, offset);
+        return { bytesRead: bytes.length, buffer };
+      }
+    );
+
+    await expect(detectImportOptions(vscode.Uri.file("/tmp/misleading.csv"))).resolves.toEqual({
+      delimiter: "\t",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+
+    expect(importOptionMocks.open).toHaveBeenCalledWith("/tmp/misleading.csv", "r");
+    expect(importOptionMocks.read).toHaveBeenCalledOnce();
+    const [buffer, offset, length, position] = importOptionMocks.read.mock.calls[0] ?? [];
+    expect(Buffer.isBuffer(buffer)).toBe(true);
+    expect(buffer).toHaveLength(IMPORT_DETECTION_SAMPLE_BYTES);
+    expect([offset, length, position]).toEqual([0, IMPORT_DETECTION_SAMPLE_BYTES, 0]);
+    expect(importOptionMocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("uses the same bounded host-local read for remote-workspace files", async () => {
+    const remote = {
+      scheme: "vscode-remote",
+      fsPath: "/workspace/data.tsv"
+    } as vscode.Uri;
+    const bytes = new TextEncoder().encode("name;value\none;1\n");
+    importOptionMocks.read.mockImplementationOnce(async (buffer: Uint8Array) => {
+      buffer.set(bytes);
+      return { bytesRead: bytes.length, buffer };
+    });
+
+    await expect(detectImportOptions(remote)).resolves.toEqual({
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    expect(importOptionMocks.open).toHaveBeenCalledWith("/workspace/data.tsv", "r");
+    expect(importOptionMocks.read).toHaveBeenCalledOnce();
+    expect(importOptionMocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("falls back safely and closes the descriptor when sampling fails", async () => {
+    importOptionMocks.read.mockRejectedValueOnce(new Error("unreadable"));
+
+    await expect(detectImportOptions(vscode.Uri.file("/tmp/data.csv"))).resolves.toEqual({
+      delimiter: ",",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    expect(importOptionMocks.close).toHaveBeenCalledOnce();
   });
 });
 

@@ -1,6 +1,8 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
+import { detectedImportOptionsFromSample, IMPORT_DETECTION_SAMPLE_BYTES } from "./importDetection";
+import { open } from "node:fs/promises";
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
@@ -28,6 +30,25 @@ export function defaultImportOptions(uri: vscode.Uri): ImportOptions | undefined
   }
   if (extension === ".xlsx" || extension === ".xls") return { sheetIndex: 0 };
   return undefined;
+}
+
+export async function detectImportOptions(uri: vscode.Uri): Promise<ImportOptions | undefined> {
+  const defaults = defaultImportOptions(uri);
+  if (!defaults || (uri.scheme !== "file" && uri.scheme !== "vscode-remote")) return defaults;
+  const extension = path.extname(uri.fsPath).toLowerCase();
+  if (extension !== ".csv" && extension !== ".tsv") return defaults;
+
+  let handle;
+  try {
+    handle = await open(uri.fsPath, "r");
+    const sample = Buffer.allocUnsafe(IMPORT_DETECTION_SAMPLE_BYTES);
+    const { bytesRead } = await handle.read(sample, 0, sample.length, 0);
+    return detectedImportOptionsFromSample(uri.fsPath, sample.subarray(0, bytesRead));
+  } catch {
+    return defaults;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 export async function promptImportOptions(

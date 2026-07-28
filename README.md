@@ -37,8 +37,8 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 
 ## What it does
 
-- Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor tab, editor title bar, or Command Palette.
-- Changes CSV, TSV, and Excel import options without losing the current cleaning plan or view.
+- Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor tab, editor title bar, or Command Palette. Delimited files open immediately with bounded delimiter, encoding, quote, and header detection.
+- Changes CSV, TSV, and Excel import options explicitly when automatic detection needs correction, without losing the current cleaning plan or view.
 - Pages through wide and large datasets with row and column virtualization, typed values, keyboard navigation, column search, and progressive insights.
 - Keeps filters and sorts separate from cleaning steps, so exploration never silently changes exported results.
 - Previews every transformation as a data diff with editable, backend-native Python before you apply it.

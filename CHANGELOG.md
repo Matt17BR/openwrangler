@@ -2,6 +2,12 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
+## Unreleased
+
+### Changed
+
+- Made primary CSV and TSV launches immediate: the local or remote extension host uses one bounded 64 KiB sample to detect comma, tab, semicolon, or pipe delimiters, UTF-8/BOM versus Windows-1252, standard versus structural single quotes, and likely headers, then fails soft to safe suffix defaults if the host cannot read the sample. **Change Import Options** remains available for explicit correction.
+
 ## [1.0.0] - 2026-07-28
 
 ### Added

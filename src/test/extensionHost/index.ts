@@ -4076,89 +4076,29 @@ async function acceptDefaultDelimitedImport(
   expectedSource: vscode.Uri,
   checkpointPrefix: string
 ): Promise<void> {
-  for (const { key, title, option } of [
-    { key: "delimiter", title: "Delimiter", option: "Comma" },
-    { key: "encoding", title: "Text encoding", option: "utf-8" },
-    { key: "header", title: "Header row", option: "First row contains column names" }
-  ]) {
-    const checkpoint = `${checkpointPrefix}:${key}`;
-    recordAcceptanceProgress(`${checkpoint}:wait`);
-    const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
-    recordAcceptanceProgress(`${checkpoint}:visible`);
-    const defaultOption = quickInput.getByRole("option", { name: option }).first();
-    await withAcceptanceOperationDeadline(
-      defaultOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} default option to become visible`
-    );
-    assert.match(
-      (await withAcceptanceOperationDeadline(
-        defaultOption.getAttribute("class", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} default option class`
-      )) ?? "",
-      /(?:^|\s)focused(?:\s|$)/u,
-      `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
-    );
-    await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
-    recordAcceptanceProgress(`${checkpoint}:accept`);
-    await withAcceptanceOperationDeadline(
-      pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} default option keyboard acceptance`
-    );
-    try {
-      await withAcceptanceOperationDeadline(
-        quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} prompt to advance`
-      );
-    } catch (error) {
-      const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+  recordAcceptanceProgress(`${checkpointPrefix}:automatic-detection`);
+  const deadline = Date.now() + SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS;
+  do {
+    const quickInputs = page.locator(".quick-input-widget:visible");
+    const count = await quickInputs.count().catch(() => 0);
+    if (count > 0) {
+      const labels = await quickInputs
+        .allInnerTexts()
+        .then((values) => values.slice(0, 8).map((value) => value.replace(/\s+/gu, " ").trim()))
+        .catch(() => []);
       throw new Error(
-        `${title} did not advance after accepting focused default ${JSON.stringify(option)} with Enter. Visible options: ${JSON.stringify(visibleOptions)}`,
-        { cause: error }
+        `Opening ${JSON.stringify(expectedSource.toString())} exposed an initial Quick Input instead of using automatic import detection. Visible Quick Inputs: ${JSON.stringify(labels)}.`
       );
     }
-    recordAcceptanceProgress(`${checkpoint}:accepted`);
-  }
-  const quoteCheckpoint = `${checkpointPrefix}:quote`;
-  recordAcceptanceProgress(`${quoteCheckpoint}:wait`);
-  const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character");
-  recordAcceptanceProgress(`${quoteCheckpoint}:visible`);
-  const field = quoteInput.locator(".quick-input-box input").first();
-  await withAcceptanceOperationDeadline(
-    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    "Quote character field to become visible"
+    if (testing.activeSession()?.metadata.source.uri === expectedSource.toString()) {
+      recordAcceptanceProgress(`${checkpointPrefix}:automatic-detection-complete`);
+      return;
+    }
+    await page.waitForTimeout(25);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Automatic import detection did not open ${JSON.stringify(expectedSource.toString())} before the launch deadline.`
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character default value"
-    ),
-    '"'
-  );
-  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
-  recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
-  await withAcceptanceOperationDeadline(
-    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    "Quote character keyboard acceptance"
-  );
-  try {
-    await withAcceptanceOperationDeadline(
-      quoteInput.waitFor({ state: "hidden", timeout: 3_000 }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character prompt to advance"
-    );
-  } catch (error) {
-    throw new Error("Quote character did not advance after accepting its focused default value with Enter.", {
-      cause: error
-    });
-  }
-  recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
 }
 
 async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unknown> {
@@ -8359,19 +8299,7 @@ async function exerciseLiveImportReconfiguration(
   await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   const opening = vscode.commands.executeCommand("openWrangler.openFile", configured);
-  await acceptDelimitedImportOptions(
-    page,
-    testing,
-    configured,
-    undefined,
-    "verify:file-inputs:reconfigure:initial-options",
-    {
-      delimiter: "Comma",
-      encoding: "utf-8",
-      header: "First row contains column names",
-      quoteChar: '"'
-    }
-  );
+  await acceptDefaultDelimitedImport(page, testing, configured, "verify:file-inputs:reconfigure:initial-options");
   await opening;
   await waitFor(
     () => {
@@ -8379,11 +8307,11 @@ async function exerciseLiveImportReconfiguration(
       return (
         active?.metadata.source.path === configured.fsPath &&
         active.metadata.shape.rows === 80 &&
-        active.metadata.shape.columns === 1
+        active.metadata.shape.columns === 8
       );
     },
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the semicolon CSV to open under its initial comma defaults"
+    "the semicolon CSV to open with automatically detected import options"
   );
 
   const before = testing.activeSession();

@@ -5,7 +5,7 @@ import type { OpenWranglerBridge } from "../dataBridge";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { getSetting } from "../configuration";
 import { confirmedFileConfiguration } from "./confirmedFileConfigurations";
-import { defaultImportOptions, ImportCancelledError, promptImportOptions } from "./importOptions";
+import { detectImportOptions } from "./importOptions";
 
 const CUSTOM_EDITOR_ID = "openWrangler.viewer";
 
@@ -28,7 +28,7 @@ export class OpenWranglerCustomEditorProvider implements vscode.CustomReadonlyEd
       return;
     }
     const confirmed = confirmedFileConfiguration(this.context.workspaceState, document.uri);
-    const source = fileSource(document.uri, confirmed?.importOptions ?? defaultImportOptions(document.uri));
+    const source = fileSource(document.uri, confirmed?.importOptions ?? (await detectImportOptions(document.uri)));
     const configuredBackend = getConfiguredBackend();
     new OpenWranglerPanel(
       webviewPanel,
@@ -70,18 +70,14 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       }
       if (!(await validateFileTarget(target))) return;
 
-      try {
-        const configuredBackend = getConfiguredBackend();
-        OpenWranglerPanel.create(
-          context,
-          bridge,
-          fileSource(target, await promptImportOptions(target)),
-          backendPin(configuredBackend),
-          configuredBackend
-        );
-      } catch (error) {
-        if (!(error instanceof ImportCancelledError)) throw error;
-      }
+      const configuredBackend = getConfiguredBackend();
+      OpenWranglerPanel.create(
+        context,
+        bridge,
+        fileSource(target, await detectImportOptions(target)),
+        backendPin(configuredBackend),
+        configuredBackend
+      );
     })
   );
 
@@ -104,18 +100,14 @@ export const registerFileCommands = (context: vscode.ExtensionContext, bridge: O
       }
       if (!(await validateFileTarget(selected))) return;
 
-      try {
-        const configuredBackend = getConfiguredBackend();
-        OpenWranglerPanel.create(
-          context,
-          bridge,
-          fileSource(selected, await promptImportOptions(selected)),
-          backendPin(configuredBackend),
-          configuredBackend
-        );
-      } catch (error) {
-        if (!(error instanceof ImportCancelledError)) throw error;
-      }
+      const configuredBackend = getConfiguredBackend();
+      OpenWranglerPanel.create(
+        context,
+        bridge,
+        fileSource(selected, await detectImportOptions(selected)),
+        backendPin(configuredBackend),
+        configuredBackend
+      );
     })
   );
 };
