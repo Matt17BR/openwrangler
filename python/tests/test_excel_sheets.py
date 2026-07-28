@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from openwrangler_runtime.excel_sheets import list_excel_sheet_names
+from openwrangler_runtime.excel_sheets import ExcelBackend, list_excel_sheet_names
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -19,7 +19,9 @@ def _write_legacy_xls(path: Path) -> None:
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 @pytest.mark.parametrize("extension", ["xlsx", "xls"])
-def test_lists_actual_workbook_sheet_names_in_order(backend: str, extension: str, tmp_path: Path) -> None:
+def test_lists_actual_workbook_sheet_names_in_order(
+    backend: ExcelBackend, extension: str, tmp_path: Path
+) -> None:
     path = tmp_path / f"workbook.{extension}"
     if extension == "xls":
         _write_legacy_xls(path)
