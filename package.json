@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
