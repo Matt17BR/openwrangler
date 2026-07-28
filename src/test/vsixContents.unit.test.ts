@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   inspectNotebookRendererBundle,
+  inspectPackagedReadmeSource,
   inspectReadmeSourceSrcsets,
   inspectVsixEntries,
   inspectVsixPreReleaseMetadata,
@@ -340,6 +341,20 @@ describe("VSIX prerelease metadata validation", () => {
 });
 
 describe("VSIX packaged README source validation", () => {
+  it("requires packaged README bytes to remain identical to the tracked source", () => {
+    const source = "[performance tracker](https://example.test/issues/91)\n";
+    expect(inspectPackagedReadmeSource(source, source)).toEqual([]);
+    expect(
+      inspectPackagedReadmeSource(
+        "[issue #91](https://example.test/issues/91)\n",
+        "[issue [#91](https://example.test/issues/91)](https://example.test/issues/91)\n"
+      )
+    ).toEqual(["Packaged README must exactly match README.md; VSCE must not rewrite release-facing content."]);
+    expect(inspectPackagedReadmeSource(source, undefined)).toEqual([
+      "README source parity requires source and packaged text."
+    ]);
+  });
+
   it("accepts quoted srcsets only when every candidate is an absolute HTTPS URL", () => {
     expect(
       inspectReadmeSourceSrcsets(`

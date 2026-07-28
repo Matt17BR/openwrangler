@@ -382,3 +382,12 @@ export function inspectReadmeSourceSrcsets(readme) {
 
   return problems;
 }
+
+export function inspectPackagedReadmeSource(sourceReadme, packagedReadme) {
+  if (typeof sourceReadme !== "string" || typeof packagedReadme !== "string") {
+    return ["README source parity requires source and packaged text."];
+  }
+  return sourceReadme === packagedReadme
+    ? []
+    : ["Packaged README must exactly match README.md; VSCE must not rewrite release-facing content."];
+}

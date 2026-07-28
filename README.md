@@ -116,9 +116,10 @@ Open Wrangler's release gates exercise a 100,000 by 50 CSV and a 1,000,000 by 20
 lazy execution, projected paging, cache behavior, and installed-editor first-grid checks. The detailed evidence
 lives in the [feature parity record](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
 
-A fair, reproducible black-box comparison with Microsoft Data Wrangler is still in progress in
-[issue #91](https://github.com/Matt17BR/openwrangler/issues/91). Until the same files, environments, versions,
-and user-visible timing boundaries can be compared, Open Wrangler does not claim to be universally faster.
+A fair, reproducible black-box comparison with Microsoft Data Wrangler is still in progress in the
+[performance comparison tracker](https://github.com/Matt17BR/openwrangler/issues/91). Until the same files,
+environments, versions, and user-visible timing boundaries can be compared, Open Wrangler does not claim to be
+universally faster.
 
 ## Roadmap
 

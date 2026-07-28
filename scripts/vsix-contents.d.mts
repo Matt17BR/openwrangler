@@ -8,3 +8,4 @@ export function inspectVsixEntries(entries: readonly string[]): {
 export function inspectNotebookRendererBundle(bundle: unknown): string[];
 export function inspectVsixPreReleaseMetadata(packageJson: string, vsixManifest: string): string[];
 export function inspectReadmeSourceSrcsets(readme: string): string[];
+export function inspectPackagedReadmeSource(sourceReadme: unknown, packagedReadme: unknown): string[];
