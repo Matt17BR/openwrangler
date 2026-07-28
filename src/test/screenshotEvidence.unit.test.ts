@@ -1,27 +1,126 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   PACKAGED_SCREENSHOT_COLUMNS,
-  PACKAGED_SCREENSHOT_ROWS,
+  PACKAGED_SCREENSHOT_DATA_PROVENANCE,
+  PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
+  PACKAGED_SCREENSHOT_FIXED_FEATURED_WIDTHS,
+  PACKAGED_SCREENSHOT_MARKETS,
+  PACKAGED_SCREENSHOT_ROW_COUNT,
+  PACKAGED_SCREENSHOT_SCENES,
+  packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
-  packagedScreenshotFixtureCsv
+  packagedScreenshotFixtureCsv,
+  packagedScreenshotRow
 } from "./extensionHost/screenshotEvidence";
 
 describe("packaged editor screenshot evidence", () => {
-  it("uses one small, readable, deterministic fixture", () => {
+  it("generates one deterministic, realistic business fixture without private data", () => {
     const csv = packagedScreenshotFixtureCsv();
     const lines = csv.trimEnd().split("\n");
+    const rows = Array.from({ length: PACKAGED_SCREENSHOT_ROW_COUNT }, (_, index) => packagedScreenshotRow(index));
+    const orderIds = rows.map((row) => row[0]);
+    const markets = rows.map((row) => row[1]);
+    const revenues = rows.map((row) => row[2]);
+    const fulfillment = rows.map((row) => row[3]);
+    const dates = rows.map((row) => row[4]);
+    const units = rows.map((row) => row[8]);
+    const notes = rows.map((row) => row[14]);
 
-    expect(PACKAGED_SCREENSHOT_COLUMNS).toHaveLength(6);
-    expect(PACKAGED_SCREENSHOT_ROWS).toHaveLength(12);
-    expect(lines).toHaveLength(13);
-    expect(lines[0]).toBe("order_id,city,category,revenue,units,order_date");
-    expect(lines.every((line) => line.split(",").length === PACKAGED_SCREENSHOT_COLUMNS.length)).toBe(true);
-    expect(csv).not.toMatch(/(?:sample|fixture|test)[-_ ]?(?:data|value)?/iu);
+    expect(PACKAGED_SCREENSHOT_DATA_PROVENANCE).toContain("Deterministic synthetic");
+    expect(PACKAGED_SCREENSHOT_ROW_COUNT).toBe(10_000);
+    expect(PACKAGED_SCREENSHOT_COLUMNS).toHaveLength(15);
+    expect(lines).toHaveLength(PACKAGED_SCREENSHOT_ROW_COUNT + 1);
+    expect(lines[0]).toBe(PACKAGED_SCREENSHOT_COLUMNS.join(","));
+    expect(parseCsvRecord(lines[1] ?? "")).toEqual(rows[0]);
+    expect(parseCsvRecord(lines.at(-1) ?? "")).toEqual(rows.at(-1));
+    expect(lines.slice(1).every((line) => parseCsvRecord(line).length === PACKAGED_SCREENSHOT_COLUMNS.length)).toBe(
+      true
+    );
+    expect(rows.every((row) => row.length === PACKAGED_SCREENSHOT_COLUMNS.length)).toBe(true);
+    expect(new Set(orderIds).size).toBe(PACKAGED_SCREENSHOT_ROW_COUNT);
+    expect(new Set(markets)).toEqual(new Set(PACKAGED_SCREENSHOT_MARKETS));
+    for (const market of PACKAGED_SCREENSHOT_MARKETS) {
+      expect(markets.filter((value) => value === market).length).toBeGreaterThan(1_000);
+    }
+    expect(revenues.filter((value) => value === "").length).toBeGreaterThan(50);
+    expect(new Set(revenues.filter(Boolean)).size).toBeGreaterThan(8_000);
+    expect(Math.min(...revenues.filter(Boolean).map(Number))).toBeGreaterThan(50);
+    expect(Math.max(...revenues.filter(Boolean).map(Number))).toBeGreaterThan(10_000);
+    expect(fulfillment).toContain("true");
+    expect(fulfillment).toContain("false");
+    expect(fulfillment).toContain("");
+    expect(units).toContain("");
+    expect(units.filter(Boolean).every((value) => Number.isSafeInteger(Number(value)))).toBe(true);
+    expect(dates.filter((value) => value === "").length).toBeGreaterThan(20);
+    const populatedDates = dates.filter(Boolean).sort();
+    expect(populatedDates[0]).toBe("2024-01-01");
+    expect(populatedDates.at(-1)).toBe("2025-12-30");
+    expect(notes).toContain("");
+    expect(notes.some((value) => value.length > 80 && value.includes(","))).toBe(true);
+    expect(notes.some((value) => value.includes('"'))).toBe(true);
+    expect(csv).not.toMatch(
+      /(?:celonis|mmazzarelli|dropbox|@(?:gmail|celonis)|\/home\/|\\users\\|(?:sample|fixture|test)[-_ ]?(?:data|value)?)/iu
+    );
+    expect(createHash("sha256").update(csv).digest("hex")).toBe(
+      "4beafb09e558146895114812046a1a9f08cac14f883466195ded700c8506e35d"
+    );
+    expect(packagedScreenshotRow(0)).toEqual([
+      "2400001",
+      "Benelux",
+      "79.00",
+      "true",
+      "2024-01-01",
+      "Enterprise",
+      "Direct",
+      "Analytics",
+      "1",
+      "79.00",
+      "0.00",
+      "18.96",
+      "High",
+      "2024-12-31",
+      'Renewal review follows the Q2 pilot, with "steady adoption" reported across the regional account'
+    ]);
+    expect(packagedScreenshotRow(PACKAGED_SCREENSHOT_ROW_COUNT - 1)).toEqual([
+      "2410000",
+      "DACH",
+      "83.53",
+      "true",
+      "2024-03-13",
+      "Public sector",
+      "Online",
+      "Analytics",
+      "1",
+      "93.18",
+      "10.36",
+      "30.25",
+      "Standard",
+      "2025-04-08",
+      "Procurement requested a consolidated proposal covering support levels and implementation milestones"
+    ]);
+    expect(() => packagedScreenshotRow(-1)).toThrow(RangeError);
+    expect(() => packagedScreenshotRow(PACKAGED_SCREENSHOT_ROW_COUNT)).toThrow(RangeError);
+  });
+
+  it("fits a complete featured prefix while retaining a realistic horizontally scrollable schema", () => {
+    const gridClientWidth = 1_050;
+    const rowHeaderWidth = 48;
+    const widths = packagedScreenshotFeaturedColumnWidths(gridClientWidth, rowHeaderWidth);
+
+    expect(PACKAGED_SCREENSHOT_FEATURED_COLUMNS).toEqual(PACKAGED_SCREENSHOT_COLUMNS.slice(0, 5));
+    expect(PACKAGED_SCREENSHOT_COLUMNS.length).toBeGreaterThan(PACKAGED_SCREENSHOT_FEATURED_COLUMNS.length);
+    expect(widths).toMatchObject(PACKAGED_SCREENSHOT_FIXED_FEATURED_WIDTHS);
+    expect(Object.values(widths).every((width) => width >= 160 && width <= 640)).toBe(true);
+    expect(Object.values(widths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(gridClientWidth);
+    expect(() => packagedScreenshotFeaturedColumnWidths(0, rowHeaderWidth)).toThrow(TypeError);
+    expect(() => packagedScreenshotFeaturedColumnWidths(700, rowHeaderWidth)).toThrow(RangeError);
   });
 
   it("keeps README scene names explicit and theme-aware", () => {
+    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "transform"]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
     expect(packagedScreenshotFileName("cursor", "transform", "dark")).toBe("cursor-transform-dark.png");
@@ -44,3 +143,28 @@ describe("packaged editor screenshot evidence", () => {
     expect(readme).not.toMatch(/docs\/images\/(?:grid-view|filter-panel|wide-grid|notebook-preview)\.png/u);
   });
 });
+
+function parseCsvRecord(record: string): string[] {
+  const values: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < record.length; index += 1) {
+    const character = record[index];
+    if (character === '"') {
+      if (quoted && record[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === "," && !quoted) {
+      values.push(value);
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  if (quoted) throw new Error("Unterminated quoted CSV fixture field.");
+  values.push(value);
+  return values;
+}
