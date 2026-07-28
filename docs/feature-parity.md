@@ -8,38 +8,38 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 
 VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity), so publication there can make Open Wrangler discoverable; discovery is not compatibility evidence, and its isolated functional smoke remains outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
-| Surface                                              | Pandas | Polars | Status  | Required evidence                                                              |
-| ---------------------------------------------------- | -----: | -----: | ------- | ------------------------------------------------------------------------------ |
-| CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done    | Package import-change, `.xls`, cancel/error UI green; record:docs/testing.md   |
-| Notebook variable viewer and toolbar                 |    Yes |    Yes | Done    | Released Jupyter remote/release-platform matrix green; record:docs/testing.md  |
-| Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done    | Coordinator snapshot plus exact packaged editors green; record:docs/testing.md |
-| Virtual grid, column sizing, navigation              |    Yes |    Yes | Partial | Add installed-editor first-usable-grid timing; record:docs/testing.md          |
-| Dataset summary and quick insights                   |    Yes |    Yes | Done    | Typed profiles/stats plus packaged queries green; record:docs/testing.md       |
-| Basic and advanced viewing filters                   |    Yes |    Yes | Done    | AND/OR engine, browser, and packaged green; record:docs/testing.md             |
-| Multi-column viewing sorts                           |    Yes |    Yes | Done    | Stable null-order engine and packaged green; record:docs/testing.md            |
-| Editing mode and operation catalog                   |    Yes |    Yes | Done    | Structural duplicate/non-string packaged matrix green; record:docs/testing.md  |
-| Draft preview and data diff                          |    Yes |    Yes | Done    | Typed/identity diff and packaged previews green; record:docs/testing.md        |
-| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done    | Installed selection/diff/clear and shortcuts green; record:docs/testing.md     |
-| Generated code preview and editing                   |    Yes |    Yes | Done    | Native code plus edited packaged exports green; record:docs/testing.md         |
-| Sort/filter cleaning steps                           |    Yes |    Yes | Done    | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md    |
-| Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done    | Reordered mixed-label preview/apply/replay green; record:docs/testing.md       |
-| Missing/duplicate row operations                     |    Yes |    Yes | Done    | Stable refs, all modes, code and packaged duplicates; record:docs/testing.md   |
-| One-hot and multi-label binarization                 |    Yes |    Yes | Done    | Null/blank/collision and generated-code parity; record:docs/testing.md         |
-| Find/replace/strip/split/case transforms             |    Yes |    Yes | Done    | Unicode/null plus packaged text preview/apply; record:docs/testing.md          |
-| Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done    | Numeric edges plus packaged preview/apply; record:docs/testing.md              |
-| Group and aggregate                                  |    Yes |    Yes | Done    | Nullable order plus packaged preview/apply; record:docs/testing.md             |
-| Custom engine-native code                            |    Yes |    Yes | Done    | Trusted custom code plus installed Restricted Mode; record:docs/testing.md     |
-| String/datetime/new-column by example                |    Yes |    Yes | Done    | Candidate matrix plus packaged confirmation; record:docs/testing.md            |
-| Copy/script/notebook code export                     |    Yes |    Yes | Done    | Edited buffer, source-safe Save/alias package green; record:docs/testing.md    |
-| CSV and Parquet data export                          |    Yes |    Yes | Done    | Cross-engine atomic and packaged exports green; record:docs/testing.md         |
-| Runtime selection, setup, change, clear              |    Yes |    Yes | Done    | Resolver, released-Python A→B→A, decline flow green; record:docs/testing.md    |
-| Original icons, native views, themes, accessibility  |    N/A |    N/A | Done    | Exact-head axe plus native VS Code/Cursor gates; record:docs/testing.md        |
-| Runtime crash/reload/session replay                  |    Yes |    Yes | Done    | Packaged injected recovery/replay green; record:docs/testing.md                |
-| Column-projected grid-block transport                |    Yes |    Yes | Done    | Bounded row/column blocks plus native pushdown green; record:docs/testing.md   |
-| Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done    | All ID-backed families packaged and replayed; record:docs/testing.md           |
-| Restricted Mode and trust-gated execution            |    N/A |    N/A | Done    | Separate trusted/untrusted installed-editor runs green; record:docs/testing.md |
-| Installed-editor first-usable-grid performance       |    Yes |    Yes | Partial | Enforce 100k CSV and 1M Parquet paint timings; record:docs/testing.md          |
-| Cross-platform first-class editor package acceptance |    N/A |    N/A | Done    | Exact VS Code/Cursor OS + Remote SSH green; record:docs/testing.md             |
+| Surface                                              | Pandas | Polars | Status | Required evidence                                                              |
+| ---------------------------------------------------- | -----: | -----: | ------ | ------------------------------------------------------------------------------ |
+| CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done   | Package import-change, `.xls`, cancel/error UI green; record:docs/testing.md   |
+| Notebook variable viewer and toolbar                 |    Yes |    Yes | Done   | Released Jupyter remote/release-platform matrix green; record:docs/testing.md  |
+| Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done   | Coordinator snapshot plus exact packaged editors green; record:docs/testing.md |
+| Virtual grid, column sizing, navigation              |    Yes |    Yes | Done   | Hosted exact-artifact paint/scroll gate green; record:docs/testing.md          |
+| Dataset summary and quick insights                   |    Yes |    Yes | Done   | Typed profiles/stats plus packaged queries green; record:docs/testing.md       |
+| Basic and advanced viewing filters                   |    Yes |    Yes | Done   | AND/OR engine, browser, and packaged green; record:docs/testing.md             |
+| Multi-column viewing sorts                           |    Yes |    Yes | Done   | Stable null-order engine and packaged green; record:docs/testing.md            |
+| Editing mode and operation catalog                   |    Yes |    Yes | Done   | Structural duplicate/non-string packaged matrix green; record:docs/testing.md  |
+| Draft preview and data diff                          |    Yes |    Yes | Done   | Typed/identity diff and packaged previews green; record:docs/testing.md        |
+| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done   | Installed selection/diff/clear and shortcuts green; record:docs/testing.md     |
+| Generated code preview and editing                   |    Yes |    Yes | Done   | Native code plus edited packaged exports green; record:docs/testing.md         |
+| Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md    |
+| Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md       |
+| Missing/duplicate row operations                     |    Yes |    Yes | Done   | Stable refs, all modes, code and packaged duplicates; record:docs/testing.md   |
+| One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md         |
+| Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md          |
+| Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md              |
+| Group and aggregate                                  |    Yes |    Yes | Done   | Nullable order plus packaged preview/apply; record:docs/testing.md             |
+| Custom engine-native code                            |    Yes |    Yes | Done   | Trusted custom code plus installed Restricted Mode; record:docs/testing.md     |
+| String/datetime/new-column by example                |    Yes |    Yes | Done   | Candidate matrix plus packaged confirmation; record:docs/testing.md            |
+| Copy/script/notebook code export                     |    Yes |    Yes | Done   | Edited buffer, source-safe Save/alias package green; record:docs/testing.md    |
+| CSV and Parquet data export                          |    Yes |    Yes | Done   | Cross-engine atomic and packaged exports green; record:docs/testing.md         |
+| Runtime selection, setup, change, clear              |    Yes |    Yes | Done   | Resolver, released-Python A→B→A, decline flow green; record:docs/testing.md    |
+| Original icons, native views, themes, accessibility  |    N/A |    N/A | Done   | Exact-head axe plus native VS Code/Cursor gates; record:docs/testing.md        |
+| Runtime crash/reload/session replay                  |    Yes |    Yes | Done   | Packaged injected recovery/replay green; record:docs/testing.md                |
+| Column-projected grid-block transport                |    Yes |    Yes | Done   | Bounded row/column blocks plus native pushdown green; record:docs/testing.md   |
+| Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done   | All ID-backed families packaged and replayed; record:docs/testing.md           |
+| Restricted Mode and trust-gated execution            |    N/A |    N/A | Done   | Separate trusted/untrusted installed-editor runs green; record:docs/testing.md |
+| Installed-editor first-usable-grid performance       |    Yes |    Yes | Done   | Hosted 100k CSV/1M Parquet editor gate green; record:docs/testing.md           |
+| Cross-platform first-class editor package acceptance |    N/A |    N/A | Done   | Exact VS Code/Cursor OS + Remote SSH green; record:docs/testing.md             |
 
 ## DuckDB file-backed preview matrix
 
@@ -647,6 +647,13 @@ Ambiguous Pandas viewing-name hardening, 2026-07-27:
 - Live Pandas filters, sorts, and distinct-value lookup now reject both duplicate raw labels and distinct raw labels whose string forms collide, matching the existing saved-snapshot fail-closed behavior. Standalone and notebook transports preserve request and view correlation while returning the structured `ambiguous_view_column` diagnostic.
 - The grid and Filters / Sorts drawer explain the ambiguity, distinguish selector entries by position, and disable only controls that would emit a name-addressed query. Stable-ID cleaning operations, paging, profiling, resizing, selection, and clear actions remain usable.
 - Focused Pandas runtime, standalone protocol, kernel protocol, and React tests cover true duplicates and integer-`7`/string-`"7"` collisions. This closes a silent-first-column correctness gap without changing the status of any parity row or replacing packaged-editor evidence.
+
+Installed-editor grid and performance acceptance, 2026-07-28:
+
+- Exact source `cfc30e4fdb77711f9007b598bb9ad099dfcf5ca6` passed the single, non-retried [hosted evidence run 30320866354](https://github.com/Matt17BR/openwrangler/actions/runs/30320866354). Its sealed `openwrangler-installed-performance-evidence-report-v1` report is artifact `8674099196`, 92,583 bytes, with SHA-256 `46d7519df26890c44e5168be7d417da5c52713450cba4f5579e3b7673e3fcdee`; the report's evidence verdict is green with no failures.
+- Official VS Code 1.130.0 and Cursor 3.13.10 each retained all ten cold-source and ten warm-source samples for the 100k×50 CSV and 1M×20 Parquet fixtures. VS Code CSV/Parquet cold p95 was 1,086.365/1,466.276 ms and Cursor was 1,907.449/1,715.429 ms, below the 3,000/5,000 ms limits. Warm p95 was 711.511/639.252 ms in VS Code and 1,546.690/1,528.144 ms in Cursor.
+- Production-grid cached/uncached p95 was 63.8/131.1 ms in VS Code and 96.8/148.2 ms in Cursor, below the 100/500 ms limits. Renderer-heartbeat p95 was 14.1/14.7 ms. Both editors completed the real filter and sort controls while renderer and foreground-page probes stayed responsive, observed active profiling, authoritatively cancelled their queued companion requests, and finished with verified process/session cleanup.
+- The evidence artifact is deliberately non-promotable and was not reused as release bytes. It closes **Virtual grid, column sizing, navigation** and **Installed-editor first-usable-grid performance** for the Pandas/Polars 1.0 matrix; the ordinary stable candidate is built afresh from the all-rows-**Done** source.
 
 ## Explicitly deferred from 1.0
 

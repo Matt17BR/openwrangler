@@ -6,7 +6,7 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 <!-- open-wrangler-release-status:start -->
 
-> **Release status:** 1.0 validation candidate, not a stable release. The final two installed-editor performance rows remain open in the [feature parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
+> **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
 
 ## Install
 
@@ -21,9 +21,11 @@ Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
 Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.
 
-There is no public installation for this evidence-only candidate. It is built and installed only inside isolated hosted validation and must not be published to GitHub Releases, the Visual Studio Marketplace, or Open VSX.
+Download both `openwrangler.vsix` and `openwrangler.vsix.sha256` from the matching [GitHub Release](https://github.com/Matt17BR/openwrangler/releases), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
 
-After the hosted evidence is green, the two remaining rows must be marked complete and a fresh all-green stable candidate must be built. The evidence-only VSIX is never renamed or promoted.
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running `pip`; it never installs packages silently.
+
+This stable release satisfies every in-scope row in the checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
 
 <!-- open-wrangler-release-status:end -->
 
