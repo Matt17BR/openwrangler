@@ -17,7 +17,7 @@ import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from 
 import { parseStrictJson } from "../../shared/strictJson.cjs";
 import { publishInstalledPerformanceFragment, type InstalledPerformanceArtifactReceipt } from "./fragmentPublication";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
-import { measureRendererGridScroll } from "./rendererGridScrollMeasurement";
+import { measureRendererGridScroll, rendererHasUsableGridGeometry } from "./rendererGridScrollMeasurement";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
@@ -807,6 +807,8 @@ async function measureForegroundPage(
 async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: number }): Promise<boolean> {
   const grid = frame.locator('table[role="grid"]').first();
   if ((await grid.count()) === 0 || !(await grid.isVisible())) return false;
+  const scroller = frame.getByTestId("data-grid-scroller").first();
+  if ((await scroller.count()) === 0 || !(await scroller.isVisible())) return false;
   const attributes = await grid.evaluate((element) => ({
     busy: element.getAttribute("aria-busy"),
     rows: element.getAttribute("aria-rowcount"),
@@ -819,15 +821,17 @@ async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: 
   ) {
     return false;
   }
-  for (const [row, column] of [
+  const requiredCells = [
     [0, 0],
     [0, Math.min(1, shape.columns - 1)],
     [Math.min(1, shape.rows - 1), 0]
-  ]) {
+  ] as const;
+  for (const [row, column] of requiredCells) {
     const cell = frame.locator(`[data-grid-row="${row}"][data-grid-column="${column}"]`).first();
     if ((await cell.count()) === 0 || !(await cell.isVisible())) return false;
     if ((await cell.textContent()) !== String(row + column)) return false;
   }
+  if (!(await frame.evaluate(rendererHasUsableGridGeometry, { cells: requiredCells }))) return false;
   const insightsToggle = frame.getByRole("button", { name: "Hide insights", exact: true });
   if ((await insightsToggle.count()) === 0 || !(await insightsToggle.isVisible())) return false;
   return true;

@@ -2,9 +2,11 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   measureRendererGridScroll,
+  rendererHasUsableGridGeometry,
   type RendererGridMeasurementElement,
   type RendererGridMeasurementRuntime,
-  type RendererGridScrollMeasurementInput
+  type RendererGridScrollMeasurementInput,
+  type RendererUsableGridGeometryInput
 } from "./extensionHost/rendererGridScrollMeasurement";
 
 interface MutableStyle {
@@ -121,6 +123,27 @@ const input: RendererGridScrollMeasurementInput = {
 };
 
 describe("renderer-local grid scroll measurement", () => {
+  it("accepts required cells only when the production scroller and viewport visibly intersect them", () => {
+    const runtime = new FakeRuntime();
+    const requiredCells = { cells: [[400, 0] as const] };
+    const isolatedGeometryCheck = runInNewContext(`(${rendererHasUsableGridGeometry.toString()})`) as (
+      geometryInput: RendererUsableGridGeometryInput,
+      rendererRuntime: RendererGridMeasurementRuntime
+    ) => boolean;
+
+    expect(isolatedGeometryCheck(requiredCells, runtime)).toBe(true);
+
+    runtime.scroller.rectangle = { top: 0, right: 800, bottom: 0, left: 0, width: 800, height: 0 };
+    expect(isolatedGeometryCheck(requiredCells, runtime)).toBe(false);
+
+    runtime.scroller.rectangle = { top: 0, right: 800, bottom: 900, left: 0, width: 800, height: 900 };
+    runtime.cell.rectangle = { top: 800, right: 120, bottom: 829, left: 20, width: 100, height: 29 };
+    expect(isolatedGeometryCheck(requiredCells, runtime)).toBe(false);
+
+    runtime.cell.rectangle = { top: 650, right: 120, bottom: 679, left: 20, width: 100, height: 29 };
+    expect(isolatedGeometryCheck(requiredCells, runtime)).toBe(true);
+  });
+
   it("serializes as one closure-free renderer function", async () => {
     const runtime = new FakeRuntime();
     const isolatedMeasurement = runInNewContext(`(${measureRendererGridScroll.toString()})`) as (
@@ -156,6 +179,26 @@ describe("renderer-local grid scroll measurement", () => {
     expect(runtime.timers.size).toBe(0);
   });
 
+  it("still requires two renderer frames when the requested scroll position is unchanged", async () => {
+    const runtime = new FakeRuntime();
+    runtime.scroller.scrollTop = input.row * input.rowHeight;
+    const measurement = measureRendererGridScroll(input, runtime);
+    let settled = false;
+    void measurement.then(() => {
+      settled = true;
+    });
+
+    expect(runtime.scroller.scrollTop).toBe(11_600);
+    runtime.advanceFrame();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    runtime.advanceFrame();
+    await expect(measurement).resolves.toBe(32);
+    expect(runtime.animationFrames.size).toBe(0);
+    expect(runtime.timers.size).toBe(0);
+  });
+
   it("does not accept mismatched text, hidden cells, or zero-area geometry", async () => {
     const runtime = new FakeRuntime();
     runtime.cell.textContent = "stale";
@@ -186,14 +229,50 @@ describe("renderer-local grid scroll measurement", () => {
 
   it("cancels the pending animation frame when its bounded timeout expires", async () => {
     const runtime = new FakeRuntime();
-    runtime.cell.textContent = "never";
-    const measurement = measureRendererGridScroll(input, runtime);
+    runtime.cell.textContent = "actual-private-value";
+    const measurement = measureRendererGridScroll({ ...input, expectedText: "expected-private-value" }, runtime);
 
     expect(runtime.animationFrames.size).toBe(1);
     expect(runtime.timers.size).toBe(1);
     runtime.expire();
 
-    await expect(measurement).rejects.toThrow(/did not visibly commit 1000 rows/u);
+    const failure = await measurement.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/did not visibly commit 1000 rows and 50 columns at 400,0/u);
+    expect(message).not.toContain("actual-private-value");
+    expect(message).not.toContain("expected-private-value");
+    const diagnostic = JSON.parse(message.slice(message.indexOf("State: ") + "State: ".length)) as Record<
+      string,
+      unknown
+    >;
+    expect(diagnostic).toEqual({
+      animationFramesObserved: 0,
+      consecutiveMatchingFrames: 0,
+      viewportWidth: 1024,
+      viewportHeight: 768,
+      scrollTop: 11_600,
+      scrollerPresent: true,
+      gridPresent: true,
+      cellPresent: true,
+      scrollerConnected: true,
+      gridConnected: true,
+      cellConnected: true,
+      scrollerContainsGrid: true,
+      scrollerContainsCell: true,
+      ariaBusyMatches: true,
+      ariaRowCountMatches: true,
+      ariaColumnCountMatches: true,
+      textMatches: false,
+      scrollerVisibleStyle: true,
+      gridVisibleStyle: true,
+      cellVisibleStyle: true,
+      scrollerPositiveSize: true,
+      cellPositiveSize: true,
+      cellIntersectsScroller: true,
+      cellIntersectsViewport: true,
+      committedTargetMatches: false
+    });
     expect(runtime.animationFrames.size).toBe(0);
     expect(runtime.timers.size).toBe(0);
   });

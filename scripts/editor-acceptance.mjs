@@ -1051,7 +1051,14 @@ function createRuntimeCleanup(runtime) {
 export function editorDisplayLaunchArgs(platform = process.platform, environment = process.env) {
   if (platform !== "linux") return [...ISOLATED_EDITOR_ARGS];
   const mode = editorDisplayMode(environment);
-  if (mode === "headless") return ["--ozone-platform=headless", "--disable-gpu", ...ISOLATED_EDITOR_ARGS];
+  if (mode === "headless") {
+    return [
+      "--ozone-platform=headless",
+      "--ozone-override-screen-size=1920,1080",
+      "--disable-gpu",
+      ...ISOLATED_EDITOR_ARGS
+    ];
+  }
   if (mode === "xvfb") return ["--ozone-platform=x11", ...ISOLATED_EDITOR_ARGS];
   return [...ISOLATED_EDITOR_ARGS];
 }
