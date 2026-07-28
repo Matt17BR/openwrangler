@@ -243,3 +243,27 @@ test("reports an exhausted non-public Marketplace version as pending", async (co
     MarketplacePublicationPendingError
   );
 });
+
+test("accepts only the reviewed Marketplace polling-attempt bound", async (context) => {
+  const candidate = await fixture(context);
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 41,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(gallery(candidate.candidateSha256), candidate.candidate),
+      prerelease: false,
+      version
+    }),
+    /integer from 1 through 40/u
+  );
+  const result = await verifyMarketplacePublication({
+    attempts: 40,
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: fetchFixture(gallery(candidate.candidateSha256), candidate.candidate),
+    prerelease: false,
+    version
+  });
+  assert.equal(result.version, version);
+});

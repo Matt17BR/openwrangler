@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "ebd0b8da11b630c21c0a02bd5f456a435146aefa3eb50998de4a0786adc48f64";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "240af0fe2b24035bc2d6b4a9c7f411236bbc051aac117c68bfeaabe0072053ae";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -203,6 +203,13 @@ export function inspectMarketplacePromotionPipeline(source) {
     RELEASE_PRERELEASE: "$(releasePrerelease)",
     RELEASE_TAG: "$(releaseTag)"
   };
+  const publicVerifierEnvironment = {
+    AUTOMATION_SHA: "$(Build.SourceVersion)",
+    EXPECTED_SHA: "$(releaseCommit)",
+    OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS: 40,
+    RELEASE_PRERELEASE: "$(releasePrerelease)",
+    RELEASE_TAG: "$(releaseTag)"
+  };
   if (
     JSON.stringify(download?.env) !==
       JSON.stringify({
@@ -212,9 +219,11 @@ export function inspectMarketplacePromotionPipeline(source) {
         RELEASE_TAG: "$(releaseTag)"
       }) ||
     JSON.stringify(canonicalVerifier?.env) !== JSON.stringify(verifierEnvironment) ||
-    JSON.stringify(publicVerifier?.env) !== JSON.stringify(verifierEnvironment)
+    JSON.stringify(publicVerifier?.env) !== JSON.stringify(publicVerifierEnvironment)
   ) {
-    problems.push("Every registry artifact consumer must use the exact intake tag, commit, and channel outputs.");
+    problems.push(
+      "Every registry artifact consumer must use the exact intake outputs and the public verifier's maximum reviewed polling bound."
+    );
   }
   const azure = promotionSteps.find((step) => step?.task === "AzureCLI@2");
   const azureLines = normalizedLines(azure?.inputs?.inlineScript);

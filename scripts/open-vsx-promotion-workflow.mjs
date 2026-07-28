@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 64 * 1024;
-const AUDITED_WORKFLOW_SHA256 = "7e6239699f9566bc4ed4a5fb4567d95df79db1ebd75e7bc12ad05272803cd5b5";
+const AUDITED_WORKFLOW_SHA256 = "1f83263a4c263fb7155c7069b7c33dc279d13755acf57bac7a4a0843527f82d1";
 const CHECKOUT = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const TAG_EXPRESSION = "${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}";
@@ -115,7 +115,7 @@ export function inspectOpenVsxPromotionWorkflow(source) {
     job.name !== "Promote exact public GitHub release" ||
     job.if !== "${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}" ||
     job["runs-on"] !== "ubuntu-24.04" ||
-    job["timeout-minutes"] !== 60 ||
+    job["timeout-minutes"] !== 75 ||
     job.environment !== "publishing" ||
     !exactKeys(job.env, ["RELEASE_TAG"]) ||
     job.env.RELEASE_TAG !== TAG_EXPRESSION ||

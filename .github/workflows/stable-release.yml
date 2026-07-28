@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       publish:
-        description: Publish the accepted stable release to GitHub and Open VSX
+        description: Publish to GitHub and Open VSX and trigger Marketplace promotion
         required: true
         default: false
         type: boolean
@@ -617,11 +617,11 @@ jobs:
           test "$REMOTE_SSH_RESULT" = "success"
 
   release:
-    name: Publish GitHub and Open VSX stable release
+    name: Publish GitHub/Open VSX and trigger Marketplace
     needs: [package, acceptance-gate]
     if: ${{ inputs.publish == true }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     environment: publishing
     permissions:
       contents: write
@@ -659,6 +659,13 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - name: Publish or verify the exact lightweight release tag
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/push-stable-release-tag.mjs
       - name: Publish or verify the exact GitHub stable release
         env:
           EXPECTED_SHA: ${{ github.sha }}

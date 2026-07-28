@@ -152,7 +152,7 @@ test("post-publish verification remains bounded and fails closed", async () => {
   );
   await assert.rejects(
     waitForOpenVsxRelease({
-      attempts: 32,
+      attempts: 92,
       candidateBytes,
       candidateSha256,
       fetchImpl: exactFetch(),
@@ -161,4 +161,26 @@ test("post-publish verification remains bounded and fails closed", async () => {
     }),
     /outside the reviewed bound/u
   );
+});
+
+test("default post-publish verification covers the reviewed fifteen-minute propagation window", async () => {
+  let attempts = 0;
+  const result = await waitForOpenVsxRelease({
+    candidateBytes,
+    candidateSha256,
+    delay: async () => {},
+    fetchImpl: async (url) => {
+      if (url === api) {
+        attempts += 1;
+        return attempts < 91 ? jsonResponse({ error: "missing" }, 404) : jsonResponse(metadata());
+      }
+      if (url === checksum) return new Response(candidateSha256);
+      if (url === download) return new Response(candidateBytes);
+      throw new Error(`Unexpected Open VSX URL: ${url}`);
+    },
+    root,
+    version
+  });
+  assert.equal(result.status, "exact");
+  assert.equal(attempts, 91);
 });

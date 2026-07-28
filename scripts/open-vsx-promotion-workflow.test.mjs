@@ -15,6 +15,7 @@ test("Open VSX promotion rejects trigger, secret, source, channel, and publicati
     source.replace("  workflow_call:\n", "  not_workflow_call:\n"),
     source.replace("contents: read", "contents: write"),
     source.replace("environment: publishing", "environment: unprotected"),
+    source.replace("timeout-minutes: 75", "timeout-minutes: 60"),
     source.replace("ref: main", "ref: ${{ github.ref }}"),
     source.replace("persist-credentials: false", "persist-credentials: true"),
     source.replace(

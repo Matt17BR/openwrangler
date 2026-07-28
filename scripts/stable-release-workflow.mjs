@@ -8,10 +8,11 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
 const MAX_CONTRACT_DEPTH = 128;
 const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "b0fef5f61115ac30dc453a16b7c5c9c6e6b3f883951b617fe89df4b93b041cba";
+const AUDITED_WORKFLOW_SHA256 = "b19439b19111c19d897baf3cd2cd23dc83876b13db2b7b0bc37f8de73a4215a6";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
+const PUBLISH_TAG_COMMAND = "node scripts/push-stable-release-tag.mjs";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
@@ -748,6 +749,9 @@ export function inspectStableReleaseWorkflow(source) {
   if (release.environment !== "publishing") {
     problems.push("release must use the existing protected publishing environment.");
   }
+  if (release["runs-on"] !== "ubuntu-24.04" || release["timeout-minutes"] !== 40) {
+    problems.push("release must retain bounded Ubuntu publication time for registry propagation.");
+  }
   if (!exactKeys(release.permissions, ["contents"]) || release.permissions.contents !== "write") {
     problems.push("release must have only contents: write.");
   }
@@ -761,7 +765,28 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push("release must never rebuild or repackage the tested artifact.");
   }
   const releaseJobSteps = steps(release);
+  const publishTagStep = findRun(release, PUBLISH_TAG_COMMAND);
   const githubReleaseStep = findRun(release, "node scripts/publish-github-stable-release.mjs canonical-release");
+  if (
+    !exactKeys(publishTagStep, ["name", "env", "run"]) ||
+    publishTagStep.name !== "Publish or verify the exact lightweight release tag" ||
+    !exactKeys(publishTagStep.env, ["EXPECTED_SHA", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "RELEASE_TAG"]) ||
+    publishTagStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    publishTagStep.env.GITHUB_REPOSITORY !== "${{ github.repository }}" ||
+    publishTagStep.env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    publishTagStep.env.RELEASE_TAG !== RELEASE_TAG
+  ) {
+    problems.push("release must publish one exact lightweight tag with the ephemeral GitHub token.");
+  } else {
+    inspectAdjacentCanonicalVerification(
+      releaseJobSteps,
+      publishTagStep,
+      "canonical_release",
+      "Reverify the exact canonical artifact for final publication",
+      "stable release tag publication",
+      problems
+    );
+  }
   if (
     !exactKeys(githubReleaseStep, ["name", "env", "run"]) ||
     githubReleaseStep.name !== "Publish or verify the exact GitHub stable release" ||
@@ -772,15 +797,8 @@ export function inspectStableReleaseWorkflow(source) {
     githubReleaseStep.env.RELEASE_TAG !== RELEASE_TAG
   ) {
     problems.push("release must idempotently publish or verify the exact GitHub stable release.");
-  } else {
-    inspectAdjacentCanonicalVerification(
-      releaseJobSteps,
-      githubReleaseStep,
-      "canonical_release",
-      "Reverify the exact canonical artifact for final publication",
-      "GitHub release publication",
-      problems
-    );
+  } else if (releaseJobSteps.indexOf(githubReleaseStep) !== releaseJobSteps.indexOf(publishTagStep) + 1) {
+    problems.push("GitHub release publication must immediately follow the exact lightweight tag push.");
   }
 
   const tokenStep = findRun(release, "npx --no-install ovsx verify-pat Matt17BR");
