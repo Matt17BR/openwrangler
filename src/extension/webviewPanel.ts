@@ -136,6 +136,18 @@ export class OpenWranglerPanel {
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
 
+  static async previewStepForSessionForTesting(
+    request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
+  ): Promise<SessionOpenedResponse | undefined> {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === request.sessionId);
+    if (!target?.rendererReady || target.disposed) return undefined;
+    await target.forward(request);
+    return target.snapshot?.metadata.draftStep?.id === request.step.id &&
+      target.snapshot.metadata.revision > request.revision
+      ? target.snapshot
+      : undefined;
+  }
+
   static panelHydratedForSession(sessionId: string): boolean {
     const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
     return Boolean(

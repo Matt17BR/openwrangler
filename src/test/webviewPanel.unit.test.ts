@@ -463,6 +463,62 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
+  it("routes screenshot-evidence drafts through the live panel snapshot", async () => {
+    const draft = {
+      id: "screenshot-uppercase",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [
+          {
+            rowNumber: 0,
+            columnId: "c:0",
+            column: "city",
+            before: page.rows[0]!.values[0]!,
+            after: { kind: "string", raw: "BERLIN", display: "BERLIN", isNull: false, isNaN: false }
+          }
+        ],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest) =>
+      candidate.kind === "previewStep" ? preview : openedResponse
+    );
+    const harness = createPanelHarness({ request }, { openResponse: openedResponse });
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    const previewRequest = {
+      kind: "previewStep",
+      sessionId: "session",
+      revision: 0,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    } satisfies Extract<OpenWranglerRequest, { kind: "previewStep" }>;
+
+    const snapshot = await OpenWranglerPanel.previewStepForSessionForTesting(previewRequest);
+
+    expect(snapshot?.metadata.draftStep).toEqual(draft);
+    expect(snapshot?.metadata.revision).toBe(1);
+    expect(snapshot?.page.rows[0]?.values[0]?.display).toBe("Berlin");
+    expect(request).toHaveBeenLastCalledWith(previewRequest, undefined);
+    expect(harness.posted).toContainEqual(preview);
+  });
+
   it("replays retained state when an unhydrated renderer pulls its snapshot", async () => {
     const source: SessionSource = {
       kind: "file",

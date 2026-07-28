@@ -63,6 +63,7 @@ import {
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
+import { packagedScreenshotFileName, packagedScreenshotFixtureCsv } from "./screenshotEvidence";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -78,6 +79,9 @@ interface TestApi {
     | undefined;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  previewPanelStep(
+    request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
+  ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
   panelHydrated(sessionId: string): boolean;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -646,7 +650,7 @@ export async function run(): Promise<void> {
   }
   if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
     recordAcceptanceProgress("verify:screenshots");
-    await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+    await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
   if (testPython && process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
     recordAcceptanceProgress("verify:dependency-recovery");
@@ -4393,22 +4397,11 @@ async function captureWorkbenchScreenshot(page: Page, destination: string): Prom
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 }
 
-async function capturePackagedEditorScreenshots(
-  testing: TestApi,
-  fixture: vscode.Uri,
-  outputDirectory: string
-): Promise<void> {
+async function capturePackagedEditorScreenshots(testing: TestApi, outputDirectory: string): Promise<void> {
   if (process.platform !== "linux") return;
-  recordAcceptanceProgress("verify:screenshots:open");
-  mkdirSync(outputDirectory, { recursive: true });
-  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
-  await waitFor(
-    () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the custom editor before screenshot capture"
-  );
-  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
-
+  const fixtureDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-screenshot-evidence-"));
+  const fixture = vscode.Uri.file(path.join(fixtureDirectory, "sales-snapshot.csv"));
+  writeFileSync(fixture.fsPath, packagedScreenshotFixtureCsv(), { encoding: "utf8", flag: "wx" });
   const workbench = vscode.workspace.getConfiguration("workbench");
   const windowConfiguration = vscode.workspace.getConfiguration("window");
   const scm = vscode.workspace.getConfiguration("scm");
@@ -4425,7 +4418,55 @@ async function capturePackagedEditorScreenshots(
   const originalTypescriptValidation = typescript.get<boolean>("validate.enable");
   const originalJavascriptValidation = javascript.get<boolean>("validate.enable");
   const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
-  const capturePage = await connectToEditorWorkbench();
+  let capturePage: Page;
+  try {
+    capturePage = await connectToEditorWorkbench();
+    recordAcceptanceProgress("verify:screenshots:open");
+    mkdirSync(outputDirectory, { recursive: true });
+    await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the custom editor before screenshot capture"
+    );
+    const opened = testing.activeSession();
+    assert.ok(opened, "The screenshot fixture must publish one active session.");
+    assert.deepEqual(opened.metadata.shape, { rows: 12, columns: 6 });
+    assert.deepEqual(opened.metadata.filterModel, { filters: [], sort: [] });
+    assert.deepEqual(opened.metadata.steps, []);
+    assert.equal(opened.metadata.draftStep, undefined);
+    assert.deepEqual(opened.viewState, {
+      filterModel: { filters: [], sort: [] },
+      columnWidths: {},
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    await waitFor(
+      () => testing.panelHydrated(opened.sessionId),
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the screenshot fixture panel to hydrate"
+    );
+    assert.equal(
+      await testing.synchronizePanel(opened.sessionId),
+      true,
+      "The clean screenshot fixture must synchronize with its exact renderer."
+    );
+    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  } catch (error) {
+    const active = testing.activeSession();
+    if (active?.metadata.source.path === fixture.fsPath) {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        10_000,
+        "the failed screenshot session and runtime to close"
+      );
+    }
+    if (testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning()) {
+      rmSync(fixtureDirectory, { recursive: true, force: true });
+    }
+    throw error;
+  }
+
   const darkTheme = contributedTheme("vs-dark", "Default Dark Modern");
   const lightTheme = contributedTheme("vs", "Default Light Modern");
   const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
@@ -4444,17 +4485,70 @@ async function capturePackagedEditorScreenshots(
     await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
     await prepareWorkbenchForEvidence();
+    await hideCodePreviewPanel();
     await new Promise((resolve) => setTimeout(resolve, 800));
-    recordAcceptanceProgress("verify:screenshots:dark");
-    await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, `${editor}-dark.png`);
-    recordAcceptanceProgress("verify:screenshots:light");
-    await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, `${editor}-light.png`);
+    recordAcceptanceProgress("verify:screenshots:hero-dark");
+    await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, packagedScreenshotFileName(editor, "hero", "dark"));
+    recordAcceptanceProgress("verify:screenshots:hero-light");
+    await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, packagedScreenshotFileName(editor, "hero", "light"));
     recordAcceptanceProgress("verify:screenshots:high-contrast");
     await captureTheme(
       highContrastTheme,
       vscode.ColorThemeKind.HighContrast,
       4,
       `${editor}-high-contrast-zoom-200.png`
+    );
+    recordAcceptanceProgress("verify:screenshots:draft");
+    const current = testing.activeSession();
+    assert.ok(current, "The screenshot fixture must remain active before creating its draft.");
+    const revenue = columnReference(current.metadata, "revenue");
+    const previewRequest = {
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: current.sessionId,
+      revision: current.metadata.revision,
+      step: {
+        id: "readme-round-revenue",
+        kind: "roundNumber",
+        params: { column: revenue, decimals: 0 }
+      },
+      offset: 0,
+      limit: 20
+    } satisfies Extract<OpenWranglerRequest, { kind: "previewStep" }>;
+    const previewed = await testing.previewPanelStep(previewRequest);
+    assert.ok(previewed, "The README transform evidence must preview through the live custom-editor panel.");
+    assert.equal(previewed.metadata.draftStep?.kind, "roundNumber");
+    assert.deepEqual(gridColumnDisplays(previewed.page, revenue.id).slice(0, 4), [
+      "1250.0",
+      "875.0",
+      "1500.0",
+      "640.0"
+    ]);
+    assert.equal(
+      gridColumnDisplays(previewed.page, revenue.id).some((value) => /0{8,}/u.test(value)),
+      false,
+      "Rounded README evidence must not contain floating-point representation noise."
+    );
+    assert.equal(
+      await testing.synchronizePanel(current.sessionId),
+      true,
+      "The draft screenshot must synchronize the runtime diff and generated code with the exact renderer."
+    );
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    await waitForCodePreviewPanel();
+    recordAcceptanceProgress("verify:screenshots:transform-dark");
+    await captureTheme(
+      darkTheme,
+      vscode.ColorThemeKind.Dark,
+      0,
+      packagedScreenshotFileName(editor, "transform", "dark")
+    );
+    recordAcceptanceProgress("verify:screenshots:transform-light");
+    await captureTheme(
+      lightTheme,
+      vscode.ColorThemeKind.Light,
+      0,
+      packagedScreenshotFileName(editor, "transform", "light")
     );
     recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
@@ -4482,6 +4576,7 @@ async function capturePackagedEditorScreenshots(
       10_000,
       "the screenshot session and runtime to close"
     );
+    rmSync(fixtureDirectory, { recursive: true, force: true });
   }
   recordAcceptanceProgress("verify:screenshots:complete");
 
@@ -4539,6 +4634,26 @@ async function capturePackagedEditorScreenshots(
       }
     }
     await clearNotifications(commands);
+  }
+
+  async function hideCodePreviewPanel(): Promise<void> {
+    const panel = capturePage.locator(".part.panel").first();
+    if ((await panel.count()) === 0 || !(await panel.isVisible())) return;
+    const commands = new Set(await vscode.commands.getCommands(true));
+    assert.equal(
+      commands.has("workbench.action.closePanel"),
+      true,
+      "The workbench must expose its panel close command."
+    );
+    await vscode.commands.executeCommand("workbench.action.closePanel");
+    await panel.waitFor({ state: "hidden", timeout: 10_000 });
+  }
+
+  async function waitForCodePreviewPanel(): Promise<void> {
+    const panel = capturePage.locator(".part.panel").first();
+    await panel.waitFor({ state: "visible", timeout: 10_000 });
+    const codePreview = panel.getByText("Code Preview", { exact: true });
+    assert.equal(await codePreview.count(), 1, "The transform screenshot must show the native Code Preview panel.");
   }
 
   async function clearNotifications(commands?: Set<string>): Promise<void> {

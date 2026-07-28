@@ -4,10 +4,12 @@ Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family 
 
 Polars and Pandas are first-class backends. DuckDB provides a native file-backed path for larger local datasets.
 
+Files open into a focused grid with the native Operations, Summary, Filters / Sorts, and Cleaning Steps views alongside it:
+
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-light.png">
-  <img alt="Open Wrangler running in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-light.png">
+  <img alt="A clean Open Wrangler file view in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
 </picture>
 
 <!-- open-wrangler-release-status:start -->
@@ -61,6 +63,14 @@ The checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/
 2. Add an operation and configure it.
 3. Check the draft grid, diff, and generated code.
 4. Apply or discard the draft, then export the committed plan when ready.
+
+Every change remains a draft until you confirm it. The preview keeps the data diff and generated engine-native code visible together:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-transform-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-transform-light.png">
+  <img alt="A rounded numeric column shown as an Open Wrangler draft diff with generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-transform-dark.png">
+</picture>
 
 Applied steps form a replayable history. The latest step can be edited, steps can be undone, and viewing filters remain independent. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every operation, command, setting, and shortcut.
 
