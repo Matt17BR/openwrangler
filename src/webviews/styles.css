@@ -834,30 +834,182 @@ th.rowHeader {
   font-style: italic;
 }
 
-.summaryPanel h3 {
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  margin: 14px 0 6px;
+.summaryPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+.summaryPanel[data-active-view="filters"] {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.filtersViewContent {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.filtersViewContent > .filterSortPanel {
+  border-bottom: 0;
+}
+
+.summaryViewTabs {
+  background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-sideBar-background));
+  border-bottom: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 5px 8px 0;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.summaryViewTab {
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 2px 2px 0 0;
+  color: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
+  min-width: 0;
+  padding: 6px 8px 5px;
+}
+
+.summaryViewTab:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+}
+
+.summaryViewTab[aria-selected="true"] {
+  background: var(--vscode-tab-activeBackground, var(--vscode-sideBar-background));
+  border-bottom-color: var(--vscode-focusBorder);
+  color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+}
+
+.summaryViewContent {
+  padding: 12px;
+}
+
+.summaryColumnHeader,
+.summaryDatasetHeader {
+  margin-bottom: 10px;
+}
+
+.summaryColumnHeader {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.summaryColumnHeader > div {
+  min-width: 0;
+}
+
+.summaryColumnHeader h2,
+.summaryDatasetHeader h2 {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.summaryEyebrow {
+  color: var(--vscode-descriptionForeground);
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.summaryTypeBadge {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 999px;
+  color: var(--vscode-descriptionForeground);
+  flex: 0 1 auto;
+  font-size: 10px;
+  max-width: 48%;
+  overflow: hidden;
+  padding: 2px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summaryEvidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 10px;
+}
+
+.summaryEvidence span {
+  background: var(--vscode-badge-background);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  font-size: 10px;
+  padding: 2px 7px;
+}
+
+.summaryEvidence span.sampled {
+  background: transparent;
+  border-color: var(--vscode-editorWarning-foreground, var(--vscode-panel-border));
+  color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+}
+
+.summaryStatGrid {
+  background: var(--vscode-editorWidget-background, transparent);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  gap: 5px 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.summaryStatGrid + .summaryStatGrid {
+  margin-top: 8px;
+}
+
+.summaryStatGrid dd {
+  font-variant-numeric: tabular-nums;
+  max-width: 180px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.summaryPanel h3 {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  margin: 14px 0 7px;
+  text-transform: uppercase;
+}
+
+.summaryTopValues .barRow,
+.summaryPanel .missingList .barRow {
+  grid-template-columns: minmax(0, 1fr) minmax(48px, 80px) auto;
+}
+
+.summaryTopValues small,
+.summaryPanel .missingList small {
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryPlaceholder {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  margin: 8px 0 0;
 }
 
 .summaryGroup {
   border-top: 1px solid var(--vscode-panel-border);
-  padding: 8px 0;
-}
-
-.summaryPanel {
-  flex: 0 1 52%;
-  overflow: auto;
+  margin-top: 12px;
+  padding: 9px 0 0;
 }
 
 .summaryPanel summary {
   cursor: pointer;
-}
-
-.summaryPanel summary small {
-  display: block;
-  opacity: 0.65;
 }
 
 dl {

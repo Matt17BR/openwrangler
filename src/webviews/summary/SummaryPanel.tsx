@@ -1,110 +1,311 @@
-import type { ColumnSchema, ColumnSummary, SessionMetadata } from "../../shared/protocol";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { ColumnSchema, ColumnSummary, SessionMetadata, ValueCount } from "../../shared/protocol";
+
+export type SummaryPanelView = "column" | "dataset" | "filters";
 
 interface SummaryPanelProps {
   metadata: SessionMetadata | undefined;
   summaries: ColumnSummary[];
   schemaById: Map<string, ColumnSchema>;
+  selectedColumnId?: string;
+  activeView: SummaryPanelView;
+  onSelectView(view: SummaryPanelView): void;
 }
 
-export function SummaryPanel({ metadata, summaries, schemaById }: SummaryPanelProps) {
-  const missingByColumn = metadata?.stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
-  const summaryByColumnId = new Map(summaries.map((summary) => [summary.columnId, summary]));
-  const orderedSummaries = metadata
-    ? metadata.schema.flatMap((column) => {
-        const summary = summaryByColumnId.get(column.id);
-        return summary ? [summary] : [];
-      })
-    : summaries;
+const summaryViews: readonly SummaryPanelView[] = ["column", "dataset", "filters"];
+
+export function SummaryPanel({
+  metadata,
+  summaries,
+  schemaById,
+  selectedColumnId,
+  activeView,
+  onSelectView
+}: SummaryPanelProps) {
+  const resolvedColumnId =
+    selectedColumnId && schemaById.has(selectedColumnId) ? selectedColumnId : metadata?.schema[0]?.id;
+  const selectedSchema = resolvedColumnId ? schemaById.get(resolvedColumnId) : undefined;
+  const selectedSummary = resolvedColumnId
+    ? summaries.find((summary) => summary.columnId === resolvedColumnId)
+    : undefined;
 
   return (
-    <section className="panel summaryPanel">
-      <h2>Data Summary</h2>
-      <dl className="dataSummaryStats">
-        <dt>Data shape</dt>
-        <dd>
-          {metadata
-            ? `${metadata.filteredShape.rows.toLocaleString()} rows x ${metadata.filteredShape.columns.toLocaleString()} columns`
-            : "Loading"}
-        </dd>
-        <dt>Columns</dt>
-        <dd>{metadata?.shape.columns.toLocaleString() ?? "-"}</dd>
-        <dt>Rows</dt>
-        <dd>{metadata?.filteredShape.rows.toLocaleString() ?? "-"}</dd>
-        <dt>Missing cells</dt>
-        <dd>{metadata?.stats?.missingCells.toLocaleString() ?? "-"}</dd>
-        <dt>Duplicate rows</dt>
-        <dd>{metadata?.stats?.duplicateRows.toLocaleString() ?? "-"}</dd>
-      </dl>
-      <details className="summaryGroup" open={missingByColumn.length > 0}>
-        <summary>Missing values (by column)</summary>
-        {!metadata?.stats ? (
-          <p className="mutedText" role="status">
-            Profiling exact missing values…
-          </p>
-        ) : missingByColumn.length === 0 ? (
-          <p className="mutedText">No missing values.</p>
-        ) : (
-          <div className="missingList">
-            {missingByColumn.map((item, index) => (
-              <div key={`${item.column}-${index}`} className="barRow">
-                <span>{item.column}</span>
-                <meter min={0} max={metadata?.filteredShape.rows ?? 1} value={item.count} />
-                <small>{item.count.toLocaleString()}</small>
-              </div>
-            ))}
-          </div>
-        )}
-      </details>
+    <section className="panel summaryPanel" data-active-view={activeView}>
+      <div className="summaryViewTabs" role="tablist" aria-label="Insights view">
+        {summaryViews.map((view) => (
+          <button
+            key={view}
+            id={tabId(view)}
+            type="button"
+            role="tab"
+            className="summaryViewTab"
+            aria-controls={panelId(view)}
+            aria-selected={activeView === view}
+            tabIndex={activeView === view ? 0 : -1}
+            data-summary-view={view}
+            onClick={() => onSelectView(view)}
+            onKeyDown={(event) => moveTabSelection(event, view, onSelectView)}
+          >
+            {viewLabel(view)}
+          </button>
+        ))}
+      </div>
 
-      <h3>Column Summary</h3>
-      {orderedSummaries.length === 0 && <p>No summary data yet.</p>}
-      {orderedSummaries.map((summary) => {
-        const schema = schemaById.get(summary.columnId);
-        const displayName = columnDisplayName(summary, schema, metadata?.schema);
-        return (
-          <details key={summary.columnId} className="summaryGroup" open={orderedSummaries.length <= 6}>
-            <summary>
-              <span>{displayName}</span>
-              <small>{schema?.rawType ?? summary.rawType}</small>
-            </summary>
-            <dl>
-              <dt>Values</dt>
-              <dd>{summary.totalCount.toLocaleString()}</dd>
-              <dt>Missing</dt>
-              <dd>{(summary.nullCount + summary.nanCount).toLocaleString()}</dd>
-              <dt>Distinct</dt>
-              <dd>{summary.distinctCount?.toLocaleString() ?? "n/a"}</dd>
-              {summary.numeric && (
-                <>
-                  <dt>Min</dt>
-                  <dd>{formatNumber(summary.numeric.min)}</dd>
-                  <dt>Max</dt>
-                  <dd>{formatNumber(summary.numeric.max)}</dd>
-                  <dt>Mean</dt>
-                  <dd>{formatNumber(summary.numeric.mean)}</dd>
-                  <dt>Median</dt>
-                  <dd>{formatNumber(summary.numeric.median)}</dd>
-                  <dt>Std. deviation</dt>
-                  <dd>{formatNumber(summary.numeric.std)}</dd>
-                </>
-              )}
-            </dl>
-            {summary.topValues.length > 0 && (
-              <div className="topValues">
-                {summary.topValues.map((item, index) => (
-                  <div key={`${item.value}-${index}`} className="barRow">
-                    <span>{item.value}</span>
-                    <meter min={0} max={summary.topValues[0]?.count ?? 1} value={item.count} />
-                    <small>{item.count}</small>
+      {activeView === "column" && (
+        <div id={panelId("column")} className="summaryViewContent" role="tabpanel" aria-labelledby={tabId("column")}>
+          <SelectedColumnSummary metadata={metadata} schema={selectedSchema} summary={selectedSummary} />
+        </div>
+      )}
+
+      {activeView === "dataset" && (
+        <div id={panelId("dataset")} className="summaryViewContent" role="tabpanel" aria-labelledby={tabId("dataset")}>
+          <DatasetSummary metadata={metadata} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SelectedColumnSummary({
+  metadata,
+  schema,
+  summary
+}: {
+  metadata: SessionMetadata | undefined;
+  schema: ColumnSchema | undefined;
+  summary: ColumnSummary | undefined;
+}) {
+  if (!metadata) {
+    return (
+      <p className="summaryPlaceholder" role="status">
+        Preparing column summary…
+      </p>
+    );
+  }
+  if (!schema) {
+    return <p className="summaryPlaceholder">This dataset has no columns.</p>;
+  }
+
+  const displayName = summary
+    ? columnDisplayName(summary, schema, metadata.schema)
+    : schemaDisplayName(schema, metadata.schema);
+
+  return (
+    <>
+      <header className="summaryColumnHeader">
+        <div>
+          <span className="summaryEyebrow">Selected column</span>
+          <h2>{displayName}</h2>
+        </div>
+        <span className="summaryTypeBadge">{schema.rawType}</span>
+      </header>
+
+      {!summary ? (
+        <p className="summaryPlaceholder" role="status">
+          Profiling selected column…
+        </p>
+      ) : (
+        <>
+          <div className="summaryEvidence" aria-label="Profile provenance">
+            <span>Exact statistics</span>
+            {summary.visualization && (
+              <span className={summary.visualization.sampled ? "sampled" : undefined}>
+                {summary.visualization.sampled ? "Sampled distribution" : "Exact distribution"}
+              </span>
+            )}
+          </div>
+
+          <dl className="summaryStatGrid">
+            <dt>Rows</dt>
+            <dd>{summary.totalCount.toLocaleString()}</dd>
+            <dt>Null</dt>
+            <dd>{summary.nullCount.toLocaleString()}</dd>
+            <dt>NaN</dt>
+            <dd>{summary.nanCount.toLocaleString()}</dd>
+            <dt>Distinct</dt>
+            <dd>{summary.distinctCount?.toLocaleString() ?? "n/a"}</dd>
+            <TypeSpecificStats summary={summary} />
+          </dl>
+
+          <TopValues summary={summary} />
+        </>
+      )}
+    </>
+  );
+}
+
+function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
+  if (summary.numeric) {
+    return (
+      <>
+        <dt>Min</dt>
+        <dd>{formatNumber(summary.numeric.min)}</dd>
+        <dt>Max</dt>
+        <dd>{formatNumber(summary.numeric.max)}</dd>
+        <dt>Mean</dt>
+        <dd>{formatNumber(summary.numeric.mean)}</dd>
+        <dt>Median</dt>
+        <dd>{formatNumber(summary.numeric.median)}</dd>
+        <dt>Std. deviation</dt>
+        <dd>{formatNumber(summary.numeric.std)}</dd>
+      </>
+    );
+  }
+
+  if (summary.visualization?.kind === "datetime") {
+    return (
+      <>
+        <dt>Min</dt>
+        <dd>{summary.visualization.min ?? "n/a"}</dd>
+        <dt>Max</dt>
+        <dd>{summary.visualization.max ?? "n/a"}</dd>
+      </>
+    );
+  }
+
+  if (summary.visualization?.kind === "boolean") {
+    return (
+      <>
+        <dt>True</dt>
+        <dd>{summary.visualization.trueCount.toLocaleString()}</dd>
+        <dt>False</dt>
+        <dd>{summary.visualization.falseCount.toLocaleString()}</dd>
+      </>
+    );
+  }
+
+  if (summary.visualization?.kind === "categorical" && summary.visualization.otherCount > 0) {
+    return (
+      <>
+        <dt>Other values</dt>
+        <dd>{summary.visualization.otherCount.toLocaleString()}</dd>
+      </>
+    );
+  }
+
+  return null;
+}
+
+function TopValues({ summary }: { summary: ColumnSummary }) {
+  const categorical = summary.visualization?.kind === "categorical" ? summary.visualization : undefined;
+  if (!categorical) return null;
+  const values = categorical.categories;
+  const otherCount = categorical?.otherCount ?? 0;
+  if (values.length === 0 && otherCount === 0) return null;
+  const maximum = Math.max(1, ...values.map((item) => item.count), otherCount);
+
+  return (
+    <section className="summaryTopValues" aria-labelledby={`summary-top-values-${summary.columnId}`}>
+      <h3 id={`summary-top-values-${summary.columnId}`}>Top values</h3>
+      <div className="topValues">
+        {values.map((item, index) => (
+          <TopValueRow key={topValueKey(item, index)} item={item} maximum={maximum} />
+        ))}
+        {otherCount > 0 && <TopValueRow item={{ value: "Other", count: otherCount }} maximum={maximum} />}
+      </div>
+    </section>
+  );
+}
+
+function TopValueRow({ item, maximum }: { item: ValueCount; maximum: number }) {
+  const label = item.value.length === 0 ? "Empty string" : item.value;
+  return (
+    <div className="barRow">
+      <span title={label}>{label}</span>
+      <meter min={0} max={maximum} value={item.count} aria-label={`${label}: ${item.count.toLocaleString()}`} />
+      <small>{item.count.toLocaleString()}</small>
+    </div>
+  );
+}
+
+function DatasetSummary({ metadata }: { metadata: SessionMetadata | undefined }) {
+  const stats = metadata?.stats;
+  const missingByColumn = stats?.missingValuesByColumn.filter((item) => item.count > 0) ?? [];
+
+  return (
+    <>
+      <header className="summaryDatasetHeader">
+        <span className="summaryEyebrow">Current view</span>
+        <h2>Dataset</h2>
+      </header>
+      <dl className="summaryStatGrid dataSummaryStats">
+        <dt>Rows</dt>
+        <dd>{metadata?.filteredShape.rows.toLocaleString() ?? "Loading"}</dd>
+        <dt>Columns</dt>
+        <dd>{metadata?.filteredShape.columns.toLocaleString() ?? "Loading"}</dd>
+        {metadata && metadata.shape.rows !== metadata.filteredShape.rows && (
+          <>
+            <dt>Rows before filters</dt>
+            <dd>{metadata.shape.rows.toLocaleString()}</dd>
+          </>
+        )}
+      </dl>
+
+      {!stats ? (
+        <p className="summaryPlaceholder" role="status">
+          Profiling exact dataset statistics…
+        </p>
+      ) : (
+        <>
+          <div className="summaryEvidence" aria-label="Profile provenance">
+            <span>Exact statistics</span>
+          </div>
+          <dl className="summaryStatGrid">
+            <dt>Missing cells</dt>
+            <dd>{stats.missingCells.toLocaleString()}</dd>
+            <dt>Rows with missing values</dt>
+            <dd>{stats.missingRows.toLocaleString()}</dd>
+            <dt>Duplicate rows</dt>
+            <dd>{stats.duplicateRows.toLocaleString()}</dd>
+          </dl>
+
+          <details className="summaryGroup" open={missingByColumn.length > 0}>
+            <summary>Missing values by column</summary>
+            {missingByColumn.length === 0 ? (
+              <p className="mutedText">No missing values.</p>
+            ) : (
+              <div className="missingList">
+                {missingByColumn.map((item, index) => (
+                  <div key={`${item.column}-${index}`} className="barRow">
+                    <span title={item.column}>{item.column}</span>
+                    <meter
+                      min={0}
+                      max={metadata?.filteredShape.rows ?? 1}
+                      value={item.count}
+                      aria-label={`${item.column}: ${item.count.toLocaleString()} missing`}
+                    />
+                    <small>{item.count.toLocaleString()}</small>
                   </div>
                 ))}
               </div>
             )}
           </details>
-        );
-      })}
-    </section>
+        </>
+      )}
+    </>
   );
+}
+
+function moveTabSelection(
+  event: ReactKeyboardEvent<HTMLButtonElement>,
+  currentView: SummaryPanelView,
+  onSelectView: (view: SummaryPanelView) => void
+): void {
+  let nextIndex: number;
+  const currentIndex = summaryViews.indexOf(currentView);
+  if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % summaryViews.length;
+  else if (event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + summaryViews.length) % summaryViews.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else if (event.key === "End") nextIndex = summaryViews.length - 1;
+  else return;
+
+  event.preventDefault();
+  const nextView = summaryViews[nextIndex];
+  const nextTab = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(
+    `[data-summary-view="${nextView}"]`
+  );
+  nextTab?.focus();
+  onSelectView(nextView);
 }
 
 function columnDisplayName(
@@ -113,8 +314,30 @@ function columnDisplayName(
   allColumns: readonly ColumnSchema[] | undefined
 ): string {
   if (!schema || !allColumns) return summary.column;
+  return schemaDisplayName(schema, allColumns);
+}
+
+function schemaDisplayName(schema: ColumnSchema, allColumns: readonly ColumnSchema[]): string {
   const duplicateCount = allColumns.filter((column) => column.name === schema.name).length;
-  return duplicateCount > 1 ? `${summary.column} (column ${schema.position + 1})` : summary.column;
+  return duplicateCount > 1 ? `${schema.name} (column ${schema.position + 1})` : schema.name;
+}
+
+function topValueKey(item: ValueCount, index: number): string {
+  return `${item.value}-${item.count}-${index}`;
+}
+
+function viewLabel(view: SummaryPanelView): string {
+  if (view === "column") return "Column";
+  if (view === "dataset") return "Dataset";
+  return "Filters";
+}
+
+function tabId(view: SummaryPanelView): string {
+  return `openwrangler-insights-tab-${view}`;
+}
+
+function panelId(view: SummaryPanelView): string {
+  return `openwrangler-insights-view-${view}`;
 }
 
 const formatNumber = (value: number | undefined): string => {

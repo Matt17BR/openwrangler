@@ -363,7 +363,7 @@ writeWebviewHarness(
   { [payloads.values.column]: payloads.values },
   "filter-panel.png",
   {},
-  { openColumnFilter: "city" }
+  { openColumnFilter: "city", insightsView: "filters", selectedColumnPosition: 0 }
 );
 const truncatedNotebook = structuredClone(payloads.notebook);
 const capturedNotebookRows = truncatedNotebook.page.rows.length;
@@ -419,7 +419,12 @@ writeWebviewHarness(
   {},
   "acceptance/summary-families-dark-800.png",
   {},
-  { width: 800, defaultColumnWidth: 140 }
+  {
+    width: 800,
+    defaultColumnWidth: 140,
+    insightsView: "column",
+    selectedColumnPosition: 0
+  }
 );
 writeWebviewHarness(
   "summary-families-dark-zoom-200.html",
@@ -427,7 +432,12 @@ writeWebviewHarness(
   {},
   "acceptance/summary-families-dark-zoom-200.png",
   {},
-  { zoom: 2, defaultColumnWidth: 140 }
+  {
+    zoom: 2,
+    defaultColumnWidth: 140,
+    insightsView: "dataset",
+    selectedColumnPosition: 0
+  }
 );
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
 writeWebviewHarness(
@@ -475,10 +485,21 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const height = appearance.height ?? 760;
   const editorAction = appearance.editorAction;
   const openColumnFilter = appearance.openColumnFilter;
+  const insightsView = appearance.insightsView;
+  const selectedColumnPosition = appearance.selectedColumnPosition;
   const stepInspections = appearance.stepInspections ?? {};
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
   const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
   const strictProjectedPages = appearance.strictProjectedPages === true;
+  if (insightsView !== undefined && !["column", "dataset", "filters"].includes(insightsView)) {
+    throw new Error(`Unsupported Insights view for ${fileName}: ${String(insightsView)}`);
+  }
+  if (
+    selectedColumnPosition !== undefined &&
+    (!Number.isInteger(selectedColumnPosition) || selectedColumnPosition < 0)
+  ) {
+    throw new Error(`Invalid selected-column position for ${fileName}: ${String(selectedColumnPosition)}`);
+  }
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -500,8 +521,61 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
     const strictProjectedPages = ${stringifyForInlineScript(strictProjectedPages)};
     window.openWranglerMessages = [];
     window.openWranglerHarnessErrors = [];
+    window.openWranglerHarnessActions = {
+      selectedColumnPosition: undefined,
+      insightsView: undefined
+    };
     window.openWranglerProjectedResponses = [];
     window.openWranglerColumnBlockSize = ${stringifyForInlineScript(fetchColumnBlockSize)};
+    const selectedColumnPosition = ${stringifyForInlineScript(selectedColumnPosition)};
+    const insightsView = ${stringifyForInlineScript(insightsView)};
+    function activateInsightsScenario(attempt = 0) {
+      if (!insightsView) return;
+      if (attempt >= 40) {
+        window.openWranglerHarnessErrors.push(
+          "Could not activate the requested Insights scenario: " + insightsView + "."
+        );
+        return;
+      }
+
+      if (
+        Number.isInteger(selectedColumnPosition) &&
+        window.openWranglerHarnessActions.selectedColumnPosition !== selectedColumnPosition
+      ) {
+        const cell = document.querySelector(
+          'td[data-grid-row="0"][data-grid-column="' + selectedColumnPosition + '"]'
+        );
+        if (cell instanceof HTMLElement) {
+          cell.focus();
+          window.openWranglerHarnessActions.selectedColumnPosition = selectedColumnPosition;
+        }
+        setTimeout(() => activateInsightsScenario(attempt + 1), 25);
+        return;
+      }
+
+      const panel = document.getElementById("openwrangler-insights-panel");
+      if (!panel) {
+        const toggle = document.querySelector(
+          'button[aria-controls="openwrangler-insights-panel"]'
+        );
+        if (toggle instanceof HTMLButtonElement) toggle.click();
+        setTimeout(() => activateInsightsScenario(attempt + 1), 25);
+        return;
+      }
+
+      const tab = [...panel.querySelectorAll('[role="tab"][data-summary-view]')]
+        .find(candidate => candidate.dataset.summaryView === insightsView);
+      if (!(tab instanceof HTMLButtonElement)) {
+        setTimeout(() => activateInsightsScenario(attempt + 1), 25);
+        return;
+      }
+      if (tab.getAttribute("aria-selected") !== "true") {
+        tab.click();
+        setTimeout(() => activateInsightsScenario(attempt + 1), 25);
+        return;
+      }
+      window.openWranglerHarnessActions.insightsView = insightsView;
+    }
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
         window.openWranglerMessages.push(message);
@@ -520,6 +594,14 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
             filter?.focus();
             filter?.click();
           }, 100);`
+              : ""
+          }
+          ${
+            insightsView
+              ? `setTimeout(
+            () => activateInsightsScenario(),
+            ${openColumnFilter ? 160 : 80}
+          );`
               : ""
           }
         }

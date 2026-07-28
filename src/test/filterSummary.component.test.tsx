@@ -602,46 +602,241 @@ describe("FilterPanel", () => {
 });
 
 describe("SummaryPanel", () => {
-  const summaries: ColumnSummary[] = [
-    {
-      columnId: "c:1",
-      column: "sales",
-      type: "float",
-      rawType: "float",
-      totalCount: 4,
-      nullCount: 1,
-      nanCount: 2,
-      distinctCount: 2,
-      topValues: [
-        { value: "12", count: 2 },
-        { value: "10", count: 1 }
+  const numericSummary: ColumnSummary = {
+    columnId: "c:1",
+    column: "sales",
+    type: "float",
+    rawType: "Float64",
+    totalCount: 4,
+    nullCount: 1,
+    nanCount: 2,
+    distinctCount: 2,
+    topValues: [
+      { value: "12", count: 2 },
+      { value: "10", count: 1 }
+    ],
+    numeric: { min: 10, max: 12, mean: Number.NaN, median: 12 },
+    visualization: {
+      kind: "numeric",
+      bins: [
+        { min: 10, max: 11, count: 1 },
+        { min: 11, max: 12, count: 2 }
       ],
-      numeric: { min: 10, max: 12, mean: Number.NaN, median: 12 }
+      sampled: true
     }
-  ];
+  };
 
-  it("renders loading, empty, missing, numeric, and top-value summaries", () => {
-    const { rerender } = render(<SummaryPanel metadata={undefined} summaries={[]} schemaById={new Map()} />);
-    expect(screen.getByText("Loading")).toBeInTheDocument();
-    expect(screen.getByText("Profiling exact missing values…")).toBeInTheDocument();
-    expect(screen.getByText("No summary data yet.")).toBeInTheDocument();
+  const categoricalSummary: ColumnSummary = {
+    columnId: "c:0",
+    column: "city",
+    type: "string",
+    rawType: "String",
+    totalCount: 4,
+    nullCount: 0,
+    nanCount: 0,
+    distinctCount: 3,
+    topValues: [
+      { value: "Berlin", count: 2 },
+      { value: "", count: 1 }
+    ],
+    visualization: {
+      kind: "categorical",
+      categories: [
+        { value: "Berlin", count: 2 },
+        { value: "", count: 1 }
+      ],
+      otherCount: 1
+    }
+  };
+
+  const renderSummary = (
+    options: {
+      activeView?: "column" | "dataset" | "filters";
+      selectedColumnId?: string;
+      metadataValue?: SessionMetadata;
+      summaries?: ColumnSummary[];
+      onSelectView?: (view: "column" | "dataset" | "filters") => void;
+    } = {}
+  ) => {
+    const metadataValue = options.metadataValue ?? metadata;
+    return render(
+      <SummaryPanel
+        metadata={metadataValue}
+        summaries={options.summaries ?? [categoricalSummary, numericSummary]}
+        schemaById={new Map(metadataValue.schema.map((column) => [column.id, column]))}
+        selectedColumnId={options.selectedColumnId}
+        activeView={options.activeView ?? "column"}
+        onSelectView={options.onSelectView ?? (() => undefined)}
+      />
+    );
+  };
+
+  it("exposes one keyboard-operable Column, Dataset, and Filters tablist", () => {
+    const onSelectView = vi.fn();
+    renderSummary({ activeView: "column", onSelectView });
+
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Column", "Dataset", "Filters"]);
+    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    expect(tabs[0]).toHaveAttribute("tabindex", "0");
+    expect(tabs[1]).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.keyDown(tabs[0]!, { key: "ArrowRight" });
+    expect(onSelectView).toHaveBeenLastCalledWith("dataset");
+    expect(tabs[1]).toHaveFocus();
+    fireEvent.keyDown(tabs[1]!, { key: "End" });
+    expect(onSelectView).toHaveBeenLastCalledWith("filters");
+    expect(tabs[2]).toHaveFocus();
+  });
+
+  it("renders only the selected column with exact scalar and sampled-distribution provenance", () => {
+    renderSummary({ selectedColumnId: "c:1" });
+
+    expect(screen.getByRole("tabpanel", { name: "Column" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "sales" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "city" })).not.toBeInTheDocument();
+    expect(screen.getByText("Float64")).toBeInTheDocument();
+    expect(screen.getByText("Exact statistics")).toBeInTheDocument();
+    expect(screen.getByText("Sampled distribution")).toBeInTheDocument();
+    expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("NaN").nextElementSibling).toHaveTextContent("2");
+    expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("10");
+    expect(screen.getByText("Max").nextElementSibling).toHaveTextContent("12");
+    expect(screen.getByText("Mean").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
+  });
+
+  it("falls back to the first schema column and labels categorical values and the remainder", () => {
+    renderSummary();
+
+    expect(screen.getByRole("heading", { name: "city" })).toBeInTheDocument();
+    expect(screen.getByText("Exact distribution")).toBeInTheDocument();
+    expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("3");
+    expect(screen.getByText("Other values").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByRole("heading", { name: "Top values" })).toBeInTheDocument();
+    expect(screen.getByText("Berlin")).toBeInTheDocument();
+    expect(screen.getByText("Empty string")).toBeInTheDocument();
+    expect(screen.getByText("Other")).toBeInTheDocument();
+    expect(screen.getByRole("meter", { name: "Berlin: 2" })).toHaveValue(2);
+  });
+
+  it("renders explicit datetime bounds and boolean counts from existing profile metadata", () => {
+    const familyMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: 2 },
+      filteredShape: { rows: 4, columns: 2 },
+      schema: [
+        { id: "c:flag", name: "flag", position: 0, rawType: "Boolean", type: "boolean", nullable: false },
+        { id: "c:when", name: "when", position: 1, rawType: "Datetime", type: "datetime", nullable: true }
+      ]
+    };
+    const familySummaries: ColumnSummary[] = [
+      {
+        columnId: "c:flag",
+        column: "flag",
+        type: "boolean",
+        rawType: "Boolean",
+        totalCount: 4,
+        nullCount: 0,
+        nanCount: 0,
+        distinctCount: 2,
+        topValues: [],
+        visualization: { kind: "boolean", trueCount: 3, falseCount: 1 }
+      },
+      {
+        columnId: "c:when",
+        column: "when",
+        type: "datetime",
+        rawType: "Datetime",
+        totalCount: 4,
+        nullCount: 1,
+        nanCount: 0,
+        distinctCount: 3,
+        topValues: [],
+        visualization: { kind: "datetime", min: "2024-01-01", max: "2024-04-01" }
+      }
+    ];
+    const { rerender } = renderSummary({
+      metadataValue: familyMetadata,
+      summaries: familySummaries,
+      selectedColumnId: "c:flag"
+    });
+    expect(screen.getByText("True").nextElementSibling).toHaveTextContent("3");
+    expect(screen.getByText("False").nextElementSibling).toHaveTextContent("1");
 
     rerender(
       <SummaryPanel
-        metadata={metadata}
-        summaries={summaries}
-        schemaById={new Map(metadata.schema.map((column) => [column.id, column]))}
+        metadata={familyMetadata}
+        summaries={familySummaries}
+        schemaById={new Map(familyMetadata.schema.map((column) => [column.id, column]))}
+        selectedColumnId="c:when"
+        activeView="column"
+        onSelectView={() => undefined}
       />
     );
-    expect(screen.getByText("4 rows x 2 columns")).toBeInTheDocument();
-    expect(screen.getByText("Float64")).toBeInTheDocument();
-    expect(screen.getAllByText("n/a").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("sales")).toHaveLength(2);
-    expect(screen.getByText("Missing", { selector: "dt" }).nextElementSibling).toHaveTextContent("3");
-    expect(screen.getByText("12", { selector: ".topValues span" })).toBeInTheDocument();
+    expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("2024-01-01");
+    expect(screen.getByText("Max").nextElementSibling).toHaveTextContent("2024-04-01");
   });
 
-  it("renders out-of-order duplicate-label summaries in schema order with human disambiguation", () => {
+  it("renders dataset shape and exact missing and duplicate statistics only in Dataset view", () => {
+    renderSummary({ activeView: "dataset" });
+
+    expect(screen.getByRole("tabpanel", { name: "Dataset" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dataset" })).toBeInTheDocument();
+    expect(screen.getByText("Rows").nextElementSibling).toHaveTextContent("4");
+    expect(screen.getByText("Columns").nextElementSibling).toHaveTextContent("2");
+    expect(screen.getByText("Missing cells").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("Rows with missing values").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("Duplicate rows").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("sales")).toBeInTheDocument();
+    expect(screen.queryByText("Profiling selected column…")).not.toBeInTheDocument();
+  });
+
+  it("renders bounded loading and empty states without implying missing profile data is exact", () => {
+    const { rerender } = render(
+      <SummaryPanel
+        metadata={undefined}
+        summaries={[]}
+        schemaById={new Map()}
+        activeView="column"
+        onSelectView={() => undefined}
+      />
+    );
+    expect(screen.getByText("Preparing column summary…")).toHaveAttribute("role", "status");
+
+    const withoutStats = { ...metadata, stats: undefined };
+    rerender(
+      <SummaryPanel
+        metadata={withoutStats}
+        summaries={[]}
+        schemaById={new Map(withoutStats.schema.map((column) => [column.id, column]))}
+        selectedColumnId="c:1"
+        activeView="dataset"
+        onSelectView={() => undefined}
+      />
+    );
+    expect(screen.getByText("Profiling exact dataset statistics…")).toHaveAttribute("role", "status");
+    expect(screen.queryByText("Exact statistics")).not.toBeInTheDocument();
+
+    const zeroColumnMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 0, columns: 0 },
+      filteredShape: { rows: 0, columns: 0 },
+      schema: []
+    };
+    rerender(
+      <SummaryPanel
+        metadata={zeroColumnMetadata}
+        summaries={[]}
+        schemaById={new Map()}
+        activeView="column"
+        onSelectView={() => undefined}
+      />
+    );
+    expect(screen.getByText("This dataset has no columns.")).toBeInTheDocument();
+  });
+
+  it("renders only the selected duplicate label with positional disambiguation", () => {
     const duplicateMetadata: SessionMetadata = {
       ...metadata,
       shape: { rows: 4, columns: 2 },
@@ -663,20 +858,21 @@ describe("SummaryPanel", () => {
       numeric: { min, max: min + 3 },
       topValues: []
     });
-    render(
-      <SummaryPanel
-        metadata={duplicateMetadata}
-        summaries={[summary("c:right", "Float64", 10), summary("c:left", "Int64", 1)]}
-        schemaById={new Map(duplicateMetadata.schema.map((column) => [column.id, column]))}
-      />
-    );
+    renderSummary({
+      metadataValue: duplicateMetadata,
+      summaries: [summary("c:right", "Float64", 10), summary("c:left", "Int64", 1)],
+      selectedColumnId: "c:right"
+    });
 
-    expect(screen.getAllByText(/value \(column [12]\)/u).map((node) => node.textContent)).toEqual([
-      "value (column 1)",
-      "value (column 2)"
-    ]);
-    const groups = [...document.querySelectorAll<HTMLDetailsElement>(".summaryPanel .summaryGroup")].slice(1);
-    expect(within(groups[0]!).getByText("Min").nextElementSibling).toHaveTextContent("1");
-    expect(within(groups[1]!).getByText("Min").nextElementSibling).toHaveTextContent("10");
+    expect(screen.getByRole("heading", { name: "value (column 2)" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "value (column 1)" })).not.toBeInTheDocument();
+    expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("10");
+  });
+
+  it("renders only the shared tablist for the Filters view", () => {
+    renderSummary({ activeView: "filters" });
+    expect(screen.getByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tabpanel")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading")).not.toBeInTheDocument();
   });
 });
