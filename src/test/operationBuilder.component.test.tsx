@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionMetadata, TransformStep } from "../shared/protocol";
 import { operationCatalog } from "../shared/operations";
@@ -354,6 +354,37 @@ describe("OperationBuilder", () => {
     });
   });
 
+  it("reorders and removes individual sort rows without losing the retained values", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="sortRows"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Remove sort rule 1" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Add sort column" }));
+    fireEvent.change(screen.getByLabelText("Column 2"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getAllByLabelText("Direction")[1], { target: { value: "desc" } });
+    fireEvent.click(screen.getByRole("button", { name: "Move sort rule 2 up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0].params.rules).toEqual([
+      { column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "last" },
+      { column: { id: "c:0", name: "city" }, direction: "asc", nulls: "last" }
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sort rule 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[1][0].params.rules).toEqual([
+      { column: { id: "c:1", name: "sales" }, direction: "desc", nulls: "last" }
+    ]);
+  });
+
   it("emits an explicit empty reference list when drop-missing applies to all columns", () => {
     const onPreview = vi.fn();
     render(
@@ -386,9 +417,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const select = screen.getByRole("listbox") as HTMLSelectElement;
-    select.options[1].selected = true;
-    fireEvent.change(select);
+    fireEvent.click(screen.getByRole("checkbox", { name: "value — column 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
       columns: [{ id: "c:1", name: "value" }],
@@ -416,8 +445,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByRole("option", { name: "city — column 1" })).toBeInTheDocument();
-    expect((screen.getByRole("option", { name: "city — column 1" }) as HTMLOptionElement).selected).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "city — column 1" })).toBeChecked();
   });
 
   it("fails closed when a saved step has no recorded input schema while leaving cancel usable", () => {
@@ -673,9 +701,13 @@ describe("OperationBuilder", () => {
 
   it("emits stable references for both formula operands", () => {
     const onPreview = vi.fn();
+    const numericMetadata = {
+      ...metadata,
+      schema: [{ ...metadata.schema[0], name: "units", rawType: "Int64", type: "integer" as const }, metadata.schema[1]]
+    };
     render(
       <OperationBuilder
-        metadata={metadata}
+        metadata={numericMetadata}
         filterModel={{ filters: [], sort: [] }}
         initialKind="formula"
         onClose={() => undefined}
@@ -696,7 +728,7 @@ describe("OperationBuilder", () => {
           leftColumn: { id: "c:1", name: "sales" },
           operator: "add",
           newColumn: "ratio",
-          rightColumn: { id: "c:0", name: "city" }
+          rightColumn: { id: "c:0", name: "units" }
         }
       })
     );
@@ -717,11 +749,9 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const structuralSelect = screen.getByRole("listbox") as HTMLSelectElement;
-    expect(structuralSelect).toHaveAccessibleName(label);
-    structuralSelect.options[0].selected = true;
-    structuralSelect.options[1].selected = true;
-    fireEvent.change(structuralSelect);
+    const structuralSelection = screen.getByRole("group", { name: label });
+    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "city — column 1" }));
+    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "sales — column 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(structuralPreview.mock.calls[0][0].params).toEqual({
       columns: [
@@ -768,7 +798,7 @@ describe("OperationBuilder", () => {
     );
 
     expect(screen.getByText("Selected order: sales — column 2 → city — column 1")).toBeInTheDocument();
-    expect(screen.getByRole("listbox")).toHaveAccessibleName("Columns to keep");
+    expect(screen.getByRole("group", { name: "Columns to keep" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
       columns: [
@@ -790,13 +820,11 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const columnSelect = screen.getByRole("listbox") as HTMLSelectElement;
-    columnSelect.options[1].selected = true;
-    fireEvent.change(columnSelect);
-    columnSelect.options[0].selected = true;
-    fireEvent.change(columnSelect);
+    const selection = screen.getByRole("group", { name: "Columns to keep" });
+    fireEvent.click(within(selection).getByRole("checkbox", { name: "sales — column 2" }));
+    fireEvent.click(within(selection).getByRole("checkbox", { name: "city — column 1" }));
     expect(screen.getByText("Selected order: sales — column 2 → city — column 1")).toBeInTheDocument();
-    expect(screen.getByRole("listbox")).toHaveAccessibleName("Columns to keep");
+    expect(selection).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
@@ -836,12 +864,9 @@ describe("OperationBuilder", () => {
         onPreview={categoricalPreview}
       />
     );
-    const categoricalSelect = screen.getByLabelText(/Categorical columns/) as HTMLSelectElement;
-    expect(Array.from(categoricalSelect.selectedOptions, (option) => option.value)).toEqual(["c:1"]);
-    expect(Array.from(categoricalSelect.options, (option) => option.text)).toEqual([
-      "value — column 1",
-      "value — column 2"
-    ]);
+    const categoricalSelection = screen.getByRole("group", { name: "Categorical columns" });
+    expect(within(categoricalSelection).getByRole("checkbox", { name: "value — column 1" })).not.toBeChecked();
+    expect(within(categoricalSelection).getByRole("checkbox", { name: "value — column 2" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(categoricalPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
@@ -858,9 +883,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const columns = screen.getByLabelText("Categorical columns") as HTMLSelectElement;
-    columns.options[0].selected = true;
-    fireEvent.change(columns);
+    fireEvent.click(screen.getByRole("checkbox", { name: "city — column 1" }));
     fireEvent.change(screen.getByLabelText("Prefix separator"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
@@ -999,16 +1022,22 @@ describe("OperationBuilder", () => {
         params: { column: { id: "c:1", name: "value" }, delimiter: ",", index: 0, newColumn: "part" }
       }
     },
-    ...(["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"] as const).map(
-      (kind) => ({
-        label: "Column",
-        step: {
-          id: kind,
-          kind,
-          params: { column: { id: "c:1", name: "value" }, newColumn: `${kind}_result` }
-        }
-      })
-    ),
+    ...(["capitalizeText", "lowerText", "upperText"] as const).map((kind) => ({
+      label: "Text column",
+      step: {
+        id: kind,
+        kind,
+        params: { column: { id: "c:1", name: "value" }, newColumn: `${kind}_result` }
+      }
+    })),
+    ...(["minMaxScale", "floorNumber", "ceilNumber"] as const).map((kind) => ({
+      label: "Numeric column",
+      step: {
+        id: kind,
+        kind,
+        params: { column: { id: "c:1", name: "value" }, newColumn: `${kind}_result` }
+      }
+    })),
     {
       label: "Numeric column",
       step: {
@@ -1029,9 +1058,23 @@ describe("OperationBuilder", () => {
     "edits $step.kind by saved column ID instead of a duplicate label",
     ({ label, step }) => {
       const onPreview = vi.fn();
+      const columnType =
+        step.kind === "formatDatetime"
+          ? ("datetime" as const)
+          : [
+                "multiLabelBinarize",
+                "findReplace",
+                "stripText",
+                "splitText",
+                "capitalizeText",
+                "lowerText",
+                "upperText"
+              ].includes(step.kind)
+            ? ("string" as const)
+            : ("float" as const);
       const duplicateColumns = [
-        { ...metadata.schema[0], id: "c:0", name: "value", position: 0 },
-        { ...metadata.schema[1], id: "c:1", name: "value", position: 1 }
+        { ...metadata.schema[0], id: "c:0", name: "value", position: 0, type: columnType },
+        { ...metadata.schema[1], id: "c:1", name: "value", position: 1, type: columnType }
       ];
       render(
         <OperationBuilder
@@ -1132,15 +1175,11 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const keys = screen.getByRole("listbox", { name: "Group keys" }) as HTMLSelectElement;
-    expect(Array.from(keys.options, (option) => option.text)).toEqual([
-      "value — column 1",
-      "value — column 2",
-      "(empty name) — column 3",
-      "7 — column 4"
-    ]);
-    keys.options[1].selected = true;
-    fireEvent.change(keys);
+    const keys = screen.getByRole("group", { name: "Group keys" });
+    for (const label of ["value — column 1", "value — column 2", "(empty name) — column 3", "7 — column 4"]) {
+      expect(within(keys).getByRole("checkbox", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.click(within(keys).getByRole("checkbox", { name: "value — column 2" }));
     const value = screen.getByLabelText("Value 1") as HTMLSelectElement;
     fireEvent.change(value, { target: { value: "c:3" } });
     fireEvent.change(screen.getByLabelText("Output name"), { target: { value: "total" } });
@@ -1161,6 +1200,107 @@ describe("OperationBuilder", () => {
     });
   });
 
+  it("filters group inputs by portable type and keeps aggregation rows removable and reorderable", () => {
+    const onPreview = vi.fn();
+    const columns = [
+      metadata.schema[0],
+      metadata.schema[1],
+      {
+        id: "c:2",
+        name: "when",
+        position: 2,
+        rawType: "Datetime",
+        type: "datetime" as const,
+        nullable: false
+      },
+      {
+        id: "c:3",
+        name: "items",
+        position: 3,
+        rawType: "List(String)",
+        type: "list" as const,
+        nullable: true
+      }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: columns, shape: { rows: 2, columns: columns.length } }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind="groupBy"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    const keys = screen.getByRole("group", { name: "Group keys" });
+    expect(within(keys).getByRole("checkbox", { name: "city — column 1" })).toBeInTheDocument();
+    expect(within(keys).queryByRole("checkbox", { name: "items — column 4" })).not.toBeInTheDocument();
+    fireEvent.click(within(keys).getByRole("checkbox", { name: "city — column 1" }));
+
+    expect(
+      Array.from((screen.getByLabelText("Value 1") as HTMLSelectElement).options, (option) => option.value)
+    ).toEqual(["c:1"]);
+    fireEvent.change(screen.getByLabelText("Calculation"), { target: { value: "count" } });
+    expect(
+      Array.from((screen.getByLabelText("Value 1") as HTMLSelectElement).options, (option) => option.value)
+    ).toEqual(["c:0", "c:1", "c:2"]);
+    fireEvent.change(screen.getByLabelText("Value 1"), { target: { value: "c:0" } });
+    fireEvent.change(screen.getByLabelText("Output name"), { target: { value: "city_count" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add aggregation" }));
+    fireEvent.change(screen.getAllByLabelText("Output name")[1], { target: { value: "sales_sum" } });
+    fireEvent.click(screen.getByRole("button", { name: "Move aggregation 2 up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove aggregation 2" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+
+    expect(onPreview.mock.calls[0][0].params).toEqual({
+      keys: [{ id: "c:0", name: "city" }],
+      aggregations: [{ column: { id: "c:1", name: "sales" }, operation: "sum", alias: "sales_sum" }]
+    });
+    expect(screen.getByRole("button", { name: "Remove aggregation 1" })).toBeDisabled();
+  });
+
+  it.each([
+    ["formula", "Left column", ["c:1"]],
+    ["textLength", "Text column", ["c:0"]],
+    ["upperText", "Text column", ["c:0"]],
+    ["roundNumber", "Numeric column", ["c:1"]],
+    ["formatDatetime", "Date or datetime column", ["c:2"]]
+  ] as const)("shows only compatible columns for %s", (kind, label, expectedIds) => {
+    const columns = [
+      metadata.schema[0],
+      metadata.schema[1],
+      {
+        id: "c:2",
+        name: "when",
+        position: 2,
+        rawType: "Datetime",
+        type: "datetime" as const,
+        nullable: false
+      },
+      {
+        id: "c:3",
+        name: "items",
+        position: 3,
+        rawType: "List(String)",
+        type: "list" as const,
+        nullable: true
+      }
+    ];
+    render(
+      <OperationBuilder
+        metadata={{ ...metadata, schema: columns, shape: { rows: 2, columns: columns.length } }}
+        filterModel={{ filters: [], sort: [] }}
+        initialKind={kind}
+        onClose={() => undefined}
+        onPreview={() => undefined}
+      />
+    );
+
+    const select = screen.getByLabelText(label) as HTMLSelectElement;
+    expect(Array.from(select.options, (option) => option.value)).toEqual(expectedIds);
+  });
+
   it("preserves by-example source interaction order and aligned scalar arrays", () => {
     const onPreview = vi.fn();
     const columns = [
@@ -1179,12 +1319,10 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const sources = screen.getByRole("listbox", { name: "Source columns" }) as HTMLSelectElement;
-    sources.options[0].selected = false;
-    sources.options[1].selected = true;
-    fireEvent.change(sources);
-    sources.options[3].selected = true;
-    fireEvent.change(sources);
+    const sources = screen.getByRole("group", { name: "Source columns" });
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "value — column 1" }));
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "value — column 2" }));
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "7 — column 4" }));
     expect(screen.getByText("Selected order: value — column 2 → 7 — column 4")).toBeInTheDocument();
     const examples = [
       { inputs: ["a", 1], output: "a1" },

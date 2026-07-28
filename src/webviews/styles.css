@@ -1240,27 +1240,70 @@ dd {
 }
 
 .formField,
-.formFieldset {
+.formFieldset,
+.columnSelectionField {
   display: grid;
   gap: 5px;
 }
 
 .formField > span,
 .formField > label,
-.formFieldset legend {
+.formFieldset legend,
+.columnSelectionField legend {
   font-size: 11px;
   font-weight: 600;
 }
 
 .formField small,
-.codeField small {
+.codeField small,
+.columnSelectionField small {
   color: var(--vscode-descriptionForeground);
   font-size: 10px;
 }
 
-.formField select[multiple] {
-  appearance: none;
-  min-height: 90px;
+.columnSelectionField {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.columnSelectionField legend {
+  margin-bottom: 5px;
+  padding: 0;
+}
+
+.columnChecklist {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  display: grid;
+  max-height: 154px;
+  min-height: 34px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.columnChecklistItem {
+  align-items: center;
+  border-radius: 2px;
+  display: flex;
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
+.columnChecklistItem:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.columnChecklistItem:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.operationCompatibilityNote {
+  line-height: 1.35;
 }
 
 .formFieldset {
@@ -1282,8 +1325,35 @@ dd {
   margin-bottom: 8px;
 }
 
+.operationInputRow {
+  grid-template-columns: minmax(120px, 1.2fr) minmax(96px, 0.9fr) minmax(82px, 0.8fr) auto;
+}
+
 .aggregationRow {
-  grid-template-columns: 1fr 0.8fr 1fr;
+  grid-template-columns: minmax(120px, 1fr) minmax(96px, 0.8fr) minmax(120px, 1fr) auto;
+}
+
+.operationRowActions {
+  align-items: center;
+  display: flex;
+  gap: 3px;
+  padding-bottom: 1px;
+}
+
+.operationRemoveButton {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--vscode-foreground);
+  display: inline-flex;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 6px;
+}
+
+.operationRemoveButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: var(--vscode-panel-border);
 }
 
 .checkboxField {
@@ -1436,6 +1506,10 @@ dd {
   .compoundRow,
   .aggregationRow {
     grid-template-columns: 1fr;
+  }
+
+  .operationRowActions {
+    justify-content: flex-end;
   }
 }
 
