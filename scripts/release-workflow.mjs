@@ -1295,7 +1295,9 @@ export function inspectStableCandidateWorkflow(contents) {
     reportUpload?.index !== failedReportUpload.index + 1 ||
     reportUpload?.index !== performanceSteps.length - 1
   ) {
-    problems.push("stable-candidate.yml must upload only the successful path-free report immediately.");
+    problems.push(
+      "stable-candidate.yml must upload the successful path-free report immediately after the narrow numeric-failure slot."
+    );
   }
 
   const allCommands = [...packageSteps, ...performanceSteps].map((step) => normalizeRun(step.run)).filter(Boolean);

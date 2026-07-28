@@ -1485,6 +1485,7 @@ function publishInstalledPerformanceFailureEvidence(
   if (typeof revalidateArtifacts !== "function") {
     throw new TypeError("Installed-performance failure evidence requires one artifact revalidation callback.");
   }
+  revalidateArtifacts();
   let artifactsValidatedWhileReportOpen = false;
   revalidateReport(reportReceipt, {
     afterOpen() {
@@ -1495,7 +1496,6 @@ function publishInstalledPerformanceFailureEvidence(
   if (!artifactsValidatedWhileReportOpen) {
     throw new Error("Installed-performance failure evidence could not jointly revalidate its report and candidate.");
   }
-  revalidateArtifacts();
   const output = `evidence_path=${reportPath}\nevidence_sha256=${reportReceipt.sha256}\nevidence_size=${String(reportReceipt.bytes)}\nevidence_ready=true\n`;
   appendOutput(githubOutput, output, "utf8");
   return Object.freeze({

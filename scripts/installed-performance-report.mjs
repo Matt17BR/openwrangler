@@ -1015,8 +1015,11 @@ function assertPublicEvidence(value, key = "") {
   if (
     typeof value === "string" &&
     (/\bfile:\/\//iu.test(value) ||
-      /(?:^|[\s"'(])\/(?:home|Users|tmp|run|private|var\/folders)\//u.test(value) ||
-      /(?:^|[\s"'(])[A-Za-z]:\\/u.test(value))
+      /(?:^|[\s"'([{=,:])\/(?=$|[^/\s])/u.test(value) ||
+      /(?:^|[\s"'([{=,])(?:\\\\|\/\/)[^\\/\s]+[\\/][^\\/\s]+/u.test(value) ||
+      /(?:^|[\s"'([{=,])[A-Za-z]:[\\/]/u.test(value) ||
+      /(?:^|[\s"'([{=,])~[\\/]/u.test(value) ||
+      /(?:^|[\s"'([{=,])\\(?=$|[^\\\s])/u.test(value))
   ) {
     throw new TypeError(`Installed performance evidence field ${key} contains a private path.`);
   }

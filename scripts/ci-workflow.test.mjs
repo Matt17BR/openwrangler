@@ -284,7 +284,7 @@ test("stable evidence workflow inspector rejects source, artifact, and consumer 
       candidate.jobs["installed-performance"].steps.find(
         (step) => step.name === "Upload installed-performance evidence"
       ).if = "${{ always() }}";
-    }).some((problem) => problem.includes("successful path-free report"))
+    }).some((problem) => problem.includes("successful path-free report immediately after"))
   );
   assert.ok(
     inspect((candidate) => {
