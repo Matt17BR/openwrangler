@@ -355,6 +355,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       );
       const preparationRuntime = this.runtimeSlot(preparationScope.key);
       requestLease = this.retainRuntime(preparationRuntime);
+      let leasedRuntime = preparationRuntime;
       let resolutionCancellationRequested = false;
       const cancelPendingResolution = (): void => {
         resolutionCancellationRequested = true;
@@ -369,43 +370,76 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
           ? options.cancellation.onCancellationRequested(cancelPendingResolution)
           : undefined;
       try {
-        const preparation = this.prepareRequestForDispatch(request);
-        if (resolutionCancellationRequested || options.cancellation?.isCancellationRequested) {
-          cancelPendingResolution();
-        }
-        const prepared = await preparation;
-        if (prepared.request.kind === "error") {
-          releaseRequestLease();
-          return prepared.request;
-        }
-        if (options.cancellation?.isCancellationRequested) {
-          releaseRequestLease();
-          return { kind: "cancelled", targetRequestId: "not-started" };
-        }
-        runtimeRequest = prepared.request;
-        desired = prepared.processSelection ?? (await this.processSelectionFor(runtimeRequest));
-        if (!this.isCurrentEnvironmentSelection(desired.selection)) {
-          releaseRequestLease();
-          return this.runtimeSelectionChangedError();
-        }
-        runtime = this.runtimeSlot(desired.selection.key);
-        if (runtime !== preparationRuntime) {
-          const desiredLease = this.retainRuntime(runtime);
-          releaseRequestLease();
-          requestLease = desiredLease;
-        }
-        try {
-          proc = await this.ensureProcess(runtime, desired);
-        } catch (error) {
-          if (!this.isCurrentEnvironmentSelection(desired.selection)) {
-            releaseRequestLease();
-            return this.runtimeSelectionChangedError();
+        let selectionRetryAvailable = request.kind === "openSession";
+        const consumeSelectionRetry = (): boolean => {
+          if (
+            !selectionRetryAvailable ||
+            resolutionCancellationRequested ||
+            options.cancellation?.isCancellationRequested
+          ) {
+            return false;
           }
-          throw error;
-        }
-        if (!this.isCurrentEnvironmentSelection(desired.selection)) {
-          releaseRequestLease();
-          return this.runtimeSelectionChangedError();
+          selectionRetryAvailable = false;
+          return true;
+        };
+        for (;;) {
+          try {
+            const preparation = this.prepareRequestForDispatch(request);
+            if (resolutionCancellationRequested || options.cancellation?.isCancellationRequested) {
+              cancelPendingResolution();
+            }
+            const prepared = await preparation;
+            if (prepared.request.kind === "error") {
+              if (prepared.request.code === "runtime_selection_changed" && consumeSelectionRetry()) continue;
+              releaseRequestLease();
+              return prepared.request;
+            }
+            if (options.cancellation?.isCancellationRequested) {
+              releaseRequestLease();
+              return { kind: "cancelled", targetRequestId: "not-started" };
+            }
+            runtimeRequest = prepared.request;
+            desired = prepared.processSelection ?? (await this.processSelectionFor(runtimeRequest));
+            if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+              if (consumeSelectionRetry()) continue;
+              releaseRequestLease();
+              return this.runtimeSelectionChangedError();
+            }
+            runtime = this.runtimeSlot(desired.selection.key);
+            if (runtime !== leasedRuntime) {
+              const desiredLease = this.retainRuntime(runtime);
+              releaseRequestLease();
+              requestLease = desiredLease;
+              leasedRuntime = runtime;
+            }
+            try {
+              proc = await this.ensureProcess(runtime, desired);
+            } catch (error) {
+              if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+                if (consumeSelectionRetry()) continue;
+                releaseRequestLease();
+                return this.runtimeSelectionChangedError();
+              }
+              throw error;
+            }
+            if (!this.isCurrentEnvironmentSelection(desired.selection)) {
+              if (consumeSelectionRetry()) continue;
+              releaseRequestLease();
+              return this.runtimeSelectionChangedError();
+            }
+            break;
+          } catch (error) {
+            if (
+              !(error instanceof PythonEnvironmentResolutionCancelledError) &&
+              isPythonEnvironmentResolutionTerminalError(error) &&
+              error.code !== "python_environment_resolution_timeout" &&
+              error.code !== "python_environment_resolution_workspace_untrusted" &&
+              consumeSelectionRetry()
+            ) {
+              continue;
+            }
+            throw error;
+          }
         }
       } catch (error) {
         releaseRequestLease();
@@ -2510,10 +2544,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       }
       failures.push({ backend, missing, dependencies });
     }
-    const missing = [...new Set(failures.flatMap((failure) => failure.missing))];
     if (!this.isCurrentEnvironmentSelection(selection)) return { request: this.runtimeSelectionChangedError() };
     const selectedFailure = failures[0];
-    const selectedRequirements = [...(selectedFailure?.missing ?? missing)];
+    const selectedRequirements = [...(selectedFailure?.missing ?? [])];
     const selectedRequirementSet = new Set(selectedRequirements);
     this.lastMissingDependencies = {
       environment,
@@ -2528,8 +2561,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
       request: {
         kind: "error",
         code: "missing_dependencies",
-        message: `The selected Python ${environment.version} environment cannot open this source. Missing: ${missing.join(", ")}.`,
-        detail: "Use Open Wrangler: Install Runtime Dependencies to review and confirm installation.",
+        message: `The selected Python ${environment.version} environment cannot open this source with ${backendDisplayName(selectedFailure?.backend)}. Missing: ${selectedRequirements.join(", ")}.`,
+        detail:
+          "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
         recoverable: true
       }
     };
@@ -2735,6 +2769,12 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
         "Select a compatible Python 3.10-3.14 environment with the Open Wrangler: Change Runtime command."
     );
   }
+}
+
+function backendDisplayName(backend: DataBackend | undefined): string {
+  if (backend === "duckdb") return "DuckDB";
+  if (backend === "pandas") return "Pandas";
+  return "Polars";
 }
 
 function sourceResource(source: SessionSource): vscode.Uri | undefined {

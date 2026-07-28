@@ -33,6 +33,7 @@ export class OpenWranglerPanel {
   private importChangeTail: Promise<void> = Promise.resolve();
   private currentImportChangeTask: Promise<void> | undefined;
   private nativeImportCommand: Promise<boolean> | undefined;
+  private runtimeDependencyInstallTask: Promise<void> | undefined;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
@@ -347,6 +348,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "installRuntimeDependencies") {
+      await this.installRuntimeDependencies();
+      return;
+    }
+
     if (this.changingImportOptions) {
       await this.post({
         kind: "error",
@@ -427,6 +433,53 @@ export class OpenWranglerPanel {
       }
     );
     return command;
+  }
+
+  private installRuntimeDependencies(): Promise<void> {
+    if (this.runtimeDependencyInstallTask) return this.runtimeDependencyInstallTask;
+    const task = (async () => {
+      await this.opening?.catch(() => undefined);
+      if (
+        this.disposed ||
+        this.sessionId ||
+        this.openResponse?.kind !== "error" ||
+        this.openResponse.code !== "missing_dependencies"
+      ) {
+        return;
+      }
+      await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: true });
+      try {
+        const installed = await vscode.commands.executeCommand<boolean>(
+          "openWrangler.installRuntimeDependencies"
+        );
+        if (!installed || this.disposed || this.sessionId) return;
+        this.openResponse = undefined;
+        await this.open();
+      } catch (error) {
+        if (!this.disposed) {
+          await this.post({
+            kind: "error",
+            code: "dependency_install_failed",
+            message: error instanceof Error ? error.message : String(error),
+            recoverable: true
+          });
+        }
+      } finally {
+        if (!this.disposed) {
+          await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: false });
+        }
+      }
+    })();
+    this.runtimeDependencyInstallTask = task;
+    void task.then(
+      () => {
+        if (this.runtimeDependencyInstallTask === task) this.runtimeDependencyInstallTask = undefined;
+      },
+      () => {
+        if (this.runtimeDependencyInstallTask === task) this.runtimeDependencyInstallTask = undefined;
+      }
+    );
+    return task;
   }
 
   private async changeImportOptions(generation: number): Promise<void> {
@@ -1050,7 +1103,10 @@ export class OpenWranglerPanel {
             kind: "changeImportOptions",
             ...(message.actionId === undefined ? {} : { actionId: message.actionId })
           }
-        : undefined;
+          : undefined;
+    }
+    if (message.kind === "installRuntimeDependencies") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;
     }
     if (
       message.kind !== "runtimeRequest" ||
@@ -1151,6 +1207,7 @@ type WebviewRequest =
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
   | { kind: "changeImportOptions"; actionId?: string }
+  | { kind: "installRuntimeDependencies" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;

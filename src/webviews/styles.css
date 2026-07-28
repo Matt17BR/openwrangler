@@ -103,6 +103,12 @@ textarea {
   padding: 24px;
 }
 
+.errorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .importOptionsStatus {
   color: var(--vscode-descriptionForeground);
   font-size: 12px;

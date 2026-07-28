@@ -43,6 +43,7 @@ export function App() {
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [foregroundError, setForegroundError] = useState<string | undefined>();
+  const [foregroundErrorCode, setForegroundErrorCode] = useState<string | undefined>();
   const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<ReadonlyMap<string, BackgroundDiagnostic>>(
     () => new Map()
   );
@@ -51,6 +52,7 @@ export function App() {
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
+  const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
   const [goToColumn, setGoToColumn] = useState("");
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
@@ -826,6 +828,7 @@ export function App() {
         | RequestImportOptionsChangeMessage
         | RendererSynchronizationMessage
         | ImportOptionsStateMessage
+        | RuntimeDependencyInstallStateMessage
         | SessionPresentationMessage
         | ViewStateMessage
         | StepInspectionResultMessage
@@ -851,6 +854,10 @@ export function App() {
       }
       if (response.kind === "importOptionsState") {
         updateImportOptionsPending(response.busy);
+        return;
+      }
+      if (response.kind === "runtimeDependencyInstallState") {
+        setRuntimeDependencyInstallPending(response.busy);
         return;
       }
       if (response.kind === "sessionPresentation") {
@@ -986,6 +993,7 @@ export function App() {
       }
 
       if (response.kind === "error") {
+        setForegroundErrorCode(response.code);
         if (response.viewRequestId) {
           const pendingPage = latestPageRequest.current;
           if (pendingPage?.viewRequestId === response.viewRequestId) {
@@ -1033,12 +1041,13 @@ export function App() {
         } else if (importOptionsPendingRef.current) {
           setForegroundError(response.message);
           return;
-        } else if (!metadataRef.current) {
-          setPendingRendererSynchronization(undefined);
-          acknowledgedRendererSynchronizationId.current = undefined;
-          setLoading(false);
-          setProjectionLoading(false);
-        }
+          } else if (!metadataRef.current) {
+            setPendingRendererSynchronization(undefined);
+            acknowledgedRendererSynchronizationId.current = undefined;
+            setLoading(false);
+            setProjectionLoading(false);
+            setRuntimeDependencyInstallPending(false);
+          }
         setForegroundError(response.message);
         return;
       }
@@ -1069,6 +1078,8 @@ export function App() {
             acknowledgedRendererSynchronizationId.current = undefined;
             setLoading(false);
             setProjectionLoading(false);
+            setForegroundErrorCode(undefined);
+            setRuntimeDependencyInstallPending(false);
             setForegroundError("Opening the dataframe was cancelled.");
           }
           return;
@@ -1112,7 +1123,9 @@ export function App() {
         setMutationPending(false);
         setLoading(false);
         setProjectionLoading(false);
+        setRuntimeDependencyInstallPending(false);
         setForegroundError(undefined);
+        setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
         storeGridViewState(emptyGridViewState());
         storePendingStepInspection(undefined);
@@ -1775,14 +1788,30 @@ export function App() {
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
   const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
+  const installDependencyDisabled = loading || runtimeDependencyInstallPending;
 
   if (foregroundError && !metadata) {
     return (
       <main className="app app-error">
         <h1>Open Wrangler</h1>
         <p role="alert">{foregroundError}</p>
-        {webviewConfig.canChangeImportOptions && (
-          <>
+        <div className="errorActions">
+          {foregroundErrorCode === "missing_dependencies" && (
+            <button
+              type="button"
+              className="toolbarButton"
+              disabled={installDependencyDisabled}
+              aria-busy={runtimeDependencyInstallPending || undefined}
+              onClick={(event) => {
+                event.currentTarget.blur();
+                setRuntimeDependencyInstallPending(true);
+                vscode.postMessage({ kind: "installRuntimeDependencies" });
+              }}
+            >
+              <span className="codicon codicon-cloud-download" aria-hidden="true" /> Install required dependency
+            </button>
+          )}
+          {webviewConfig.canChangeImportOptions && (
             <button
               type="button"
               className="toolbarButton"
@@ -1794,12 +1823,17 @@ export function App() {
             >
               <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
             </button>
-            {importOptionsPending && (
-              <span className="importOptionsStatus" role="status" aria-live="polite">
-                Updating import options…
-              </span>
-            )}
-          </>
+          )}
+        </div>
+        {importOptionsPending && (
+          <span className="importOptionsStatus" role="status" aria-live="polite">
+            Updating import options…
+          </span>
+        )}
+        {runtimeDependencyInstallPending && (
+          <span className="importOptionsStatus" role="status" aria-live="polite">
+            Waiting for dependency confirmation…
+          </span>
         )}
       </main>
     );
@@ -2225,6 +2259,11 @@ interface RendererSynchronizationMessage {
 
 interface ImportOptionsStateMessage {
   kind: "importOptionsState";
+  busy: boolean;
+}
+
+interface RuntimeDependencyInstallStateMessage {
+  kind: "runtimeDependencyInstallState";
   busy: boolean;
 }
 

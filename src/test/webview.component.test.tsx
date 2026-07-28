@@ -1572,6 +1572,39 @@ describe("App file import options", () => {
     expect(action).not.toHaveAttribute("aria-busy");
   });
 
+  it("offers a direct confirmed dependency install only for a structured missing-dependency error", async () => {
+    const { unmount } = render(<App />);
+    dispatchAppMessage({
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Polars is missing fastexcel>=0.9.",
+      recoverable: true
+    });
+
+    const action = await screen.findByRole("button", { name: "Install required dependency" });
+    webviewPostMessage.mockClear();
+    fireEvent.click(action);
+
+    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for dependency confirmation");
+
+    dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+
+    unmount();
+    render(<App />);
+    dispatchAppMessage({
+      kind: "error",
+      code: "invalid_import_options",
+      message: "Choose a valid delimiter.",
+      recoverable: true
+    });
+    expect(screen.queryByRole("button", { name: "Install required dependency" })).toBeNull();
+  });
+
   it("commits and blurs a pointer-triggered import action before dispatch, then restores it after completion", async () => {
     const frames: FrameRequestCallback[] = [];
     const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {

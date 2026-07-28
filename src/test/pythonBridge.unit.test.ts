@@ -216,6 +216,66 @@ describe("PythonBridge cancellation", () => {
     expect(harness.writes()).toEqual([]);
   });
 
+  it("retries one transient runtime-selection change before an open-session request is dispatched", async () => {
+    const request = openSessionRequest(remoteFileSource());
+    const prepare = vi
+      .fn<(request: OpenWranglerRequest) => Promise<OpenWranglerRequest | ErrorResponse>>()
+      .mockRejectedValueOnce(new pythonEnvironment.PythonEnvironmentResolutionSupersededError())
+      .mockResolvedValueOnce(request);
+    const harness = createHarness(prepare);
+
+    const response = harness.bridge.request(request);
+    await harness.waitForWrites(1);
+
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(harness.ensureProcess).toHaveBeenCalledOnce();
+    const dispatched = harness.writes()[0]!;
+    expect(dispatched.request).toEqual(request);
+    harness.respond(dispatched.requestId, openedFor(request, "session"));
+    await expect(response).resolves.toMatchObject({ kind: "sessionOpened" });
+  });
+
+  it("bounds pre-dispatch open-session recovery to one retry when runtime selection keeps changing", async () => {
+    const request = openSessionRequest(remoteFileSource());
+    const prepare = vi.fn(async () => {
+      throw new pythonEnvironment.PythonEnvironmentResolutionSupersededError();
+    });
+    const harness = createHarness(prepare);
+
+    await expect(harness.bridge.request(request)).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed",
+      recoverable: true
+    });
+
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(harness.ensureProcess).not.toHaveBeenCalled();
+    expect(harness.writes()).toEqual([]);
+  });
+
+  it("never retries a runtime-selection error returned after the open-session request was dispatched", async () => {
+    const request = openSessionRequest(remoteFileSource());
+    const prepare = vi.fn(async () => request);
+    const harness = createHarness(prepare);
+
+    const response = harness.bridge.request(request);
+    await harness.waitForWrites(1);
+    const dispatched = harness.writes()[0]!;
+    harness.respond(dispatched.requestId, {
+      kind: "error",
+      code: "runtime_selection_changed",
+      message: "The runtime changed after dispatch.",
+      recoverable: true
+    });
+
+    await expect(response).resolves.toMatchObject({
+      kind: "error",
+      code: "runtime_selection_changed"
+    });
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(harness.writes()).toHaveLength(1);
+  });
+
   it("aborts an unresolved scope selection and returns the existing not-started cancellation", async () => {
     const token = new ManualCancellation();
     const source = remoteSourceAt("/resolution/cancelled.csv");
@@ -3303,6 +3363,28 @@ describe("PythonBridge environment resource selection", () => {
         .mocked(pythonEnvironment.probeDependencies)
         .mock.calls.map(([, dependencies]) => dependencies.map((dependency) => dependency.importModule))
     ).toEqual([["pandas"]]);
+  });
+
+  it("reports only the preferred automatic Excel backend and its exact missing requirement", async () => {
+    const source = remoteSourceAt("/data/workbook.xlsx");
+    const { internals } = createEnvironmentHarness();
+    vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
+    vi.mocked(pythonEnvironment.probeDependencies)
+      .mockResolvedValueOnce({ missing: ["fastexcel>=0.9"], available: ["polars"] })
+      .mockResolvedValueOnce({ missing: ["openpyxl>=3.1.5"], available: ["pandas"] });
+
+    await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toEqual({
+      kind: "error",
+      code: "missing_dependencies",
+      message:
+        "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.9.",
+      detail:
+        "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
+      recoverable: true
+    });
+    expect(internals.lastMissingDependencies).toMatchObject({
+      requirements: ["fastexcel>=0.9"]
+    });
   });
 
   it.each([

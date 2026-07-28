@@ -1651,6 +1651,77 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
   });
 
+  it("runs the confirmed dependency install from an initial error and reopens only after success", async () => {
+    const missing: OpenWranglerResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Polars is missing fastexcel>=0.9.",
+      recoverable: true
+    };
+    let openCalls = 0;
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      }
+      if (candidate.kind !== "openSession") throw new Error(`Unexpected request ${candidate.kind}`);
+      openCalls += 1;
+      return openCalls === 1 ? missing : openedResponse;
+    });
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
+      if (command === "openWrangler.installRuntimeDependencies") return true;
+      return undefined;
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    await harness.open();
+    harness.posted.length = 0;
+    executeCommand.mockClear();
+
+    await harness.receive({ kind: "installRuntimeDependencies" });
+
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(request.mock.calls.map(([candidate]) => candidate.kind)).toEqual(["openSession", "openSession"]);
+    expect(harness.posted).toEqual([
+      { kind: "runtimeDependencyInstallState", busy: true },
+      openedResponse,
+      { kind: "runtimeDependencyInstallState", busy: false }
+    ]);
+  });
+
+  it("keeps an initial dependency error retryable when installation is declined", async () => {
+    const missing: OpenWranglerResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Polars is missing fastexcel>=0.9.",
+      recoverable: true
+    };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
+      if (command === "openWrangler.installRuntimeDependencies") return false;
+      return undefined;
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    await harness.open();
+    harness.posted.length = 0;
+    executeCommand.mockClear();
+
+    for (const malformed of [
+      { kind: "installRuntimeDependencies", unexpected: true },
+      { kind: "installRuntimeDependencies", confirmed: true }
+    ]) {
+      await harness.receive(malformed);
+    }
+    expect(executeCommand).not.toHaveBeenCalled();
+
+    await harness.receive({ kind: "installRuntimeDependencies" });
+
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(request).toHaveBeenCalledOnce();
+    expect(harness.posted).toEqual([
+      { kind: "runtimeDependencyInstallState", busy: true },
+      { kind: "runtimeDependencyInstallState", busy: false }
+    ]);
+  });
+
   it("atomically publishes a successful live import reconfiguration and retains its source and revision", async () => {
     const source: SessionSource = {
       kind: "file",
