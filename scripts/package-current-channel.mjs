@@ -61,7 +61,13 @@ export function resolveCurrentChannelPackageArguments({ arguments_, packageJson 
     throw new Error("Stable-channel packaging must not receive --pre-release.");
   }
 
-  return Object.freeze(["package", ...(channel === "preview" ? ["--pre-release"] : []), "--out", outputArguments[1]]);
+  return Object.freeze([
+    "package",
+    "--no-gitHubIssueLinking",
+    ...(channel === "preview" ? ["--pre-release"] : []),
+    "--out",
+    outputArguments[1]
+  ]);
 }
 
 function runCli() {

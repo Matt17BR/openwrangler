@@ -23,6 +23,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Rewrote the README around installation, first use, core capabilities, supported engines and formats, editor compatibility, roadmap, measured performance evidence, and three explained theme-aware product scenes. Removed internal release-process commentary, repeated screenshots, and redundant compatibility prose.
 - Tightened the Operations and Filters / Sorts native views so categories retain useful descriptions, selection and current-view labels stay concise, and draft code consistently reads **Generated Polars code**.
 
+### Fixed
+
+- Prevented VSCE's issue-reference autolinker from rewriting the packaged README, and moved exact README byte parity into ordinary VSIX verification so canonical release staging is no longer the first place that drift is detected.
+
 ## [1.0.1] - 2026-07-28
 
 ### Changed
