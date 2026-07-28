@@ -23,6 +23,16 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "  linux-acceptance:\n    name: Linux release acceptance",
       "  linux-acceptance:\n    defaults:\n      run:\n        shell: bash\n    name: Linux release acceptance"
     ),
+    source.replace(
+      "  acceptance-gate:\n    name: Require every stable acceptance result",
+      "  acceptance-gate:\n    continue-on-error: true\n    name: Require every stable acceptance result"
+    ),
+    source.replace(
+      "      - name: Fail closed unless every required job succeeded",
+      "      - name: Fail closed unless every required job succeeded\n        continue-on-error: true"
+    ),
+    source.replace("      - run: npm test\n", "      - run: npm test\n        continue-on-error: true\n"),
+    source.replace("      - run: npm test\n", "      - run: npm test\n        if: ${{ false }}\n"),
     source.replace("--out-dir canonical-release", "--out-dir canonical-release\n          --performance-evidence"),
     source.replace("artifact-ids: ${{ needs.package.outputs.artifact-id }}", "name: openwrangler-stable-release"),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),

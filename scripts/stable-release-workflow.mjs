@@ -231,6 +231,12 @@ export function inspectStableReleaseWorkflow(source) {
     if (job?.env !== undefined || job?.defaults !== undefined) {
       problems.push(`${jobName} must not inherit job-level environment or shell defaults.`);
     }
+    if (
+      job?.["continue-on-error"] !== undefined ||
+      steps(job).some((step) => step?.["continue-on-error"] !== undefined)
+    ) {
+      problems.push(`${jobName} must not convert a failed release step or job into success.`);
+    }
   }
   inspectPinnedActions(workflow, problems);
 
@@ -338,8 +344,9 @@ export function inspectStableReleaseWorkflow(source) {
     "npm run audit:python",
     "npm run benchmark:runtime"
   ]) {
-    if (!allRunsFor(linux).includes(required)) {
-      problems.push(`linux-acceptance must run ${required}.`);
+    const requiredSteps = steps(linux).filter((step) => command(step?.run) === required);
+    if (requiredSteps.length !== 1 || !exactKeys(requiredSteps[0], ["run"])) {
+      problems.push(`linux-acceptance must run ${required} exactly once as an unconditional required step.`);
     }
   }
   const linuxSteps = steps(linux);
@@ -474,6 +481,8 @@ export function inspectStableReleaseWorkflow(source) {
       'test "$REMOTE_SSH_RESULT" = "success"'
     ].join(" ");
     if (
+      !exactKeys(gate, ["name", "env", "run"]) ||
+      gate.name !== "Fail closed unless every required job succeeded" ||
       !exactKeys(gate.env, Object.keys(expectedEnvironment)) ||
       Object.entries(expectedEnvironment).some(([key, value]) => gate.env[key] !== value) ||
       command(gate.run) !== expectedRun
