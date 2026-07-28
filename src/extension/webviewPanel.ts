@@ -449,9 +449,7 @@ export class OpenWranglerPanel {
       }
       await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: true });
       try {
-        const installed = await vscode.commands.executeCommand<boolean>(
-          "openWrangler.installRuntimeDependencies"
-        );
+        const installed = await vscode.commands.executeCommand<boolean>("openWrangler.installRuntimeDependencies");
         if (!installed || this.disposed || this.sessionId) return;
         this.openResponse = undefined;
         await this.open();
@@ -1103,7 +1101,7 @@ export class OpenWranglerPanel {
             kind: "changeImportOptions",
             ...(message.actionId === undefined ? {} : { actionId: message.actionId })
           }
-          : undefined;
+        : undefined;
     }
     if (message.kind === "installRuntimeDependencies") {
       return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;

@@ -3376,8 +3376,7 @@ describe("PythonBridge environment resource selection", () => {
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toEqual({
       kind: "error",
       code: "missing_dependencies",
-      message:
-        "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.9.",
+      message: "The selected Python 3.12.4 environment cannot open this source with Polars. Missing: fastexcel>=0.9.",
       detail:
         "Install the required dependency from this error, or run Open Wrangler: Install Runtime Dependencies, then review and confirm the exact environment change.",
       recoverable: true

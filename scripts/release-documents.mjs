@@ -74,7 +74,7 @@ ${README_EDITOR_SUPPORT}
 
 Install from the [Visual Studio Marketplace](${MARKETPLACE_URL}) or [Open VSX](${OPEN_VSX_URL}). For manual or offline installation, use the VSIX and matching checksum from a [GitHub Release](${RELEASES_URL}).
 
-On first open, Open Wrangler uses your configured Python path, selected Python environment, or a supported system interpreter. Missing dependencies are named and installed only after confirmation.
+On first open, Open Wrangler uses your configured Python path, selected Python environment, or a supported system interpreter. Missing packages are never installed silently: the error names the preferred backend and its exact requirements, and **Install required dependency** opens a confirmation before retrying the same file.
 
 The checked-in [feature parity matrix](${FEATURE_PARITY_URL}) records the tested 1.0 scope and its acceptance evidence. Real-world regressions remain release-blocking when discovered.
 

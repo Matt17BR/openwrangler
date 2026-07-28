@@ -31,7 +31,7 @@ VS Code and Cursor are release-tested. Other desktop forks that consume Open VSX
 
 Install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler) or [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler). For manual or offline installation, use the VSIX and matching checksum from a [GitHub Release](https://github.com/Matt17BR/openwrangler/releases).
 
-On first open, Open Wrangler uses your configured Python path, selected Python environment, or a supported system interpreter. Missing dependencies are named and installed only after confirmation.
+On first open, Open Wrangler uses your configured Python path, selected Python environment, or a supported system interpreter. Missing packages are never installed silently: the error names the preferred backend and its exact requirements, and **Install required dependency** opens a confirmation before retrying the same file.
 
 The checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md) records the tested 1.0 scope and its acceptance evidence. Real-world regressions remain release-blocking when discovered.
 
