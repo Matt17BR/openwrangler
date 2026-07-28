@@ -35,6 +35,38 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     source.replace("      - run: npm test\n", "      - run: npm test\n        if: ${{ false }}\n"),
     source.replace("--out-dir canonical-release", "--out-dir canonical-release\n          --performance-evidence"),
     source.replace("artifact-ids: ${{ needs.package.outputs.artifact-id }}", "name: openwrangler-stable-release"),
+    source.replace(
+      "      - id: canonical\n        name: Verify the exact canonical stable artifact",
+      "      - id: canonical\n        name: Verify the exact canonical stable artifact\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - run: npm run test:python-environment-smoke",
+      "      - run: npm run test:python-environment-smoke\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - run: npm run test:extension-host\n        env:",
+      "      - run: npm run test:extension-host\n        shell: bash {0}\n        env:"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test packaged VS Code",
+      "      - id: packaged_editor\n        name: Test packaged VS Code\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors",
+      "      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX",
+      "      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: prepare_xvfb\n        name: Prepare pinned private Xvfb",
+      "      - id: prepare_xvfb\n        name: Prepare pinned private Xvfb\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH",
+      "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH\n        if: ${{ false }}"
+    ),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),
     source.replace(

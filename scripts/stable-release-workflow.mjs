@@ -71,13 +71,25 @@ function inspectCheckout(job, name, problems) {
     problems.push(`${name} must check out the event commit exactly once.`);
     return;
   }
-  const options = checkouts[0].with;
-  if (options?.ref !== EVENT_SHA || options?.["fetch-depth"] !== 0 || options?.["persist-credentials"] !== false) {
+  const checkout = checkouts[0];
+  const options = checkout.with;
+  if (
+    !exactKeys(checkout, ["uses", "with"]) ||
+    !exactKeys(options, ["ref", "fetch-depth", "persist-credentials"]) ||
+    options.ref !== EVENT_SHA ||
+    options["fetch-depth"] !== 0 ||
+    options["persist-credentials"] !== false
+  ) {
     problems.push(`${name} checkout must pin github.sha, fetch history, and persist no credentials.`);
   }
 }
 
-function inspectDownloadAndVerification(job, name, problems) {
+function inspectDownloadAndVerification(
+  job,
+  name,
+  problems,
+  verifierName = "Verify the exact canonical stable artifact"
+) {
   const jobSteps = steps(job);
   const downloads = jobSteps.filter((step) => step?.uses === DOWNLOAD_ACTION);
   if (downloads.length !== 1) {
@@ -86,6 +98,7 @@ function inspectDownloadAndVerification(job, name, problems) {
   }
   const download = downloads[0];
   if (
+    !exactKeys(download, ["uses", "with"]) ||
     !exactKeys(download.with, ["artifact-ids", "path", "merge-multiple"]) ||
     download.with["artifact-ids"] !== ARTIFACT_ID ||
     download.with.path !== "canonical-release" ||
@@ -93,12 +106,16 @@ function inspectDownloadAndVerification(job, name, problems) {
   ) {
     problems.push(`${name} must download only the producer artifact ID into canonical-release.`);
   }
-  const verifier = findRun(job, "node scripts/verify-canonical-release-artifact.mjs canonical-release");
+  const verifiers = jobSteps.filter((step) => step?.id === "canonical");
+  const verifier = verifiers[0];
   if (
-    verifier === undefined ||
-    verifier.id !== "canonical" ||
-    verifier.env?.EXPECTED_SHA !== EVENT_SHA ||
-    verifier.env?.RELEASE_TAG !== RELEASE_TAG ||
+    verifiers.length !== 1 ||
+    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
+    verifier.name !== verifierName ||
+    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
+    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(verifier.run) !== "node scripts/verify-canonical-release-artifact.mjs canonical-release" ||
     jobSteps.indexOf(verifier) <= jobSteps.indexOf(download)
   ) {
     problems.push(`${name} must bind and verify the downloaded canonical set before consuming it.`);
@@ -237,6 +254,36 @@ export function inspectStableReleaseWorkflow(source) {
     ) {
       problems.push(`${jobName} must not convert a failed release step or job into success.`);
     }
+    for (const step of steps(job)) {
+      if (
+        step?.if !== undefined &&
+        step?.uses !== UPLOAD_ACTION &&
+        !(
+          jobName === "package" &&
+          exactKeys(step, ["name", "if", "run"]) &&
+          step.name === "Reject preview metadata" &&
+          step.if === "${{ steps.release_metadata.outputs.prerelease != 'false' }}" &&
+          command(step.run) === "exit 1"
+        )
+      ) {
+        problems.push(`${jobName} must not conditionally skip a required release step.`);
+      }
+      if (
+        step?.shell !== undefined &&
+        !(
+          (jobName === "linux-acceptance" &&
+            step.id === "prepare_cursor_xvfb" &&
+            step.shell === "node {0}" &&
+            command(step.run) === command(PINNED_CURSOR_XVFB_PREPARATION)) ||
+          (jobName === "released-jupyter" &&
+            step.id === "prepare_xvfb" &&
+            step.shell === "node {0}" &&
+            command(step.run) === command(PINNED_CURSOR_XVFB_PREPARATION))
+        )
+      ) {
+        problems.push(`${jobName} must not override the shell of a required release step.`);
+      }
+    }
   }
   inspectPinnedActions(workflow, problems);
 
@@ -323,15 +370,44 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("cross-platform must cover the pinned macOS and Windows release matrix.");
   }
-  for (const required of [
-    "npm run test:python-environment-smoke",
-    "python -m pytest python/tests -q",
-    "npm run test:extension-host",
-    "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
-  ]) {
-    if (!allRunsFor(crossPlatform).includes(required)) {
-      problems.push(`cross-platform must run ${required}.`);
+  for (const required of ["npm run test:python-environment-smoke", "python -m pytest python/tests -q"]) {
+    const requiredSteps = steps(crossPlatform).filter((step) => command(step?.run) === required);
+    if (requiredSteps.length !== 1 || !exactKeys(requiredSteps[0], ["run"])) {
+      problems.push(`cross-platform must run ${required} exactly once as an unconditional required step.`);
     }
+  }
+  const extensionHostStep = findRun(crossPlatform, "npm run test:extension-host");
+  if (
+    !exactKeys(extensionHostStep, ["run", "env"]) ||
+    !exactKeys(extensionHostStep.env, ["VSCODE_TEST_VERSION"]) ||
+    extensionHostStep.env.VSCODE_TEST_VERSION !== "stable"
+  ) {
+    problems.push("cross-platform must run stable extension-host acceptance unconditionally.");
+  }
+  const crossPlatformEditorStep = findRun(
+    crossPlatform,
+    "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
+  );
+  if (
+    !exactKeys(crossPlatformEditorStep, ["id", "name", "run", "env"]) ||
+    crossPlatformEditorStep.id !== "packaged_editor" ||
+    crossPlatformEditorStep.name !== "Test packaged VS Code" ||
+    !exactKeys(crossPlatformEditorStep.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
+    crossPlatformEditorStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
+    crossPlatformEditorStep.env.VSCODE_TEST_VERSION !== "stable"
+  ) {
+    problems.push("cross-platform must run full stable VS Code packaged acceptance unconditionally.");
+  }
+  const cursorSmokeStep = steps(crossPlatform).find((step) => step?.id === "cursor_smoke");
+  if (
+    !exactKeys(cursorSmokeStep, ["id", "name", "run", "env"]) ||
+    cursorSmokeStep.name !== "Test pinned Cursor platform smoke" ||
+    command(cursorSmokeStep.run) !== "node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix" ||
+    !exactKeys(cursorSmokeStep.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "OPEN_WRANGLER_PACKAGED_MODE"]) ||
+    cursorSmokeStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "cursor" ||
+    cursorSmokeStep.env.OPEN_WRANGLER_PACKAGED_MODE !== "platform-smoke"
+  ) {
+    problems.push("cross-platform must run the pinned Cursor platform smoke unconditionally.");
   }
 
   const linux = workflow.jobs["linux-acceptance"];
@@ -412,9 +488,14 @@ export function inspectStableReleaseWorkflow(source) {
   }
 
   const performance = workflow.jobs["installed-performance"];
-  const performanceRun = allRunsFor(performance).find((run) => run.includes("npm run benchmark:installed --"));
+  const performanceStep = steps(performance).find((step) => step?.id === "installed_performance");
+  const performanceRun = command(performanceStep?.run);
   if (
-    performanceRun === undefined ||
+    !exactKeys(performanceStep, ["id", "name", "env", "run"]) ||
+    performanceStep.name !== "Test the ordinary stable artifact in pinned editors" ||
+    !exactKeys(performanceStep.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    performanceStep.env.EXPECTED_SHA !== EVENT_SHA ||
+    performanceStep.env.RELEASE_TAG !== RELEASE_TAG ||
     performanceRun.includes("--performance-evidence") ||
     !performanceRun.includes("--pinned-editors") ||
     !performanceRun.includes("--candidate-in canonical-release/openwrangler.vsix") ||
@@ -425,24 +506,52 @@ export function inspectStableReleaseWorkflow(source) {
   }
 
   const jupyter = workflow.jobs["released-jupyter"];
-  const jupyterStep = steps(jupyter).find(
-    (step) =>
-      command(step?.run) ===
-      "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
-  );
+  const jupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor");
   if (
-    jupyterStep?.env?.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
-    jupyterStep?.env?.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
-    jupyterStep?.env?.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1"
+    !exactKeys(jupyterStep, ["id", "name", "run", "env"]) ||
+    jupyterStep.name !== "Test released Jupyter in the exact packaged VSIX" ||
+    command(jupyterStep.run) !== PACKAGED_EDITOR_COMMAND ||
+    !exactKeys(jupyterStep.env, [
+      "OPEN_WRANGLER_PACKAGED_EDITORS",
+      "OPEN_WRANGLER_EDITOR_DISPLAY",
+      "OPEN_WRANGLER_XVFB_EXECUTABLE",
+      "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION",
+      "OPEN_WRANGLER_REAL_REMOTE_JUPYTER",
+      "VSCODE_TEST_VERSION"
+    ]) ||
+    jupyterStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor" ||
+    jupyterStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
+    jupyterStep.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== "${{ steps.prepare_xvfb.outputs.executable }}" ||
+    jupyterStep.env.OPEN_WRANGLER_REAL_JUPYTER_EXTENSION !== "1" ||
+    jupyterStep.env.OPEN_WRANGLER_REAL_REMOTE_JUPYTER !== "1" ||
+    jupyterStep.env.VSCODE_TEST_VERSION !== "stable"
   ) {
     problems.push("released-jupyter must cover local and remote Jupyter in both VS Code and Cursor.");
   }
+  const jupyterPreparations = steps(jupyter).filter((step) => step?.id === "prepare_xvfb");
+  const jupyterPreparation = jupyterPreparations[0];
+  if (
+    jupyterPreparations.length !== 1 ||
+    !exactKeys(jupyterPreparation, ["id", "name", "shell", "run"]) ||
+    jupyterPreparation.name !== "Prepare pinned private Xvfb" ||
+    jupyterPreparation.shell !== "node {0}" ||
+    command(jupyterPreparation.run) !== command(PINNED_CURSOR_XVFB_PREPARATION) ||
+    steps(jupyter).indexOf(jupyterPreparation) >= steps(jupyter).indexOf(jupyterStep)
+  ) {
+    problems.push("released-jupyter must prepare and verify one pinned private Xvfb before its editor gate.");
+  }
 
   const remote = workflow.jobs["remote-ssh"];
-  const remoteRun = allRunsFor(remote).find((run) => run.startsWith("npm run test:remote-workspace --"));
+  const remoteStep = steps(remote).find((step) => step?.id === "remote_workspace");
+  const remoteRun = command(remoteStep?.run);
   if (
+    !exactKeys(remoteStep, ["id", "name", "run", "env"]) ||
+    remoteStep.name !== "Test packaged VS Code over Remote SSH" ||
+    !exactKeys(remoteStep.env, ["OPEN_WRANGLER_EDITOR_DISPLAY", "OPEN_WRANGLER_REMOTE_PYTHON"]) ||
+    remoteStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
+    remoteStep.env.OPEN_WRANGLER_REMOTE_PYTHON !== "${{ github.workspace }}/.remote-venv/bin/python" ||
     remoteRun !==
-    "npm run test:remote-workspace -- ${{ steps.canonical.outputs.candidate_path }} ${{ steps.canonical.outputs.candidate_sha256 }} ${{ steps.canonical.outputs.candidate_bytes }}"
+      "npm run test:remote-workspace -- ${{ steps.canonical.outputs.candidate_path }} ${{ steps.canonical.outputs.candidate_sha256 }} ${{ steps.canonical.outputs.candidate_bytes }}"
   ) {
     problems.push("remote-ssh must run the label-equivalent gate against verifier-bound artifact outputs.");
   }
@@ -510,7 +619,7 @@ export function inspectStableReleaseWorkflow(source) {
     problems.push("release must have only contents: write.");
   }
   inspectCheckout(release, "release", problems);
-  inspectDownloadAndVerification(release, "release", problems);
+  inspectDownloadAndVerification(release, "release", problems, "Revalidate the exact artifact before release");
   if (
     allRunsFor(release).some(
       (run) => /^npm run (?:build|package)(?:\s|$)/u.test(run) || run.includes("create-canonical-release-artifact")
