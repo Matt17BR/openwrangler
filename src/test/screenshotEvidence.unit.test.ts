@@ -10,6 +10,7 @@ import {
   PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_SCENES,
+  PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
   packagedScreenshotFixtureCsv,
@@ -110,6 +111,7 @@ describe("packaged editor screenshot evidence", () => {
     const rowHeaderWidth = 48;
     const widths = packagedScreenshotFeaturedColumnWidths(gridClientWidth, rowHeaderWidth);
 
+    expect(PACKAGED_SCREENSHOT_VIEWPORT).toEqual({ width: 1_920, height: 1_080 });
     expect(PACKAGED_SCREENSHOT_FEATURED_COLUMNS).toEqual(PACKAGED_SCREENSHOT_COLUMNS.slice(0, 5));
     expect(PACKAGED_SCREENSHOT_COLUMNS.length).toBeGreaterThan(PACKAGED_SCREENSHOT_FEATURED_COLUMNS.length);
     expect(
@@ -121,8 +123,15 @@ describe("packaged editor screenshot evidence", () => {
     const wideWidths = packagedScreenshotFeaturedColumnWidths(1_500, rowHeaderWidth);
     expect(Object.values(wideWidths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(1_500);
     expect(Object.values(wideWidths).every((width) => width <= 640)).toBe(true);
+    expect(packagedScreenshotFeaturedColumnWidths(893, rowHeaderWidth)).toEqual(
+      PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS
+    );
+    expect(Object.values(packagedScreenshotFeaturedColumnWidths(3_248, rowHeaderWidth))).toEqual([
+      640, 640, 640, 640, 640
+    ]);
     expect(() => packagedScreenshotFeaturedColumnWidths(0, rowHeaderWidth)).toThrow(TypeError);
-    expect(() => packagedScreenshotFeaturedColumnWidths(700, rowHeaderWidth)).toThrow(RangeError);
+    expect(() => packagedScreenshotFeaturedColumnWidths(892, rowHeaderWidth)).toThrow(RangeError);
+    expect(() => packagedScreenshotFeaturedColumnWidths(3_249, rowHeaderWidth)).toThrow(RangeError);
   });
 
   it("keeps README scene names explicit and theme-aware", () => {

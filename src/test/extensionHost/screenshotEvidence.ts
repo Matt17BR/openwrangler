@@ -16,6 +16,7 @@ export const PACKAGED_SCREENSHOT_COLUMNS = [
   "account_note"
 ] as const;
 export const PACKAGED_SCREENSHOT_ROW_COUNT = 10_000;
+export const PACKAGED_SCREENSHOT_VIEWPORT = { width: 1_920, height: 1_080 } as const;
 export const PACKAGED_SCREENSHOT_MARKETS = [
   "Benelux",
   "DACH",

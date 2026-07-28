@@ -68,6 +68,7 @@ import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
+  PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
   packagedScreenshotFixtureCsv,
@@ -4512,6 +4513,16 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
   let capturePage: Page;
   try {
     capturePage = await connectToEditorWorkbench();
+    await capturePage.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+    const captureViewport = await capturePage.evaluate(() => {
+      const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+      return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+    });
+    assert.deepEqual(
+      captureViewport,
+      PACKAGED_SCREENSHOT_VIEWPORT,
+      "README evidence requires the deterministic 1920 by 1080 packaged-editor viewport."
+    );
     recordAcceptanceProgress("verify:screenshots:open");
     mkdirSync(outputDirectory, { recursive: true });
     await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);

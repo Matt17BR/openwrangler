@@ -11,7 +11,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Added a protected, idempotent Open VSX promotion workflow for stable, preview, and historical GitHub Releases. It promotes the exact public GitHub assets without rebuilding and verifies the public publisher, checksum, channel metadata, and downloadable VSIX bytes.
 - Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. It uses the personal `Matt17BR` workload identity, promotes the exact GitHub VSIX as stable or pre-release metadata, and verifies the public upload and package contents.
 - Introduced an original pivot-grid icon family for the extension gallery and Activity Bar, with transparent 128 px and 256 px raster assets plus a monochrome theme-aware workbench mark.
-- Replaced the README capture fixture with a deterministic, license-clean 10,000-row × 15-column regional-order dataset spanning identifiers, dates, categories, numeric ranges, booleans, nulls, and long text. The packaged-editor harness now rejects clipped featured columns, controls, draft actions, code, or numeric summary statistics before accepting media.
+- Replaced the README capture fixture with a deterministic, license-clean 10,000-row × 15-column regional-order dataset spanning identifiers, dates, categories, numeric ranges, booleans, nulls, and long text. The packaged-editor harness pins a 1920 × 1080 workbench viewport and rejects clipped featured columns, controls, draft actions, code, or numeric summary statistics before accepting media.
 
 ### Changed
 
