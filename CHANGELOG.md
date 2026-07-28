@@ -9,6 +9,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Made primary CSV and TSV launches immediate: the local or remote extension host uses one bounded 64 KiB sample to detect comma, tab, semicolon, or pipe delimiters, UTF-8/BOM versus Windows-1252, standard versus structural single quotes, and likely headers, then fails soft to safe suffix defaults if the host cannot read the sample. **Change Import Options** remains available for explicit correction.
 - Made column-header sorting an unambiguous one-click primary sort: choosing ascending or descending closes the menu and replaces prior quick sorts, while a visible accessible indicator clears the active rule. Deliberate multi-column sorting now stays in Filters / Sorts as an ordered, individually removable draft with direction toggles, clear-all, and explicit apply/discard actions; viewing filters and cleaning steps remain unchanged.
 - Kept column summaries stable while progressive profiling results arrive and promoted the selected column to an expanded, visually marked first position, so exact numeric min/max/mean/median statistics remain visible instead of unexpectedly collapsing.
+- Tightened the README around the actual install, exploration, transformation, engine, and compatibility story; removed the blanket parity-complete claim so newly discovered real-world regressions are described and treated honestly.
 
 ## [1.0.0] - 2026-07-28
 

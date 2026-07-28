@@ -726,16 +726,13 @@ test("keeps the same compact editor support tiers in every README channel", () =
     PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
     STABLE_README_RELEASE_SECTION
   ]) {
-    assert.match(section, /\| VS Code\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
-    assert.match(section, /\| Cursor\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
-    assert.match(section, /\| Other VS Code-based IDEs, including Antigravity\s+\| Experimental\s+\|/u);
+    assert.match(section, /\| VS Code\s+\| First-class\s+\| Complete release suite\s+\|/u);
+    assert.match(section, /\| Cursor\s+\| First-class\s+\| Complete release suite\s+\|/u);
+    assert.match(section, /\| Other VS Code desktop IDEs\s+\| Experimental\s+\|/u);
     assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
-    assert.match(section, /Open VSX publication can make Open Wrangler discoverable there/u);
-    assert.match(section, /it does not certify compatibility/u);
-    assert.match(
-      section,
-      /Experimental editors receive isolated functional smokes and do not inherit the VS Code\/Cursor support guarantee/u
-    );
+    assert.match(section, /VS Code and Cursor are release-tested/u);
+    assert.match(section, /desktop forks that consume Open VSX may work/u);
+    assert.match(section, /are not yet part of the release gate/u);
   }
   const stableLinks = new Map(
     [...STABLE_README_RELEASE_SECTION.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu)].map((match) => [match[1], match[2]])
