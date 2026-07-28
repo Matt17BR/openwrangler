@@ -640,7 +640,7 @@ export async function run(): Promise<void> {
     recordAcceptanceProgress("verify:file-launch-surfaces");
     await exercisePackagedFileLaunchSurfaces(
       testing,
-      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.jsonl")),
+      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "[Live] sample.csv")),
       process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
     );
   }
