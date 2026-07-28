@@ -256,7 +256,7 @@ describe("App progressive profiling and view correlation", () => {
     }
   );
 
-  it("returns drawer focus to the exact column-filter opener", async () => {
+  it("returns drawer focus to the toolbar when the column-filter opener is hidden", async () => {
     const frames: FrameRequestCallback[] = [];
     const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       frames.push(callback);
@@ -278,7 +278,7 @@ describe("App progressive profiling and view correlation", () => {
 
       fireEvent.keyDown(close, { key: "Escape" });
       act(() => frames.shift()?.(performance.now()));
-      expect(filter).toHaveFocus();
+      expect(screen.getByRole("button", { name: "Insights & filters" })).toHaveFocus();
     } finally {
       hasFocus.mockRestore();
       requestFrame.mockRestore();

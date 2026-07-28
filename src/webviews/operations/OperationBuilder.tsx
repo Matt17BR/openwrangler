@@ -1482,7 +1482,6 @@ function ColumnReferencesSelect({
     <fieldset
       className="columnSelectionField"
       aria-describedby={preserveSelectionOrder && selectedLabels.length > 0 ? `${helpId} ${orderId}` : helpId}
-      aria-required={required}
     >
       <legend>{label}</legend>
       {selectedIds.map((id) => (
@@ -1512,6 +1511,7 @@ function ColumnReferencesSelect({
         {columns.length === 0 && <span className="mutedText">No compatible columns are available.</span>}
       </div>
       <small id={helpId}>
+        {required ? "Select at least one column. " : ""}
         {preserveSelectionOrder
           ? "Check columns in the order you want to use them. Uncheck any column to remove it."
           : "Check each column you want to include. No keyboard modifier is required."}

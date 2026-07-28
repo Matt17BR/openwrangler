@@ -36,6 +36,15 @@ function scheduleWebviewFocusRestoration(restore: () => void): number {
   });
 }
 
+function canRestoreFocusTo(target: HTMLElement | null | undefined): target is HTMLElement {
+  return Boolean(
+    target?.isConnected &&
+    target.tabIndex >= 0 &&
+    !target.matches(":disabled") &&
+    target.closest("[inert], [hidden], details:not([open])") === null
+  );
+}
+
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<GridPage | undefined>();
@@ -161,9 +170,7 @@ export function App() {
     const returnTarget = operationReturnFocus.current;
     operationReturnFocus.current = null;
     const frame = scheduleWebviewFocusRestoration(() => {
-      const targetIsAvailable =
-        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
-      if (targetIsAvailable) {
+      if (canRestoreFocusTo(returnTarget)) {
         returnTarget.focus();
         return;
       }
@@ -1714,9 +1721,7 @@ export function App() {
     const returnTarget = sidePanelReturnFocus.current;
     sidePanelReturnFocus.current = null;
     scheduleWebviewFocusRestoration(() => {
-      const targetIsAvailable =
-        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
-      if (targetIsAvailable) returnTarget.focus();
+      if (canRestoreFocusTo(returnTarget)) returnTarget.focus();
       else sidePanelToggleRef.current?.focus();
     });
   };
