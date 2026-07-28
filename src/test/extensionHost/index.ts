@@ -4523,6 +4523,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       PACKAGED_SCREENSHOT_VIEWPORT,
       "README evidence requires the deterministic 1920 by 1080 packaged-editor viewport."
     );
+    await prepareWorkbenchForEvidence();
+    await hideCodePreviewPanel();
+    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
     recordAcceptanceProgress("verify:screenshots:open");
     mkdirSync(outputDirectory, { recursive: true });
     await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
@@ -4588,7 +4591,6 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     );
     assert.deepEqual(testing.activeSession()?.viewState.columnWidths, columnWidths);
     assert.equal(testing.activeSession()?.viewState.selectedColumnId, revenue.id);
-    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
   } catch (error) {
     const active = testing.activeSession();
     if (active?.metadata.source.path === fixture.fsPath) {
