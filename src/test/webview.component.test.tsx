@@ -1399,6 +1399,7 @@ describe("App file import options", () => {
         expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(false);
       });
 
+      expect(document.querySelector("main.app")).toHaveAttribute("data-session-id", metadata.sessionId);
       expect(webviewPostMessage).toHaveBeenCalledWith({
         kind: "rendererSynchronized",
         syncId: "S".repeat(32),

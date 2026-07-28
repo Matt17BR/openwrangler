@@ -18,6 +18,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Bound packaged-editor grid discovery to the exact live session and inspect the newest retained Open Wrangler webviews first, so older hidden Cursor targets cannot starve the active-panel assertion.
+- Corrected the installed-editor release benchmark to map requested logical rows through the same bounded scroll-canvas constants as the production grid. Million-row acceptance now measures the intended cell instead of interpreting an uncompressed pixel offset as a different row.
 - Restored keyboard focus to a visible control when closing Filters / Sorts after entering through a column menu; a closed menu item or the document body can no longer be mistaken for a valid return target. Required multi-column checklists now use explicit group guidance instead of an invalid `aria-required` fieldset attribute.
 - Opened zero-byte, BOM-only, and whitespace-only CSV/TSV sources as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB instead of surfacing raw parser failures. Non-empty malformed input still fails in its native reader, and opening never changes source bytes.
 - Kept the installed dataframe surface on the declared VS Code foreground and editor-background tokens instead of inheriting a subtly different workbench color from the host webview.

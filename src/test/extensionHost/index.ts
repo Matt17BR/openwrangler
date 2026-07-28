@@ -65,6 +65,7 @@ import {
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
 import { packagedScreenshotFileName, packagedScreenshotFixtureCsv } from "./screenshotEvidence";
+import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -3376,7 +3377,7 @@ async function exercisePackagedPlatformSmoke(
   assert.equal(active.metadata.shape.columns, 4);
 
   recordAcceptanceProgress("platform-smoke:grid");
-  const gridTarget = await waitForOpenWranglerGridTarget(page);
+  const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
   const grid = gridTarget.frame.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
   await grid.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await grid.getAttribute("aria-colcount"), "5");
@@ -3500,7 +3501,7 @@ async function exerciseRemoteWorkspace(
   assert.deepEqual(active.metadata.shape, { rows: 3, columns: 2 });
   await waitFor(
     () => testing.panelHydrated(active.metadata.sessionId),
-    OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the exact Remote SSH panel to finish opening and acknowledge its current renderer snapshot"
   );
   assert.equal(
@@ -3563,7 +3564,11 @@ async function exerciseRemoteWorkspace(
   assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
 }
 
-async function waitForOpenWranglerGridTarget(workbench: Page): Promise<OpenWranglerWebviewTarget> {
+async function waitForOpenWranglerGridTarget(
+  workbench: Page,
+  testing: TestApi,
+  expectedSessionId: string
+): Promise<OpenWranglerWebviewTarget> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   do {
     const browser = workbench.context().browser();
@@ -3571,7 +3576,9 @@ async function waitForOpenWranglerGridTarget(workbench: Page): Promise<OpenWrang
     for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
       if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
       try {
-        const grid = target.frame.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
+        const app = await exactSessionApp(target.frame, expectedSessionId);
+        if (!app) continue;
+        const grid = app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
         if ((await grid.count()) > 0 && (await grid.isVisible())) return target;
       } catch (error) {
         ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
@@ -3579,7 +3586,39 @@ async function waitForOpenWranglerGridTarget(workbench: Page): Promise<OpenWrang
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
-  throw new Error("The editor journey did not expose a live Open Wrangler grid.");
+
+  const browser = workbench.context().browser();
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  const diagnostics = await openWranglerGridDiagnostics(workbench, browser, expectedSessionId);
+  const active = testing.activeSession();
+  throw new Error(
+    "The editor journey did not expose the expected live Open Wrangler grid. " +
+      `State: ${JSON.stringify({
+        expectedSessionId,
+        activeSession:
+          active === undefined
+            ? undefined
+            : {
+                sessionId: active.sessionId,
+                sourceLabel: active.metadata.source.label,
+                revision: active.metadata.revision
+              },
+        coordinator: testing.diagnostics(),
+        panelHydrated: testing.panelHydrated(expectedSessionId),
+        activeTab: activeEditorTabDiagnostic(),
+        webviews: diagnostics
+      })}`
+  );
+}
+
+async function exactSessionApp(frame: Frame, expectedSessionId: string): Promise<Locator | undefined> {
+  const apps = frame.locator("main.app[data-session-id]");
+  const count = await apps.count();
+  for (let index = 0; index < count; index += 1) {
+    const app = apps.nth(index);
+    if ((await app.getAttribute("data-session-id")) === expectedSessionId) return app;
+  }
+  return undefined;
 }
 
 async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
@@ -3780,7 +3819,40 @@ async function exercisePackagedFileLaunchSurfaces(
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-title action to open the selected source"
   );
-  const gridTarget = await waitForOpenWranglerGridTarget(page);
+  const active = testing.activeSession();
+  assert.ok(active, "The editor-title action must publish its dataframe session.");
+  await waitFor(
+    () => testing.panelHydrated(active.metadata.sessionId),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the exact editor-title panel to finish opening and acknowledge its current renderer snapshot",
+    () =>
+      JSON.stringify({
+        sessionId: active.metadata.sessionId,
+        coordinator: testing.diagnostics(),
+        activeTab: activeEditorTabDiagnostic()
+      })
+  );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      testing.synchronizePanel(active.metadata.sessionId),
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the exact editor-title Open Wrangler panel synchronization"
+    ),
+    true,
+    "The editor-title session must own a synchronized Open Wrangler grid panel."
+  );
+  await waitFor(
+    () => {
+      const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      return Boolean(
+        tab && isOpenWranglerSessionTab(tab) && tab.label === `Open Wrangler: ${active.metadata.source.label}`
+      );
+    },
+    10_000,
+    "the editor-title Open Wrangler session tab to remain active",
+    () => JSON.stringify(activeEditorTabDiagnostic())
+  );
+  const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
   await exercisePrimarySortJourney(testing, gridTarget.frame, "verify:file-launch:title-action:sort-journey");
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
@@ -8372,12 +8444,8 @@ function openWranglerWebviewTargets(
     if (candidate !== workbench && candidate.isClosed()) continue;
     const frames = candidate
       .frames()
-      .map((frame, frameIndex) => ({ frame, frameIndex, classification: classifyRendererUrl(frame.url()) }))
-      .sort(
-        (left, right) => rendererTargetPriority(left.classification) - rendererTargetPriority(right.classification)
-      );
+      .map((frame, frameIndex) => ({ frame, frameIndex, classification: classifyRendererUrl(frame.url()) }));
     for (const { frame, frameIndex, classification } of frames) {
-      if (targets.length >= limit) return targets;
       targets.push({
         page: candidate,
         frame,
@@ -8389,7 +8457,7 @@ function openWranglerWebviewTargets(
       });
     }
   }
-  return targets;
+  return prioritizeNewestRendererTargets(targets, limit);
 }
 
 function classifyRendererUrl(url: string): {
@@ -8424,16 +8492,102 @@ function classifyRendererUrl(url: string): {
   };
 }
 
-function rendererTargetPriority(classification: { isWebview: boolean; isOpenWranglerWebview: boolean }): number {
-  if (classification.isOpenWranglerWebview) return 0;
-  if (classification.isWebview) return 1;
-  return 2;
-}
-
 function assertOpenWranglerWebviewLifecycle(workbench: Page, browser: Browser | null): void {
   if (workbench.isClosed()) throw new Error("The editor workbench closed during Open Wrangler webview discovery.");
   if (browser !== null && !browser.isConnected()) {
     throw new Error("The editor CDP browser disconnected during Open Wrangler webview discovery.");
+  }
+}
+
+function activeEditorTabDiagnostic(): Record<string, boolean | string> {
+  const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  const input = tab?.input;
+  const constructorName =
+    typeof input === "object" && input !== null
+      ? (input as { constructor?: { name?: unknown } }).constructor?.name
+      : undefined;
+  const viewType =
+    typeof input === "object" &&
+    input !== null &&
+    "viewType" in input &&
+    typeof (input as { viewType?: unknown }).viewType === "string"
+      ? (input as { viewType: string }).viewType
+      : "";
+  return {
+    label: tab?.label ?? "",
+    inputType: typeof constructorName === "string" ? constructorName : typeof input,
+    viewType,
+    isOpenWranglerSession: tab ? isOpenWranglerSessionTab(tab) : false
+  };
+}
+
+async function openWranglerGridDiagnostics(
+  workbench: Page,
+  browser: Browser | null,
+  expectedSessionId: string
+): Promise<unknown> {
+  const allTargets = openWranglerWebviewTargets(workbench, browser, Number.MAX_SAFE_INTEGER);
+  const targets = allTargets.slice(0, OPEN_WRANGLER_WEBVIEW_DIAGNOSTIC_TARGET_LIMIT);
+  const summary = {
+    totalTargets: allTargets.length,
+    openWranglerTargets: allTargets.filter((target) => target.isOpenWranglerWebview).length,
+    diagnosedTargets: targets.length
+  };
+  try {
+    const targetsState = await withAcceptanceOperationDeadline(
+      Promise.all(
+        targets.map(async (target) => {
+          if (isRetiredRendererTarget(workbench, target.page, target.frame)) {
+            return rendererTargetDiagnostic(target, { retired: true, attached: false });
+          }
+          try {
+            const apps = target.frame.locator("main.app");
+            const sessionIds = (
+              await target.frame.locator("main.app[data-session-id]").evaluateAll((elements) =>
+                elements
+                  .map((element) => element.getAttribute("data-session-id") ?? "")
+                  .filter((sessionId) => sessionId.length > 0)
+                  .slice(0, 4)
+              )
+            ).join(",");
+            const exactApp = await exactSessionApp(target.frame, expectedSessionId);
+            const exactGrid = exactApp?.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
+            const [roots, appCount, gridCount, exactAppVisible, exactGridCount, exactGridVisible] = await Promise.all([
+              target.frame.locator("#root").count(),
+              apps.count(),
+              target.frame.locator('[data-testid="data-grid-scroller"] [role="grid"]').count(),
+              exactApp?.isVisible() ?? Promise.resolve(false),
+              exactGrid?.count() ?? Promise.resolve(0),
+              exactGrid?.isVisible() ?? Promise.resolve(false)
+            ]);
+            return rendererTargetDiagnostic(target, {
+              retired: false,
+              attached: !target.frame.isDetached(),
+              roots,
+              apps: appCount,
+              grids: gridCount,
+              sessionIds,
+              exactAppVisible,
+              exactGridCount,
+              exactGridVisible
+            });
+          } catch (error) {
+            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+            return rendererTargetDiagnostic(target, { retired: true, attached: false });
+          }
+        })
+      ),
+      WORKBENCH_DIAGNOSTIC_TIMEOUT_MS,
+      "bounded exact-session Open Wrangler grid diagnostics"
+    );
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    return { ...summary, targets: targetsState };
+  } catch (error) {
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    if (error instanceof Error && error.message.startsWith("Timed out waiting for bounded exact-session")) {
+      return { ...summary, targets: "unavailable within the diagnostics deadline" };
+    }
+    throw error;
   }
 }
 
