@@ -737,12 +737,11 @@ test("keeps the same compact editor support tiers in every README channel", () =
       /Experimental editors receive isolated functional smokes and do not inherit the VS Code\/Cursor support guarantee/u
     );
   }
-  assert.match(
-    STABLE_README_RELEASE_SECTION,
-    /https:\/\/marketplace\.visualstudio\.com\/items\?itemName=Matt17BR\.openwrangler/u
+  assert.ok(
+    STABLE_README_RELEASE_SECTION.includes("https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler")
   );
-  assert.match(STABLE_README_RELEASE_SECTION, /https:\/\/open-vsx\.org\/extension\/Matt17BR\/openwrangler/u);
-  assert.match(STABLE_README_RELEASE_SECTION, /https:\/\/github\.com\/Matt17BR\/openwrangler\/releases/u);
+  assert.ok(STABLE_README_RELEASE_SECTION.includes("https://open-vsx.org/extension/Matt17BR/openwrangler"));
+  assert.ok(STABLE_README_RELEASE_SECTION.includes("https://github.com/Matt17BR/openwrangler/releases"));
 });
 
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {
