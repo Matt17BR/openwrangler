@@ -88,6 +88,18 @@ function validateToken(token) {
   }
 }
 
+function encodeGitCredentialComponent(value) {
+  return [...value]
+    .map((character) =>
+      /[A-Za-z0-9._~-]/u.test(character) ? character : `%${character.codePointAt(0).toString(16).padStart(2, "0")}`
+    )
+    .join("");
+}
+
+function quoteGitHelperArgument(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 function readVersion(root) {
   const packageJsonPath = join(root, "package.json");
   const source = readFileSync(packageJsonPath, "utf8");
@@ -149,7 +161,7 @@ function createCredentialLease(token) {
       0o600
     );
     if (enforcePosixModes) fchmodSync(descriptor, 0o600);
-    const value = `https://x-access-token:${encodeURIComponent(token)}@github.com\n`;
+    const value = `https://x-access-token:${encodeGitCredentialComponent(token)}@github.com\n`;
     if (Buffer.byteLength(value, "utf8") > TOKEN_MAX_BYTES * 3 + 64) {
       throw new Error("The encoded Git credential exceeds its bound.");
     }
@@ -161,10 +173,12 @@ function createCredentialLease(token) {
     }
     return Object.freeze({
       descriptor,
-      identity: Object.freeze({ dev: stat.dev, ino: stat.ino }),
+      expectedValue: value,
+      identity: Object.freeze({ dev: stat.dev, ino: stat.ino, uid: stat.uid }),
       path,
       root,
-      rootIdentity: Object.freeze({ dev: rootStat.dev, ino: rootStat.ino })
+      rootIdentity: Object.freeze({ dev: rootStat.dev, ino: rootStat.ino, uid: rootStat.uid }),
+      enforcePosixModes
     });
   } catch (error) {
     if (descriptor !== undefined) {
@@ -190,46 +204,181 @@ function createCredentialLease(token) {
   }
 }
 
+function assertCredentialRootIdentity(lease) {
+  const rootStat = lstatSync(lease.root);
+  if (
+    !rootStat.isDirectory() ||
+    rootStat.isSymbolicLink() ||
+    rootStat.dev !== lease.rootIdentity.dev ||
+    rootStat.ino !== lease.rootIdentity.ino ||
+    rootStat.uid !== lease.rootIdentity.uid ||
+    (lease.enforcePosixModes && (rootStat.mode & 0o777) !== 0o700)
+  ) {
+    throw new Error("The private Git credential directory changed before cleanup.");
+  }
+}
+
+function scrubOriginalCredentialDescriptor(lease) {
+  const opened = fstatSync(lease.descriptor);
+  const expectedBytes = Buffer.byteLength(lease.expectedValue, "utf8");
+  if (
+    !opened.isFile() ||
+    opened.dev !== lease.identity.dev ||
+    opened.ino !== lease.identity.ino ||
+    opened.uid !== lease.identity.uid ||
+    opened.size !== expectedBytes ||
+    (lease.enforcePosixModes && (opened.mode & 0o777) !== 0o600) ||
+    (opened.nlink !== 0 && opened.nlink !== 1)
+  ) {
+    throw new Error("The original private Git credential changed before cleanup.");
+  }
+
+  if (opened.nlink === 1) {
+    const named = lstatSync(lease.path);
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== 1 ||
+      named.dev !== opened.dev ||
+      named.ino !== opened.ino ||
+      named.uid !== opened.uid ||
+      named.size !== expectedBytes ||
+      (lease.enforcePosixModes && (named.mode & 0o777) !== 0o600)
+    ) {
+      throw new Error("The linked private Git credential moved outside its owned path before cleanup.");
+    }
+  }
+
+  ftruncateSync(lease.descriptor, 0);
+  fsyncSync(lease.descriptor);
+}
+
+function scrubCredentialPath(lease) {
+  let descriptor;
+  let opened;
+  try {
+    descriptor = openSync(lease.path, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+    opened = fstatSync(descriptor);
+    const originalAtPath = opened.dev === lease.identity.dev && opened.ino === lease.identity.ino;
+    const erasedByHelper = !originalAtPath && opened.size === 0;
+    const expectedBytes = Buffer.byteLength(lease.expectedValue, "utf8");
+    const expectedCurrentBytes = originalAtPath || erasedByHelper ? 0 : expectedBytes;
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1 ||
+      opened.dev !== lease.identity.dev ||
+      opened.uid !== lease.identity.uid ||
+      opened.size !== expectedCurrentBytes ||
+      (lease.enforcePosixModes && (opened.mode & 0o777) !== 0o600) ||
+      (!originalAtPath && !erasedByHelper && readFileSync(descriptor, "utf8") !== lease.expectedValue)
+    ) {
+      throw new Error(
+        originalAtPath
+          ? "The scrubbed private Git credential changed before removal."
+          : "The private Git credential replacement was not the exact helper rewrite."
+      );
+    }
+    const named = lstatSync(lease.path);
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== 1 ||
+      named.dev !== opened.dev ||
+      named.ino !== opened.ino ||
+      named.uid !== opened.uid ||
+      named.size !== expectedCurrentBytes ||
+      (lease.enforcePosixModes && (named.mode & 0o777) !== 0o600)
+    ) {
+      throw new Error("The private Git credential path changed after it was opened for cleanup.");
+    }
+    const beforeScrub = fstatSync(descriptor);
+    if (
+      beforeScrub.nlink !== 1 ||
+      beforeScrub.dev !== opened.dev ||
+      beforeScrub.ino !== opened.ino ||
+      beforeScrub.uid !== opened.uid ||
+      beforeScrub.size !== expectedCurrentBytes
+    ) {
+      throw new Error("The private Git credential changed immediately before it was scrubbed.");
+    }
+    ftruncateSync(descriptor, 0);
+    fsyncSync(descriptor);
+  } catch (error) {
+    if (descriptor === undefined && error?.code === "ENOENT") return;
+    if (descriptor === undefined) {
+      throw new Error("The private Git credential path changed before cleanup.", { cause: error });
+    }
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+
+  const scrubbed = lstatSync(lease.path);
+  if (
+    !scrubbed.isFile() ||
+    scrubbed.isSymbolicLink() ||
+    scrubbed.nlink !== 1 ||
+    scrubbed.dev !== opened.dev ||
+    scrubbed.ino !== opened.ino ||
+    scrubbed.uid !== opened.uid ||
+    (lease.enforcePosixModes && (scrubbed.mode & 0o777) !== 0o600) ||
+    scrubbed.size !== 0
+  ) {
+    throw new Error("The private Git credential replacement changed while it was scrubbed.");
+  }
+  unlinkSync(lease.path);
+}
+
 function closeCredentialLease(lease) {
   const cleanupErrors = [];
+
+  let rootIsOwned = false;
   try {
-    ftruncateSync(lease.descriptor, 0);
-    fsyncSync(lease.descriptor);
+    assertCredentialRootIdentity(lease);
+    rootIsOwned = true;
   } catch (error) {
     cleanupErrors.push(error);
+  }
+
+  if (rootIsOwned) {
+    try {
+      scrubOriginalCredentialDescriptor(lease);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
   try {
     closeSync(lease.descriptor);
   } catch (error) {
     cleanupErrors.push(error);
   }
-  try {
-    const current = lstatSync(lease.path);
-    if (
-      !current.isFile() ||
-      current.isSymbolicLink() ||
-      current.dev !== lease.identity.dev ||
-      current.ino !== lease.identity.ino
-    ) {
-      throw new Error("The private Git credential path changed before cleanup.");
+
+  if (rootIsOwned) {
+    try {
+      assertCredentialRootIdentity(lease);
+    } catch (error) {
+      rootIsOwned = false;
+      cleanupErrors.push(error);
     }
-    unlinkSync(lease.path);
-  } catch (error) {
-    cleanupErrors.push(error);
   }
-  try {
-    const rootStat = lstatSync(lease.root);
-    if (
-      !rootStat.isDirectory() ||
-      rootStat.isSymbolicLink() ||
-      rootStat.dev !== lease.rootIdentity.dev ||
-      rootStat.ino !== lease.rootIdentity.ino
-    ) {
-      throw new Error("The private Git credential directory changed before cleanup.");
+
+  let credentialPathCleaned = false;
+  if (rootIsOwned) {
+    try {
+      scrubCredentialPath(lease);
+      credentialPathCleaned = true;
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-    rmdirSync(lease.root);
-  } catch (error) {
-    cleanupErrors.push(error);
+  }
+
+  if (rootIsOwned && credentialPathCleaned) {
+    try {
+      assertCredentialRootIdentity(lease);
+      rmdirSync(lease.root);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
   if (cleanupErrors.length > 0) {
     throw new AggregateError(cleanupErrors, "The private Git credential could not be cleaned safely.");
@@ -240,7 +389,7 @@ function pushTag({ expectedCommit, gitRunner, releaseTag, root, token }) {
   const lease = createCredentialLease(token);
   let pushError;
   try {
-    const helper = `credential.helper=store --file=${lease.path}`;
+    const helper = `credential.helper=store --file=${quoteGitHelperArgument(lease.path)}`;
     const refspec = `${expectedCommit}:refs/tags/${releaseTag}`;
     const args = [
       "-c",
