@@ -244,7 +244,6 @@ try {
           }
           if (
             requested?.includes("cursor") &&
-            (process.platform === "darwin" || process.platform === "win32") &&
             (acceptanceMode === "platform-smoke" || !candidates.some((editor) => editor.key === "cursor"))
           ) {
             writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:acquire-cursor");

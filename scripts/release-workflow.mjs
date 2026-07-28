@@ -622,9 +622,9 @@ export function inspectReleaseWorkflow(contents) {
     !isRecord(workflow.on.push) ||
     !Array.isArray(workflow.on.push.tags) ||
     workflow.on.push.tags.length !== 1 ||
-    workflow.on.push.tags[0] !== "v*"
+    workflow.on.push.tags[0] !== "v0.*[13579].*"
   ) {
-    problems.push('release.yml must trigger only from pushed "v*" tags.');
+    problems.push('release.yml must trigger only from numeric preview-channel "v0.*[13579].*" tags.');
   }
   if (!hasExactPermissions(workflow.permissions, { contents: "read" })) {
     problems.push("release.yml default permissions must be exactly contents: read.");
