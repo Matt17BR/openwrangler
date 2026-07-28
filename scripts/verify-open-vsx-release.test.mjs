@@ -152,7 +152,7 @@ test("post-publish verification remains bounded and fails closed", async () => {
   );
   await assert.rejects(
     waitForOpenVsxRelease({
-      attempts: 14,
+      attempts: 32,
       candidateBytes,
       candidateSha256,
       fetchImpl: exactFetch(),

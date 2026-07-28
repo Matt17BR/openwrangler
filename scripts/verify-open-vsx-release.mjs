@@ -15,8 +15,8 @@ const LOWER_SHA256 = /^[0-9a-f]{64}$/u;
 const STABLE_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const METADATA_MAX_BYTES = 1024 * 1024;
 const VSIX_MAX_BYTES = 32 * 1024 * 1024;
-const POST_PUBLISH_ATTEMPTS = 13;
-const POST_PUBLISH_DELAY_MS = 5_000;
+const POST_PUBLISH_ATTEMPTS = 31;
+const POST_PUBLISH_DELAY_MS = 10_000;
 const OPEN_VSX_REQUEST_TIMEOUT_MS = 15_000;
 
 function isTransientStatus(status) {
