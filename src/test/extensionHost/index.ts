@@ -8538,6 +8538,16 @@ async function exerciseLiveImportReconfiguration(
 
   const before = testing.activeSession();
   assert.ok(before, "The configurable CSV must publish an active session.");
+  assert.deepEqual(
+    before.metadata.source.importOptions,
+    {
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    },
+    "Automatic import detection must establish the baseline before reconfiguration selects a real alternative."
+  );
   const stableSessionId = before.sessionId;
   const stableSourceIdentity = fileSourceIdentity(before.metadata.source);
   const initialDiagnostics = testing.diagnostics();
@@ -8571,7 +8581,7 @@ async function exerciseLiveImportReconfiguration(
       delimiter: "Semicolon",
       encoding: "utf-8",
       header: "First row contains column names",
-      quoteChar: '"'
+      quoteChar: "'"
     }
   );
   await waitFor(
@@ -8582,7 +8592,8 @@ async function exerciseLiveImportReconfiguration(
         active.metadata.source.path === configured.fsPath &&
         active.metadata.shape.rows === 80 &&
         active.metadata.shape.columns === 8 &&
-        active.metadata.source.importOptions?.delimiter === ";"
+        active.metadata.source.importOptions?.delimiter === ";" &&
+        active.metadata.source.importOptions.quoteChar === "'"
       );
     },
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -8604,7 +8615,7 @@ async function exerciseLiveImportReconfiguration(
   assert.deepEqual(changed.metadata.source.importOptions, {
     delimiter: ";",
     encoding: "utf-8",
-    quoteChar: '"',
+    quoteChar: "'",
     hasHeader: true
   });
   assert.deepEqual(
