@@ -1041,13 +1041,13 @@ export function App() {
         } else if (importOptionsPendingRef.current) {
           setForegroundError(response.message);
           return;
-          } else if (!metadataRef.current) {
-            setPendingRendererSynchronization(undefined);
-            acknowledgedRendererSynchronizationId.current = undefined;
-            setLoading(false);
-            setProjectionLoading(false);
-            setRuntimeDependencyInstallPending(false);
-          }
+        } else if (!metadataRef.current) {
+          setPendingRendererSynchronization(undefined);
+          acknowledgedRendererSynchronizationId.current = undefined;
+          setLoading(false);
+          setProjectionLoading(false);
+          setRuntimeDependencyInstallPending(false);
+        }
         setForegroundError(response.message);
         return;
       }
