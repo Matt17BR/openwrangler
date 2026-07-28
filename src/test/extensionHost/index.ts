@@ -3374,6 +3374,74 @@ async function exercisePackagedPlatformSmoke(
     .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
     .waitFor({ state: "visible", timeout: 5_000 });
 
+  recordAcceptanceProgress("platform-smoke:sort-journey");
+  const cityHeader = gridTarget.frame.locator('th[data-column="city"]').first();
+  const cityMenu = cityHeader.locator("details.columnMenu").first();
+  await cityMenu.getByLabel("Column actions for city").click();
+  await cityMenu.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  assert.equal(
+    await cityMenu.evaluate((element) => element.hasAttribute("open")),
+    false,
+    "A quick-sort choice must close its column menu."
+  );
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return (
+        sort?.length === 1 && sort[0]?.column === "city" && sort[0].direction === "asc" && sort[0].nulls === "last"
+      );
+    },
+    10_000,
+    "the city quick sort to become the only active viewing sort"
+  );
+  await gridTarget.frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "Berlin" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await cityHeader.getByRole("button", { name: /Clear sort for city; currently ascending/u }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+
+  const salesHeader = gridTarget.frame.locator('th[data-column="sales"]').first();
+  const salesMenu = salesHeader.locator("details.columnMenu").first();
+  await salesMenu.getByLabel("Column actions for sales").click();
+  await salesMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
+  assert.equal(
+    await salesMenu.evaluate((element) => element.hasAttribute("open")),
+    false,
+    "A later quick sort must also close its column menu."
+  );
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return (
+        sort?.length === 1 && sort[0]?.column === "sales" && sort[0].direction === "desc" && sort[0].nulls === "last"
+      );
+    },
+    10_000,
+    "the sales quick sort to replace the earlier city sort"
+  );
+  assert.equal(
+    await cityHeader.getByRole("button", { name: /Clear sort for city/u }).count(),
+    0,
+    "Replacing a quick sort must remove the prior column's active-sort indicator."
+  );
+  const clearSalesSort = salesHeader.getByRole("button", {
+    name: /Clear sort for sales; currently descending/u
+  });
+  await clearSalesSort.waitFor({ state: "visible", timeout: 10_000 });
+  await clearSalesSort.click();
+  await waitFor(
+    () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
+    10_000,
+    "the visible sort indicator to clear the viewing sort"
+  );
+  await gridTarget.frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "Milan" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+
   recordAcceptanceProgress("platform-smoke:theme");
   const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
     const window = element.ownerDocument.defaultView;
