@@ -6328,10 +6328,11 @@ async function exercisePackagedRendererProvenance(
   let secondNotebook: vscode.NotebookDocument | undefined;
   try {
     recordAcceptanceProgress("verify:notebook-renderer:open-b");
-    secondNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(secondNotebookPath));
+    const openedSecondNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(secondNotebookPath));
+    secondNotebook = openedSecondNotebook;
     recordAcceptanceProgress("verify:notebook-renderer:opened-b");
     assert.equal(
-      jupyter.testing.stats(secondNotebook.uri),
+      jupyter.testing.stats(openedSecondNotebook.uri),
       undefined,
       "Notebook B must not acquire a kernel before notebook A's renderer action."
     );
@@ -6343,7 +6344,7 @@ async function exercisePackagedRendererProvenance(
     });
     originEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
     recordAcceptanceProgress("verify:notebook-renderer:show-b");
-    await vscode.window.showNotebookDocument(secondNotebook, {
+    await vscode.window.showNotebookDocument(openedSecondNotebook, {
       viewColumn: vscode.ViewColumn.Two,
       preserveFocus: false,
       preview: false
@@ -6351,7 +6352,7 @@ async function exercisePackagedRendererProvenance(
     recordAcceptanceProgress("verify:notebook-renderer:shown-b");
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
-      secondNotebook,
+      openedSecondNotebook,
       "Notebook B must remain active while the renderer event is emitted from notebook A."
     );
 
@@ -6360,14 +6361,29 @@ async function exercisePackagedRendererProvenance(
     const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
-      secondNotebook,
+      openedSecondNotebook,
       "Notebook B must still be the exact active document immediately before notebook A's renderer action."
     );
-    recordAcceptanceProgress("verify:notebook-renderer:click");
+    let originFocusObserved = false;
+    const focusListener = vscode.window.onDidChangeActiveNotebookEditor((editor) => {
+      if (editor?.notebook === originNotebook) originFocusObserved = true;
+    });
     try {
-      await originButton.evaluate((button: unknown) => (button as { click(): void }).click());
+      recordAcceptanceProgress("verify:notebook-renderer:click");
+      try {
+        await originButton.click();
+      } finally {
+        await originButton.dispose();
+      }
+      if (vscode.window.activeNotebookEditor?.notebook === originNotebook) originFocusObserved = true;
+      await waitFor(
+        () => originFocusObserved,
+        10_000,
+        "the real renderer action to focus its exact originating notebook before opening the session panel",
+        () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
+      );
     } finally {
-      await originButton.dispose();
+      focusListener.dispose();
     }
     recordAcceptanceProgress("verify:notebook-renderer:session");
     await waitFor(
@@ -6380,7 +6396,8 @@ async function exercisePackagedRendererProvenance(
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "notebook A's renderer event to open notebook A while notebook B was active"
+      "notebook A's real renderer action to open notebook A after notebook B was active immediately before dispatch",
+      () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
     );
 
     const active = testing.activeSession();
@@ -6404,7 +6421,7 @@ async function exercisePackagedRendererProvenance(
       "The renderer event must read notebook A's kernel variable."
     );
     assert.equal(
-      jupyter.testing.stats(secondNotebook.uri),
+      jupyter.testing.stats(openedSecondNotebook.uri),
       undefined,
       "Notebook A's renderer event must not acquire notebook B's active kernel."
     );
@@ -6416,14 +6433,18 @@ async function exercisePackagedRendererProvenance(
     const originCellsBeforeInsertion = Array.from({ length: originCellCount }, (_, index) =>
       originNotebook.cellAt(index).document.getText()
     );
-    const secondCellCount = secondNotebook.cellCount;
+    const secondCellCount = openedSecondNotebook.cellCount;
     assert.equal(await vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode"), true);
     await waitFor(
       () => originNotebook.cellCount === originCellCount + 1,
       10_000,
       "generated code from notebook A's renderer session to return to notebook A"
     );
-    assert.equal(secondNotebook.cellCount, secondCellCount, "Notebook B must remain unchanged by notebook A's export.");
+    assert.equal(
+      openedSecondNotebook.cellCount,
+      secondCellCount,
+      "Notebook B must remain unchanged by notebook A's export."
+    );
     const rendererInsertionIndices = Array.from({ length: originNotebook.cellCount }, (_, index) => index).filter(
       (index) => {
         const cell = originNotebook.cellAt(index);
@@ -6462,13 +6483,58 @@ async function exercisePackagedRendererProvenance(
     await disposePackagedSessionPanel(testing, active.sessionId, "the renderer provenance session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
     recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
-    const tabsToClose = rendererProvenanceTabs(secondNotebook);
+    const tabsToClose = rendererProvenanceTabs(openedSecondNotebook);
     if (tabsToClose.length > 0) assert.equal(await vscode.window.tabGroups.close(tabsToClose, true), true);
     recordAcceptanceProgress("verify:notebook-renderer:complete");
   } catch (error) {
     await bestEffortRendererProvenanceCleanup(testing, originNotebook, secondNotebook);
     throw error;
   }
+}
+
+function rendererProvenanceDiagnostics(
+  testing: TestApi,
+  jupyter: FakeJupyterApi,
+  originNotebook: vscode.NotebookDocument,
+  secondNotebook: vscode.NotebookDocument
+): string {
+  const activeNotebook = vscode.window.activeNotebookEditor?.notebook;
+  const source = testing.activeSession()?.metadata.source;
+  const coordinator = testing.diagnostics();
+  const sourceDiagnostic =
+    source?.kind === "notebookVariable"
+      ? {
+          kind: source.kind,
+          variableName: source.variableName,
+          origin:
+            source.uri === originNotebook.uri.toString()
+              ? "A"
+              : source.uri === secondNotebook.uri.toString()
+                ? "B"
+                : "other"
+        }
+      : source
+        ? { kind: source.kind }
+        : null;
+  return JSON.stringify({
+    activeNotebook:
+      activeNotebook === originNotebook
+        ? "A"
+        : activeNotebook === secondNotebook
+          ? "B"
+          : activeNotebook
+            ? "other"
+            : "none",
+    activeSource: sourceDiagnostic,
+    coordinator: {
+      sessionCount: coordinator.sessionCount,
+      activeSessionPresent: coordinator.activeSessionId !== undefined
+    },
+    kernels: {
+      A: jupyter.testing.stats(originNotebook.uri) ?? null,
+      B: jupyter.testing.stats(secondNotebook.uri) ?? null
+    }
+  });
 }
 
 async function bestEffortRendererProvenanceCleanup(

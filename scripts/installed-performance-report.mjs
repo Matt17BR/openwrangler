@@ -17,11 +17,13 @@ import fixtureManifestContract from "../src/shared/installedPerformanceFixtureMa
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v6";
-export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v1";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v5";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v7";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v2";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
-export const INSTALLED_PERFORMANCE_SAMPLE_COUNT = 10;
+export const INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT = 10;
+export const INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT = 40;
+export const INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
   "retain every measured sample; no trimming, deletion, winsorization, or retry";
 export const INSTALLED_PERFORMANCE_BOUNDARY =
@@ -53,8 +55,8 @@ export function isInstalledPerformanceNumericGateError(error) {
   );
 }
 
-export function summarizeInstalledDurationSamples(samples, label = "duration samples") {
-  assertDurationSamples(samples, label);
+export function summarizeInstalledDurationSamples(samples, label = "duration samples", expectedCount) {
+  assertDurationSamples(samples, label, expectedCount);
   const ordered = [...samples].sort((left, right) => left - right);
   return {
     count: samples.length,
@@ -95,7 +97,7 @@ export function validateInstalledPerformancePhase(fragment, expected = {}) {
   if (kind === "first-grid") {
     validateFirstGridMeasurement(fragment.measurement, fragment.fixture.format);
   } else if (kind === "grid-interaction") {
-    validateGridInteractionMeasurement(fragment.measurement);
+    validateGridInteractionMeasurement(fragment.measurement, gridInteractionSampleCountForFixture(fragment.fixture));
   } else {
     throw new TypeError("Installed performance measurement kind must be first-grid or grid-interaction.");
   }
@@ -166,7 +168,8 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
     fixtureManifest: structuredClone(fixtureManifest),
     measurement: {
       boundary: INSTALLED_PERFORMANCE_BOUNDARY,
-      sampleCountPerCase: INSTALLED_PERFORMANCE_SAMPLE_COUNT,
+      firstGridSampleCountPerCase: INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
+      gridInteractionSampleCountPerCase: INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
       outlierPolicy: INSTALLED_PERFORMANCE_OUTLIER_POLICY
     },
     limits: { ...INSTALLED_PERFORMANCE_LIMITS },
@@ -237,9 +240,23 @@ function assertInstalledPerformanceGate(
     throw new TypeError("Installed performance candidate does not match its guarded source commit.");
   }
   validateInstalledFixtureManifest(report.fixtureManifest);
-  exactKeys(report.measurement, ["boundary", "sampleCountPerCase", "outlierPolicy"], [], "measurement contract");
+  exactKeys(
+    report.measurement,
+    ["boundary", "firstGridSampleCountPerCase", "gridInteractionSampleCountPerCase", "outlierPolicy"],
+    [],
+    "measurement contract"
+  );
   assertEqual(report.measurement.boundary, INSTALLED_PERFORMANCE_BOUNDARY, "measurement boundary");
-  assertEqual(report.measurement.sampleCountPerCase, INSTALLED_PERFORMANCE_SAMPLE_COUNT, "measurement sample count");
+  assertEqual(
+    report.measurement.firstGridSampleCountPerCase,
+    INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
+    "first-grid measurement sample count"
+  );
+  assertEqual(
+    report.measurement.gridInteractionSampleCountPerCase,
+    INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
+    "grid-interaction measurement sample count"
+  );
   assertEqual(report.measurement.outlierPolicy, INSTALLED_PERFORMANCE_OUTLIER_POLICY, "outlier policy");
   if (JSON.stringify(report.limits) !== JSON.stringify(INSTALLED_PERFORMANCE_LIMITS)) {
     throw new TypeError("Installed performance limits do not match the release contract.");
@@ -497,7 +514,11 @@ function validateFirstGridMeasurement(measurement, format) {
   if (!["cold", "warm"].includes(measurement.sourceCache)) {
     throw new TypeError("First-grid source cache must be cold or warm.");
   }
-  assertDurationSamples(measurement.samplesMs, `${format} ${measurement.sourceCache} first-grid samples`);
+  assertDurationSamples(
+    measurement.samplesMs,
+    `${format} ${measurement.sourceCache} first-grid samples`,
+    INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT
+  );
   if (!Array.isArray(measurement.cacheProofs) || measurement.cacheProofs.length !== measurement.samplesMs.length) {
     throw new TypeError("Every first-grid sample must retain one aligned source-cache proof.");
   }
@@ -570,7 +591,7 @@ function validateCacheProof(proof, requestedState) {
   }
 }
 
-function validateGridInteractionMeasurement(measurement) {
+function validateGridInteractionMeasurement(measurement, expectedSampleCount) {
   exactKeys(
     measurement,
     ["kind", "cachedSamplesMs", "uncachedSamplesMs", "heartbeatSamplesMs", "filter", "sort", "profiling"],
@@ -583,7 +604,7 @@ function validateGridInteractionMeasurement(measurement) {
     ["uncachedSamplesMs", "uncached-grid samples"],
     ["heartbeatSamplesMs", "interaction-heartbeat samples"]
   ]) {
-    assertDurationSamples(measurement[key], label);
+    assertDurationSamples(measurement[key], label, expectedSampleCount);
   }
   for (const operation of ["filter", "sort"]) {
     exactKeys(measurement[operation], ["completed", "latencyMs", "responsiveness"], [], `${operation} evidence`);
@@ -751,18 +772,31 @@ function groupEditorPhases(phases) {
       }
       firstGrid[format][cache] = {
         cacheProofs: structuredClone(phase.measurement.cacheProofs),
-        timing: summarizeInstalledDurationSamples(phase.measurement.samplesMs, `${format} ${cache} first-grid samples`)
+        timing: summarizeInstalledDurationSamples(
+          phase.measurement.samplesMs,
+          `${format} ${cache} first-grid samples`,
+          INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT
+        )
       };
       continue;
     }
     if (gridInteraction) throw new TypeError("Duplicate installed grid-interaction phase.");
     gridInteraction = {
       fixtureFormat: phase.fixture.format,
-      cached: summarizeInstalledDurationSamples(phase.measurement.cachedSamplesMs, "cached-grid samples"),
-      uncached: summarizeInstalledDurationSamples(phase.measurement.uncachedSamplesMs, "uncached-grid samples"),
+      cached: summarizeInstalledDurationSamples(
+        phase.measurement.cachedSamplesMs,
+        "cached-grid samples",
+        INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+      ),
+      uncached: summarizeInstalledDurationSamples(
+        phase.measurement.uncachedSamplesMs,
+        "uncached-grid samples",
+        INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+      ),
       heartbeat: summarizeInstalledDurationSamples(
         phase.measurement.heartbeatSamplesMs,
-        "interaction-heartbeat samples"
+        "interaction-heartbeat samples",
+        INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
       ),
       filter: structuredClone(phase.measurement.filter),
       sort: structuredClone(phase.measurement.sort),
@@ -786,7 +820,7 @@ function validateGroupedResults(results) {
     for (const cache of ["cold", "warm"]) {
       const result = results.firstGrid[format][cache];
       exactKeys(result, ["cacheProofs", "timing"], [], `${format} ${cache} first-grid result`);
-      validateSummary(result.timing);
+      validateSummary(result.timing, INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT);
       if (!Array.isArray(result.cacheProofs) || result.cacheProofs.length !== result.timing.samplesMs.length) {
         throw new TypeError(`${format} ${cache} result must retain one proof per timing sample.`);
       }
@@ -803,26 +837,37 @@ function validateGroupedResults(results) {
   if (!["csv", "parquet"].includes(results.gridInteraction.fixtureFormat)) {
     throw new TypeError("Grid-interaction fixture format is invalid.");
   }
-  for (const key of ["cached", "uncached", "heartbeat"]) validateSummary(results.gridInteraction[key]);
-  validateGridInteractionMeasurement({
-    kind: "grid-interaction",
-    cachedSamplesMs: results.gridInteraction.cached.samplesMs,
-    uncachedSamplesMs: results.gridInteraction.uncached.samplesMs,
-    heartbeatSamplesMs: results.gridInteraction.heartbeat.samplesMs,
-    filter: results.gridInteraction.filter,
-    sort: results.gridInteraction.sort,
-    profiling: results.gridInteraction.profiling
-  });
+  for (const key of ["cached", "uncached", "heartbeat"]) {
+    validateSummary(results.gridInteraction[key], INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT);
+  }
+  validateGridInteractionMeasurement(
+    {
+      kind: "grid-interaction",
+      cachedSamplesMs: results.gridInteraction.cached.samplesMs,
+      uncachedSamplesMs: results.gridInteraction.uncached.samplesMs,
+      heartbeatSamplesMs: results.gridInteraction.heartbeat.samplesMs,
+      filter: results.gridInteraction.filter,
+      sort: results.gridInteraction.sort,
+      profiling: results.gridInteraction.profiling
+    },
+    INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT
+  );
 }
 
-function validateSummary(summary) {
+function gridInteractionSampleCountForFixture(fixture) {
+  return fixture.format === "parquet" && fixture.rows === 5_000 && fixture.columns === 8
+    ? INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT
+    : INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT;
+}
+
+function validateSummary(summary, expectedCount) {
   exactKeys(
     summary,
     ["count", "samplesMs", "excludedSamples", "outlierPolicy", "minMs", "medianMs", "p95Ms", "maxMs"],
     [],
     "duration summary"
   );
-  const expected = summarizeInstalledDurationSamples(summary.samplesMs);
+  const expected = summarizeInstalledDurationSamples(summary.samplesMs, "duration samples", expectedCount);
   if (JSON.stringify(summary) !== JSON.stringify(expected)) {
     throw new TypeError("Duration summary does not match its retained samples.");
   }
@@ -930,9 +975,18 @@ function installedPerformanceFailureDetails(
   return failures;
 }
 
-function assertDurationSamples(samples, label) {
-  if (!Array.isArray(samples) || samples.length < INSTALLED_PERFORMANCE_SAMPLE_COUNT || samples.length > 1_000) {
-    throw new TypeError(`${label} must retain between ${INSTALLED_PERFORMANCE_SAMPLE_COUNT} and 1,000 samples.`);
+function assertDurationSamples(samples, label, expectedCount) {
+  const minimum = expectedCount ?? INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT;
+  if (
+    !Array.isArray(samples) ||
+    (expectedCount === undefined && (samples.length < minimum || samples.length > 1_000)) ||
+    (expectedCount !== undefined && samples.length !== expectedCount)
+  ) {
+    throw new TypeError(
+      expectedCount === undefined
+        ? `${label} must retain between ${minimum} and 1,000 samples.`
+        : `${label} must retain exactly ${expectedCount} samples.`
+    );
   }
   for (const sample of samples) assertFiniteNonnegative(sample, label);
 }

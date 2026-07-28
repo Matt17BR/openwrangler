@@ -360,6 +360,47 @@ describe("App progressive profiling and view correlation", () => {
     expect(requestsOfKind("getPage")).toHaveLength(0);
   });
 
+  it("trailing-debounces presentation persistence until scrolling and resizing settle", () => {
+    vi.useFakeTimers();
+    const view = render(<App />);
+    try {
+      dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+      dispatch({
+        kind: "viewState",
+        state: {
+          columnWidths: { "c:1": 275 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      });
+      postMessage.mockClear();
+      const resize = screen.getByRole("button", { name: "Resize sales column" });
+
+      fireEvent.keyDown(resize, { key: "ArrowRight" });
+      act(() => vi.advanceTimersByTime(75));
+      fireEvent.keyDown(resize, { key: "ArrowRight" });
+      act(() => vi.advanceTimersByTime(75));
+      expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "updateViewState" }));
+
+      act(() => vi.advanceTimersByTime(25));
+      expect(
+        postMessage.mock.calls.map(([message]) => message).filter((message) => message.kind === "updateViewState")
+      ).toEqual([
+        {
+          kind: "updateViewState",
+          state: {
+            columnWidths: { "c:1": 295 },
+            selectedColumnId: "c:1",
+            viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+          }
+        }
+      ]);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["pagehide", "beforeunload"])("flushes the final pending grid presentation on %s", (eventName) => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });

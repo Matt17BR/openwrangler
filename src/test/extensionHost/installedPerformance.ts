@@ -19,11 +19,13 @@ import { publishInstalledPerformanceFragment, type InstalledPerformanceArtifactR
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import { measureRendererGridScroll, rendererHasUsableGridGeometry } from "./rendererGridScrollMeasurement";
 
-const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
+const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v5";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIRST_GRID_BOUNDARY =
   "vscode.openWith dispatch to a visible production grid block with exact shape and aria-busy=false";
-const SAMPLE_COUNT = 10;
+const FIRST_GRID_SAMPLE_COUNT = 10;
+const GRID_INTERACTION_SAMPLE_COUNT = 40;
+const SMOKE_GRID_INTERACTION_SAMPLE_COUNT = 10;
 const GRID_DISCOVERY_TIMEOUT_MS = 60_000;
 const SESSION_CLOSE_TIMEOUT_MS = 15_000;
 const FIRST_GRID_PHASE_PATTERN = /^perf-(csv|parquet)-(cold|warm)$/u;
@@ -128,7 +130,13 @@ export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
           fixture,
           sourceCache: sourceCache as "cold" | "warm"
         })
-      : await measureGridInteraction({ testing, workbench, sourceUri, fixture });
+      : await measureGridInteraction({
+          testing,
+          workbench,
+          sourceUri,
+          fixture,
+          sampleCount: manifest.smoke ? SMOKE_GRID_INTERACTION_SAMPLE_COUNT : GRID_INTERACTION_SAMPLE_COUNT
+        });
   } finally {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await waitFor(
@@ -200,7 +208,7 @@ async function measureFirstUsableGrid({
   await waitForUsableGrid(workbench, { rows: 2, columns: 2 });
   recordProgress("warmup:complete");
 
-  for (let sample = 0; sample < SAMPLE_COUNT; sample += 1) {
+  for (let sample = 0; sample < FIRST_GRID_SAMPLE_COUNT; sample += 1) {
     recordProgress(`sample-${sample + 1}:cache`);
     const prepared = prepareSourceCache(testPython, workspace, source, sourceCache);
     cacheProofs.push(prepared);
@@ -231,7 +239,7 @@ async function measureFirstUsableGrid({
     );
   }
 
-  assert.equal(samplesMs.length, SAMPLE_COUNT);
+  assert.equal(samplesMs.length, FIRST_GRID_SAMPLE_COUNT);
   assert.equal(cacheProofs.length, samplesMs.length, "Every timed first-grid sample must retain one cache proof.");
   return {
     kind: "first-grid",
@@ -246,13 +254,19 @@ async function measureGridInteraction({
   testing,
   workbench,
   sourceUri,
-  fixture
+  fixture,
+  sampleCount
 }: {
   testing: TestApi;
   workbench: Page;
   sourceUri: vscode.Uri;
   fixture: InstalledPerformanceFixtureEntry;
+  sampleCount: number;
 }): Promise<Record<string, unknown>> {
+  assert.ok(
+    sampleCount === GRID_INTERACTION_SAMPLE_COUNT || sampleCount === SMOKE_GRID_INTERACTION_SAMPLE_COUNT,
+    "Grid-interaction sample count must match the release or smoke contract."
+  );
   recordProgress("interaction:open");
   await vscode.commands.executeCommand("vscode.openWith", sourceUri, "openWrangler.viewer", vscode.ViewColumn.One);
   const session = await waitForHostSession(
@@ -275,14 +289,16 @@ async function measureGridInteraction({
   for (const row of cachedRows) {
     await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row);
   }
+  await scrollGridToRow(frame, cachedRows[0]!, fixture.rows, fixture.columns, cachedRows[0]!);
   const cachedSamplesMs: number[] = [];
-  for (let sample = 0; sample < SAMPLE_COUNT; sample += 1) {
+  for (let sample = 0; sample < sampleCount; sample += 1) {
     const row = cachedRows[(sample + 1) % cachedRows.length];
+    assert.notEqual(row, cachedRows[sample % cachedRows.length], "Every timed cached sample must change rows.");
     cachedSamplesMs.push(await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row));
     recordProgress(`interaction:cached-${sample + 1}`);
   }
 
-  const uncachedRows = Array.from({ length: SAMPLE_COUNT }, (_, index) => 800 + index * 400);
+  const uncachedRows = Array.from({ length: sampleCount }, (_, index) => 800 + index * 400);
   assert.ok(
     uncachedRows.every((row) => row < fixture.rows),
     "The interaction fixture must contain every deterministic uncached target block."
@@ -367,9 +383,9 @@ async function measureGridInteraction({
   const profiling = await proveAuthoritativeProfileCancellation(testing, frame, session.sessionId);
   recordProgress("interaction:profiling-cancelled");
 
-  assert.equal(cachedSamplesMs.length, SAMPLE_COUNT);
-  assert.equal(uncachedSamplesMs.length, SAMPLE_COUNT);
-  assert.equal(heartbeatSamplesMs.length, SAMPLE_COUNT);
+  assert.equal(cachedSamplesMs.length, sampleCount);
+  assert.equal(uncachedSamplesMs.length, sampleCount);
+  assert.equal(heartbeatSamplesMs.length, sampleCount);
   return {
     kind: "grid-interaction",
     cachedSamplesMs,
