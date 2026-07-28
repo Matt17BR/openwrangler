@@ -1,12 +1,12 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseStrictJson } from "./strict-json.mjs";
-import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
+import { verifyRegistryReleaseArtifactFromCheckout } from "./verify-registry-release-artifact.mjs";
 import { inspectVsixArchive, MAX_VSIX_BYTES, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
+import { inspectVsixPreReleaseMetadata } from "./vsix-contents.mjs";
 
 export const MARKETPLACE_EXTENSION_ID = "Matt17BR.openwrangler";
 export const MARKETPLACE_VSIX_SHA256_PROPERTY = "Microsoft.VisualStudio.Services.VsixSha256";
@@ -15,7 +15,6 @@ const MARKETPLACE_EXTENSION = "openwrangler";
 const GALLERY_QUERY_URL =
   "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery?api-version=7.2-preview.1";
 const GALLERY_JSON_MAX_BYTES = 8 * 1024 * 1024;
-const FULL_COMMIT = /^[0-9a-f]{40}$/u;
 
 export class MarketplacePublicationPendingError extends Error {}
 
@@ -81,7 +80,7 @@ function flagSet(flags) {
   );
 }
 
-function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson) {
+function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson, prerelease) {
   const extensions = gallery?.results?.[0]?.extensions;
   if (!Array.isArray(extensions) || extensions.length === 0) {
     throw new MarketplacePublicationPendingError(`Marketplace has not exposed ${MARKETPLACE_EXTENSION_ID} yet.`);
@@ -134,6 +133,10 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson)
   if (properties.get("Microsoft.VisualStudio.Code.ExtensionKind") !== extensionKind) {
     throw new Error("Marketplace extension-kind metadata differs from the canonical package.");
   }
+  const publishedPrerelease = properties.get("Microsoft.VisualStudio.Code.PreRelease");
+  if ((prerelease && publishedPrerelease !== "true") || (!prerelease && publishedPrerelease !== undefined)) {
+    throw new Error("Marketplace pre-release metadata differs from the canonical package channel.");
+  }
   const vsixAssets = Array.isArray(published.files)
     ? published.files.filter((file) => file?.assetType === "Microsoft.VisualStudio.Services.VSIXPackage")
     : [];
@@ -169,7 +172,7 @@ function assertSameVsixSemantics(canonical, published) {
   }
 }
 
-async function queryPublicMarketplace({ candidateSha256, fetchImpl, packageJson, version }) {
+async function queryPublicMarketplace({ candidateSha256, fetchImpl, packageJson, prerelease, version }) {
   const queryResponse = await fetchImpl(GALLERY_QUERY_URL, {
     method: "POST",
     headers: {
@@ -209,7 +212,7 @@ async function queryPublicMarketplace({ candidateSha256, fetchImpl, packageJson,
   } catch (error) {
     throw new Error("Marketplace gallery response is not valid bounded strict JSON.", { cause: error });
   }
-  exactMarketplaceVersion(gallery, version, candidateSha256, packageJson);
+  exactMarketplaceVersion(gallery, version, candidateSha256, packageJson, prerelease);
 
   const packageUrl = `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${MARKETPLACE_PUBLISHER}/vsextensions/${MARKETPLACE_EXTENSION}/${version}/vspackage`;
   const packageResponse = await fetchImpl(packageUrl, {
@@ -236,6 +239,7 @@ export async function verifyMarketplacePublication({
   candidateSha256,
   delayMs = 15_000,
   fetchImpl = fetch,
+  prerelease,
   sleep = delay,
   version
 }) {
@@ -244,6 +248,9 @@ export async function verifyMarketplacePublication({
   }
   if (typeof version !== "string" || !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u.test(version)) {
     throw new TypeError("Canonical Marketplace verification requires one numeric extension version.");
+  }
+  if (typeof prerelease !== "boolean") {
+    throw new TypeError("Canonical Marketplace verification requires an explicit pre-release boolean.");
   }
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 40) {
     throw new TypeError("Marketplace polling attempts must be an integer from 1 through 40.");
@@ -258,13 +265,18 @@ export async function verifyMarketplacePublication({
   }
   const canonicalArchive = await inspectVsixArchive(candidate.bytes);
   const packageJson = parseStrictJson(canonicalArchive.packagedPackageJson);
+  const preReleaseProblems = inspectVsixPreReleaseMetadata(
+    canonicalArchive.packagedPackageJson,
+    canonicalArchive.vsixManifest
+  );
   if (
     packageJson?.publisher !== MARKETPLACE_PUBLISHER ||
     packageJson?.name !== MARKETPLACE_EXTENSION ||
     packageJson?.version !== version ||
-    packageJson?.preview !== false
+    packageJson?.preview !== prerelease ||
+    preReleaseProblems.length > 0
   ) {
-    throw new Error("Canonical Marketplace candidate identity, version, or stable channel is invalid.");
+    throw new Error("Canonical Marketplace candidate identity, version, or release channel is invalid.");
   }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -273,6 +285,7 @@ export async function verifyMarketplacePublication({
         candidateSha256,
         fetchImpl,
         packageJson,
+        prerelease,
         version
       });
       const publishedArchive = await inspectVsixArchive(publishedBytes);
@@ -299,31 +312,20 @@ export async function verifyMarketplacePublication({
   throw new Error("Marketplace publication verification exhausted without a result.");
 }
 
-function exactHead(root) {
-  const commit = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 4096,
-    timeout: 10_000,
-    windowsHide: true
-  }).trim();
-  if (!FULL_COMMIT.test(commit)) {
-    throw new Error("Marketplace verification source did not resolve to one full Git commit.");
-  }
-  return commit;
-}
-
 async function runCli() {
   if (process.argv.length !== 3) {
     throw new Error("Pass exactly one downloaded canonical artifact directory.");
   }
   const root = realpathSync.native(resolve(import.meta.dirname, ".."));
-  const canonical = await verifyCanonicalReleaseArtifact({
+  const prerelease =
+    process.env.RELEASE_PRERELEASE === "true" ? true : process.env.RELEASE_PRERELEASE === "false" ? false : undefined;
+  const canonical = await verifyRegistryReleaseArtifactFromCheckout({
+    automationCommit: process.env.AUTOMATION_SHA,
     directory: process.argv[2],
     expectedCommit: process.env.EXPECTED_SHA,
+    prerelease,
     releaseTag: process.env.RELEASE_TAG,
-    sourceCommit: exactHead(root),
-    sourcePackageJson: readFileSync(join(root, "package.json"), "utf8")
+    root
   });
   const receipt = await verifyMarketplacePublication({
     attempts: process.env.OPEN_WRANGLER_MARKETPLACE_VERIFY_ATTEMPTS
@@ -331,6 +333,7 @@ async function runCli() {
       : undefined,
     candidatePath: canonical.candidatePath,
     candidateSha256: canonical.candidateSha256,
+    prerelease: canonical.prerelease,
     version: canonical.version
   });
   console.log(

@@ -6,7 +6,8 @@ import test from "node:test";
 import {
   CANONICAL_RELEASE_FILES,
   downloadCanonicalGithubRelease,
-  GithubReleasePendingError
+  GithubReleasePendingError,
+  PREVIEW_RELEASE_FILES
 } from "./download-canonical-github-release.mjs";
 
 const releaseTag = "v1.0.2";
@@ -62,6 +63,7 @@ test("downloads exactly the three canonical public GitHub release assets", async
     attempts: 1,
     fetchImpl: successfulFetch(),
     outputDirectory: output,
+    prerelease: false,
     releaseTag
   });
   assert.deepEqual(receipt, {
@@ -72,6 +74,25 @@ test("downloads exactly the three canonical public GitHub release assets", async
   for (const [name, bytes] of payloads) {
     assert.deepEqual(readFileSync(join(output, name)), bytes);
   }
+});
+
+test("downloads the exact two-asset canonical pre-release without inventing provenance", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-preview-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const output = join(parent, "preview-release");
+  const preview = release({
+    prerelease: true,
+    assets: release().assets.filter((asset) => PREVIEW_RELEASE_FILES.includes(asset.name))
+  });
+  const receipt = await downloadCanonicalGithubRelease({
+    attempts: 1,
+    fetchImpl: successfulFetch(preview),
+    outputDirectory: output,
+    prerelease: true,
+    releaseTag
+  });
+  assert.deepEqual(receipt.files, PREVIEW_RELEASE_FILES);
+  assert.deepEqual(readdirSync(output).sort(), [...PREVIEW_RELEASE_FILES].sort());
 });
 
 test("polls only while a public release is genuinely pending", async (context) => {
@@ -91,6 +112,7 @@ test("polls only while a public release is genuinely pending", async (context) =
     delayMs: 1,
     fetchImpl,
     outputDirectory: join(parent, "canonical-release"),
+    prerelease: false,
     releaseTag,
     sleep: async () => {
       sleeps += 1;
@@ -111,6 +133,7 @@ test("rejects malformed release inventory, URLs, and byte drift without retrying
       attempts: 2,
       fetchImpl: successfulFetch(extra),
       outputDirectory: join(parent, "extra"),
+      prerelease: false,
       releaseTag,
       sleep: async () => assert.fail("structural conflicts must not be retried")
     }),
@@ -124,6 +147,7 @@ test("rejects malformed release inventory, URLs, and byte drift without retrying
       attempts: 1,
       fetchImpl: successfulFetch(wrongUrl),
       outputDirectory: join(parent, "wrong-url"),
+      prerelease: false,
       releaseTag
     }),
     /canonical public download URL/u
@@ -141,9 +165,26 @@ test("rejects malformed release inventory, URLs, and byte drift without retrying
         return result;
       },
       outputDirectory: join(parent, "drift"),
+      prerelease: false,
       releaseTag
     }),
     /declared size/u
+  );
+});
+
+test("rejects a GitHub release whose public channel differs from the selected package channel", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-channel-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 2,
+      fetchImpl: successfulFetch(),
+      outputDirectory: join(parent, "canonical-release"),
+      prerelease: true,
+      releaseTag,
+      sleep: async () => assert.fail("a conflicting public channel must not be retried")
+    }),
+    /requested channel/u
   );
 });
 
@@ -155,6 +196,7 @@ test("exhausted pending release lookup remains a pending-class failure", async (
       attempts: 1,
       fetchImpl: async () => new Response("", { status: 404 }),
       outputDirectory: join(parent, "canonical-release"),
+      prerelease: false,
       releaseTag
     }),
     GithubReleasePendingError

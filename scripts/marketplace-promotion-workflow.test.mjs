@@ -16,6 +16,7 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
     source.replace('      - "v*"', '      - "main"'),
     source.replace("pr: none", "pr:\n  branches:\n    include:\n      - main"),
     source.replace("default: openwrangler-marketplace-publishing", "default: arbitrary-connection"),
+    source.replace('    default: ""', '    default: "v1.0.1"'),
     source.replace("lockBehavior: sequential", "lockBehavior: runLatest"),
     source.replace("environment: openwrangler-marketplace-publishing", "environment: unprotected"),
     source.replace("persistCredentials: false", "persistCredentials: true"),
@@ -25,7 +26,7 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
       "curl -L https://example.com/openwrangler.vsix -o canonical-release/openwrangler.vsix"
     ),
     source.replace(
-      "node scripts/verify-canonical-release-artifact.mjs canonical-release",
+      "node scripts/verify-registry-release-artifact.mjs canonical-release",
       "node scripts/verify-vsix.mjs canonical-release/openwrangler.vsix"
     ),
     source.replace("AzureCLI@2", "AzureCLI@1"),
@@ -42,9 +43,15 @@ test("Marketplace promotion inspector rejects credentials, rebuilding, and promo
       "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate",
       "npx --no-install vsce publish --pat $(VSCE_PAT) --packagePath canonical-release/openwrangler.vsix"
     ),
+    source.replace(
+      "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate",
+      "npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate"
+    ),
+    source.replace("BUILD_REASON: $(Build.Reason)", "BUILD_REASON: Manual"),
+    source.replace("EXPECTED_SHA: $(releaseCommit)", "EXPECTED_SHA: $(Build.SourceVersion)"),
     source.replace("node scripts/verify-marketplace-publication.mjs canonical-release", "echo published"),
     source.replace(
-      "condition: and(succeeded(), eq(dependencies.Intake.outputs['Bind.release_intake.stable'], 'true'))",
+      "condition: and(succeeded(), eq(dependencies.Intake.outputs['Bind.release_intake.promote'], 'true'))",
       "condition: succeededOrFailed()"
     ),
     `${source}\n# drift\n`

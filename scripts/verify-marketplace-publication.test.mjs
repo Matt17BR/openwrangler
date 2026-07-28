@@ -23,14 +23,14 @@ const packageJson = Object.freeze({
   extensionKind: ["workspace"]
 });
 
-function releaseEntries(readme = "# Open Wrangler\n") {
+function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, preReleaseProperty = "") {
   return new Map([
     ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
     [
       "extension.vsixmanifest",
-      `<?xml version="1.0" encoding="utf-8"?><PackageManifest xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"><Metadata><Identity Id="openwrangler" Publisher="Matt17BR" Version="${version}" /><Properties></Properties></Metadata></PackageManifest>`
+      `<?xml version="1.0" encoding="utf-8"?><PackageManifest xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"><Metadata><Identity Id="openwrangler" Publisher="Matt17BR" Version="${version}" /><Properties>${preReleaseProperty}</Properties></Metadata></PackageManifest>`
     ],
-    ["extension/package.json", JSON.stringify(packageJson)],
+    ["extension/package.json", JSON.stringify(manifest)],
     ["extension/LICENSE.txt", "MIT License\n"],
     ["extension/readme.md", readme],
     ["extension/changelog.md", "# Changelog\n"],
@@ -70,7 +70,7 @@ function createVsix(entries, reverse = false) {
   });
 }
 
-function gallery(candidateSha256, overrides = {}) {
+function gallery(candidateSha256, overrides = {}, extraProperties = []) {
   return {
     results: [
       {
@@ -95,7 +95,8 @@ function gallery(candidateSha256, overrides = {}) {
                 properties: [
                   { key: MARKETPLACE_VSIX_SHA256_PROPERTY, value: candidateSha256 },
                   { key: "Microsoft.VisualStudio.Code.Engine", value: packageJson.engines.vscode },
-                  { key: "Microsoft.VisualStudio.Code.ExtensionKind", value: "workspace" }
+                  { key: "Microsoft.VisualStudio.Code.ExtensionKind", value: "workspace" },
+                  ...extraProperties
                 ],
                 ...overrides
               }
@@ -122,10 +123,10 @@ function fetchFixture(galleryBody, publicVsix) {
   };
 }
 
-async function fixture(context) {
+async function fixture(context, manifest = packageJson, preReleaseProperty = "") {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-marketplace-public-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
-  const candidate = await createVsix(releaseEntries());
+  const candidate = await createVsix(releaseEntries("# Open Wrangler\n", manifest, preReleaseProperty));
   const candidatePath = join(root, "openwrangler.vsix");
   writeFileSync(candidatePath, candidate, { flag: "wx", mode: 0o600 });
   return {
@@ -144,11 +145,30 @@ test("verifies upload SHA metadata and exact public VSIX semantics across ZIP re
     candidatePath: candidate.candidatePath,
     candidateSha256: candidate.candidateSha256,
     fetchImpl: fetchFixture(gallery(candidate.candidateSha256), publicVsix),
+    prerelease: false,
     version
   });
   assert.deepEqual(receipt, {
     candidateSha256: candidate.candidateSha256,
     extensionId: "Matt17BR.openwrangler",
+    version
+  });
+});
+
+test("verifies an exact Marketplace pre-release flag in package, VSIX, and gallery metadata", async (context) => {
+  const preReleaseProperty = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />';
+  const previewManifest = Object.freeze({ ...packageJson, preview: true });
+  const candidate = await fixture(context, previewManifest, preReleaseProperty);
+  const publicVsix = await createVsix(releaseEntries("# Open Wrangler\n", previewManifest, preReleaseProperty), true);
+  await verifyMarketplacePublication({
+    attempts: 1,
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: fetchFixture(
+      gallery(candidate.candidateSha256, {}, [{ key: "Microsoft.VisualStudio.Code.PreRelease", value: "true" }]),
+      publicVsix
+    ),
+    prerelease: true,
     version
   });
 });
@@ -168,6 +188,7 @@ test("polls a genuinely pending public version and then verifies it", async (con
       }
       return success(url, options);
     },
+    prerelease: false,
     sleep: async () => {
       sleeps += 1;
     },
@@ -184,6 +205,7 @@ test("rejects an existing conflicting upload hash without retrying", async (cont
       candidatePath: candidate.candidatePath,
       candidateSha256: candidate.candidateSha256,
       fetchImpl: fetchFixture(gallery("b".repeat(64)), candidate.candidate),
+      prerelease: false,
       sleep: async () => assert.fail("a conflicting public version must not be retried"),
       version
     }),
@@ -200,6 +222,7 @@ test("rejects public payload drift even when Marketplace reports the canonical u
       candidatePath: candidate.candidatePath,
       candidateSha256: candidate.candidateSha256,
       fetchImpl: fetchFixture(gallery(candidate.candidateSha256), changed),
+      prerelease: false,
       version
     }),
     /entries or payload bytes differ/u
@@ -214,6 +237,7 @@ test("reports an exhausted non-public Marketplace version as pending", async (co
       candidatePath: candidate.candidatePath,
       candidateSha256: candidate.candidateSha256,
       fetchImpl: fetchFixture({ results: [{ extensions: [] }] }, candidate.candidate),
+      prerelease: false,
       version
     }),
     MarketplacePublicationPendingError

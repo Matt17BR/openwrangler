@@ -13,65 +13,130 @@ function manifest({ preview = false, version = "1.0.2" } = {}) {
   });
 }
 
-test("Marketplace intake accepts an exact stable tag checkout", () => {
+function automatic(overrides = {}) {
+  return {
+    buildReason: "IndividualCI",
+    checkedOutCommit: commit,
+    currentMainCommit: undefined,
+    existingReleaseTag: "",
+    releasePackageJson: manifest(),
+    resolvedTagCommit: commit,
+    sourceBranch: "refs/tags/v1.0.2",
+    sourceCommit: commit,
+    ...overrides
+  };
+}
+
+test("Marketplace intake accepts exact automatic stable and pre-release tag checkouts", () => {
+  assert.deepEqual(inspectMarketplaceReleaseIntake(automatic()), {
+    eligible: true,
+    prerelease: false,
+    problems: [],
+    releaseCommit: commit,
+    releaseTag: "v1.0.2",
+    version: "1.0.2"
+  });
+
   assert.deepEqual(
-    inspectMarketplaceReleaseIntake({
-      checkedOutCommit: commit,
-      packageJson: manifest(),
-      sourceBranch: "refs/tags/v1.0.2",
-      sourceCommit: commit
-    }),
+    inspectMarketplaceReleaseIntake(
+      automatic({
+        releasePackageJson: manifest({ preview: true, version: "0.3.0" }),
+        sourceBranch: "refs/tags/v0.3.0"
+      })
+    ),
     {
       eligible: true,
+      prerelease: true,
       problems: [],
-      releaseTag: "v1.0.2",
-      version: "1.0.2"
-    }
-  );
-});
-
-test("Marketplace intake safely skips a valid preview tag", () => {
-  assert.deepEqual(
-    inspectMarketplaceReleaseIntake({
-      checkedOutCommit: commit,
-      packageJson: manifest({ preview: true, version: "0.3.0" }),
-      sourceBranch: "refs/tags/v0.3.0",
-      sourceCommit: commit
-    }),
-    {
-      eligible: false,
-      problems: [],
+      releaseCommit: commit,
       releaseTag: "v0.3.0",
       version: "0.3.0"
     }
   );
 });
 
-test("Marketplace intake rejects branches, tag drift, and checkout drift", () => {
-  const branch = inspectMarketplaceReleaseIntake({
-    checkedOutCommit: commit,
-    packageJson: manifest(),
-    sourceBranch: "refs/heads/main",
-    sourceCommit: commit
-  });
-  assert.equal(branch.eligible, false);
-  assert.match(branch.problems.join("\n"), /only a canonical numeric Git tag ref|does not match package version/u);
+test("Marketplace intake accepts a manual historical release from current protected main", () => {
+  const historicalCommit = "b".repeat(40);
+  assert.deepEqual(
+    inspectMarketplaceReleaseIntake(
+      automatic({
+        buildReason: "Manual",
+        currentMainCommit: commit,
+        existingReleaseTag: "v1.0.1",
+        releasePackageJson: manifest({ version: "1.0.1" }),
+        resolvedTagCommit: historicalCommit,
+        sourceBranch: "refs/heads/main"
+      })
+    ),
+    {
+      eligible: true,
+      prerelease: false,
+      problems: [],
+      releaseCommit: historicalCommit,
+      releaseTag: "v1.0.1",
+      version: "1.0.1"
+    }
+  );
+});
 
-  const tag = inspectMarketplaceReleaseIntake({
-    checkedOutCommit: commit,
-    packageJson: manifest(),
-    sourceBranch: "refs/tags/v1.0.3",
-    sourceCommit: commit
-  });
-  assert.equal(tag.eligible, false);
-  assert.match(tag.problems.join("\n"), /does not match package version/u);
+test("Marketplace intake rejects unsafe historical source selection and tag drift", () => {
+  for (const candidate of [
+    automatic({
+      buildReason: "IndividualCI",
+      currentMainCommit: commit,
+      existingReleaseTag: "v1.0.1",
+      releasePackageJson: manifest({ version: "1.0.1" }),
+      resolvedTagCommit: "b".repeat(40),
+      sourceBranch: "refs/heads/main"
+    }),
+    automatic({
+      buildReason: "Manual",
+      currentMainCommit: commit,
+      existingReleaseTag: "v1.0.1",
+      releasePackageJson: manifest({ version: "1.0.1" }),
+      resolvedTagCommit: "b".repeat(40),
+      sourceBranch: "refs/heads/release"
+    }),
+    automatic({
+      buildReason: "Manual",
+      currentMainCommit: commit,
+      existingReleaseTag: "v1.0.1",
+      releasePackageJson: manifest({ version: "1.0.3" }),
+      resolvedTagCommit: "b".repeat(40),
+      sourceBranch: "refs/heads/main"
+    }),
+    automatic({
+      buildReason: "Manual",
+      currentMainCommit: "c".repeat(40),
+      existingReleaseTag: "v1.0.1",
+      releasePackageJson: manifest({ version: "1.0.1" }),
+      resolvedTagCommit: "b".repeat(40),
+      sourceBranch: "refs/heads/main"
+    }),
+    automatic({ resolvedTagCommit: "b".repeat(40) }),
+    automatic({ checkedOutCommit: "b".repeat(40) })
+  ]) {
+    assert.equal(inspectMarketplaceReleaseIntake(candidate).eligible, false);
+  }
+});
 
-  const checkout = inspectMarketplaceReleaseIntake({
-    checkedOutCommit: "b".repeat(40),
-    packageJson: manifest(),
-    sourceBranch: "refs/tags/v1.0.2",
-    sourceCommit: commit
-  });
-  assert.equal(checkout.eligible, false);
-  assert.match(checkout.problems.join("\n"), /checkout must equal/u);
+test("Marketplace intake rejects a wrong package identity or channel declaration", () => {
+  const identity = inspectMarketplaceReleaseIntake(
+    automatic({
+      releasePackageJson: JSON.stringify({
+        name: "other",
+        publisher: "Matt17BR",
+        preview: false,
+        version: "1.0.2"
+      })
+    })
+  );
+  assert.equal(identity.eligible, false);
+  assert.match(identity.problems.join("\n"), /Matt17BR\.openwrangler/u);
+
+  const channel = inspectMarketplaceReleaseIntake(
+    automatic({ releasePackageJson: manifest({ preview: false, version: "0.3.0" }), sourceBranch: "refs/tags/v0.3.0" })
+  );
+  assert.equal(channel.eligible, false);
+  assert.match(channel.problems.join("\n"), /requires package\.json "preview" to be true/u);
 });
