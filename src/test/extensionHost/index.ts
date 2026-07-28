@@ -568,7 +568,11 @@ export async function run(): Promise<void> {
   }
   if (phase === "platform-smoke") {
     recordAcceptanceProgress("platform-smoke:start");
-    await exercisePackagedPlatformSmoke(testing, extension, fixture);
+    await exercisePackagedPlatformSmoke(
+      testing,
+      extension,
+      vscode.Uri.joinPath(workspace, "fixtures", "[Live] sample.csv")
+    );
     recordAcceptanceProgress("platform-smoke:complete");
     console.log("Open Wrangler packaged platform smoke passed.");
     return;
