@@ -1014,7 +1014,7 @@ function assertPublicEvidence(value, key = "") {
   }
   if (typeof value === "string") {
     const pathCandidate = value.replace(
-      /(^|[^\p{L}\p{N}._~-])((?!file:)[A-Za-z][A-Za-z0-9+.-]*):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:\/[A-Za-z0-9._~!$&'()*+\-=%:@/?#]*)?/giu,
+      /(^|[^\p{L}\p{N}._~-])((?!file:)[A-Za-z][A-Za-z0-9+.-]*):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:\/[A-Za-z0-9._~!$&'()*+\-=%:@/?#]*)?(?=$|[^\p{L}\p{N}._~!$&'()*+\-=%:@/?#])/giu,
       "$1"
     );
     if (

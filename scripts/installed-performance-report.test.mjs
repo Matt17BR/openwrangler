@@ -260,7 +260,9 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
 
   for (const urlFollowedByPrivatePath of [
     "https://example.test,/root/private-release",
-    String.raw`x://example.test;|\Users\alice\private-release`
+    String.raw`x://example.test;|\Users\alice\private-release`,
+    "https://example.test_/root/private-release",
+    "https://example.test-/root/private-release"
   ]) {
     const mixedUrlReport = structuredClone(failed);
     mixedUrlReport.editors[1].provenance.platform.operatingSystemRelease = urlFollowedByPrivatePath;
