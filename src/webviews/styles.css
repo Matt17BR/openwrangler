@@ -92,6 +92,8 @@ textarea {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
 }
 
 .appWorkspace {

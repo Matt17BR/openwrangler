@@ -16,6 +16,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Kept the installed dataframe surface on the declared VS Code foreground and editor-background tokens instead of inheriting a subtly different workbench color from the host webview.
 - Treated Polars CSV, TSV, Parquet, and JSONL source paths as exact local filenames, so brackets, asterisks, question marks, and braces can no longer be expanded as glob patterns or silently select a different file.
 - Kept every row reachable in multi-million-row grids by mapping the complete logical range onto a bounded Chromium-safe scroll canvas and rebasing the rendered row segment around the current viewport. Restored positions, keyboard navigation, and Previous/Next block actions now retain their exact logical target instead of being pulled back by browser scroll-height clamping.
 - Made viewing filters disappear structurally when their final value or predicate is removed, so stale searches and empty selections cannot remain as hidden no-op filters or enable an empty **Filter rows** cleaning step. The Filters / Sorts drawer now keeps every active column filter visible with type-safe summaries and independent value/predicate removal, while the native Filters tree can clear a whole column filter; all removal paths preserve sibling conditions and viewing sorts.
