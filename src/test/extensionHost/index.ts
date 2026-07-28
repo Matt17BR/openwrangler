@@ -3348,7 +3348,7 @@ async function exercisePackagedPlatformSmoke(
   const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
   await titleAction.waitFor({ state: "visible", timeout: 10_000 });
   await titleAction.click();
-  await acceptDefaultDelimitedImport(page, testing, fixture, "platform-smoke:import");
+  await waitForAutomaticDelimitedImport(page, testing, fixture, "platform-smoke:import");
   await waitFor(
     () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -3866,7 +3866,7 @@ async function exercisePackagedFileLaunchSurfaces(
   await customEditorTitleAction.click();
   recordAcceptanceProgress("verify:file-launch:third-party-editor:import");
   const importCheckpoint = "verify:file-launch:third-party-editor:import";
-  await acceptDefaultDelimitedImport(page, testing, customEditorFixture, importCheckpoint);
+  await waitForAutomaticDelimitedImport(page, testing, customEditorFixture, importCheckpoint);
   recordAcceptanceProgress(`${importCheckpoint}:options-complete`);
   recordAcceptanceProgress(`${importCheckpoint}:session-open`);
   await waitFor(
@@ -4070,7 +4070,7 @@ async function inspectThirdPartyCustomEditorFrames(page: Page): Promise<CustomEd
   return diagnostics.filter((diagnostic) => diagnostic.markerCount > 0);
 }
 
-async function acceptDefaultDelimitedImport(
+async function waitForAutomaticDelimitedImport(
   page: Page,
   testing: TestApi,
   expectedSource: vscode.Uri,
@@ -8299,7 +8299,7 @@ async function exerciseLiveImportReconfiguration(
   await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   const opening = vscode.commands.executeCommand("openWrangler.openFile", configured);
-  await acceptDefaultDelimitedImport(page, testing, configured, "verify:file-inputs:reconfigure:initial-options");
+  await waitForAutomaticDelimitedImport(page, testing, configured, "verify:file-inputs:reconfigure:initial-options");
   await opening;
   await waitFor(
     () => {

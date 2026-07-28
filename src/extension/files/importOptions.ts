@@ -1,8 +1,8 @@
+import { open } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
 import { detectedImportOptionsFromSample, IMPORT_DETECTION_SAMPLE_BYTES } from "./importDetection";
-import { open } from "node:fs/promises";
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
