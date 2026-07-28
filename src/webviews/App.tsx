@@ -1845,7 +1845,7 @@ export function App() {
   }
 
   return (
-    <main className="app" tabIndex={-1} onKeyDown={handleKeyboardShortcut}>
+    <main className="app" data-session-id={metadata?.sessionId} tabIndex={-1} onKeyDown={handleKeyboardShortcut}>
       <div
         className="appWorkspace"
         data-testid="app-workspace"
