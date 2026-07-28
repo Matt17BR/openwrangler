@@ -1,9 +1,14 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { load as parseYaml } from "js-yaml";
 
 const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
+const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
+const MAX_CONTRACT_DEPTH = 128;
+const MAX_CONTRACT_NODES = 200_000;
+const AUDITED_WORKFLOW_SHA256 = "d93e4f59b0694fe6206bff3889de9f16e25f0466934da9b9410d4f080b8da0af";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
@@ -55,6 +60,73 @@ function exactKeys(value, expected) {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
   return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function auditedGraphSha256(value) {
+  const digest = createHash("sha256");
+  const active = new WeakSet();
+  let bytes = 0;
+  let nodes = 0;
+
+  const append = (text) => {
+    bytes += Buffer.byteLength(text, "utf8");
+    if (bytes > MAX_CONTRACT_BYTES) throw new Error("The stable release workflow exceeds its canonical byte bound.");
+    digest.update(text, "utf8");
+  };
+  const appendString = (text) => {
+    append(`s${Buffer.byteLength(text, "utf8")}:`);
+    append(text);
+  };
+  const visit = (current, depth) => {
+    nodes += 1;
+    if (nodes > MAX_CONTRACT_NODES) throw new Error("The stable release workflow exceeds its node bound.");
+    if (depth > MAX_CONTRACT_DEPTH) throw new Error("The stable release workflow exceeds its depth bound.");
+    if (current === null) {
+      append("n;");
+      return;
+    }
+    if (typeof current === "string") {
+      appendString(current);
+      return;
+    }
+    if (typeof current === "boolean") {
+      append(current ? "b1;" : "b0;");
+      return;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) throw new Error("The stable release workflow contains a non-finite number.");
+      append(`d${Object.is(current, -0) ? "-0" : String(current)};`);
+      return;
+    }
+    if (typeof current !== "object") {
+      throw new Error("The stable release workflow contains an unsupported scalar.");
+    }
+    if (active.has(current)) throw new Error("The stable release workflow contains a cyclic YAML alias.");
+    active.add(current);
+    try {
+      if (Array.isArray(current)) {
+        append("a[");
+        for (const item of current) visit(item, depth + 1);
+        append("];");
+        return;
+      }
+      const prototype = Object.getPrototypeOf(current);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error("The stable release workflow contains a non-plain object.");
+      }
+      append("o{");
+      for (const key of Object.keys(current).sort()) {
+        appendString(key);
+        visit(current[key], depth + 1);
+      }
+      append("};");
+    } finally {
+      active.delete(current);
+    }
+  };
+
+  visit(value, 0);
+  return digest.digest("hex");
 }
 
 function steps(job) {
@@ -242,6 +314,16 @@ export function inspectStableReleaseWorkflow(source) {
   }
   if (!exactKeys(workflow.jobs, JOBS)) {
     problems.push(`Stable release must contain exactly these jobs: ${JOBS.join(", ")}.`);
+    return problems;
+  }
+  try {
+    if (auditedGraphSha256(workflow) !== AUDITED_WORKFLOW_SHA256) {
+      problems.push(
+        "Stable release must match the reviewed dispatch text, runners, ordered steps, environments, commands, actions, and evidence uploads."
+      );
+    }
+  } catch {
+    problems.push("Stable release must be a bounded, acyclic graph of plain YAML values.");
     return problems;
   }
   for (const [jobName, job] of Object.entries(workflow.jobs)) {
