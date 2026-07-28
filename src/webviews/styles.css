@@ -927,6 +927,11 @@ th.rowHeader {
   padding: 8px 0;
 }
 
+.summaryGroup.selectedSummary {
+  border-left: 2px solid var(--vscode-focusBorder);
+  padding-left: 8px;
+}
+
 .summaryPanel {
   flex: 0 1 52%;
   overflow: auto;

@@ -742,4 +742,77 @@ describe("SummaryPanel", () => {
     expect(within(groups[0]!).getByText("Min").nextElementSibling).toHaveTextContent("1");
     expect(within(groups[1]!).getByText("Min").nextElementSibling).toHaveTextContent("10");
   });
+
+  it("keeps an opened summary expanded as progressive results arrive", () => {
+    const schema = Array.from({ length: 8 }, (_, position) => ({
+      id: `c:${position}`,
+      name: `column_${position}`,
+      position,
+      rawType: "Int64",
+      type: "integer" as const,
+      nullable: false
+    }));
+    const progressiveMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 4, columns: schema.length },
+      filteredShape: { rows: 4, columns: schema.length },
+      schema
+    };
+    const summary = (position: number): ColumnSummary => ({
+      columnId: `c:${position}`,
+      column: `column_${position}`,
+      type: "integer",
+      rawType: "Int64",
+      totalCount: 4,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 4,
+      numeric: { min: position, max: position + 3 },
+      topValues: []
+    });
+    const schemaById = new Map(schema.map((column) => [column.id, column]));
+    const { rerender } = render(
+      <SummaryPanel
+        metadata={progressiveMetadata}
+        summaries={Array.from({ length: 7 }, (_, position) => summary(position))}
+        schemaById={schemaById}
+      />
+    );
+    const target = screen.getByText("column_3").closest("details");
+    if (!(target instanceof HTMLDetailsElement)) throw new Error("Expected a column summary disclosure.");
+    expect(target).not.toHaveAttribute("open");
+
+    target.open = true;
+    fireEvent(target, new Event("toggle"));
+    expect(target).toHaveAttribute("open");
+
+    rerender(
+      <SummaryPanel
+        metadata={progressiveMetadata}
+        summaries={Array.from({ length: 8 }, (_, position) => summary(position))}
+        schemaById={schemaById}
+      />
+    );
+    expect(screen.getByText("column_3").closest("details")).toHaveAttribute("open");
+  });
+
+  it("promotes and expands the selected numeric column with exact statistics", () => {
+    render(
+      <SummaryPanel
+        metadata={metadata}
+        summaries={summaries}
+        schemaById={new Map(metadata.schema.map((column) => [column.id, column]))}
+        selectedColumnId="c:1"
+      />
+    );
+
+    const summariesRoot = screen.getByRole("heading", { name: "Column Summary" }).parentElement;
+    const selected = summariesRoot?.querySelector<HTMLDetailsElement>(".selectedSummary");
+    expect(selected).toHaveAttribute("open");
+    expect(selected?.querySelector("summary")).toHaveAttribute("aria-current", "true");
+    expect(within(selected!).getByText("Selected · Float64")).toBeInTheDocument();
+    expect(within(selected!).getByText("Min").nextElementSibling).toHaveTextContent("10");
+    expect(within(selected!).getByText("Max").nextElementSibling).toHaveTextContent("12");
+    expect(within(selected!).getByText("Median").nextElementSibling).toHaveTextContent("12");
+  });
 });

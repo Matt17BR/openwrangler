@@ -2103,7 +2103,12 @@ export function App() {
                   onClick={closeSidePanel}
                 />
               </div>
-              <SummaryPanel metadata={metadata} summaries={summaries} schemaById={schemaById} />
+              <SummaryPanel
+                metadata={metadata}
+                summaries={summaries}
+                schemaById={schemaById}
+                selectedColumnId={gridViewState.selectedColumnId}
+              />
               <FilterPanel
                 key={filterColumn}
                 metadata={metadata}
