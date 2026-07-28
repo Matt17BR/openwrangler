@@ -25,6 +25,7 @@ from .base import (
     ensure_output_columns_available,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_blank_delimited_file,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -111,6 +112,12 @@ class PolarsEngine(DataFrameEngine):
                     "Use the Pandas backend for this encoding."
                 )
             encoding: Literal["utf8", "utf8-lossy"] = "utf8-lossy" if requested_encoding == "utf8-lossy" else "utf8"
+            if is_blank_delimited_file(
+                path,
+                encoding="utf-8",
+                errors="replace" if encoding == "utf8-lossy" else "strict",
+            ):
+                return pl.DataFrame().lazy()
             return _scan_literal_file(
                 pl.scan_csv,
                 path,

@@ -503,6 +503,14 @@ export function DataGrid({
         </button>
       </div>
 
+      {page.totalRows === 0 && metadata.schema.length === 0 && (
+        <div className="emptyState" role="status">
+          <strong>Empty dataset</strong>
+          <br />
+          <span>This source contains 0 rows × 0 columns.</span>
+        </div>
+      )}
+
       {diffPresentation && (diffPresentation.addedColumns.length > 0 || diffPresentation.removedColumns.length > 0) && (
         <section className="gridColumnChanges" aria-label="Column changes">
           <strong>Column changes</strong>

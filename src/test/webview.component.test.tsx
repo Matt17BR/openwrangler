@@ -1226,7 +1226,7 @@ describe("DataGrid", () => {
     expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
   });
 
-  it("resizes columns from the keyboard and labels an empty grid", () => {
+  it("resizes columns from the keyboard and clearly labels empty rows and datasets", () => {
     let currentViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
     const onViewStateChange = vi.fn((next) => {
       currentViewState = next;
@@ -1287,6 +1287,27 @@ describe("DataGrid", () => {
 
     expect(screen.getByText("No rows")).toBeInTheDocument();
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
+
+    rerender(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 0, columns: 0 }, filteredShape: { rows: 0, columns: 0 }, schema: [] }}
+        page={{ offset: 0, limit: 2, totalRows: 0, columnIds: [], rows: [] }}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        viewState={currentViewState}
+        onViewStateChange={onViewStateChange}
+        onPage={vi.fn()}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("Empty dataset")).toBeInTheDocument();
+    expect(screen.getByText("This source contains 0 rows × 0 columns.")).toBeInTheDocument();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "1");
   });
 });
 

@@ -16,6 +16,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Opened zero-byte, BOM-only, and whitespace-only CSV/TSV sources as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB instead of surfacing raw parser failures. Non-empty malformed input still fails in its native reader, and opening never changes source bytes.
 - Kept the installed dataframe surface on the declared VS Code foreground and editor-background tokens instead of inheriting a subtly different workbench color from the host webview.
 - Treated Polars CSV, TSV, Parquet, and JSONL source paths as exact local filenames, so brackets, asterisks, question marks, and braces can no longer be expanded as glob patterns or silently select a different file.
 - Kept every row reachable in multi-million-row grids by mapping the complete logical range onto a bounded Chromium-safe scroll canvas and rebasing the rendered row segment around the current viewport. Restored positions, keyboard navigation, and Previous/Next block actions now retain their exact logical target instead of being pulled back by browser scroll-height clamping.
