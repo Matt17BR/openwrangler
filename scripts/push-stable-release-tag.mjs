@@ -128,9 +128,16 @@ function inspectRemoteTag({ expectedCommit, gitRunner, releaseTag, root }) {
 
 function createCredentialLease(token) {
   const root = mkdtempSync(join(tmpdir(), "ow-stable-tag-"));
-  chmodSync(root, 0o700);
+  // Windows stat modes do not represent inherited ACLs. Keep exact modes as a
+  // POSIX invariant while relying on exclusive creation and file identities on Windows.
+  const enforcePosixModes = process.platform !== "win32";
+  if (enforcePosixModes) chmodSync(root, 0o700);
   const rootStat = lstatSync(root);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || (rootStat.mode & 0o777) !== 0o700) {
+  if (
+    !rootStat.isDirectory() ||
+    rootStat.isSymbolicLink() ||
+    (enforcePosixModes && (rootStat.mode & 0o777) !== 0o700)
+  ) {
     throw new Error("The private Git credential directory is invalid.");
   }
   const path = join(root, "credentials");
@@ -138,10 +145,10 @@ function createCredentialLease(token) {
   try {
     descriptor = openSync(
       path,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
       0o600
     );
-    fchmodSync(descriptor, 0o600);
+    if (enforcePosixModes) fchmodSync(descriptor, 0o600);
     const value = `https://x-access-token:${encodeURIComponent(token)}@github.com\n`;
     if (Buffer.byteLength(value, "utf8") > TOKEN_MAX_BYTES * 3 + 64) {
       throw new Error("The encoded Git credential exceeds its bound.");
@@ -149,7 +156,7 @@ function createCredentialLease(token) {
     writeSync(descriptor, value, undefined, "utf8");
     fsyncSync(descriptor);
     const stat = fstatSync(descriptor);
-    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600) {
+    if (!stat.isFile() || stat.nlink !== 1 || (enforcePosixModes && (stat.mode & 0o777) !== 0o600)) {
       throw new Error("The private Git credential file is invalid.");
     }
     return Object.freeze({

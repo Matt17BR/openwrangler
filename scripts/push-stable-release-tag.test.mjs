@@ -79,12 +79,14 @@ function createRunner({ expectedCommit, initialRemote = "", postPushRemote } = {
       assert.ok(helper);
       const credentialPath = helper.slice("credential.helper=store --file=".length);
       credentialPaths.push(credentialPath);
-      const credentialDescriptor = openSync(credentialPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const credentialDescriptor = openSync(credentialPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       try {
         const beforeRead = fstatSync(credentialDescriptor);
         assert.equal(beforeRead.isFile(), true);
         assert.equal(beforeRead.nlink, 1);
-        assert.equal(beforeRead.mode & 0o777, 0o600);
+        if (process.platform !== "win32") {
+          assert.equal(beforeRead.mode & 0o777, 0o600);
+        }
         assert.equal(
           readFileSync(credentialDescriptor, "utf8"),
           `https://x-access-token:${encodeURIComponent(token)}@github.com\n`
