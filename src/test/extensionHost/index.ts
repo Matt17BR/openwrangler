@@ -4412,12 +4412,14 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
   const fixture = vscode.Uri.file(path.join(fixtureDirectory, "sales-snapshot.csv"));
   writeFileSync(fixture.fsPath, packagedScreenshotFixtureCsv(), { encoding: "utf8", flag: "wx" });
   const workbench = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
   const windowConfiguration = vscode.workspace.getConfiguration("window");
   const scm = vscode.workspace.getConfiguration("scm");
   const typescript = vscode.workspace.getConfiguration("typescript");
   const javascript = vscode.workspace.getConfiguration("javascript");
   const originalTheme = workbench.get<string>("colorTheme");
   const originalStatusBarVisible = workbench.get<boolean>("statusBar.visible");
+  const originalBreadcrumbsEnabled = breadcrumbs.get<boolean>("enabled");
   const originalZoom = windowConfiguration.get<number>("zoomLevel");
   const originalTitle = windowConfiguration.get<string>("title");
   const originalCommandCenter = windowConfiguration.get<boolean>("commandCenter");
@@ -4482,6 +4484,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
   try {
     recordAcceptanceProgress("verify:screenshots:prepare");
     await workbench.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update(
       "title",
       "${activeEditorShort}${separator}Open Wrangler",
@@ -4563,6 +4566,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
   } finally {
     await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
     await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", originalBreadcrumbsEnabled, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("title", originalTitle, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("commandCenter", originalCommandCenter, vscode.ConfigurationTarget.Global);

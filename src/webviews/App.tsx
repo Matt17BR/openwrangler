@@ -2205,7 +2205,7 @@ export function App() {
                 </div>
               )}
             </header>
-            <details className="draftCode" open>
+            <details className="draftCode">
               <summary>
                 Generated{" "}
                 {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
