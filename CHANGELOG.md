@@ -11,6 +11,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Kept column summaries stable while progressive profiling results arrive and promoted the selected column to an expanded, visually marked first position, so exact numeric min/max/mean/median statistics remain visible instead of unexpectedly collapsing.
 - Tightened the README around the actual install, exploration, transformation, engine, and compatibility story; removed the blanket parity-complete claim so newly discovered real-world regressions are described and treated honestly.
 
+### Fixed
+
+- Kept every row reachable in multi-million-row grids by mapping the complete logical range onto a bounded Chromium-safe scroll canvas and rebasing the rendered row segment around the current viewport. Restored positions, keyboard navigation, and Previous/Next block actions now retain their exact logical target instead of being pulled back by browser scroll-height clamping.
+
 ## [1.0.0] - 2026-07-28
 
 ### Added

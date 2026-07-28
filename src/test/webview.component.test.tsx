@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSummary, GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
+import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -64,6 +65,43 @@ const page: GridPage = {
     }
   ]
 };
+
+const chromiumMaximumLayoutHeight = 33_554_428;
+const largeGridRowCount = 3_012_020;
+const largeGridPageSize = 200;
+
+function pageAt(offset: number, totalRows = largeGridRowCount): GridPage {
+  const rowCount = Math.min(largeGridPageSize, Math.max(0, totalRows - offset));
+  return {
+    offset,
+    limit: largeGridPageSize,
+    totalRows,
+    columnIds: page.columnIds,
+    rows: Array.from({ length: rowCount }, (_, index) => {
+      const rowNumber = offset + index;
+      return {
+        id: `r:${rowNumber}`,
+        rowNumber,
+        values: [
+          {
+            kind: "string" as const,
+            raw: `row-${rowNumber}`,
+            display: `row-${rowNumber}`,
+            isNull: false,
+            isNaN: false
+          },
+          {
+            kind: "number" as const,
+            raw: rowNumber,
+            display: String(rowNumber),
+            isNull: false,
+            isNaN: false
+          }
+        ]
+      };
+    })
+  };
+}
 
 describe("DataGrid", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -527,6 +565,201 @@ describe("DataGrid", () => {
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
     expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("reaches the first, middle, and final rows beyond Chromium's layout ceiling", async () => {
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const props = {
+      metadata: largeMetadata,
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={pageAt(0)} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 580 });
+    let physicalScrollTop = scroller.scrollTop;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = Math.min(value, chromiumMaximumLayoutHeight);
+      }
+    });
+    fireEvent(window, new Event("resize"));
+
+    expect(document.querySelector('[data-grid-row="0"]')).not.toBeNull();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", String(largeGridRowCount + 1));
+
+    const middleRow = 1_506_053;
+    const middleOffset = Math.floor(middleRow / largeGridPageSize) * largeGridPageSize;
+    scroller.scrollTop =
+      (middleRow / (largeGridRowCount - 1)) * (maximumGridScrollCanvasHeight - scroller.clientHeight);
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(props.onPage).toHaveBeenLastCalledWith(middleOffset));
+    rerender(<DataGrid {...props} page={pageAt(middleOffset)} />);
+
+    await waitFor(() => expect(document.querySelector(`[data-grid-row="${middleRow}"]`)).not.toBeNull());
+    expect(scroller.scrollTop).toBeGreaterThan(0);
+    expect(scroller.scrollTop).toBeLessThan(maximumGridScrollCanvasHeight);
+    expect(document.querySelector(`[data-grid-row="${middleRow}"]`)?.closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      String(middleRow + 2)
+    );
+
+    const finalRow = largeGridRowCount - 1;
+    const finalOffset = Math.floor(finalRow / largeGridPageSize) * largeGridPageSize;
+    scroller.scrollTop = maximumGridScrollCanvasHeight - scroller.clientHeight;
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(props.onPage).toHaveBeenLastCalledWith(finalOffset));
+    rerender(<DataGrid {...props} page={pageAt(finalOffset)} />);
+
+    await waitFor(() => expect(document.querySelector(`[data-grid-row="${finalRow}"]`)).not.toBeNull());
+    expect(scroller.scrollTop).toBeLessThan(maximumGridScrollCanvasHeight);
+    expect(scroller.scrollTop).toBeLessThan(chromiumMaximumLayoutHeight);
+    expect(document.querySelector(`[data-grid-row="${finalRow}"]`)?.closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      String(largeGridRowCount + 1)
+    );
+
+    const restoredRow = middleRow + 37;
+    const restoredOffset = Math.floor(restoredRow / largeGridPageSize) * largeGridPageSize;
+    const pageRequestsBeforeRestore = props.onPage.mock.calls.length;
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(restoredOffset)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: restoredRow, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(document.querySelector(`[data-grid-row="${restoredRow}"]`)).not.toBeNull());
+    expect(props.onPage).toHaveBeenCalledTimes(pageRequestsBeforeRestore);
+    expect(scroller.scrollTop).toBeLessThan(maximumGridScrollCanvasHeight);
+    expect(document.querySelector(`[data-grid-row="${restoredRow}"]`)?.closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      String(restoredRow + 2)
+    );
+  });
+
+  it("keeps huge-grid Next and Previous block requests stable across correlated scroll events", async () => {
+    const initialOffset = 1_506_000;
+    const nextOffset = initialOffset + largeGridPageSize;
+    const onPage = vi.fn();
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata: {
+        ...metadata,
+        shape: { rows: largeGridRowCount, columns: 2 },
+        filteredShape: { rows: largeGridRowCount, columns: 2 }
+      },
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onViewStateChange,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(
+      <DataGrid
+        {...props}
+        page={pageAt(initialOffset)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 580 });
+    let physicalScrollTop = scroller.scrollTop;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = Math.min(value, chromiumMaximumLayoutHeight);
+      }
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    expect(onPage).toHaveBeenCalledTimes(1);
+    expect(onPage).toHaveBeenLastCalledWith(nextOffset);
+    fireEvent.scroll(scroller);
+    expect(onPage).toHaveBeenCalledTimes(1);
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: {},
+      viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(nextOffset)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+    expect(onPage).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous block" }));
+    expect(onPage).toHaveBeenCalledTimes(2);
+    expect(onPage).toHaveBeenLastCalledWith(initialOffset);
+    fireEvent.scroll(scroller);
+    expect(onPage).toHaveBeenCalledTimes(2);
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: {},
+      viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 }
+    });
+  });
+
+  it("uses Ctrl+End to reach and focus the final accessible row of a huge grid", async () => {
+    const onPage = vi.fn();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const props = {
+      metadata: largeMetadata,
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={pageAt(0)} />);
+    const firstCell = document.querySelector<HTMLTableCellElement>('[data-grid-row="0"][data-grid-column="0"]');
+    expect(firstCell).not.toBeNull();
+    act(() => firstCell?.focus());
+    fireEvent.keyDown(firstCell!, { key: "End", ctrlKey: true });
+
+    const finalRow = largeGridRowCount - 1;
+    const finalOffset = Math.floor(finalRow / largeGridPageSize) * largeGridPageSize;
+    expect(onPage).toHaveBeenCalledWith(finalOffset);
+    rerender(<DataGrid {...props} page={pageAt(finalOffset)} />);
+
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute("data-grid-row", String(finalRow));
+      expect(document.activeElement).toHaveAttribute("data-grid-column", "1");
+    });
+    expect(document.activeElement?.closest("tr")).toHaveAttribute("aria-rowindex", String(largeGridRowCount + 1));
+    hasFocus.mockRestore();
   });
 
   it("keeps one scroll listener across busy rerenders and reconciles with the latest page callback", async () => {
