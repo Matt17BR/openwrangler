@@ -39,7 +39,7 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 
 - Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor tab, editor title bar, or Command Palette.
 - Changes CSV, TSV, and Excel import options without losing the current cleaning plan or view.
-- Pages through wide and large datasets with row and column virtualization, typed values, keyboard navigation, column search, and progressive insights.
+- Pages through wide and large datasets with row and column virtualization, typed values, keyboard navigation, column search, and selected-column insights with exact type-aware statistics.
 - Keeps filters and sorts separate from cleaning steps, so exploration never silently changes exported results.
 - Previews every transformation as a data diff with editable, backend-native Python before you apply it.
 - Provides 27 built-in operations across row, column, text, categorical, numeric, datetime, grouping, custom-code, and by-example workflows.
@@ -75,7 +75,7 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 
 ## Cleaning workflow
 
-1. Filter, sort, inspect distributions, and select the columns you care about.
+1. Select a column to inspect its distribution and exact statistics, then filter or sort without changing the cleaning plan.
 2. Add an operation and configure it.
 3. Check the draft grid, diff, and generated code.
 4. Apply or discard the draft, then export the committed plan when ready.

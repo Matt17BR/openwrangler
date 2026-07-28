@@ -585,6 +585,14 @@ Stable-ID column summaries and Insights polish, 2026-07-27:
 
 This strengthens the existing **Done** dataset-summary row and the still-**Partial** release-platform visual/accessibility row for [issue #90](https://github.com/Matt17BR/openwrangler/issues/90). Broader workbench hierarchy, information-density, and interaction redesign remains explicitly post-1.0 work in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88); it does not expand this bounded release slice. This does not close unrelated 1.0 gates or make a parity-complete claim.
 
+Selected-column Insights refinement, 2026-07-28:
+
+- Insights now opens on one selected-column card with dedicated Column, Dataset, and Filters tabs instead of profiling and stacking the complete schema. Numeric bounds and moments, datetime bounds, boolean counts, categorical values, null, NaN, distinct, and exact-versus-sampled provenance are explicit.
+- Drawer profiling owns only the selected stable column ID and transfers that ownership on selection changes. Exact missing/duplicate dataset statistics are requested only from the Dataset tab; tab changes, close, mutation, and recovery retain the existing cancellation and logical-view freshness rules.
+- Focused React tests cover tab keyboard behavior, duplicate-label disambiguation, selected-only wide-schema work, independent grid/drawer ownership, dataset-stat gating, rollback, and stale-response rejection. Production-bundle screenshot and axe harnesses exercise all three views.
+
+This post-1.0 slice refines the existing **Done** dataset-summary row without changing its underlying protocol or engine semantics. Text-length statistics and the broader command-row/draft-strip redesign remain separately bounded work in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88).
+
 Released-Jupyter argument provenance slice, 2026-07-26:
 
 - The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.

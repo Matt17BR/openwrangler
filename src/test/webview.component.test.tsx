@@ -1479,6 +1479,7 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByRole("cell", { name: "Milan" });
     fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Filters" }));
     const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
     expect(cityHeader).not.toBeNull();
     const cityControls = within(cityHeader!);

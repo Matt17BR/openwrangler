@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pixelmatch from "pixelmatch";
@@ -27,6 +27,7 @@ const python =
   ) ?? (process.platform === "win32" ? "python" : "python3");
 const chrome = process.env.CHROME_BIN ?? chromium.executablePath();
 const verify = process.argv.includes("--verify");
+const screenshotJobs = [];
 
 rmSync(tmpDir, { recursive: true, force: true });
 mkdirSync(tmpDir, { recursive: true });
@@ -313,7 +314,17 @@ duplicateColumnPayload.metadata.schema = duplicateColumnPayload.metadata.schema.
   name: ["value", "value", "7", ""][position]
 }));
 
-writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
+writeWebviewHarness(
+  "grid-view.html",
+  payloads.opened,
+  {},
+  "grid-view.png",
+  {},
+  {
+    insightsView: "column",
+    selectedColumnPosition: 2
+  }
+);
 writeWebviewHarness(
   "operation-dialog.html",
   payloads.opened,
@@ -473,6 +484,11 @@ for (const zoom of [0.8, 1.5, 2]) {
     {},
     { zoom }
   );
+}
+
+await validateWebviewHarnesses();
+for (const job of screenshotJobs) {
+  screenshot(job.htmlPath, job.outputPath, job.width, job.height);
 }
 
 function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName, suppliedPages = {}, appearance = {}) {
@@ -701,7 +717,11 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  screenshot(htmlPath, outputPath, width, height);
+  queueScreenshot(htmlPath, outputPath, width, height, {
+    kind: "webview",
+    expectedInsightsView: insightsView,
+    expectedSelectedColumnPosition: selectedColumnPosition
+  });
 }
 
 function writeNotebookHarness(fileName, payload, outputName) {
@@ -756,7 +776,7 @@ show(df, label="sample.csv")</div>
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  screenshot(htmlPath, outputPath);
+  queueScreenshot(htmlPath, outputPath);
 }
 
 function writeCodePreviewHarness(fileName, code, outputName) {
@@ -791,7 +811,144 @@ function writeCodePreviewHarness(fileName, code, outputName) {
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  screenshot(htmlPath, outputPath, 1280, 420);
+  queueScreenshot(htmlPath, outputPath, 1280, 420);
+}
+
+function queueScreenshot(htmlPath, outputPath, width = 1280, height = 760, validation = undefined) {
+  screenshotJobs.push({ htmlPath, outputPath, width, height, validation });
+}
+
+async function validateWebviewHarnesses() {
+  const webviewJobs = screenshotJobs.filter((job) => job.validation?.kind === "webview");
+  if (webviewJobs.length === 0) return;
+
+  const browserRoot = resolve(tmpDir, "browser-validation");
+  const home = resolve(browserRoot, "home");
+  const config = resolve(browserRoot, "config");
+  const cache = resolve(browserRoot, "cache");
+  const data = resolve(browserRoot, "data");
+  const browserTemp =
+    process.platform === "win32" ? resolve(browserRoot, "tmp") : mkdtempSync("/tmp/ow-shot-validate-");
+  for (const directory of [home, config, cache, data, browserTemp]) mkdirSync(directory, { recursive: true });
+  if (process.platform !== "win32") chmodSync(browserTemp, 0o700);
+
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: chrome,
+      headless: true,
+      args: ["--no-sandbox", "--disable-dev-shm-usage", "--allow-file-access-from-files"],
+      env: {
+        ...process.env,
+        HOME: home,
+        XDG_CONFIG_HOME: config,
+        XDG_CACHE_HOME: cache,
+        XDG_DATA_HOME: data,
+        TMPDIR: browserTemp,
+        TEMP: browserTemp,
+        TMP: browserTemp
+      },
+      timeout: 30_000
+    });
+
+    for (const job of webviewJobs) {
+      const context = await browser.newContext({
+        viewport: { width: job.width, height: job.height },
+        deviceScaleFactor: 1
+      });
+      try {
+        const page = await context.newPage();
+        const pageErrors = [];
+        page.on("pageerror", (error) => pageErrors.push(error.message));
+        page.setDefaultTimeout(5_000);
+        page.setDefaultNavigationTimeout(15_000);
+        await page.goto(pathToFileURL(job.htmlPath).href, { waitUntil: "load", timeout: 15_000 });
+        await page.waitForFunction(
+          () =>
+            globalThis.openWranglerHarnessErrors?.length > 0 ||
+            globalThis.openWranglerMessages?.some((message) => message.kind === "ready"),
+          undefined,
+          { timeout: 5_000 }
+        );
+
+        const expected = {
+          insightsView: job.validation.expectedInsightsView,
+          selectedColumnPosition: job.validation.expectedSelectedColumnPosition
+        };
+        if (expected.insightsView !== undefined || expected.selectedColumnPosition !== undefined) {
+          await page.waitForFunction(
+            ({ insightsView, selectedColumnPosition }) => {
+              if (globalThis.openWranglerHarnessErrors?.length > 0) return true;
+              const actions = globalThis.openWranglerHarnessActions;
+              const selectedColumnReached =
+                selectedColumnPosition === undefined ||
+                (actions?.selectedColumnPosition === selectedColumnPosition &&
+                  document.querySelector(`td[data-grid-column="${selectedColumnPosition}"][aria-selected="true"]`) !==
+                    null);
+              const insightsViewReached =
+                insightsView === undefined ||
+                (actions?.insightsView === insightsView &&
+                  document
+                    .querySelector(`[role="tab"][data-summary-view="${insightsView}"]`)
+                    ?.getAttribute("aria-selected") === "true" &&
+                  document.getElementById(`openwrangler-insights-view-${insightsView}`) !== null);
+              return selectedColumnReached && insightsViewReached;
+            },
+            expected,
+            { timeout: 5_000 }
+          );
+        } else {
+          await page.waitForTimeout(200);
+        }
+
+        const state = await page.evaluate(() => {
+          const actions = globalThis.openWranglerHarnessActions;
+          const selectedCell = document.querySelector('td[data-grid-column][aria-selected="true"]');
+          const selectedTab = document.querySelector('[role="tab"][data-summary-view][aria-selected="true"]');
+          return {
+            errors: Array.isArray(globalThis.openWranglerHarnessErrors)
+              ? [...globalThis.openWranglerHarnessErrors]
+              : ["Harness did not expose openWranglerHarnessErrors."],
+            selectedColumnPosition: selectedCell ? Number(selectedCell.getAttribute("data-grid-column")) : undefined,
+            selectedInsightsView: selectedTab?.getAttribute("data-summary-view"),
+            actions
+          };
+        });
+        if (pageErrors.length > 0) {
+          throw new Error(`Webview harness ${job.htmlPath} raised page errors: ${pageErrors.join(" ")}`);
+        }
+        if (state.errors.length > 0) {
+          throw new Error(`Webview harness ${job.htmlPath} reported errors: ${state.errors.join(" ")}`);
+        }
+        if (
+          expected.selectedColumnPosition !== undefined &&
+          (state.actions?.selectedColumnPosition !== expected.selectedColumnPosition ||
+            state.selectedColumnPosition !== expected.selectedColumnPosition)
+        ) {
+          throw new Error(
+            `Webview harness ${job.htmlPath} did not select column ${expected.selectedColumnPosition}; ` +
+              `actions=${String(state.actions?.selectedColumnPosition)}, DOM=${String(state.selectedColumnPosition)}.`
+          );
+        }
+        if (
+          expected.insightsView !== undefined &&
+          (state.actions?.insightsView !== expected.insightsView ||
+            state.selectedInsightsView !== expected.insightsView)
+        ) {
+          throw new Error(
+            `Webview harness ${job.htmlPath} did not activate Insights view ${expected.insightsView}; ` +
+              `actions=${String(state.actions?.insightsView)}, DOM=${String(state.selectedInsightsView)}.`
+          );
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  } finally {
+    await browser?.close();
+    rmSync(browserRoot, { recursive: true, force: true });
+    if (process.platform !== "win32") rmSync(browserTemp, { recursive: true, force: true });
+  }
 }
 
 function screenshot(htmlPath, outputPath, width = 1280, height = 760) {

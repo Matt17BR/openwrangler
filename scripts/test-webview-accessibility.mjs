@@ -203,8 +203,11 @@ async function verifyInsightsDrawerWorkflow(browser) {
     if ((await toggle.getAttribute("aria-controls")) !== "openwrangler-insights-panel") {
       throw new Error(`${harness} did not connect the Insights toggle to its drawer.`);
     }
-    await toggle.focus();
-    await page.keyboard.press("Enter");
+    const initialView = harness.includes("zoom-200") ? "dataset" : "column";
+    await page.waitForFunction(
+      (expectedView) => globalThis.openWranglerHarnessActions.insightsView === expectedView,
+      initialView
+    );
     const panel = page.getByRole("complementary", { name: "Insights and filters" });
     await panel.waitFor();
     if ((await panel.getAttribute("aria-modal")) !== null) {
@@ -221,11 +224,17 @@ async function verifyInsightsDrawerWorkflow(browser) {
     const columnTab = summaryPanel.getByRole("tab", { name: "Column" });
     const datasetTab = summaryPanel.getByRole("tab", { name: "Dataset" });
     const filtersTab = summaryPanel.getByRole("tab", { name: "Filters" });
+    const initialTab = initialView === "dataset" ? datasetTab : columnTab;
+    if ((await initialTab.getAttribute("aria-selected")) !== "true") {
+      throw new Error(`${harness} did not preserve its requested initial Insights view.`);
+    }
+    await initialTab.focus();
+    await page.keyboard.press("Home");
+    const columnPanel = summaryPanel.getByRole("tabpanel", { name: "Column" });
+    await columnPanel.getByRole("heading", { name: "value (column 1)" }).waitFor();
     if ((await columnTab.getAttribute("aria-selected")) !== "true") {
       throw new Error(`${harness} did not open Insights on the selected-column view.`);
     }
-    const columnPanel = summaryPanel.getByRole("tabpanel", { name: "Column" });
-    await columnPanel.getByRole("heading", { name: "value (column 1)" }).waitFor();
     if (await columnPanel.getByRole("heading", { name: "value (column 2)" }).count()) {
       throw new Error(`${harness} rendered an unselected duplicate column in the selected-column view.`);
     }
@@ -249,16 +258,22 @@ async function verifyInsightsDrawerWorkflow(browser) {
       throw new Error(`${harness} did not keyboard-select and focus the Filters tab.`);
     }
     await filtersPanel.getByRole("heading", { name: "Filters / Sorts" }).waitFor();
-    const filterColumns = filtersPanel.getByLabel("Column");
-    if ((await filterColumns.count()) !== 2) {
-      throw new Error(`${harness} did not expose both filter and sort column selectors.`);
+    await filtersPanel.getByRole("status").filter({ hasText: '2 columns share the displayed name "value"' }).waitFor();
+    for (const optionName of ["value (column 1)", "value (column 2)"]) {
+      const options = filtersPanel.locator("option", { hasText: optionName });
+      if ((await options.count()) !== 2) {
+        throw new Error(`${harness} did not preserve positional duplicate labels in both column selectors.`);
+      }
     }
-    for (const select of await filterColumns.all()) {
-      await select.getByRole("option", { name: "value (column 1)" }).waitFor();
-      await select.getByRole("option", { name: "value (column 2)" }).waitFor();
-    }
+    await filtersPanel
+      .locator("summary")
+      .filter({ hasText: /^SORTS$/u })
+      .click();
+    await filtersPanel.getByLabel("Sort direction").waitFor();
+    await filtersPanel.getByRole("button", { name: "Add sort" }).waitFor();
     await scanPageAccessibility(page, `${harness} (Filters tab)`);
 
+    await filtersTab.focus();
     await page.keyboard.press("Home");
     await summaryPanel.getByRole("tabpanel", { name: "Column" }).waitFor();
     if ((await columnTab.getAttribute("aria-selected")) !== "true" || !(await columnTab.evaluate(isActiveTab))) {
@@ -269,7 +284,7 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.waitForFunction(
       () =>
         document.activeElement instanceof HTMLButtonElement &&
-        document.activeElement.textContent?.trim() === "Insights & filters"
+        document.activeElement.getAttribute("aria-label") === "Insights & filters"
     );
     if (!(await toggle.evaluate((element) => document.activeElement === element))) {
       throw new Error(`${harness} did not restore focus to the exact Insights opener.`);

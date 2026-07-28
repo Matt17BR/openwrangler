@@ -2,6 +2,12 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
+## [Unreleased]
+
+### Changed
+
+- Reworked the Insights drawer around the selected column instead of profiling and stacking every column when it opens. Dedicated Column, Dataset, and Filters tabs now expose exact numeric, datetime, boolean, categorical, missing-value, and duplicate-row statistics on demand while preserving progressive cancellation and stale-response guards.
+
 ## [1.0.0] - 2026-07-28
 
 ### Added

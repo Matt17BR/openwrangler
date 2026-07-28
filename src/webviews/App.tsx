@@ -1414,7 +1414,7 @@ export function App() {
     if (importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
     const confirmed = confirmedView.current;
-    if (!currentMetadata?.schema.some((candidate) => candidate.name === column)) return;
+    if (currentMetadata?.schema.filter((candidate) => candidate.name === column).length !== 1) return;
     const viewRequestId = nextViewRequestId();
     const valuesFilterModel = filterModelForColumnValues(currentMetadata.filterModel, column);
     if (!currentMetadata || !confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
@@ -1527,6 +1527,7 @@ export function App() {
     if (desiredColumnId) sendSummaryColumn(desiredColumnId, 1, "drawer");
     if (summaryPanelView === "dataset") requestStatsForConfirmedView();
     else cancelBackgroundRequests((pending) => pending.kind === "stats");
+    if (summaryPanelView !== "filters") cancelBackgroundRequests((pending) => pending.kind === "values");
   }, [
     activeViewContextId,
     cancelBackgroundRequests,

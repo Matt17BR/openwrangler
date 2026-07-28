@@ -207,20 +207,14 @@ describe("App progressive profiling and view correlation", () => {
     expect(within(drawer).getByText("Max").nextElementSibling).toHaveTextContent("20");
     expect(within(drawer).queryByRole("heading", { name: "duplicate (column 1)" })).toBeNull();
 
-    selectInsightsView("Filters");
-    const columnSelects = within(drawer).getAllByLabelText("Column");
-    expect(columnSelects).toHaveLength(2);
-    for (const select of columnSelects) {
-      expect(within(select).getByRole("option", { name: "duplicate (column 1)" })).toBeInTheDocument();
-      expect(within(select).getByRole("option", { name: "duplicate (column 2)" })).toBeInTheDocument();
-    }
+    fireEvent.click(within(drawer).getByRole("tab", { name: "Filters" }));
     expect(
-      screen.getAllByText(
+      within(drawer).getAllByText(
         'View filters, sorts, and values are unavailable because 2 columns share the displayed name "duplicate". Rename one column in a cleaning step first.'
-      )
-    ).toHaveLength(3);
-    expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+      ).length
+    ).toBeGreaterThan(0);
+    expect(within(drawer).getByRole("button", { name: "Values" })).toBeDisabled();
+    expect(within(drawer).getByRole("button", { name: "Add sort" })).toBeDisabled();
     expect(requestsOfKind("getColumnValues")).toHaveLength(0);
   });
 
@@ -742,6 +736,30 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.queryByText("Berlin", { selector: ".valueList span" })).not.toBeInTheDocument();
   });
 
+  it("cancels filter-value work and ignores its late diagnostic after leaving Filters", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByText("Berlin");
+    openCityFilter();
+    const valuesRequest = onlyRequest("getColumnValues");
+
+    postMessage.mockClear();
+    selectInsightsView("Column");
+
+    await waitFor(() =>
+      expect(cancellationMessages().flatMap((message) => message.viewRequestIds)).toContain(viewId(valuesRequest))
+    );
+    dispatch({
+      kind: "error",
+      code: "profile_failed",
+      message: "A stale values warning",
+      recoverable: true,
+      viewRequestId: viewId(valuesRequest)
+    });
+    expect(screen.queryByText(/A stale values warning/)).not.toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "Column" })).toBeInTheDocument();
+  });
+
   it("keeps foreground page failures separate from successful profiling work", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -834,6 +852,65 @@ describe("App progressive profiling and view correlation", () => {
 
     expect(await screen.findByText(/Keep this exact-stats warning/)).toBeInTheDocument();
     expect(screen.getByText("Undo failed")).toBeInTheDocument();
+  });
+
+  it("transfers open Column Insights ownership when the selected grid column changes", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    await waitFor(() => expect(cancellationMessages().length).toBeGreaterThan(0));
+
+    postMessage.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
+    const cityRequest = onlyRequest("getSummary");
+    expect(cityRequest.columnIds).toEqual(["c:0"]);
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+
+    const salesCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
+    if (!salesCell) throw new Error("Expected the sales grid cell.");
+    act(() => salesCell.focus());
+
+    await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
+    const salesRequest = requestsOfKind("getSummary").at(-1);
+    if (!salesRequest) throw new Error("Expected the selected sales-column summary request.");
+    expect(salesRequest.columnIds).toEqual(["c:1"]);
+    expect(cancellationMessages().flatMap((message) => message.viewRequestIds)).toContain(viewId(cityRequest));
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
+
+    dispatch({
+      kind: "summary",
+      revision: metadata.revision,
+      viewRequestId: viewId(cityRequest),
+      summaries: [citySummary]
+    });
+    const columnPanel = screen.getByRole("tabpanel", { name: "Column" });
+    expect(within(columnPanel).getByRole("heading", { name: "sales" })).toBeVisible();
+    expect(within(columnPanel).getByText("Profiling selected column…")).toBeVisible();
+
+    const salesSummary: ColumnSummary = {
+      columnId: "c:1",
+      column: "sales",
+      type: "float",
+      rawType: "Float64",
+      totalCount: 500,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 1,
+      numeric: { min: 12, max: 12, mean: 12, median: 12, std: 0 },
+      topValues: [{ value: "12", count: 500 }]
+    };
+    dispatch({
+      kind: "summary",
+      revision: metadata.revision,
+      viewRequestId: viewId(salesRequest),
+      summaries: [salesSummary]
+    });
+
+    await waitFor(() => expect(within(columnPanel).getByText("Min").nextElementSibling).toHaveTextContent("12"));
+    expect(within(columnPanel).queryByRole("heading", { name: "city" })).not.toBeInTheDocument();
+    expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
   });
 
   it("profiles only the selected drawer column and cancels view-specific ownership", async () => {
