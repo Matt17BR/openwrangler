@@ -4,13 +4,22 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-28
+
+### Added
+
+- Added a protected, idempotent Open VSX promotion workflow for stable, preview, and historical GitHub Releases. It promotes the exact public GitHub assets without rebuilding and verifies the public publisher, checksum, channel metadata, and downloadable VSIX bytes.
+- Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. It uses the personal `Matt17BR` workload identity, promotes the exact GitHub VSIX as stable or pre-release metadata, and verifies the public upload and package contents.
+- Introduced an original pivot-grid icon family for the extension gallery and Activity Bar, with transparent 128 px and 256 px raster assets plus a monochrome theme-aware workbench mark.
+- Replaced the README capture fixture with a deterministic, license-clean 10,000-row × 15-column regional-order dataset spanning identifiers, dates, categories, numeric ranges, booleans, nulls, and long text. The packaged-editor harness now rejects clipped featured columns, controls, draft actions, code, or numeric summary statistics before accepting media.
+
 ### Changed
 
-- Added a protected, idempotent Open VSX promotion workflow for stable, preview, and historical GitHub Releases. Preview publication calls the reusable workflow directly after its GitHub prerelease is public; manually or externally published releases can use the release event; and protected-main recovery can backfill an existing tag such as `v1.0.1`. Every path checks out reviewed automation separately from the immutable release source, downloads the exact public GitHub assets without rebuilding, verifies the source commit, channel, manifest, checksum, and VSIX bytes before authentication and publication, then requires the public Open VSX metadata, publisher, checksum, and downloadable bytes to match.
 - Extended the bounded Open VSX post-publication check from five to fifteen minutes, with matching final-job timeout room, after real registry propagation proved that accepted releases can remain temporarily unavailable.
-- Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. Automatic tag runs and protected-main manual backfills keep automation source separate from the selected immutable release commit, download and revalidate the exact channel-specific GitHub assets, publish stable or pre-release metadata with the personal `Matt17BR` workload identity through lockfile-pinned VSCE, and then require the public Marketplace upload SHA plus normalized package metadata and payload contents to match. Duplicate reruns are safe only when that proof succeeds; conflicting public versions fail closed.
 - Made Microsoft Marketplace activation self-diagnosing and safe on first setup: the default manual `main` run with no release tag now completes as an explicit no-op, while a real promotion prints only the federated identity's validated Azure DevOps profile UUID immediately before VSCE verifies publisher access. The bounded probe never logs its token or profile response, and every other non-tag or unsafe intake still fails closed.
 - Closed the stable-release trigger gap by atomically pushing exactly one lightweight `v<package version>` ref at the accepted `main` commit immediately before GitHub Release creation. The push uses a private, scrubbed credential file rather than an argument or logged URL, rejects annotated/conflicting/ambiguous refs, verifies the public ref afterward, and is idempotent only for the same lightweight tag. This real Git event starts the separate Azure Marketplace promotion, whose public verification now uses its maximum reviewed forty-attempt window.
+- Rewrote the README around installation, first use, core capabilities, supported engines and formats, editor compatibility, and two explained theme-aware product scenes. Removed internal release-process commentary, contextual roadmap caveats, repeated screenshots, and redundant compatibility prose.
+- Tightened the Operations and Filters / Sorts native views so categories retain useful descriptions, selection and current-view labels stay concise, and draft code consistently reads **Generated Polars code**.
 
 ## [1.0.1] - 2026-07-28
 
