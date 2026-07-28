@@ -16,7 +16,7 @@ export const PACKAGED_SCREENSHOT_COLUMNS = [
   "account_note"
 ] as const;
 export const PACKAGED_SCREENSHOT_ROW_COUNT = 10_000;
-export const PACKAGED_SCREENSHOT_VIEWPORT = { width: 1_920, height: 1_080 } as const;
+export const PACKAGED_SCREENSHOT_VIEWPORT = { width: 1_920, height: 860 } as const;
 export const PACKAGED_SCREENSHOT_MARKETS = [
   "Benelux",
   "DACH",
@@ -26,9 +26,8 @@ export const PACKAGED_SCREENSHOT_MARKETS = [
   "Nordics",
   "UK & Ireland"
 ] as const;
-export const PACKAGED_SCREENSHOT_SCENES = ["hero", "columns", "transform"] as const;
+export const PACKAGED_SCREENSHOT_SCENES = ["hero", "notebook-pandas", "notebook-polars"] as const;
 export const PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH = 420;
-export const PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT = 390;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",
   "market",

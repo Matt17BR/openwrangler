@@ -4,6 +4,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-07-28
+
+### Changed
+
+- Rebuilt the README media around three compact, portable product views: a realistic file-backed dataframe, an automatic Pandas notebook snapshot, and a live Polars notebook draft with summaries, diff, and generated code. The copy now distinguishes saved snapshots from live variables, describes DuckDB's current file-only scope, and treats benchmark fixture sizes as evidence points rather than row limits.
+- Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
+- Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for a 2,500-row Pandas dataframe and a 2,500-row Polars dataframe. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
+
 ### Fixed
 
 - Recognized Git credential-store's exact atomic approval and rejection rewrites after a stable-tag push, then scrubbed and removed the replacement without weakening the private-directory, identity, content, link-count, or mode checks.
