@@ -24,6 +24,7 @@ export const CANONICAL_RELEASE_FILES = Object.freeze([
 export const PREVIEW_RELEASE_FILES = Object.freeze(["openwrangler.vsix", "openwrangler.vsix.sha256"]);
 const STABLE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const RELEASE_JSON_MAX_BYTES = 1024 * 1024;
+const MAX_RELEASE_POLL_ATTEMPTS = 240;
 const FILE_LIMITS = new Map([
   ["openwrangler.vsix", MAX_VSIX_BYTES],
   ["openwrangler.vsix.provenance.json", 4096],
@@ -248,8 +249,10 @@ export async function downloadCanonicalGithubRelease({
 }) {
   assertStableTag(releaseTag);
   const expectedFiles = releaseFiles(prerelease);
-  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 40) {
-    throw new TypeError("GitHub release polling attempts must be an integer from 1 through 40.");
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > MAX_RELEASE_POLL_ATTEMPTS) {
+    throw new TypeError(
+      `GitHub release polling attempts must be an integer from 1 through ${MAX_RELEASE_POLL_ATTEMPTS}.`
+    );
   }
   if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
     throw new TypeError("GitHub release polling delay must be an integer from 0 through 60000 milliseconds.");

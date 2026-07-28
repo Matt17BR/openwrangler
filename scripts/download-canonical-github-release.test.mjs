@@ -121,6 +121,30 @@ test("polls only while a public release is genuinely pending", async (context) =
   assert.equal(sleeps, 1);
 });
 
+test("allows a bounded long registry-promotion poll without accepting an unbounded retry count", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-bounded-poll-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+
+  await downloadCanonicalGithubRelease({
+    attempts: 210,
+    fetchImpl: successfulFetch(),
+    outputDirectory: join(parent, "canonical-release"),
+    prerelease: false,
+    releaseTag
+  });
+
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 241,
+      fetchImpl: successfulFetch(),
+      outputDirectory: join(parent, "too-many-attempts"),
+      prerelease: false,
+      releaseTag
+    }),
+    /integer from 1 through 240/u
+  );
+});
+
 test("rejects malformed release inventory, URLs, and byte drift without retrying", async (context) => {
   const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-reject-")));
   context.after(() => rmSync(parent, { force: true, recursive: true }));
