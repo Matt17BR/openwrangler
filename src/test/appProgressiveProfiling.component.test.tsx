@@ -213,7 +213,7 @@ describe("App progressive profiling and view correlation", () => {
       )
     ).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Values" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
     expect(requestsOfKind("getColumnValues")).toHaveLength(0);
   });
 

@@ -10,7 +10,7 @@ import type {
   GridPage,
   SessionMetadata
 } from "../../shared/protocol";
-import type { SortDirection } from "../../shared/filterModel";
+import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
   ambiguousViewColumnMessage,
   countViewColumnNames,
@@ -36,8 +36,10 @@ interface DataGridProps {
   beforeSchema?: ColumnSchema[];
   viewControlsDisabled?: boolean;
   viewControlsDisabledReason?: string;
+  sortRules?: SortRule[];
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
+  onClearSortColumn?(column: string): void;
   onOpenFilter(column: string): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
   onVisibleSummaryColumnsChange(columnIds: string[]): void;
@@ -91,8 +93,10 @@ export function DataGrid({
   beforeSchema,
   viewControlsDisabled = false,
   viewControlsDisabledReason = "View controls are unavailable while inspecting an applied step.",
+  sortRules = metadata.filterModel.sort,
   onPage,
   onSortColumn,
+  onClearSortColumn = () => undefined,
   onOpenFilter,
   onVisibleColumnRangeChange = ignoreVisibleColumnRangeChange,
   onVisibleSummaryColumnsChange,
@@ -484,32 +488,39 @@ export function DataGrid({
                 #
               </th>
               {leftSpacerWidth > 0 && <th className="virtualSpacer" aria-hidden="true" />}
-              {visibleColumns.map((column) => (
-                <ColumnHeader
-                  key={column.id}
-                  column={column}
-                  ariaColumnIndex={column.position + 2}
-                  width={widths[column.position]}
-                  selected={viewState.selectedColumnId === column.id}
-                  added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
-                  showInsights={showInsights}
-                  summary={summaryByColumnId.get(column.id)}
-                  viewControlsDisabled={viewControlsDisabled}
-                  viewControlsDisabledReason={viewControlsDisabledReason}
-                  viewColumnNameCount={viewColumnNameCounts.get(column.name) ?? 0}
-                  onOpenFilter={(name) => {
-                    reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
-                    onOpenFilter(name);
-                  }}
-                  onSortColumn={onSortColumn}
-                  onResize={(width) =>
-                    reportViewState({
-                      ...viewStateRef.current,
-                      columnWidths: { ...viewStateRef.current.columnWidths, [column.id]: width }
-                    })
-                  }
-                />
-              ))}
+              {visibleColumns.map((column) => {
+                const activeSortIndex = sortRules.findIndex((rule) => rule.column === column.name);
+                return (
+                  <ColumnHeader
+                    key={column.id}
+                    column={column}
+                    ariaColumnIndex={column.position + 2}
+                    width={widths[column.position]}
+                    selected={viewState.selectedColumnId === column.id}
+                    added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
+                    showInsights={showInsights}
+                    summary={summaryByColumnId.get(column.id)}
+                    viewControlsDisabled={viewControlsDisabled}
+                    viewControlsDisabledReason={viewControlsDisabledReason}
+                    viewColumnNameCount={viewColumnNameCounts.get(column.name) ?? 0}
+                    activeSort={activeSortIndex < 0 ? undefined : sortRules[activeSortIndex]}
+                    activeSortIndex={activeSortIndex < 0 ? undefined : activeSortIndex}
+                    sortCount={sortRules.length}
+                    onOpenFilter={(name) => {
+                      reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                      onOpenFilter(name);
+                    }}
+                    onSortColumn={onSortColumn}
+                    onClearSortColumn={onClearSortColumn}
+                    onResize={(width) =>
+                      reportViewState({
+                        ...viewStateRef.current,
+                        columnWidths: { ...viewStateRef.current.columnWidths, [column.id]: width }
+                      })
+                    }
+                  />
+                );
+              })}
               {rightSpacerWidth > 0 && <th className="virtualSpacer" aria-hidden="true" />}
             </tr>
           </thead>
@@ -814,8 +825,12 @@ function ColumnHeader({
   viewControlsDisabled,
   viewControlsDisabledReason,
   viewColumnNameCount,
+  activeSort,
+  activeSortIndex,
+  sortCount,
   onOpenFilter,
   onSortColumn,
+  onClearSortColumn,
   onResize
 }: {
   column: ColumnSchema;
@@ -828,10 +843,15 @@ function ColumnHeader({
   viewControlsDisabled: boolean;
   viewControlsDisabledReason: string;
   viewColumnNameCount: number;
+  activeSort: SortRule | undefined;
+  activeSortIndex: number | undefined;
+  sortCount: number;
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
+  onClearSortColumn(column: string): void;
   onResize(width: number): void;
 }) {
+  const menuRef = useRef<HTMLDetailsElement>(null);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
   const ambiguityReason =
@@ -860,13 +880,30 @@ function ColumnHeader({
     else return;
     event.preventDefault();
   };
+  const closeMenu = () => {
+    if (menuRef.current) menuRef.current.open = false;
+  };
+  const runMenuAction = (action: () => void) => {
+    closeMenu();
+    action();
+  };
+  const activeSortLabel =
+    activeSort &&
+    `${activeSort.direction === "asc" ? "ascending" : "descending"}${
+      sortCount > 1 && activeSortIndex !== undefined ? `, priority ${activeSortIndex + 1} of ${sortCount}` : ""
+    }`;
 
   return (
     <th
       data-column={column.name}
       aria-colindex={ariaColumnIndex}
       aria-selected={selected}
-      aria-label={added ? `${column.name}, added column` : undefined}
+      aria-sort={
+        activeSort?.direction === "asc" ? "ascending" : activeSort?.direction === "desc" ? "descending" : undefined
+      }
+      aria-label={[column.name, added ? "added column" : "", activeSortLabel ? `sorted ${activeSortLabel}` : ""]
+        .filter(Boolean)
+        .join(", ")}
       data-diff-state={added ? "added" : undefined}
       className={[selected ? "selectedColumn" : "", added ? "diffAddedColumn" : ""].filter(Boolean).join(" ")}
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
@@ -874,7 +911,25 @@ function ColumnHeader({
       <div className="columnHeader">
         <span className={`typeIcon codicon ${typeIcon(column.type)}`} aria-hidden="true" />
         <span className="columnTitle">{column.name}</span>
-        <details className="columnMenu">
+        {activeSort && (
+          <button
+            type="button"
+            className={`columnSortIndicator codicon ${
+              activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
+            }`}
+            aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
+            title={`Sorted ${activeSortLabel}. Clear sort`}
+            disabled={viewControlsDisabled}
+            onClick={() => onClearSortColumn(column.name)}
+          >
+            {sortCount > 1 && activeSortIndex !== undefined && (
+              <span className="sortPriority" aria-hidden="true">
+                {activeSortIndex + 1}
+              </span>
+            )}
+          </button>
+        )}
+        <details ref={menuRef} className="columnMenu">
           <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
           <div className="columnMenuContent">
             {viewQueryControlsDisabled && (
@@ -887,7 +942,7 @@ function ColumnHeader({
               disabled={viewQueryControlsDisabled}
               aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
               title={viewQueryControlsDisabledReason}
-              onClick={() => onOpenFilter(column.name)}
+              onClick={() => runMenuAction(() => onOpenFilter(column.name))}
             >
               Filter…
             </button>
@@ -902,7 +957,7 @@ function ColumnHeader({
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
               }
-              onClick={() => onSortColumn(column.name, "asc")}
+              onClick={() => runMenuAction(() => onSortColumn(column.name, "asc"))}
             >
               Sort ascending
             </button>
@@ -917,10 +972,19 @@ function ColumnHeader({
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
               }
-              onClick={() => onSortColumn(column.name, "desc")}
+              onClick={() => runMenuAction(() => onSortColumn(column.name, "desc"))}
             >
               Sort descending
             </button>
+            {activeSort && (
+              <button
+                type="button"
+                disabled={viewControlsDisabled}
+                onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
+              >
+                Clear sort
+              </button>
+            )}
           </div>
         </details>
         <button

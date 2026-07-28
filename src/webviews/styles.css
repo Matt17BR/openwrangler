@@ -380,6 +380,62 @@ textarea {
   padding: 2px 7px;
 }
 
+.sortRulesHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.sortApplyActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sortRuleList {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.sortRule {
+  align-items: center;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  padding: 4px;
+}
+
+.sortRulePriority {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  font-size: 10px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.sortRuleColumn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sortDirectionButton {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
 .checkboxRow {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -563,8 +619,33 @@ th small {
   align-items: center;
   display: grid;
   gap: 6px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   position: relative;
+}
+
+.columnSortIndicator {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  border: 0;
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  min-width: 22px;
+  padding: 0 5px;
+}
+
+.columnSortIndicator:hover,
+.columnSortIndicator:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.sortPriority {
+  font-family: var(--vscode-font-family);
+  font-size: 9px;
+  margin-left: 1px;
 }
 
 .typeIcon {

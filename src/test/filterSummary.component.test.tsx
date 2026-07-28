@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
@@ -154,17 +155,78 @@ describe("FilterPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
 
     fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
-    expect(onApply).toHaveBeenLastCalledWith(
-      expect.objectContaining({ sort: expect.arrayContaining([expect.objectContaining({ direction: "desc" })]) })
-    );
-    expect(screen.getByText("sales desc")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Update sort" }));
+    expect(screen.getByRole("list", { name: "Active sort order" })).toHaveTextContent("salesdescending");
 
     fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
     expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
     fireEvent.click(screen.getByRole("button", { name: "Use basic filters" }));
     expect(screen.getByRole("button", { name: "Use advanced filters" })).toBeInTheDocument();
+  });
+
+  it("keeps deliberate multi-sort ordered, editable, individually removable, and separate from filters", () => {
+    const initialModel: FilterModel = {
+      logic: "or",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value: "i" }]
+        }
+      ],
+      sort: [
+        { column: "city", direction: "asc", nulls: "last" },
+        { column: "sales", direction: "desc", nulls: "last" }
+      ]
+    };
+    const onApply = vi.fn();
+    const Harness = () => {
+      const [model, setModel] = useState(initialModel);
+      return (
+        <FilterPanel
+          metadata={metadata}
+          model={model}
+          values={values}
+          onApply={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+          onRequestValues={() => undefined}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const ordered = screen.getByRole("list", { name: "Active sort order" });
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("cityascending");
+    expect(within(ordered).getAllByRole("listitem")[1]).toHaveTextContent("salesdescending");
+    expect(screen.getByText(/Update this column in place without changing its priority/u)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change sort 1, city, to descending" }));
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("citydescending");
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sort 2, sales, descending" }));
+    expect(within(ordered).getAllByRole("listitem")).toHaveLength(1);
+    expect(onApply).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        logic: "or",
+        filters: initialModel.filters,
+        sort: [{ column: "city", direction: "desc", nulls: "last" }]
+      })
+    );
+
+    onApply.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Clear all sorts" }));
+    expect(screen.getByText("No active sorts.")).toBeVisible();
+    expect(onApply).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
+    expect(onApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ logic: "or", filters: initialModel.filters, sort: [] })
+    );
   });
 
   it("keys ambiguous displays by typed selection identity while showing the display text", () => {
@@ -453,14 +515,14 @@ describe("FilterPanel", () => {
     expect(screen.getByLabelText("Predicate operator")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add predicate" })).toBeDisabled();
     expect(screen.getByLabelText("Sort direction")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Clear column" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
 
     fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
     fireEvent.click(screen.getByRole("button", { name: "Values" }));
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
     expect(onApply).not.toHaveBeenCalled();
     expect(onRequestValues).not.toHaveBeenCalled();
 
@@ -496,13 +558,13 @@ describe("FilterPanel", () => {
       expect(select).toHaveValue("");
     }
     expect(screen.getByLabelText("Sort direction")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
 
     fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
     fireEvent.click(screen.getByRole("button", { name: "Values" }));
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
     fireEvent.change(screen.getByLabelText("Condition combination"), { target: { value: "or" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
     expect(onApply).not.toHaveBeenCalled();
     expect(onRequestValues).not.toHaveBeenCalled();
@@ -533,12 +595,12 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
     fireEvent.click(screen.getByText("SORTS"));
     expect(screen.getByLabelText("Sort direction")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Add sort" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add to sort" })).toBeDisabled();
 
     fireEvent.keyDown(screen.getByPlaceholderText("Search values"), { key: "Enter" });
     fireEvent.click(screen.getByRole("checkbox", { name: /Berlin/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
     expect(onApply).not.toHaveBeenCalled();
     expect(onRequestValues).not.toHaveBeenCalled();
   });
@@ -592,7 +654,8 @@ describe("FilterPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Values" }));
     expect(onRequestValues).toHaveBeenLastCalledWith("revenue", "");
-    fireEvent.click(screen.getByRole("button", { name: "Add sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
     expect(onApply).toHaveBeenLastCalledWith(
       expect.objectContaining({
         sort: [expect.objectContaining({ column: "revenue", direction: "desc" })]

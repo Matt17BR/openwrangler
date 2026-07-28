@@ -45,6 +45,9 @@ export function FilterPanel({
   const [predicateValue, setPredicateValue] = useState("");
   const [secondPredicateValue, setSecondPredicateValue] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const modelSortKey = sortRulesKey(model.sort);
+  const [sortEditor, setSortEditor] = useState(() => ({ modelKey: modelSortKey, rules: model.sort }));
+  const draftSort = sortEditor.modelKey === modelSortKey ? sortEditor.rules : model.sort;
   const [sortOpen, setSortOpen] = useState(model.sort.length > 0);
   const [advanced, setAdvanced] = useState(defaultAdvanced);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
@@ -143,14 +146,32 @@ export function FilterPanel({
 
   const applySort = () => {
     if (viewQueryControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
-    onApply({
-      ...model,
-      sort: [
-        ...model.sort.filter((rule) => rule.column !== activeColumn),
-        { column: activeColumn, direction: sortDirection, nulls: "last" }
-      ]
+    const existingIndex = draftSort.findIndex((rule) => rule.column === activeColumn);
+    const nextRule = { column: activeColumn, direction: sortDirection, nulls: "last" as const };
+    setSortEditor({
+      modelKey: modelSortKey,
+      rules:
+        existingIndex < 0
+          ? [...draftSort, nextRule]
+          : draftSort.map((rule, index) => (index === existingIndex ? nextRule : rule))
     });
   };
+
+  const removeSort = (index: number) => {
+    if (disabled) return;
+    setSortEditor({ modelKey: modelSortKey, rules: draftSort.filter((_, ruleIndex) => ruleIndex !== index) });
+  };
+
+  const toggleSortDirection = (index: number) => {
+    if (disabled) return;
+    setSortEditor({
+      modelKey: modelSortKey,
+      rules: draftSort.map((rule, ruleIndex) =>
+        ruleIndex === index ? { ...rule, direction: rule.direction === "asc" ? "desc" : "asc" } : rule
+      )
+    });
+  };
+  const sortDirty = !sameSortRules(draftSort, model.sort);
 
   const clearColumn = () => {
     if (disabled || !columnSchema || !activeColumn) return;
@@ -377,21 +398,98 @@ export function FilterPanel({
             disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={applySort}
           >
-            Add sort
+            {draftSort.some((rule) => rule.column === activeColumn) ? "Update sort" : "Add to sort"}
           </button>
         </div>
-        <div className="activeRules">
-          {model.sort.length === 0 && <span className="mutedText">No active sorts.</span>}
-          {model.sort.map((rule) => (
-            <span key={rule.column} className="rulePill">
-              {rule.column} {rule.direction === "asc" ? "asc" : "desc"}
-            </span>
-          ))}
+        <p className="panelNote">
+          {draftSort.some((rule) => rule.column === activeColumn)
+            ? "Update this column in place without changing its priority."
+            : "Add this column after the existing rules. Header sorting replaces this list with one primary sort."}{" "}
+          Changes stay local until you apply the sort order.
+        </p>
+        <div className="sortRulesHeader">
+          <strong>Active sort order</strong>
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={disabled || draftSort.length === 0}
+            onClick={() => setSortEditor({ modelKey: modelSortKey, rules: [] })}
+          >
+            Clear all sorts
+          </button>
+        </div>
+        <div className="activeRules" aria-live="polite">
+          {draftSort.length === 0 && <span className="mutedText">No active sorts.</span>}
+          {draftSort.length > 0 && (
+            <ol className="sortRuleList" aria-label="Active sort order">
+              {draftSort.map((rule, index) => {
+                const directionLabel = rule.direction === "asc" ? "ascending" : "descending";
+                const nextDirectionLabel = rule.direction === "asc" ? "descending" : "ascending";
+                return (
+                  <li key={rule.column} className="sortRule">
+                    <span className="sortRulePriority" aria-hidden="true">
+                      {index + 1}
+                    </span>
+                    <span className="sortRuleColumn">{rule.column}</span>
+                    <button
+                      type="button"
+                      className="secondaryButton sortDirectionButton"
+                      disabled={disabled}
+                      aria-label={`Change sort ${index + 1}, ${rule.column}, to ${nextDirectionLabel}`}
+                      onClick={() => toggleSortDirection(index)}
+                    >
+                      <span
+                        className={`codicon ${rule.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"}`}
+                        aria-hidden="true"
+                      />
+                      {directionLabel}
+                    </button>
+                    <button
+                      type="button"
+                      className="iconButton codicon codicon-close"
+                      disabled={disabled}
+                      aria-label={`Remove sort ${index + 1}, ${rule.column}, ${directionLabel}`}
+                      onClick={() => removeSort(index)}
+                    />
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+        <div className="sortApplyActions">
+          <button
+            type="button"
+            disabled={disabled || !sortDirty}
+            onClick={() => onApply({ ...model, sort: draftSort })}
+          >
+            Apply sort order
+          </button>
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={disabled || !sortDirty}
+            onClick={() => setSortEditor({ modelKey: modelSortKey, rules: model.sort })}
+          >
+            Discard sort changes
+          </button>
         </div>
       </details>
     </section>
   );
 }
+
+const sameSortRules = (left: FilterModel["sort"], right: FilterModel["sort"]): boolean =>
+  left.length === right.length &&
+  left.every(
+    (rule, index) =>
+      rule.column === right[index]?.column &&
+      rule.direction === right[index]?.direction &&
+      rule.nulls === right[index]?.nulls
+  );
+
+const sortRulesKey = (rules: FilterModel["sort"]): string =>
+  JSON.stringify(rules.map((rule) => [rule.column, rule.direction, rule.nulls]));
 
 const columnOptionLabel = (name: string, position: number, nameCounts: ReadonlyMap<string, number>): string =>
   (nameCounts.get(name) ?? 0) > 1 ? `${name} (column ${position + 1})` : name;

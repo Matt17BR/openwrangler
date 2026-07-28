@@ -2055,15 +2055,21 @@ export function App() {
                 viewControlsDisabledReason={
                   importOptionsPending ? "View controls are unavailable while import options are changing." : undefined
                 }
+                sortRules={inspectionMode ? [] : filterModel.sort}
                 onSortColumn={(column, direction) =>
                   inspectionMode
                     ? undefined
                     : applyFilters({
                         ...filterModel,
-                        sort: [
-                          ...filterModel.sort.filter((rule) => rule.column !== column),
-                          { column, direction, nulls: "last" }
-                        ]
+                        sort: [{ column, direction, nulls: "last" }]
+                      })
+                }
+                onClearSortColumn={(column) =>
+                  inspectionMode
+                    ? undefined
+                    : applyFilters({
+                        ...filterModel,
+                        sort: filterModel.sort.filter((rule) => rule.column !== column)
                       })
                 }
                 onOpenFilter={(column) => {

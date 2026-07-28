@@ -92,6 +92,49 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("closes header sort menus and exposes the active primary sort as a clearable accessible state", () => {
+    const onSortColumn = vi.fn();
+    const onClearSortColumn = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: () => undefined,
+      onSortColumn,
+      onClearSortColumn,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+
+    menu.open = true;
+    fireEvent.click(city.getByRole("button", { name: "Sort ascending" }));
+    expect(menu.open).toBe(false);
+    expect(onSortColumn).toHaveBeenLastCalledWith("city", "asc");
+
+    rerender(<DataGrid {...props} sortRules={[{ column: "city", direction: "asc", nulls: "last" }]} />);
+    expect(cityHeader).toHaveAttribute("aria-sort", "ascending");
+    expect(city.getByRole("button", { name: /Clear sort for city; currently ascending/u })).toBeVisible();
+
+    menu.open = true;
+    fireEvent.click(city.getByRole("button", { name: "Sort descending" }));
+    expect(menu.open).toBe(false);
+    expect(onSortColumn).toHaveBeenLastCalledWith("city", "desc");
+
+    rerender(<DataGrid {...props} sortRules={[{ column: "city", direction: "desc", nulls: "last" }]} />);
+    expect(cityHeader).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(city.getByRole("button", { name: /Clear sort for city; currently descending/u }));
+    expect(onClearSortColumn).toHaveBeenCalledWith("city");
+  });
+
   it("renders exact min/max separately from accessible non-color-only summary visuals", async () => {
     const schema: SessionMetadata["schema"] = [
       { id: "c:number", name: "value", position: 0, rawType: "Float64", type: "float", nullable: false },
@@ -1506,6 +1549,50 @@ describe("App file import options", () => {
     expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
     expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+  });
+
+  it("treats a header sort as one primary view-only sort and replaces earlier quick sorts", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        filterModel: {
+          filters: [],
+          sort: [
+            { column: "sales", direction: "asc", nulls: "last" },
+            { column: "city", direction: "asc", nulls: "last" }
+          ]
+        }
+      },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+    menu.open = true;
+    fireEvent.click(city.getByRole("button", { name: "Sort descending" }));
+
+    expect(menu.open).toBe(false);
+    expect(webviewPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "runtimeRequest",
+        request: expect.objectContaining({
+          kind: "getPage",
+          filterModel: {
+            filters: [],
+            sort: [{ column: "city", direction: "desc", nulls: "last" }]
+          }
+        })
+      })
+    );
+    expect(city.getByRole("button", { name: /Clear sort for city; currently descending/u })).toBeVisible();
   });
 
   it("keeps the grid loading when a drained cleaning completion lands during import reconfiguration", async () => {
