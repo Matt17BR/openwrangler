@@ -5,6 +5,7 @@ import { inspectPreviewReadme } from "./release-documents.mjs";
 import { inspectPerformanceEvidenceSourceReadiness, inspectStableSourceReadiness } from "./release-readiness.mjs";
 import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
+import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -25,7 +26,9 @@ if (missing.length > 0) {
   throw new Error(`Missing required documentation: ${missing.join(", ")}`);
 }
 
-const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
+const packageLockSource = readFileSync(resolve(root, "package-lock.json"), "utf8");
+const packageJson = JSON.parse(packageJsonSource);
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const trackedEvidencePaths = new Set(
@@ -83,6 +86,19 @@ const stableReleaseWorkflowProblems = inspectStableReleaseWorkflow(
 );
 if (stableReleaseWorkflowProblems.length > 0) {
   throw new Error(`Stable release workflow contract is stale:\n- ${stableReleaseWorkflowProblems.join("\n- ")}`);
+}
+const marketplacePromotionProblems = inspectMarketplacePromotionPipeline(
+  readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8")
+);
+if (marketplacePromotionProblems.length > 0) {
+  throw new Error(`Marketplace promotion pipeline contract is stale:\n- ${marketplacePromotionProblems.join("\n- ")}`);
+}
+const marketplaceVsceLockProblems = inspectMarketplaceVsceLock({
+  packageJson: packageJsonSource,
+  packageLock: packageLockSource
+});
+if (marketplaceVsceLockProblems.length > 0) {
+  throw new Error(`Marketplace VSCE dependency lock is stale:\n- ${marketplaceVsceLockProblems.join("\n- ")}`);
 }
 const changelog = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${packageJson.version}]`)) {

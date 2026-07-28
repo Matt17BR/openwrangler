@@ -1,0 +1,281 @@
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  writeSync
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { parseStrictJson } from "./strict-json.mjs";
+import { MAX_VSIX_BYTES } from "./vsix-archive.mjs";
+
+export const GITHUB_RELEASE_REPOSITORY = "Matt17BR/openwrangler";
+export const CANONICAL_RELEASE_FILES = Object.freeze([
+  "openwrangler.vsix",
+  "openwrangler.vsix.provenance.json",
+  "openwrangler.vsix.sha256"
+]);
+const STABLE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
+const RELEASE_JSON_MAX_BYTES = 1024 * 1024;
+const FILE_LIMITS = new Map([
+  ["openwrangler.vsix", MAX_VSIX_BYTES],
+  ["openwrangler.vsix.provenance.json", 4096],
+  ["openwrangler.vsix.sha256", 512]
+]);
+
+export class GithubReleasePendingError extends Error {}
+
+function assertStableTag(releaseTag) {
+  if (typeof releaseTag !== "string" || !STABLE_TAG.test(releaseTag)) {
+    throw new Error("RELEASE_TAG must be one canonical numeric vmajor.minor.patch tag.");
+  }
+}
+
+async function readResponseBytes(response, maximumBytes, label) {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && (!/^(?:0|[1-9]\d*)$/u.test(declared) || BigInt(declared) > BigInt(maximumBytes))) {
+    throw new Error(`${label} exceeds its declared byte limit.`);
+  }
+  if (response.body === null) {
+    throw new Error(`${label} did not provide a response body.`);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      length += value.byteLength;
+      if (length > maximumBytes) {
+        throw new Error(`${label} exceeds its byte limit.`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, length);
+}
+
+function validateReleaseAssetUrl(url, releaseTag, fileName) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`GitHub release asset ${fileName} has an invalid download URL.`);
+  }
+  const expectedPath = `/${GITHUB_RELEASE_REPOSITORY}/releases/download/${releaseTag}/${fileName}`;
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname !== "github.com" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.port !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.pathname !== expectedPath
+  ) {
+    throw new Error(`GitHub release asset ${fileName} does not use its canonical public download URL.`);
+  }
+  return parsed.href;
+}
+
+function parseReleaseMetadata(bytes, releaseTag) {
+  const release = parseStrictJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes), {
+    maxBytes: RELEASE_JSON_MAX_BYTES
+  });
+  if (
+    typeof release !== "object" ||
+    release === null ||
+    Array.isArray(release) ||
+    release.tag_name !== releaseTag ||
+    release.prerelease !== false ||
+    typeof release.draft !== "boolean" ||
+    typeof release.html_url !== "string" ||
+    !Array.isArray(release.assets)
+  ) {
+    throw new Error("The GitHub release is not one public stable release for the requested tag.");
+  }
+  if (release.draft) {
+    throw new GithubReleasePendingError(`GitHub release ${releaseTag} is still a draft.`);
+  }
+  const assets = new Map();
+  for (const asset of release.assets) {
+    if (
+      typeof asset !== "object" ||
+      asset === null ||
+      Array.isArray(asset) ||
+      typeof asset.name !== "string" ||
+      !Number.isSafeInteger(asset.size) ||
+      asset.size < 0 ||
+      typeof asset.browser_download_url !== "string"
+    ) {
+      throw new Error("The GitHub release contains malformed asset metadata.");
+    }
+    if (!CANONICAL_RELEASE_FILES.includes(asset.name)) {
+      throw new Error(`The GitHub release contains unexpected asset ${asset.name}.`);
+    }
+    if (assets.has(asset.name)) {
+      throw new Error(`The GitHub release contains duplicate asset ${asset.name}.`);
+    }
+    if (asset.state !== "uploaded" || asset.size === 0) {
+      throw new GithubReleasePendingError(`GitHub release asset ${asset.name} is not uploaded yet.`);
+    }
+    assets.set(asset.name, asset);
+  }
+  if (CANONICAL_RELEASE_FILES.some((name) => !assets.has(name))) {
+    throw new GithubReleasePendingError("The GitHub release does not expose all three canonical assets yet.");
+  }
+  return assets;
+}
+
+async function fetchReleaseAssets({ fetchImpl, releaseTag }) {
+  const releaseUrl = `https://api.github.com/repos/${GITHUB_RELEASE_REPOSITORY}/releases/tags/${encodeURIComponent(
+    releaseTag
+  )}`;
+  const response = await fetchImpl(releaseUrl, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "OpenWrangler-marketplace-promotion/1",
+      "X-GitHub-Api-Version": "2022-11-28"
+    },
+    redirect: "error"
+  });
+  if (response.status === 404) {
+    throw new GithubReleasePendingError(`GitHub release ${releaseTag} is not public yet.`);
+  }
+  if (response.status === 429 || response.status >= 500) {
+    throw new GithubReleasePendingError(`GitHub release lookup is temporarily unavailable (${response.status}).`);
+  }
+  if (!response.ok) {
+    throw new Error(`GitHub release lookup failed with HTTP ${response.status}.`);
+  }
+  const metadata = await readResponseBytes(response, RELEASE_JSON_MAX_BYTES, "GitHub release metadata");
+  const assets = parseReleaseMetadata(metadata, releaseTag);
+  const downloaded = new Map();
+  for (const fileName of CANONICAL_RELEASE_FILES) {
+    const asset = assets.get(fileName);
+    const limit = FILE_LIMITS.get(fileName);
+    if (asset.size > limit) {
+      throw new Error(`GitHub release asset ${fileName} exceeds its byte limit.`);
+    }
+    const assetResponse = await fetchImpl(validateReleaseAssetUrl(asset.browser_download_url, releaseTag, fileName), {
+      headers: {
+        Accept: "application/octet-stream",
+        "User-Agent": "OpenWrangler-marketplace-promotion/1"
+      },
+      redirect: "follow"
+    });
+    if (!assetResponse.ok) {
+      throw new GithubReleasePendingError(
+        `GitHub release asset ${fileName} is not downloadable yet (${assetResponse.status}).`
+      );
+    }
+    const bytes = await readResponseBytes(assetResponse, limit, `GitHub release asset ${fileName}`);
+    if (bytes.length !== asset.size) {
+      throw new Error(`GitHub release asset ${fileName} differs from its declared size.`);
+    }
+    downloaded.set(fileName, bytes);
+  }
+  return downloaded;
+}
+
+function canonicalOutputDirectory(outputDirectory) {
+  if (typeof outputDirectory !== "string" || outputDirectory.length === 0) {
+    throw new TypeError("Canonical GitHub release download requires one output directory.");
+  }
+  const requested = resolve(outputDirectory);
+  const parent = dirname(requested);
+  const parentMetadata = lstatSync(parent, { bigint: true });
+  if (
+    !parentMetadata.isDirectory() ||
+    parentMetadata.isSymbolicLink() ||
+    realpathSync.native(parent) !== parent ||
+    (typeof process.getuid === "function" && parentMetadata.uid !== BigInt(process.getuid())) ||
+    basename(requested) === "." ||
+    basename(requested) === ".."
+  ) {
+    throw new Error("The canonical download parent must be one canonical, owned, non-symlinked directory.");
+  }
+  return requested;
+}
+
+function writeExclusiveFile(path, bytes) {
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const descriptor = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
+  try {
+    let offset = 0;
+    while (offset < bytes.length) {
+      offset += writeSync(descriptor, bytes, offset, bytes.length - offset);
+    }
+    fchmodSync(descriptor, 0o600);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+export async function downloadCanonicalGithubRelease({
+  attempts = 20,
+  delayMs = 15_000,
+  fetchImpl = fetch,
+  outputDirectory,
+  releaseTag,
+  sleep = delay
+}) {
+  assertStableTag(releaseTag);
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 40) {
+    throw new TypeError("GitHub release polling attempts must be an integer from 1 through 40.");
+  }
+  if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
+    throw new TypeError("GitHub release polling delay must be an integer from 0 through 60000 milliseconds.");
+  }
+  const output = canonicalOutputDirectory(outputDirectory);
+  let files;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      files = await fetchReleaseAssets({ fetchImpl, releaseTag });
+      break;
+    } catch (error) {
+      if (!(error instanceof GithubReleasePendingError) || attempt === attempts) {
+        throw error;
+      }
+      await sleep(delayMs);
+    }
+  }
+  mkdirSync(output, { mode: 0o700, recursive: false });
+  for (const fileName of CANONICAL_RELEASE_FILES) {
+    writeExclusiveFile(join(output, fileName), files.get(fileName));
+  }
+  return Object.freeze({
+    directory: output,
+    files: CANONICAL_RELEASE_FILES
+  });
+}
+
+async function runCli() {
+  if (process.argv.length !== 3) {
+    throw new Error("Pass exactly one canonical release output directory.");
+  }
+  const receipt = await downloadCanonicalGithubRelease({
+    attempts: process.env.OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS
+      ? Number(process.env.OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS)
+      : undefined,
+    outputDirectory: process.argv[2],
+    releaseTag: process.env.RELEASE_TAG
+  });
+  console.log(`Downloaded ${receipt.files.length} canonical GitHub release assets for ${process.env.RELEASE_TAG}.`);
+}
+
+if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  await runCli();
+}
