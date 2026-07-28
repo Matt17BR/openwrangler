@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { inspectPreviewReadme } from "./release-documents.mjs";
 import { inspectPerformanceEvidenceSourceReadiness, inspectStableSourceReadiness } from "./release-readiness.mjs";
 import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
+import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -76,6 +77,12 @@ const stableCandidateWorkflowProblems = inspectStableCandidateWorkflow(
 );
 if (stableCandidateWorkflowProblems.length > 0) {
   throw new Error(`Stable candidate workflow contract is stale:\n- ${stableCandidateWorkflowProblems.join("\n- ")}`);
+}
+const stableReleaseWorkflowProblems = inspectStableReleaseWorkflow(
+  readFileSync(resolve(root, ".github/workflows/stable-release.yml"), "utf8")
+);
+if (stableReleaseWorkflowProblems.length > 0) {
+  throw new Error(`Stable release workflow contract is stale:\n- ${stableReleaseWorkflowProblems.join("\n- ")}`);
 }
 const changelog = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${packageJson.version}]`)) {
