@@ -19,9 +19,7 @@ def _write_legacy_xls(path: Path) -> None:
 
 @pytest.mark.parametrize("backend", ["pandas", "polars"])
 @pytest.mark.parametrize("extension", ["xlsx", "xls"])
-def test_lists_actual_workbook_sheet_names_in_order(
-    backend: ExcelBackend, extension: str, tmp_path: Path
-) -> None:
+def test_lists_actual_workbook_sheet_names_in_order(backend: ExcelBackend, extension: str, tmp_path: Path) -> None:
     path = tmp_path / f"workbook.{extension}"
     if extension == "xls":
         _write_legacy_xls(path)
