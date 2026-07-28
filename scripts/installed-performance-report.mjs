@@ -1012,17 +1012,21 @@ function assertPublicEvidence(value, key = "") {
     }
     return;
   }
-  if (
-    typeof value === "string" &&
-    (/\bfile:(?:\/+|\\+)/iu.test(value) ||
-      /(?:^|[\s"'([{=,])\/+/u.test(value) ||
-      /:\/(?!\/)/u.test(value) ||
-      /(?:^|[\s"'([{=,:])\\+/u.test(value) ||
-      /(?:^|[\s"'([{=,])[A-Za-z]:(?:\\+|\/(?!\/))/u.test(value) ||
-      /(?:^|[\s"'([{=,])~(?:[A-Za-z0-9._-]+)?[\\/]/u.test(value) ||
-      /(?:^|[\s"'([{=,])\.{1,2}[\\/]/u.test(value))
-  ) {
-    throw new TypeError(`Installed performance evidence field ${key} contains a private path.`);
+  if (typeof value === "string") {
+    const pathCandidate = value.replace(
+      /(^|[\s"'([{=,:])((?!file:)[A-Za-z][A-Za-z0-9+.-]*):\/\/([^\\/\s"'()[\]{}<>][^\\\s"'()[\]{}<>]*)/giu,
+      "$1"
+    );
+    if (
+      /\bfile:(?:\/+|\\+)/iu.test(pathCandidate) ||
+      /(?:^|[\s"'([{=,:])\/+/u.test(pathCandidate) ||
+      /(?:^|[\s"'([{=,:])\\+/u.test(pathCandidate) ||
+      /(?:^|[\s"'([{=,:])[A-Za-z]:[\\/]+/u.test(pathCandidate) ||
+      /(?:^|[\s"'([{=,:])~[^\\/\s]*[\\/]/u.test(pathCandidate) ||
+      /(?:^|[\s"'([{=,:])\.{1,2}[\\/]/u.test(pathCandidate)
+    ) {
+      throw new TypeError(`Installed performance evidence field ${key} contains a private path.`);
+    }
   }
 }
 
