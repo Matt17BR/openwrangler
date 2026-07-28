@@ -8014,28 +8014,16 @@ async function exercisePublicLegacyExcelImportOptions(
 
   for (const scenario of [
     {
-      backend: "polars" as const,
-      mode: "Sheet name",
-      inputTitle: "Excel sheet name",
-      value: "second",
-      importOptions: { sheetName: "second" }
+      backend: "polars" as const
     },
     {
-      backend: "pandas" as const,
-      mode: "Sheet index",
-      inputTitle: "Excel sheet index",
-      value: "1",
-      importOptions: { sheetIndex: 1 }
+      backend: "pandas" as const
     }
   ] as const) {
-    const checkpoint = `verify:file-inputs:configured:public-excel:${scenario.backend}:${scenario.mode
-      .toLowerCase()
-      .replaceAll(" ", "-")}`;
+    const checkpoint = `verify:file-inputs:configured:public-excel:${scenario.backend}`;
     await config.update("defaultBackend", scenario.backend, vscode.ConfigurationTarget.Global);
     recordAcceptanceProgress(`${checkpoint}:open`);
-    const opening = vscode.commands.executeCommand("openWrangler.openFile", source);
-    await acceptExcelImportOptions(page, testing, source, scenario.mode, scenario.inputTitle, scenario.value);
-    await opening;
+    await vscode.commands.executeCommand("openWrangler.openFile", source);
 
     await waitFor(
       () => {
@@ -8043,12 +8031,89 @@ async function exercisePublicLegacyExcelImportOptions(
         return (
           active?.metadata.source.path === source.fsPath &&
           active.metadata.backend === scenario.backend &&
+          active.metadata.shape.rows === 1 &&
+          active.metadata.shape.columns === 3
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `legacy.xls to open its first worksheet automatically through the public ${scenario.backend} workflow`,
+      () =>
+        packagedFileOpenDiagnostics(testing, {
+          sourceLabel: path.basename(source.fsPath),
+          backend: scenario.backend,
+          shape: { rows: 1, columns: 3 }
+        })
+    );
+
+    assert.equal(
+      await page.locator(".quick-input-widget:visible").filter({ hasText: "Excel sheet" }).count(),
+      0,
+      `The public ${scenario.backend} BIFF workflow must open its first worksheet without an import prompt.`
+    );
+    const initiallyActive = testing.activeSession();
+    assert.ok(initiallyActive, `The public ${scenario.backend} BIFF workflow must publish an active session.`);
+    const stableSessionId = initiallyActive.sessionId;
+    const stableSourceIdentity = fileSourceIdentity(initiallyActive.metadata.source);
+    assert.deepEqual(
+      initiallyActive.metadata.source.importOptions,
+      { sheetIndex: 0 },
+      `The public ${scenario.backend} BIFF workflow must record its automatic first-sheet selection.`
+    );
+    assert.deepEqual(
+      initiallyActive.metadata.schema.map((column) => column.name),
+      ["name", "value", "active"],
+      `The public ${scenario.backend} BIFF workflow must expose the first worksheet schema.`
+    );
+    const initialFirstColumn = initiallyActive.metadata.schema[0];
+    assert.ok(initialFirstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
+    const initialGrid = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: `public-biff-${scenario.backend}-initial`,
+      sessionId: stableSessionId,
+      revision: initiallyActive.metadata.revision,
+      offset: 0,
+      limit: 20,
+      filterModel: initiallyActive.metadata.filterModel
+    });
+    assert.equal(
+      initialGrid.kind,
+      "page",
+      `The public ${scenario.backend} BIFF workflow must return its automatic first-sheet page.`
+    );
+    if (initialGrid.kind !== "page") {
+      throw new Error(`The public ${scenario.backend} BIFF workflow did not return its first-sheet page.`);
+    }
+    assert.deepEqual(
+      gridColumnDisplays(initialGrid.page, initialFirstColumn.id),
+      ["first"],
+      `The public ${scenario.backend} BIFF workflow must initially read the first worksheet.`
+    );
+    assert.deepEqual(
+      readFileSync(source.fsPath),
+      sourceBytes,
+      `The public ${scenario.backend} automatic BIFF open must not modify its source.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:opened-first-sheet`);
+
+    recordAcceptanceProgress(`${checkpoint}:change-sheet`);
+    const changingSheet = vscode.commands.executeCommand("openWrangler.changeImportOptions");
+    await acceptSearchableExcelSheet(page, testing, source, stableSessionId, "second");
+    await changingSheet;
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === stableSessionId &&
+          active.metadata.source.path === source.fsPath &&
+          active.metadata.backend === scenario.backend &&
+          active.metadata.source.importOptions?.sheetName === "second" &&
           active.metadata.shape.rows === 2 &&
           active.metadata.shape.columns === 3
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      `legacy.xls to open through the public ${scenario.backend} ${scenario.mode.toLowerCase()} workflow`,
+      `the public ${scenario.backend} BIFF session to adopt the selected worksheet by name`,
       () =>
         packagedFileOpenDiagnostics(testing, {
           sourceLabel: path.basename(source.fsPath),
@@ -8058,23 +8123,38 @@ async function exercisePublicLegacyExcelImportOptions(
     );
 
     const active = testing.activeSession();
-    assert.ok(active, `The public ${scenario.backend} BIFF workflow must publish an active session.`);
+    assert.ok(active, `The reconfigured public ${scenario.backend} BIFF workflow must remain active.`);
+    assert.equal(
+      active.sessionId,
+      stableSessionId,
+      `The public ${scenario.backend} worksheet change must retain the public session identity.`
+    );
+    assert.deepEqual(
+      fileSourceIdentity(active.metadata.source),
+      stableSourceIdentity,
+      `The public ${scenario.backend} worksheet change must retain the exact source identity.`
+    );
     assert.deepEqual(
       active.metadata.source.importOptions,
-      scenario.importOptions,
-      `The public ${scenario.backend} BIFF workflow must preserve its explicit sheet selection.`
+      { sheetName: "second" },
+      `The public ${scenario.backend} BIFF workflow must preserve its selected worksheet name.`
     );
     assert.deepEqual(
       active.metadata.schema.map((column) => column.name),
       ["name", "value", "active"],
-      `The public ${scenario.backend} BIFF workflow must expose the selected sheet schema.`
+      `The public ${scenario.backend} BIFF workflow must expose the selected worksheet schema.`
+    );
+    assert.equal(
+      testing.diagnostics().sessions.filter((session) => session.publicId === stableSessionId).length,
+      1,
+      `The public ${scenario.backend} worksheet change must retain exactly one private session owner.`
     );
     const firstColumn = active.metadata.schema[0];
     assert.ok(firstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
     const grid = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
-      viewRequestId: `public-biff-${scenario.backend}-${scenario.mode.toLowerCase().replaceAll(" ", "-")}`,
+      viewRequestId: `public-biff-${scenario.backend}-second`,
       sessionId: active.sessionId,
       revision: active.metadata.revision,
       offset: 0,
@@ -8095,7 +8175,7 @@ async function exercisePublicLegacyExcelImportOptions(
       sourceBytes,
       `The public ${scenario.backend} BIFF workflow must not modify its source.`
     );
-    recordAcceptanceProgress(`${checkpoint}:opened`);
+    recordAcceptanceProgress(`${checkpoint}:changed-sheet`);
 
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(
@@ -8921,42 +9001,32 @@ async function acceptQuickPickOptionWithKeyboard(
   if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accepted`);
 }
 
-async function acceptExcelImportOptions(
+async function acceptSearchableExcelSheet(
   page: Page,
   testing: TestApi,
   expectedSource: vscode.Uri,
-  mode: "Sheet name" | "Sheet index",
-  inputTitle: "Excel sheet name" | "Excel sheet index",
-  value: string
+  existingSessionId: string,
+  sheetName: string
 ): Promise<void> {
-  const modePrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet");
-  // "Excel sheet" remains a substring of the next value prompt, so the
-  // following exact input-title wait is the transition proof for this step.
-  await acceptQuickPickOptionWithKeyboard(page, modePrompt, "Excel sheet", mode, undefined, false);
-
-  const valuePrompt = await waitForImportQuickInput(page, testing, expectedSource, inputTitle);
-  const field = valuePrompt.locator(".quick-input-box input").first();
+  const sheetPrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet", existingSessionId);
+  const field = sheetPrompt.locator(".quick-input-box input").first();
   await withAcceptanceOperationDeadline(
     field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} field to become visible`
+    "the searchable Excel worksheet field to become visible"
   );
-  await waitForImportNaturalKeyboardFocus(field, inputTitle, "exact");
+  await waitForImportNaturalKeyboardFocus(field, "Excel sheet", "exact");
   await withAcceptanceOperationDeadline(
-    field.fill(value, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    field.fill(sheetName, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} value`
+    `the Excel worksheet search ${JSON.stringify(sheetName)}`
   );
-  await withAcceptanceOperationDeadline(
-    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} acceptance`
+  assert.equal(
+    await field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    sheetName,
+    "The Excel worksheet picker must accept a searchable worksheet query."
   );
-  await withAcceptanceOperationDeadline(
-    valuePrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} prompt to close`
-  );
+  await acceptQuickPickOptionWithKeyboard(page, sheetPrompt, "Excel sheet", sheetName);
 }
 
 function packagedFileOpenDiagnostics(
