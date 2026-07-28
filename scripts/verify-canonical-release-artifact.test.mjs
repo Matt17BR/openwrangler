@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -71,7 +71,7 @@ function createVsix() {
 }
 
 async function createFixture(context) {
-  const directory = mkdtempSync(join(tmpdir(), "openwrangler-canonical-consumer-"));
+  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "openwrangler-canonical-consumer-")));
   context.after(() => rmSync(directory, { force: true, recursive: true }));
   const vsix = await createVsix();
   const digest = createHash("sha256").update(vsix).digest("hex");
