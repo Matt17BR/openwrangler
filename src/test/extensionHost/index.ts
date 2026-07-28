@@ -3304,11 +3304,13 @@ async function exercisePackagedPlatformSmoke(
   extension: vscode.Extension<ExtensionApi>,
   fixture: vscode.Uri
 ): Promise<void> {
+  const editorKey = process.env.OPEN_WRANGLER_TEST_EDITOR;
   assert.equal(
-    process.env.OPEN_WRANGLER_TEST_EDITOR,
-    "cursor",
-    "The bounded cross-platform smoke is reserved for the pinned Cursor candidate."
+    editorKey === "vscode" || editorKey === "cursor",
+    true,
+    "The bounded packaged journey requires VS Code or Cursor."
   );
+  const editorName = editorKey === "cursor" ? "Cursor" : "VS Code";
   const sourceBytes = await vscode.workspace.fs.readFile(fixture);
   const page = await connectToEditorWorkbench();
   const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
@@ -3342,7 +3344,7 @@ async function exercisePackagedPlatformSmoke(
       return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
     },
     10_000,
-    "the CSV source editor before the Cursor title action"
+    `the CSV source editor before the ${editorName} title action`
   );
   await page.bringToFront();
   const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
@@ -3352,10 +3354,10 @@ async function exercisePackagedPlatformSmoke(
   await waitFor(
     () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the pinned Cursor CSV action to open a dataframe session"
+    `the ${editorName} CSV action to open a dataframe session`
   );
   const active = testing.activeSession();
-  assert.ok(active, "The pinned Cursor smoke must publish an active dataframe session.");
+  assert.ok(active, `The ${editorName} journey must publish an active dataframe session.`);
   assert.equal(active.metadata.source.path, fixture.fsPath);
   assert.equal(active.metadata.shape.rows > 0, true);
   assert.equal(active.metadata.shape.columns, 4);
@@ -3379,7 +3381,7 @@ async function exercisePackagedPlatformSmoke(
   recordAcceptanceProgress("platform-smoke:theme");
   const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
     const window = element.ownerDocument.defaultView;
-    if (!window) throw new Error("The pinned Cursor webview did not expose a live window.");
+    if (!window) throw new Error("The packaged editor webview did not expose a live window.");
     const computed = window.getComputedStyle(element);
     const root = window.getComputedStyle(element.ownerDocument.documentElement);
     const probe = element.ownerDocument.createElement("span");
@@ -3400,9 +3402,9 @@ async function exercisePackagedPlatformSmoke(
     probe.remove();
     return result;
   });
-  assert.ok(themeAttestation.foregroundToken, "The Cursor webview must receive the VS Code foreground token.");
-  assert.ok(themeAttestation.backgroundToken, "The Cursor webview must receive the VS Code editor-background token.");
-  assert.ok(themeAttestation.fontToken, "The Cursor webview must receive the VS Code font token.");
+  assert.ok(themeAttestation.foregroundToken, `${editorName} must provide the VS Code foreground token.`);
+  assert.ok(themeAttestation.backgroundToken, `${editorName} must provide the VS Code editor-background token.`);
+  assert.ok(themeAttestation.fontToken, `${editorName} must provide the VS Code font token.`);
   assert.equal(themeAttestation.color, themeAttestation.expectedColor);
   assert.equal(themeAttestation.background, themeAttestation.expectedBackground);
   assert.ok(themeAttestation.fontFamily);
@@ -3423,7 +3425,7 @@ async function exercisePackagedPlatformSmoke(
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
-    "the pinned Cursor smoke session and Python runtime to terminate"
+    `the ${editorName} journey session and Python runtime to terminate`
   );
   assert.deepEqual(testing.diagnostics().sessions, []);
 }
