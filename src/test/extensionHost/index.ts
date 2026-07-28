@@ -4574,7 +4574,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       gridDimensions.clientWidth,
       gridDimensions.rowHeaderWidth
     );
-    const columnWidths = Object.fromEntries(
+    let columnWidths = Object.fromEntries(
       opened.metadata.schema
         .filter((column) => column.name in widthsByName)
         .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]])
@@ -4589,6 +4589,39 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       true,
       "The composed screenshot fixture must synchronize with its exact renderer."
     );
+    const orderDate = columnReference(opened.metadata, "order_date");
+    const trailingGap = await app.evaluate((root, columnName) => {
+      type ScreenshotRect = { readonly right: number };
+      type ScreenshotElement = {
+        readonly dataset: Readonly<Record<string, string | undefined>>;
+        getBoundingClientRect(): ScreenshotRect;
+        querySelector(selector: string): ScreenshotElement | null;
+        querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
+      };
+      const appRoot = root as unknown as ScreenshotElement;
+      const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+      const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+        (candidate) => candidate.dataset.column === columnName
+      );
+      if (!scroller || !header) throw new Error("The screenshot grid fit geometry is incomplete.");
+      return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
+    }, orderDate.name);
+    assert.ok(trailingGap >= -1, "The final featured screenshot column must not extend beyond the live grid.");
+    if (trailingGap > 1) {
+      const adjustedWidth = (columnWidths[orderDate.id] ?? widthsByName.order_date) + Math.floor(trailingGap);
+      assert.ok(adjustedWidth <= 640, "The live screenshot grid fit must retain the maximum column width.");
+      columnWidths = { ...columnWidths, [orderDate.id]: adjustedWidth };
+      await testing.updateViewState(opened.sessionId, {
+        columnWidths,
+        selectedColumnId: revenue.id,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      });
+      assert.equal(
+        await testing.synchronizePanel(opened.sessionId),
+        true,
+        "The final measured screenshot grid fit must synchronize with its exact renderer."
+      );
+    }
     assert.deepEqual(testing.activeSession()?.viewState.columnWidths, columnWidths);
     assert.equal(testing.activeSession()?.viewState.selectedColumnId, revenue.id);
   } catch (error) {
