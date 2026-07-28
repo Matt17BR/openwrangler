@@ -40,7 +40,7 @@ function localTagExists(root, releaseTag) {
   return result.status === 0;
 }
 
-export function inspectRemoteStableTagOutput({ expectedCommit, output, releaseTag }) {
+export function inspectRemoteStableTagOutput({ expectedCommit, output, releaseTag, requirePresent = false }) {
   if (typeof expectedCommit !== "string" || !FULL_COMMIT.test(expectedCommit)) {
     throw new Error("EXPECTED_SHA must be one lowercase full Git commit ID.");
   }
@@ -61,6 +61,9 @@ export function inspectRemoteStableTagOutput({ expectedCommit, output, releaseTa
     refs.set(match[2], match[1]);
   }
   if (refs.size === 0) {
+    if (requirePresent) {
+      throw new Error("The required remote RELEASE_TAG does not exist.");
+    }
     return Object.freeze({ annotated: false, exists: false, releaseTag, sourceCommit: expectedCommit });
   }
   const direct = refs.get(directRef);
@@ -80,8 +83,8 @@ export function inspectRemoteStableTagOutput({ expectedCommit, output, releaseTa
   });
 }
 
-export function verifyRemoteStableTag({ expectedCommit, releaseTag, root }) {
-  inspectRemoteStableTagOutput({ expectedCommit, output: "", releaseTag });
+export function verifyRemoteStableTag({ expectedCommit, releaseTag, requirePresent = false, root }) {
+  inspectRemoteStableTagOutput({ expectedCommit, output: "", releaseTag, requirePresent: false });
   const repositoryRoot = realpathSync.native(resolve(root));
   const discoveredRoot = realpathSync.native(git(repositoryRoot, ["rev-parse", "--show-toplevel"]).trim());
   if (discoveredRoot !== repositoryRoot || resolveCommit(repositoryRoot, "HEAD", "HEAD") !== expectedCommit) {
@@ -97,7 +100,7 @@ export function verifyRemoteStableTag({ expectedCommit, releaseTag, root }) {
   if (result.error !== undefined || result.signal !== null || result.status !== 0 || result.stderr !== "") {
     throw new Error("Git could not inspect the exact remote stable release tag.", { cause: result.error });
   }
-  return inspectRemoteStableTagOutput({ expectedCommit, output: result.stdout, releaseTag });
+  return inspectRemoteStableTagOutput({ expectedCommit, output: result.stdout, releaseTag, requirePresent });
 }
 
 export function prepareStableCandidateTag({ expectedCommit, releaseTag, root }) {
@@ -139,11 +142,16 @@ export function prepareStableCandidateTag({ expectedCommit, releaseTag, root }) 
 }
 
 function runCli() {
-  const root = resolve(import.meta.dirname, "..");
-  if (process.argv.length === 3 && process.argv[2] === "--verify-remote") {
+  const defaultRoot = resolve(import.meta.dirname, "..");
+  if (
+    (process.argv.length === 3 || process.argv.length === 4) &&
+    (process.argv[2] === "--verify-remote" || process.argv[2] === "--require-remote")
+  ) {
+    const root = process.argv[3] === undefined ? defaultRoot : resolve(process.argv[3]);
     const receipt = verifyRemoteStableTag({
       expectedCommit: process.env.EXPECTED_SHA,
       releaseTag: process.env.RELEASE_TAG,
+      requirePresent: process.argv[2] === "--require-remote",
       root
     });
     console.log(
@@ -154,12 +162,12 @@ function runCli() {
     return;
   }
   if (process.argv.length !== 2) {
-    throw new Error("Pass no arguments, or pass exactly --verify-remote.");
+    throw new Error("Pass no arguments, or pass a remote-verification mode and optional repository root.");
   }
   const receipt = prepareStableCandidateTag({
     expectedCommit: process.env.EXPECTED_SHA,
     releaseTag: process.env.RELEASE_TAG,
-    root
+    root: defaultRoot
   });
   console.log(
     `${receipt.created ? "Prepared local" : "Verified existing"} ${receipt.releaseTag} at ${receipt.sourceCommit}.`

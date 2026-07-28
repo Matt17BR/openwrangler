@@ -2,11 +2,17 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
+## [Unreleased]
+
+### Changed
+
+- Added a protected, idempotent Open VSX promotion workflow for stable, preview, and historical GitHub Releases. Preview publication calls the reusable workflow directly after its GitHub prerelease is public; manually or externally published releases can use the release event; and protected-main recovery can backfill an existing tag such as `v1.0.1`. Every path checks out reviewed automation separately from the immutable release source, downloads the exact public GitHub assets without rebuilding, verifies the source commit, channel, manifest, checksum, and VSIX bytes before authentication and publication, then requires the public Open VSX metadata, publisher, checksum, and downloadable bytes to match.
+- Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. Automatic tag runs and protected-main manual backfills keep automation source separate from the selected immutable release commit, download and revalidate the exact channel-specific GitHub assets, publish stable or pre-release metadata with the personal `Matt17BR` workload identity through lockfile-pinned VSCE, and then require the public Marketplace upload SHA plus normalized package metadata and payload contents to match. Duplicate reruns are safe only when that proof succeeds; conflicting public versions fail closed.
+
 ## [1.0.1] - 2026-07-28
 
 ### Changed
 
-- Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. Automatic tag runs and protected-main manual backfills keep automation source separate from the selected immutable release commit, download and revalidate the exact channel-specific GitHub assets, publish stable or pre-release metadata with the personal `Matt17BR` workload identity through lockfile-pinned VSCE, and then require the public Marketplace upload SHA plus normalized package metadata and payload contents to match. Duplicate reruns are safe only when that proof succeeds; conflicting public versions fail closed.
 - Replaced manual Excel sheet-name/index entry with a searchable picker populated from the open workbook through its confirmed Pandas or Polars runtime. The initial open still selects the first sheet automatically; explicit **Change Import Options** remains read-only, cancellable, trust-gated, and safe for numeric-looking sheet names.
 - Made ordinary file opens absorb one transient Python-environment selection event before any runtime request is dispatched; repeated selection churn still fails, and dispatched or mutating requests are never retried. When no Excel backend is ready, the error now names only the preferred backend and its exact requirements instead of merging Polars and Pandas alternatives. The initial error offers **Install required dependency**, retains the existing Workspace Trust and exact modal-confirmation gates, and reopens the file only after a confirmed successful install.
 - Made primary CSV and TSV launches immediate: the local or remote extension host uses one bounded 64 KiB sample to detect comma, tab, semicolon, or pipe delimiters, UTF-8/BOM versus Windows-1252, standard versus structural single quotes, and likely headers, then fails soft to safe suffix defaults if the host cannot read the sample. **Change Import Options** remains available for explicit correction.

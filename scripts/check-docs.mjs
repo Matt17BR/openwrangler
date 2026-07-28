@@ -6,6 +6,7 @@ import { inspectPerformanceEvidenceSourceReadiness, inspectStableSourceReadiness
 import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
 import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
 import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
+import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const required = [
@@ -99,6 +100,12 @@ const marketplaceVsceLockProblems = inspectMarketplaceVsceLock({
 });
 if (marketplaceVsceLockProblems.length > 0) {
   throw new Error(`Marketplace VSCE dependency lock is stale:\n- ${marketplaceVsceLockProblems.join("\n- ")}`);
+}
+const openVsxPromotionProblems = inspectOpenVsxPromotionWorkflow(
+  readFileSync(resolve(root, ".github/workflows/open-vsx-promotion.yml"), "utf8")
+);
+if (openVsxPromotionProblems.length > 0) {
+  throw new Error(`Open VSX promotion workflow contract is stale:\n- ${openVsxPromotionProblems.join("\n- ")}`);
 }
 const changelog = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${packageJson.version}]`)) {

@@ -121,6 +121,21 @@ test("preview registry consumer rejects stable flags, source drift, extra files,
     /selected release source is invalid/u
   );
 
+  const packagedManifestDrift = await fixture(context, {
+    ...sourceManifest,
+    description: "different packaged metadata"
+  });
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: packagedManifestDrift.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /does not match/u
+  );
+
   const extra = await fixture(context);
   writeFileSync(join(extra.directory, "unexpected.txt"), "x");
   await assert.rejects(

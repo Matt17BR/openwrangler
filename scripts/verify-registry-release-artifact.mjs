@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -89,6 +90,7 @@ function releaseSource(packageJson, releaseTag, prerelease) {
   }
   return Object.freeze({
     extensionId: `${manifest.publisher}.${manifest.name}`,
+    manifest,
     prerelease,
     version: metadata.version
   });
@@ -134,6 +136,7 @@ async function verifyPreviewReleaseArtifact({ directory, expectedCommit, release
   if (
     packaged.extensionId !== source.extensionId ||
     packaged.version !== source.version ||
+    !isDeepStrictEqual(packaged.manifest, source.manifest) ||
     preReleaseProblems.length > 0
   ) {
     throw new Error(

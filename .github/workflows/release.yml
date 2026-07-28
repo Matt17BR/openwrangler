@@ -262,3 +262,9 @@ jobs:
           files: |
             release/openwrangler.vsix
             release/openwrangler.vsix.sha256
+
+  promote-open-vsx:
+    needs: release
+    uses: ./.github/workflows/open-vsx-promotion.yml
+    with:
+      release_tag: ${{ github.ref_name }}

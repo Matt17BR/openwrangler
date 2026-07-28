@@ -135,6 +135,19 @@ test("accepts an absent, exact lightweight, or exact annotated remote tag idempo
   );
 });
 
+test("required remote release intake rejects an absent tag", () => {
+  assert.throws(
+    () =>
+      inspectRemoteStableTagOutput({
+        expectedCommit: "a".repeat(40),
+        output: "",
+        releaseTag: "v1.0.1",
+        requirePresent: true
+      }),
+    /does not exist/u
+  );
+});
+
 test("rejects conflicting, duplicated, malformed, and noncanonical remote tags", () => {
   const expectedCommit = "a".repeat(40);
   for (const output of [

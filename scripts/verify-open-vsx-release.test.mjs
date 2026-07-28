@@ -64,6 +64,24 @@ test("verifies exact stable Open VSX metadata, checksum, publisher, and VSIX byt
   });
 });
 
+test("verifies preview metadata only for an explicitly preview candidate", async () => {
+  const preview = metadata({ preRelease: true, preview: true });
+  assert.equal(
+    (
+      await verifyOpenVsxReleaseOnce({
+        candidateBytes,
+        candidateSha256,
+        channel: "preview",
+        fetchImpl: exactFetch({ manifest: preview }),
+        root,
+        version
+      })
+    ).status,
+    "exact"
+  );
+  await assert.rejects(verify(exactFetch({ manifest: preview })), /metadata conflicts/u);
+});
+
 test("distinguishes an absent version from a transient registry response", async () => {
   assert.equal((await verify(async () => jsonResponse({ error: "missing" }, 404))).status, "missing");
   assert.equal((await verify(async () => jsonResponse({ error: "busy" }, 503))).status, "transient");

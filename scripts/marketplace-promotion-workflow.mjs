@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "64bd3f22bff721f3ff2dde9bf009574bf16d185d88a91f66117eeca376635942";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "44d9129686541d8f66158ee77a0c016a86871adad12796326bc27f4507028694";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -176,6 +176,7 @@ export function inspectMarketplacePromotionPipeline(source) {
   const deployment = promote?.jobs?.[0];
   if (
     deployment?.deployment !== "Marketplace" ||
+    deployment?.timeoutInMinutes !== 240 ||
     deployment?.environment !== SERVICE_CONNECTION ||
     JSON.stringify(deployment?.variables) !==
       JSON.stringify({
@@ -204,6 +205,8 @@ export function inspectMarketplacePromotionPipeline(source) {
   if (
     JSON.stringify(download?.env) !==
       JSON.stringify({
+        OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 210,
+        OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 60000,
         RELEASE_PRERELEASE: "$(releasePrerelease)",
         RELEASE_TAG: "$(releaseTag)"
       }) ||

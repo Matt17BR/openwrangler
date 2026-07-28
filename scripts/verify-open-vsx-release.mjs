@@ -67,7 +67,7 @@ function exactPublicUrls(root, version) {
   });
 }
 
-function validateMetadata(metadata, { urls, version }) {
+function validateMetadata(metadata, { channel, urls, version }) {
   requirePlainObject(metadata, "Open VSX release metadata");
   const files = requirePlainObject(metadata.files, "Open VSX release files");
   const downloads = requirePlainObject(metadata.downloads, "Open VSX release downloads");
@@ -79,8 +79,8 @@ function validateMetadata(metadata, { urls, version }) {
     metadata.version !== version ||
     metadata.displayName !== OPEN_VSX_DISPLAY_NAME ||
     metadata.targetPlatform !== "universal" ||
-    metadata.preRelease !== false ||
-    metadata.preview !== false ||
+    metadata.preRelease !== (channel === "preview") ||
+    metadata.preview !== (channel === "preview") ||
     metadata.downloadable !== true ||
     metadata.deprecated !== false ||
     publisher.loginName !== OPEN_VSX_NAMESPACE ||
@@ -102,6 +102,7 @@ function validateMetadata(metadata, { urls, version }) {
 export async function verifyOpenVsxReleaseOnce({
   candidateBytes,
   candidateSha256,
+  channel = "stable",
   fetchImpl = fetch,
   root = OPEN_VSX_ROOT,
   version
@@ -112,6 +113,7 @@ export async function verifyOpenVsxReleaseOnce({
     candidateBytes.length > VSIX_MAX_BYTES ||
     !LOWER_SHA256.test(candidateSha256) ||
     !STABLE_VERSION.test(version) ||
+    (channel !== "stable" && channel !== "preview") ||
     createHash("sha256").update(candidateBytes).digest("hex") !== candidateSha256
   ) {
     throw new Error("Open VSX verification requires one bounded checksum-matched canonical VSIX.");
@@ -136,7 +138,7 @@ export async function verifyOpenVsxReleaseOnce({
   }
   const metadataBytes = await readBoundedResponse(response, METADATA_MAX_BYTES, "Open VSX metadata");
   const metadata = parseStrictJson(metadataBytes.toString("utf8"), { maxBytes: METADATA_MAX_BYTES });
-  validateMetadata(metadata, { urls, version });
+  validateMetadata(metadata, { channel, urls, version });
 
   const checksumResponse = await fetchImpl(urls.sha256, {
     headers: { accept: "text/plain", "user-agent": "openwrangler-stable-release" },
@@ -195,6 +197,7 @@ export async function waitForOpenVsxRelease({
   attempts = POST_PUBLISH_ATTEMPTS,
   candidateBytes,
   candidateSha256,
+  channel = "stable",
   delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
   delayMs = POST_PUBLISH_DELAY_MS,
   fetchImpl = fetch,
@@ -210,6 +213,7 @@ export async function waitForOpenVsxRelease({
       result = await verifyOpenVsxReleaseOnce({
         candidateBytes,
         candidateSha256,
+        channel,
         fetchImpl,
         root,
         version

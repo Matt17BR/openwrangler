@@ -62,7 +62,7 @@ stages:
     jobs:
       - deployment: Marketplace
         displayName: Publish and verify Microsoft Marketplace
-        timeoutInMinutes: 60
+        timeoutInMinutes: 240
         pool:
           vmImage: ubuntu-24.04
         workspace:
@@ -91,6 +91,8 @@ stages:
                 - script: node scripts/download-canonical-github-release.mjs canonical-release
                   displayName: Download the exact public GitHub release
                   env:
+                    OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 210
+                    OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 60000
                     RELEASE_PRERELEASE: $(releasePrerelease)
                     RELEASE_TAG: $(releaseTag)
                 - script: node scripts/verify-registry-release-artifact.mjs canonical-release
