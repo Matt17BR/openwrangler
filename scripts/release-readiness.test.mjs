@@ -730,8 +730,8 @@ test("keeps the same compact editor support tiers in every README channel", () =
     assert.match(section, /\| Cursor\s+\| Release-tested\s+\|/u);
     assert.match(section, /\| Other VS Code desktop forks\s+\| Experimental\s+\|/u);
     assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
-    assert.match(section, /VS Code and Cursor are release-tested/u);
-    assert.match(section, /Other VS Code desktop forks may work, but support is experimental/u);
+    assert.doesNotMatch(section, /VS Code and Cursor are release-tested\./u);
+    assert.doesNotMatch(section, /Other VS Code desktop forks may work, but support is experimental\./u);
     assert.doesNotMatch(section, /Antigravity|release gate|parity matrix/iu);
   }
   const stableLinks = new Map(

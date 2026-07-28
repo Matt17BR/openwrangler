@@ -6,12 +6,6 @@
 
 <p align="center">An open-source dataframe viewer and cleaner for VS Code and Cursor, with native Polars, DuckDB, and Pandas workflows.</p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-light.png">
-  <img alt="Open Wrangler exploring a regional orders dataset with column summaries in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
-</picture>
-
 <!-- open-wrangler-release-status:start -->
 
 > **Release status:** Stable
@@ -31,11 +25,15 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 | Other VS Code desktop forks | Experimental   |
 | Browser-hosted `vscode.dev` | Unsupported    |
 
-VS Code and Cursor are release-tested. Other VS Code desktop forks may work, but support is experimental.
-
 Open Wrangler requires Python 3.10–3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
 
 <!-- open-wrangler-release-status:end -->
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-light.png">
+  <img alt="Open Wrangler exploring a regional orders dataset with column summaries in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
+</picture>
 
 ## Quick start
 
@@ -43,7 +41,7 @@ Open Wrangler requires Python 3.10–3.14. It uses your configured Python path, 
 2. Explore column summaries, search, filter, and sort without changing the source.
 3. Choose **Add step**, review the data diff and generated code, then apply the step or discard it.
 
-For notebooks, run a Pandas or Polars dataframe and use the Open Wrangler variable or notebook action.
+For Jupyter notebooks, choose **Open Variable** in the notebook toolbar, then enter a Pandas or Polars dataframe variable name.
 
 ## Capabilities
 

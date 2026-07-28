@@ -19,9 +19,7 @@ const README_EDITOR_SUPPORT = `| Editor                      | Support        |
 | VS Code                     | Release-tested |
 | Cursor                      | Release-tested |
 | Other VS Code desktop forks | Experimental   |
-| Browser-hosted \`vscode.dev\` | Unsupported    |
-
-VS Code and Cursor are release-tested. Other VS Code desktop forks may work, but support is experimental.`;
+| Browser-hosted \`vscode.dev\` | Unsupported    |`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
