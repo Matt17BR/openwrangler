@@ -256,6 +256,12 @@ jobs:
       - run: npm run audit:python
       - run: npm run benchmark:runtime
       - run: npm run build:test-extension
+      - id: canonical_vscode
+        name: Reverify the exact canonical stable artifact for VS Code
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_vscode
         name: Test the full package in headless VS Code
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -297,6 +303,12 @@ jobs:
           }
           accessSync(executable, X_OK);
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
+      - id: canonical_cursor
+        name: Reverify the exact canonical stable artifact for Cursor
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_cursor
         name: Test the full package in private-display Cursor
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix

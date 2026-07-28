@@ -26,6 +26,30 @@ function command(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
 }
 
+const PINNED_CURSOR_XVFB_PREPARATION = [
+  'const { execFileSync } = require("node:child_process");',
+  'const { X_OK } = require("node:constants");',
+  'const { accessSync, appendFileSync, lstatSync } = require("node:fs");',
+  'const { isAbsolute } = require("node:path");',
+  "",
+  'const output = execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"], {',
+  "cwd: process.cwd(),",
+  'encoding: "utf8",',
+  'stdio: ["ignore", "pipe", "inherit"]',
+  "});",
+  "if (!/^[^\\0\\r\\n]+\\n?$/u.test(output)) {",
+  'throw new Error("The Xvfb preparer must print exactly one path.");',
+  "}",
+  'const executable = output.endsWith("\\n") ? output.slice(0, -1) : output;',
+  'if (!isAbsolute(executable)) throw new Error("The prepared Xvfb path must be absolute.");',
+  "const stat = lstatSync(executable);",
+  "if (!stat.isFile() || stat.isSymbolicLink()) {",
+  'throw new Error("The prepared Xvfb path must be a regular, non-symlink file.");',
+  "}",
+  "accessSync(executable, X_OK);",
+  'appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\\n`, "utf8");'
+].join("\n");
+
 function exactKeys(value, expected) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();
@@ -97,6 +121,7 @@ function inspectFailureUpload(jobSteps, editorStep, expectedName, label, problem
   const upload = jobSteps[editorIndex + 1];
   if (
     editorIndex < 0 ||
+    !exactKeys(upload, ["name", "if", "uses", "with"]) ||
     upload?.uses !== UPLOAD_ACTION ||
     upload?.if !==
       `\${{ always() && steps.${editorStep?.id}.outcome == 'failure' && steps.${editorStep?.id}.outputs.evidence_ready == 'true' }}` ||
@@ -119,25 +144,32 @@ function inspectFailureUpload(jobSteps, editorStep, expectedName, label, problem
   }
 }
 
+function inspectAdjacentCanonicalVerification(jobSteps, editorStep, expectedId, expectedName, label, problems) {
+  const editorIndex = jobSteps.indexOf(editorStep);
+  const verifier = jobSteps[editorIndex - 1];
+  if (
+    editorIndex < 1 ||
+    !exactKeys(verifier, ["id", "name", "env", "run"]) ||
+    verifier.id !== expectedId ||
+    verifier.name !== expectedName ||
+    !exactKeys(verifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+    verifier.env.EXPECTED_SHA !== EVENT_SHA ||
+    verifier.env.RELEASE_TAG !== RELEASE_TAG ||
+    command(verifier.run) !== "node scripts/verify-canonical-release-artifact.mjs canonical-release"
+  ) {
+    problems.push(`${label} must immediately follow a fresh verification of the exact canonical artifact.`);
+  }
+}
+
 function inspectCursorXvfbPreparation(jobSteps, cursorStep, problems) {
   const preparations = jobSteps.filter((step) => step?.id === "prepare_cursor_xvfb");
   const preparation = preparations[0];
-  const requiredScriptFragments = [
-    'execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"]',
-    "if (!/^[^\\0\\r\\n]+\\n?$/u.test(output))",
-    "if (!isAbsolute(executable))",
-    "lstatSync(executable)",
-    "!stat.isFile() || stat.isSymbolicLink()",
-    "accessSync(executable, X_OK)",
-    "appendFileSync(process.env.GITHUB_OUTPUT"
-  ];
   if (
     preparations.length !== 1 ||
     !exactKeys(preparation, ["id", "name", "shell", "run"]) ||
     preparation.name !== "Prepare pinned private Xvfb for Cursor" ||
     preparation.shell !== "node {0}" ||
-    typeof preparation.run !== "string" ||
-    requiredScriptFragments.some((fragment) => !preparation.run.includes(fragment)) ||
+    command(preparation.run) !== command(PINNED_CURSOR_XVFB_PREPARATION) ||
     jobSteps.indexOf(preparation) >= jobSteps.indexOf(cursorStep)
   ) {
     problems.push("linux-acceptance must prepare and verify one pinned private Xvfb before launching Cursor.");
@@ -159,6 +191,12 @@ export function inspectStableReleaseWorkflow(source) {
     return ["stable-release.yml must contain one workflow object."];
   }
 
+  if (
+    !exactKeys(workflow, ["name", "on", "permissions", "concurrency", "jobs"]) ||
+    workflow.name !== "Stable release"
+  ) {
+    problems.push("Stable release must use the exact top-level contract without inherited environment or defaults.");
+  }
   if (!exactKeys(workflow.on, ["workflow_dispatch"])) {
     problems.push("Stable release must be manually dispatched only.");
   }
@@ -188,6 +226,11 @@ export function inspectStableReleaseWorkflow(source) {
   if (!exactKeys(workflow.jobs, JOBS)) {
     problems.push(`Stable release must contain exactly these jobs: ${JOBS.join(", ")}.`);
     return problems;
+  }
+  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+    if (job?.env !== undefined || job?.defaults !== undefined) {
+      problems.push(`${jobName} must not inherit job-level environment or shell defaults.`);
+    }
   }
   inspectPinnedActions(workflow, problems);
 
@@ -305,10 +348,12 @@ export function inspectStableReleaseWorkflow(source) {
   const linuxCursorStep = linuxEditorSteps.find((step) => step?.id === "packaged_cursor");
   if (
     linuxEditorSteps.length !== 2 ||
+    !exactKeys(linuxVscodeStep, ["id", "name", "run", "env"]) ||
     linuxVscodeStep?.name !== "Test the full package in headless VS Code" ||
     !exactKeys(linuxVscodeStep?.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
     linuxVscodeStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
     linuxVscodeStep.env.VSCODE_TEST_VERSION !== "stable" ||
+    !exactKeys(linuxCursorStep, ["id", "name", "run", "env"]) ||
     linuxCursorStep?.name !== "Test the full package in private-display Cursor" ||
     !exactKeys(linuxCursorStep?.env, [
       "OPEN_WRANGLER_PACKAGED_EDITORS",
@@ -326,6 +371,14 @@ export function inspectStableReleaseWorkflow(source) {
       "linux-acceptance must test the exact package in headless VS Code and pinned private-Xvfb Cursor under D-Bus."
     );
   } else {
+    inspectAdjacentCanonicalVerification(
+      linuxSteps,
+      linuxVscodeStep,
+      "canonical_vscode",
+      "Reverify the exact canonical stable artifact for VS Code",
+      "linux-acceptance VS Code",
+      problems
+    );
     inspectFailureUpload(
       linuxSteps,
       linuxVscodeStep,
@@ -334,6 +387,14 @@ export function inspectStableReleaseWorkflow(source) {
       problems
     );
     inspectCursorXvfbPreparation(linuxSteps, linuxCursorStep, problems);
+    inspectAdjacentCanonicalVerification(
+      linuxSteps,
+      linuxCursorStep,
+      "canonical_cursor",
+      "Reverify the exact canonical stable artifact for Cursor",
+      "linux-acceptance Cursor",
+      problems
+    );
     inspectFailureUpload(
       linuxSteps,
       linuxCursorStep,

@@ -3347,6 +3347,7 @@ export async function runEditorAcceptancePhase(
       platform,
       displayMode,
       runId,
+      editorSpawned: true,
       exitState: observation.exitState,
       resultSnapshot: observation.resultSnapshot
     };
@@ -3934,6 +3935,7 @@ function editorAcceptanceRemediation(kind, context, editorKey, progress, readPro
     context.platform === "linux" &&
     context.displayMode === "headless" &&
     editorKey === "cursor" &&
+    context.editorSpawned === true &&
     readProgress &&
     context.treeVerifiedStopped !== false &&
     progress === `${context.phase}:runner-spawn`

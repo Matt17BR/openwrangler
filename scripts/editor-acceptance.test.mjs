@@ -3760,6 +3760,7 @@ test("acceptance failures publish complete structured diagnostics", async () => 
       progressPath,
       platform: "linux",
       displayMode: "headless",
+      editorSpawned: true,
       exitState: { code: null, signal: "SIGABRT" }
     };
     const earlyCursorFailure = createEditorAcceptanceFailure(
@@ -3784,6 +3785,16 @@ test("acceptance failures publish complete structured diagnostics", async () => 
     );
     assert.match(inactiveCursorFailure.message, /OPEN_WRANGLER_EDITOR_DISPLAY=xvfb/u);
     assert.match(inactiveCursorFailure.details.remediation, /isolated and invisible/u);
+    assert.equal(
+      createEditorAcceptanceFailure("outer-timeout", "Cursor timed out before launch.", {
+        ...earlyCursorContext,
+        editorSpawned: false,
+        elapsedMs: 180_032,
+        exitState: { code: null, signal: "SIGKILL" },
+        timeoutKind: "inactivity"
+      }).details.remediation,
+      undefined
+    );
 
     const noRemediation = (overrides) =>
       createEditorAcceptanceFailure("premature-exit", "Editor exited before writing a result.", {
