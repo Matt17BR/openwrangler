@@ -389,8 +389,8 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByRole("option", { name: "value — column 1" })).toHaveValue("c:0");
-    expect((screen.getByRole("option", { name: "value — column 2" }) as HTMLOptionElement).selected).toBe(true);
+    expect(screen.getByRole("option", { name: "value, column 1" })).toHaveValue("c:0");
+    expect((screen.getByRole("option", { name: "value, column 2" }) as HTMLOptionElement).selected).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
       rules: [{ column: { id: "c:1", name: "value" }, direction: "desc", nulls: "first" }]
@@ -460,7 +460,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "value — column 2" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "value, column 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
       columns: [{ id: "c:1", name: "value" }],
@@ -488,7 +488,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByRole("checkbox", { name: "city — column 1" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "city, column 1" })).toBeChecked();
   });
 
   it("fails closed when a saved step has no recorded input schema while leaving cancel usable", () => {
@@ -651,7 +651,7 @@ describe("OperationBuilder", () => {
       { ...metadata.schema[1], id: "c:1", name: "value", position: 1 },
       { ...metadata.schema[0], id: "c:2", name: "", position: 2 },
       { ...metadata.schema[0], id: "c:3", name: "(empty name)", position: 3 },
-      { ...metadata.schema[0], id: "c:4", name: "value — column 1", position: 4 }
+      { ...metadata.schema[0], id: "c:4", name: "value, column 1", position: 4 }
     ];
     render(
       <OperationBuilder
@@ -678,15 +678,15 @@ describe("OperationBuilder", () => {
       />
     );
 
-    const first = screen.getByRole("option", { name: "value — column 1" }) as HTMLOptionElement;
-    const second = screen.getByRole("option", { name: "value — column 2" }) as HTMLOptionElement;
+    const first = screen.getByRole("option", { name: "value, column 1" }) as HTMLOptionElement;
+    const second = screen.getByRole("option", { name: "value, column 2" }) as HTMLOptionElement;
     expect(first).toHaveValue("c:0");
     expect(second).toHaveValue("c:1");
     expect(first.selected).toBe(false);
     expect(second.selected).toBe(true);
-    expect(screen.getByRole("option", { name: "(empty name) — column 3" })).toHaveValue("c:2");
-    expect(screen.getByRole("option", { name: "(empty name) — column 4" })).toHaveValue("c:3");
-    expect(screen.getByRole("option", { name: "value — column 1 — column 5" })).toHaveValue("c:4");
+    expect(screen.getByRole("option", { name: "(empty name), column 3" })).toHaveValue("c:2");
+    expect(screen.getByRole("option", { name: "(empty name), column 4" })).toHaveValue("c:3");
+    expect(screen.getByRole("option", { name: "value, column 1, column 5" })).toHaveValue("c:4");
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview).toHaveBeenCalledWith(
@@ -793,8 +793,8 @@ describe("OperationBuilder", () => {
     );
 
     const structuralSelection = screen.getByRole("group", { name: label });
-    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "city — column 1" }));
-    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "sales — column 2" }));
+    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "city, column 1" }));
+    fireEvent.click(within(structuralSelection).getByRole("checkbox", { name: "sales, column 2" }));
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(structuralPreview.mock.calls[0][0].params).toEqual({
       columns: [
@@ -840,7 +840,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    expect(screen.getByText("Selected order: sales — column 2 → city — column 1")).toBeInTheDocument();
+    expect(screen.getByText("Selected order: sales, column 2 → city, column 1")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Columns to keep" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(onPreview.mock.calls[0][0].params).toEqual({
@@ -864,9 +864,9 @@ describe("OperationBuilder", () => {
     );
 
     const selection = screen.getByRole("group", { name: "Columns to keep" });
-    fireEvent.click(within(selection).getByRole("checkbox", { name: "sales — column 2" }));
-    fireEvent.click(within(selection).getByRole("checkbox", { name: "city — column 1" }));
-    expect(screen.getByText("Selected order: sales — column 2 → city — column 1")).toBeInTheDocument();
+    fireEvent.click(within(selection).getByRole("checkbox", { name: "sales, column 2" }));
+    fireEvent.click(within(selection).getByRole("checkbox", { name: "city, column 1" }));
+    expect(screen.getByText("Selected order: sales, column 2 → city, column 1")).toBeInTheDocument();
     expect(selection).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
@@ -908,8 +908,8 @@ describe("OperationBuilder", () => {
       />
     );
     const categoricalSelection = screen.getByRole("group", { name: "Categorical columns" });
-    expect(within(categoricalSelection).getByRole("checkbox", { name: "value — column 1" })).not.toBeChecked();
-    expect(within(categoricalSelection).getByRole("checkbox", { name: "value — column 2" })).toBeChecked();
+    expect(within(categoricalSelection).getByRole("checkbox", { name: "value, column 1" })).not.toBeChecked();
+    expect(within(categoricalSelection).getByRole("checkbox", { name: "value, column 2" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(categoricalPreview).toHaveBeenCalledWith(initialStep, initialStep.id);
   });
@@ -926,7 +926,7 @@ describe("OperationBuilder", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "city — column 1" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "city, column 1" }));
     fireEvent.change(screen.getByLabelText("Prefix separator"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
 
@@ -1136,10 +1136,7 @@ describe("OperationBuilder", () => {
 
       const columnSelect = screen.getByLabelText(label) as HTMLSelectElement;
       expect(columnSelect.value).toBe("c:1");
-      expect(Array.from(columnSelect.options, (option) => option.text)).toEqual([
-        "value — column 1",
-        "value — column 2"
-      ]);
+      expect(Array.from(columnSelect.options, (option) => option.text)).toEqual(["value, column 1", "value, column 2"]);
       fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
       expect(onPreview).toHaveBeenCalledWith(step, step.id);
     }
@@ -1219,10 +1216,10 @@ describe("OperationBuilder", () => {
     );
 
     const keys = screen.getByRole("group", { name: "Group keys" });
-    for (const label of ["value — column 1", "value — column 2", "(empty name) — column 3", "7 — column 4"]) {
+    for (const label of ["value, column 1", "value, column 2", "(empty name), column 3", "7, column 4"]) {
       expect(within(keys).getByRole("checkbox", { name: label })).toBeInTheDocument();
     }
-    fireEvent.click(within(keys).getByRole("checkbox", { name: "value — column 2" }));
+    fireEvent.click(within(keys).getByRole("checkbox", { name: "value, column 2" }));
     const value = screen.getByLabelText("Value 1") as HTMLSelectElement;
     fireEvent.change(value, { target: { value: "c:3" } });
     fireEvent.change(screen.getByLabelText("Output name"), { target: { value: "total" } });
@@ -1276,9 +1273,9 @@ describe("OperationBuilder", () => {
     );
 
     const keys = screen.getByRole("group", { name: "Group keys" });
-    expect(within(keys).getByRole("checkbox", { name: "city — column 1" })).toBeInTheDocument();
-    expect(within(keys).queryByRole("checkbox", { name: "items — column 4" })).not.toBeInTheDocument();
-    fireEvent.click(within(keys).getByRole("checkbox", { name: "city — column 1" }));
+    expect(within(keys).getByRole("checkbox", { name: "city, column 1" })).toBeInTheDocument();
+    expect(within(keys).queryByRole("checkbox", { name: "items, column 4" })).not.toBeInTheDocument();
+    fireEvent.click(within(keys).getByRole("checkbox", { name: "city, column 1" }));
 
     expect(
       Array.from((screen.getByLabelText("Value 1") as HTMLSelectElement).options, (option) => option.value)
@@ -1363,10 +1360,10 @@ describe("OperationBuilder", () => {
     );
 
     const sources = screen.getByRole("group", { name: "Source columns" });
-    fireEvent.click(within(sources).getByRole("checkbox", { name: "value — column 1" }));
-    fireEvent.click(within(sources).getByRole("checkbox", { name: "value — column 2" }));
-    fireEvent.click(within(sources).getByRole("checkbox", { name: "7 — column 4" }));
-    expect(screen.getByText("Selected order: value — column 2 → 7 — column 4")).toBeInTheDocument();
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "value, column 1" }));
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "value, column 2" }));
+    fireEvent.click(within(sources).getByRole("checkbox", { name: "7, column 4" }));
+    expect(screen.getByText("Selected order: value, column 2 → 7, column 4")).toBeInTheDocument();
     const examples = [
       { inputs: ["a", 1], output: "a1" },
       { inputs: ["b", 2], output: "b2" }
@@ -1408,7 +1405,7 @@ describe("OperationBuilder", () => {
         onPreview={groupPreview}
       />
     );
-    expect(screen.getByText("Selected order: value — column 2")).toBeInTheDocument();
+    expect(screen.getByText("Selected order: value, column 2")).toBeInTheDocument();
     expect(screen.getByLabelText("Value 1")).toHaveValue("c:2");
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(groupPreview.mock.calls[0][0]).toEqual(groupStep);
@@ -1439,7 +1436,7 @@ describe("OperationBuilder", () => {
         onPreview={examplePreview}
       />
     );
-    expect(screen.getByText("Selected order: value — column 2")).toBeInTheDocument();
+    expect(screen.getByText("Selected order: value, column 2")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
     expect(examplePreview.mock.calls[0][0].params).toEqual({
       sourceColumns: [{ id: "c:1", name: "value" }],

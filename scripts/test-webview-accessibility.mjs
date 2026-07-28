@@ -252,7 +252,7 @@ if (failures.length > 0) {
     .flatMap(({ harness, violations }) =>
       violations.map(
         (violation) =>
-          `${harness}: [${violation.impact ?? "unknown"}] ${violation.id} — ${violation.help}\n` +
+          `${harness}: [${violation.impact ?? "unknown"}] ${violation.id}: ${violation.help}\n` +
           violation.nodes
             .slice(0, 5)
             .map((node) => `  ${node.target.join(" ")}: ${node.failureSummary ?? "failed"}`)

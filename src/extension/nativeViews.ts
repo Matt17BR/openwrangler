@@ -55,14 +55,22 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
 }
 
 class ViewNode extends vscode.TreeItem {
-  constructor(label: string, description: string, icon: string, command?: vscode.Command, contextValue?: string) {
+  constructor(
+    label: string,
+    description: string,
+    icon: string,
+    command?: vscode.Command,
+    contextValue?: string,
+    disabledReason?: string
+  ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
     this.iconPath = new vscode.ThemeIcon(icon);
     this.command = command;
     this.contextValue = contextValue;
-    this.tooltip = `${label}: ${description}`;
-    this.accessibilityInformation = { label: `${label}, ${description}` };
+    const detail = disabledReason ? `${description}. ${disabledReason}` : description;
+    this.tooltip = `${label}: ${detail}`;
+    this.accessibilityInformation = { label: `${label}, ${detail}` };
   }
 }
 
@@ -500,7 +508,7 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
     (operation) =>
       new ViewNode(
         operation.title,
-        !editable ? "Viewing mode" : metadata.draftStep ? "Apply or discard the current draft" : operation.group,
+        operation.group,
         operation.icon,
         canStart
           ? {
@@ -508,7 +516,13 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
               title: `Start ${operation.title}`,
               arguments: [operation.kind]
             }
-          : undefined
+          : undefined,
+        undefined,
+        !editable
+          ? "Available in editing mode"
+          : metadata.draftStep
+            ? "Apply or discard the current draft first"
+            : undefined
       )
   );
 }
@@ -516,12 +530,11 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
 function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const { metadata, stepInspection } = snapshot;
   const nodes: ViewNode[] = [
-    new ViewNode(
-      "Original data",
-      stepInspection ? "Show the confirmed dataframe view" : "Selected · confirmed dataframe view",
-      "database",
-      { command: "openWrangler.selectStep", title: "Show original data", arguments: [] }
-    )
+    new ViewNode("Original data", stepInspection ? "Show current view" : "Selected", "database", {
+      command: "openWrangler.selectStep",
+      title: "Show original data",
+      arguments: []
+    })
   ];
   nodes.push(
     ...metadata.steps.map((step, index) => {
@@ -547,7 +560,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   );
   if (metadata.draftStep) {
     const draft = operationByKind(metadata.draftStep.kind);
-    nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing — apply or discard", draft.icon));
+    nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing. Apply or discard.", draft.icon));
   }
   return nodes;
 }
@@ -600,7 +613,7 @@ function filterNodes(model: FilterModel): ViewNode[] {
   );
   return filters.length || sorts.length
     ? [...filters, ...sorts]
-    : [new ViewNode("No filters or sorts", "Viewing state is separate from cleaning steps", "filter")];
+    : [new ViewNode("No filters or sorts", "Current view", "filter")];
 }
 
 function filterNodeDescription(filter: FilterModel["filters"][number]): string {

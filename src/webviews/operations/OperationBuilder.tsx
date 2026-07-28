@@ -1016,7 +1016,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           <span>Examples (JSON)</span>
           <textarea name="examples" rows={12} required defaultValue={examples} spellCheck={false} />
           <small>
-            Provide 2–64 items. Each <code>inputs</code> array must contain one value in the displayed source-column
+            Provide 2 to 64 items. Each <code>inputs</code> array must contain one value in the displayed source-column
             order, followed by an <code>output</code>. Preview confirms the deterministic program and reports ambiguity.
           </small>
         </label>
@@ -1527,7 +1527,7 @@ function ColumnReferencesSelect({
 
 function columnOptionLabel(column: ColumnSchema): string {
   const displayName = column.name === "" ? "(empty name)" : column.name;
-  return `${displayName} — column ${column.position + 1}`;
+  return `${displayName}, column ${column.position + 1}`;
 }
 
 function SelectField({

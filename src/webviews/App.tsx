@@ -19,6 +19,7 @@ import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
 import { OperationBuilder } from "./operations/OperationBuilder";
+import { ColumnSearch } from "./ColumnSearch";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
@@ -62,7 +63,7 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
-  const [goToColumn, setGoToColumn] = useState("");
+  const [goToColumnRequest, setGoToColumnRequest] = useState<{ columnId: string; requestId: number } | undefined>();
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [operationOpen, setOperationOpen] = useState(false);
@@ -1911,20 +1912,16 @@ export function App() {
               >
                 {inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
               </button>
-              <label className="goToColumn">
-                <span>Column</span>
-                <input
-                  list="openwrangler-columns"
-                  value={goToColumn}
-                  placeholder="Search columns"
-                  onChange={(event) => setGoToColumn(event.target.value)}
-                />
-                <datalist id="openwrangler-columns">
-                  {(displayMetadata ?? metadata).schema.map((column) => (
-                    <option key={column.id} value={column.name} />
-                  ))}
-                </datalist>
-              </label>
+              <ColumnSearch
+                columns={(displayMetadata ?? metadata).schema}
+                selectedColumnId={goToColumnRequest?.columnId}
+                onSelect={(columnId) =>
+                  setGoToColumnRequest((current) => ({
+                    columnId,
+                    requestId: (current?.requestId ?? 0) + 1
+                  }))
+                }
+              />
               <span className="modeBadge">{metadata.mode}</span>
               <span className="backendBadge">{metadata.backend}</span>
               {snapshotMode && <span className="modeBadge">Snapshot</span>}
@@ -2017,7 +2014,7 @@ export function App() {
             </header>
             {pendingStepInspection && (
               <div role="status" aria-live="polite">
-                Loading inspection rows {pendingStepInspection.offset + 1}–{pendingStepInspection.offset + pageSize}…
+                Loading inspection rows {pendingStepInspection.offset + 1} to {pendingStepInspection.offset + pageSize}…
               </div>
             )}
             {stepInspectionError && (
@@ -2102,7 +2099,8 @@ export function App() {
                 viewContextId={
                   inspectionMode ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}` : activeViewContextId
                 }
-                goToColumn={goToColumn}
+                goToColumnId={goToColumnRequest?.columnId}
+                goToColumnRequestId={goToColumnRequest?.requestId}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={
                   inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
@@ -2214,7 +2212,7 @@ export function App() {
               <summary>
                 Generated{" "}
                 {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
-                code · edit in Code Preview panel
+                {" code · edit in Code Preview panel"}
               </summary>
               <pre tabIndex={0} aria-label="Generated Python code preview">
                 <code>{generatedCode}</code>

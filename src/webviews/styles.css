@@ -268,8 +268,109 @@ textarea {
   font-size: 12px;
 }
 
-.goToColumn input {
-  width: 160px;
+.columnSearchControl {
+  position: relative;
+}
+
+.columnSearchControl input {
+  padding-left: 25px;
+  width: 190px;
+}
+
+.columnSearchInputIcon {
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+  left: 7px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+.columnSearchPopup {
+  background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  min-width: 280px;
+  overflow: hidden;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+}
+
+.columnSearchResults {
+  list-style: none;
+  margin: 0;
+  max-height: min(360px, 55vh);
+  overflow: auto;
+  padding: 3px;
+}
+
+.columnSearchResults:empty {
+  padding: 0;
+}
+
+.columnSearchResults [role="option"] {
+  align-items: center;
+  border-radius: 3px;
+  cursor: default;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 18px minmax(100px, 1fr) auto auto;
+  min-height: 28px;
+  padding: 2px 7px;
+}
+
+.columnSearchResults [role="option"].active {
+  background: var(--vscode-list-activeSelectionBackground, var(--vscode-button-background));
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-button-foreground));
+}
+
+.columnSearchResults [role="option"].selected:not(.active) {
+  background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-list-inactiveSelectionForeground, var(--vscode-foreground));
+}
+
+.columnSearchTypeIcon {
+  color: currentColor;
+  font-size: 14px;
+  justify-self: center;
+}
+
+.columnSearchName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.columnSearchType,
+.columnSearchPosition,
+.columnSearchCount {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.columnSearchResults [role="option"].active .columnSearchType,
+.columnSearchResults [role="option"].active .columnSearchPosition {
+  color: inherit;
+  opacity: 0.82;
+}
+
+.columnSearchPosition {
+  border-left: 1px solid currentColor;
+  padding-left: 8px;
+}
+
+.columnSearchEmpty,
+.columnSearchCount {
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.columnSearchCount {
+  border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
 }
 
 .layout {
@@ -1553,8 +1654,14 @@ dd {
     flex: 1;
   }
 
-  .goToColumn input {
+  .columnSearchControl input {
     width: min(46vw, 220px);
+  }
+
+  .columnSearchPopup {
+    left: 0;
+    max-width: min(92vw, 360px);
+    right: auto;
   }
 
   .gridControls span {
