@@ -138,7 +138,7 @@ describe("session persistence", () => {
     });
   });
 
-  it("retains the confirmed PySpark backend for live-notebook recovery", () => {
+  it("rejects PySpark state until live-notebook recovery is supported", () => {
     const state = {
       backend: "pyspark",
       cleaning: { steps: [] },
@@ -149,7 +149,7 @@ describe("session persistence", () => {
       }
     };
 
-    expect(decodePersistedSession(state)).toEqual(state);
+    expect(decodePersistedSession(state)).toBeUndefined();
   });
 
   it("rejects persisted by-example text outside the strict UTF-8 envelope", () => {
