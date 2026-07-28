@@ -3,7 +3,7 @@ name: Release VSIX
 on:
   push:
     tags:
-      - "v*"
+      - "v0.*[13579].*"
 
 permissions:
   contents: read

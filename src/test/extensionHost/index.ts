@@ -163,6 +163,10 @@ const DEPENDENCY_GUARD_PROTOCOL = "openwrangler-dependency-guard-v1";
 const DEPENDENCY_GUARD_ACCEPTANCE_TOKEN = "22222222-2222-4222-8222-222222222222";
 const DEPENDENCY_GUARD_HOSTILE_TOKEN = "33333333-3333-4333-8333-333333333333";
 const DEPENDENCY_GUARD_PARENT_CRASH_EXIT_CODE = 197;
+// sample.csv has only four data rows and fits in the native editor grid, so
+// row zero is its only physically possible first visible row. The 80-row
+// import-reconfiguration scenario separately proves nonzero row restoration.
+const SHORT_FIXTURE_FIRST_VISIBLE_ROW = 0;
 
 function resolveAcceptanceTemporaryDirectory(directory: string): string {
   const isolatedTempRoot = path.resolve(tmpdir());
@@ -7099,7 +7103,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
     await testing.updateViewState(opened.metadata.sessionId, {
       columnWidths: { [salesColumnId]: target.width },
       selectedColumnId: salesColumnId,
-      viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
+      viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: target.scrollLeft }
     });
 
     recordAcceptanceProgress(`seed:${target.backend}:close`);
@@ -7135,7 +7139,7 @@ async function seedPersistedPlan(testing: TestApi, fixture: vscode.Uri): Promise
       filterModel: { ...filterModel, logic: "and" },
       columnWidths: { [salesColumnId]: target.width },
       selectedColumnId: salesColumnId,
-      viewport: { firstVisibleRow: 1, scrollLeft: target.scrollLeft }
+      viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: target.scrollLeft }
     });
     recordAcceptanceProgress(`seed:${target.backend}:readback-close`);
     const readbackClosed = await testing.request({
@@ -7186,7 +7190,7 @@ async function verifyPersistedReplayAndRecovery(
     filterModel: restored.metadata.filterModel,
     columnWidths: { [restoredSalesId]: 250 },
     selectedColumnId: restoredSalesId,
-    viewport: { firstVisibleRow: 1, scrollLeft: 35 }
+    viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: 35 }
   });
 
   const secondFixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.tsv");
@@ -7230,7 +7234,7 @@ async function verifyPersistedReplayAndRecovery(
     filterModel: third.metadata.filterModel,
     columnWidths: { [duckdbSalesId]: 310 },
     selectedColumnId: duckdbSalesId,
-    viewport: { firstVisibleRow: 1, scrollLeft: 75 }
+    viewport: { firstVisibleRow: SHORT_FIXTURE_FIRST_VISIBLE_ROW, scrollLeft: 75 }
   });
   assert.notEqual(third.metadata.sessionId, restored.metadata.sessionId);
   assert.notEqual(third.metadata.sessionId, second.metadata.sessionId);

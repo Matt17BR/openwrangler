@@ -1,20 +1,7 @@
 import * as assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  closeSync,
-  constants,
-  createReadStream,
-  fstatSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  type BigIntStats,
-  writeFileSync
-} from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as vscode from "vscode";
@@ -28,11 +15,11 @@ import type {
 } from "../../shared/installedPerformanceFixtureManifestTypes";
 import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from "../../shared/protocol";
 import { parseStrictJson } from "../../shared/strictJson.cjs";
-import { removeIdentifiedTemporary } from "./identifiedTemporary";
+import { publishInstalledPerformanceFragment, type InstalledPerformanceArtifactReceipt } from "./fragmentPublication";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
+import { measureRendererGridScroll, rendererHasUsableGridGeometry } from "./rendererGridScrollMeasurement";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
-const ARTIFACT_RECEIPT_PROTOCOL = "openwrangler-editor-acceptance-artifact-receipt-v1";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIRST_GRID_BOUNDARY =
   "vscode.openWith dispatch to a visible production grid block with exact shape and aria-busy=false";
@@ -89,13 +76,7 @@ interface ProductConfiguration {
   fetchColumnBlockSize: 16;
 }
 
-interface ArtifactReceipt {
-  protocol: typeof ARTIFACT_RECEIPT_PROTOCOL;
-  bytes: number;
-  sha256: string;
-}
-
-export async function run(): Promise<ArtifactReceipt> {
+export async function run(): Promise<InstalledPerformanceArtifactReceipt> {
   const phase = requiredEnvironment("OPEN_WRANGLER_TEST_PHASE");
   const firstGridMatch = FIRST_GRID_PHASE_PATTERN.exec(phase);
   assert.ok(
@@ -173,7 +154,7 @@ export async function run(): Promise<ArtifactReceipt> {
     },
     measurement
   };
-  const receipt = publishFragment(path.join(workspace, "results", `${phase}.json`), fragment);
+  const receipt = publishInstalledPerformanceFragment(path.join(workspace, "results", `${phase}.json`), fragment);
   recordProgress("fragment:published");
   return receipt;
 }
@@ -583,18 +564,16 @@ async function scrollGridToRow(
   totalColumns: number,
   expectedValue: number
 ): Promise<number> {
-  const started = await rendererNow(frame);
-  await frame.getByTestId("data-grid-scroller").evaluate((element, targetRow) => {
-    (element as unknown as { scrollTop: number }).scrollTop = targetRow * 29;
-  }, row);
-  await waitForGridState(frame, {
-    rows: totalRows,
-    columns: totalColumns,
+  const duration = await frame.evaluate(measureRendererGridScroll, {
     row,
     column: 0,
-    value: expectedValue
+    totalRows,
+    totalColumns,
+    expectedText: String(expectedValue),
+    rowHeight: 29,
+    timeoutMs: GRID_DISCOVERY_TIMEOUT_MS
   });
-  return roundMilliseconds((await rendererNow(frame)) - started);
+  return roundMilliseconds(duration);
 }
 
 async function measureRendererHeartbeat(frame: Frame): Promise<number> {
@@ -609,13 +588,6 @@ async function measureRendererHeartbeat(frame: Frame): Promise<number> {
     });
   });
   return roundMilliseconds(duration);
-}
-
-async function rendererNow(frame: Frame): Promise<number> {
-  return frame.evaluate(() => {
-    const browser = globalThis as unknown as { performance: { now(): number } };
-    return browser.performance.now();
-  });
 }
 
 async function openColumnAction(frame: Frame, column: string, action: string): Promise<void> {
@@ -835,6 +807,8 @@ async function measureForegroundPage(
 async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: number }): Promise<boolean> {
   const grid = frame.locator('table[role="grid"]').first();
   if ((await grid.count()) === 0 || !(await grid.isVisible())) return false;
+  const scroller = frame.getByTestId("data-grid-scroller").first();
+  if ((await scroller.count()) === 0 || !(await scroller.isVisible())) return false;
   const attributes = await grid.evaluate((element) => ({
     busy: element.getAttribute("aria-busy"),
     rows: element.getAttribute("aria-rowcount"),
@@ -847,15 +821,17 @@ async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: 
   ) {
     return false;
   }
-  for (const [row, column] of [
+  const requiredCells = [
     [0, 0],
     [0, Math.min(1, shape.columns - 1)],
     [Math.min(1, shape.rows - 1), 0]
-  ]) {
+  ] as const;
+  for (const [row, column] of requiredCells) {
     const cell = frame.locator(`[data-grid-row="${row}"][data-grid-column="${column}"]`).first();
     if ((await cell.count()) === 0 || !(await cell.isVisible())) return false;
     if ((await cell.textContent()) !== String(row + column)) return false;
   }
+  if (!(await frame.evaluate(rendererHasUsableGridGeometry, { cells: requiredCells }))) return false;
   const insightsToggle = frame.getByRole("button", { name: "Hide insights", exact: true });
   if ((await insightsToggle.count()) === 0 || !(await insightsToggle.isVisible())) return false;
   return true;
@@ -992,69 +968,6 @@ async function sha256(file: string): Promise<string> {
     stream.once("end", resolve);
   });
   return digest.digest("hex");
-}
-
-function publishFragment(destination: string, value: unknown): ArtifactReceipt {
-  mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-  try {
-    lstatSync(destination);
-    throw new Error("The installed performance fragment destination must be unused.");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
-  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-  assert.ok(bytes.length > 0 && bytes.length <= MAX_PRIVATE_JSON_BYTES);
-  let descriptor: number | undefined;
-  let temporaryIdentity: BigIntStats | undefined;
-  let published = false;
-  try {
-    descriptor = openSync(
-      temporary,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
-      0o600
-    );
-    const identity = fstatSync(descriptor, { bigint: true });
-    assert.ok(identity.isFile() && identity.nlink === 1n);
-    temporaryIdentity = identity;
-    writeFileSync(descriptor, bytes);
-    fsyncSync(descriptor);
-    const complete = fstatSync(descriptor, { bigint: true });
-    assert.ok(
-      complete.isFile() && complete.nlink === 1n && complete.dev === identity.dev && complete.ino === identity.ino
-    );
-    closeSync(descriptor);
-    descriptor = undefined;
-    const atPath = lstatSync(temporary, { bigint: true });
-    assert.ok(
-      atPath.isFile() &&
-        !atPath.isSymbolicLink() &&
-        atPath.nlink === 1n &&
-        atPath.dev === complete.dev &&
-        atPath.ino === complete.ino
-    );
-    renameSync(temporary, destination);
-    const publishedIdentity = lstatSync(destination, { bigint: true });
-    assert.ok(
-      publishedIdentity.isFile() &&
-        !publishedIdentity.isSymbolicLink() &&
-        publishedIdentity.nlink === 1n &&
-        publishedIdentity.dev === complete.dev &&
-        publishedIdentity.ino === complete.ino &&
-        publishedIdentity.size === complete.size &&
-        publishedIdentity.mtimeNs === complete.mtimeNs &&
-        publishedIdentity.ctimeNs === complete.ctimeNs
-    );
-    published = true;
-    return Object.freeze({
-      protocol: ARTIFACT_RECEIPT_PROTOCOL,
-      bytes: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex")
-    });
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
-    if (!published && temporaryIdentity !== undefined) removeIdentifiedTemporary(temporary, temporaryIdentity);
-  }
 }
 
 function roundMilliseconds(value: number): number {

@@ -5047,6 +5047,7 @@ test("Linux editor acceptance defaults to an isolated zero-window platform", asy
     assert.equal(environment.XDG_SESSION_TYPE, "tty");
     assert.deepEqual(editorDisplayLaunchArgs("linux", environment), [
       "--ozone-platform=headless",
+      "--ozone-override-screen-size=1920,1080",
       "--disable-gpu",
       "--force-disable-user-env",
       "--disable-updates",

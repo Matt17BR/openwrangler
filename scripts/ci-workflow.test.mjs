@@ -158,7 +158,15 @@ test("manual stable evidence packages once and consumes the same canonical artif
   const evidenceUploadIndex = performance.steps.findIndex(
     (step) => step.name === "Upload installed-performance evidence"
   );
-  assert.ok(downloadIndex >= 0 && downloadIndex < benchmarkIndex && benchmarkIndex < evidenceUploadIndex);
+  const failedEvidenceUploadIndex = performance.steps.findIndex(
+    (step) => step.name === "Upload failed numeric installed-performance evidence"
+  );
+  assert.ok(
+    downloadIndex >= 0 &&
+      downloadIndex < benchmarkIndex &&
+      failedEvidenceUploadIndex === benchmarkIndex + 1 &&
+      evidenceUploadIndex === failedEvidenceUploadIndex + 1
+  );
   assert.deepEqual(performance.steps[downloadIndex]?.with, {
     "artifact-ids": "${{ needs.package.outputs.artifact-id }}",
     path: "performance-evidence",
@@ -180,9 +188,23 @@ test("manual stable evidence packages once and consumes the same canonical artif
     EXPECTED_SHA: "${{ github.sha }}",
     RELEASE_TAG: "${{ inputs.release_tag }}"
   });
+  const failedEvidenceUpload = performance.steps[failedEvidenceUploadIndex];
+  assert.equal(failedEvidenceUpload?.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
+  assert.equal(
+    failedEvidenceUpload?.if,
+    "${{ always() && steps.installed_performance.outcome == 'failure' && steps.installed_performance.outputs.evidence_ready == 'true' }}"
+  );
+  assert.deepEqual(failedEvidenceUpload?.with, {
+    name: "openwrangler-installed-performance-numeric-failure",
+    path: "${{ steps.installed_performance.outputs.evidence_path }}",
+    "if-no-files-found": "error",
+    "retention-days": 7,
+    "compression-level": 9,
+    "include-hidden-files": false
+  });
   const evidenceUpload = performance.steps[evidenceUploadIndex];
   assert.equal(evidenceUpload?.uses, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a");
-  assert.equal(evidenceUpload?.if, undefined);
+  assert.equal(evidenceUpload?.if, "${{ steps.installed_performance.outcome == 'success' }}");
   assert.deepEqual(evidenceUpload?.with, {
     name: "openwrangler-installed-performance",
     path: "${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json",
@@ -242,6 +264,27 @@ test("stable evidence workflow inspector rejects source, artifact, and consumer 
       candidate.jobs["installed-performance"].steps.find((step) => step.id === "installed_performance").run +=
         " --smoke";
     }).some((problem) => problem.includes("isolated unsharded"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs["installed-performance"].steps.find(
+        (step) => step.name === "Upload failed numeric installed-performance evidence"
+      ).with.path = "performance-evidence/openwrangler.vsix";
+    }).some((problem) => problem.includes("validated numeric-gate report"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs["installed-performance"].steps.find(
+        (step) => step.name === "Upload failed numeric installed-performance evidence"
+      ).if = "${{ always() }}";
+    }).some((problem) => problem.includes("validated numeric-gate report"))
+  );
+  assert.ok(
+    inspect((candidate) => {
+      candidate.jobs["installed-performance"].steps.find(
+        (step) => step.name === "Upload installed-performance evidence"
+      ).if = "${{ always() }}";
+    }).some((problem) => problem.includes("successful path-free report immediately after"))
   );
   assert.ok(
     inspect((candidate) => {

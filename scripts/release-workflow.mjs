@@ -179,7 +179,21 @@ const STABLE_PERFORMANCE_STEPS = [
     ].join(" ")
   },
   {
+    name: "Upload failed numeric installed-performance evidence",
+    if: "${{ always() && steps.installed_performance.outcome == 'failure' && steps.installed_performance.outputs.evidence_ready == 'true' }}",
+    uses: UPLOAD_ACTION,
+    with: {
+      name: "openwrangler-installed-performance-numeric-failure",
+      path: "${{ steps.installed_performance.outputs.evidence_path }}",
+      "if-no-files-found": "error",
+      "retention-days": 7,
+      "compression-level": 9,
+      "include-hidden-files": false
+    }
+  },
+  {
     name: "Upload installed-performance evidence",
+    if: "${{ steps.installed_performance.outcome == 'success' }}",
     uses: UPLOAD_ACTION,
     with: {
       name: "openwrangler-installed-performance",
@@ -608,9 +622,9 @@ export function inspectReleaseWorkflow(contents) {
     !isRecord(workflow.on.push) ||
     !Array.isArray(workflow.on.push.tags) ||
     workflow.on.push.tags.length !== 1 ||
-    workflow.on.push.tags[0] !== "v*"
+    workflow.on.push.tags[0] !== "v0.*[13579].*"
   ) {
-    problems.push('release.yml must trigger only from pushed "v*" tags.');
+    problems.push('release.yml must trigger only from numeric preview-channel "v0.*[13579].*" tags.');
   }
   if (!hasExactPermissions(workflow.permissions, { contents: "read" })) {
     problems.push("release.yml default permissions must be exactly contents: read.");
@@ -1229,8 +1243,36 @@ export function inspectStableCandidateWorkflow(contents) {
     "installed-performance report upload",
     problems
   );
+  const failedReportUpload = stableCandidateStep(
+    performanceSteps,
+    (step) => step.name === "Upload failed numeric installed-performance evidence",
+    "failed numeric installed-performance report upload",
+    problems
+  );
+  if (
+    failedReportUpload?.step.if !==
+      "${{ always() && steps.installed_performance.outcome == 'failure' && steps.installed_performance.outputs.evidence_ready == 'true' }}" ||
+    failedReportUpload?.step.uses !== UPLOAD_ACTION ||
+    !exactRecord(failedReportUpload?.step.with, {
+      name: "openwrangler-installed-performance-numeric-failure",
+      path: "${{ steps.installed_performance.outputs.evidence_path }}",
+      "if-no-files-found": "error",
+      "retention-days": 7,
+      "compression-level": 9,
+      "include-hidden-files": false
+    }) ||
+    ["env", "continue-on-error", "shell", "working-directory"].some((key) =>
+      hasOwn(failedReportUpload?.step ?? {}, key)
+    ) ||
+    failedReportUpload?.index !== benchmark?.index + 1
+  ) {
+    problems.push(
+      "stable-candidate.yml may retain only a validated numeric-gate report through the benchmark's exact failure output."
+    );
+  }
   if (
     reportUpload?.step.uses !== UPLOAD_ACTION ||
+    reportUpload?.step.if !== "${{ steps.installed_performance.outcome == 'success' }}" ||
     !exactRecord(reportUpload?.step.with, {
       name: "openwrangler-installed-performance",
       path: STABLE_REPORT_PATH,
@@ -1239,8 +1281,7 @@ export function inspectStableCandidateWorkflow(contents) {
       "compression-level": 9,
       "include-hidden-files": false
     }) ||
-    !defaultStableStepControls(reportUpload?.step) ||
-    hasOwn(reportUpload?.step ?? {}, "env") ||
+    ["env", "continue-on-error", "shell", "working-directory"].some((key) => hasOwn(reportUpload?.step ?? {}, key)) ||
     performanceCheckout === undefined ||
     performanceTag === undefined ||
     download === undefined ||
@@ -1250,10 +1291,13 @@ export function inspectStableCandidateWorkflow(contents) {
       performanceTag.index < download.index &&
       download.index < benchmark.index
     ) ||
-    reportUpload?.index !== benchmark.index + 1 ||
+    failedReportUpload === undefined ||
+    reportUpload?.index !== failedReportUpload.index + 1 ||
     reportUpload?.index !== performanceSteps.length - 1
   ) {
-    problems.push("stable-candidate.yml must upload only the successful path-free report immediately.");
+    problems.push(
+      "stable-candidate.yml must upload the successful path-free report immediately after the narrow numeric-failure slot."
+    );
   }
 
   const allCommands = [...packageSteps, ...performanceSteps].map((step) => normalizeRun(step.run)).filter(Boolean);

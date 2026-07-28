@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { chmodSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   INSTALLED_PERFORMANCE_BOUNDARY,
@@ -13,12 +14,14 @@ import {
   assertInstalledPerformanceEvidenceGate,
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
+  isInstalledPerformanceNumericGateError,
   revalidateInstalledPerformanceReport,
   summarizeInstalledDurationSamples,
   validateInstalledFixtureManifest,
   validateInstalledPerformancePhase,
   writeInstalledPerformanceReport
 } from "./installed-performance-report.mjs";
+import { publishInstalledPerformanceReleaseResult } from "./run-installed-performance.mjs";
 
 const sha = (digit) => digit.repeat(64);
 const sample = (value) => Array.from({ length: 10 }, (_, index) => value + index / 100);
@@ -164,7 +167,348 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     passed: false,
     failures: ["cursor parquet cold first-grid p95 5000ms >= 5000ms"]
   };
-  assert.throws(() => assertInstalledPerformanceReleaseGate(failed), /parquet cold first-grid p95/u);
+  let numericError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(failed),
+    (error) => {
+      numericError = error;
+      return /parquet cold first-grid p95/u.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(numericError), true);
+  assert.deepEqual(numericError.failures, ["cursor parquet cold first-grid p95 5000ms >= 5000ms"]);
+  assert.equal(Object.isFrozen(numericError.failures), true);
+
+  for (const privatePath of [
+    "/home/alice/private-release",
+    "/root/private-release",
+    "/mnt/private-release",
+    "/opt/private-release",
+    "///root/private-release",
+    "/ root/private-release",
+    "release at /etc/os-release",
+    "release;/root/private-release",
+    String.raw`release|\Users\alice\private-release`,
+    "release-/root/private-release",
+    "release./root/private-release",
+    "release_/root/private-release",
+    "release~/root/private-release",
+    "root:////private-release",
+    "//server",
+    "//server/share/private-release",
+    String.raw`\\server`,
+    String.raw`\\server\share\private-release`,
+    "C:/Users/alice/private-release",
+    String.raw`C:\Users\alice\private-release`,
+    "~/private-release",
+    "~alice/private-release",
+    "~alice",
+    "~",
+    "~+/private-release",
+    "~+1/private-release",
+    "~alice+tag/private-release",
+    "home:~alice/private-release",
+    "../private-release",
+    "./private-release",
+    "..",
+    ".",
+    "cwd:../private-release",
+    String.raw`C:Users\alice\private-release`,
+    "$HOME/private-release",
+    "${HOME}/private-release",
+    String.raw`$env:USERPROFILE\private-release`,
+    "$Env:HOME/private-release",
+    String.raw`$global:PSScriptRoot\private-release`,
+    String.raw`%USERPROFILE%\private-release`,
+    "file:%2F%2F%2Fhome%2Falice%2Fprivate-release",
+    "%2Fhome%2Falice%2Fprivate-release",
+    "C%3A%5CUsers%5Calice%5Cprivate-release",
+    "%252Fhome%252Falice",
+    "AMD Ryzen 7 / Radeon 780M",
+    "x:///private-release",
+    String.raw`\Users\alice\private-release`
+  ]) {
+    const privateNumericReport = structuredClone(failed);
+    privateNumericReport.editors[1].provenance.platform.operatingSystemRelease = privatePath;
+    let privateEvidenceError;
+    assert.throws(
+      () => assertInstalledPerformanceReleaseGate(privateNumericReport),
+      (error) => {
+        privateEvidenceError = error;
+        return /contains a private path/u.test(error.message);
+      }
+    );
+    assert.equal(isInstalledPerformanceNumericGateError(privateEvidenceError), false);
+  }
+
+  const publicUrlReport = structuredClone(failed);
+  publicUrlReport.editors[1].provenance.platform.operatingSystemRelease = "https://example.test/public-release";
+  let publicUrlError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(publicUrlReport),
+    (error) => {
+      publicUrlError = error;
+      return /parquet cold first-grid p95/u.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(publicUrlError), true);
+
+  const oneLetterUrlReport = structuredClone(failed);
+  oneLetterUrlReport.editors[1].provenance.platform.operatingSystemRelease = "x://example.test/public-release";
+  let oneLetterUrlError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(oneLetterUrlReport),
+    (error) => {
+      oneLetterUrlError = error;
+      return /parquet cold first-grid p95/u.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(oneLetterUrlError), true);
+
+  const labeledUrlReport = structuredClone(failed);
+  labeledUrlReport.editors[1].provenance.platform.operatingSystemRelease =
+    "release URL: x://example.test/public-release";
+  let labeledUrlError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(labeledUrlReport),
+    (error) => {
+      labeledUrlError = error;
+      return /parquet cold first-grid p95/u.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(labeledUrlError), true);
+
+  for (const publicUrl of [
+    "https://example.test?doc=public",
+    "https://example.test#public",
+    "https://example.test?doc=/public/path"
+  ]) {
+    const publicUrlQueryReport = structuredClone(failed);
+    publicUrlQueryReport.editors[1].provenance.platform.operatingSystemRelease = publicUrl;
+    let publicUrlQueryError;
+    assert.throws(
+      () => assertInstalledPerformanceReleaseGate(publicUrlQueryReport),
+      (error) => {
+        publicUrlQueryError = error;
+        return /parquet cold first-grid p95/u.test(error.message);
+      }
+    );
+    assert.equal(isInstalledPerformanceNumericGateError(publicUrlQueryError), true);
+  }
+
+  for (const urlFollowedByPrivatePath of [
+    "https://example.test,/root/private-release",
+    String.raw`x://example.test;|\Users\alice\private-release`,
+    "https://example.test_/root/private-release",
+    "https://example.test-/root/private-release"
+  ]) {
+    const mixedUrlReport = structuredClone(failed);
+    mixedUrlReport.editors[1].provenance.platform.operatingSystemRelease = urlFollowedByPrivatePath;
+    let mixedUrlError;
+    assert.throws(
+      () => assertInstalledPerformanceReleaseGate(mixedUrlReport),
+      (error) => {
+        mixedUrlError = error;
+        return /contains a private path/u.test(error.message);
+      }
+    );
+    assert.equal(isInstalledPerformanceNumericGateError(mixedUrlError), false);
+  }
+});
+
+test("numeric-only publication emits one final jointly revalidated report receipt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-numeric-output-"));
+  try {
+    const runnerTemp = join(directory, "runner-temp");
+    const reportPath = join(runnerTemp, "installed-performance.json");
+    const githubOutput = join(directory, "github-output");
+    let candidateValidations = 0;
+    const publicationEvents = [];
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: reportPath,
+          result: numericFailureReport(),
+          publicCandidateReceipt: { path: join(directory, "candidate.vsix") },
+          revalidateCandidate() {
+            candidateValidations += 1;
+            publicationEvents.push("candidate");
+          },
+          revalidateFailureReport(receipt, hooks) {
+            publicationEvents.push("failure-report-open");
+            const result = revalidateInstalledPerformanceReport(receipt, hooks);
+            publicationEvents.push("failure-report-close");
+            return result;
+          },
+          appendFailureEvidenceOutput(...arguments_) {
+            publicationEvents.push("output");
+            appendFileSync(...arguments_);
+          },
+          failureEvidenceEnvironment: {
+            GITHUB_ACTIONS: "true",
+            GITHUB_OUTPUT: githubOutput,
+            RUNNER_TEMP: runnerTemp
+          }
+        }),
+      (error) => isInstalledPerformanceNumericGateError(error)
+    );
+    assert.equal(candidateValidations, 6);
+    assert.deepEqual(publicationEvents.slice(-5), [
+      "candidate",
+      "failure-report-open",
+      "candidate",
+      "failure-report-close",
+      "output"
+    ]);
+
+    const outputs = await readFile(githubOutput, "utf8");
+    const emittedPath = /^evidence_path=(.+)$/mu.exec(outputs)?.[1];
+    const emittedSha256 = /^evidence_sha256=([0-9a-f]{64})$/mu.exec(outputs)?.[1];
+    const emittedSize = /^evidence_size=([1-9][0-9]*)$/mu.exec(outputs)?.[1];
+    assert.equal(/^evidence_ready=true$/mu.test(outputs), true);
+    assert.equal(emittedPath, resolve(reportPath));
+    const bytes = await readFile(emittedPath);
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), emittedSha256);
+    assert.equal(String(bytes.length), emittedSize);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("failure output stays absent for structural, private, uncertain, unsafe, and output-fault cases", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ow-installed-failure-output-closed-"));
+  try {
+    const runnerTemp = join(directory, "runner-temp");
+    const environmentFor = (name) => ({
+      GITHUB_ACTIONS: "true",
+      GITHUB_OUTPUT: join(directory, `${name}.github-output`),
+      RUNNER_TEMP: runnerTemp
+    });
+    const candidateReceipt = { path: join(directory, "candidate.vsix") };
+    const numeric = numericFailureReport();
+    const mixed = structuredClone(numeric);
+    mixed.source.trackedWorktreeDirty = true;
+    mixed.releaseGate = {
+      passed: false,
+      failures: ["candidate source worktree has tracked changes", ...numeric.releaseGate.failures]
+    };
+    const privateNumeric = structuredClone(numeric);
+    privateNumeric.editors[1].provenance.platform.operatingSystemRelease = "/home/alice/private-release";
+
+    for (const [name, report, expected] of [
+      ["mixed", mixed, /candidate source worktree has tracked changes/u],
+      ["private", privateNumeric, /contains a private path/u]
+    ]) {
+      const environment = environmentFor(name);
+      assert.throws(
+        () =>
+          publishInstalledPerformanceReleaseResult({
+            output: join(runnerTemp, `${name}.json`),
+            result: report,
+            publicCandidateReceipt: candidateReceipt,
+            revalidateCandidate() {},
+            failureEvidenceEnvironment: environment
+          }),
+        expected
+      );
+      assert.equal(existsSync(environment.GITHUB_OUTPUT), false);
+    }
+
+    const candidateUncertainEnvironment = environmentFor("candidate-uncertain");
+    let candidateChecks = 0;
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(runnerTemp, "candidate-uncertain.json"),
+          result: numeric,
+          publicCandidateReceipt: candidateReceipt,
+          revalidateCandidate() {
+            candidateChecks += 1;
+            if (candidateChecks === 4) throw new Error("candidate became uncertain before failure output");
+          },
+          failureEvidenceEnvironment: candidateUncertainEnvironment
+        }),
+      /numeric gate failed.*could not be published/su
+    );
+    assert.equal(existsSync(candidateUncertainEnvironment.GITHUB_OUTPUT), false);
+
+    const reportUncertainEnvironment = environmentFor("report-uncertain");
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(runnerTemp, "report-uncertain.json"),
+          result: numeric,
+          publicCandidateReceipt: candidateReceipt,
+          revalidateCandidate() {},
+          revalidateFailureReport() {},
+          failureEvidenceEnvironment: reportUncertainEnvironment
+        }),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.some((failure) => /could not jointly revalidate its report and candidate/u.test(failure.message))
+    );
+    assert.equal(existsSync(reportUncertainEnvironment.GITHUB_OUTPUT), false);
+
+    const finalWindowMutationEnvironment = environmentFor("final-window-mutation");
+    let finalWindowMutated = false;
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(runnerTemp, "final-window-mutation.json"),
+          result: numeric,
+          publicCandidateReceipt: candidateReceipt,
+          revalidateCandidate() {},
+          revalidateFailureReport(receipt, hooks) {
+            return revalidateInstalledPerformanceReport(receipt, {
+              afterOpen(path) {
+                hooks.afterOpen(path);
+                writeFileSync(path, "{}\n", { mode: 0o600 });
+                finalWindowMutated = true;
+              }
+            });
+          },
+          failureEvidenceEnvironment: finalWindowMutationEnvironment
+        }),
+      /numeric gate failed.*could not be published/su
+    );
+    assert.equal(finalWindowMutated, true);
+    assert.equal(existsSync(finalWindowMutationEnvironment.GITHUB_OUTPUT), false);
+
+    const unsafeEnvironment = environmentFor("unsafe-path");
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(directory, "outside-runner-temp.json"),
+          result: numeric,
+          publicCandidateReceipt: candidateReceipt,
+          revalidateCandidate() {},
+          failureEvidenceEnvironment: unsafeEnvironment
+        }),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.some((failure) => /not safe for exact-path upload/u.test(failure.message))
+    );
+    assert.equal(existsSync(unsafeEnvironment.GITHUB_OUTPUT), false);
+
+    const outputFaultEnvironment = environmentFor("output-fault");
+    assert.throws(
+      () =>
+        publishInstalledPerformanceReleaseResult({
+          output: join(runnerTemp, "output-fault.json"),
+          result: numeric,
+          publicCandidateReceipt: candidateReceipt,
+          revalidateCandidate() {},
+          failureEvidenceEnvironment: outputFaultEnvironment,
+          appendFailureEvidenceOutput() {
+            throw new Error("workflow output unavailable");
+          }
+        }),
+      /numeric gate failed.*could not be published/su
+    );
+    assert.equal(existsSync(outputFaultEnvironment.GITHUB_OUTPUT), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("aggregate evidence rejects a runtime that does not match the VSIX candidate", () => {
@@ -359,7 +703,39 @@ test("aggregate verdicts retain dirty-source and missing-editor release failures
     passed: false,
     failures: ["candidate source worktree has tracked changes", "missing cursor installed performance evidence"]
   });
-  assert.throws(() => assertInstalledPerformanceReleaseGate(report), /tracked changes.*missing cursor/su);
+  let structuralError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(report),
+    (error) => {
+      structuralError = error;
+      return /tracked changes.*missing cursor/su.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(structuralError), false);
+});
+
+test("numeric failure classification fails closed when any structural gate also fails", () => {
+  const cursor = editorRun("cursor");
+  cursor.phases.at(-1).measurement.cachedSamplesMs[9] = 100;
+  const report = buildInstalledPerformanceReport({
+    generatedAtUtc: "2026-07-27T00:00:00.000Z",
+    candidate: candidate(),
+    source: { commit: "b".repeat(40), trackedWorktreeDirty: true },
+    fixtureManifest: fixtureManifest(),
+    editorRuns: [editorRun("vscode"), cursor]
+  });
+  assert.equal(report.releaseGate.passed, false);
+  assert.ok(report.releaseGate.failures.includes("candidate source worktree has tracked changes"));
+  assert.ok(report.releaseGate.failures.includes("cursor cached grid p95 100ms >= 100ms"));
+  let mixedError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(report),
+    (error) => {
+      mixedError = error;
+      return /gates failed/u.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(mixedError), false);
 });
 
 test("aggregate evidence rejects a candidate attributed to another checkout commit", () => {
@@ -495,6 +871,18 @@ function passingReport() {
     fixtureManifest: fixtureManifest(),
     editorRuns: [editorRun("vscode"), editorRun("cursor")]
   });
+}
+
+function numericFailureReport() {
+  const report = structuredClone(passingReport());
+  report.editors[1].results.firstGrid.parquet.cold.timing.samplesMs[9] = 5_000;
+  report.editors[1].results.firstGrid.parquet.cold.timing.p95Ms = 5_000;
+  report.editors[1].results.firstGrid.parquet.cold.timing.maxMs = 5_000;
+  report.releaseGate = {
+    passed: false,
+    failures: ["cursor parquet cold first-grid p95 5000ms >= 5000ms"]
+  };
+  return report;
 }
 
 function editorRun(key) {

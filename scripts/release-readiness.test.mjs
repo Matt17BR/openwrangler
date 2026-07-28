@@ -20,6 +20,7 @@ import test from "node:test";
 import { dump as dumpYaml, load as parseYaml } from "js-yaml";
 import { ZipFile } from "yazl";
 import { inspectVsixArchive, MAX_VSIX_ENTRY_BYTES } from "./vsix-archive.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
 import {
   inspectPreviewReleaseMetadata,
   inspectReleaseMetadata,
@@ -676,10 +677,47 @@ test("requires one exact positive stable release and install section in both REA
   assert.ok(packagedProblems.some((problem) => problem.startsWith("Packaged README must")));
 });
 
-test("keeps the checked-in preview README release and install section generated", () => {
+test("keeps the checked-in README release and install section generated for its current source channel", () => {
   const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-  assert.deepEqual(inspectPreviewReadme(readme), []);
-  assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
+  const packageJson = parseStrictJson(readFileSync(new URL("../package.json", import.meta.url), "utf8"), {
+    maxBytes: 1024 * 1024
+  });
+  assert.equal(typeof packageJson?.preview, "boolean");
+  if (packageJson.preview === true) {
+    assert.deepEqual(inspectPreviewReadme(readme), []);
+    assert.ok(readme.includes(PREVIEW_README_RELEASE_SECTION));
+    return;
+  }
+
+  const featureParity = readFileSync(new URL("../docs/feature-parity.md", import.meta.url), "utf8");
+  const trackedEvidencePaths = new Set(
+    execFileSync("git", ["ls-files", "-z", "--"], {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true
+    })
+      .split("\0")
+      .filter(Boolean)
+  );
+  const stableProblems = inspectStableSourceReadiness({
+    featureParity,
+    readme,
+    trackedEvidencePaths
+  });
+  const evidenceProblems = inspectPerformanceEvidenceSourceReadiness({
+    featureParity,
+    readme,
+    trackedEvidencePaths,
+    version: packageJson.version
+  });
+  assert.equal(Number(stableProblems.length === 0) + Number(evidenceProblems.length === 0), 1);
+  if (evidenceProblems.length === 0) {
+    assert.deepEqual(inspectPerformanceEvidenceReadme(readme), []);
+    assert.ok(readme.includes(PERFORMANCE_EVIDENCE_README_RELEASE_SECTION));
+  } else {
+    assert.ok(readme.includes(STABLE_README_RELEASE_SECTION));
+  }
 });
 
 test("keeps the same compact editor support tiers in every README channel", () => {

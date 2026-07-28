@@ -6,7 +6,7 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 <!-- open-wrangler-release-status:start -->
 
-> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md) remains open.
+> **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](https://github.com/Matt17BR/openwrangler/releases).
 
 ## Install
 
@@ -21,24 +21,11 @@ Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
 Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.
 
-To try the current preview from a clone of this repository:
+Download both `openwrangler.vsix` and `openwrangler.vsix.sha256` from the matching [GitHub Release](https://github.com/Matt17BR/openwrangler/releases), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
 
-```bash
-npm install
-python3 -m venv .venv
-.venv/bin/python -m pip install -e "python[dev]"
-npm run package -- --pre-release --out openwrangler.vsix
-```
+Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running `pip`; it never installs packages silently.
 
-On Windows, use `py -m venv .venv` and `.venv\Scripts\python.exe` in the equivalent commands.
-
-In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select `openwrangler.vsix`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu.
-
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running `pip`; it never installs packages silently. If an editor or machine stops during that change, the environment stays blocked until the guarded revalidation command proves it is consistent.
-
-Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
-
-Open Wrangler itself remains a preview and does not yet claim complete Microsoft Data Wrangler parity.
+This stable release satisfies every in-scope row in the checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
 
 <!-- open-wrangler-release-status:end -->
 
@@ -104,8 +91,6 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 ## Develop and contribute
 
-After the source setup above, use `npm run build` while iterating and `npm test` for the complete TypeScript and Python regression suites.
-
-Start with [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md). The [architecture guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md).
+Follow the setup in [CONTRIBUTING.md](https://github.com/Matt17BR/openwrangler/blob/main/CONTRIBUTING.md), use `npm run build` while iterating, and run `npm test` for the complete TypeScript and Python regression suites. The [architecture guide](https://github.com/Matt17BR/openwrangler/blob/main/docs/architecture.md) explains the extension/runtime boundaries, and [testing.md](https://github.com/Matt17BR/openwrangler/blob/main/docs/testing.md) covers the acceptance suites. Security issues should follow [SECURITY.md](https://github.com/Matt17BR/openwrangler/blob/main/SECURITY.md).
 
 Open Wrangler is an independent clean-room implementation inspired by the publicly documented behavior of Microsoft Data Wrangler. It does not use Microsoft code, branding, or assets and is not affiliated with Microsoft. Licensed under [MIT](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
