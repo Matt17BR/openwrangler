@@ -254,40 +254,20 @@ function scrubOriginalCredentialDescriptor(lease) {
 }
 
 function scrubCredentialPath(lease) {
-  let current;
-  try {
-    current = lstatSync(lease.path);
-  } catch (error) {
-    if (error?.code === "ENOENT") return;
-    throw error;
-  }
-
-  const expectedBytes = Buffer.byteLength(lease.expectedValue, "utf8");
-  const originalAtPath = current.dev === lease.identity.dev && current.ino === lease.identity.ino;
-  const erasedByHelper = !originalAtPath && current.size === 0;
-  const expectedCurrentBytes = originalAtPath || erasedByHelper ? 0 : expectedBytes;
-  if (
-    !current.isFile() ||
-    current.isSymbolicLink() ||
-    current.nlink !== 1 ||
-    current.dev !== lease.identity.dev ||
-    current.uid !== lease.identity.uid ||
-    current.size !== expectedCurrentBytes ||
-    (lease.enforcePosixModes && (current.mode & 0o777) !== 0o600)
-  ) {
-    throw new Error("The private Git credential path changed before cleanup.");
-  }
-
   let descriptor;
+  let opened;
   try {
     descriptor = openSync(lease.path, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
-    const opened = fstatSync(descriptor);
+    opened = fstatSync(descriptor);
+    const originalAtPath = opened.dev === lease.identity.dev && opened.ino === lease.identity.ino;
+    const erasedByHelper = !originalAtPath && opened.size === 0;
+    const expectedBytes = Buffer.byteLength(lease.expectedValue, "utf8");
+    const expectedCurrentBytes = originalAtPath || erasedByHelper ? 0 : expectedBytes;
     if (
       !opened.isFile() ||
       opened.nlink !== 1 ||
-      opened.dev !== current.dev ||
-      opened.ino !== current.ino ||
-      opened.uid !== current.uid ||
+      opened.dev !== lease.identity.dev ||
+      opened.uid !== lease.identity.uid ||
       opened.size !== expectedCurrentBytes ||
       (lease.enforcePosixModes && (opened.mode & 0o777) !== 0o600) ||
       (!originalAtPath && !erasedByHelper && readFileSync(descriptor, "utf8") !== lease.expectedValue)
@@ -298,8 +278,37 @@ function scrubCredentialPath(lease) {
           : "The private Git credential replacement was not the exact helper rewrite."
       );
     }
+    const named = lstatSync(lease.path);
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== 1 ||
+      named.dev !== opened.dev ||
+      named.ino !== opened.ino ||
+      named.uid !== opened.uid ||
+      named.size !== expectedCurrentBytes ||
+      (lease.enforcePosixModes && (named.mode & 0o777) !== 0o600)
+    ) {
+      throw new Error("The private Git credential path changed after it was opened for cleanup.");
+    }
+    const beforeScrub = fstatSync(descriptor);
+    if (
+      beforeScrub.nlink !== 1 ||
+      beforeScrub.dev !== opened.dev ||
+      beforeScrub.ino !== opened.ino ||
+      beforeScrub.uid !== opened.uid ||
+      beforeScrub.size !== expectedCurrentBytes
+    ) {
+      throw new Error("The private Git credential changed immediately before it was scrubbed.");
+    }
     ftruncateSync(descriptor, 0);
     fsyncSync(descriptor);
+  } catch (error) {
+    if (descriptor === undefined && error?.code === "ENOENT") return;
+    if (descriptor === undefined) {
+      throw new Error("The private Git credential path changed before cleanup.", { cause: error });
+    }
+    throw error;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
@@ -309,9 +318,9 @@ function scrubCredentialPath(lease) {
     !scrubbed.isFile() ||
     scrubbed.isSymbolicLink() ||
     scrubbed.nlink !== 1 ||
-    scrubbed.dev !== current.dev ||
-    scrubbed.ino !== current.ino ||
-    scrubbed.uid !== current.uid ||
+    scrubbed.dev !== opened.dev ||
+    scrubbed.ino !== opened.ino ||
+    scrubbed.uid !== opened.uid ||
     (lease.enforcePosixModes && (scrubbed.mode & 0o777) !== 0o600) ||
     scrubbed.size !== 0
   ) {
