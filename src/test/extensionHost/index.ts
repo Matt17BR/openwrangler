@@ -69,12 +69,10 @@ import {
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH,
   PACKAGED_SCREENSHOT_ROW_COUNT,
-  PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
-  packagedScreenshotFixtureCsv,
-  packagedScreenshotRow
+  packagedScreenshotFixtureCsv
 } from "./screenshotEvidence";
 import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 
@@ -982,6 +980,26 @@ async function exerciseReleasedJupyterExtension(
     );
     assert.ok(pandasMimePayload, "The released-Jupyter MIME v2 item must satisfy the saved-output contract.");
     assert.equal(pandasMimePayload.metadata.source.label, "DataFrame");
+    assert.deepEqual(pandasMimePayload.metadata.shape, { rows: 2_500, columns: 6 });
+    assert.deepEqual(
+      pandasMimePayload.metadata.schema.map((column) => column.name),
+      ["order_id", "market", "revenue", "fulfilled", "order_date", "channel"]
+    );
+
+    recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
+    await showExactReleasedNotebook(notebook);
+    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "polars_series");
+    const polarsSeries = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      { name: "polars_series", type: "polars.series.series.Series", backend: "polars", firstValue: "7" },
+      "the Polars Series opened from the real Open Wrangler notebook toolbar"
+    );
+    await assertReleasedSessionPage(testing, polarsSeries, "7", "released-jupyter-polars-series");
+    assert.equal(polarsSeries.metadata.mode, "viewing", "Released notebook sessions must default to viewing mode.");
+    await disposePackagedSessionPanel(testing, polarsSeries.sessionId, "the released-Jupyter Polars Series");
+
     const rendererEditor = await showExactReleasedNotebook(notebook);
     rendererEditor.selection = renderedCell;
     rendererEditor.selections = [renderedCell];
@@ -992,6 +1010,11 @@ async function exerciseReleasedJupyterExtension(
       "after revealing the released-Jupyter MIME renderer"
     );
     recordAcceptanceProgress(`${phase}:mime-renderer-revealed`);
+    const screenshotOutput = process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS;
+    const restoreScreenshotWorkbench =
+      phase === "jupyter-allow" && screenshotOutput
+        ? await prepareReleasedJupyterScreenshotWorkbench(workbench, notebook, rendererEditor)
+        : undefined;
     let rendererButton: NotebookRendererButton;
     try {
       rendererButton = await waitForNotebookRendererButton(workbench, "DataFrame");
@@ -1003,6 +1026,9 @@ async function exerciseReleasedJupyterExtension(
       );
     }
     try {
+      if (phase === "jupyter-allow" && screenshotOutput) {
+        await captureReleasedJupyterPandasPreview(workbench, rendererButton, screenshotOutput);
+      }
       await rendererButton.click();
     } finally {
       await rendererButton.dispose();
@@ -1018,6 +1044,7 @@ async function exerciseReleasedJupyterExtension(
     assert.equal(snapshot.metadata.source.label, "DataFrame");
     assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
     await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
+    await restoreScreenshotWorkbench?.();
 
     recordAcceptanceProgress(`${phase}:pandas-series`);
     const pandasSeries = await openReleasedVariableSession(
@@ -1029,20 +1056,6 @@ async function exerciseReleasedJupyterExtension(
     );
     await assertReleasedSessionPage(testing, pandasSeries, "5", "released-jupyter-pandas-series");
     await disposePackagedSessionPanel(testing, pandasSeries.sessionId, "the released-Jupyter Pandas Series");
-
-    recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
-    await showExactReleasedNotebook(notebook);
-    await invokeReleasedNotebookToolbarVariable(workbench, notebook, "polars_series");
-    const polarsSeries = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      { name: "polars_series", type: "polars.series.series.Series", backend: "polars", firstValue: "7" },
-      "the Polars Series opened from the real Open Wrangler notebook toolbar"
-    );
-    await assertReleasedSessionPage(testing, polarsSeries, "7", "released-jupyter-polars-series");
-    assert.equal(polarsSeries.metadata.mode, "viewing", "Released notebook sessions must default to viewing mode.");
-    await disposePackagedSessionPanel(testing, polarsSeries.sessionId, "the released-Jupyter Polars Series");
 
     recordAcceptanceProgress(`${phase}:polars-dataframe`);
     await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
@@ -1066,7 +1079,7 @@ async function exerciseReleasedJupyterExtension(
     const polarsPage = await assertReleasedSessionPage(testing, polarsFrame, "3", "released-jupyter-polars-dataframe");
 
     recordAcceptanceProgress(`${phase}:polars-plan`);
-    const preview = await testing.request({
+    const preview = await testing.previewPanelStep({
       kind: "previewStep",
       ...GRID_COLUMN_WINDOW,
       sessionId: polarsFrame.sessionId,
@@ -1075,26 +1088,25 @@ async function exerciseReleasedJupyterExtension(
         id: "released-jupyter-double",
         kind: "formula",
         params: {
-          leftColumn: columnReference(polarsFrame.metadata, "value"),
+          leftColumn: columnReference(polarsFrame.metadata, "units"),
           operator: "multiply",
           value: 2,
-          newColumn: "doubled"
+          newColumn: "double_units"
         }
       },
       offset: 0,
       limit: 10
     });
-    assert.equal(
-      preview.kind,
-      "stepPreview",
-      `The released-Jupyter Polars preview must succeed: ${JSON.stringify(preview).slice(0, 2_000)}`
-    );
-    if (preview.kind !== "stepPreview") throw new Error("The released-Jupyter Polars preview did not resolve.");
+    assert.ok(preview, "The released-Jupyter Polars preview must publish through the live dataframe panel.");
+    assert.equal(preview.metadata.draftStep?.id, "released-jupyter-double");
+    if (phase === "jupyter-allow" && screenshotOutput) {
+      await captureReleasedJupyterPolarsDraft(workbench, testing, polarsFrame.sessionId, screenshotOutput);
+    }
     const applied = await testing.request({
       kind: "applyDraft",
       ...GRID_COLUMN_WINDOW,
       sessionId: polarsFrame.sessionId,
-      revision: preview.revision,
+      revision: preview.metadata.revision,
       offset: 0,
       limit: 10
     });
@@ -1378,11 +1390,30 @@ function writeReleasedJupyterNotebook(
     "import os",
     "import socket",
     "import sys",
+    "from datetime import date, timedelta",
     "import pandas as pd",
     "import polars as pl",
     "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
     "pandas_series = pd.Series([5, 6], name='series_value')",
-    "polars_frame = pl.DataFrame({'value': [3, 4], 'label': ['c', 'd']})",
+    "showcase_rows = 2500",
+    "showcase_markets = ['DACH', 'Nordics', 'Iberia', 'France', 'Italy', 'Benelux', 'UK & Ireland']",
+    "showcase_channels = ['Direct', 'Partner', 'Online']",
+    "notebook_showcase = pd.DataFrame({",
+    "    'order_id': list(range(24001, 24001 + showcase_rows)),",
+    "    'market': [showcase_markets[index % len(showcase_markets)] for index in range(showcase_rows)],",
+    "    'revenue': [round(620.50 + ((index * 7919) % 1850000) / 100, 2) for index in range(showcase_rows)],",
+    "    'fulfilled': [index % 7 != 2 for index in range(showcase_rows)],",
+    "    'order_date': pd.to_datetime('2026-01-01') + pd.to_timedelta([index % 365 for index in range(showcase_rows)], unit='D'),",
+    "    'channel': [showcase_channels[index % len(showcase_channels)] for index in range(showcase_rows)],",
+    "})",
+    "polars_frame = pl.DataFrame({",
+    "    'units': [1 + ((index * 7 + 2) % 12) for index in range(showcase_rows)],",
+    "    'market': [showcase_markets[index % len(showcase_markets)] for index in range(showcase_rows)],",
+    "    'revenue': [round(620.50 + ((index * 6151) % 1250000) / 100, 2) for index in range(showcase_rows)],",
+    "    'fulfilled': [index % 7 != 2 for index in range(showcase_rows)],",
+    "    'order_date': [date(2026, 1, 1) + timedelta(days=index % 365) for index in range(showcase_rows)],",
+    "    'channel': [showcase_channels[index % len(showcase_channels)] for index in range(showcase_rows)],",
+    "})",
     "polars_series = pl.Series('series_value', [7, 8])",
     `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
     `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
@@ -1410,7 +1441,7 @@ function writeReleasedJupyterNotebook(
           execution_count: null,
           metadata: {},
           outputs: [],
-          source: ["pandas_frame\n"]
+          source: ["notebook_showcase\n"]
         },
         {
           cell_type: "code",
@@ -3126,9 +3157,20 @@ async function exerciseReleasedJupyterRestartReplay(
   ]);
   assert.equal(polarsReplayed.kind, "page", "The released-Jupyter Polars plan must replay after kernel replacement.");
   if (polarsReplayed.kind !== "page") throw new Error("Released-Jupyter Polars restart replay did not return a page.");
-  const doubled = polarsReplayed.metadata.schema.find((column) => column.name === "doubled");
+  const doubled = polarsReplayed.metadata.schema.find((column) => column.name === "double_units");
   assert.ok(doubled, "Recovered released-Jupyter metadata must retain the applied formula output.");
-  assert.deepEqual(gridColumnDisplays(polarsReplayed.page, doubled.id), ["6", "8"]);
+  assert.deepEqual(gridColumnDisplays(polarsReplayed.page, doubled.id), [
+    "6",
+    "20",
+    "10",
+    "24",
+    "14",
+    "4",
+    "18",
+    "8",
+    "22",
+    "12"
+  ]);
   assert.equal(polarsReplayed.metadata.steps.length, 1);
   assert.equal(
     pandasReplayed.kind,
@@ -4437,7 +4479,13 @@ async function waitForVisibleEditorDialog(workbench: Page, text: string): Promis
   );
 }
 
-async function captureWorkbenchScreenshot(page: Page, destination: string): Promise<void> {
+async function captureWorkbenchScreenshot(page: Page, destination: string, maximumHeight?: number): Promise<void> {
+  if (
+    maximumHeight !== undefined &&
+    (!Number.isSafeInteger(maximumHeight) || maximumHeight < 1 || maximumHeight > PACKAGED_SCREENSHOT_VIEWPORT.height)
+  ) {
+    throw new TypeError("A workbench screenshot maximum height must be one bounded positive integer.");
+  }
   await page.bringToFront();
   const viewport = await page.evaluate(() => {
     const pageWindow = globalThis as unknown as {
@@ -4469,7 +4517,7 @@ async function captureWorkbenchScreenshot(page: Page, destination: string): Prom
             x: 0,
             y: titleBarHeight,
             width: viewport.width,
-            height: viewport.height - titleBarHeight
+            height: Math.min(viewport.height - titleBarHeight, maximumHeight ?? Number.POSITIVE_INFINITY)
           }
         }
       : {})
@@ -4487,6 +4535,284 @@ async function captureWorkbenchScreenshot(page: Page, destination: string): Prom
   }
   const image = readFileSync(destination);
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+}
+
+async function prepareReleasedJupyterScreenshotWorkbench(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  editor: vscode.NotebookEditor
+): Promise<() => Promise<void>> {
+  if (process.platform !== "linux") return async () => {};
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  const previousThemeKind = vscode.window.activeColorTheme.kind;
+  await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+  const viewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  assert.deepEqual(
+    viewport,
+    PACKAGED_SCREENSHOT_VIEWPORT,
+    "Notebook README evidence requires the deterministic packaged-editor viewport."
+  );
+
+  const workbenchConfiguration = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const settings = [
+    { configuration: windowConfiguration, key: "autoDetectColorScheme" },
+    { configuration: windowConfiguration, key: "autoDetectHighContrast" },
+    { configuration: windowConfiguration, key: "commandCenter" },
+    { configuration: windowConfiguration, key: "title" },
+    { configuration: workbenchConfiguration, key: "colorTheme" },
+    { configuration: workbenchConfiguration, key: "statusBar.visible" },
+    { configuration: breadcrumbs, key: "enabled" }
+  ] as const;
+  const previousSettings = settings.map(({ configuration, key }) => ({
+    configuration,
+    key,
+    value: configuration.inspect(key)?.globalValue
+  }));
+  await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+  await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+  await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+  await windowConfiguration.update(
+    "title",
+    "${activeEditorShort}${separator}Open Wrangler",
+    vscode.ConfigurationTarget.Global
+  );
+  await workbenchConfiguration.update(
+    "colorTheme",
+    releasedJupyterScreenshotTheme(),
+    vscode.ConfigurationTarget.Global
+  );
+  await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+  await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+  await waitFor(
+    () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+    10_000,
+    "the dark notebook screenshot theme"
+  );
+
+  await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+    "workbench.action.closeSidebar",
+    "workbench.action.toggleSidebarVisibility"
+  ]);
+  await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+    "workbench.action.closeAuxiliaryBar",
+    "workbench.action.toggleAuxiliaryBar"
+  ]);
+  await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+    "workbench.action.closePanel",
+    "workbench.action.togglePanel"
+  ]);
+  await clearReleasedJupyterScreenshotTransientUi(workbench);
+  const visibleEditor = await showExactReleasedNotebook(notebook);
+  assert.equal(visibleEditor, editor, "Notebook screenshot preparation must retain the exact originating editor.");
+  const renderedCell = new vscode.NotebookRange(1, 2);
+  editor.selection = renderedCell;
+  editor.selections = [renderedCell];
+  editor.revealRange(renderedCell, vscode.NotebookEditorRevealType.AtTop);
+  await workbench.waitForTimeout(600);
+  return async () => {
+    for (const { configuration, key, value } of previousSettings.reverse()) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+    await workbench.setViewportSize(previousViewport);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === previousThemeKind,
+      10_000,
+      "the notebook workbench to restore its prior color theme"
+    );
+    await workbench.waitForTimeout(1_000);
+  };
+}
+
+async function captureReleasedJupyterPandasPreview(
+  workbench: Page,
+  rendererButton: NotebookRendererButton,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "Notebook screenshot output must be one absolute directory.");
+  const preview = await rendererButton.evaluate((element) => {
+    type PreviewElement = {
+      readonly textContent: string | null;
+      closest(selector: string): PreviewElement | null;
+      getBoundingClientRect(): { width: number; height: number };
+      querySelector(selector: string): PreviewElement | null;
+      querySelectorAll(selector: string): ArrayLike<PreviewElement>;
+    };
+    const button = element as PreviewElement;
+    const section = button.closest("section.openwrangler-notebook");
+    if (!section) return null;
+    const bounds = section.getBoundingClientRect();
+    return {
+      title: section.querySelector("header > span")?.textContent?.trim() ?? "",
+      headers: Array.from(section.querySelectorAll("thead th"), (header) => header.textContent?.trim() ?? ""),
+      rows: section.querySelectorAll("tbody tr").length,
+      width: bounds.width,
+      height: bounds.height
+    };
+  });
+  assert.ok(preview, "The Pandas notebook action must remain inside its exact rendered preview.");
+  assert.deepEqual(preview, {
+    title: "Open Wrangler preview: DataFrame (pandas) - 2500 x 6",
+    headers: ["order_id", "market", "revenue", "fulfilled", "order_date", "channel"],
+    rows: 20,
+    width: preview?.width,
+    height: preview?.height
+  });
+  assert.ok(
+    preview.width > 0 && preview.height > 0,
+    `The Pandas notebook preview must be fully laid out: ${JSON.stringify({
+      width: preview.width,
+      height: preview.height
+    })}`
+  );
+  await clearReleasedJupyterScreenshotTransientUi(workbench);
+  mkdirSync(outputDirectory, { recursive: true });
+  recordAcceptanceProgress("jupyter-allow:screenshot:pandas");
+  await captureWorkbenchScreenshot(
+    workbench,
+    path.resolve(
+      outputDirectory,
+      packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-pandas", "dark")
+    ),
+    450
+  );
+}
+
+async function captureReleasedJupyterPolarsDraft(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "The Polars notebook screenshot requires the exact live session.");
+  assert.ok(active, "The Polars notebook screenshot requires one active dataframe session.");
+  assert.equal(active.metadata.backend, "polars");
+  assert.equal(active.metadata.source.kind, "notebookVariable");
+  assert.equal(active.metadata.source.variableName, "polars_frame");
+  assert.equal(active.metadata.draftStep?.id, "released-jupyter-double");
+
+  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
+  await testing.updateViewState(sessionId, {
+    ...active.viewState,
+    columnWidths: widths,
+    selectedColumnId: columnReference(active.metadata, "units").id,
+    viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+  });
+  assert.equal(await testing.synchronizePanel(sessionId), true);
+  await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+    "workbench.action.closeSidebar",
+    "workbench.action.toggleSidebarVisibility"
+  ]);
+  await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+    "workbench.action.closeAuxiliaryBar",
+    "workbench.action.toggleAuxiliaryBar"
+  ]);
+  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  const panel = workbench.locator(".part.panel:visible").first();
+  await panel.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await panel.getByText("Code Preview", { exact: true }).count(),
+    1,
+    "The Polars notebook screenshot must open the Code Preview panel."
+  );
+  await waitForReleasedJupyterCodePreview(workbench, "double_units");
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The Polars notebook screenshot requires the exact live Open Wrangler renderer.");
+  const backendBadge = app.locator(".backendBadge").first();
+  await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal((await backendBadge.innerText()).trim(), "POLARS");
+  await app.getByRole("button", { name: "Apply step" }).waitFor({ state: "visible", timeout: 10_000 });
+  await app.getByRole("button", { name: "Discard" }).waitFor({ state: "visible", timeout: 10_000 });
+  await clearReleasedJupyterScreenshotTransientUi(workbench);
+  mkdirSync(outputDirectory, { recursive: true });
+  recordAcceptanceProgress("jupyter-allow:screenshot:polars");
+  await captureWorkbenchScreenshot(
+    workbench,
+    path.resolve(
+      outputDirectory,
+      packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-polars", "dark")
+    ),
+    760
+  );
+  await workbench.setViewportSize({ width: 1_920, height: 1_080 });
+  await workbench.waitForTimeout(500);
+}
+
+async function waitForReleasedJupyterCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {
+  const deadline = Date.now() + 10_000;
+  do {
+    for (const frame of workbench.frames()) {
+      const content = frame.locator('[aria-label="Editable generated Python code preview"]');
+      if ((await content.count()) === 0 || !(await content.isVisible().catch(() => false))) continue;
+      if ((await content.innerText().catch(() => "")).includes(expectedCode)) return content;
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  throw new Error(`The generated Polars notebook code did not expose ${JSON.stringify(expectedCode)}.`);
+}
+
+async function closeVisibleWorkbenchPart(
+  workbench: Page,
+  selector: string,
+  commandCandidates: readonly string[]
+): Promise<void> {
+  const part = workbench.locator(selector).first();
+  if ((await part.count()) === 0 || !(await part.isVisible())) return;
+  const commands = new Set(await vscode.commands.getCommands(true));
+  const command = commandCandidates.find((candidate) => commands.has(candidate));
+  assert.ok(command, `The screenshot workbench cannot close visible part ${selector}.`);
+  await vscode.commands.executeCommand(command);
+  await part.waitFor({ state: "hidden", timeout: 10_000 });
+}
+
+async function clearReleasedJupyterScreenshotTransientUi(workbench: Page): Promise<void> {
+  const commands = new Set(await vscode.commands.getCommands(true));
+  if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+  if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+  await workbench.keyboard.press("Escape");
+  await workbench.mouse.move(Math.floor(PACKAGED_SCREENSHOT_VIEWPORT.width * 0.75), 40);
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await workbench.locator(".monaco-hover:visible").count()) === 0, {
+      timeoutMs: 3_000,
+      intervalMs: 50
+    }),
+    true,
+    "Notebook screenshot capture must dismiss every workbench hover."
+  );
+  const transient = await workbench
+    .locator(
+      ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+    )
+    .allInnerTexts();
+  assert.deepEqual(
+    transient.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500)),
+    [],
+    "Notebook screenshot capture must not retain transient workbench UI."
+  );
+}
+
+function releasedJupyterScreenshotTheme(): string {
+  for (const extension of vscode.extensions.all) {
+    const themes = extension.packageJSON.contributes?.themes as
+      Array<{ id?: unknown; label?: unknown; uiTheme?: unknown }> | undefined;
+    const dark = themes?.find((theme) => theme.uiTheme === "vs-dark");
+    if (typeof dark?.id === "string" && dark.id.length > 0) return dark.id;
+    if (typeof dark?.label === "string" && dark.label.length > 0) return dark.label;
+  }
+  return "Default Dark Modern";
 }
 
 async function capturePackagedEditorScreenshots(testing: TestApi, outputDirectory: string): Promise<void> {
@@ -4523,7 +4849,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     assert.deepEqual(
       captureViewport,
       PACKAGED_SCREENSHOT_VIEWPORT,
-      "README evidence requires the deterministic 1920 by 1080 packaged-editor viewport."
+      `README evidence requires the deterministic ${PACKAGED_SCREENSHOT_VIEWPORT.width} by ${PACKAGED_SCREENSHOT_VIEWPORT.height} packaged-editor viewport.`
     );
     await prepareWorkbenchForEvidence();
     await hideCodePreviewPanel();
@@ -4637,97 +4963,6 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       4,
       `${editor}-high-contrast-zoom-200.png`
     );
-    await workbench.update("colorTheme", darkTheme, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("zoomLevel", 0, vscode.ConfigurationTarget.Global);
-    await waitFor(
-      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
-      10_000,
-      `${darkTheme} to activate before column-search screenshot composition`
-    );
-    await hidePrimarySidebar();
-    await fitFeaturedGridColumns(hero.sessionId, columnReference(hero.metadata, "revenue").id);
-    await openColumnSearchScene(hero.sessionId);
-    recordAcceptanceProgress("verify:screenshots:columns-dark");
-    await captureTheme(
-      darkTheme,
-      vscode.ColorThemeKind.Dark,
-      0,
-      packagedScreenshotFileName(editor, "columns", "dark"),
-      "columns"
-    );
-    recordAcceptanceProgress("verify:screenshots:columns-light");
-    await captureTheme(
-      lightTheme,
-      vscode.ColorThemeKind.Light,
-      0,
-      packagedScreenshotFileName(editor, "columns", "light"),
-      "columns"
-    );
-    await closeColumnSearchScene(hero.sessionId);
-    await workbench.update("colorTheme", darkTheme, vscode.ConfigurationTarget.Global);
-    await windowConfiguration.update("zoomLevel", 0, vscode.ConfigurationTarget.Global);
-    await waitFor(
-      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
-      10_000,
-      `${darkTheme} to reactivate before transform screenshot composition`
-    );
-    recordAcceptanceProgress("verify:screenshots:draft");
-    const current = testing.activeSession();
-    assert.ok(current, "The screenshot fixture must remain active before creating its draft.");
-    const revenue = columnReference(current.metadata, "revenue");
-    const previewRequest = {
-      kind: "previewStep",
-      ...GRID_COLUMN_WINDOW,
-      sessionId: current.sessionId,
-      revision: current.metadata.revision,
-      step: {
-        id: "readme-round-revenue",
-        kind: "roundNumber",
-        params: { column: revenue, decimals: 0 }
-      },
-      offset: 0,
-      limit: 20
-    } satisfies Extract<OpenWranglerRequest, { kind: "previewStep" }>;
-    const previewed = await testing.previewPanelStep(previewRequest);
-    assert.ok(previewed, "The README transform evidence must preview through the live custom-editor panel.");
-    assert.equal(previewed.metadata.draftStep?.kind, "roundNumber");
-    const roundedRevenue = Array.from({ length: 4 }, (_, index) => {
-      const value = packagedScreenshotRow(index)[2];
-      assert.ok(value, `Screenshot fixture revenue row ${index + 1} must be populated.`);
-      return Math.round(Number(value)).toFixed(1);
-    });
-    assert.deepEqual(gridColumnDisplays(previewed.page, revenue.id).slice(0, 4), roundedRevenue);
-    assert.equal(
-      gridColumnDisplays(previewed.page, revenue.id).some((value) => /0{8,}/u.test(value)),
-      false,
-      "Rounded README evidence must not contain floating-point representation noise."
-    );
-    assert.equal(
-      await testing.synchronizePanel(current.sessionId),
-      true,
-      "The draft screenshot must synchronize the runtime diff and generated code with the exact renderer."
-    );
-    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-    await waitForCodePreviewPanel();
-    await hidePrimarySidebar();
-    await resizeCodePreviewPanel(PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT);
-    await fitFeaturedGridColumns(current.sessionId, revenue.id);
-    recordAcceptanceProgress("verify:screenshots:transform-dark");
-    await captureTheme(
-      darkTheme,
-      vscode.ColorThemeKind.Dark,
-      0,
-      packagedScreenshotFileName(editor, "transform", "dark"),
-      "transform"
-    );
-    recordAcceptanceProgress("verify:screenshots:transform-light");
-    await captureTheme(
-      lightTheme,
-      vscode.ColorThemeKind.Light,
-      0,
-      packagedScreenshotFileName(editor, "transform", "light"),
-      "transform"
-    );
     recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
     await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
@@ -4764,7 +4999,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     expectedKind: vscode.ColorThemeKind,
     zoomLevel: number,
     fileName: string,
-    scene?: "hero" | "columns" | "transform"
+    scene?: "hero"
   ): Promise<void> {
     await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", zoomLevel, vscode.ConfigurationTarget.Global);
@@ -4773,17 +5008,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       10_000,
       `${theme} to activate before screenshot capture`
     );
-    if (scene === "hero" || scene === undefined) {
-      await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
-    }
+    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
     await clearNotifications();
-    if (scene === "columns") {
-      const active = testing.activeSession();
-      assert.ok(active, "Column-search capture requires the active dataframe session.");
-      await openColumnSearchScene(active.sessionId);
-    } else {
-      await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
-    }
+    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     await new Promise((resolve) => setTimeout(resolve, 800));
     const destination = path.resolve(outputDirectory, fileName);
     await capturePage.bringToFront();
@@ -4799,12 +5026,17 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         scale: Math.max(1, pageWindow.devicePixelRatio)
       };
     });
-    await capturePage.mouse.move(Math.max(1, viewport.width - 8), Math.max(1, viewport.height - 8));
+    await capturePage.keyboard.press("Escape");
+    await capturePage.mouse.move(Math.max(1, Math.floor(viewport.width * 0.75)), 40);
     await clearNotifications();
-    await capturePage
-      .locator(".monaco-hover")
-      .waitFor({ state: "hidden", timeout: 2_000 })
-      .catch(() => {});
+    assert.equal(
+      await pollAcceptanceCondition(async () => (await capturePage.locator(".monaco-hover:visible").count()) === 0, {
+        timeoutMs: 3_000,
+        intervalMs: 50
+      }),
+      true,
+      "Screenshot capture must dismiss every workbench hover."
+    );
     const transientUi = await inspectCaptureTransientUi();
     assert.equal(
       transientUi.length,
@@ -4926,37 +5158,6 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     await waitForWorkbenchPartSize(sidebar, "width", targetWidth, "the README hero sidebar");
   }
 
-  async function hidePrimarySidebar(): Promise<void> {
-    const sidebar = capturePage.locator(".part.sidebar").first();
-    if ((await sidebar.count()) === 0 || !(await sidebar.isVisible())) return;
-    const commands = new Set(await vscode.commands.getCommands(true));
-    const closeCommand = commands.has("workbench.action.closeSidebar")
-      ? "workbench.action.closeSidebar"
-      : commands.has("workbench.action.toggleSidebarVisibility")
-        ? "workbench.action.toggleSidebarVisibility"
-        : undefined;
-    assert.ok(closeCommand, "The screenshot workbench must expose a primary-sidebar close command.");
-    await vscode.commands.executeCommand(closeCommand);
-    await sidebar.waitFor({ state: "hidden", timeout: 10_000 });
-  }
-
-  async function resizeCodePreviewPanel(targetHeight: number): Promise<void> {
-    const panel = capturePage.locator(".part.panel:visible").first();
-    await panel.waitFor({ state: "visible", timeout: 10_000 });
-    const bounds = await panel.boundingBox();
-    assert.ok(bounds, "The transform scene requires measurable Code Preview geometry.");
-    if (Math.abs(bounds.height - targetHeight) <= 2) return;
-    const sash = await nearestWorkbenchSash("horizontal", bounds.y);
-    assert.ok(sash, "The transform scene requires the Code Preview resize sash.");
-    const startX = Math.max(bounds.x + 20, Math.min(bounds.x + bounds.width - 20, bounds.x + bounds.width / 2));
-    const startY = sash.y + sash.height / 2;
-    await capturePage.mouse.move(startX, startY);
-    await capturePage.mouse.down();
-    await capturePage.mouse.move(startX, startY - (targetHeight - bounds.height), { steps: 12 });
-    await capturePage.mouse.up();
-    await waitForWorkbenchPartSize(panel, "height", targetHeight, "the README Code Preview panel");
-  }
-
   async function nearestWorkbenchSash(
     orientation: "horizontal" | "vertical",
     targetPosition: number
@@ -4994,15 +5195,6 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     throw new Error(`${label} must measure ${expected}px; observed ${String(actual)}px.`);
   }
 
-  async function openColumnSearchScene(sessionId: string): Promise<void> {
-    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
-    const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "Column-search composition requires the exact live Open Wrangler renderer.");
-    const input = app.getByPlaceholder("Search columns");
-    await input.click();
-    await app.getByRole("listbox", { name: "Matching columns" }).waitFor({ state: "visible", timeout: 10_000 });
-  }
-
   async function primeExactDatasetStats(sessionId: string): Promise<void> {
     const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
     const app = await exactSessionApp(target.frame, sessionId);
@@ -5020,21 +5212,12 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     await drawer.waitFor({ state: "hidden", timeout: 10_000 });
   }
 
-  async function closeColumnSearchScene(sessionId: string): Promise<void> {
-    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
-    const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "Column-search cleanup requires the exact live Open Wrangler renderer.");
-    const input = app.getByPlaceholder("Search columns");
-    await input.press("Escape");
-    await app.getByRole("listbox", { name: "Matching columns" }).waitFor({ state: "hidden", timeout: 10_000 });
-  }
-
-  async function composeNativeViews(scene: "hero" | "transform"): Promise<void> {
+  async function composeNativeViews(scene: "hero"): Promise<void> {
     const desired = new Map<string, boolean>([
       ["Operations", false],
-      ["Summary", scene === "hero"],
+      ["Summary", true],
       ["Filters / Sorts", false],
-      ["Cleaning Steps", scene === "transform"]
+      ["Cleaning Steps", false]
     ]);
     const sidebar = capturePage.locator(".part.sidebar:visible");
     for (const [label, expanded] of desired) {
@@ -5153,86 +5336,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     throw new Error(`The hero native Summary is cramped or incomplete: ${JSON.stringify(measurement)}`);
   }
 
-  async function assertColumnSearchWorkbenchComposition(): Promise<void> {
-    const sidebar = capturePage.locator(".part.sidebar").first();
-    assert.equal(await sidebar.isVisible(), false, "The column-search scene must keep the primary sidebar hidden.");
-    const panel = capturePage.locator(".part.panel").first();
-    assert.equal(await panel.isVisible(), false, "The column-search scene must keep the bottom panel hidden.");
-  }
-
-  async function assertTransformWorkbenchComposition(): Promise<void> {
-    const sidebar = capturePage.locator(".part.sidebar").first();
-    assert.equal(await sidebar.isVisible(), false, "The transform scene must keep the primary sidebar hidden.");
-    const panel = capturePage.locator(".part.panel:visible").first();
-    await panel.waitFor({ state: "visible", timeout: 10_000 });
-    const panelBounds = await panel.boundingBox();
-    assert.ok(panelBounds, "The transform scene requires measurable Code Preview geometry.");
-    assert.ok(
-      Math.abs(panelBounds.height - PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT) <= 3,
-      `The transform Code Preview must measure ${PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT}px.`
-    );
-    const deadline = Date.now() + 15_000;
-    let measurement:
-      | {
-          code: string;
-          frameHeight: number;
-          lastLineBottom: number;
-          horizontalOverflow: number;
-          lineCount: number;
-        }
-      | undefined;
-    do {
-      for (const frame of capturePage.frames()) {
-        const content = frame.locator('[aria-label="Editable generated Python code preview"]');
-        if ((await content.count()) === 0 || !(await content.isVisible().catch(() => false))) continue;
-        measurement = await content.evaluate((node) => {
-          type CodePreviewElement = {
-            readonly ownerDocument: {
-              readonly defaultView: { readonly innerHeight: number } | null;
-            };
-            readonly textContent: string | null;
-            closest(selector: string): { readonly clientWidth: number; readonly scrollWidth: number } | null;
-            querySelectorAll(selector: string): ArrayLike<{
-              getBoundingClientRect(): { readonly bottom: number };
-            }>;
-          };
-          const editor = node as unknown as CodePreviewElement;
-          const frameWindow = editor.ownerDocument.defaultView;
-          if (!frameWindow) throw new Error("The Code Preview frame has no live window.");
-          const scroller = editor.closest(".cm-scroller");
-          const lines = Array.from(editor.querySelectorAll(".cm-line"));
-          const lastLine = lines.at(-1)?.getBoundingClientRect();
-          return {
-            code: editor.textContent ?? "",
-            frameHeight: frameWindow.innerHeight,
-            lastLineBottom: lastLine?.bottom ?? Number.POSITIVE_INFINITY,
-            horizontalOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : Number.POSITIVE_INFINITY,
-            lineCount: lines.length
-          };
-        });
-        break;
-      }
-      if (
-        measurement &&
-        /import polars as pl/u.test(measurement.code) &&
-        /def clean_data\(df\):/u.test(measurement.code) &&
-        /\.with_columns\(/u.test(measurement.code) &&
-        /\.round\(0\)/u.test(measurement.code) &&
-        measurement.lineCount >= 8 &&
-        measurement.lastLineBottom <= measurement.frameHeight - 4 &&
-        measurement.horizontalOverflow <= 1
-      ) {
-        return;
-      }
-      await capturePage.waitForTimeout(50);
-    } while (Date.now() < deadline);
-    throw new Error(`The transform Code Preview is incomplete or clipped: ${JSON.stringify(measurement)}`);
-  }
-
-  async function assertPackagedScreenshotScene(scene: "hero" | "columns" | "transform"): Promise<void> {
-    if (scene === "hero") await assertHeroNativeViewComposition();
-    if (scene === "columns") await assertColumnSearchWorkbenchComposition();
-    if (scene === "transform") await assertTransformWorkbenchComposition();
+  async function assertPackagedScreenshotScene(scene: "hero"): Promise<void> {
+    await assertHeroNativeViewComposition();
     const active = testing.activeSession();
     assert.ok(active, "Screenshot geometry requires the active packaged dataframe session.");
     const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
@@ -5253,14 +5358,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           clippedControls: string[];
           revenueSummary: string;
           draftVisible: boolean;
-          draftActionLabels: string[];
-          visibleGridRows: number;
           columnSearchOpen: boolean;
-          columnSearchResultCount: number;
-          columnSearchIconCount: number;
-          columnSearchTypeCount: number;
-          columnSearchOverflow: number;
-          columnSearchOutsideApp: boolean;
         }
       | undefined;
     do {
@@ -5326,28 +5424,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           const clippedControls = controls
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
-          const visibleGridRows = new Set(
-            Array.from(appRoot.querySelectorAll("td[data-grid-row]"))
-              .filter((cell) => {
-                const bounds = cell.getBoundingClientRect();
-                return (
-                  bounds.bottom > scrollerBounds.top + 1 &&
-                  bounds.top < scrollerBounds.bottom - 1 &&
-                  bounds.right > scrollerBounds.left + 1 &&
-                  bounds.left < scrollerBounds.right - 1
-                );
-              })
-              .map((cell) => cell.dataset.gridRow ?? "")
-              .filter(Boolean)
-          ).size;
           const revenueHeader = headers.find((header) => header.dataset.column === "revenue");
           const draft = appRoot.querySelector('.draftPanel[aria-label="Draft preview"]');
           const columnSearch = appRoot.querySelector(".columnSearchPopup");
-          const columnSearchBounds = columnSearch?.getBoundingClientRect();
-          const appBounds = appRoot.getBoundingClientRect();
-          const columnSearchTypes = Array.from(appRoot.querySelectorAll(".columnSearchType"))
-            .map((element) => element.innerText.trim())
-            .filter(Boolean);
           return {
             workspaceOverflow: workspace.scrollWidth - workspace.clientWidth,
             gridOverflow: scroller.scrollWidth - scroller.clientWidth,
@@ -5361,28 +5440,12 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             clippedControls,
             revenueSummary: revenueHeader?.querySelector(".exactSummaryStats")?.innerText ?? "",
             draftVisible: Boolean(draft),
-            draftActionLabels: Array.from(
-              appRoot.querySelectorAll('.cleaningBar button:not([aria-hidden="true"])')
-            ).map((button) => button.innerText.trim()),
-            visibleGridRows,
-            columnSearchOpen: Boolean(columnSearch),
-            columnSearchResultCount: appRoot.querySelectorAll(".columnSearchResults [role=option]").length,
-            columnSearchIconCount: appRoot.querySelectorAll(".columnSearchTypeIcon").length,
-            columnSearchTypeCount: new Set(columnSearchTypes).size,
-            columnSearchOverflow: columnSearch ? columnSearch.scrollWidth - columnSearch.clientWidth : 0,
-            columnSearchOutsideApp: Boolean(
-              columnSearchBounds &&
-              (columnSearchBounds.left < appBounds.left - 1 ||
-                columnSearchBounds.right > appBounds.right + 1 ||
-                columnSearchBounds.top < appBounds.top - 1 ||
-                columnSearchBounds.bottom > appBounds.bottom + 1)
-            )
+            columnSearchOpen: Boolean(columnSearch)
           };
         },
         {
           featured: [...PACKAGED_SCREENSHOT_FEATURED_COLUMNS],
-          nextColumn: PACKAGED_SCREENSHOT_COLUMNS[PACKAGED_SCREENSHOT_FEATURED_COLUMNS.length],
-          scene
+          nextColumn: PACKAGED_SCREENSHOT_COLUMNS[PACKAGED_SCREENSHOT_FEATURED_COLUMNS.length]
         }
       );
       const ready =
@@ -5397,17 +5460,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         measurement.clippedControls.length === 0 &&
         /\bMin\b/u.test(measurement.revenueSummary) &&
         /\bMax\b/u.test(measurement.revenueSummary) &&
-        measurement.draftVisible === (scene === "transform") &&
-        measurement.columnSearchOpen === (scene === "columns") &&
-        (scene !== "columns" ||
-          (measurement.columnSearchResultCount >= 10 &&
-            measurement.columnSearchIconCount === measurement.columnSearchResultCount &&
-            measurement.columnSearchTypeCount >= 3 &&
-            measurement.columnSearchOverflow <= 1 &&
-            !measurement.columnSearchOutsideApp)) &&
-        (scene !== "transform" || (measurement.visibleGridRows >= 5 && measurement.visibleGridRows <= 12)) &&
-        (scene !== "transform" ||
-          (measurement.draftActionLabels.includes("Discard") && measurement.draftActionLabels.includes("Apply step")));
+        !measurement.draftVisible &&
+        !measurement.columnSearchOpen;
       if (ready) return;
       await capturePage.waitForTimeout(50);
     } while (Date.now() < deadline);
@@ -5442,13 +5496,6 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     );
     await vscode.commands.executeCommand("workbench.action.closePanel");
     await panel.waitFor({ state: "hidden", timeout: 10_000 });
-  }
-
-  async function waitForCodePreviewPanel(): Promise<void> {
-    const panel = capturePage.locator(".part.panel").first();
-    await panel.waitFor({ state: "visible", timeout: 10_000 });
-    const codePreview = panel.getByText("Code Preview", { exact: true });
-    assert.equal(await codePreview.count(), 1, "The transform screenshot must show the native Code Preview panel.");
   }
 
   async function clearNotifications(commands?: Set<string>): Promise<void> {
