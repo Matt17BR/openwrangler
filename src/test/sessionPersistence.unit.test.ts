@@ -138,6 +138,20 @@ describe("session persistence", () => {
     });
   });
 
+  it("retains the confirmed PySpark backend for live-notebook recovery", () => {
+    const state = {
+      backend: "pyspark",
+      cleaning: { steps: [] },
+      view: {
+        filterModel: { filters: [], sort: [] },
+        columnWidths: {},
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    };
+
+    expect(decodePersistedSession(state)).toEqual(state);
+  });
+
   it("rejects persisted by-example text outside the strict UTF-8 envelope", () => {
     const step = {
       id: "bounded-example",

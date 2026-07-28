@@ -351,7 +351,10 @@
           "pandas.core.series.Series",
           "pandas.Series",
           "polars.dataframe.frame.DataFrame",
-          "polars.series.series.Series"
+          "polars.series.series.Series",
+          "pyspark.sql.dataframe.DataFrame",
+          "pyspark.sql.classic.dataframe.DataFrame",
+          "pyspark.sql.connect.dataframe.DataFrame"
         ]
       }
     ],

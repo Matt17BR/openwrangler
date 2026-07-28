@@ -44,7 +44,7 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 - Previews every transformation as a data diff with editable, backend-native Python before you apply it.
 - Provides 27 built-in operations across row, column, text, categorical, numeric, datetime, grouping, custom-code, and by-example workflows.
 - Replays, edits, and undoes cleaning steps while preserving the original dataframe.
-- Opens live Polars and Pandas variables from Jupyter and can insert the generated cleaning function back into the originating notebook.
+- Opens live Polars and Pandas variables from Jupyter and can insert the generated cleaning function back into the originating notebook. PySpark 4.2 DataFrames have a separate experimental, viewing-only path.
 - Expands saved notebook output into a read-only, filterable snapshot without starting Jupyter; variable-linked output also offers an explicit action for the linked live dataframe in its originating notebook.
 - Copies code, saves a Python script, or atomically exports cleaned data to a new CSV or Parquet file.
 
@@ -65,11 +65,12 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 
 ## Engines and formats
 
-| Backend | File sessions                   | Notebook variables | Notes                                                            |
-| ------- | ------------------------------- | ------------------ | ---------------------------------------------------------------- |
-| Polars  | CSV, TSV, Parquet, JSONL, Excel | Yes                | Native operations and lazy scans where the format allows         |
-| DuckDB  | CSV, TSV, Parquet, JSONL        | Not yet            | Native lazy relations; no Pandas, Polars, or Arrow conversion    |
-| Pandas  | CSV, TSV, Parquet, JSONL, Excel | Yes                | Position-safe support for duplicate and non-string column labels |
+| Backend       | File sessions                   | Notebook variables        | Notes                                                            |
+| ------------- | ------------------------------- | ------------------------- | ---------------------------------------------------------------- |
+| Polars        | CSV, TSV, Parquet, JSONL, Excel | Yes                       | Native operations and lazy scans where the format allows         |
+| DuckDB        | CSV, TSV, Parquet, JSONL        | Not yet                   | Native lazy relations; no Pandas, Polars, or Arrow conversion    |
+| Pandas        | CSV, TSV, Parquet, JSONL, Excel | Yes                       | Position-safe support for duplicate and non-string column labels |
+| PySpark 4.2.x | No                              | Experimental viewing only | Spark-side queries; only bounded results return to Python        |
 
 `auto` mode tries Polars, then DuckDB, then Pandas, skipping unavailable or incompatible choices. You can pin a backend in the Open Wrangler settings.
 
@@ -84,7 +85,7 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 ## Current limits
 
-- PySpark is planned, but not implemented. The [engine proposal](https://github.com/Matt17BR/openwrangler/issues/36) requires distributed execution with no full-frame collection or implicit local-dataframe conversion.
+- PySpark 4.2 live-notebook viewing is experimental. It has no file sessions, cleaning operations, generated-code/data export, saved-output formatter, or packaged-editor/recovery guarantee yet; local Spark Connect is tested, while external and authenticated Connect servers still need acceptance. Follow the remaining [engine gates](https://github.com/Matt17BR/openwrangler/issues/36).
 - R dataframes and Quarto/R Markdown integration are a [post-1.0 architecture spike](https://github.com/Matt17BR/openwrangler/issues/87), not a Python conversion layer.
 - DuckDB currently supports file-backed sessions only; Excel files and notebook variables use Polars or Pandas.
 - Browser-hosted `vscode.dev` runtimes are outside the current scope.

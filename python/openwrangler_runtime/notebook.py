@@ -61,6 +61,8 @@ def build_payload(
             "Open Wrangler notebook output supports Pandas and Polars dataframe or series values."
         ) from error
     try:
+        if engine.name not in {"pandas", "polars"}:
+            raise EngineError("Open Wrangler notebook output supports Pandas and Polars dataframe or series values.")
         if "notebookOutput" not in engine.capabilities.source_kinds:
             raise EngineError(f"The {engine.name} backend does not support notebook output sources.")
         frame = _normalize_snapshot_value(engine, value)

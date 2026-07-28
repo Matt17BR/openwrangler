@@ -4,7 +4,7 @@ Baseline: Microsoft Data Wrangler 1.24.2, observed and documented on 2026-07-15.
 
 Status values: **Done** has automated and editor acceptance evidence; **Partial** is usable but incomplete; **Planned** is not release-ready. Open Wrangler 1.0 requires every in-scope row to be **Done**.
 
-The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview documented in its own matrix; its evidence does not retroactively turn a two-engine **Done** row into a three-engine claim or replace either parity engine's release gates.
+The parity contract below remains specifically Pandas and Polars. DuckDB is an additive, experimental file-backed preview, and PySpark 4.2 is a separate experimental live-notebook viewing preview. Their evidence does not retroactively broaden a two-engine **Done** row or replace either parity engine's release gates.
 
 VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity), so publication there can make Open Wrangler discoverable; discovery is not compatibility evidence, and its isolated functional smoke remains outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
@@ -61,6 +61,24 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | CSV and Parquet cleaned-data export          | Yes                 | Partial | Native/atomic packaged exports preserve source bytes    | Failure injection and cross-platform destination matrix      |
 | Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix         |
 | Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate |
+
+## PySpark live-notebook viewing preview matrix
+
+PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. **Partial** means the focused PySpark 4.2/Java 17 engine contract runs in a dedicated unconditional CI job, not that the surface has passed packaged-editor, external-cluster, or recovery acceptance.
+
+| Surface                                        | Availability             | Status  | Recorded evidence                                       | Remaining acceptance gate                                      |
+| ---------------------------------------------- | ------------------------ | ------- | ------------------------------------------------------- | -------------------------------------------------------------- |
+| Classic PySpark DataFrame detection            | Live notebook only       | Partial | Exact 4.2 local-Spark adapter and registry tests        | Packaged released-Jupyter variable launch                      |
+| Local Spark Connect DataFrame viewing          | Live notebook only       | Partial | Exact 4.2 local Connect adapter and registry tests      | External/authenticated Connect server execution                |
+| Indexed, projected grid pages                  | Read-only                | Partial | Spark-side `zipWithIndex` plus bounded-collect tests    | Large partitioned fixture and packaged virtual-grid acceptance |
+| Basic/advanced filters and multi-column sorts  | Read-only                | Partial | Native Spark expression and typed-page tests            | Full literal edge matrix and packaged interaction              |
+| Summaries, statistics, and distinct values     | Read-only                | Partial | Spark aggregate and bounded-value tests                 | Repeated resource/performance evidence                         |
+| Session cleanup                                | Owned indexed child only | Partial | Exactly-once unpersist tests; Spark session stays alive | Kernel restart, cancellation, and remote-cluster recovery      |
+| Cleaning operations and history                | No                       | Planned | Capabilities reject editing                             | Distributed transformation IR and native code generation       |
+| Script/notebook/data export                    | No                       | Planned | Capabilities reject export                              | Source-safe Spark-native export design                         |
+| Saved-output MIME formatter                    | No                       | Planned | `notebookOutput` is not advertised                      | Bounded distributed snapshot policy                            |
+| File sessions and automatic backend selection  | No                       | Planned | `file` is not advertised                                | Explicit Spark source/session configuration design             |
+| VS Code/Cursor packaged and release acceptance | No support claim yet     | Planned | Focused runtime CI only                                 | Released Jupyter, both editors, restart, and cleanup matrix    |
 
 ## Recorded acceptance evidence
 
@@ -657,4 +675,4 @@ Installed-editor grid and performance acceptance, 2026-07-28:
 
 ## Explicitly deferred from 1.0
 
-Copilot operations, DuckDB Excel/notebook/`.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. Native PySpark support is a tracked post-parity engine expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36); it remains unavailable until its distributed paging, Spark Connect, operation, recovery, and packaged-editor gates are green. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
+Copilot operations, DuckDB Excel/notebook/`.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. PySpark's tracked post-parity expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36) is limited to the experimental read-only live-notebook matrix above; editing, exports, saved output, external Spark Connect execution, recovery, and packaged-editor support remain unavailable until their distributed gates are green. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.

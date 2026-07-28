@@ -27,6 +27,10 @@ interface PackageManifest {
     };
     configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
+    jupyterVariableViewers?: Array<{
+      command?: string;
+      dataTypes?: string[];
+    }>;
     menus?: Record<string, MenuContribution[]>;
     notebookRenderer?: Array<{
       id?: string;
@@ -154,6 +158,20 @@ describe("notebook launch contributions", () => {
       expect(entry?.when).not.toContain("jupyter.kernel.isjupyter");
       expect(entry?.when).not.toContain("notebookKernel");
     }
+  });
+
+  it("registers classic and Connect PySpark DataFrames with the Jupyter Variables view", () => {
+    const viewer = manifest.contributes?.jupyterVariableViewers?.find(
+      (candidate) => candidate.command === "openWrangler.launchDataViewer"
+    );
+
+    expect(viewer?.dataTypes).toEqual(
+      expect.arrayContaining([
+        "pyspark.sql.dataframe.DataFrame",
+        "pyspark.sql.classic.dataframe.DataFrame",
+        "pyspark.sql.connect.dataframe.DataFrame"
+      ])
+    );
   });
 });
 

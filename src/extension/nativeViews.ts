@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
+import { dataBackendLabel } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel } from "./webviewPanel";
@@ -547,7 +548,11 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
       : selectedColumn.name
     : "None";
   return [
-    new ViewNode(metadata.source.label, `${metadata.backend} · ${metadata.mode}`, "table"),
+    new ViewNode(
+      metadata.source.label,
+      `${metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend} · ${metadata.mode}`,
+      "table"
+    ),
     new ViewNode(
       "Shape",
       `${metadata.filteredShape.rows.toLocaleString()} × ${metadata.filteredShape.columns.toLocaleString()}`,

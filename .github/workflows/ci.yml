@@ -175,6 +175,41 @@ jobs:
         if: matrix.python == '3.10'
       - run: python -m pytest python/tests -q
 
+  pyspark-notebook-viewing:
+    name: PySpark 4.2 notebook viewing (Java 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "python[dev]"
+      - run: python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"
+      - name: Verify exact optional runtimes
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pandas
+          import pyspark
+          from packaging.version import Version
+
+          assert pyspark.__version__ == "4.2.0", pyspark.__version__
+          assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
+          PY
+          java -XshowSettings:properties -version 2>&1 |
+            grep -Eq '^[[:space:]]*java\.specification\.version = 17$'
+      - name: Test native PySpark notebook viewing
+        run: python -m pytest -q python/tests/test_pyspark_engine.py python/tests/test_engine_registry.py
+        env:
+          PYTHONPATH: python
+
   extension-host:
     runs-on: ubuntu-latest
     strategy:

@@ -46,7 +46,7 @@ def test_open_session_accepts_only_a_non_empty_requested_session_identity() -> N
         decode_envelope(envelope)
 
 
-def test_open_session_accepts_duckdb_and_rejects_unknown_backends() -> None:
+def test_open_session_accepts_supported_backends_and_scopes_pyspark_to_live_notebooks() -> None:
     envelope = {
         "protocolVersion": 2,
         "requestId": "open-duckdb",
@@ -62,8 +62,24 @@ def test_open_session_accepts_duckdb_and_rejects_unknown_backends() -> None:
     }
 
     assert decode_envelope(envelope)[2]["backend"] == "duckdb"
+    envelope["request"]["backend"] = "pyspark"
+    with pytest.raises(ProtocolError, match="only live notebookVariable sources"):
+        decode_envelope(envelope)
+
+    envelope["request"]["source"] = {
+        "kind": "notebookVariable",
+        "label": "spark_frame",
+        "variableName": "spark_frame",
+    }
+    assert decode_envelope(envelope)[2]["backend"] == "pyspark"
+    envelope["request"]["mode"] = "editing"
+    with pytest.raises(ProtocolError, match="only viewing mode"):
+        decode_envelope(envelope)
+    envelope["request"]["mode"] = "viewing"
+    assert decode_envelope(envelope)[2]["mode"] == "viewing"
+
     envelope["request"]["backend"] = "sqlite"
-    with pytest.raises(ProtocolError, match="pandas, polars, or duckdb"):
+    with pytest.raises(ProtocolError, match="pandas, polars, duckdb, or pyspark"):
         decode_envelope(envelope)
 
 

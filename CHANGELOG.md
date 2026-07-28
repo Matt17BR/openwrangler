@@ -2,6 +2,12 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
+## [Unreleased]
+
+### Added
+
+- Added an experimental, viewing-only PySpark 4.2 live-notebook path for classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and unpersists only its owned indexed child without stopping the user's Spark session. A dedicated unconditional Linux CI job runs both paths with exact PySpark 4.2 Connect extras, compatible Pandas, and Java 17. Editing, exports, saved-output formatting, external/authenticated Spark Connect servers, kernel recovery, and packaged-editor support remain explicit future gates.
+
 ## [1.0.0] - 2026-07-28
 
 ### Added

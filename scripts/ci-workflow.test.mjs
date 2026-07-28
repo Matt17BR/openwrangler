@@ -564,6 +564,56 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
   ]);
 });
 
+test("PySpark notebook viewing has one unconditional exact-runtime CI job", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const job = workflow?.jobs?.["pyspark-notebook-viewing"];
+
+  assert.equal(job?.name, "PySpark 4.2 notebook viewing (Java 17)");
+  assert.equal(job?.["runs-on"], "ubuntu-latest");
+  assert.equal(job?.["timeout-minutes"], 30);
+  assert.equal(job?.if, undefined);
+  assert.equal(job?.needs, undefined);
+  assert.equal(job?.["continue-on-error"], undefined);
+
+  const steps = job?.steps;
+  assert.ok(Array.isArray(steps), "CI must retain the focused PySpark notebook-viewing job.");
+  assert.equal(
+    steps.some((step) => step?.["continue-on-error"] !== undefined),
+    false
+  );
+  assert.deepEqual(
+    steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-python@"))?.with,
+    {
+      "python-version": "3.12",
+      cache: "pip"
+    }
+  );
+  assert.deepEqual(
+    steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"))?.with,
+    {
+      distribution: "temurin",
+      "java-version": "17"
+    }
+  );
+  assert.equal(
+    steps.some((step) => step?.run === 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"'),
+    true
+  );
+
+  const runtimeVerification = steps.find((step) => step?.name === "Verify exact optional runtimes");
+  assert.match(runtimeVerification?.run ?? "", /pyspark\.__version__ == "4\.2\.0"/u);
+  assert.match(runtimeVerification?.run ?? "", /Version\("2\.2"\).*Version\("3"\)/u);
+  assert.match(runtimeVerification?.run ?? "", /java\\\.specification\\\.version = 17/u);
+
+  const focused = steps.find((step) => step?.name === "Test native PySpark notebook viewing");
+  assert.equal(
+    focused?.run,
+    "python -m pytest -q python/tests/test_pyspark_engine.py python/tests/test_engine_registry.py"
+  );
+  assert.deepEqual(focused?.env, { PYTHONPATH: "python" });
+});
+
 test("released-Jupyter PR paths include every consumed dependency manifest", () => {
   const source = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);

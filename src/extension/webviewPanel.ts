@@ -193,10 +193,13 @@ export class OpenWranglerPanel {
     const pageSize = getSetting<number>("fetchBlockSize", 200);
     const columnLimit = fetchColumnBlockSize();
     const isFile = this.source.kind === "file";
-    const mode = getSetting<"editing" | "viewing">(
-      isFile ? "fileStartMode" : "notebookStartMode",
-      isFile ? "editing" : "viewing"
-    );
+    const mode =
+      this.backend === "pyspark"
+        ? "viewing"
+        : getSetting<"editing" | "viewing">(
+            isFile ? "fileStartMode" : "notebookStartMode",
+            isFile ? "editing" : "viewing"
+          );
     const generation = ++this.openAttemptGeneration;
     const cancellation = new vscode.CancellationTokenSource();
     this.importChangeCancellation?.cancel();

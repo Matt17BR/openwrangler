@@ -457,12 +457,12 @@ def test_failed_notebook_payload_closes_transient_engine(monkeypatch) -> None:
     assert created[0].close_calls == 1
 
 
-def test_notebook_payload_rejects_engine_without_output_capability(monkeypatch) -> None:
+def test_notebook_payload_rejects_backend_outside_saved_output_allowlist(monkeypatch) -> None:
     created: list[TrackingPandasEngine] = []
     registry = tracking_registry(created, factory=ReadOnlyPandasEngine, backend="readonly")
     monkeypatch.setattr(notebook, "default_engine_registry", lambda: registry)
 
-    with pytest.raises(EngineError, match="readonly backend does not support notebook output"):
+    with pytest.raises(EngineError, match="supports Pandas and Polars"):
         notebook.build_payload(pd.DataFrame({"value": [1]}))
 
     assert created[0].close_calls == 1
@@ -582,10 +582,11 @@ def test_read_only_engine_gates_editing_and_exports(tmp_path) -> None:
     opened = manager.open_session(csv_source(path), backend="readonly", mode="editing")
     session_id = opened["metadata"]["sessionId"]
 
+    assert opened["metadata"]["mode"] == "viewing"
     assert opened["metadata"]["capabilities"]["editable"] is False
     assert opened["metadata"]["capabilities"]["exportCsv"] is False
     assert opened["metadata"]["capabilities"]["exportParquet"] is False
-    with pytest.raises(EngineError, match="readonly backend does not support editing"):
+    with pytest.raises(EngineError, match="session is in viewing mode"):
         manager.preview_step(
             session_id,
             0,

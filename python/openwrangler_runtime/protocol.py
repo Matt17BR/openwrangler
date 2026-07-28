@@ -175,8 +175,13 @@ def decode_request(value: Any) -> dict[str, Any]:
             decoded_source["importOptions"] = _validate_import_options(source["importOptions"], source)
         request = dict(request)
         request["source"] = decoded_source
-        if request.get("backend") not in {None, "pandas", "polars", "duckdb"}:
-            raise ProtocolError("backend must be pandas, polars, or duckdb.")
+        backend = request.get("backend")
+        if backend not in {None, "pandas", "polars", "duckdb", "pyspark"}:
+            raise ProtocolError("backend must be pandas, polars, duckdb, or pyspark.")
+        if backend == "pyspark" and source.get("kind") != "notebookVariable":
+            raise ProtocolError("The pyspark backend supports only live notebookVariable sources.")
+        if backend == "pyspark" and request.get("mode") not in {None, "viewing"}:
+            raise ProtocolError("The pyspark backend supports only viewing mode.")
         if request.get("mode") not in {None, "viewing", "editing"}:
             raise ProtocolError("mode must be viewing or editing.")
         requested_session_id = request.get("requestedSessionId")

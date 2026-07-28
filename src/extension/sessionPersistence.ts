@@ -97,7 +97,7 @@ function decodePersistedView(value: unknown): PersistedViewingState | undefined 
 }
 
 function isDataBackend(value: unknown): value is DataBackend {
-  return value === "polars" || value === "duckdb" || value === "pandas";
+  return value === "polars" || value === "duckdb" || value === "pandas" || value === "pyspark";
 }
 
 function decodeStep(value: unknown): TransformStep | undefined {

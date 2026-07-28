@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyFilterModel, hasActiveFilters, hasActiveSort } from "../shared/filterModel";
+import { dataBackendLabel } from "../shared/protocol";
 
 describe("filter model", () => {
   it("starts empty", () => {
@@ -29,5 +30,11 @@ describe("filter model", () => {
 
     expect(hasActiveFilters(model)).toBe(true);
     expect(hasActiveSort(model)).toBe(true);
+  });
+});
+
+describe("data backend labels", () => {
+  it("uses the public PySpark spelling in editor UI", () => {
+    expect(dataBackendLabel("pyspark")).toBe("PySpark");
   });
 });

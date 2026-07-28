@@ -44,7 +44,7 @@ import {
   type PythonEnvironment,
   type PythonEnvironmentSelectionChangeEvent
 } from "./pythonEnvironment";
-import { backendImportCapabilityFailure, type PythonDependency } from "./pythonEnvironmentModel";
+import { backendImportCapabilityFailure, isFileDataBackend, type PythonDependency } from "./pythonEnvironmentModel";
 import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
@@ -2441,6 +2441,17 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private async prepareRequestForDispatch(request: OpenWranglerRequest): Promise<PreparedRequest> {
     if (request.kind !== "openSession") return { request };
     if (request.backend) {
+      if (!isFileDataBackend(request.backend)) {
+        return {
+          request: {
+            kind: "error",
+            code: "unsupported_backend",
+            message: "PySpark sessions require a live variable from a Jupyter notebook kernel.",
+            detail: "Open the dataframe from Jupyter's Variables view or use Open Wrangler: Open Notebook Variable.",
+            recoverable: true
+          }
+        };
+      }
       const capabilityFailure = backendImportCapabilityFailure(request.backend, request.source);
       if (capabilityFailure) {
         return {

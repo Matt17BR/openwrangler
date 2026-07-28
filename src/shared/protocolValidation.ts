@@ -48,6 +48,7 @@ const CELL_KINDS = new Set([
   "struct",
   "unknown"
 ]);
+const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark"] as const;
 const MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536;
 const OPERATION_KINDS = new Set([
   "sortRows",
@@ -146,7 +147,11 @@ export function isOpenWranglerRequest(value: unknown): value is OpenWranglerRequ
         candidate.kind === "openSession" &&
         isSessionSource(candidate.source) &&
         optional(candidate, "requestedSessionId", isNonEmptyString) &&
-        optional(candidate, "backend", (backend) => isOneOf(backend, ["polars", "duckdb", "pandas"])) &&
+        optional(candidate, "backend", (backend) => isOneOf(backend, DATA_BACKENDS)) &&
+        (candidate.backend !== "pyspark" ||
+          (isRecord(candidate.source) &&
+            candidate.source.kind === "notebookVariable" &&
+            (candidate.mode === undefined || candidate.mode === "viewing"))) &&
         optional(candidate, "mode", (mode) => isOneOf(mode, ["viewing", "editing"])) &&
         isBoundedPageSize(candidate.pageSize) &&
         isNonNegativeInteger(candidate.columnOffset) &&
@@ -530,7 +535,9 @@ function isSessionMetadata(value: unknown): value is SessionMetadata {
     candidate.protocolVersion === PROTOCOL_VERSION &&
     isString(candidate.sessionId) &&
     isNonNegativeInteger(candidate.revision) &&
-    isOneOf(candidate.backend, ["polars", "duckdb", "pandas"]) &&
+    isOneOf(candidate.backend, DATA_BACKENDS) &&
+    (candidate.backend !== "pyspark" ||
+      (isRecord(candidate.source) && candidate.source.kind === "notebookVariable" && candidate.mode === "viewing")) &&
     isOneOf(candidate.mode, ["viewing", "editing"]) &&
     isSessionSource(candidate.source) &&
     isSourceCapabilities(candidate.capabilities) &&

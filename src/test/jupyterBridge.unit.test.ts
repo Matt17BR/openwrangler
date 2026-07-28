@@ -218,6 +218,53 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.activeEditorReads).toBe(0);
   });
 
+  it.each([
+    "pyspark.sql.dataframe.DataFrame",
+    "pyspark.sql.classic.dataframe.DataFrame",
+    "pyspark.sql.connect.dataframe.DataFrame"
+  ])("pins the %s Variables-view type to the PySpark backend", async (type) => {
+    const origin = notebook("file:///workspace/spark.ipynb");
+    notebookMocks.notebookDocuments.push(origin);
+    const { context, coordinatedBridge } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "spark_frame",
+      type,
+      fileName: origin.uri
+    });
+
+    expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      coordinatedBridge,
+      {
+        kind: "notebookVariable",
+        label: "spark_frame",
+        variableName: "spark_frame",
+        uri: origin.uri.toString()
+      },
+      "pyspark"
+    );
+  });
+
+  it("does not infer PySpark from an unrecognized or lookalike Variables-view type", async () => {
+    const origin = notebook("file:///workspace/frame.ipynb");
+    notebookMocks.notebookDocuments.push(origin);
+    const { context, coordinatedBridge } = register();
+
+    await command("openWrangler.launchDataViewer")({
+      name: "frame",
+      type: "custom.pyspark.sql.dataframe.DataFrame",
+      fileName: origin.uri
+    });
+
+    expect(notebookMocks.createPanel).toHaveBeenCalledWith(context, coordinatedBridge, {
+      kind: "notebookVariable",
+      label: "frame",
+      variableName: "frame",
+      uri: origin.uri.toString()
+    });
+  });
+
   it("revives released Jupyter's canonical serialized fileName URI", async () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");

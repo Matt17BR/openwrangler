@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SessionSource } from "../shared/protocol";
-import { automaticBackends, isSupportedPythonVersion, requiredDependencies } from "../extension/pythonEnvironmentModel";
+import {
+  automaticBackends,
+  isFileDataBackend,
+  isSupportedPythonVersion,
+  requiredDependencies
+} from "../extension/pythonEnvironmentModel";
 
 describe("Python environment requirements", () => {
   it("accepts exactly the supported Python minor range", () => {
@@ -74,6 +79,8 @@ describe("Python environment requirements", () => {
     expect(requiredDependencies(automaticBackends(lossyUtf8)[0], lossyUtf8).map((item) => item.installSpec)).toEqual([
       "pandas"
     ]);
+    expect(isFileDataBackend("pyspark")).toBe(false);
+    expect(automaticBackends(parquet)).not.toContain("pyspark");
   });
 
   it("routes multibyte CSV controls only through engines that accept them", () => {
