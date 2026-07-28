@@ -322,13 +322,23 @@ export function inspectStableReleaseWorkflow(source) {
   } else {
     const upload = uploads[0];
     const expectedPath = `${CANONICAL_PATHS.join("\n")}\n`;
+    const packageVerifier = steps(packaging).find((step) => step?.id === "canonical");
     if (
+      !exactKeys(upload, ["id", "name", "uses", "with"]) ||
       upload.id !== "canonical_artifact" ||
+      upload.name !== "Upload the canonical stable artifact set" ||
       upload.with?.name !== "openwrangler-stable-release" ||
       upload.with?.path !== expectedPath ||
       upload.with?.["if-no-files-found"] !== "error" ||
       upload.with?.["compression-level"] !== 0 ||
-      upload.with?.["include-hidden-files"] !== false
+      upload.with?.["include-hidden-files"] !== false ||
+      !exactKeys(packageVerifier, ["id", "name", "env", "run"]) ||
+      packageVerifier.name !== "Revalidate the canonical stable artifact set" ||
+      !exactKeys(packageVerifier.env, ["EXPECTED_SHA", "RELEASE_TAG"]) ||
+      packageVerifier.env.EXPECTED_SHA !== EVENT_SHA ||
+      packageVerifier.env.RELEASE_TAG !== RELEASE_TAG ||
+      command(packageVerifier.run) !== "node scripts/verify-canonical-release-artifact.mjs canonical-release" ||
+      steps(packaging).indexOf(upload) !== steps(packaging).indexOf(packageVerifier) + 1
     ) {
       problems.push("package must upload only the canonical VSIX, checksum, and provenance set.");
     }
@@ -398,6 +408,14 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("cross-platform must run full stable VS Code packaged acceptance unconditionally.");
   }
+  inspectAdjacentCanonicalVerification(
+    steps(crossPlatform),
+    crossPlatformEditorStep,
+    "canonical_vscode",
+    "Reverify the exact canonical stable artifact for cross-platform VS Code",
+    "cross-platform VS Code",
+    problems
+  );
   const cursorSmokeStep = steps(crossPlatform).find((step) => step?.id === "cursor_smoke");
   if (
     !exactKeys(cursorSmokeStep, ["id", "name", "run", "env"]) ||
@@ -409,6 +427,14 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("cross-platform must run the pinned Cursor platform smoke unconditionally.");
   }
+  inspectAdjacentCanonicalVerification(
+    steps(crossPlatform),
+    cursorSmokeStep,
+    "canonical_cursor",
+    "Reverify the exact canonical stable artifact for cross-platform Cursor",
+    "cross-platform Cursor",
+    problems
+  );
 
   const linux = workflow.jobs["linux-acceptance"];
   for (const required of [
@@ -504,6 +530,14 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("installed-performance must consume ordinary stable provenance in both pinned editors.");
   }
+  inspectAdjacentCanonicalVerification(
+    steps(performance),
+    performanceStep,
+    "canonical",
+    "Verify the exact canonical stable artifact",
+    "installed-performance",
+    problems
+  );
 
   const jupyter = workflow.jobs["released-jupyter"];
   const jupyterStep = steps(jupyter).find((step) => step?.id === "packaged_editor");
@@ -540,6 +574,14 @@ export function inspectStableReleaseWorkflow(source) {
   ) {
     problems.push("released-jupyter must prepare and verify one pinned private Xvfb before its editor gate.");
   }
+  inspectAdjacentCanonicalVerification(
+    steps(jupyter),
+    jupyterStep,
+    "canonical_jupyter",
+    "Reverify the exact canonical stable artifact for released Jupyter",
+    "released-jupyter",
+    problems
+  );
 
   const remote = workflow.jobs["remote-ssh"];
   const remoteStep = steps(remote).find((step) => step?.id === "remote_workspace");
@@ -551,13 +593,21 @@ export function inspectStableReleaseWorkflow(source) {
     remoteStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
     remoteStep.env.OPEN_WRANGLER_REMOTE_PYTHON !== "${{ github.workspace }}/.remote-venv/bin/python" ||
     remoteRun !==
-      "npm run test:remote-workspace -- ${{ steps.canonical.outputs.candidate_path }} ${{ steps.canonical.outputs.candidate_sha256 }} ${{ steps.canonical.outputs.candidate_bytes }}"
+      "npm run test:remote-workspace -- ${{ steps.canonical_remote.outputs.candidate_path }} ${{ steps.canonical_remote.outputs.candidate_sha256 }} ${{ steps.canonical_remote.outputs.candidate_bytes }}"
   ) {
     problems.push("remote-ssh must run the label-equivalent gate against verifier-bound artifact outputs.");
   }
   if (steps(remote).some((step) => step?.uses === UPLOAD_ACTION)) {
     problems.push("remote-ssh must not upload raw private state before its runner exposes sealed evidence.");
   }
+  inspectAdjacentCanonicalVerification(
+    steps(remote),
+    remoteStep,
+    "canonical_remote",
+    "Reverify the exact canonical stable artifact for Remote SSH",
+    "remote-ssh",
+    problems
+  );
 
   const acceptanceGate = workflow.jobs["acceptance-gate"];
   const expectedGateNeeds = ["package", ...CONSUMERS];
@@ -631,8 +681,11 @@ export function inspectStableReleaseWorkflow(source) {
   if (releaseSteps.length !== 1) {
     problems.push("release must create exactly one GitHub release with the pinned action.");
   } else {
-    const options = releaseSteps[0].with;
+    const releaseStep = releaseSteps[0];
+    const options = releaseStep.with;
     if (
+      !exactKeys(releaseStep, ["name", "uses", "with"]) ||
+      releaseStep.name !== "Create the stable GitHub release without rebuilding" ||
       options?.tag_name !== RELEASE_TAG ||
       options?.target_commitish !== EVENT_SHA ||
       options?.draft !== false ||
@@ -644,6 +697,14 @@ export function inspectStableReleaseWorkflow(source) {
     ) {
       problems.push("release must attach the same canonical set as a non-draft stable GitHub release.");
     }
+    inspectAdjacentCanonicalVerification(
+      steps(release),
+      releaseStep,
+      "canonical_release",
+      "Reverify the exact canonical artifact for final publication",
+      "release publication",
+      problems
+    );
   }
 
   const writeJobs = Object.entries(workflow.jobs)

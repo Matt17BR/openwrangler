@@ -67,6 +67,34 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH",
       "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH\n        if: ${{ false }}"
     ),
+    source.replace(
+      "      - id: canonical_artifact\n        name: Upload the canonical stable artifact set",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: canonical_artifact\n        name: Upload the canonical stable artifact set"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test packaged VS Code",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: packaged_editor\n        name: Test packaged VS Code"
+    ),
+    source.replace(
+      "      - id: cursor_smoke\n        name: Test pinned Cursor platform smoke",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: cursor_smoke\n        name: Test pinned Cursor platform smoke"
+    ),
+    source.replace(
+      "      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX"
+    ),
+    source.replace(
+      "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH"
+    ),
+    source.replace(
+      "      - name: Create the stable GitHub release without rebuilding",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - name: Create the stable GitHub release without rebuilding"
+    ),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),
     source.replace(

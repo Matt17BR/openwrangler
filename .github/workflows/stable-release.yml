@@ -167,6 +167,12 @@ jobs:
         env:
           VSCODE_TEST_VERSION: stable
       - run: npm run build:test-extension
+      - id: canonical_vscode
+        name: Reverify the exact canonical stable artifact for cross-platform VS Code
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test packaged VS Code
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -183,6 +189,12 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: canonical_cursor
+        name: Reverify the exact canonical stable artifact for cross-platform Cursor
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: cursor_smoke
         name: Test pinned Cursor platform smoke
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -462,6 +474,12 @@ jobs:
           }
           accessSync(executable, X_OK);
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
+      - id: canonical_jupyter
+        name: Reverify the exact canonical stable artifact for released Jupyter
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test released Jupyter in the exact packaged VSIX
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -564,13 +582,19 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
+      - id: canonical_remote
+        name: Reverify the exact canonical stable artifact for Remote SSH
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: remote_workspace
         name: Test packaged VS Code over Remote SSH
         run: >-
           npm run test:remote-workspace --
-          ${{ steps.canonical.outputs.candidate_path }}
-          ${{ steps.canonical.outputs.candidate_sha256 }}
-          ${{ steps.canonical.outputs.candidate_bytes }}
+          ${{ steps.canonical_remote.outputs.candidate_path }}
+          ${{ steps.canonical_remote.outputs.candidate_sha256 }}
+          ${{ steps.canonical_remote.outputs.candidate_bytes }}
         env:
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
@@ -645,6 +669,12 @@ jobs:
             0) echo "Refusing to replace existing remote tag $RELEASE_TAG." >&2; exit 1 ;;
             *) exit "$status" ;;
           esac
+      - id: canonical_release
+        name: Reverify the exact canonical artifact for final publication
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - name: Create the stable GitHub release without rebuilding
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
