@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   closeSync,
   constants,
   cpSync,
@@ -48,6 +49,7 @@ import {
   assertInstalledPerformanceEvidenceGate,
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
+  isInstalledPerformanceNumericGateError,
   revalidateInstalledPerformanceReport,
   validateInstalledFixtureManifest,
   validateInstalledPerformancePhase,
@@ -100,6 +102,7 @@ const PERFORMANCE_EVIDENCE_BUILD_METHOD = "performance-evidence-artifact-v1";
 const OUTPUT_MAX_BYTES = 1024 * 1024;
 const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
+const numericFailureEvidenceReportReceipts = new WeakSet();
 const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
   "media/activity-icon.svg",
   "media/codePreview.js",
@@ -1346,7 +1349,10 @@ export function publishInstalledPerformanceReleaseResult({
   revalidateCandidate = revalidateInstalledPerformanceVsix,
   revalidateChecksum = revalidateInstalledPerformanceChecksum,
   revalidateProvenance = revalidateAcceptedPerformanceProvenance,
-  revalidateReport = revalidateInstalledPerformanceReport
+  revalidateReport = revalidateInstalledPerformanceReport,
+  failureEvidenceEnvironment = process.env,
+  appendFailureEvidenceOutput = appendFileSync,
+  revalidateFailureReport = revalidateInstalledPerformanceReport
 }) {
   assertInstalledPerformanceArtifactPathSeparation({
     output,
@@ -1361,15 +1367,15 @@ export function publishInstalledPerformanceReleaseResult({
   } catch (error) {
     gateError = error;
   }
+  const revalidateArtifacts = () => {
+    revalidateCandidate(publicCandidateReceipt);
+    if (publicChecksumReceipt !== undefined) {
+      revalidateChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
+    }
+    if (publicProvenanceReceipt !== undefined) revalidateProvenance(publicProvenanceReceipt);
+  };
   let validationError;
   try {
-    const revalidateArtifacts = () => {
-      revalidateCandidate(publicCandidateReceipt);
-      if (publicChecksumReceipt !== undefined) {
-        revalidateChecksum(publicChecksumReceipt, publicCandidateReceipt.path);
-      }
-      if (publicProvenanceReceipt !== undefined) revalidateProvenance(publicProvenanceReceipt);
-    };
     revalidateArtifacts();
     let artifactsValidatedWhileReportOpen = false;
     revalidateReport(reportReceipt, {
@@ -1392,8 +1398,111 @@ export function publishInstalledPerformanceReleaseResult({
     );
   }
   if (validationError !== undefined) throw validationError;
-  if (gateError !== undefined) throw gateError;
+  if (gateError !== undefined) {
+    if (isInstalledPerformanceNumericGateError(gateError)) {
+      try {
+        revalidateArtifacts();
+        numericFailureEvidenceReportReceipts.add(reportReceipt);
+        try {
+          publishInstalledPerformanceFailureEvidence(reportReceipt, {
+            environment: failureEvidenceEnvironment,
+            revalidateReport: revalidateFailureReport,
+            revalidateArtifacts,
+            appendOutput: appendFailureEvidenceOutput
+          });
+        } finally {
+          numericFailureEvidenceReportReceipts.delete(reportReceipt);
+        }
+      } catch (error) {
+        throw new AggregateError(
+          [gateError, error],
+          "Installed-performance numeric gate failed and its retained evidence output could not be published."
+        );
+      }
+    }
+    throw gateError;
+  }
   return reportReceipt;
+}
+
+function publishInstalledPerformanceFailureEvidence(
+  reportReceipt,
+  {
+    environment = process.env,
+    revalidateReport = revalidateInstalledPerformanceReport,
+    revalidateArtifacts = () => {},
+    appendOutput = appendFileSync
+  } = {}
+) {
+  if (!numericFailureEvidenceReportReceipts.has(reportReceipt)) {
+    throw new Error("Installed-performance failure evidence requires a numeric-gate publication receipt.");
+  }
+  const githubOutput = environment.GITHUB_OUTPUT;
+  if (githubOutput === undefined) return undefined;
+  if (
+    environment.GITHUB_ACTIONS !== "true" ||
+    typeof githubOutput !== "string" ||
+    !isAbsolute(githubOutput) ||
+    githubOutput.length === 0 ||
+    githubOutput.length > 4096 ||
+    /[\0\r\n]/u.test(githubOutput)
+  ) {
+    throw new Error("Installed-performance failure evidence requires one trusted GitHub Actions output file.");
+  }
+  const runnerTemp = environment.RUNNER_TEMP;
+  if (
+    typeof runnerTemp !== "string" ||
+    !isAbsolute(runnerTemp) ||
+    runnerTemp.length === 0 ||
+    runnerTemp.length > 4096 ||
+    /[\0\r\n]/u.test(runnerTemp)
+  ) {
+    throw new Error("Installed-performance failure evidence requires one absolute GitHub runner temp root.");
+  }
+  if (
+    typeof reportReceipt?.path !== "string" ||
+    reportReceipt.path.length === 0 ||
+    reportReceipt.path.length > 4096 ||
+    /[\0\r\n*?[\]]/u.test(reportReceipt.path)
+  ) {
+    throw new Error("Installed-performance failure evidence receipt is not safe for exact-path upload.");
+  }
+  const reportPath = resolve(reportReceipt.path);
+  const relativeReport = relative(resolve(runnerTemp), reportPath);
+  if (
+    relativeReport.length === 0 ||
+    relativeReport === ".." ||
+    relativeReport.startsWith(`..${sep}`) ||
+    isAbsolute(relativeReport) ||
+    typeof reportReceipt?.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(reportReceipt.sha256) ||
+    !Number.isSafeInteger(reportReceipt?.bytes) ||
+    reportReceipt.bytes <= 0 ||
+    reportReceipt.bytes > OUTPUT_MAX_BYTES
+  ) {
+    throw new Error("Installed-performance failure evidence receipt is not safe for exact-path upload.");
+  }
+  if (typeof revalidateArtifacts !== "function") {
+    throw new TypeError("Installed-performance failure evidence requires one artifact revalidation callback.");
+  }
+  let artifactsValidatedWhileReportOpen = false;
+  revalidateReport(reportReceipt, {
+    afterOpen() {
+      revalidateArtifacts();
+      artifactsValidatedWhileReportOpen = true;
+    }
+  });
+  if (!artifactsValidatedWhileReportOpen) {
+    throw new Error("Installed-performance failure evidence could not jointly revalidate its report and candidate.");
+  }
+  revalidateArtifacts();
+  const output = `evidence_path=${reportPath}\nevidence_sha256=${reportReceipt.sha256}\nevidence_size=${String(reportReceipt.bytes)}\nevidence_ready=true\n`;
+  appendOutput(githubOutput, output, "utf8");
+  return Object.freeze({
+    path: reportPath,
+    sha256: reportReceipt.sha256,
+    bytes: reportReceipt.bytes
+  });
 }
 
 export function installedPerformanceDisplayMode(editor, environment = process.env) {

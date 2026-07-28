@@ -62,7 +62,8 @@ export const EXTENSION_TEST_COMPILED_MODULES = Object.freeze([
   EXTENSION_TEST_ENTRYPOINT,
   "dist-test/test/extensionHost/fragmentPublication.js",
   "dist-test/test/extensionHost/identifiedTemporary.js",
-  "dist-test/test/extensionHost/progress.js"
+  "dist-test/test/extensionHost/progress.js",
+  "dist-test/test/extensionHost/rendererGridScrollMeasurement.js"
 ]);
 
 function readBoundedRegularAsset(path, label, maxBytes = MAX_RUNTIME_ASSET_BYTES) {

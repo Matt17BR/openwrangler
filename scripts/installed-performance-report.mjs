@@ -42,6 +42,16 @@ const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const PYTHON_VERSION = /^3\.(?:10|11|12|13|14)(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MAX_REPORT_BYTES = 1024 * 1024;
 const installedPerformanceReportReceipts = new WeakSet();
+const installedPerformanceNumericGateErrors = new WeakSet();
+
+export function isInstalledPerformanceNumericGateError(error) {
+  return (
+    error instanceof Error &&
+    installedPerformanceNumericGateErrors.has(error) &&
+    Array.isArray(error.failures) &&
+    error.failures.length > 0
+  );
+}
 
 export function summarizeInstalledDurationSamples(samples, label = "duration samples") {
   assertDurationSamples(samples, label);
@@ -245,15 +255,26 @@ function assertInstalledPerformanceGate(
     validateGroupedResults(editor.results);
   }
   exactKeys(report[verdictKey], ["passed", "failures"], [], `${gateLabel}-gate verdict`);
-  const failures = installedPerformanceFailures(report, { requiredEditors, requireLinuxReference });
+  const failureDetails = installedPerformanceFailureDetails(report, { requiredEditors, requireLinuxReference });
+  const failures = failureDetails.map((failure) => failure.message);
   const expectedVerdict = { passed: failures.length === 0, failures };
   if (JSON.stringify(report[verdictKey]) !== JSON.stringify(expectedVerdict)) {
     throw new Error(`Installed performance report ${gateLabel} verdict does not match its measurements.`);
   }
-  if (failures.length > 0) {
-    throw new Error(`Installed performance ${gateLabel} gates failed:\n${failures.join("\n")}`);
-  }
   assertPublicEvidence(report);
+  if (failures.length > 0) {
+    const error = new Error(`Installed performance ${gateLabel} gates failed:\n${failures.join("\n")}`);
+    if (failureDetails.every((failure) => failure.kind === "numeric")) {
+      Object.defineProperty(error, "failures", {
+        value: Object.freeze([...failures]),
+        enumerable: false,
+        configurable: false,
+        writable: false
+      });
+      installedPerformanceNumericGateErrors.add(error);
+    }
+    throw error;
+  }
   return report;
 }
 
@@ -811,22 +832,33 @@ function installedPerformanceFailures(
   report,
   { requiredEditors = ["vscode", "cursor"], requireLinuxReference = true } = {}
 ) {
+  return installedPerformanceFailureDetails(report, { requiredEditors, requireLinuxReference }).map(
+    (failure) => failure.message
+  );
+}
+
+function installedPerformanceFailureDetails(
+  report,
+  { requiredEditors = ["vscode", "cursor"], requireLinuxReference = true } = {}
+) {
   const failures = [];
+  const structural = (message) => failures.push({ kind: "structural", message });
+  const numeric = (message) => failures.push({ kind: "numeric", message });
   if (report.source.trackedWorktreeDirty) {
-    failures.push("candidate source worktree has tracked changes");
+    structural("candidate source worktree has tracked changes");
   }
   const editorKeys = report.editors.map((entry) => entry.provenance.editor.key);
   for (const required of requiredEditors) {
-    if (!editorKeys.includes(required)) failures.push(`missing ${required} installed performance evidence`);
+    if (!editorKeys.includes(required)) structural(`missing ${required} installed performance evidence`);
   }
   for (const editor of report.editors) {
     const label = editor.provenance.editor.key;
     if (requireLinuxReference && editor.provenance.platform.operatingSystem !== "Linux") {
-      failures.push(`${label} did not run on the Linux reference platform`);
+      structural(`${label} did not run on the Linux reference platform`);
     }
     const expectedDisplayMode = label === "cursor" ? "xvfb" : "headless";
     if (requireLinuxReference && editor.provenance.platform.editorDisplayMode !== expectedDisplayMode) {
-      failures.push(`${label} did not use the required ${expectedDisplayMode} editor display mode`);
+      structural(`${label} did not use the required ${expectedDisplayMode} editor display mode`);
     }
     if (
       requireLinuxReference &&
@@ -834,7 +866,7 @@ function installedPerformanceFailures(
         !positiveInteger(editor.resources.peakEditorTreeRssBytes) ||
         !positiveInteger(editor.resources.peakPythonRuntimeRssBytes))
     ) {
-      failures.push(`${label} RSS evidence is incomplete`);
+      structural(`${label} RSS evidence is incomplete`);
     }
     for (const format of ["csv", "parquet"]) {
       const limit =
@@ -844,9 +876,9 @@ function installedPerformanceFailures(
       for (const cache of ["cold", "warm"]) {
         const result = editor.results.firstGrid[format][cache];
         const actual = result.timing.p95Ms;
-        if (!(actual < limit)) failures.push(`${label} ${format} ${cache} first-grid p95 ${actual}ms >= ${limit}ms`);
+        if (!(actual < limit)) numeric(`${label} ${format} ${cache} first-grid p95 ${actual}ms >= ${limit}ms`);
         if (result.cacheProofs.some((proof) => !proof.verified)) {
-          failures.push(`${label} ${format} ${cache} source-cache residency was not proven for every sample`);
+          structural(`${label} ${format} ${cache} source-cache residency was not proven for every sample`);
         }
       }
     }
@@ -856,10 +888,10 @@ function installedPerformanceFailures(
       ["uncached grid", interaction.uncached.p95Ms, INSTALLED_PERFORMANCE_LIMITS.uncachedGridP95Ms],
       ["interaction heartbeat", interaction.heartbeat.p95Ms, INSTALLED_PERFORMANCE_LIMITS.interactionHeartbeatP95Ms]
     ]) {
-      if (!(actual < limit)) failures.push(`${label} ${name} p95 ${actual}ms >= ${limit}ms`);
+      if (!(actual < limit)) numeric(`${label} ${name} p95 ${actual}ms >= ${limit}ms`);
     }
-    if (!interaction.filter.completed) failures.push(`${label} filter did not complete`);
-    if (!interaction.sort.completed) failures.push(`${label} sort did not complete`);
+    if (!interaction.filter.completed) structural(`${label} filter did not complete`);
+    if (!interaction.sort.completed) structural(`${label} sort did not complete`);
     if (
       !interaction.profiling.activeObserved ||
       interaction.profiling.activeCheckpoint.state !== "active" ||
@@ -873,7 +905,7 @@ function installedPerformanceFailures(
       !interaction.profiling.originalRequestSettled ||
       interaction.profiling.originalResponseKind !== "cancelled"
     ) {
-      failures.push(`${label} did not prove authoritative profile cancellation`);
+      structural(`${label} did not prove authoritative profile cancellation`);
     }
     for (const [operation, responsiveness] of [
       ["filter", interaction.filter.responsiveness],
@@ -881,15 +913,15 @@ function installedPerformanceFailures(
       ["profiling", interaction.profiling.responsiveness]
     ]) {
       if (!responsiveness.outstandingObserved || responsiveness.foregroundResponseKind !== "page") {
-        failures.push(`${label} ${operation} did not prove concurrent renderer and foreground responsiveness`);
+        structural(`${label} ${operation} did not prove concurrent renderer and foreground responsiveness`);
       }
       if (!(responsiveness.rendererHeartbeatMs < INSTALLED_PERFORMANCE_LIMITS.outstandingRendererHeartbeatMs)) {
-        failures.push(
+        numeric(
           `${label} ${operation} outstanding renderer heartbeat ${responsiveness.rendererHeartbeatMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingRendererHeartbeatMs}ms`
         );
       }
       if (!(responsiveness.foregroundPageLatencyMs < INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs)) {
-        failures.push(
+        numeric(
           `${label} ${operation} outstanding foreground page ${responsiveness.foregroundPageLatencyMs}ms >= ${INSTALLED_PERFORMANCE_LIMITS.outstandingForegroundPageMs}ms`
         );
       }

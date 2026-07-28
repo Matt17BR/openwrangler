@@ -72,7 +72,8 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
     "dist-test/test/extensionHost/installedPerformance.js",
     "dist-test/test/extensionHost/fragmentPublication.js",
     "dist-test/test/extensionHost/identifiedTemporary.js",
-    "dist-test/test/extensionHost/progress.js"
+    "dist-test/test/extensionHost/progress.js",
+    "dist-test/test/extensionHost/rendererGridScrollMeasurement.js"
   ]);
   const packageManifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(
@@ -110,6 +111,7 @@ test("extension-test builds explicitly stage declaration-shadowed CommonJS runti
         'require("./fragmentPublication");',
         'require("./identifiedTemporary");',
         'require("./progress");',
+        'require("./rendererGridScrollMeasurement");',
         "exports.run = async function run() {};",
         ""
       ].join("\n"),
@@ -2457,9 +2459,9 @@ test("release publication jointly revalidates the candidate while the report is 
   ]);
 });
 
-test("release publication retains and jointly verifies evidence when the numeric gate fails", () => {
+test("release publication retains and jointly verifies evidence without publishing unclassified gate failures", () => {
   const events = [];
-  const gateError = new Error("numeric performance gate failed");
+  const gateError = new Error("unclassified performance gate failed");
   assert.throws(
     () =>
       publishInstalledPerformanceReleaseResult({
@@ -2495,6 +2497,14 @@ test("release publication retains and jointly verifies evidence when the numeric
           events.push("report-open");
           hooks.afterOpen();
           events.push("report-close");
+        },
+        failureEvidenceEnvironment: {
+          GITHUB_ACTIONS: "true",
+          GITHUB_OUTPUT: resolve(tmpdir(), "unused-installed-performance-output"),
+          RUNNER_TEMP: tmpdir()
+        },
+        appendFailureEvidenceOutput() {
+          events.push("publish-failure-evidence");
         }
       }),
     (error) => error === gateError

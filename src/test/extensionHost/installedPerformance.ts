@@ -17,6 +17,7 @@ import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from 
 import { parseStrictJson } from "../../shared/strictJson.cjs";
 import { publishInstalledPerformanceFragment, type InstalledPerformanceArtifactReceipt } from "./fragmentPublication";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
+import { measureRendererGridScroll } from "./rendererGridScrollMeasurement";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v4";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
@@ -563,18 +564,16 @@ async function scrollGridToRow(
   totalColumns: number,
   expectedValue: number
 ): Promise<number> {
-  const started = await rendererNow(frame);
-  await frame.getByTestId("data-grid-scroller").evaluate((element, targetRow) => {
-    (element as unknown as { scrollTop: number }).scrollTop = targetRow * 29;
-  }, row);
-  await waitForGridState(frame, {
-    rows: totalRows,
-    columns: totalColumns,
+  const duration = await frame.evaluate(measureRendererGridScroll, {
     row,
     column: 0,
-    value: expectedValue
+    totalRows,
+    totalColumns,
+    expectedText: String(expectedValue),
+    rowHeight: 29,
+    timeoutMs: GRID_DISCOVERY_TIMEOUT_MS
   });
-  return roundMilliseconds((await rendererNow(frame)) - started);
+  return roundMilliseconds(duration);
 }
 
 async function measureRendererHeartbeat(frame: Frame): Promise<number> {
@@ -589,13 +588,6 @@ async function measureRendererHeartbeat(frame: Frame): Promise<number> {
     });
   });
   return roundMilliseconds(duration);
-}
-
-async function rendererNow(frame: Frame): Promise<number> {
-  return frame.evaluate(() => {
-    const browser = globalThis as unknown as { performance: { now(): number } };
-    return browser.performance.now();
-  });
 }
 
 async function openColumnAction(frame: Frame, column: string, action: string): Promise<void> {
