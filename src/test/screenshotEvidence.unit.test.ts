@@ -6,8 +6,8 @@ import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
-  PACKAGED_SCREENSHOT_FIXED_FEATURED_WIDTHS,
   PACKAGED_SCREENSHOT_MARKETS,
+  PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_SCENES,
   packagedScreenshotFeaturedColumnWidths,
@@ -112,9 +112,15 @@ describe("packaged editor screenshot evidence", () => {
 
     expect(PACKAGED_SCREENSHOT_FEATURED_COLUMNS).toEqual(PACKAGED_SCREENSHOT_COLUMNS.slice(0, 5));
     expect(PACKAGED_SCREENSHOT_COLUMNS.length).toBeGreaterThan(PACKAGED_SCREENSHOT_FEATURED_COLUMNS.length);
-    expect(widths).toMatchObject(PACKAGED_SCREENSHOT_FIXED_FEATURED_WIDTHS);
-    expect(Object.values(widths).every((width) => width >= 160 && width <= 640)).toBe(true);
+    expect(
+      PACKAGED_SCREENSHOT_FEATURED_COLUMNS.every(
+        (name) => widths[name] >= PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS[name] && widths[name] <= 640
+      )
+    ).toBe(true);
     expect(Object.values(widths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(gridClientWidth);
+    const wideWidths = packagedScreenshotFeaturedColumnWidths(1_500, rowHeaderWidth);
+    expect(Object.values(wideWidths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(1_500);
+    expect(Object.values(wideWidths).every((width) => width <= 640)).toBe(true);
     expect(() => packagedScreenshotFeaturedColumnWidths(0, rowHeaderWidth)).toThrow(TypeError);
     expect(() => packagedScreenshotFeaturedColumnWidths(700, rowHeaderWidth)).toThrow(RangeError);
   });
