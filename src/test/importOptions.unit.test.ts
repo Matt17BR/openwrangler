@@ -139,6 +139,45 @@ describe("automatic import option sampling", () => {
 describe("Excel import prompts", () => {
   beforeEach(resetPromptMocks);
 
+  it("shows actual worksheet names and promotes the current zero-based sheet without a text prompt", async () => {
+    importOptionMocks.showQuickPick.mockImplementationOnce(async (items) => items[0]);
+
+    await expect(
+      promptImportOptions(vscode.Uri.file("/tmp/data.xlsx"), { sheetIndex: 1 }, undefined, [
+        "Overview",
+        "Sales",
+        "2024"
+      ])
+    ).resolves.toEqual({ sheetName: "Sales" });
+
+    expect(picksAt(0).map(({ label, value }) => ({ label, value }))).toEqual([
+      { label: "Sales", value: "Sales" },
+      { label: "Overview", value: "Overview" },
+      { label: "2024", value: "2024" }
+    ]);
+    expect(picksAt(0)[0]).toMatchObject({
+      description: "Current",
+      detail: "Worksheet 2 of 3"
+    });
+    expect(importOptionMocks.showQuickPick.mock.calls[0]?.[1]).toMatchObject({
+      title: "Excel sheet",
+      placeHolder: "Choose a worksheet",
+      ignoreFocusOut: true
+    });
+    expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
+  });
+
+  it("keeps numeric worksheet names name-addressed when selected from workbook metadata", async () => {
+    importOptionMocks.showQuickPick.mockImplementationOnce(async (items) =>
+      (items as Pick[]).find(({ value }) => value === "2024")
+    );
+
+    await expect(
+      promptImportOptions(vscode.Uri.file("/tmp/data.xls"), { sheetName: "Overview" }, undefined, ["Overview", "2024"])
+    ).resolves.toEqual({ sheetName: "2024" });
+    expect(importOptionMocks.showInputBox).not.toHaveBeenCalled();
+  });
+
   it("keeps a numeric worksheet name unambiguously name-addressed and prefills the current name", async () => {
     importOptionMocks.showQuickPick.mockImplementationOnce(async (items) => items[0]);
     importOptionMocks.showInputBox.mockResolvedValueOnce("0");

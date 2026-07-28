@@ -513,7 +513,17 @@ export class OpenWranglerPanel {
 
       let importOptions: NonNullable<SessionSource["importOptions"]> | undefined;
       try {
-        importOptions = await promptImportOptions(uri, this.source.importOptions, cancellation.token);
+        const extension = path.extname(uri.fsPath).toLowerCase();
+        const isExcelSource = extension === ".xlsx" || extension === ".xls";
+        const sheetNames =
+          isExcelSource && this.sessionId && this.snapshot?.metadata.backend
+            ? await this.bridge.listExcelSheets?.(this.sessionId, this.source, this.snapshot.metadata.backend, {
+                cancellation: cancellation.token
+              })
+            : undefined;
+        if (this.disposed || generation !== this.openAttemptGeneration) return;
+        if (cancellation.token.isCancellationRequested) throw new ImportCancelledError();
+        importOptions = await promptImportOptions(uri, this.source.importOptions, cancellation.token, sheetNames);
       } catch (error) {
         if (error instanceof ImportCancelledError) {
           if (this.disposed || generation !== this.openAttemptGeneration) return;

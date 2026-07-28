@@ -48,6 +48,7 @@ import { backendImportCapabilityFailure, type PythonDependency } from "./pythonE
 import { isFullyQualifiedPythonPath } from "./pythonPath";
 import { buildPythonProcessEnvironment } from "./pythonProcessEnvironment";
 import { stopChildProcessGracefully } from "./processShutdown";
+import { discoverExcelSheetNames } from "./files/excelSheetNames";
 
 interface PendingRequest {
   readonly requestId: string;
@@ -263,6 +264,7 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
   private dependencyInstallOperation: DependencyInstallOperation | undefined;
   private dependencyRecoveryOperation: DependencyRecoveryOperation | undefined;
   private readonly dependencyMutations = new Map<string, DependencyInstallOperation>();
+  private readonly excelSheetReads = new Set<AbortController>();
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.environmentApiBroker = new PythonEnvironmentApiBroker((event) =>
@@ -296,6 +298,73 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
     return [...this.runtimeSlots.values()].some((runtime) =>
       Boolean(runtime.process || runtime.processStart || runtime.processStop)
     );
+  }
+
+  async listExcelSheets(
+    sessionId: string,
+    source: SessionSource,
+    backend: DataBackend,
+    options: BridgeRequestOptions = {}
+  ): Promise<readonly string[] | undefined> {
+    if (
+      this.disposed ||
+      !vscode.workspace.isTrusted ||
+      options.cancellation?.isCancellationRequested ||
+      source.kind !== "file" ||
+      !source.path ||
+      ![".xls", ".xlsx"].includes(path.extname(source.path).toLowerCase()) ||
+      (backend !== "pandas" && backend !== "polars")
+    ) {
+      return undefined;
+    }
+    const runtime = this.sessionOwners.get(sessionId);
+    const processSelection = runtime?.processSelection;
+    if (
+      !runtime?.process ||
+      !processSelection ||
+      pythonSelectionScope(sourceResource(source)).key !== runtime.key ||
+      !this.isCurrentEnvironmentSelection(processSelection.selection)
+    ) {
+      return undefined;
+    }
+
+    const release = this.retainRuntime(runtime);
+    const controller = new AbortController();
+    this.excelSheetReads.add(controller);
+    const cancellation = options.cancellation?.onCancellationRequested(() =>
+      controller.abort(new Error("Excel worksheet discovery was cancelled."))
+    );
+    try {
+      const names = await discoverExcelSheetNames({
+        pythonPath: processSelection.environment.executable,
+        extensionPath: this.context.extensionPath,
+        sourcePath: source.path,
+        backend,
+        signal: controller.signal
+      });
+      if (
+        controller.signal.aborted ||
+        this.disposed ||
+        !vscode.workspace.isTrusted ||
+        this.sessionOwners.get(sessionId) !== runtime ||
+        runtime.processSelection !== processSelection ||
+        !this.isCurrentEnvironmentSelection(processSelection.selection)
+      ) {
+        return undefined;
+      }
+      return names;
+    } catch (error) {
+      if (!controller.signal.aborted && !this.disposed) {
+        this.output.appendLine(
+          `Could not list worksheets for ${source.label}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      return undefined;
+    } finally {
+      cancellation?.dispose();
+      this.excelSheetReads.delete(controller);
+      release();
+    }
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
@@ -1458,6 +1527,9 @@ export class PythonBridge implements OpenWranglerBridge, vscode.Disposable {
 
   private async shutdownBridge(): Promise<void> {
     this.disposed = true;
+    for (const controller of this.excelSheetReads ?? []) {
+      controller.abort(new Error("Open Wrangler runtime bridge disposed during Excel worksheet discovery."));
+    }
     const dependencyInstall = this.dependencyInstallOperation;
     const failures: unknown[] = [];
     const dependencyGuardCommands = [...(this.activeDependencyGuardCommands ?? [])];

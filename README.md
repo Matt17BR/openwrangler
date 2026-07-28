@@ -39,7 +39,7 @@ The checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/
 
 ## What it does
 
-- Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS from the Explorer, editor tab, editor toolbar, or Command Palette. Delimited files are detected automatically—including an explicit empty-dataset view for blank files—and import options remain available when correction is needed.
+- Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS from the Explorer, editor tab, editor toolbar, or Command Palette. Delimited files are detected automatically—including an explicit empty-dataset view for blank files—and Excel import options show the workbook's actual sheet names.
 - Explores large and wide data through a virtualized, keyboard-accessible grid with search, progressive column insights, and filters and sorts that stay visible and individually removable.
 - Keeps viewing filters and sorts separate from the cleaning plan.
 - Previews all 27 built-in operations as a data diff with engine-native Python before apply or discard.

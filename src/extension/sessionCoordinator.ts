@@ -144,6 +144,8 @@ export class SessionCoordinator implements vscode.Disposable {
   createBridge(delegate: OpenWranglerBridge, notebookDocument?: vscode.NotebookDocument): OpenWranglerBridge {
     return {
       request: (request, options) => this.request(delegate, request, options, notebookDocument),
+      listExcelSheets: (sessionId, source, backend, options) =>
+        this.listExcelSheets(delegate, sessionId, source, backend, options),
       reconfigureFileSession: (sessionId, revision, source, options) =>
         this.reconfigureFileSession(delegate, sessionId, revision, source, options),
       cancelViewRequests: (sessionId, viewRequestIds) => this.cancelViewRequests(sessionId, viewRequestIds),
@@ -154,6 +156,28 @@ export class SessionCoordinator implements vscode.Disposable {
       clearStepInspection: (sessionId) => this.clearStepInspection(sessionId),
       setActiveSession: (sessionId) => this.setActive(sessionId)
     };
+  }
+
+  private async listExcelSheets(
+    delegate: OpenWranglerBridge,
+    sessionId: string,
+    source: SessionSource,
+    backend: DataBackend,
+    options?: BridgeRequestOptions
+  ): Promise<readonly string[] | undefined> {
+    if (this.disposed || options?.cancellation?.isCancellationRequested) return undefined;
+    const session = this.sessions.get(sessionId);
+    if (
+      !session ||
+      session.delegate !== delegate ||
+      session.closing ||
+      session.reconfiguring ||
+      session.metadata.backend !== backend ||
+      !sameFileSourceIdentity(session.openRequest.source, source)
+    ) {
+      return undefined;
+    }
+    return delegate.listExcelSheets?.(session.runtimeId, session.openRequest.source, session.metadata.backend, options);
   }
 
   setActive(sessionId: string | undefined): void {

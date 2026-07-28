@@ -1855,6 +1855,57 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(promptPicksAt(0)[0]).toMatchObject({ value: ";", description: "Current" });
   });
 
+  it("uses live workbook sheet names for Excel reconfiguration without asking users to type one", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "workbook.xlsx",
+      path: "/workspace/workbook.xlsx",
+      uri: "file:///workspace/workbook.xlsx",
+      importOptions: { sheetIndex: 0 }
+    };
+    const initial = responseForSource(source);
+    const listExcelSheets = vi.fn(async () => ["Overview", "Sales", "2024"]);
+    const reconfigureFileSession = vi.fn(
+      async (_sessionId: string, _revision: number, nextSource: SessionSource): Promise<OpenWranglerResponse> =>
+        responseForSource(nextSource, 1)
+    );
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => initial),
+        listExcelSheets,
+        reconfigureFileSession
+      },
+      { source, openResponse: initial }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+    panelPromptMocks.showQuickPick.mockImplementationOnce(async (items) =>
+      (items as PromptPick[]).find(({ value }) => value === "Sales")
+    );
+
+    await harness.receive({ kind: "changeImportOptions" });
+
+    expect(listExcelSheets).toHaveBeenCalledWith("session", source, "polars", {
+      cancellation: expect.objectContaining({
+        isCancellationRequested: false,
+        onCancellationRequested: expect.any(Function)
+      })
+    });
+    expect(promptPicksAt(0).map(({ label }) => label)).toEqual(["Overview", "Sales", "2024"]);
+    expect(panelPromptMocks.showInputBox).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).toHaveBeenCalledWith(
+      "session",
+      0,
+      { ...source, importOptions: { sheetName: "Sales" } },
+      {
+        cancellation: expect.objectContaining({
+          isCancellationRequested: false,
+          onCancellationRequested: expect.any(Function)
+        })
+      }
+    );
+  });
+
   it("remembers an initial non-default file configuration only after session open is confirmed", async () => {
     const source: SessionSource = {
       kind: "file",
