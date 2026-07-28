@@ -641,7 +641,7 @@ test("requires one exact positive stable release and install section in both REA
     `# Open Wrangler\n\n<!--\n${STABLE_README_RELEASE_SECTION}\n-->\n`,
     `# Open Wrangler\n\n<div hidden>\n${STABLE_README_RELEASE_SECTION}\n</div>\n`,
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${STABLE_README_RELEASE_SECTION}\n`,
-    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed VSIX", "VSIX")}\n`
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed GitHub Release", "GitHub Release")}\n`
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ readme }));
     assert.ok(problems.some((problem) => problem.startsWith("README.md must")));
@@ -737,6 +737,12 @@ test("keeps the same compact editor support tiers in every README channel", () =
       /Experimental editors receive isolated functional smokes and do not inherit the VS Code\/Cursor support guarantee/u
     );
   }
+  assert.match(
+    STABLE_README_RELEASE_SECTION,
+    /https:\/\/marketplace\.visualstudio\.com\/items\?itemName=Matt17BR\.openwrangler/u
+  );
+  assert.match(STABLE_README_RELEASE_SECTION, /https:\/\/open-vsx\.org\/extension\/Matt17BR\/openwrangler/u);
+  assert.match(STABLE_README_RELEASE_SECTION, /https:\/\/github\.com\/Matt17BR\/openwrangler\/releases/u);
 });
 
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {

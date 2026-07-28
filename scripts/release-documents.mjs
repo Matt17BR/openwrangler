@@ -12,6 +12,8 @@ const FEATURE_PARITY_HEADING = "Feature parity matrix";
 const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
 const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
+const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
+const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
 const FEATURE_PARITY_URL = "https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md";
 const README_EDITOR_SUPPORT = `| Editor                                          | Support      | Release coverage                                       |
 | ----------------------------------------------- | ------------ | ------------------------------------------------------ |
@@ -62,7 +64,7 @@ ${README_RELEASE_SECTION_END}`;
 
 export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](${RELEASES_URL}).
+> **Release status:** Stable. Install from the [Visual Studio Marketplace](${MARKETPLACE_URL}), [Open VSX](${OPEN_VSX_URL}), or a [checksummed GitHub Release](${RELEASES_URL}).
 
 ## Install
 
@@ -70,7 +72,7 @@ Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
 ${README_EDITOR_SUPPORT}
 
-Download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
+Install directly from the [Visual Studio Marketplace](${MARKETPLACE_URL}) or [Open VSX](${OPEN_VSX_URL}). For manual or offline installation, download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
 
 Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
 
