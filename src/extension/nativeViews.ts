@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as vscode from "vscode";
+import { isActiveColumnFilter } from "../shared/filterModel";
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
@@ -188,6 +189,20 @@ export function registerNativeViews(
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
   context.subscriptions.push(
     contextSubscription,
+    vscode.commands.registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
+      const snapshot = coordinator.activeSession();
+      if (
+        typeof column !== "string" ||
+        !snapshot?.viewState.filterModel.filters.some(
+          (filter) => filter.column === column && isActiveColumnFilter(filter)
+        )
+      ) {
+        return;
+      }
+      if (!OpenWranglerPanel.sendEditorAction({ action: "clearFilterColumn", column })) {
+        void vscode.window.showInformationMessage("Open the active dataframe editor before removing a viewing filter.");
+      }
+    }),
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
@@ -561,12 +576,18 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
 }
 
 function filterNodes(model: FilterModel): ViewNode[] {
-  const filters = model.filters.map(
+  const filters = model.filters.filter(isActiveColumnFilter).map(
     (filter) =>
       new ViewNode(
         filter.column,
-        `${filter.predicates.length} predicates${filter.valueFilter ? " · values" : ""}`,
-        "filter"
+        filterNodeDescription(filter),
+        "filter",
+        {
+          command: "openWrangler.clearViewFilterColumn",
+          title: `Remove ${filter.column} filter`,
+          arguments: [filter.column]
+        },
+        "openWrangler.viewFilter"
       )
   );
   const sorts = model.sort.map(
@@ -580,6 +601,19 @@ function filterNodes(model: FilterModel): ViewNode[] {
   return filters.length || sorts.length
     ? [...filters, ...sorts]
     : [new ViewNode("No filters or sorts", "Viewing state is separate from cleaning steps", "filter")];
+}
+
+function filterNodeDescription(filter: FilterModel["filters"][number]): string {
+  const parts: string[] = [];
+  if (filter.valueFilter) {
+    const selected = filter.valueFilter.selectedValues.length;
+    if (selected > 0) parts.push(`${selected} selected ${selected === 1 ? "value" : "values"}`);
+    if (filter.valueFilter.includeNulls) parts.push("null");
+    if (filter.valueFilter.includeNaN) parts.push("NaN");
+  }
+  const predicates = filter.predicates.length;
+  if (predicates > 0) parts.push(`${predicates} ${predicates === 1 ? "condition" : "conditions"}`);
+  return parts.join(" · ");
 }
 
 function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {

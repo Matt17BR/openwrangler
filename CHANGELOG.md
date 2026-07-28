@@ -2,6 +2,29 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
+## [1.0.1] - 2026-07-28
+
+### Changed
+
+- Replaced manual Excel sheet-name/index entry with a searchable picker populated from the open workbook through its confirmed Pandas or Polars runtime. The initial open still selects the first sheet automatically; explicit **Change Import Options** remains read-only, cancellable, trust-gated, and safe for numeric-looking sheet names.
+- Made ordinary file opens absorb one transient Python-environment selection event before any runtime request is dispatched; repeated selection churn still fails, and dispatched or mutating requests are never retried. When no Excel backend is ready, the error now names only the preferred backend and its exact requirements instead of merging Polars and Pandas alternatives. The initial error offers **Install required dependency**, retains the existing Workspace Trust and exact modal-confirmation gates, and reopens the file only after a confirmed successful install.
+- Made primary CSV and TSV launches immediate: the local or remote extension host uses one bounded 64 KiB sample to detect comma, tab, semicolon, or pipe delimiters, UTF-8/BOM versus Windows-1252, standard versus structural single quotes, and likely headers, then fails soft to safe suffix defaults if the host cannot read the sample. **Change Import Options** remains available for explicit correction.
+- Made column-header sorting an unambiguous one-click primary sort: choosing ascending or descending closes the menu and replaces prior quick sorts, while a visible accessible indicator clears the active rule. Deliberate multi-column sorting now stays in Filters / Sorts as an ordered, individually removable draft with direction toggles, clear-all, and explicit apply/discard actions; viewing filters and cleaning steps remain unchanged.
+- Kept column summaries stable while progressive profiling results arrive and promoted the selected column to an expanded, visually marked first position, so exact numeric min/max/mean/median statistics remain visible instead of unexpectedly collapsing.
+- Made cleaning-operation forms easier to author: multi-column choices use explicit accessible checklists instead of Ctrl/Cmd multi-selects; sort and aggregation rows can be moved or removed individually; and text, numeric, datetime, group-key, by-example, and aggregation selectors hide schema types that the chosen operation cannot safely consume.
+- Collapsed the draft's inline generated-code fallback by default when the dedicated Code Preview panel already presents the editable code, reducing duplication while keeping the inline copy one click away.
+- Made README screenshots reproducible product evidence: the isolated packaged-editor harness now opens a fresh 12-row, six-column synthetic file with no retained view or plan, captures a clean dark/light grid with the empty Code Preview panel closed, then creates a real numeric-round draft and captures its diff plus generated code in both themes.
+- Tightened the README around the actual install, exploration, transformation, engine, and compatibility story; removed the blanket parity-complete claim so newly discovered real-world regressions are described and treated honestly.
+
+### Fixed
+
+- Restored keyboard focus to a visible control when closing Filters / Sorts after entering through a column menu; a closed menu item or the document body can no longer be mistaken for a valid return target. Required multi-column checklists now use explicit group guidance instead of an invalid `aria-required` fieldset attribute.
+- Opened zero-byte, BOM-only, and whitespace-only CSV/TSV sources as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB instead of surfacing raw parser failures. Non-empty malformed input still fails in its native reader, and opening never changes source bytes.
+- Kept the installed dataframe surface on the declared VS Code foreground and editor-background tokens instead of inheriting a subtly different workbench color from the host webview.
+- Treated Polars CSV, TSV, Parquet, and JSONL source paths as exact local filenames, so brackets, asterisks, question marks, and braces can no longer be expanded as glob patterns or silently select a different file.
+- Kept every row reachable in multi-million-row grids by mapping the complete logical range onto a bounded Chromium-safe scroll canvas and rebasing the rendered row segment around the current viewport. Restored positions, keyboard navigation, and Previous/Next block actions now retain their exact logical target instead of being pulled back by browser scroll-height clamping.
+- Made viewing filters disappear structurally when their final value or predicate is removed, so stale searches and empty selections cannot remain as hidden no-op filters or enable an empty **Filter rows** cleaning step. The Filters / Sorts drawer now keeps every active column filter visible with type-safe summaries and independent value/predicate removal, while the native Filters tree can clear a whole column filter; all removal paths preserve sibling conditions and viewing sorts.
+
 ## [1.0.0] - 2026-07-28
 
 ### Added

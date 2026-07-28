@@ -34,6 +34,7 @@ import {
 import type { Jupyter, JupyterServerCollection, KernelStatus } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
+import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import {
   normalizeNotebookOutputPayload,
@@ -63,6 +64,7 @@ import {
 } from "./playwrightLifecycle";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
+import { packagedScreenshotFileName, packagedScreenshotFixtureCsv } from "./screenshotEvidence";
 
 interface TestApi {
   request(request: OpenWranglerRequest): Promise<OpenWranglerResponse>;
@@ -78,6 +80,9 @@ interface TestApi {
     | undefined;
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  previewPanelStep(
+    request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
+  ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
   panelHydrated(sessionId: string): boolean;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
@@ -564,7 +569,15 @@ export async function run(): Promise<void> {
   }
   if (phase === "platform-smoke") {
     recordAcceptanceProgress("platform-smoke:start");
-    await exercisePackagedPlatformSmoke(testing, extension, fixture);
+    await exercisePackagedPlatformSmoke(
+      testing,
+      extension,
+      vscode.Uri.joinPath(workspace, "fixtures", "[Live] sample.csv")
+    );
+    if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+      recordAcceptanceProgress("platform-smoke:screenshots");
+      await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+    }
     recordAcceptanceProgress("platform-smoke:complete");
     console.log("Open Wrangler packaged platform smoke passed.");
     return;
@@ -640,13 +653,13 @@ export async function run(): Promise<void> {
     recordAcceptanceProgress("verify:file-launch-surfaces");
     await exercisePackagedFileLaunchSurfaces(
       testing,
-      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "sample.jsonl")),
+      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "[Live] sample.csv")),
       process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
     );
   }
   if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
     recordAcceptanceProgress("verify:screenshots");
-    await capturePackagedEditorScreenshots(testing, fixture, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+    await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
   if (testPython && process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
     recordAcceptanceProgress("verify:dependency-recovery");
@@ -3304,11 +3317,13 @@ async function exercisePackagedPlatformSmoke(
   extension: vscode.Extension<ExtensionApi>,
   fixture: vscode.Uri
 ): Promise<void> {
+  const editorKey = process.env.OPEN_WRANGLER_TEST_EDITOR;
   assert.equal(
-    process.env.OPEN_WRANGLER_TEST_EDITOR,
-    "cursor",
-    "The bounded cross-platform smoke is reserved for the pinned Cursor candidate."
+    editorKey === "vscode" || editorKey === "cursor",
+    true,
+    "The bounded packaged journey requires VS Code or Cursor."
   );
+  const editorName = editorKey === "cursor" ? "Cursor" : "VS Code";
   const sourceBytes = await vscode.workspace.fs.readFile(fixture);
   const page = await connectToEditorWorkbench();
   const activeEditorGroup = page.locator(".part.editor .editor-group-container.active");
@@ -3342,20 +3357,20 @@ async function exercisePackagedPlatformSmoke(
       return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
     },
     10_000,
-    "the CSV source editor before the Cursor title action"
+    `the CSV source editor before the ${editorName} title action`
   );
   await page.bringToFront();
   const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
   await titleAction.waitFor({ state: "visible", timeout: 10_000 });
   await titleAction.click();
-  await acceptDefaultDelimitedImport(page, testing, fixture, "platform-smoke:import");
+  await waitForAutomaticDelimitedImport(page, testing, fixture, "platform-smoke:import");
   await waitFor(
     () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the pinned Cursor CSV action to open a dataframe session"
+    `the ${editorName} CSV action to open a dataframe session`
   );
   const active = testing.activeSession();
-  assert.ok(active, "The pinned Cursor smoke must publish an active dataframe session.");
+  assert.ok(active, `The ${editorName} journey must publish an active dataframe session.`);
   assert.equal(active.metadata.source.path, fixture.fsPath);
   assert.equal(active.metadata.shape.rows > 0, true);
   assert.equal(active.metadata.shape.columns, 4);
@@ -3374,10 +3389,12 @@ async function exercisePackagedPlatformSmoke(
     .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
     .waitFor({ state: "visible", timeout: 5_000 });
 
+  await exercisePrimarySortJourney(testing, gridTarget.frame, "platform-smoke:sort-journey");
+
   recordAcceptanceProgress("platform-smoke:theme");
   const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
     const window = element.ownerDocument.defaultView;
-    if (!window) throw new Error("The pinned Cursor webview did not expose a live window.");
+    if (!window) throw new Error("The packaged editor webview did not expose a live window.");
     const computed = window.getComputedStyle(element);
     const root = window.getComputedStyle(element.ownerDocument.documentElement);
     const probe = element.ownerDocument.createElement("span");
@@ -3398,9 +3415,9 @@ async function exercisePackagedPlatformSmoke(
     probe.remove();
     return result;
   });
-  assert.ok(themeAttestation.foregroundToken, "The Cursor webview must receive the VS Code foreground token.");
-  assert.ok(themeAttestation.backgroundToken, "The Cursor webview must receive the VS Code editor-background token.");
-  assert.ok(themeAttestation.fontToken, "The Cursor webview must receive the VS Code font token.");
+  assert.ok(themeAttestation.foregroundToken, `${editorName} must provide the VS Code foreground token.`);
+  assert.ok(themeAttestation.backgroundToken, `${editorName} must provide the VS Code editor-background token.`);
+  assert.ok(themeAttestation.fontToken, `${editorName} must provide the VS Code font token.`);
   assert.equal(themeAttestation.color, themeAttestation.expectedColor);
   assert.equal(themeAttestation.background, themeAttestation.expectedBackground);
   assert.ok(themeAttestation.fontFamily);
@@ -3421,7 +3438,7 @@ async function exercisePackagedPlatformSmoke(
   await waitFor(
     () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
     10_000,
-    "the pinned Cursor smoke session and Python runtime to terminate"
+    `the ${editorName} journey session and Python runtime to terminate`
   );
   assert.deepEqual(testing.diagnostics().sessions, []);
 }
@@ -3562,7 +3579,77 @@ async function waitForOpenWranglerGridTarget(workbench: Page): Promise<OpenWrang
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
-  throw new Error("The pinned Cursor smoke did not expose a live Open Wrangler grid.");
+  throw new Error("The editor journey did not expose a live Open Wrangler grid.");
+}
+
+async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
+  recordAcceptanceProgress(checkpoint);
+  const cityHeader = frame.locator('th[data-column="city"]').first();
+  const cityMenu = cityHeader.locator("details.columnMenu").first();
+  await cityMenu.getByLabel("Column actions for city").click();
+  await cityMenu.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  assert.equal(
+    await cityMenu.evaluate((element) => element.hasAttribute("open")),
+    false,
+    "A quick-sort choice must close its column menu."
+  );
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return (
+        sort?.length === 1 && sort[0]?.column === "city" && sort[0].direction === "asc" && sort[0].nulls === "last"
+      );
+    },
+    10_000,
+    "the city quick sort to become the only active viewing sort"
+  );
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "Berlin" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await cityHeader.getByRole("button", { name: /Clear sort for city; currently ascending/u }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+
+  const salesHeader = frame.locator('th[data-column="sales"]').first();
+  const salesMenu = salesHeader.locator("details.columnMenu").first();
+  await salesMenu.getByLabel("Column actions for sales").click();
+  await salesMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
+  assert.equal(
+    await salesMenu.evaluate((element) => element.hasAttribute("open")),
+    false,
+    "A later quick sort must also close its column menu."
+  );
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return (
+        sort?.length === 1 && sort[0]?.column === "sales" && sort[0].direction === "desc" && sort[0].nulls === "last"
+      );
+    },
+    10_000,
+    "the sales quick sort to replace the earlier city sort"
+  );
+  assert.equal(
+    await cityHeader.getByRole("button", { name: /Clear sort for city/u }).count(),
+    0,
+    "Replacing a quick sort must remove the prior column's active-sort indicator."
+  );
+  const clearSalesSort = salesHeader.getByRole("button", {
+    name: /Clear sort for sales; currently descending/u
+  });
+  await clearSalesSort.waitFor({ state: "visible", timeout: 10_000 });
+  await clearSalesSort.click();
+  await waitFor(
+    () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
+    10_000,
+    "the visible sort indicator to clear the viewing sort"
+  );
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "Milan" })
+    .waitFor({ state: "visible", timeout: 10_000 });
 }
 
 async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {
@@ -3687,11 +3774,14 @@ async function exercisePackagedFileLaunchSurfaces(
 
   recordAcceptanceProgress("verify:file-launch:title-action:open");
   await titleAction.first().click();
+  await waitForAutomaticDelimitedImport(page, testing, fixture, "verify:file-launch:title-action:import");
   await waitFor(
     () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
     "the editor-title action to open the selected source"
   );
+  const gridTarget = await waitForOpenWranglerGridTarget(page);
+  await exercisePrimarySortJourney(testing, gridTarget.frame, "verify:file-launch:title-action:sort-journey");
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await waitFor(
@@ -3798,7 +3888,7 @@ async function exercisePackagedFileLaunchSurfaces(
   await customEditorTitleAction.click();
   recordAcceptanceProgress("verify:file-launch:third-party-editor:import");
   const importCheckpoint = "verify:file-launch:third-party-editor:import";
-  await acceptDefaultDelimitedImport(page, testing, customEditorFixture, importCheckpoint);
+  await waitForAutomaticDelimitedImport(page, testing, customEditorFixture, importCheckpoint);
   recordAcceptanceProgress(`${importCheckpoint}:options-complete`);
   recordAcceptanceProgress(`${importCheckpoint}:session-open`);
   await waitFor(
@@ -4002,95 +4092,35 @@ async function inspectThirdPartyCustomEditorFrames(page: Page): Promise<CustomEd
   return diagnostics.filter((diagnostic) => diagnostic.markerCount > 0);
 }
 
-async function acceptDefaultDelimitedImport(
+async function waitForAutomaticDelimitedImport(
   page: Page,
   testing: TestApi,
   expectedSource: vscode.Uri,
   checkpointPrefix: string
 ): Promise<void> {
-  for (const { key, title, option } of [
-    { key: "delimiter", title: "Delimiter", option: "Comma" },
-    { key: "encoding", title: "Text encoding", option: "utf-8" },
-    { key: "header", title: "Header row", option: "First row contains column names" }
-  ]) {
-    const checkpoint = `${checkpointPrefix}:${key}`;
-    recordAcceptanceProgress(`${checkpoint}:wait`);
-    const quickInput = await waitForImportQuickInput(page, testing, expectedSource, title);
-    recordAcceptanceProgress(`${checkpoint}:visible`);
-    const defaultOption = quickInput.getByRole("option", { name: option }).first();
-    await withAcceptanceOperationDeadline(
-      defaultOption.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} default option to become visible`
-    );
-    assert.match(
-      (await withAcceptanceOperationDeadline(
-        defaultOption.getAttribute("class", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} default option class`
-      )) ?? "",
-      /(?:^|\s)focused(?:\s|$)/u,
-      `${title} must initially focus the documented default option ${JSON.stringify(option)}.`
-    );
-    await waitForImportNaturalKeyboardFocus(quickInput, title, "contains");
-    recordAcceptanceProgress(`${checkpoint}:accept`);
-    await withAcceptanceOperationDeadline(
-      pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      `${title} default option keyboard acceptance`
-    );
-    try {
-      await withAcceptanceOperationDeadline(
-        quickInput.waitFor({ state: "hidden", timeout: 3_000 }),
-        WORKBENCH_OPERATION_TIMEOUT_MS,
-        `${title} prompt to advance`
-      );
-    } catch (error) {
-      const visibleOptions = await boundedImportOptionDiagnostics(quickInput);
+  recordAcceptanceProgress(`${checkpointPrefix}:automatic-detection`);
+  const deadline = Date.now() + SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS;
+  do {
+    const quickInputs = page.locator(".quick-input-widget:visible");
+    const count = await quickInputs.count().catch(() => 0);
+    if (count > 0) {
+      const labels = await quickInputs
+        .allInnerTexts()
+        .then((values) => values.slice(0, 8).map((value) => value.replace(/\s+/gu, " ").trim()))
+        .catch(() => []);
       throw new Error(
-        `${title} did not advance after accepting focused default ${JSON.stringify(option)} with Enter. Visible options: ${JSON.stringify(visibleOptions)}`,
-        { cause: error }
+        `Opening ${JSON.stringify(expectedSource.toString())} exposed an initial Quick Input instead of using automatic import detection. Visible Quick Inputs: ${JSON.stringify(labels)}.`
       );
     }
-    recordAcceptanceProgress(`${checkpoint}:accepted`);
-  }
-  const quoteCheckpoint = `${checkpointPrefix}:quote`;
-  recordAcceptanceProgress(`${quoteCheckpoint}:wait`);
-  const quoteInput = await waitForImportQuickInput(page, testing, expectedSource, "Quote character");
-  recordAcceptanceProgress(`${quoteCheckpoint}:visible`);
-  const field = quoteInput.locator(".quick-input-box input").first();
-  await withAcceptanceOperationDeadline(
-    field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    "Quote character field to become visible"
+    if (testing.activeSession()?.metadata.source.uri === expectedSource.toString()) {
+      recordAcceptanceProgress(`${checkpointPrefix}:automatic-detection-complete`);
+      return;
+    }
+    await page.waitForTimeout(25);
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Automatic import detection did not open ${JSON.stringify(expectedSource.toString())} before the launch deadline.`
   );
-  assert.equal(
-    await withAcceptanceOperationDeadline(
-      field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character default value"
-    ),
-    '"'
-  );
-  await waitForImportNaturalKeyboardFocus(field, "Quote character", "exact");
-  recordAcceptanceProgress(`${quoteCheckpoint}:accept`);
-  await withAcceptanceOperationDeadline(
-    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    "Quote character keyboard acceptance"
-  );
-  try {
-    await withAcceptanceOperationDeadline(
-      quoteInput.waitFor({ state: "hidden", timeout: 3_000 }),
-      WORKBENCH_OPERATION_TIMEOUT_MS,
-      "Quote character prompt to advance"
-    );
-  } catch (error) {
-    throw new Error("Quote character did not advance after accepting its focused default value with Enter.", {
-      cause: error
-    });
-  }
-  recordAcceptanceProgress(`${quoteCheckpoint}:accepted`);
 }
 
 async function boundedImportOptionDiagnostics(quickInput: Locator): Promise<unknown> {
@@ -4376,29 +4406,20 @@ async function captureWorkbenchScreenshot(page: Page, destination: string): Prom
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 }
 
-async function capturePackagedEditorScreenshots(
-  testing: TestApi,
-  fixture: vscode.Uri,
-  outputDirectory: string
-): Promise<void> {
+async function capturePackagedEditorScreenshots(testing: TestApi, outputDirectory: string): Promise<void> {
   if (process.platform !== "linux") return;
-  recordAcceptanceProgress("verify:screenshots:open");
-  mkdirSync(outputDirectory, { recursive: true });
-  await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
-  await waitFor(
-    () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
-    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the custom editor before screenshot capture"
-  );
-  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
-
+  const fixtureDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-screenshot-evidence-"));
+  const fixture = vscode.Uri.file(path.join(fixtureDirectory, "sales-snapshot.csv"));
+  writeFileSync(fixture.fsPath, packagedScreenshotFixtureCsv(), { encoding: "utf8", flag: "wx" });
   const workbench = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
   const windowConfiguration = vscode.workspace.getConfiguration("window");
   const scm = vscode.workspace.getConfiguration("scm");
   const typescript = vscode.workspace.getConfiguration("typescript");
   const javascript = vscode.workspace.getConfiguration("javascript");
   const originalTheme = workbench.get<string>("colorTheme");
   const originalStatusBarVisible = workbench.get<boolean>("statusBar.visible");
+  const originalBreadcrumbsEnabled = breadcrumbs.get<boolean>("enabled");
   const originalZoom = windowConfiguration.get<number>("zoomLevel");
   const originalTitle = windowConfiguration.get<string>("title");
   const originalCommandCenter = windowConfiguration.get<boolean>("commandCenter");
@@ -4408,13 +4429,62 @@ async function capturePackagedEditorScreenshots(
   const originalTypescriptValidation = typescript.get<boolean>("validate.enable");
   const originalJavascriptValidation = javascript.get<boolean>("validate.enable");
   const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
-  const capturePage = await connectToEditorWorkbench();
+  let capturePage: Page;
+  try {
+    capturePage = await connectToEditorWorkbench();
+    recordAcceptanceProgress("verify:screenshots:open");
+    mkdirSync(outputDirectory, { recursive: true });
+    await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.path === fixture.fsPath,
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the custom editor before screenshot capture"
+    );
+    const opened = testing.activeSession();
+    assert.ok(opened, "The screenshot fixture must publish one active session.");
+    assert.deepEqual(opened.metadata.shape, { rows: 12, columns: 6 });
+    assert.deepEqual(opened.metadata.filterModel, { logic: "and", filters: [], sort: [] });
+    assert.deepEqual(opened.metadata.steps, []);
+    assert.equal(opened.metadata.draftStep, undefined);
+    assert.deepEqual(opened.viewState, {
+      filterModel: { logic: "and", filters: [], sort: [] },
+      columnWidths: {},
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    await waitFor(
+      () => testing.panelHydrated(opened.sessionId),
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the screenshot fixture panel to hydrate"
+    );
+    assert.equal(
+      await testing.synchronizePanel(opened.sessionId),
+      true,
+      "The clean screenshot fixture must synchronize with its exact renderer."
+    );
+    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  } catch (error) {
+    const active = testing.activeSession();
+    if (active?.metadata.source.path === fixture.fsPath) {
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      await waitFor(
+        () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+        10_000,
+        "the failed screenshot session and runtime to close"
+      );
+    }
+    if (testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning()) {
+      rmSync(fixtureDirectory, { recursive: true, force: true });
+    }
+    throw error;
+  }
+
   const darkTheme = contributedTheme("vs-dark", "Default Dark Modern");
   const lightTheme = contributedTheme("vs", "Default Light Modern");
   const highContrastTheme = contributedTheme("hc-black", "Default High Contrast");
   try {
     recordAcceptanceProgress("verify:screenshots:prepare");
     await workbench.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update(
       "title",
       "${activeEditorShort}${separator}Open Wrangler",
@@ -4427,11 +4497,12 @@ async function capturePackagedEditorScreenshots(
     await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
     await prepareWorkbenchForEvidence();
+    await hideCodePreviewPanel();
     await new Promise((resolve) => setTimeout(resolve, 800));
-    recordAcceptanceProgress("verify:screenshots:dark");
-    await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, `${editor}-dark.png`);
-    recordAcceptanceProgress("verify:screenshots:light");
-    await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, `${editor}-light.png`);
+    recordAcceptanceProgress("verify:screenshots:hero-dark");
+    await captureTheme(darkTheme, vscode.ColorThemeKind.Dark, 0, packagedScreenshotFileName(editor, "hero", "dark"));
+    recordAcceptanceProgress("verify:screenshots:hero-light");
+    await captureTheme(lightTheme, vscode.ColorThemeKind.Light, 0, packagedScreenshotFileName(editor, "hero", "light"));
     recordAcceptanceProgress("verify:screenshots:high-contrast");
     await captureTheme(
       highContrastTheme,
@@ -4439,10 +4510,63 @@ async function capturePackagedEditorScreenshots(
       4,
       `${editor}-high-contrast-zoom-200.png`
     );
+    recordAcceptanceProgress("verify:screenshots:draft");
+    const current = testing.activeSession();
+    assert.ok(current, "The screenshot fixture must remain active before creating its draft.");
+    const revenue = columnReference(current.metadata, "revenue");
+    const previewRequest = {
+      kind: "previewStep",
+      ...GRID_COLUMN_WINDOW,
+      sessionId: current.sessionId,
+      revision: current.metadata.revision,
+      step: {
+        id: "readme-round-revenue",
+        kind: "roundNumber",
+        params: { column: revenue, decimals: 0 }
+      },
+      offset: 0,
+      limit: 20
+    } satisfies Extract<OpenWranglerRequest, { kind: "previewStep" }>;
+    const previewed = await testing.previewPanelStep(previewRequest);
+    assert.ok(previewed, "The README transform evidence must preview through the live custom-editor panel.");
+    assert.equal(previewed.metadata.draftStep?.kind, "roundNumber");
+    assert.deepEqual(gridColumnDisplays(previewed.page, revenue.id).slice(0, 4), [
+      "1250.0",
+      "875.0",
+      "1500.0",
+      "640.0"
+    ]);
+    assert.equal(
+      gridColumnDisplays(previewed.page, revenue.id).some((value) => /0{8,}/u.test(value)),
+      false,
+      "Rounded README evidence must not contain floating-point representation noise."
+    );
+    assert.equal(
+      await testing.synchronizePanel(current.sessionId),
+      true,
+      "The draft screenshot must synchronize the runtime diff and generated code with the exact renderer."
+    );
+    await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    await waitForCodePreviewPanel();
+    recordAcceptanceProgress("verify:screenshots:transform-dark");
+    await captureTheme(
+      darkTheme,
+      vscode.ColorThemeKind.Dark,
+      0,
+      packagedScreenshotFileName(editor, "transform", "dark")
+    );
+    recordAcceptanceProgress("verify:screenshots:transform-light");
+    await captureTheme(
+      lightTheme,
+      vscode.ColorThemeKind.Light,
+      0,
+      packagedScreenshotFileName(editor, "transform", "light")
+    );
     recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
     await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
     await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", originalBreadcrumbsEnabled, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("title", originalTitle, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("commandCenter", originalCommandCenter, vscode.ConfigurationTarget.Global);
@@ -4465,6 +4589,7 @@ async function capturePackagedEditorScreenshots(
       10_000,
       "the screenshot session and runtime to close"
     );
+    rmSync(fixtureDirectory, { recursive: true, force: true });
   }
   recordAcceptanceProgress("verify:screenshots:complete");
 
@@ -4522,6 +4647,26 @@ async function capturePackagedEditorScreenshots(
       }
     }
     await clearNotifications(commands);
+  }
+
+  async function hideCodePreviewPanel(): Promise<void> {
+    const panel = capturePage.locator(".part.panel").first();
+    if ((await panel.count()) === 0 || !(await panel.isVisible())) return;
+    const commands = new Set(await vscode.commands.getCommands(true));
+    assert.equal(
+      commands.has("workbench.action.closePanel"),
+      true,
+      "The workbench must expose its panel close command."
+    );
+    await vscode.commands.executeCommand("workbench.action.closePanel");
+    await panel.waitFor({ state: "hidden", timeout: 10_000 });
+  }
+
+  async function waitForCodePreviewPanel(): Promise<void> {
+    const panel = capturePage.locator(".part.panel").first();
+    await panel.waitFor({ state: "visible", timeout: 10_000 });
+    const codePreview = panel.getByText("Code Preview", { exact: true });
+    assert.equal(await codePreview.count(), 1, "The transform screenshot must show the native Code Preview panel.");
   }
 
   async function clearNotifications(commands?: Set<string>): Promise<void> {
@@ -7468,9 +7613,14 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       "utf8"
     );
     writeFileSync(path.join(directory, "configured.tsv"), "name|value\nalpha|1\nbeta|2\n", "utf8");
+    const damagedCsvPrefix = Buffer.from(
+      `name,value\n${"a".repeat(IMPORT_DETECTION_SAMPLE_BYTES - Buffer.byteLength("name,value\n", "utf8"))}`,
+      "utf8"
+    );
+    assert.equal(damagedCsvPrefix.length, IMPORT_DETECTION_SAMPLE_BYTES);
     writeFileSync(
       path.join(directory, "damaged.csv"),
-      Buffer.concat([Buffer.from("name,value\nbroken-", "utf8"), Buffer.from([0xff]), Buffer.from(",1\n", "utf8")])
+      Buffer.concat([damagedCsvPrefix, Buffer.from([0xff]), Buffer.from(",1\n", "utf8")])
     );
     writeFileSync(path.join(directory, "damaged.jsonl"), '{"name":"broken"\n', "utf8");
     writeFileSync(path.join(directory, "damaged.parquet"), "PAR1broken", "utf8");
@@ -7864,28 +8014,16 @@ async function exercisePublicLegacyExcelImportOptions(
 
   for (const scenario of [
     {
-      backend: "polars" as const,
-      mode: "Sheet name",
-      inputTitle: "Excel sheet name",
-      value: "second",
-      importOptions: { sheetName: "second" }
+      backend: "polars" as const
     },
     {
-      backend: "pandas" as const,
-      mode: "Sheet index",
-      inputTitle: "Excel sheet index",
-      value: "1",
-      importOptions: { sheetIndex: 1 }
+      backend: "pandas" as const
     }
   ] as const) {
-    const checkpoint = `verify:file-inputs:configured:public-excel:${scenario.backend}:${scenario.mode
-      .toLowerCase()
-      .replaceAll(" ", "-")}`;
+    const checkpoint = `verify:file-inputs:configured:public-excel:${scenario.backend}`;
     await config.update("defaultBackend", scenario.backend, vscode.ConfigurationTarget.Global);
     recordAcceptanceProgress(`${checkpoint}:open`);
-    const opening = vscode.commands.executeCommand("openWrangler.openFile", source);
-    await acceptExcelImportOptions(page, testing, source, scenario.mode, scenario.inputTitle, scenario.value);
-    await opening;
+    await vscode.commands.executeCommand("openWrangler.openFile", source);
 
     await waitFor(
       () => {
@@ -7893,12 +8031,89 @@ async function exercisePublicLegacyExcelImportOptions(
         return (
           active?.metadata.source.path === source.fsPath &&
           active.metadata.backend === scenario.backend &&
+          active.metadata.shape.rows === 1 &&
+          active.metadata.shape.columns === 3
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      `legacy.xls to open its first worksheet automatically through the public ${scenario.backend} workflow`,
+      () =>
+        packagedFileOpenDiagnostics(testing, {
+          sourceLabel: path.basename(source.fsPath),
+          backend: scenario.backend,
+          shape: { rows: 1, columns: 3 }
+        })
+    );
+
+    assert.equal(
+      await page.locator(".quick-input-widget:visible").filter({ hasText: "Excel sheet" }).count(),
+      0,
+      `The public ${scenario.backend} BIFF workflow must open its first worksheet without an import prompt.`
+    );
+    const initiallyActive = testing.activeSession();
+    assert.ok(initiallyActive, `The public ${scenario.backend} BIFF workflow must publish an active session.`);
+    const stableSessionId = initiallyActive.sessionId;
+    const stableSourceIdentity = fileSourceIdentity(initiallyActive.metadata.source);
+    assert.deepEqual(
+      initiallyActive.metadata.source.importOptions,
+      { sheetIndex: 0 },
+      `The public ${scenario.backend} BIFF workflow must record its automatic first-sheet selection.`
+    );
+    assert.deepEqual(
+      initiallyActive.metadata.schema.map((column) => column.name),
+      ["name", "value", "active"],
+      `The public ${scenario.backend} BIFF workflow must expose the first worksheet schema.`
+    );
+    const initialFirstColumn = initiallyActive.metadata.schema[0];
+    assert.ok(initialFirstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
+    const initialGrid = await testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: `public-biff-${scenario.backend}-initial`,
+      sessionId: stableSessionId,
+      revision: initiallyActive.metadata.revision,
+      offset: 0,
+      limit: 20,
+      filterModel: initiallyActive.metadata.filterModel
+    });
+    assert.equal(
+      initialGrid.kind,
+      "page",
+      `The public ${scenario.backend} BIFF workflow must return its automatic first-sheet page.`
+    );
+    if (initialGrid.kind !== "page") {
+      throw new Error(`The public ${scenario.backend} BIFF workflow did not return its first-sheet page.`);
+    }
+    assert.deepEqual(
+      gridColumnDisplays(initialGrid.page, initialFirstColumn.id),
+      ["first"],
+      `The public ${scenario.backend} BIFF workflow must initially read the first worksheet.`
+    );
+    assert.deepEqual(
+      readFileSync(source.fsPath),
+      sourceBytes,
+      `The public ${scenario.backend} automatic BIFF open must not modify its source.`
+    );
+    recordAcceptanceProgress(`${checkpoint}:opened-first-sheet`);
+
+    recordAcceptanceProgress(`${checkpoint}:change-sheet`);
+    const changingSheet = vscode.commands.executeCommand("openWrangler.changeImportOptions");
+    await acceptSearchableExcelSheet(page, testing, source, stableSessionId, "second");
+    await changingSheet;
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.sessionId === stableSessionId &&
+          active.metadata.source.path === source.fsPath &&
+          active.metadata.backend === scenario.backend &&
+          active.metadata.source.importOptions?.sheetName === "second" &&
           active.metadata.shape.rows === 2 &&
           active.metadata.shape.columns === 3
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      `legacy.xls to open through the public ${scenario.backend} ${scenario.mode.toLowerCase()} workflow`,
+      `the public ${scenario.backend} BIFF session to adopt the selected worksheet by name`,
       () =>
         packagedFileOpenDiagnostics(testing, {
           sourceLabel: path.basename(source.fsPath),
@@ -7908,23 +8123,38 @@ async function exercisePublicLegacyExcelImportOptions(
     );
 
     const active = testing.activeSession();
-    assert.ok(active, `The public ${scenario.backend} BIFF workflow must publish an active session.`);
+    assert.ok(active, `The reconfigured public ${scenario.backend} BIFF workflow must remain active.`);
+    assert.equal(
+      active.sessionId,
+      stableSessionId,
+      `The public ${scenario.backend} worksheet change must retain the public session identity.`
+    );
+    assert.deepEqual(
+      fileSourceIdentity(active.metadata.source),
+      stableSourceIdentity,
+      `The public ${scenario.backend} worksheet change must retain the exact source identity.`
+    );
     assert.deepEqual(
       active.metadata.source.importOptions,
-      scenario.importOptions,
-      `The public ${scenario.backend} BIFF workflow must preserve its explicit sheet selection.`
+      { sheetName: "second" },
+      `The public ${scenario.backend} BIFF workflow must preserve its selected worksheet name.`
     );
     assert.deepEqual(
       active.metadata.schema.map((column) => column.name),
       ["name", "value", "active"],
-      `The public ${scenario.backend} BIFF workflow must expose the selected sheet schema.`
+      `The public ${scenario.backend} BIFF workflow must expose the selected worksheet schema.`
+    );
+    assert.equal(
+      testing.diagnostics().sessions.filter((session) => session.publicId === stableSessionId).length,
+      1,
+      `The public ${scenario.backend} worksheet change must retain exactly one private session owner.`
     );
     const firstColumn = active.metadata.schema[0];
     assert.ok(firstColumn, `The public ${scenario.backend} BIFF workflow must expose its first column.`);
     const grid = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
-      viewRequestId: `public-biff-${scenario.backend}-${scenario.mode.toLowerCase().replaceAll(" ", "-")}`,
+      viewRequestId: `public-biff-${scenario.backend}-second`,
       sessionId: active.sessionId,
       revision: active.metadata.revision,
       offset: 0,
@@ -7945,7 +8175,7 @@ async function exercisePublicLegacyExcelImportOptions(
       sourceBytes,
       `The public ${scenario.backend} BIFF workflow must not modify its source.`
     );
-    recordAcceptanceProgress(`${checkpoint}:opened`);
+    recordAcceptanceProgress(`${checkpoint}:changed-sheet`);
 
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
     await waitFor(
@@ -8291,19 +8521,7 @@ async function exerciseLiveImportReconfiguration(
   await config.update("defaultBackend", "auto", vscode.ConfigurationTarget.Global);
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   const opening = vscode.commands.executeCommand("openWrangler.openFile", configured);
-  await acceptDelimitedImportOptions(
-    page,
-    testing,
-    configured,
-    undefined,
-    "verify:file-inputs:reconfigure:initial-options",
-    {
-      delimiter: "Comma",
-      encoding: "utf-8",
-      header: "First row contains column names",
-      quoteChar: '"'
-    }
-  );
+  await waitForAutomaticDelimitedImport(page, testing, configured, "verify:file-inputs:reconfigure:initial-options");
   await opening;
   await waitFor(
     () => {
@@ -8311,15 +8529,25 @@ async function exerciseLiveImportReconfiguration(
       return (
         active?.metadata.source.path === configured.fsPath &&
         active.metadata.shape.rows === 80 &&
-        active.metadata.shape.columns === 1
+        active.metadata.shape.columns === 8
       );
     },
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-    "the semicolon CSV to open under its initial comma defaults"
+    "the semicolon CSV to open with automatically detected import options"
   );
 
   const before = testing.activeSession();
   assert.ok(before, "The configurable CSV must publish an active session.");
+  assert.deepEqual(
+    before.metadata.source.importOptions,
+    {
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    },
+    "Automatic import detection must establish the baseline before reconfiguration selects a real alternative."
+  );
   const stableSessionId = before.sessionId;
   const stableSourceIdentity = fileSourceIdentity(before.metadata.source);
   const initialDiagnostics = testing.diagnostics();
@@ -8353,7 +8581,7 @@ async function exerciseLiveImportReconfiguration(
       delimiter: "Semicolon",
       encoding: "utf-8",
       header: "First row contains column names",
-      quoteChar: '"'
+      quoteChar: "'"
     }
   );
   await waitFor(
@@ -8364,7 +8592,8 @@ async function exerciseLiveImportReconfiguration(
         active.metadata.source.path === configured.fsPath &&
         active.metadata.shape.rows === 80 &&
         active.metadata.shape.columns === 8 &&
-        active.metadata.source.importOptions?.delimiter === ";"
+        active.metadata.source.importOptions?.delimiter === ";" &&
+        active.metadata.source.importOptions.quoteChar === "'"
       );
     },
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -8386,7 +8615,7 @@ async function exerciseLiveImportReconfiguration(
   assert.deepEqual(changed.metadata.source.importOptions, {
     delimiter: ";",
     encoding: "utf-8",
-    quoteChar: '"',
+    quoteChar: "'",
     hasHeader: true
   });
   assert.deepEqual(
@@ -8783,42 +9012,32 @@ async function acceptQuickPickOptionWithKeyboard(
   if (checkpoint) recordAcceptanceProgress(`${checkpoint}:accepted`);
 }
 
-async function acceptExcelImportOptions(
+async function acceptSearchableExcelSheet(
   page: Page,
   testing: TestApi,
   expectedSource: vscode.Uri,
-  mode: "Sheet name" | "Sheet index",
-  inputTitle: "Excel sheet name" | "Excel sheet index",
-  value: string
+  existingSessionId: string,
+  sheetName: string
 ): Promise<void> {
-  const modePrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet");
-  // "Excel sheet" remains a substring of the next value prompt, so the
-  // following exact input-title wait is the transition proof for this step.
-  await acceptQuickPickOptionWithKeyboard(page, modePrompt, "Excel sheet", mode, undefined, false);
-
-  const valuePrompt = await waitForImportQuickInput(page, testing, expectedSource, inputTitle);
-  const field = valuePrompt.locator(".quick-input-box input").first();
+  const sheetPrompt = await waitForImportQuickInput(page, testing, expectedSource, "Excel sheet", existingSessionId);
+  const field = sheetPrompt.locator(".quick-input-box input").first();
   await withAcceptanceOperationDeadline(
     field.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} field to become visible`
+    "the searchable Excel worksheet field to become visible"
   );
-  await waitForImportNaturalKeyboardFocus(field, inputTitle, "exact");
+  await waitForImportNaturalKeyboardFocus(field, "Excel sheet", "exact");
   await withAcceptanceOperationDeadline(
-    field.fill(value, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    field.fill(sheetName, { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} value`
+    `the Excel worksheet search ${JSON.stringify(sheetName)}`
   );
-  await withAcceptanceOperationDeadline(
-    pressKeyboardKeyPairWithoutTransitionGap(page.keyboard, "Enter"),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} acceptance`
+  assert.equal(
+    await field.inputValue({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    sheetName,
+    "The Excel worksheet picker must accept a searchable worksheet query."
   );
-  await withAcceptanceOperationDeadline(
-    valuePrompt.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
-    WORKBENCH_OPERATION_TIMEOUT_MS,
-    `the ${inputTitle} prompt to close`
-  );
+  await acceptQuickPickOptionWithKeyboard(page, sheetPrompt, "Excel sheet", sheetName);
 }
 
 function packagedFileOpenDiagnostics(

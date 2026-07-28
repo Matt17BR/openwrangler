@@ -4,6 +4,14 @@ Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family 
 
 Polars and Pandas are first-class backends. DuckDB provides a native file-backed path for larger local datasets.
 
+Files open into a focused grid with the native Operations, Summary, Filters / Sorts, and Cleaning Steps views alongside it:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-light.png">
+  <img alt="A clean Open Wrangler file view in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
+</picture>
+
 <!-- open-wrangler-release-status:start -->
 
 > **Release status:** Stable. Install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler), [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler), or a [checksummed GitHub Release](https://github.com/Matt17BR/openwrangler/releases).
@@ -12,56 +20,32 @@ Polars and Pandas are first-class backends. DuckDB provides a native file-backed
 
 Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
-| Editor                                          | Support      | Release coverage                                       |
-| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
-| VS Code                                         | First-class  | Full automated and release matrix                      |
-| Cursor                                          | First-class  | Full automated and release matrix                      |
-| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
-| Browser-hosted `vscode.dev`                     | Unsupported  | No local Python/runtime extension host                 |
+| Editor                      | Support      | Validation                        |
+| --------------------------- | ------------ | --------------------------------- |
+| VS Code                     | First-class  | Complete release suite            |
+| Cursor                      | First-class  | Complete release suite            |
+| Other VS Code desktop IDEs  | Experimental | Best-effort compatibility         |
+| Browser-hosted `vscode.dev` | Unsupported  | Requires a desktop extension host |
 
-Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.
+VS Code and Cursor are release-tested. Other desktop forks that consume Open VSX may work—including [Antigravity](https://antigravity.google/docs/editor?app=antigravity)—but are not yet part of the release gate.
 
-Install directly from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler) or [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler). For manual or offline installation, download both `openwrangler.vsix` and `openwrangler.vsix.sha256` from the matching [GitHub Release](https://github.com/Matt17BR/openwrangler/releases), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
+Install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler) or [Open VSX](https://open-vsx.org/extension/Matt17BR/openwrangler). For manual or offline installation, use the VSIX and matching checksum from a [GitHub Release](https://github.com/Matt17BR/openwrangler/releases).
 
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running `pip`; it never installs packages silently.
+On first open, Open Wrangler uses your configured Python path, selected Python environment, or a supported system interpreter. Missing packages are never installed silently: the error names the preferred backend and its exact requirements, and **Install required dependency** opens a confirmation before retrying the same file.
 
-This stable release satisfies every in-scope row in the checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
+The checked-in [feature parity matrix](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md) records the tested 1.0 scope and its acceptance evidence. Real-world regressions remain release-blocking when discovered.
 
 <!-- open-wrangler-release-status:end -->
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-light.png">
-  <img alt="Open Wrangler running in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-dark.png">
-</picture>
-
 ## What it does
 
-- Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS files from the Explorer, editor tab, editor title bar, or Command Palette.
-- Changes CSV, TSV, and Excel import options without losing the current cleaning plan or view.
-- Pages through wide and large datasets with row and column virtualization, typed values, keyboard navigation, column search, and progressive insights.
-- Keeps filters and sorts separate from cleaning steps, so exploration never silently changes exported results.
-- Previews every transformation as a data diff with editable, backend-native Python before you apply it.
-- Provides 27 built-in operations across row, column, text, categorical, numeric, datetime, grouping, custom-code, and by-example workflows.
-- Replays, edits, and undoes cleaning steps while preserving the original dataframe.
-- Opens live Polars and Pandas variables from Jupyter and can insert the generated cleaning function back into the originating notebook.
-- Expands saved notebook output into a read-only, filterable snapshot without starting Jupyter; variable-linked output also offers an explicit action for the linked live dataframe in its originating notebook.
-- Copies code, saves a Python script, or atomically exports cleaned data to a new CSV or Parquet file.
-
-<table>
-  <tr>
-    <th width="50%">Explore</th>
-    <th width="50%">Transform</th>
-  </tr>
-  <tr>
-    <td><img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/grid-view.png" alt="Virtualized dataframe grid with column insights"></td>
-    <td><img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/acceptance/draft-preview-dark-1280.png" alt="Transformation preview with data diff and generated code"></td>
-  </tr>
-  <tr>
-    <td>Filter, sort, profile, and navigate without changing the cleaning plan.</td>
-    <td>Review the data diff and generated code before applying a step.</td>
-  </tr>
-</table>
+- Opens CSV, TSV, Parquet, JSONL, XLSX, and XLS from the Explorer, editor tab, editor toolbar, or Command Palette. Delimited files are detected automatically—including an explicit empty-dataset view for blank files—and Excel import options show the workbook's actual sheet names.
+- Explores large and wide data through a virtualized, keyboard-accessible grid with search, progressive column insights, and filters and sorts that stay visible and individually removable.
+- Keeps viewing filters and sorts separate from the cleaning plan.
+- Previews all 27 built-in operations as a data diff with engine-native Python before apply or discard.
+- Replays, edits, and undoes steps without modifying the original dataframe.
+- Opens live Pandas and Polars notebook variables and expands saved notebook output as a read-only snapshot.
+- Copies code, inserts it into the originating notebook, saves a script, or exports cleaned CSV/Parquet data to a new file.
 
 ## Engines and formats
 
@@ -79,6 +63,14 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 2. Add an operation and configure it.
 3. Check the draft grid, diff, and generated code.
 4. Apply or discard the draft, then export the committed plan when ready.
+
+Every change remains a draft until you confirm it. The preview keeps the data diff and generated engine-native code visible together:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-transform-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-transform-light.png">
+  <img alt="A rounded numeric column shown as an Open Wrangler draft diff with generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-transform-dark.png">
+</picture>
 
 Applied steps form a replayable history. The latest step can be edited, steps can be undone, and viewing filters remain independent. The [generated reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md) lists every operation, command, setting, and shortcut.
 

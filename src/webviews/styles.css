@@ -92,6 +92,8 @@ textarea {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
 }
 
 .appWorkspace {
@@ -101,6 +103,12 @@ textarea {
 .app-error {
   align-items: flex-start;
   padding: 24px;
+}
+
+.errorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .importOptionsStatus {
@@ -357,6 +365,66 @@ textarea {
   letter-spacing: 0.04em;
 }
 
+.activeFilterOverview {
+  border-top: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 7px;
+  padding: 9px 0;
+}
+
+.activeFilterOverview > header,
+.activeFilterGroup > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.activeFilterOverview > header {
+  font-size: 12px;
+}
+
+.activeFilterOverview p {
+  margin: 0;
+}
+
+.activeFilterList {
+  display: grid;
+  gap: 6px;
+}
+
+.activeFilterGroup {
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.activeFilterGroup > header > span {
+  display: grid;
+  min-width: 0;
+}
+
+.activeFilterGroup > header strong,
+.activeFilterGroup > header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activeFilterGroup > header small {
+  color: var(--vscode-descriptionForeground);
+}
+
+.compactTextButton {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  padding: 2px 4px;
+}
+
 .valueList {
   max-height: 132px;
   overflow: auto;
@@ -378,6 +446,82 @@ textarea {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;
   padding: 2px 7px;
+}
+
+.sortRulesHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.sortApplyActions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sortRuleList {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.sortRule {
+  align-items: center;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  padding: 4px;
+}
+
+.sortRulePriority {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  font-size: 10px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.sortRuleColumn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sortDirectionButton {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.rulePillButton {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.rulePillButton > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rulePillButton .codicon {
+  flex: 0 0 auto;
+  font-size: 12px;
 }
 
 .checkboxRow {
@@ -563,8 +707,33 @@ th small {
   align-items: center;
   display: grid;
   gap: 6px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   position: relative;
+}
+
+.columnSortIndicator {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  border: 0;
+  border-radius: 999px;
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  min-width: 22px;
+  padding: 0 5px;
+}
+
+.columnSortIndicator:hover,
+.columnSortIndicator:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.sortPriority {
+  font-family: var(--vscode-font-family);
+  font-size: 9px;
+  margin-left: 1px;
 }
 
 .typeIcon {
@@ -844,6 +1013,11 @@ th.rowHeader {
 .summaryGroup {
   border-top: 1px solid var(--vscode-panel-border);
   padding: 8px 0;
+}
+
+.summaryGroup.selectedSummary {
+  border-left: 2px solid var(--vscode-focusBorder);
+  padding-left: 8px;
 }
 
 .summaryPanel {
@@ -1154,27 +1328,70 @@ dd {
 }
 
 .formField,
-.formFieldset {
+.formFieldset,
+.columnSelectionField {
   display: grid;
   gap: 5px;
 }
 
 .formField > span,
 .formField > label,
-.formFieldset legend {
+.formFieldset legend,
+.columnSelectionField legend {
   font-size: 11px;
   font-weight: 600;
 }
 
 .formField small,
-.codeField small {
+.codeField small,
+.columnSelectionField small {
   color: var(--vscode-descriptionForeground);
   font-size: 10px;
 }
 
-.formField select[multiple] {
-  appearance: none;
-  min-height: 90px;
+.columnSelectionField {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.columnSelectionField legend {
+  margin-bottom: 5px;
+  padding: 0;
+}
+
+.columnChecklist {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  display: grid;
+  max-height: 154px;
+  min-height: 34px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.columnChecklistItem {
+  align-items: center;
+  border-radius: 2px;
+  display: flex;
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 6px;
+}
+
+.columnChecklistItem:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.columnChecklistItem:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.operationCompatibilityNote {
+  line-height: 1.35;
 }
 
 .formFieldset {
@@ -1196,8 +1413,35 @@ dd {
   margin-bottom: 8px;
 }
 
+.operationInputRow {
+  grid-template-columns: minmax(120px, 1.2fr) minmax(96px, 0.9fr) minmax(82px, 0.8fr) auto;
+}
+
 .aggregationRow {
-  grid-template-columns: 1fr 0.8fr 1fr;
+  grid-template-columns: minmax(120px, 1fr) minmax(96px, 0.8fr) minmax(120px, 1fr) auto;
+}
+
+.operationRowActions {
+  align-items: center;
+  display: flex;
+  gap: 3px;
+  padding-bottom: 1px;
+}
+
+.operationRemoveButton {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--vscode-foreground);
+  display: inline-flex;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 6px;
+}
+
+.operationRemoveButton:not(:disabled):hover {
+  background: var(--vscode-toolbar-hoverBackground);
+  border-color: var(--vscode-panel-border);
 }
 
 .checkboxField {
@@ -1350,6 +1594,10 @@ dd {
   .compoundRow,
   .aggregationRow {
     grid-template-columns: 1fr;
+  }
+
+  .operationRowActions {
+    justify-content: flex-end;
   }
 }
 

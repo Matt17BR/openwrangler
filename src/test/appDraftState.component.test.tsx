@@ -185,7 +185,9 @@ describe("App draft state boundaries", () => {
     expect(screen.getByText("candidate backend warning")).toBeInTheDocument();
     expect(screen.queryByText("stale warning")).toBeNull();
     expect(screen.getByText("1 changed cells")).toBeInTheDocument();
-    expect(document.querySelector(".draftCode summary")).toHaveTextContent(/Generated\s+Pandas\s*code/u);
+    const draftCode = document.querySelector(".draftCode");
+    expect(draftCode?.querySelector("summary")).toHaveTextContent(/Generated\s+Pandas\s*code/u);
+    expect(draftCode).not.toHaveAttribute("open");
     await waitFor(() => expect(latestGridProps().beforeSchema).toEqual(committedSchema));
 
     dispatch({

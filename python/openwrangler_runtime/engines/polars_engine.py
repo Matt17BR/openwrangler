@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from importlib import import_module
 from importlib.util import find_spec
+from inspect import signature
 from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
@@ -24,6 +25,7 @@ from .base import (
     ensure_output_columns_available,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_blank_delimited_file,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -42,6 +44,27 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 _POLARS_INTEGER_LIMB_BASE = 10**9
 _POLARS_INTEGER_LIMB_COUNT = 5
+
+
+def _literal_file_uri(path: str) -> str:
+    """Return an encoded local-file URI for Polars versions without `glob=False`."""
+
+    return Path(path).expanduser().absolute().as_uri()
+
+
+def _scan_literal_file(scanner: Callable[..., Any], path: str, **options: Any) -> Any:
+    """Scan exactly one local file without treating its name as a glob pattern."""
+
+    try:
+        supports_glob = "glob" in signature(scanner).parameters
+    except (TypeError, ValueError):
+        supports_glob = False
+    if supports_glob:
+        return scanner(path, glob=False, **options)
+    # Older scan APIs—and scan_ndjson in current Polars—do not expose `glob`.
+    # An encoded file URI preserves lazy native scanning while making wildcard
+    # characters part of the literal local path.
+    return scanner(_literal_file_uri(path), **options)
 
 
 class PolarsEngine(DataFrameEngine):
@@ -89,7 +112,14 @@ class PolarsEngine(DataFrameEngine):
                     "Use the Pandas backend for this encoding."
                 )
             encoding: Literal["utf8", "utf8-lossy"] = "utf8-lossy" if requested_encoding == "utf8-lossy" else "utf8"
-            return pl.scan_csv(
+            if is_blank_delimited_file(
+                path,
+                encoding="utf-8",
+                errors="replace" if encoding == "utf8-lossy" else "strict",
+            ):
+                return pl.DataFrame().lazy()
+            return _scan_literal_file(
+                pl.scan_csv,
                 path,
                 separator=options.get("delimiter", "\t" if extension == ".tsv" else ","),
                 encoding=encoding,
@@ -97,9 +127,9 @@ class PolarsEngine(DataFrameEngine):
                 has_header=options.get("hasHeader", True),
             )
         if extension == ".parquet":
-            return pl.scan_parquet(path)
+            return _scan_literal_file(pl.scan_parquet, path)
         if extension == ".jsonl":
-            return pl.scan_ndjson(path)
+            return _scan_literal_file(pl.scan_ndjson, path)
         if extension in {".xlsx", ".xls"}:
             sheet_selector = resolve_excel_sheet_selector(options)
             if sheet_selector[0] == "sheetIndex":

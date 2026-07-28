@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSummary, GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 import { DataGrid } from "../webviews/grid/DataGrid";
+import { maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
 const webviewPostMessage = vi.hoisted(() => vi.fn());
 vi.mock("../webviews/vscodeApi", () => ({
@@ -65,6 +66,43 @@ const page: GridPage = {
   ]
 };
 
+const chromiumMaximumLayoutHeight = 33_554_428;
+const largeGridRowCount = 3_012_020;
+const largeGridPageSize = 200;
+
+function pageAt(offset: number, totalRows = largeGridRowCount): GridPage {
+  const rowCount = Math.min(largeGridPageSize, Math.max(0, totalRows - offset));
+  return {
+    offset,
+    limit: largeGridPageSize,
+    totalRows,
+    columnIds: page.columnIds,
+    rows: Array.from({ length: rowCount }, (_, index) => {
+      const rowNumber = offset + index;
+      return {
+        id: `r:${rowNumber}`,
+        rowNumber,
+        values: [
+          {
+            kind: "string" as const,
+            raw: `row-${rowNumber}`,
+            display: `row-${rowNumber}`,
+            isNull: false,
+            isNaN: false
+          },
+          {
+            kind: "number" as const,
+            raw: rowNumber,
+            display: String(rowNumber),
+            isNull: false,
+            isNaN: false
+          }
+        ]
+      };
+    })
+  };
+}
+
 describe("DataGrid", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -90,6 +128,49 @@ describe("DataGrid", () => {
     expect(screen.getByText("Paris")).toBeTruthy();
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "3");
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
+  });
+
+  it("closes header sort menus and exposes the active primary sort as a clearable accessible state", () => {
+    const onSortColumn = vi.fn();
+    const onClearSortColumn = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: () => undefined,
+      onSortColumn,
+      onClearSortColumn,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+
+    menu.open = true;
+    fireEvent.click(city.getByRole("button", { name: "Sort ascending" }));
+    expect(menu.open).toBe(false);
+    expect(onSortColumn).toHaveBeenLastCalledWith("city", "asc");
+
+    rerender(<DataGrid {...props} sortRules={[{ column: "city", direction: "asc", nulls: "last" }]} />);
+    expect(cityHeader).toHaveAttribute("aria-sort", "ascending");
+    expect(city.getByRole("button", { name: /Clear sort for city; currently ascending/u })).toBeVisible();
+
+    menu.open = true;
+    fireEvent.click(city.getByRole("button", { name: "Sort descending" }));
+    expect(menu.open).toBe(false);
+    expect(onSortColumn).toHaveBeenLastCalledWith("city", "desc");
+
+    rerender(<DataGrid {...props} sortRules={[{ column: "city", direction: "desc", nulls: "last" }]} />);
+    expect(cityHeader).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(city.getByRole("button", { name: /Clear sort for city; currently descending/u }));
+    expect(onClearSortColumn).toHaveBeenCalledWith("city");
   });
 
   it("renders exact min/max separately from accessible non-color-only summary visuals", async () => {
@@ -484,6 +565,201 @@ describe("DataGrid", () => {
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
     expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("reaches the first, middle, and final rows beyond Chromium's layout ceiling", async () => {
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const props = {
+      metadata: largeMetadata,
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={pageAt(0)} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 580 });
+    let physicalScrollTop = scroller.scrollTop;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = Math.min(value, chromiumMaximumLayoutHeight);
+      }
+    });
+    fireEvent(window, new Event("resize"));
+
+    expect(document.querySelector('[data-grid-row="0"]')).not.toBeNull();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", String(largeGridRowCount + 1));
+
+    const middleRow = 1_506_053;
+    const middleOffset = Math.floor(middleRow / largeGridPageSize) * largeGridPageSize;
+    scroller.scrollTop =
+      (middleRow / (largeGridRowCount - 1)) * (maximumGridScrollCanvasHeight - scroller.clientHeight);
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(props.onPage).toHaveBeenLastCalledWith(middleOffset));
+    rerender(<DataGrid {...props} page={pageAt(middleOffset)} />);
+
+    await waitFor(() => expect(document.querySelector(`[data-grid-row="${middleRow}"]`)).not.toBeNull());
+    expect(scroller.scrollTop).toBeGreaterThan(0);
+    expect(scroller.scrollTop).toBeLessThan(maximumGridScrollCanvasHeight);
+    expect(document.querySelector(`[data-grid-row="${middleRow}"]`)?.closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      String(middleRow + 2)
+    );
+
+    const finalRow = largeGridRowCount - 1;
+    const finalOffset = Math.floor(finalRow / largeGridPageSize) * largeGridPageSize;
+    scroller.scrollTop = maximumGridScrollCanvasHeight - scroller.clientHeight;
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(props.onPage).toHaveBeenLastCalledWith(finalOffset));
+    rerender(<DataGrid {...props} page={pageAt(finalOffset)} />);
+
+    await waitFor(() => expect(document.querySelector(`[data-grid-row="${finalRow}"]`)).not.toBeNull());
+    expect(scroller.scrollTop).toBeLessThan(maximumGridScrollCanvasHeight);
+    expect(scroller.scrollTop).toBeLessThan(chromiumMaximumLayoutHeight);
+    expect(document.querySelector(`[data-grid-row="${finalRow}"]`)?.closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      String(largeGridRowCount + 1)
+    );
+
+    const restoredRow = middleRow + 37;
+    const restoredOffset = Math.floor(restoredRow / largeGridPageSize) * largeGridPageSize;
+    const pageRequestsBeforeRestore = props.onPage.mock.calls.length;
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(restoredOffset)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: restoredRow, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+    await waitFor(() => expect(document.querySelector(`[data-grid-row="${restoredRow}"]`)).not.toBeNull());
+    expect(props.onPage).toHaveBeenCalledTimes(pageRequestsBeforeRestore);
+    expect(scroller.scrollTop).toBeLessThan(maximumGridScrollCanvasHeight);
+    expect(document.querySelector(`[data-grid-row="${restoredRow}"]`)?.closest("tr")).toHaveAttribute(
+      "aria-rowindex",
+      String(restoredRow + 2)
+    );
+  });
+
+  it("keeps huge-grid Next and Previous block requests stable across correlated scroll events", async () => {
+    const initialOffset = 1_506_000;
+    const nextOffset = initialOffset + largeGridPageSize;
+    const onPage = vi.fn();
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata: {
+        ...metadata,
+        shape: { rows: largeGridRowCount, columns: 2 },
+        filteredShape: { rows: largeGridRowCount, columns: 2 }
+      },
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onViewStateChange,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(
+      <DataGrid
+        {...props}
+        page={pageAt(initialOffset)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 580 });
+    let physicalScrollTop = scroller.scrollTop;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => physicalScrollTop,
+      set: (value: number) => {
+        physicalScrollTop = Math.min(value, chromiumMaximumLayoutHeight);
+      }
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+    expect(onPage).toHaveBeenCalledTimes(1);
+    expect(onPage).toHaveBeenLastCalledWith(nextOffset);
+    fireEvent.scroll(scroller);
+    expect(onPage).toHaveBeenCalledTimes(1);
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: {},
+      viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(nextOffset)}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: nextOffset, scrollLeft: 0 } }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    fireEvent.scroll(scroller);
+    expect(onPage).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous block" }));
+    expect(onPage).toHaveBeenCalledTimes(2);
+    expect(onPage).toHaveBeenLastCalledWith(initialOffset);
+    fireEvent.scroll(scroller);
+    expect(onPage).toHaveBeenCalledTimes(2);
+    expect(onViewStateChange).toHaveBeenLastCalledWith({
+      columnWidths: {},
+      viewport: { firstVisibleRow: initialOffset, scrollLeft: 0 }
+    });
+  });
+
+  it("uses Ctrl+End to reach and focus the final accessible row of a huge grid", async () => {
+    const onPage = vi.fn();
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const largeMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: largeGridRowCount, columns: 2 },
+      filteredShape: { rows: largeGridRowCount, columns: 2 }
+    };
+    const props = {
+      metadata: largeMetadata,
+      summaries: [],
+      pageSize: largeGridPageSize,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} page={pageAt(0)} />);
+    const firstCell = document.querySelector<HTMLTableCellElement>('[data-grid-row="0"][data-grid-column="0"]');
+    expect(firstCell).not.toBeNull();
+    act(() => firstCell?.focus());
+    fireEvent.keyDown(firstCell!, { key: "End", ctrlKey: true });
+
+    const finalRow = largeGridRowCount - 1;
+    const finalOffset = Math.floor(finalRow / largeGridPageSize) * largeGridPageSize;
+    expect(onPage).toHaveBeenCalledWith(finalOffset);
+    rerender(<DataGrid {...props} page={pageAt(finalOffset)} />);
+
+    await waitFor(() => {
+      expect(document.activeElement).toHaveAttribute("data-grid-row", String(finalRow));
+      expect(document.activeElement).toHaveAttribute("data-grid-column", "1");
+    });
+    expect(document.activeElement?.closest("tr")).toHaveAttribute("aria-rowindex", String(largeGridRowCount + 1));
+    hasFocus.mockRestore();
   });
 
   it("keeps one scroll listener across busy rerenders and reconciles with the latest page callback", async () => {
@@ -950,7 +1226,7 @@ describe("DataGrid", () => {
     expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]);
   });
 
-  it("resizes columns from the keyboard and labels an empty grid", () => {
+  it("resizes columns from the keyboard and clearly labels empty rows and datasets", () => {
     let currentViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
     const onViewStateChange = vi.fn((next) => {
       currentViewState = next;
@@ -1011,6 +1287,27 @@ describe("DataGrid", () => {
 
     expect(screen.getByText("No rows")).toBeInTheDocument();
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
+
+    rerender(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 0, columns: 0 }, filteredShape: { rows: 0, columns: 0 }, schema: [] }}
+        page={{ offset: 0, limit: 2, totalRows: 0, columnIds: [], rows: [] }}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        viewState={currentViewState}
+        onViewStateChange={onViewStateChange}
+        onPage={vi.fn()}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("Empty dataset")).toBeInTheDocument();
+    expect(screen.getByText("This source contains 0 rows × 0 columns.")).toBeInTheDocument();
+    expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "1");
   });
 });
 
@@ -1022,6 +1319,52 @@ describe("App file import options", () => {
 
   beforeEach(() => {
     webviewPostMessage.mockClear();
+  });
+
+  it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {
+    const filteredMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        logic: "and",
+        filters: [
+          {
+            column: "city",
+            type: "string",
+            predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
+          },
+          {
+            column: "sales",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
+          }
+        ],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: filteredMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    dispatchAppMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
+    expect(pageRequest?.request.filterModel).toEqual({
+      logic: "and",
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
+        }
+      ],
+      sort: filteredMetadata.filterModel.sort
+    });
   });
 
   it("acknowledges the exact rendered snapshot only after React commits it", () => {
@@ -1248,6 +1591,39 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "importOptionsState", busy: false });
     expect(action).toBeEnabled();
     expect(action).not.toHaveAttribute("aria-busy");
+  });
+
+  it("offers a direct confirmed dependency install only for a structured missing-dependency error", async () => {
+    const { unmount } = render(<App />);
+    dispatchAppMessage({
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Polars is missing fastexcel>=0.9.",
+      recoverable: true
+    });
+
+    const action = await screen.findByRole("button", { name: "Install required dependency" });
+    webviewPostMessage.mockClear();
+    fireEvent.click(action);
+
+    expect(webviewPostMessage).toHaveBeenCalledWith({ kind: "installRuntimeDependencies" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("Waiting for dependency confirmation");
+
+    dispatchAppMessage({ kind: "runtimeDependencyInstallState", busy: false });
+    expect(action).toBeEnabled();
+    expect(action).not.toHaveAttribute("aria-busy");
+
+    unmount();
+    render(<App />);
+    dispatchAppMessage({
+      kind: "error",
+      code: "invalid_import_options",
+      message: "Choose a valid delimiter.",
+      recoverable: true
+    });
+    expect(screen.queryByRole("button", { name: "Install required dependency" })).toBeNull();
   });
 
   it("commits and blurs a pointer-triggered import action before dispatch, then restores it after completion", async () => {
@@ -1506,6 +1882,50 @@ describe("App file import options", () => {
     expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
     expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
+  });
+
+  it("treats a header sort as one primary view-only sort and replaces earlier quick sorts", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        filterModel: {
+          filters: [],
+          sort: [
+            { column: "sales", direction: "asc", nulls: "last" },
+            { column: "city", direction: "asc", nulls: "last" }
+          ]
+        }
+      },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!cityHeader) throw new Error("Expected the city header.");
+    const city = within(cityHeader);
+    const menu = city.getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+    menu.open = true;
+    fireEvent.click(city.getByRole("button", { name: "Sort descending" }));
+
+    expect(menu.open).toBe(false);
+    expect(webviewPostMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "runtimeRequest",
+        request: expect.objectContaining({
+          kind: "getPage",
+          filterModel: {
+            filters: [],
+            sort: [{ column: "city", direction: "desc", nulls: "last" }]
+          }
+        })
+      })
+    );
+    expect(city.getByRole("button", { name: /Clear sort for city; currently descending/u })).toBeVisible();
   });
 
   it("keeps the grid loading when a drained cleaning completion lands during import reconfiguration", async () => {

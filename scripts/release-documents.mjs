@@ -15,14 +15,14 @@ const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
 const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
 const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
 const FEATURE_PARITY_URL = "https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md";
-const README_EDITOR_SUPPORT = `| Editor                                          | Support      | Release coverage                                       |
-| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
-| VS Code                                         | First-class  | Full automated and release matrix                      |
-| Cursor                                          | First-class  | Full automated and release matrix                      |
-| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
-| Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
+const README_EDITOR_SUPPORT = `| Editor                      | Support      | Validation                        |
+| --------------------------- | ------------ | --------------------------------- |
+| VS Code                     | First-class  | Complete release suite            |
+| Cursor                      | First-class  | Complete release suite            |
+| Other VS Code desktop IDEs  | Experimental | Best-effort compatibility         |
+| Browser-hosted \`vscode.dev\` | Unsupported  | Requires a desktop extension host |
 
-Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.`;
+VS Code and Cursor are release-tested. Other desktop forks that consume Open VSX may work—including [Antigravity](https://antigravity.google/docs/editor?app=antigravity)—but are not yet part of the release gate.`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -72,11 +72,11 @@ Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
 
 ${README_EDITOR_SUPPORT}
 
-Install directly from the [Visual Studio Marketplace](${MARKETPLACE_URL}) or [Open VSX](${OPEN_VSX_URL}). For manual or offline installation, download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
+Install from the [Visual Studio Marketplace](${MARKETPLACE_URL}) or [Open VSX](${OPEN_VSX_URL}). For manual or offline installation, use the VSIX and matching checksum from a [GitHub Release](${RELEASES_URL}).
 
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
+On first open, Open Wrangler uses your configured Python path, selected Python environment, or a supported system interpreter. Missing packages are never installed silently: the error names the preferred backend and its exact requirements, and **Install required dependency** opens a confirmation before retrying the same file.
 
-This stable release satisfies every in-scope row in the checked-in [feature parity matrix](${FEATURE_PARITY_URL}).
+The checked-in [feature parity matrix](${FEATURE_PARITY_URL}) records the tested 1.0 scope and its acceptance evidence. Real-world regressions remain release-blocking when discovered.
 
 ${README_RELEASE_SECTION_END}`;
 

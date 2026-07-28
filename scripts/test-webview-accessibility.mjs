@@ -423,11 +423,16 @@ async function verifyStepInspectionWorkflow(browser) {
 async function verifyFilterKeyboardWorkflow(browser) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
   await page.goto(pathToFileURL(resolve(harnessDir, "filter-panel.html")).href, { waitUntil: "load" });
+  await page.bringToFront();
+  await page.waitForFunction(() => document.hasFocus());
   await page.getByRole("complementary", { name: "Insights and filters" }).waitFor();
   await waitForRuntimeRequestCount(page, "getColumnValues", 1);
   await page.getByRole("checkbox").first().waitFor();
 
-  const columnMenu = page.locator("details.columnMenu[open] .columnMenuContent");
+  const columnAction = page.locator('th[data-column="year"] details.columnMenu summary');
+  await columnAction.focus();
+  await page.keyboard.press("Enter");
+  const columnMenu = page.locator('th[data-column="year"] details.columnMenu[open] .columnMenuContent');
   await columnMenu.waitFor();
   const menuBackground = await columnMenu.evaluate((element) => {
     const color = getComputedStyle(element).backgroundColor;
@@ -437,6 +442,9 @@ async function verifyFilterKeyboardWorkflow(browser) {
   if (menuBackground.alpha < 1) {
     throw new Error(`Column menu background is not opaque (${menuBackground.color}).`);
   }
+  await columnAction.focus();
+  await page.keyboard.press("Enter");
+  await columnMenu.waitFor({ state: "hidden" });
 
   const search = page.getByRole("textbox", { name: /Search values for/ });
   await search.focus();
@@ -467,15 +475,45 @@ async function verifyFilterKeyboardWorkflow(browser) {
   if (!(await sorts.evaluate((element) => element.open))) {
     throw new Error("Changing sort direction closed the sort disclosure.");
   }
-  await page.keyboard.press("Tab");
+  const addSort = page.getByRole("button", { name: /Add to sort|Update sort/ });
+  await addSort.focus();
+  await page.keyboard.press("Enter");
+  if (!(await sorts.evaluate((element) => element.open))) {
+    throw new Error("Adding a sort closed the sort disclosure.");
+  }
+  const applySort = page.getByRole("button", { name: "Apply sort order" });
+  await applySort.focus();
   await page.keyboard.press("Enter");
   await waitForRuntimeRequestCount(page, "getPage", 2);
 
+  await page.bringToFront();
+  await page.waitForFunction(() => document.hasFocus());
   const close = page.getByRole("button", { name: "Close panel" });
   await close.focus();
   await page.keyboard.press("Enter");
   await page.getByRole("complementary", { name: "Insights and filters" }).waitFor({ state: "detached" });
-  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Filter…");
+  try {
+    await page.waitForFunction(
+      () => {
+        const active = document.activeElement;
+        if (!(active instanceof HTMLButtonElement)) return false;
+        return ["Filter…", "Insights & filters"].includes(active.textContent?.trim() ?? "");
+      },
+      undefined,
+      { timeout: 2_000 }
+    );
+  } catch {
+    const focus = await page.evaluate(() => {
+      const active = document.activeElement;
+      return {
+        tag: active?.tagName,
+        text: active?.textContent?.trim(),
+        ariaLabel: active?.getAttribute("aria-label"),
+        className: active?.getAttribute("class")
+      };
+    });
+    throw new Error(`Closing the filter drawer did not restore a valid opener: ${JSON.stringify(focus)}.`);
+  }
   await page.close();
   console.log("Filter, sort, and drawer-focus keyboard workflow verified.");
 }

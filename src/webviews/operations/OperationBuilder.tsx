@@ -1,10 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import type { FilterModel } from "../../shared/filterModel";
+import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
 import type {
   ByExampleProgram,
   ColumnReference,
   ColumnSchema,
+  ColumnType,
   OperationKind,
   SessionMetadata,
   TransformFilterModel,
@@ -25,6 +27,30 @@ interface OperationBuilderProps {
 
 const formulaOperators = ["add", "subtract", "multiply", "divide", "modulo", "power"] as const;
 const aggregationOperations = ["sum", "mean", "min", "max", "median", "count", "nUnique", "first", "last"];
+const numericColumnTypes: ReadonlySet<ColumnType> = new Set(["integer", "float", "decimal"]);
+const textColumnTypes: ReadonlySet<ColumnType> = new Set(["string"]);
+const datetimeColumnTypes: ReadonlySet<ColumnType> = new Set(["date", "datetime"]);
+const portableScalarColumnTypes: ReadonlySet<ColumnType> = new Set([
+  "string",
+  "integer",
+  "float",
+  "decimal",
+  "boolean",
+  "datetime",
+  "date",
+  "duration",
+  "binary"
+]);
+const orderedAggregationColumnTypes: ReadonlySet<ColumnType> = new Set([
+  "string",
+  "integer",
+  "float",
+  "decimal",
+  "boolean",
+  "datetime",
+  "date",
+  "duration"
+]);
 const dialogFocusableSelector = [
   "button:not(:disabled)",
   "input:not(:disabled):not([type='hidden'])",
@@ -311,8 +337,6 @@ export function OperationBuilder({
 }: OperationBuilderProps) {
   const [selectedKind, setSelectedKind] = useState<OperationKind | undefined>(initialKind ?? initialStep?.kind);
   const [search, setSearch] = useState("");
-  const [sortRows, setSortRows] = useState(1);
-  const [aggregationRows, setAggregationRows] = useState(1);
   const [formError, setFormError] = useState<string>();
   const dialogRef = useRef<HTMLElement | null>(null);
   const filteredCatalog = useMemo(() => {
@@ -328,6 +352,9 @@ export function OperationBuilder({
   const availableColumns = initialStep ? (metadata.latestStepInputSchema ?? []) : metadata.schema;
   const editPreflightError = initialStep ? savedStepEditError(initialStep, metadata.latestStepInputSchema) : undefined;
   const savedFilterModel = activeInitial?.kind === "filterRows" ? activeInitial.params.filterModel : undefined;
+  const selectedFilterQueryIsEmpty =
+    selectedKind === "filterRows" &&
+    (savedFilterModel ? !hasActiveViewQuery(savedFilterModel) : !hasActiveViewQuery(filterModel));
 
   useEffect(() => {
     if (!busy) return;
@@ -449,10 +476,6 @@ export function OperationBuilder({
                       columns={availableColumns}
                       filterModel={filterModel}
                       initialStep={activeInitial}
-                      sortRows={sortRows}
-                      aggregationRows={aggregationRows}
-                      onAddSort={() => setSortRows((count) => count + 1)}
-                      onAddAggregation={() => setAggregationRows((count) => count + 1)}
                     />
                     {formError && (
                       <p className="operationFormError" role="alert">
@@ -465,15 +488,7 @@ export function OperationBuilder({
                   <button type="button" className="secondaryButton" onClick={onClose}>
                     Cancel
                   </button>
-                  <button
-                    type="submit"
-                    disabled={
-                      editPreflightError !== undefined ||
-                      (selectedKind === "filterRows" &&
-                        (savedFilterModel ?? filterModel).filters.length === 0 &&
-                        (savedFilterModel ?? filterModel).sort.length === 0)
-                    }
-                  >
+                  <button type="submit" disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}>
                     Preview changes
                   </button>
                 </footer>
@@ -498,24 +513,22 @@ interface OperationFieldsProps {
   columns: ColumnSchema[];
   filterModel: FilterModel;
   initialStep?: TransformStep;
-  sortRows: number;
-  aggregationRows: number;
-  onAddSort(): void;
-  onAddAggregation(): void;
 }
 
-function OperationFields({
-  kind,
-  metadata,
-  columns,
-  filterModel,
-  initialStep,
-  sortRows,
-  aggregationRows,
-  onAddSort,
-  onAddAggregation
-}: OperationFieldsProps) {
+function OperationFields({ kind, metadata, columns, filterModel, initialStep }: OperationFieldsProps) {
   const params = initialStep?.params ?? {};
+  const initialSortRules = Array.isArray(params.rules) ? (params.rules as Record<string, unknown>[]) : [];
+  const initialAggregations = Array.isArray(params.aggregations)
+    ? (params.aggregations as Record<string, unknown>[])
+    : [];
+  const nextSortRowId = useRef(Math.max(1, initialSortRules.length));
+  const nextAggregationRowId = useRef(Math.max(1, initialAggregations.length));
+  const [sortRowIds, setSortRowIds] = useState(() =>
+    Array.from({ length: Math.max(1, initialSortRules.length) }, (_, index) => `sort-${index}`)
+  );
+  const [aggregationRowIds, setAggregationRowIds] = useState(() =>
+    Array.from({ length: Math.max(1, initialAggregations.length) }, (_, index) => `aggregation-${index}`)
+  );
   const [formulaOperandMode, setFormulaOperandMode] = useState(params.rightColumn ? "column" : "value");
   const [multiLabelPrefixMode, setMultiLabelPrefixMode] = useState(
     Object.prototype.hasOwnProperty.call(params, "prefix") ? "custom" : "default"
@@ -527,38 +540,56 @@ function OperationFields({
     Array.isArray(params[name]) ? params[name].map(columnReferenceId).filter(isDefined) : [];
 
   if (kind === "sortRows") {
-    const rules = Array.isArray(params.rules) ? (params.rules as Record<string, unknown>[]) : [];
+    const rulesById = new Map<string, Record<string, unknown>>(
+      initialSortRules.map((rule, index) => [`sort-${index}`, rule])
+    );
     return (
       <Fieldset legend="Sort rules">
-        {Array.from({ length: Math.max(sortRows, rules.length) }, (_, index) => (
-          <div className="compoundRow" key={index}>
-            <ColumnReferenceSelect
-              name="sortColumn"
-              label={`Column ${index + 1}`}
-              columns={columns}
-              defaultValue={columnReferenceId(rules[index]?.column) ?? columns[0]?.id}
-            />
-            <SelectField
-              name="sortDirection"
-              label="Direction"
-              defaultValue={String(rules[index]?.direction ?? "asc")}
-              options={[
-                ["asc", "Ascending"],
-                ["desc", "Descending"]
-              ]}
-            />
-            <SelectField
-              name="sortNulls"
-              label="Missing"
-              defaultValue={String(rules[index]?.nulls ?? "last")}
-              options={[
-                ["last", "Last"],
-                ["first", "First"]
-              ]}
-            />
-          </div>
-        ))}
-        <button type="button" className="secondaryButton" onClick={onAddSort}>
+        {sortRowIds.map((rowId, index) => {
+          const rule = rulesById.get(rowId);
+          return (
+            <div className="compoundRow operationInputRow" key={rowId}>
+              <ColumnReferenceSelect
+                name="sortColumn"
+                label={`Column ${index + 1}`}
+                columns={columns}
+                defaultValue={columnReferenceId(rule?.column) ?? columns[0]?.id}
+              />
+              <SelectField
+                name="sortDirection"
+                label="Direction"
+                defaultValue={String(rule?.direction ?? "asc")}
+                options={[
+                  ["asc", "Ascending"],
+                  ["desc", "Descending"]
+                ]}
+              />
+              <SelectField
+                name="sortNulls"
+                label="Missing"
+                defaultValue={String(rule?.nulls ?? "last")}
+                options={[
+                  ["last", "Last"],
+                  ["first", "First"]
+                ]}
+              />
+              <RowActions
+                label={`sort rule ${index + 1}`}
+                canRemove={sortRowIds.length > 1}
+                canMoveUp={index > 0}
+                canMoveDown={index < sortRowIds.length - 1}
+                onRemove={() => setSortRowIds((current) => current.filter((candidate) => candidate !== rowId))}
+                onMoveUp={() => setSortRowIds((current) => moveItem(current, index, index - 1))}
+                onMoveDown={() => setSortRowIds((current) => moveItem(current, index, index + 1))}
+              />
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          className="secondaryButton"
+          onClick={() => setSortRowIds((current) => [...current, `sort-${nextSortRowId.current++}`])}
+        >
           Add sort column
         </button>
       </Fieldset>
@@ -567,7 +598,9 @@ function OperationFields({
   if (kind === "filterRows") {
     const savedFilterModel = initialStep?.kind === "filterRows" ? initialStep.params.filterModel : undefined;
     const displayedFilterModel = savedFilterModel ?? filterModel;
-    const currentQueryIsEmpty = filterModel.filters.length === 0 && filterModel.sort.length === 0;
+    const currentQueryIsEmpty = !hasActiveViewQuery(filterModel);
+    const displayedFilterCount = displayedFilterModel.filters.filter(isActiveColumnFilter).length;
+    const currentFilterCount = filterModel.filters.filter(isActiveColumnFilter).length;
     return (
       <Fieldset legend={savedFilterModel ? "Saved cleaning query" : "Current viewing query"}>
         <p className="panelNote">
@@ -576,7 +609,7 @@ function OperationFields({
             : "This explicit action copies the current viewing filters and sorts into the cleaning plan. Later viewing changes remain independent."}
         </p>
         <div className="querySummary">
-          <strong>{displayedFilterModel.filters.length} filters</strong>
+          <strong>{displayedFilterCount} filters</strong>
           <strong>{displayedFilterModel.sort.length} sorts</strong>
         </div>
         {savedFilterModel && (
@@ -588,8 +621,8 @@ function OperationFields({
             <label className="checkboxField">
               <input name="filterSource" type="radio" value="current" disabled={currentQueryIsEmpty} />
               <span>
-                Replace it with the current viewing query ({filterModel.filters.length} filters,{" "}
-                {filterModel.sort.length} sorts)
+                Replace it with the current viewing query ({currentFilterCount} filters, {filterModel.sort.length}{" "}
+                sorts)
               </span>
             </label>
             {currentQueryIsEmpty && <small>Add a viewing filter or sort before replacing the saved query.</small>}
@@ -655,12 +688,13 @@ function OperationFields({
     );
   }
   if (kind === "oneHotEncode") {
+    const categoricalColumns = compatibleColumns(columns, portableScalarColumnTypes);
     return (
       <>
         <ColumnReferencesSelect
           name="columns"
           label="Categorical columns"
-          columns={columns}
+          columns={categoricalColumns}
           defaultValue={initialColumnReferences("columns")}
         />
         <TextField name="prefixSeparator" label="Prefix separator" defaultValue={param("prefixSeparator", "_")} />
@@ -704,13 +738,15 @@ function OperationFields({
     );
   }
   if (kind === "formula") {
+    const numericColumns = compatibleColumns(columns, numericColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="leftColumn"
           label="Left column"
-          columns={columns}
-          defaultValue={initialColumnReference("leftColumn")}
+          columns={numericColumns}
+          defaultValue={initialColumnReference("leftColumn", numericColumns[0]?.id)}
+          emptyMessage="No numeric columns are available. Cast a column to a numeric type first."
         />
         <SelectField
           name="operator"
@@ -735,8 +771,9 @@ function OperationFields({
           <ColumnReferenceSelect
             name="rightColumn"
             label="Right column"
-            columns={columns}
-            defaultValue={initialColumnReference("rightColumn")}
+            columns={numericColumns}
+            defaultValue={initialColumnReference("rightColumn", numericColumns[0]?.id)}
+            emptyMessage="No numeric columns are available. Cast a column to a numeric type first."
           />
         )}
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn")} required />
@@ -744,26 +781,30 @@ function OperationFields({
     );
   }
   if (kind === "textLength") {
+    const textColumns = compatibleColumns(columns, textColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "text_length")} required />
       </>
     );
   }
   if (kind === "multiLabelBinarize") {
+    const textColumns = compatibleColumns(columns, textColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Labels column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
         <label className="formField">
@@ -785,13 +826,15 @@ function OperationFields({
     );
   }
   if (kind === "findReplace") {
+    const textColumns = compatibleColumns(columns, textColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="find" label="Find (blank matches empty boundaries)" defaultValue={param("find")} />
         <TextField name="replacement" label="Replace with" defaultValue={param("replacement")} />
@@ -801,13 +844,15 @@ function OperationFields({
     );
   }
   if (kind === "stripText") {
+    const textColumns = compatibleColumns(columns, textColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="characters" label="Characters (blank means whitespace)" defaultValue={param("characters")} />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
@@ -815,13 +860,15 @@ function OperationFields({
     );
   }
   if (kind === "splitText") {
+    const textColumns = compatibleColumns(columns, textColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Text column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
         <TextField name="index" label="Part index" type="number" min={0} defaultValue={param("index", "0")} required />
@@ -829,27 +876,46 @@ function OperationFields({
       </>
     );
   }
-  if (["capitalizeText", "lowerText", "upperText", "minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
+  if (["capitalizeText", "lowerText", "upperText"].includes(kind)) {
+    const textColumns = compatibleColumns(columns, textColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
-          label="Column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          label="Text column"
+          columns={textColumns}
+          defaultValue={initialColumnReference("column", textColumns[0]?.id)}
+          emptyMessage="No text columns are available. Cast a column to text first."
+        />
+        <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
+      </>
+    );
+  }
+  if (["minMaxScale", "floorNumber", "ceilNumber"].includes(kind)) {
+    const numericColumns = compatibleColumns(columns, numericColumnTypes);
+    return (
+      <>
+        <ColumnReferenceSelect
+          name="column"
+          label="Numeric column"
+          columns={numericColumns}
+          defaultValue={initialColumnReference("column", numericColumns[0]?.id)}
+          emptyMessage="No numeric columns are available. Cast a column to a numeric type first."
         />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
       </>
     );
   }
   if (kind === "roundNumber") {
+    const numericColumns = compatibleColumns(columns, numericColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Numeric column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={numericColumns}
+          defaultValue={initialColumnReference("column", numericColumns[0]?.id)}
+          emptyMessage="No numeric columns are available. Cast a column to a numeric type first."
         />
         <TextField
           name="decimals"
@@ -863,13 +929,15 @@ function OperationFields({
     );
   }
   if (kind === "formatDatetime") {
+    const datetimeColumns = compatibleColumns(columns, datetimeColumnTypes);
     return (
       <>
         <ColumnReferenceSelect
           name="column"
           label="Date or datetime column"
-          columns={columns}
-          defaultValue={initialColumnReference("column")}
+          columns={datetimeColumns}
+          defaultValue={initialColumnReference("column", datetimeColumns[0]?.id)}
+          emptyMessage="No date or datetime columns are available. Cast a column first."
         />
         <TextField name="format" label="strftime format" defaultValue={param("format", "%Y-%m-%d")} required />
         <TextField name="newColumn" label="Output column (blank replaces in place)" defaultValue={param("newColumn")} />
@@ -877,40 +945,41 @@ function OperationFields({
     );
   }
   if (kind === "groupBy") {
-    const aggregations = Array.isArray(params.aggregations) ? (params.aggregations as Record<string, unknown>[]) : [];
+    const groupColumns = compatibleColumns(columns, portableScalarColumnTypes);
+    const aggregationsById = new Map<string, Record<string, unknown>>(
+      initialAggregations.map((aggregation, index) => [`aggregation-${index}`, aggregation])
+    );
     return (
       <>
         <ColumnReferencesSelect
           name="keys"
           label="Group keys"
-          columns={columns}
+          columns={groupColumns}
           defaultValue={initialColumnReferences("keys")}
           preserveSelectionOrder
         />
         <Fieldset legend="Aggregations">
-          {Array.from({ length: Math.max(aggregationRows, aggregations.length) }, (_, index) => (
-            <div className="compoundRow aggregationRow" key={index}>
-              <ColumnReferenceSelect
-                name="aggregationColumn"
-                label={`Value ${index + 1}`}
-                columns={columns}
-                defaultValue={columnReferenceId(aggregations[index]?.column) ?? columns[0]?.id}
-              />
-              <SelectField
-                name="aggregationOperation"
-                label="Calculation"
-                defaultValue={String(aggregations[index]?.operation ?? "sum")}
-                options={aggregationOperations.map((value) => [value, value])}
-              />
-              <TextField
-                name="aggregationAlias"
-                label="Output name"
-                defaultValue={String(aggregations[index]?.alias ?? `value_${index + 1}`)}
-                required
-              />
-            </div>
+          {aggregationRowIds.map((rowId, index) => (
+            <AggregationRow
+              key={rowId}
+              index={index}
+              columns={columns}
+              initialAggregation={aggregationsById.get(rowId)}
+              canRemove={aggregationRowIds.length > 1}
+              canMoveUp={index > 0}
+              canMoveDown={index < aggregationRowIds.length - 1}
+              onRemove={() => setAggregationRowIds((current) => current.filter((candidate) => candidate !== rowId))}
+              onMoveUp={() => setAggregationRowIds((current) => moveItem(current, index, index - 1))}
+              onMoveDown={() => setAggregationRowIds((current) => moveItem(current, index, index + 1))}
+            />
           ))}
-          <button type="button" className="secondaryButton" onClick={onAddAggregation}>
+          <button
+            type="button"
+            className="secondaryButton"
+            onClick={() =>
+              setAggregationRowIds((current) => [...current, `aggregation-${nextAggregationRowId.current++}`])
+            }
+          >
             Add aggregation
           </button>
         </Fieldset>
@@ -918,6 +987,7 @@ function OperationFields({
     );
   }
   if (kind === "byExample") {
+    const sourceColumns = compatibleColumns(columns, portableScalarColumnTypes);
     const examples = Array.isArray(params.examples)
       ? JSON.stringify(params.examples, null, 2)
       : JSON.stringify(
@@ -933,11 +1003,11 @@ function OperationFields({
         <ColumnReferencesSelect
           name="sourceColumns"
           label="Source columns"
-          columns={columns}
+          columns={sourceColumns}
           defaultValue={
             initialColumnReferences("sourceColumns").length
               ? initialColumnReferences("sourceColumns")
-              : columns.slice(0, 1).map((column) => column.id)
+              : sourceColumns.slice(0, 1).map((column) => column.id)
           }
           preserveSelectionOrder
         />
@@ -991,8 +1061,14 @@ function buildParams(
       .getAll(name)
       .map(String)
       .map((id) => referenceForId(id, availableColumns));
+  const requiredColumnReferences = (name: string, label: string) => {
+    const references = columnReferences(name);
+    if (references.length === 0) throw new Error(`${label} requires at least one compatible column.`);
+    return references;
+  };
   if (kind === "sortRows") {
     const columns = columnReferences("sortColumn");
+    if (columns.length === 0) throw new Error("Sort rows requires at least one sort rule.");
     const directions = form.getAll("sortDirection").map(String);
     const nulls = form.getAll("sortNulls").map(String);
     return { rules: columns.map((column, index) => ({ column, direction: directions[index], nulls: nulls[index] })) };
@@ -1008,10 +1084,13 @@ function buildParams(
     if (columns.length) params.columns = columns;
     return params;
   }
-  if (kind === "selectColumns" || kind === "dropColumns") return { columns: columnReferences("columns") };
+  if (kind === "selectColumns" || kind === "dropColumns")
+    return {
+      columns: requiredColumnReferences("columns", kind === "selectColumns" ? "Select columns" : "Drop columns")
+    };
   if (kind === "oneHotEncode")
     return {
-      columns: columnReferences("columns"),
+      columns: requiredColumnReferences("columns", "One-hot encoding"),
       prefixSeparator: value("prefixSeparator"),
       dropOriginal: form.has("dropOriginal")
     };
@@ -1083,8 +1162,11 @@ function buildParams(
     const columns = form.getAll("aggregationColumn").map(String);
     const operations = form.getAll("aggregationOperation").map(String);
     const aliases = form.getAll("aggregationAlias").map(String);
+    if (columns.length === 0 || columns.length !== operations.length || columns.length !== aliases.length) {
+      throw new Error("Group by requires at least one complete compatible aggregation.");
+    }
     return {
-      keys: form.getAll("keys").map((id) => referenceForId(String(id), availableColumns)),
+      keys: requiredColumnReferences("keys", "Group by"),
       aggregations: columns.map((id, index) => ({
         column: referenceForId(id, availableColumns),
         operation: operations[index],
@@ -1102,7 +1184,7 @@ function buildParams(
       throw new Error("Examples must be valid JSON.");
     }
     if (!Array.isArray(examples)) throw new Error("Examples JSON must be an array.");
-    const sourceColumns = form.getAll("sourceColumns").map((id) => referenceForId(String(id), availableColumns));
+    const sourceColumns = requiredColumnReferences("sourceColumns", "By-example");
     if (sourceColumns.length > 16) throw new Error("By-example supports at most 16 source columns.");
     if (examples.length < 2 || examples.length > 64) {
       throw new Error("By-example requires between 2 and 64 examples.");
@@ -1168,7 +1250,9 @@ function transformFilterModel(filterModel: FilterModel, columns: ColumnSchema[])
 
   return {
     ...(filterModel.logic === undefined ? {} : { logic: filterModel.logic }),
-    filters: filterModel.filters.map((filter) => ({ ...filter, column: referenceForName(filter.column) })),
+    filters: filterModel.filters
+      .filter(isActiveColumnFilter)
+      .map((filter) => ({ ...filter, column: referenceForName(filter.column) })),
     sort: filterModel.sort.map((rule) => ({ ...rule, column: referenceForName(rule.column) }))
   };
 }
@@ -1182,27 +1266,190 @@ function Fieldset({ legend, children }: { legend: string; children: ReactNode })
   );
 }
 
+function moveItem<T>(items: readonly T[], from: number, to: number): T[] {
+  if (from < 0 || from >= items.length || to < 0 || to >= items.length || from === to) return [...items];
+  const result = [...items];
+  const [item] = result.splice(from, 1);
+  result.splice(to, 0, item);
+  return result;
+}
+
+function compatibleColumns(columns: ColumnSchema[], allowedTypes: ReadonlySet<ColumnType>): ColumnSchema[] {
+  return columns.filter((column) => allowedTypes.has(column.type));
+}
+
+function aggregationColumnTypes(operation: string): ReadonlySet<ColumnType> {
+  if (["sum", "mean", "median"].includes(operation)) return numericColumnTypes;
+  if (["min", "max"].includes(operation)) return orderedAggregationColumnTypes;
+  return portableScalarColumnTypes;
+}
+
+function RowActions({
+  label,
+  canRemove,
+  canMoveUp,
+  canMoveDown,
+  onRemove,
+  onMoveUp,
+  onMoveDown
+}: {
+  label: string;
+  canRemove: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onRemove(): void;
+  onMoveUp(): void;
+  onMoveDown(): void;
+}) {
+  return (
+    <div className="operationRowActions" role="group" aria-label={`Actions for ${label}`}>
+      <button
+        type="button"
+        className="iconButton codicon codicon-arrow-up"
+        aria-label={`Move ${label} up`}
+        title="Move up"
+        disabled={!canMoveUp}
+        onClick={onMoveUp}
+      />
+      <button
+        type="button"
+        className="iconButton codicon codicon-arrow-down"
+        aria-label={`Move ${label} down`}
+        title="Move down"
+        disabled={!canMoveDown}
+        onClick={onMoveDown}
+      />
+      <button
+        type="button"
+        className="operationRemoveButton"
+        aria-label={`Remove ${label}`}
+        disabled={!canRemove}
+        title={canRemove ? `Remove ${label}` : "At least one row is required"}
+        onClick={onRemove}
+      >
+        <span className="codicon codicon-trash" aria-hidden="true" />
+        <span>Remove</span>
+      </button>
+    </div>
+  );
+}
+
+function AggregationRow({
+  index,
+  columns,
+  initialAggregation,
+  canRemove,
+  canMoveUp,
+  canMoveDown,
+  onRemove,
+  onMoveUp,
+  onMoveDown
+}: {
+  index: number;
+  columns: ColumnSchema[];
+  initialAggregation?: Record<string, unknown>;
+  canRemove: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onRemove(): void;
+  onMoveUp(): void;
+  onMoveDown(): void;
+}) {
+  const initialOperation = String(initialAggregation?.operation ?? "sum");
+  const [operation, setOperation] = useState(initialOperation);
+  const availableColumns = compatibleColumns(columns, aggregationColumnTypes(operation));
+  const initialColumnId = columnReferenceId(initialAggregation?.column);
+  const [selectedColumnId, setSelectedColumnId] = useState(() =>
+    initialColumnId && availableColumns.some((column) => column.id === initialColumnId)
+      ? initialColumnId
+      : (availableColumns[0]?.id ?? "")
+  );
+
+  const changeOperation = (nextOperation: string) => {
+    const nextColumns = compatibleColumns(columns, aggregationColumnTypes(nextOperation));
+    setOperation(nextOperation);
+    setSelectedColumnId((current) =>
+      nextColumns.some((column) => column.id === current) ? current : (nextColumns[0]?.id ?? "")
+    );
+  };
+
+  return (
+    <div className="compoundRow aggregationRow operationInputRow">
+      <ColumnReferenceSelect
+        name="aggregationColumn"
+        label={`Value ${index + 1}`}
+        columns={availableColumns}
+        value={selectedColumnId}
+        onChange={setSelectedColumnId}
+        emptyMessage={`No columns support the ${operation} calculation.`}
+      />
+      <label className="formField">
+        <span>Calculation</span>
+        <select name="aggregationOperation" value={operation} onChange={(event) => changeOperation(event.target.value)}>
+          {aggregationOperations.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </label>
+      <TextField
+        name="aggregationAlias"
+        label="Output name"
+        defaultValue={String(initialAggregation?.alias ?? `value_${index + 1}`)}
+        required
+      />
+      <RowActions
+        label={`aggregation ${index + 1}`}
+        canRemove={canRemove}
+        canMoveUp={canMoveUp}
+        canMoveDown={canMoveDown}
+        onRemove={onRemove}
+        onMoveUp={onMoveUp}
+        onMoveDown={onMoveDown}
+      />
+    </div>
+  );
+}
+
 function ColumnReferenceSelect({
   name,
   label,
   columns,
-  defaultValue
+  defaultValue,
+  value,
+  onChange,
+  emptyMessage
 }: {
   name: string;
   label: string;
   columns: ColumnSchema[];
   defaultValue?: string;
+  value?: string;
+  onChange?(value: string): void;
+  emptyMessage?: string;
 }) {
+  const fallbackValue =
+    defaultValue && columns.some((column) => column.id === defaultValue) ? defaultValue : columns[0]?.id;
+  const controlled = value !== undefined;
   return (
     <label className="formField">
       <span>{label}</span>
-      <select name={name} defaultValue={defaultValue ?? columns[0]?.id} required>
+      <select
+        name={name}
+        {...(controlled ? { value } : { defaultValue: fallbackValue })}
+        required
+        disabled={columns.length === 0}
+        onChange={onChange ? (event) => onChange(event.target.value) : undefined}
+      >
+        {columns.length === 0 && <option value="">No compatible columns</option>}
         {columns.map((column) => (
           <option key={column.id} value={column.id}>
             {columnOptionLabel(column)}
           </option>
         ))}
       </select>
+      {columns.length === 0 && <small className="operationCompatibilityNote">{emptyMessage}</small>}
     </label>
   );
 }
@@ -1232,44 +1479,49 @@ function ColumnReferencesSelect({
     return column ? columnOptionLabel(column) : id;
   });
   return (
-    <div className="formField">
-      <label htmlFor={selectId}>{label}</label>
+    <fieldset
+      className="columnSelectionField"
+      aria-describedby={preserveSelectionOrder && selectedLabels.length > 0 ? `${helpId} ${orderId}` : helpId}
+    >
+      <legend>{label}</legend>
       {selectedIds.map((id) => (
         <input key={id} type="hidden" name={name} value={id} />
       ))}
-      <select
-        id={selectId}
-        multiple
-        size={Math.min(6, Math.max(3, columns.length))}
-        value={selectedIds}
-        required={required}
-        aria-describedby={preserveSelectionOrder && selectedLabels.length > 0 ? `${helpId} ${orderId}` : helpId}
-        onChange={(event) => {
-          const selectedInSchemaOrder = Array.from(event.currentTarget.selectedOptions, (option) => option.value);
-          const selected = new Set(selectedInSchemaOrder);
-          setSelectedIds((current) => [
-            ...current.filter((id) => selected.has(id)),
-            ...selectedInSchemaOrder.filter((id) => !current.includes(id))
-          ]);
-        }}
-      >
+      <div className="columnChecklist" id={selectId}>
         {columns.map((column) => (
-          <option key={column.id} value={column.id}>
-            {columnOptionLabel(column)}
-          </option>
+          <label className="columnChecklistItem" key={column.id}>
+            <input
+              type="checkbox"
+              value={column.id}
+              checked={selectedIds.includes(column.id)}
+              onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                setSelectedIds((current) => {
+                  if (!checked) return current.filter((id) => id !== column.id);
+                  if (current.includes(column.id)) return current;
+                  if (preserveSelectionOrder) return [...current, column.id];
+                  const selected = new Set([...current, column.id]);
+                  return columns.filter((candidate) => selected.has(candidate.id)).map((candidate) => candidate.id);
+                });
+              }}
+            />
+            <span>{columnOptionLabel(column)}</span>
+          </label>
         ))}
-      </select>
+        {columns.length === 0 && <span className="mutedText">No compatible columns are available.</span>}
+      </div>
       <small id={helpId}>
+        {required ? "Select at least one column. " : ""}
         {preserveSelectionOrder
-          ? "Use Ctrl/Cmd or Shift to select more than one column. The displayed selected order is preserved."
-          : "Use Ctrl/Cmd or Shift to select more than one column."}
+          ? "Check columns in the order you want to use them. Uncheck any column to remove it."
+          : "Check each column you want to include. No keyboard modifier is required."}
       </small>
       {preserveSelectionOrder && selectedLabels.length > 0 && (
         <small id={orderId} aria-live="polite">
           Selected order: {selectedLabels.join(" → ")}
         </small>
       )}
-    </div>
+    </fieldset>
   );
 }
 

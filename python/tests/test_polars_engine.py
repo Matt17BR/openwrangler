@@ -15,6 +15,19 @@ from openwrangler_runtime.session import SessionManager
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _write_polars_file(path: Path, extension: str, values: list[int]) -> None:
+    frame = pl.DataFrame({"value": values, "label": [f"row-{index}" for index in range(len(values))]})
+    if extension == "csv":
+        frame.write_csv(path)
+    elif extension == "tsv":
+        frame.write_csv(path, separator="\t")
+    elif extension == "parquet":
+        frame.write_parquet(path)
+    else:
+        assert extension == "jsonl"
+        frame.write_ndjson(path)
+
+
 @pytest.mark.parametrize(
     ("source", "pyarrow_available", "expected_imports"),
     (
@@ -90,6 +103,89 @@ def test_polars_file_session_pages_filters_and_summarizes_without_pandas(monkeyp
     assert summary["summaries"][0]["numeric"]["max"] == 12.0
     assert summary["summaries"][0]["visualization"]["kind"] == "numeric"
     assert summary["summaries"][0]["visualization"]["bins"]
+
+
+@pytest.mark.parametrize("extension", ["csv", "tsv", "parquet", "jsonl"])
+def test_polars_file_scans_treat_glob_metacharacters_as_literal_path_characters(
+    extension: str,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / f"[published] source.{extension}"
+    _write_polars_file(path, extension, [17, 18])
+    _write_polars_file(tmp_path / f"p source.{extension}", extension, [99])
+
+    options = {"delimiter": "\t"} if extension == "tsv" else None
+    frame = PolarsEngine().read_file(str(path), options)
+
+    assert isinstance(frame, pl.LazyFrame)
+    assert frame.collect().get_column("value").to_list() == [17, 18]
+
+
+def test_polars_literal_file_scan_disables_a_native_glob_option(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "[published] source.parquet"
+    _write_polars_file(path, "parquet", [17, 18])
+    native_scan_parquet = pl.scan_parquet
+    calls: list[tuple[str, bool]] = []
+
+    def scan_parquet(source: str, *, glob: bool = True, **options: Any) -> pl.LazyFrame:
+        calls.append((source, glob))
+        return native_scan_parquet(source, glob=glob, **options)
+
+    monkeypatch.setattr(pl, "scan_parquet", scan_parquet)
+
+    frame = PolarsEngine().read_file(str(path))
+
+    assert isinstance(frame, pl.LazyFrame)
+    assert frame.collect().height == 2
+    assert calls == [(str(path), False)]
+
+
+def test_polars_literal_file_scan_uses_an_encoded_file_uri_when_glob_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "[legacy].csv"
+    _write_polars_file(path, "csv", [17, 18])
+    _write_polars_file(tmp_path / "l.csv", "csv", [99])
+    native_scan_csv = pl.scan_csv
+    calls: list[str] = []
+
+    def legacy_scan_csv(source: str, **options: Any) -> pl.LazyFrame:
+        calls.append(source)
+        return native_scan_csv(source, **options)
+
+    monkeypatch.setattr(pl, "scan_csv", legacy_scan_csv)
+
+    frame = PolarsEngine().read_file(str(path))
+
+    assert isinstance(frame, pl.LazyFrame)
+    assert frame.collect().get_column("value").to_list() == [17, 18]
+    assert calls == [path.absolute().as_uri()]
+
+
+def test_polars_session_opens_pages_and_closes_a_literal_bracket_path(tmp_path: Path) -> None:
+    path = tmp_path / "[Live] customer snapshot.csv"
+    _write_polars_file(path, "csv", [17, 18])
+    source_bytes = path.read_bytes()
+    manager = SessionManager()
+
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend="polars",
+        page_size=1,
+    )
+    session_id = opened["metadata"]["sessionId"]
+
+    assert opened["metadata"]["shape"] == {"rows": 2, "columns": 2}
+    assert isinstance(manager.sessions[session_id].original, pl.LazyFrame)
+    second_page = manager.get_page(session_id, 0, 1, 1, {"filters": [], "sort": []})
+    assert len(second_page["page"]["rows"]) == 1
+    assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+    assert session_id not in manager.sessions
+    assert path.read_bytes() == source_bytes
 
 
 def test_lazy_polars_page_projects_before_the_terminal_collect(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,13 +10,20 @@ import type {
   GridPage,
   SessionMetadata
 } from "../../shared/protocol";
-import type { SortDirection } from "../../shared/filterModel";
+import type { SortDirection, SortRule } from "../../shared/filterModel";
 import {
   ambiguousViewColumnMessage,
   countViewColumnNames,
   supportsTypedViewComparison
 } from "../../shared/filterModel";
 import type { GridViewState } from "../../shared/viewState";
+import {
+  createRowScrollModel,
+  gridRowHeight,
+  logicalRowForScrollTop,
+  renderedRowSegmentSpacers,
+  scrollTopForLogicalRow
+} from "./rowScrollModel";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -36,8 +43,10 @@ interface DataGridProps {
   beforeSchema?: ColumnSchema[];
   viewControlsDisabled?: boolean;
   viewControlsDisabledReason?: string;
+  sortRules?: SortRule[];
   onPage(offset: number): void;
   onSortColumn(column: string, direction: SortDirection): void;
+  onClearSortColumn?(column: string): void;
   onOpenFilter(column: string): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
   onVisibleSummaryColumnsChange(columnIds: string[]): void;
@@ -63,7 +72,6 @@ interface ScrollInputs {
   totalRows: number;
 }
 
-const rowHeight = 29;
 const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
@@ -91,8 +99,10 @@ export function DataGrid({
   beforeSchema,
   viewControlsDisabled = false,
   viewControlsDisabledReason = "View controls are unavailable while inspecting an applied step.",
+  sortRules = metadata.filterModel.sort,
   onPage,
   onSortColumn,
+  onClearSortColumn = () => undefined,
   onOpenFilter,
   onVisibleColumnRangeChange = ignoreVisibleColumnRangeChange,
   onVisibleSummaryColumnsChange,
@@ -128,7 +138,13 @@ export function DataGrid({
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
   const [showInsights, setShowInsights] = useState(insightsOnOpen);
-  const [viewport, setViewport] = useState({ scrollLeft: 0, scrollTop: 0, width: 1200, height: 600 });
+  const [viewport, setViewport] = useState({
+    firstVisibleRow: viewState.viewport.firstVisibleRow,
+    scrollLeft: 0,
+    scrollTop: 0,
+    width: 1200,
+    height: 600
+  });
   const [focusedCell, setFocusedCell] = useState({
     row: viewState.viewport.firstVisibleRow,
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
@@ -171,7 +187,7 @@ export function DataGrid({
     setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column });
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const scrollTop = page.offset * rowHeight;
+    const scrollTop = scrollTopForLogicalRow(createRowScrollModel(page.totalRows, scroller.clientHeight), page.offset);
     const scrollLeft = viewStateRef.current.viewport.scrollLeft;
     programmaticViewportTarget.current = { firstVisibleRow: page.offset, scrollTop, scrollLeft };
     scroller.scrollTop = scrollTop;
@@ -179,6 +195,7 @@ export function DataGrid({
     setViewport({
       scrollLeft,
       scrollTop,
+      firstVisibleRow: page.offset,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
@@ -187,7 +204,7 @@ export function DataGrid({
       ...(selectedColumnId ? { selectedColumnId } : {}),
       viewport: { firstVisibleRow: page.offset, scrollLeft }
     });
-  }, [logicalViewContext, metadata.schema, page.offset, page.rows, reportViewState]);
+  }, [logicalViewContext, metadata.schema, page.offset, page.rows, page.totalRows, reportViewState]);
 
   useLayoutEffect(() => {
     const restoration = restorationRef.current;
@@ -202,7 +219,10 @@ export function DataGrid({
     focusRequested.current = false;
     preserveGridFocusAfterScroll.current = false;
     setFocusedCell({ row, column });
-    const scrollTop = row * rowHeight;
+    const scrollTop = scrollTopForLogicalRow(
+      createRowScrollModel(restoration.page.totalRows, scroller.clientHeight),
+      row
+    );
     const scrollLeft = restoration.viewState.viewport.scrollLeft;
     programmaticViewportTarget.current = { firstVisibleRow: row, scrollTop, scrollLeft };
     scroller.scrollTop = scrollTop;
@@ -210,6 +230,7 @@ export function DataGrid({
     setViewport({
       scrollLeft,
       scrollTop,
+      firstVisibleRow: row,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
@@ -240,12 +261,18 @@ export function DataGrid({
     const scrollTop = targetStillQuantized ? target.scrollTop : scroller.scrollTop;
     const scrollLeft = targetStillQuantized ? target.scrollLeft : scroller.scrollLeft;
     const next = {
+      firstVisibleRow: 0,
       scrollLeft,
       scrollTop,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     };
+    const row = targetStillQuantized
+      ? target.firstVisibleRow
+      : logicalRowForScrollTop(createRowScrollModel(totalRows, next.height), next.scrollTop);
+    next.firstVisibleRow = row;
     setViewport((current) =>
+      current.firstVisibleRow === next.firstVisibleRow &&
       current.scrollLeft === next.scrollLeft &&
       current.scrollTop === next.scrollTop &&
       current.width === next.width &&
@@ -253,7 +280,6 @@ export function DataGrid({
         ? current
         : next
     );
-    const row = targetStillQuantized ? target.firstVisibleRow : firstVisibleRowFromScrollTop(next.scrollTop, totalRows);
     const currentViewState = viewStateRef.current;
     if (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft) {
       reportViewState({
@@ -278,18 +304,33 @@ export function DataGrid({
     const clearProgrammaticTarget = () => {
       programmaticViewportTarget.current = undefined;
     };
+    const rebaseAfterResize = () => {
+      const logicalRow =
+        programmaticViewportTarget.current?.firstVisibleRow ?? viewStateRef.current.viewport.firstVisibleRow;
+      const scrollTop = scrollTopForLogicalRow(
+        createRowScrollModel(scrollInputsRef.current.totalRows, scroller.clientHeight),
+        logicalRow
+      );
+      programmaticViewportTarget.current = {
+        firstVisibleRow: logicalRow,
+        scrollTop,
+        scrollLeft: scroller.scrollLeft
+      };
+      scroller.scrollTop = scrollTop;
+      update();
+    };
     update();
     scroller.addEventListener("scroll", update, { passive: true });
     scroller.addEventListener("wheel", clearProgrammaticTarget, { passive: true });
     scroller.addEventListener("pointerdown", clearProgrammaticTarget, { passive: true });
     scroller.addEventListener("touchstart", clearProgrammaticTarget, { passive: true });
-    window.addEventListener("resize", update);
+    window.addEventListener("resize", rebaseAfterResize);
     return () => {
       scroller.removeEventListener("scroll", update);
       scroller.removeEventListener("wheel", clearProgrammaticTarget);
       scroller.removeEventListener("pointerdown", clearProgrammaticTarget);
       scroller.removeEventListener("touchstart", clearProgrammaticTarget);
-      window.removeEventListener("resize", update);
+      window.removeEventListener("resize", rebaseAfterResize);
     };
   }, [updateViewportFromScroller]);
 
@@ -319,19 +360,32 @@ export function DataGrid({
     filters: metadata.filterModel.filters,
     sort: metadata.filterModel.sort
   })}`;
-  const globalFirstRow = firstVisibleRowFromScrollTop(viewport.scrollTop, page.totalRows);
-  const localStart = Math.max(0, globalFirstRow - page.offset - overscanRows);
-  const visibleRowCount = Math.ceil(viewport.height / rowHeight) + overscanRows * 2;
+  const rowScrollModel = createRowScrollModel(page.totalRows, viewport.height);
+  const globalFirstRow = viewport.firstVisibleRow;
+  const physicallyAvailableOverscanRows = Math.floor(viewport.scrollTop / gridRowHeight);
+  const localStart = Math.max(
+    0,
+    globalFirstRow - page.offset - Math.min(overscanRows, physicallyAvailableOverscanRows)
+  );
+  const visibleRowCount = Math.ceil(viewport.height / gridRowHeight) + overscanRows * 2;
   const localEnd = Math.min(page.rows.length, localStart + visibleRowCount);
-  const visibleRows = page.rows.slice(localStart, localEnd);
+  const pageContainsGlobalFirstRow = globalFirstRow >= page.offset && globalFirstRow < page.offset + page.rows.length;
+  const visibleRows = pageContainsGlobalFirstRow ? page.rows.slice(localStart, localEnd) : [];
   const rovingRow = visibleRows.some((row) => row.rowNumber === focusedCell.row)
     ? focusedCell.row
     : visibleRows[0]?.rowNumber;
   const rovingColumn = visibleColumns.some((column) => column.position === focusedCell.column)
     ? focusedCell.column
     : visibleColumns[0]?.position;
-  const topSpacerHeight = (page.offset + localStart) * rowHeight;
-  const bottomSpacerHeight = Math.max(0, page.totalRows - (page.offset + localEnd)) * rowHeight;
+  const rowSegmentSpacers = renderedRowSegmentSpacers(
+    rowScrollModel,
+    viewport.scrollTop,
+    globalFirstRow,
+    page.offset + localStart,
+    visibleRows.length
+  );
+  const topSpacerHeight = rowSegmentSpacers.top;
+  const bottomSpacerHeight = rowSegmentSpacers.bottom;
 
   useLayoutEffect(() => {
     if (!preserveGridFocusAfterScroll.current) return;
@@ -396,7 +450,6 @@ export function DataGrid({
 
   const goToPage = (offset: number, restoreFocus = false) => {
     if (busy) return;
-    programmaticViewportTarget.current = undefined;
     const bounded = Math.max(0, Math.min(offset, Math.max(0, page.totalRows - 1)));
     const block = Math.floor(bounded / pageSize) * pageSize;
     requestedOffset.current = block;
@@ -405,7 +458,25 @@ export function DataGrid({
       focusRequested.current = document.hasFocus();
     }
     setFocusedCell((current) => ({ row: bounded, column: current.column }));
-    if (scrollerRef.current) scrollerRef.current.scrollTop = bounded * rowHeight;
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      const scrollTop = scrollTopForLogicalRow(createRowScrollModel(page.totalRows, scroller.clientHeight), bounded);
+      const scrollLeft = scroller.scrollLeft;
+      programmaticViewportTarget.current = { firstVisibleRow: bounded, scrollTop, scrollLeft };
+      scroller.scrollTop = scrollTop;
+      setViewport({
+        firstVisibleRow: bounded,
+        scrollLeft,
+        scrollTop,
+        width: scroller.clientWidth,
+        height: scroller.clientHeight
+      });
+      const currentViewState = viewStateRef.current;
+      reportViewState({
+        ...currentViewState,
+        viewport: { firstVisibleRow: bounded, scrollLeft }
+      });
+    }
     onPage(block);
   };
 
@@ -431,6 +502,14 @@ export function DataGrid({
           {showInsights ? "Hide" : "Show"} insights
         </button>
       </div>
+
+      {page.totalRows === 0 && metadata.schema.length === 0 && (
+        <div className="emptyState" role="status">
+          <strong>Empty dataset</strong>
+          <br />
+          <span>This source contains 0 rows × 0 columns.</span>
+        </div>
+      )}
 
       {diffPresentation && (diffPresentation.addedColumns.length > 0 || diffPresentation.removedColumns.length > 0) && (
         <section className="gridColumnChanges" aria-label="Column changes">
@@ -484,32 +563,39 @@ export function DataGrid({
                 #
               </th>
               {leftSpacerWidth > 0 && <th className="virtualSpacer" aria-hidden="true" />}
-              {visibleColumns.map((column) => (
-                <ColumnHeader
-                  key={column.id}
-                  column={column}
-                  ariaColumnIndex={column.position + 2}
-                  width={widths[column.position]}
-                  selected={viewState.selectedColumnId === column.id}
-                  added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
-                  showInsights={showInsights}
-                  summary={summaryByColumnId.get(column.id)}
-                  viewControlsDisabled={viewControlsDisabled}
-                  viewControlsDisabledReason={viewControlsDisabledReason}
-                  viewColumnNameCount={viewColumnNameCounts.get(column.name) ?? 0}
-                  onOpenFilter={(name) => {
-                    reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
-                    onOpenFilter(name);
-                  }}
-                  onSortColumn={onSortColumn}
-                  onResize={(width) =>
-                    reportViewState({
-                      ...viewStateRef.current,
-                      columnWidths: { ...viewStateRef.current.columnWidths, [column.id]: width }
-                    })
-                  }
-                />
-              ))}
+              {visibleColumns.map((column) => {
+                const activeSortIndex = sortRules.findIndex((rule) => rule.column === column.name);
+                return (
+                  <ColumnHeader
+                    key={column.id}
+                    column={column}
+                    ariaColumnIndex={column.position + 2}
+                    width={widths[column.position]}
+                    selected={viewState.selectedColumnId === column.id}
+                    added={diffPresentation?.addedColumnIds.has(column.id) ?? false}
+                    showInsights={showInsights}
+                    summary={summaryByColumnId.get(column.id)}
+                    viewControlsDisabled={viewControlsDisabled}
+                    viewControlsDisabledReason={viewControlsDisabledReason}
+                    viewColumnNameCount={viewColumnNameCounts.get(column.name) ?? 0}
+                    activeSort={activeSortIndex < 0 ? undefined : sortRules[activeSortIndex]}
+                    activeSortIndex={activeSortIndex < 0 ? undefined : activeSortIndex}
+                    sortCount={sortRules.length}
+                    onOpenFilter={(name) => {
+                      reportViewState({ ...viewStateRef.current, selectedColumnId: column.id });
+                      onOpenFilter(name);
+                    }}
+                    onSortColumn={onSortColumn}
+                    onClearSortColumn={onClearSortColumn}
+                    onResize={(width) =>
+                      reportViewState({
+                        ...viewStateRef.current,
+                        columnWidths: { ...viewStateRef.current.columnWidths, [column.id]: width }
+                      })
+                    }
+                  />
+                );
+              })}
               {rightSpacerWidth > 0 && <th className="virtualSpacer" aria-hidden="true" />}
             </tr>
           </thead>
@@ -520,7 +606,7 @@ export function DataGrid({
               </tr>
             )}
             {visibleRows.map((row) => (
-              <tr key={row.id} aria-rowindex={row.rowNumber + 2} style={{ height: rowHeight }}>
+              <tr key={row.id} aria-rowindex={row.rowNumber + 2} style={{ height: gridRowHeight }}>
                 <td className="rowHeader">{row.rowNumber + 1}</td>
                 {leftSpacerWidth > 0 && <td className="virtualSpacer" aria-hidden="true" />}
                 {visibleColumns.map((column) => {
@@ -593,8 +679,14 @@ export function DataGrid({
     let nextRow = row;
     let nextColumn = column;
     const measuredViewportHeight = scrollerRef.current?.clientHeight ?? viewport.height;
-    const pageRowCount = Math.max(1, Math.floor(measuredViewportHeight / rowHeight));
-    if (event.key === "ArrowRight") nextColumn += 1;
+    const pageRowCount = Math.max(1, Math.floor(measuredViewportHeight / gridRowHeight));
+    if ((event.ctrlKey || event.metaKey) && event.key === "Home") {
+      nextRow = 0;
+      nextColumn = 0;
+    } else if ((event.ctrlKey || event.metaKey) && event.key === "End") {
+      nextRow = rowCount - 1;
+      nextColumn = columnCount - 1;
+    } else if (event.key === "ArrowRight") nextColumn += 1;
     else if (event.key === "ArrowLeft") nextColumn -= 1;
     else if (event.key === "ArrowDown") nextRow += 1;
     else if (event.key === "ArrowUp") nextRow -= 1;
@@ -603,7 +695,6 @@ export function DataGrid({
     else if (event.key === "PageDown") nextRow += pageRowCount;
     else if (event.key === "PageUp") nextRow -= pageRowCount;
     else return;
-    programmaticViewportTarget.current = undefined;
     nextRow = Math.max(0, Math.min(nextRow, rowCount - 1));
     nextColumn = Math.max(0, Math.min(nextColumn, columnCount - 1));
     const block = Math.floor(nextRow / pageSize) * pageSize;
@@ -613,8 +704,19 @@ export function DataGrid({
     focusRequested.current = document.hasFocus();
     setFocusedCell({ row: nextRow, column: nextColumn });
     const scroller = scrollerRef.current;
+    let firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
     if (scroller) {
-      scroller.scrollTop = Math.max(0, nextRow * rowHeight - scroller.clientHeight / 2);
+      firstVisibleRow = Math.max(0, nextRow - Math.floor(pageRowCount / 2));
+      const scrollTop = scrollTopForLogicalRow(
+        createRowScrollModel(page.totalRows, scroller.clientHeight),
+        firstVisibleRow
+      );
+      programmaticViewportTarget.current = {
+        firstVisibleRow,
+        scrollTop,
+        scrollLeft: Math.max(0, sum(widths.slice(0, nextColumn)) - scroller.clientWidth / 3)
+      };
+      scroller.scrollTop = scrollTop;
       scroller.scrollLeft = Math.max(0, sum(widths.slice(0, nextColumn)) - scroller.clientWidth / 3);
     }
     const currentViewState = viewStateRef.current;
@@ -622,7 +724,7 @@ export function DataGrid({
       ...currentViewState,
       selectedColumnId: metadata.schema[nextColumn]?.id,
       viewport: {
-        firstVisibleRow: firstVisibleRowFromScrollTop(scroller?.scrollTop ?? 0, page.totalRows),
+        firstVisibleRow,
         scrollLeft: scroller?.scrollLeft ?? currentViewState.viewport.scrollLeft
       }
     });
@@ -636,14 +738,6 @@ function boundedGridText(value: string | undefined): string | undefined {
   const finalCodeUnit = value.charCodeAt(end - 1);
   if (finalCodeUnit >= 0xd800 && finalCodeUnit <= 0xdbff) end -= 1;
   return `${value.slice(0, end)}…`;
-}
-
-function firstVisibleRowFromScrollTop(scrollTop: number, totalRows: number): number {
-  const unboundedRow = scrollTop / rowHeight;
-  const nearestRow = Math.round(unboundedRow);
-  const row =
-    Math.abs(scrollTop - nearestRow * rowHeight) <= scrollQuantizationTolerance ? nearestRow : Math.floor(unboundedRow);
-  return Math.max(0, Math.min(row, Math.max(0, totalRows - 1)));
 }
 
 interface GridDiffPresentation {
@@ -814,8 +908,12 @@ function ColumnHeader({
   viewControlsDisabled,
   viewControlsDisabledReason,
   viewColumnNameCount,
+  activeSort,
+  activeSortIndex,
+  sortCount,
   onOpenFilter,
   onSortColumn,
+  onClearSortColumn,
   onResize
 }: {
   column: ColumnSchema;
@@ -828,10 +926,15 @@ function ColumnHeader({
   viewControlsDisabled: boolean;
   viewControlsDisabledReason: string;
   viewColumnNameCount: number;
+  activeSort: SortRule | undefined;
+  activeSortIndex: number | undefined;
+  sortCount: number;
   onOpenFilter(column: string): void;
   onSortColumn(column: string, direction: SortDirection): void;
+  onClearSortColumn(column: string): void;
   onResize(width: number): void;
 }) {
+  const menuRef = useRef<HTMLDetailsElement>(null);
   const disabledDescriptionId = `column-view-controls-disabled-${column.position}`;
   const comparisonUnavailable = !supportsTypedViewComparison(column.type);
   const ambiguityReason =
@@ -860,13 +963,30 @@ function ColumnHeader({
     else return;
     event.preventDefault();
   };
+  const closeMenu = () => {
+    if (menuRef.current) menuRef.current.open = false;
+  };
+  const runMenuAction = (action: () => void) => {
+    closeMenu();
+    action();
+  };
+  const activeSortLabel =
+    activeSort &&
+    `${activeSort.direction === "asc" ? "ascending" : "descending"}${
+      sortCount > 1 && activeSortIndex !== undefined ? `, priority ${activeSortIndex + 1} of ${sortCount}` : ""
+    }`;
 
   return (
     <th
       data-column={column.name}
       aria-colindex={ariaColumnIndex}
       aria-selected={selected}
-      aria-label={added ? `${column.name}, added column` : undefined}
+      aria-sort={
+        activeSort?.direction === "asc" ? "ascending" : activeSort?.direction === "desc" ? "descending" : undefined
+      }
+      aria-label={[column.name, added ? "added column" : "", activeSortLabel ? `sorted ${activeSortLabel}` : ""]
+        .filter(Boolean)
+        .join(", ")}
       data-diff-state={added ? "added" : undefined}
       className={[selected ? "selectedColumn" : "", added ? "diffAddedColumn" : ""].filter(Boolean).join(" ")}
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
@@ -874,7 +994,25 @@ function ColumnHeader({
       <div className="columnHeader">
         <span className={`typeIcon codicon ${typeIcon(column.type)}`} aria-hidden="true" />
         <span className="columnTitle">{column.name}</span>
-        <details className="columnMenu">
+        {activeSort && (
+          <button
+            type="button"
+            className={`columnSortIndicator codicon ${
+              activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
+            }`}
+            aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
+            title={`Sorted ${activeSortLabel}. Clear sort`}
+            disabled={viewControlsDisabled}
+            onClick={() => onClearSortColumn(column.name)}
+          >
+            {sortCount > 1 && activeSortIndex !== undefined && (
+              <span className="sortPriority" aria-hidden="true">
+                {activeSortIndex + 1}
+              </span>
+            )}
+          </button>
+        )}
+        <details ref={menuRef} className="columnMenu">
           <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
           <div className="columnMenuContent">
             {viewQueryControlsDisabled && (
@@ -887,7 +1025,7 @@ function ColumnHeader({
               disabled={viewQueryControlsDisabled}
               aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
               title={viewQueryControlsDisabledReason}
-              onClick={() => onOpenFilter(column.name)}
+              onClick={() => runMenuAction(() => onOpenFilter(column.name))}
             >
               Filter…
             </button>
@@ -902,7 +1040,7 @@ function ColumnHeader({
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
               }
-              onClick={() => onSortColumn(column.name, "asc")}
+              onClick={() => runMenuAction(() => onSortColumn(column.name, "asc"))}
             >
               Sort ascending
             </button>
@@ -917,10 +1055,19 @@ function ColumnHeader({
                     ? `Sorting is unavailable for ${column.type} columns`
                     : undefined
               }
-              onClick={() => onSortColumn(column.name, "desc")}
+              onClick={() => runMenuAction(() => onSortColumn(column.name, "desc"))}
             >
               Sort descending
             </button>
+            {activeSort && (
+              <button
+                type="button"
+                disabled={viewControlsDisabled}
+                onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
+              >
+                Clear sort
+              </button>
+            )}
           </div>
         </details>
         <button

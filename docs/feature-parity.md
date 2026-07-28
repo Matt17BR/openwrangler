@@ -8,38 +8,40 @@ The parity contract below remains specifically Pandas and Polars. DuckDB is an a
 
 VS Code and Cursor are the first-class, release-blocking editor targets. Other VS Code-based desktop IDEs are experimental: their distribution registry and bounded smoke evidence are tracked separately in [issue #86](https://github.com/Matt17BR/openwrangler/issues/86) and do not inherit a compatibility claim from the VS Code/Cursor matrix. Google says [Antigravity is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity), so publication there can make Open Wrangler discoverable; discovery is not compatibility evidence, and its isolated functional smoke remains outstanding. Browser-hosted `vscode.dev` remains outside the local-runtime scope.
 
-| Surface                                              | Pandas | Polars | Status | Required evidence                                                              |
-| ---------------------------------------------------- | -----: | -----: | ------ | ------------------------------------------------------------------------------ |
-| CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done   | Package import-change, `.xls`, cancel/error UI green; record:docs/testing.md   |
-| Notebook variable viewer and toolbar                 |    Yes |    Yes | Done   | Released Jupyter remote/release-platform matrix green; record:docs/testing.md  |
-| Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done   | Coordinator snapshot plus exact packaged editors green; record:docs/testing.md |
-| Virtual grid, column sizing, navigation              |    Yes |    Yes | Done   | Hosted exact-artifact paint/scroll gate green; record:docs/testing.md          |
-| Dataset summary and quick insights                   |    Yes |    Yes | Done   | Typed profiles/stats plus packaged queries green; record:docs/testing.md       |
-| Basic and advanced viewing filters                   |    Yes |    Yes | Done   | AND/OR engine, browser, and packaged green; record:docs/testing.md             |
-| Multi-column viewing sorts                           |    Yes |    Yes | Done   | Stable null-order engine and packaged green; record:docs/testing.md            |
-| Editing mode and operation catalog                   |    Yes |    Yes | Done   | Structural duplicate/non-string packaged matrix green; record:docs/testing.md  |
-| Draft preview and data diff                          |    Yes |    Yes | Done   | Typed/identity diff and packaged previews green; record:docs/testing.md        |
-| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done   | Installed selection/diff/clear and shortcuts green; record:docs/testing.md     |
-| Generated code preview and editing                   |    Yes |    Yes | Done   | Native code plus edited packaged exports green; record:docs/testing.md         |
-| Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md    |
-| Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md       |
-| Missing/duplicate row operations                     |    Yes |    Yes | Done   | Stable refs, all modes, code and packaged duplicates; record:docs/testing.md   |
-| One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md         |
-| Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md          |
-| Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md              |
-| Group and aggregate                                  |    Yes |    Yes | Done   | Nullable order plus packaged preview/apply; record:docs/testing.md             |
-| Custom engine-native code                            |    Yes |    Yes | Done   | Trusted custom code plus installed Restricted Mode; record:docs/testing.md     |
-| String/datetime/new-column by example                |    Yes |    Yes | Done   | Candidate matrix plus packaged confirmation; record:docs/testing.md            |
-| Copy/script/notebook code export                     |    Yes |    Yes | Done   | Edited buffer, source-safe Save/alias package green; record:docs/testing.md    |
-| CSV and Parquet data export                          |    Yes |    Yes | Done   | Cross-engine atomic and packaged exports green; record:docs/testing.md         |
-| Runtime selection, setup, change, clear              |    Yes |    Yes | Done   | Resolver, released-Python A→B→A, decline flow green; record:docs/testing.md    |
-| Original icons, native views, themes, accessibility  |    N/A |    N/A | Done   | Exact-head axe plus native VS Code/Cursor gates; record:docs/testing.md        |
-| Runtime crash/reload/session replay                  |    Yes |    Yes | Done   | Packaged injected recovery/replay green; record:docs/testing.md                |
-| Column-projected grid-block transport                |    Yes |    Yes | Done   | Bounded row/column blocks plus native pushdown green; record:docs/testing.md   |
-| Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done   | All ID-backed families packaged and replayed; record:docs/testing.md           |
-| Restricted Mode and trust-gated execution            |    N/A |    N/A | Done   | Separate trusted/untrusted installed-editor runs green; record:docs/testing.md |
-| Installed-editor first-usable-grid performance       |    Yes |    Yes | Done   | Hosted 100k CSV/1M Parquet editor gate green; record:docs/testing.md           |
-| Cross-platform first-class editor package acceptance |    N/A |    N/A | Done   | Exact VS Code/Cursor OS + Remote SSH green; record:docs/testing.md             |
+| Surface                                              | Pandas | Polars | Status | Required evidence                                                                     |
+| ---------------------------------------------------- | -----: | -----: | ------ | ------------------------------------------------------------------------------------- |
+| CSV/TSV/Parquet/Excel/JSONL entry points             |    Yes |    Yes | Done   | Auto delimited/first-sheet open, named picker, `.xls`; record:docs/testing.md         |
+| Notebook variable viewer and toolbar                 |    Yes |    Yes | Done   | Released Jupyter remote/release-platform matrix green; record:docs/testing.md         |
+| Inline notebook renderer and full-view expansion     |    Yes |    Yes | Done   | Coordinator snapshot plus exact packaged editors green; record:docs/testing.md        |
+| Virtual grid, column sizing, navigation              |    Yes |    Yes | Done   | Hosted exact-artifact paint/scroll gate green; record:docs/testing.md                 |
+| Dataset summary and quick insights                   |    Yes |    Yes | Done   | Typed profiles/stats plus packaged queries green; record:docs/testing.md              |
+| Basic and advanced viewing filters                   |    Yes |    Yes | Done   | AND/OR engine, browser, and packaged green; record:docs/testing.md                    |
+| Multi-column viewing sorts                           |    Yes |    Yes | Done   | Quick and ordered sort journeys green; record:docs/testing.md                         |
+| Editing mode and operation catalog                   |    Yes |    Yes | Done   | Structural duplicate/non-string packaged matrix green; record:docs/testing.md         |
+| Draft preview and data diff                          |    Yes |    Yes | Done   | Typed/identity diff and packaged previews green; record:docs/testing.md               |
+| Cleaning-step history, edit, discard, undo           |    Yes |    Yes | Done   | Installed selection/diff/clear and shortcuts green; record:docs/testing.md            |
+| Generated code preview and editing                   |    Yes |    Yes | Done   | Native code plus edited packaged exports green; record:docs/testing.md                |
+| Sort/filter cleaning steps                           |    Yes |    Yes | Done   | Stable refs, native/code edges, packaged duplicates; record:docs/testing.md           |
+| Select/drop/rename/clone/cast/formula/length         |    Yes |    Yes | Done   | Reordered mixed-label preview/apply/replay green; record:docs/testing.md              |
+| Missing/duplicate row operations                     |    Yes |    Yes | Done   | Stable refs, all modes, code and packaged duplicates; record:docs/testing.md          |
+| One-hot and multi-label binarization                 |    Yes |    Yes | Done   | Null/blank/collision and generated-code parity; record:docs/testing.md                |
+| Find/replace/strip/split/case transforms             |    Yes |    Yes | Done   | Unicode/null plus packaged text preview/apply; record:docs/testing.md                 |
+| Scale/round/floor/ceiling/datetime format            |    Yes |    Yes | Done   | Numeric edges plus packaged preview/apply; record:docs/testing.md                     |
+| Group and aggregate                                  |    Yes |    Yes | Done   | Nullable order plus packaged preview/apply; record:docs/testing.md                    |
+| Custom engine-native code                            |    Yes |    Yes | Done   | Trusted custom code plus installed Restricted Mode; record:docs/testing.md            |
+| String/datetime/new-column by example                |    Yes |    Yes | Done   | Candidate matrix plus packaged confirmation; record:docs/testing.md                   |
+| Copy/script/notebook code export                     |    Yes |    Yes | Done   | Edited buffer, source-safe Save/alias package green; record:docs/testing.md           |
+| CSV and Parquet data export                          |    Yes |    Yes | Done   | Cross-engine atomic and packaged exports green; record:docs/testing.md                |
+| Runtime selection, setup, change, clear              |    Yes |    Yes | Done   | Resolver, bounded preflight retry, exact install/reopen green; record:docs/testing.md |
+| Original icons, native views, themes, accessibility  |    N/A |    N/A | Done   | Exact-head axe plus native VS Code/Cursor gates; record:docs/testing.md               |
+| Runtime crash/reload/session replay                  |    Yes |    Yes | Done   | Packaged injected recovery/replay green; record:docs/testing.md                       |
+| Column-projected grid-block transport                |    Yes |    Yes | Done   | Bounded row/column blocks plus native pushdown green; record:docs/testing.md          |
+| Duplicate/non-string Pandas column operations        |    Yes |    N/A | Done   | All ID-backed families packaged and replayed; record:docs/testing.md                  |
+| Restricted Mode and trust-gated execution            |    N/A |    N/A | Done   | Separate trusted/untrusted installed-editor runs green; record:docs/testing.md        |
+| Installed-editor first-usable-grid performance       |    Yes |    Yes | Done   | Hosted 100k CSV/1M Parquet editor gate green; record:docs/testing.md                  |
+| Cross-platform first-class editor package acceptance |    N/A |    N/A | Done   | Exact VS Code/Cursor OS + Remote SSH green; record:docs/testing.md                    |
+
+Post-1.0 viewing-filter hardening keeps the completed filter surface usable as well as semantically correct. Focused React coverage proves that removing a final selected value removes the column filter itself, changing per-column logic cannot create an empty filter, and **Filter rows** stays disabled for an effective-empty query. A two-column interaction keeps every active filter visible, removes one value or predicate without disturbing siblings, and preserves sorts on the same or another column. The native Filters tree exercises the same whole-column removal through the host/webview action boundary.
 
 ## DuckDB file-backed preview matrix
 
@@ -187,6 +189,8 @@ This advances the virtual-grid and recovery rows but keeps them **Partial** unti
 Data-format and typed-edge hardening slice, 2026-07-15:
 
 - Parameterized Pandas/Polars acceptance opens quoted/delimited CSV, headerless CSV, TSV, JSONL, Parquet, modern `.xlsx`, and a real legacy BIFF `.xls` workbook by name or zero-based sheet index. Pandas also retains its Latin-1 fixture; Polars CSV, TSV, JSONL, and Parquet sources are asserted to remain lazy.
+- Zero-byte, BOM-only, and whitespace-only CSV/TSV sources open engine-natively as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB. Parameterized runtime tests retain byte/mtime identity, exercise paging and exact statistics, and prove a non-empty unterminated quoted field still fails in each native reader.
+- Primary file, editor-title, and custom-editor launches never prompt for delimited import fields. A pure 64 KiB detector covers misleading `.csv` suffixes, UTF-8 BOM and Windows-1252 input, comma/tab/semicolon/pipe structure, standard and single quotes, apostrophe-heavy values, numeric headerless input, and quoted delimiters/newlines. Native launch acceptance fails if an initial Quick Input appears; **Change Import Options** retains the explicit override workflow.
 - Nested Polars Parquet coverage now includes unsigned 64-bit integers, decimal, time-zone datetime, list, struct, binary, categorical, duration, null, NaN, infinity, and a 20,000-character Unicode value while making `to_pandas()` fail. Container dtypes are classified by their outer type, and nested profiling remains available.
 - NumPy/Pandas scalar tests prove large integers, nullable integers/booleans, `pd.NA`, `pd.NaT`, timezone timestamps, NaN, and infinity produce typed, strict-JSON-safe cells. Pandas frames with rows but zero visible columns and fully empty Polars frames remain schema-, summary-, and page-safe.
 - Missing and malformed file opens now produce structured engine diagnostics for eager and lazy readers without retaining a session. Polars Excel correctly translates the public zero-based sheet index to the reader's one-based ID. The runtime and extension agree on format-specific parsers: Pandas `.xlsx` uses `openpyxl>=3.1.5`, Pandas `.xls` uses `xlrd>=2.0.1`, and Polars uses `fastexcel>=0.9` for both.
@@ -654,6 +658,13 @@ Installed-editor grid and performance acceptance, 2026-07-28:
 - Official VS Code 1.130.0 and Cursor 3.13.10 each retained all ten cold-source and ten warm-source samples for the 100k×50 CSV and 1M×20 Parquet fixtures. VS Code CSV/Parquet cold p95 was 1,086.365/1,466.276 ms and Cursor was 1,907.449/1,715.429 ms, below the 3,000/5,000 ms limits. Warm p95 was 711.511/639.252 ms in VS Code and 1,546.690/1,528.144 ms in Cursor.
 - Production-grid cached/uncached p95 was 63.8/131.1 ms in VS Code and 96.8/148.2 ms in Cursor, below the 100/500 ms limits. Renderer-heartbeat p95 was 14.1/14.7 ms. Both editors completed the real filter and sort controls while renderer and foreground-page probes stayed responsive, observed active profiling, authoritatively cancelled their queued companion requests, and finished with verified process/session cleanup.
 - The evidence artifact is deliberately non-promotable and was not reused as release bytes. It closes **Virtual grid, column sizing, navigation** and **Installed-editor first-usable-grid performance** for the Pandas/Polars 1.0 matrix; the ordinary stable candidate is built afresh from the all-rows-**Done** source.
+
+Operation-builder ergonomics slice, 2026-07-28:
+
+- Column-list parameters now use an explicit accessible checklist, so selecting several columns no longer depends on a platform-specific Ctrl/Cmd gesture. Ordered operations retain the order in which boxes were checked and continue to submit stable column IDs.
+- Sort rules and group aggregations expose per-row move and remove controls while retaining at least one required row. Moving or deleting one row preserves every remaining column, direction/calculation, null placement, and alias.
+- Deterministic schema compatibility is applied before preview: numeric formulas/scaling/rounding expose numeric columns, text operations expose strings, datetime formatting exposes dates/datetimes, group and by-example inputs exclude nested/unknown values, and each aggregation calculation updates its compatible value columns.
+- Focused React coverage exercises these controls, duplicate labels, ordering, removal, dynamic aggregation compatibility, and unchanged stable-reference output. Runtime IR validation remains authoritative; this UI slice does not weaken engine or generated-code acceptance.
 
 ## Explicitly deferred from 1.0
 
