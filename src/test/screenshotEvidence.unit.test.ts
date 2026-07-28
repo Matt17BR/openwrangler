@@ -132,6 +132,10 @@ describe("packaged editor screenshot evidence", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
 
     expect(readme.match(/<picture>/gu)).toHaveLength(2);
+    expect(readme).toContain(
+      '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon-128.png"'
+    );
+    expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
     for (const name of [
       "vscode-hero-dark.png",
       "vscode-hero-light.png",
@@ -141,6 +145,12 @@ describe("packaged editor screenshot evidence", () => {
       expect(readme).toContain(name);
     }
     expect(readme).not.toMatch(/docs\/images\/(?:grid-view|filter-panel|wide-grid|notebook-preview)\.png/u);
+    expect(readme).toContain("https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler");
+    expect(readme).toContain("https://open-vsx.org/extension/Matt17BR/openwrangler");
+    expect(readme).toContain("https://github.com/Matt17BR/openwrangler/releases");
+    expect(readme).not.toMatch(
+      /Antigravity|Current limits|PySpark|Quarto|R Markdown|conversion layer|parity matrix|release gate/iu
+    );
   });
 });
 

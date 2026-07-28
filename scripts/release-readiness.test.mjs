@@ -726,13 +726,13 @@ test("keeps the same compact editor support tiers in every README channel", () =
     PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
     STABLE_README_RELEASE_SECTION
   ]) {
-    assert.match(section, /\| VS Code\s+\| First-class\s+\| Complete release suite\s+\|/u);
-    assert.match(section, /\| Cursor\s+\| First-class\s+\| Complete release suite\s+\|/u);
-    assert.match(section, /\| Other VS Code desktop IDEs\s+\| Experimental\s+\|/u);
+    assert.match(section, /\| VS Code\s+\| Release-tested\s+\|/u);
+    assert.match(section, /\| Cursor\s+\| Release-tested\s+\|/u);
+    assert.match(section, /\| Other VS Code desktop forks\s+\| Experimental\s+\|/u);
     assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
     assert.match(section, /VS Code and Cursor are release-tested/u);
-    assert.match(section, /desktop forks that consume Open VSX may work/u);
-    assert.match(section, /are not yet part of the release gate/u);
+    assert.match(section, /Other VS Code desktop forks may work, but support is experimental/u);
+    assert.doesNotMatch(section, /Antigravity|release gate|parity matrix/iu);
   }
   const stableLinks = new Map(
     [...STABLE_README_RELEASE_SECTION.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu)].map((match) => [match[1], match[2]])
@@ -742,7 +742,7 @@ test("keeps the same compact editor support tiers in every README channel", () =
     "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
   );
   assert.equal(stableLinks.get("Open VSX"), "https://open-vsx.org/extension/Matt17BR/openwrangler");
-  assert.equal(stableLinks.get("GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
+  assert.equal(stableLinks.get("checksummed GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
 });
 
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {
