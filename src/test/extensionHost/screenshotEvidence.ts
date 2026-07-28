@@ -26,7 +26,9 @@ export const PACKAGED_SCREENSHOT_MARKETS = [
   "Nordics",
   "UK & Ireland"
 ] as const;
-export const PACKAGED_SCREENSHOT_SCENES = ["hero", "transform"] as const;
+export const PACKAGED_SCREENSHOT_SCENES = ["hero", "columns", "transform"] as const;
+export const PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH = 420;
+export const PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT = 390;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",
   "market",

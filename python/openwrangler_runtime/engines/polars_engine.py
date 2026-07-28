@@ -61,7 +61,7 @@ def _scan_literal_file(scanner: Callable[..., Any], path: str, **options: Any) -
         supports_glob = False
     if supports_glob:
         return scanner(path, glob=False, **options)
-    # Older scan APIs—and scan_ndjson in current Polars—do not expose `glob`.
+    # Older scan APIs, including scan_ndjson in current Polars, do not expose `glob`.
     # An encoded file URI preserves lazy native scanning while making wildcard
     # characters part of the literal local path.
     return scanner(_literal_file_uri(path), **options)

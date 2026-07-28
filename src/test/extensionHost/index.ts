@@ -67,7 +67,9 @@ import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescrip
 import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
+  PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH,
   PACKAGED_SCREENSHOT_ROW_COUNT,
+  PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
@@ -4561,67 +4563,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     const gridTarget = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
     const app = await exactSessionApp(gridTarget.frame, opened.sessionId);
     assert.ok(app, "The screenshot fixture must expose its exact live application root.");
-    const gridDimensions = await app.locator('[data-testid="data-grid-scroller"]').evaluate((scroller) => {
-      const rowHeader = scroller.querySelector("th.rowHeader");
-      if (!rowHeader) throw new Error("The screenshot grid row header is unavailable.");
-      return {
-        clientWidth: scroller.clientWidth,
-        rowHeaderWidth: rowHeader.getBoundingClientRect().width
-      };
-    });
     const revenue = columnReference(opened.metadata, "revenue");
-    const widthsByName = packagedScreenshotFeaturedColumnWidths(
-      gridDimensions.clientWidth,
-      gridDimensions.rowHeaderWidth
-    );
-    let columnWidths = Object.fromEntries(
-      opened.metadata.schema
-        .filter((column) => column.name in widthsByName)
-        .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]])
-    );
-    await testing.updateViewState(opened.sessionId, {
-      columnWidths,
-      selectedColumnId: revenue.id,
-      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-    });
-    assert.equal(
-      await testing.synchronizePanel(opened.sessionId),
-      true,
-      "The composed screenshot fixture must synchronize with its exact renderer."
-    );
-    const orderDate = columnReference(opened.metadata, "order_date");
-    const trailingGap = await app.evaluate((root, columnName) => {
-      type ScreenshotRect = { readonly right: number };
-      type ScreenshotElement = {
-        readonly dataset: Readonly<Record<string, string | undefined>>;
-        getBoundingClientRect(): ScreenshotRect;
-        querySelector(selector: string): ScreenshotElement | null;
-        querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
-      };
-      const appRoot = root as unknown as ScreenshotElement;
-      const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
-      const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
-        (candidate) => candidate.dataset.column === columnName
-      );
-      if (!scroller || !header) throw new Error("The screenshot grid fit geometry is incomplete.");
-      return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
-    }, orderDate.name);
-    assert.ok(trailingGap >= -1, "The final featured screenshot column must not extend beyond the live grid.");
-    if (trailingGap > 1) {
-      const adjustedWidth = (columnWidths[orderDate.id] ?? widthsByName.order_date) + Math.floor(trailingGap);
-      assert.ok(adjustedWidth <= 640, "The live screenshot grid fit must retain the maximum column width.");
-      columnWidths = { ...columnWidths, [orderDate.id]: adjustedWidth };
-      await testing.updateViewState(opened.sessionId, {
-        columnWidths,
-        selectedColumnId: revenue.id,
-        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
-      });
-      assert.equal(
-        await testing.synchronizePanel(opened.sessionId),
-        true,
-        "The final measured screenshot grid fit must synchronize with its exact renderer."
-      );
-    }
+    const columnWidths = await fitFeaturedGridColumns(opened.sessionId, revenue.id);
     assert.deepEqual(testing.activeSession()?.viewState.columnWidths, columnWidths);
     assert.equal(testing.activeSession()?.viewState.selectedColumnId, revenue.id);
   } catch (error) {
@@ -4660,8 +4603,17 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
     await prepareWorkbenchForEvidence();
     await hideCodePreviewPanel();
+    const hero = testing.activeSession();
+    assert.ok(hero, "The screenshot fixture must remain active while its complete Summary is composed.");
+    await primeExactDatasetStats(hero.sessionId);
     await composeNativeViews("hero");
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    await resizePrimarySidebar(PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH);
+    assert.equal(
+      await testing.synchronizePanel(hero.sessionId),
+      true,
+      "The complete Summary screenshot must synchronize with the exact renderer."
+    );
+    await fitFeaturedGridColumns(hero.sessionId, columnReference(hero.metadata, "revenue").id);
     recordAcceptanceProgress("verify:screenshots:hero-dark");
     await captureTheme(
       darkTheme,
@@ -4684,6 +4636,40 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       vscode.ColorThemeKind.HighContrast,
       4,
       `${editor}-high-contrast-zoom-200.png`
+    );
+    await workbench.update("colorTheme", darkTheme, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("zoomLevel", 0, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      `${darkTheme} to activate before column-search screenshot composition`
+    );
+    await hidePrimarySidebar();
+    await fitFeaturedGridColumns(hero.sessionId, columnReference(hero.metadata, "revenue").id);
+    await openColumnSearchScene(hero.sessionId);
+    recordAcceptanceProgress("verify:screenshots:columns-dark");
+    await captureTheme(
+      darkTheme,
+      vscode.ColorThemeKind.Dark,
+      0,
+      packagedScreenshotFileName(editor, "columns", "dark"),
+      "columns"
+    );
+    recordAcceptanceProgress("verify:screenshots:columns-light");
+    await captureTheme(
+      lightTheme,
+      vscode.ColorThemeKind.Light,
+      0,
+      packagedScreenshotFileName(editor, "columns", "light"),
+      "columns"
+    );
+    await closeColumnSearchScene(hero.sessionId);
+    await workbench.update("colorTheme", darkTheme, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("zoomLevel", 0, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      `${darkTheme} to reactivate before transform screenshot composition`
     );
     recordAcceptanceProgress("verify:screenshots:draft");
     const current = testing.activeSession();
@@ -4723,7 +4709,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     );
     await vscode.commands.executeCommand("openWrangler.codePreview.focus");
     await waitForCodePreviewPanel();
-    await composeNativeViews("transform");
+    await hidePrimarySidebar();
+    await resizeCodePreviewPanel(PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT);
+    await fitFeaturedGridColumns(current.sessionId, revenue.id);
     recordAcceptanceProgress("verify:screenshots:transform-dark");
     await captureTheme(
       darkTheme,
@@ -4776,7 +4764,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     expectedKind: vscode.ColorThemeKind,
     zoomLevel: number,
     fileName: string,
-    scene?: "hero" | "transform"
+    scene?: "hero" | "columns" | "transform"
   ): Promise<void> {
     await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", zoomLevel, vscode.ConfigurationTarget.Global);
@@ -4785,9 +4773,17 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       10_000,
       `${theme} to activate before screenshot capture`
     );
-    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+    if (scene === "hero" || scene === undefined) {
+      await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+    }
     await clearNotifications();
-    await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    if (scene === "columns") {
+      const active = testing.activeSession();
+      assert.ok(active, "Column-search capture requires the active dataframe session.");
+      await openColumnSearchScene(active.sessionId);
+    } else {
+      await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    }
     await new Promise((resolve) => setTimeout(resolve, 800));
     const destination = path.resolve(outputDirectory, fileName);
     await capturePage.bringToFront();
@@ -4841,6 +4837,198 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     return entries.flat();
   }
 
+  async function fitFeaturedGridColumns(sessionId: string, selectedColumnId: string): Promise<Record<string, number>> {
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, sessionId, "Screenshot grid fitting requires the exact active session.");
+    assert.ok(active, "Screenshot grid fitting requires one active dataframe session.");
+    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "Screenshot grid fitting requires the exact live Open Wrangler renderer.");
+    const gridDimensions = await app.locator('[data-testid="data-grid-scroller"]').evaluate((scroller) => {
+      const rowHeader = scroller.querySelector("th.rowHeader");
+      if (!rowHeader) throw new Error("The screenshot grid row header is unavailable.");
+      return {
+        clientWidth: scroller.clientWidth,
+        rowHeaderWidth: rowHeader.getBoundingClientRect().width
+      };
+    });
+    const widthsByName = packagedScreenshotFeaturedColumnWidths(
+      gridDimensions.clientWidth,
+      gridDimensions.rowHeaderWidth
+    );
+    let columnWidths = Object.fromEntries(
+      active.metadata.schema
+        .filter((column) => column.name in widthsByName)
+        .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]])
+    );
+    await testing.updateViewState(sessionId, {
+      columnWidths,
+      selectedColumnId,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The fitted screenshot grid must synchronize with its exact renderer."
+    );
+    const orderDate = columnReference(active.metadata, "order_date");
+    const trailingGap = await app.evaluate((root, columnName) => {
+      type ScreenshotRect = { readonly right: number };
+      type ScreenshotElement = {
+        readonly dataset: Readonly<Record<string, string | undefined>>;
+        getBoundingClientRect(): ScreenshotRect;
+        querySelector(selector: string): ScreenshotElement | null;
+        querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
+      };
+      const appRoot = root as unknown as ScreenshotElement;
+      const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+      const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+        (candidate) => candidate.dataset.column === columnName
+      );
+      if (!scroller || !header) throw new Error("The screenshot grid fit geometry is incomplete.");
+      return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
+    }, orderDate.name);
+    assert.ok(trailingGap >= -1, "The final featured screenshot column must not extend beyond the live grid.");
+    if (trailingGap > 1) {
+      const adjustedWidth = (columnWidths[orderDate.id] ?? widthsByName.order_date) + Math.floor(trailingGap);
+      assert.ok(adjustedWidth <= 640, "The live screenshot grid fit must retain the maximum column width.");
+      columnWidths = { ...columnWidths, [orderDate.id]: adjustedWidth };
+      await testing.updateViewState(sessionId, {
+        columnWidths,
+        selectedColumnId,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      });
+      assert.equal(
+        await testing.synchronizePanel(sessionId),
+        true,
+        "The final measured screenshot grid fit must synchronize with its exact renderer."
+      );
+    }
+    assert.deepEqual(testing.activeSession()?.viewState.columnWidths, columnWidths);
+    assert.equal(testing.activeSession()?.viewState.selectedColumnId, selectedColumnId);
+    return columnWidths;
+  }
+
+  async function resizePrimarySidebar(targetWidth: number): Promise<void> {
+    const sidebar = capturePage.locator(".part.sidebar:visible").first();
+    await sidebar.waitFor({ state: "visible", timeout: 10_000 });
+    const bounds = await sidebar.boundingBox();
+    assert.ok(bounds, "The README hero requires measurable primary-sidebar geometry.");
+    if (Math.abs(bounds.width - targetWidth) <= 2) return;
+    const sash = await nearestWorkbenchSash("vertical", bounds.x + bounds.width);
+    assert.ok(sash, "The README hero requires the primary-sidebar resize sash.");
+    const startX = sash.x + sash.width / 2;
+    const startY = Math.max(bounds.y + 20, Math.min(bounds.y + bounds.height - 20, bounds.y + bounds.height / 2));
+    await capturePage.mouse.move(startX, startY);
+    await capturePage.mouse.down();
+    await capturePage.mouse.move(startX + targetWidth - bounds.width, startY, { steps: 12 });
+    await capturePage.mouse.up();
+    await waitForWorkbenchPartSize(sidebar, "width", targetWidth, "the README hero sidebar");
+  }
+
+  async function hidePrimarySidebar(): Promise<void> {
+    const sidebar = capturePage.locator(".part.sidebar").first();
+    if ((await sidebar.count()) === 0 || !(await sidebar.isVisible())) return;
+    const commands = new Set(await vscode.commands.getCommands(true));
+    const closeCommand = commands.has("workbench.action.closeSidebar")
+      ? "workbench.action.closeSidebar"
+      : commands.has("workbench.action.toggleSidebarVisibility")
+        ? "workbench.action.toggleSidebarVisibility"
+        : undefined;
+    assert.ok(closeCommand, "The screenshot workbench must expose a primary-sidebar close command.");
+    await vscode.commands.executeCommand(closeCommand);
+    await sidebar.waitFor({ state: "hidden", timeout: 10_000 });
+  }
+
+  async function resizeCodePreviewPanel(targetHeight: number): Promise<void> {
+    const panel = capturePage.locator(".part.panel:visible").first();
+    await panel.waitFor({ state: "visible", timeout: 10_000 });
+    const bounds = await panel.boundingBox();
+    assert.ok(bounds, "The transform scene requires measurable Code Preview geometry.");
+    if (Math.abs(bounds.height - targetHeight) <= 2) return;
+    const sash = await nearestWorkbenchSash("horizontal", bounds.y);
+    assert.ok(sash, "The transform scene requires the Code Preview resize sash.");
+    const startX = Math.max(bounds.x + 20, Math.min(bounds.x + bounds.width - 20, bounds.x + bounds.width / 2));
+    const startY = sash.y + sash.height / 2;
+    await capturePage.mouse.move(startX, startY);
+    await capturePage.mouse.down();
+    await capturePage.mouse.move(startX, startY - (targetHeight - bounds.height), { steps: 12 });
+    await capturePage.mouse.up();
+    await waitForWorkbenchPartSize(panel, "height", targetHeight, "the README Code Preview panel");
+  }
+
+  async function nearestWorkbenchSash(
+    orientation: "horizontal" | "vertical",
+    targetPosition: number
+  ): Promise<{ x: number; y: number; width: number; height: number } | undefined> {
+    const candidates = capturePage.locator(`.monaco-sash.${orientation}:visible`);
+    let nearest:
+      | {
+          bounds: { x: number; y: number; width: number; height: number };
+          distance: number;
+        }
+      | undefined;
+    for (let index = 0; index < (await candidates.count()); index += 1) {
+      const bounds = await candidates.nth(index).boundingBox();
+      if (!bounds) continue;
+      const position = orientation === "vertical" ? bounds.x + bounds.width / 2 : bounds.y + bounds.height / 2;
+      const distance = Math.abs(position - targetPosition);
+      if (!nearest || distance < nearest.distance) nearest = { bounds, distance };
+    }
+    return nearest && nearest.distance <= 12 ? nearest.bounds : undefined;
+  }
+
+  async function waitForWorkbenchPartSize(
+    part: Locator,
+    dimension: "height" | "width",
+    expected: number,
+    label: string
+  ): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    let actual: number | undefined;
+    do {
+      actual = (await part.boundingBox())?.[dimension];
+      if (actual !== undefined && Math.abs(actual - expected) <= 3) return;
+      await capturePage.waitForTimeout(25);
+    } while (Date.now() < deadline);
+    throw new Error(`${label} must measure ${expected}px; observed ${String(actual)}px.`);
+  }
+
+  async function openColumnSearchScene(sessionId: string): Promise<void> {
+    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "Column-search composition requires the exact live Open Wrangler renderer.");
+    const input = app.getByPlaceholder("Search columns");
+    await input.click();
+    await app.getByRole("listbox", { name: "Matching columns" }).waitFor({ state: "visible", timeout: 10_000 });
+  }
+
+  async function primeExactDatasetStats(sessionId: string): Promise<void> {
+    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "Dataset statistics composition requires the exact live Open Wrangler renderer.");
+    const toggle = app.getByRole("button", { name: "Insights & filters" });
+    await toggle.click();
+    const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    await waitFor(
+      () => testing.activeSession()?.metadata.stats !== undefined,
+      30_000,
+      "exact dataset statistics before README screenshot capture"
+    );
+    await drawer.getByRole("button", { name: "Close panel" }).click();
+    await drawer.waitFor({ state: "hidden", timeout: 10_000 });
+  }
+
+  async function closeColumnSearchScene(sessionId: string): Promise<void> {
+    const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "Column-search cleanup requires the exact live Open Wrangler renderer.");
+    const input = app.getByPlaceholder("Search columns");
+    await input.press("Escape");
+    await app.getByRole("listbox", { name: "Matching columns" }).waitFor({ state: "hidden", timeout: 10_000 });
+  }
+
   async function composeNativeViews(scene: "hero" | "transform"): Promise<void> {
     const desired = new Map<string, boolean>([
       ["Operations", false],
@@ -4871,7 +5059,180 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     return (await header.getAttribute("class"))?.split(/\s+/u).includes("expanded") ?? false;
   }
 
-  async function assertPackagedScreenshotScene(scene: "hero" | "transform"): Promise<void> {
+  async function assertHeroNativeViewComposition(): Promise<void> {
+    const active = testing.activeSession();
+    assert.ok(active?.metadata.stats, "The hero Summary must publish exact dataset statistics.");
+    const sidebar = capturePage.locator(".part.sidebar:visible").first();
+    await sidebar.waitFor({ state: "visible", timeout: 10_000 });
+    const deadline = Date.now() + 15_000;
+    let measurement:
+      | {
+          width: number;
+          rowCount: number;
+          missingLabels: string[];
+          clippedParts: string[];
+          profilingVisible: boolean;
+          overlaps: string[];
+        }
+      | undefined;
+    do {
+      measurement = await sidebar.evaluate(
+        (root, expected) => {
+          type EvidenceElement = {
+            readonly innerText: string;
+            readonly scrollWidth: number;
+            readonly clientWidth: number;
+            getBoundingClientRect(): {
+              readonly bottom: number;
+              readonly height: number;
+              readonly top: number;
+              readonly width: number;
+            };
+            querySelectorAll(selector: string): ArrayLike<EvidenceElement>;
+          };
+          const rootElement = root as unknown as EvidenceElement;
+          const visible = (element: EvidenceElement): boolean => {
+            const bounds = element.getBoundingClientRect();
+            return bounds.width > 0 && bounds.height > 0;
+          };
+          const headers = Array.from(rootElement.querySelectorAll(".pane-header")).filter(visible);
+          const header = (label: string) =>
+            headers.find((candidate) => candidate.innerText.replace(/\s+/gu, " ").trim() === label);
+          const rows = Array.from(rootElement.querySelectorAll(".monaco-list-row")).filter(visible);
+          const matchingRows = expected.labels.map((label) =>
+            rows.find((row) => row.innerText.replace(/\s+/gu, " ").trim().startsWith(label))
+          );
+          const clippedParts = matchingRows.flatMap((row, index) =>
+            Array.from(row?.querySelectorAll(".label-name, .label-description, .monaco-highlighted-label") ?? [])
+              .filter(visible)
+              .filter((part) => part.scrollWidth > part.clientWidth + 1)
+              .map(() => expected.labels[index] ?? "")
+          );
+          const operations = header("Operations")?.getBoundingClientRect();
+          const summary = header("Summary")?.getBoundingClientRect();
+          const filters = header("Filters / Sorts")?.getBoundingClientRect();
+          const first = matchingRows[0]?.getBoundingClientRect();
+          const last = matchingRows.at(-1)?.getBoundingClientRect();
+          const overlaps = [
+            operations && summary && operations.bottom > summary.top + 1 ? "Operations and Summary headers" : "",
+            summary && first && summary.bottom > first.top + 1 ? "Summary header and first row" : "",
+            last && filters && last.bottom > filters.top + 1 ? "Summary rows and Filters header" : ""
+          ].filter(Boolean);
+          return {
+            width: rootElement.getBoundingClientRect().width,
+            rowCount: matchingRows.filter(Boolean).length,
+            missingLabels: expected.labels.filter((_, index) => !matchingRows[index]),
+            clippedParts,
+            profilingVisible: rows.some((row) => /\bProfiling\b/u.test(row.innerText)),
+            overlaps
+          };
+        },
+        {
+          labels: [
+            active.metadata.source.label,
+            "Shape",
+            "Columns",
+            "Selected column",
+            "Missing cells",
+            "Duplicate rows"
+          ]
+        }
+      );
+      if (
+        Math.abs(measurement.width - PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH) <= 3 &&
+        measurement.rowCount === 6 &&
+        measurement.missingLabels.length === 0 &&
+        measurement.clippedParts.length === 0 &&
+        !measurement.profilingVisible &&
+        measurement.overlaps.length === 0
+      ) {
+        return;
+      }
+      await capturePage.waitForTimeout(50);
+    } while (Date.now() < deadline);
+    throw new Error(`The hero native Summary is cramped or incomplete: ${JSON.stringify(measurement)}`);
+  }
+
+  async function assertColumnSearchWorkbenchComposition(): Promise<void> {
+    const sidebar = capturePage.locator(".part.sidebar").first();
+    assert.equal(await sidebar.isVisible(), false, "The column-search scene must keep the primary sidebar hidden.");
+    const panel = capturePage.locator(".part.panel").first();
+    assert.equal(await panel.isVisible(), false, "The column-search scene must keep the bottom panel hidden.");
+  }
+
+  async function assertTransformWorkbenchComposition(): Promise<void> {
+    const sidebar = capturePage.locator(".part.sidebar").first();
+    assert.equal(await sidebar.isVisible(), false, "The transform scene must keep the primary sidebar hidden.");
+    const panel = capturePage.locator(".part.panel:visible").first();
+    await panel.waitFor({ state: "visible", timeout: 10_000 });
+    const panelBounds = await panel.boundingBox();
+    assert.ok(panelBounds, "The transform scene requires measurable Code Preview geometry.");
+    assert.ok(
+      Math.abs(panelBounds.height - PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT) <= 3,
+      `The transform Code Preview must measure ${PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT}px.`
+    );
+    const deadline = Date.now() + 15_000;
+    let measurement:
+      | {
+          code: string;
+          frameHeight: number;
+          lastLineBottom: number;
+          horizontalOverflow: number;
+          lineCount: number;
+        }
+      | undefined;
+    do {
+      for (const frame of capturePage.frames()) {
+        const content = frame.locator('[aria-label="Editable generated Python code preview"]');
+        if ((await content.count()) === 0 || !(await content.isVisible().catch(() => false))) continue;
+        measurement = await content.evaluate((node) => {
+          type CodePreviewElement = {
+            readonly ownerDocument: {
+              readonly defaultView: { readonly innerHeight: number } | null;
+            };
+            readonly textContent: string | null;
+            closest(selector: string): { readonly clientWidth: number; readonly scrollWidth: number } | null;
+            querySelectorAll(selector: string): ArrayLike<{
+              getBoundingClientRect(): { readonly bottom: number };
+            }>;
+          };
+          const editor = node as unknown as CodePreviewElement;
+          const frameWindow = editor.ownerDocument.defaultView;
+          if (!frameWindow) throw new Error("The Code Preview frame has no live window.");
+          const scroller = editor.closest(".cm-scroller");
+          const lines = Array.from(editor.querySelectorAll(".cm-line"));
+          const lastLine = lines.at(-1)?.getBoundingClientRect();
+          return {
+            code: editor.textContent ?? "",
+            frameHeight: frameWindow.innerHeight,
+            lastLineBottom: lastLine?.bottom ?? Number.POSITIVE_INFINITY,
+            horizontalOverflow: scroller ? scroller.scrollWidth - scroller.clientWidth : Number.POSITIVE_INFINITY,
+            lineCount: lines.length
+          };
+        });
+        break;
+      }
+      if (
+        measurement &&
+        /import polars as pl/u.test(measurement.code) &&
+        /def clean_data\(df\):/u.test(measurement.code) &&
+        /\.with_columns\(/u.test(measurement.code) &&
+        /\.round\(0\)/u.test(measurement.code) &&
+        measurement.lineCount >= 8 &&
+        measurement.lastLineBottom <= measurement.frameHeight - 4 &&
+        measurement.horizontalOverflow <= 1
+      ) {
+        return;
+      }
+      await capturePage.waitForTimeout(50);
+    } while (Date.now() < deadline);
+    throw new Error(`The transform Code Preview is incomplete or clipped: ${JSON.stringify(measurement)}`);
+  }
+
+  async function assertPackagedScreenshotScene(scene: "hero" | "columns" | "transform"): Promise<void> {
+    if (scene === "hero") await assertHeroNativeViewComposition();
+    if (scene === "columns") await assertColumnSearchWorkbenchComposition();
+    if (scene === "transform") await assertTransformWorkbenchComposition();
     const active = testing.activeSession();
     assert.ok(active, "Screenshot geometry requires the active packaged dataframe session.");
     const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
@@ -4893,14 +5254,23 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           revenueSummary: string;
           draftVisible: boolean;
           draftActionLabels: string[];
+          visibleGridRows: number;
+          columnSearchOpen: boolean;
+          columnSearchResultCount: number;
+          columnSearchIconCount: number;
+          columnSearchTypeCount: number;
+          columnSearchOverflow: number;
+          columnSearchOutsideApp: boolean;
         }
       | undefined;
     do {
       measurement = await app.evaluate(
         (root, expected) => {
           type ScreenshotRect = {
+            readonly bottom: number;
             readonly left: number;
             readonly right: number;
+            readonly top: number;
           };
           type ScreenshotElement = {
             readonly className: string;
@@ -4956,8 +5326,28 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           const clippedControls = controls
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
+          const visibleGridRows = new Set(
+            Array.from(appRoot.querySelectorAll("td[data-grid-row]"))
+              .filter((cell) => {
+                const bounds = cell.getBoundingClientRect();
+                return (
+                  bounds.bottom > scrollerBounds.top + 1 &&
+                  bounds.top < scrollerBounds.bottom - 1 &&
+                  bounds.right > scrollerBounds.left + 1 &&
+                  bounds.left < scrollerBounds.right - 1
+                );
+              })
+              .map((cell) => cell.dataset.gridRow ?? "")
+              .filter(Boolean)
+          ).size;
           const revenueHeader = headers.find((header) => header.dataset.column === "revenue");
           const draft = appRoot.querySelector('.draftPanel[aria-label="Draft preview"]');
+          const columnSearch = appRoot.querySelector(".columnSearchPopup");
+          const columnSearchBounds = columnSearch?.getBoundingClientRect();
+          const appBounds = appRoot.getBoundingClientRect();
+          const columnSearchTypes = Array.from(appRoot.querySelectorAll(".columnSearchType"))
+            .map((element) => element.innerText.trim())
+            .filter(Boolean);
           return {
             workspaceOverflow: workspace.scrollWidth - workspace.clientWidth,
             gridOverflow: scroller.scrollWidth - scroller.clientWidth,
@@ -4973,7 +5363,20 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             draftVisible: Boolean(draft),
             draftActionLabels: Array.from(
               appRoot.querySelectorAll('.cleaningBar button:not([aria-hidden="true"])')
-            ).map((button) => button.innerText.trim())
+            ).map((button) => button.innerText.trim()),
+            visibleGridRows,
+            columnSearchOpen: Boolean(columnSearch),
+            columnSearchResultCount: appRoot.querySelectorAll(".columnSearchResults [role=option]").length,
+            columnSearchIconCount: appRoot.querySelectorAll(".columnSearchTypeIcon").length,
+            columnSearchTypeCount: new Set(columnSearchTypes).size,
+            columnSearchOverflow: columnSearch ? columnSearch.scrollWidth - columnSearch.clientWidth : 0,
+            columnSearchOutsideApp: Boolean(
+              columnSearchBounds &&
+              (columnSearchBounds.left < appBounds.left - 1 ||
+                columnSearchBounds.right > appBounds.right + 1 ||
+                columnSearchBounds.top < appBounds.top - 1 ||
+                columnSearchBounds.bottom > appBounds.bottom + 1)
+            )
           };
         },
         {
@@ -4995,7 +5398,15 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         /\bMin\b/u.test(measurement.revenueSummary) &&
         /\bMax\b/u.test(measurement.revenueSummary) &&
         measurement.draftVisible === (scene === "transform") &&
-        (scene === "hero" ||
+        measurement.columnSearchOpen === (scene === "columns") &&
+        (scene !== "columns" ||
+          (measurement.columnSearchResultCount >= 10 &&
+            measurement.columnSearchIconCount === measurement.columnSearchResultCount &&
+            measurement.columnSearchTypeCount >= 3 &&
+            measurement.columnSearchOverflow <= 1 &&
+            !measurement.columnSearchOutsideApp)) &&
+        (scene !== "transform" || (measurement.visibleGridRows >= 5 && measurement.visibleGridRows <= 12)) &&
+        (scene !== "transform" ||
           (measurement.draftActionLabels.includes("Discard") && measurement.draftActionLabels.includes("Apply step")));
       if (ready) return;
       await capturePage.waitForTimeout(50);

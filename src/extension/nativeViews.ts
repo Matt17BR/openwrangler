@@ -560,7 +560,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   );
   if (metadata.draftStep) {
     const draft = operationByKind(metadata.draftStep.kind);
-    nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing — apply or discard", draft.icon));
+    nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing. Apply or discard.", draft.icon));
   }
   return nodes;
 }

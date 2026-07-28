@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inspectPreviewReadme } from "./release-documents.mjs";
@@ -9,6 +9,51 @@ import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from 
 import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const forbiddenDashSearch = spawnSync(
+  "git",
+  [
+    "grep",
+    "-I",
+    "-n",
+    "--full-name",
+    "-e",
+    "\u2013",
+    "-e",
+    "\u2014",
+    "--",
+    ".",
+    ":(exclude).git/**",
+    ":(exclude).venv/**",
+    ":(exclude)venv/**",
+    ":(exclude)node_modules/**",
+    ":(exclude)vendor/**",
+    ":(exclude)dist/**",
+    ":(exclude)out/**",
+    ":(exclude)build/**",
+    ":(exclude)coverage/**",
+    ":(exclude)tmp/**"
+  ],
+  {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true
+  }
+);
+if (forbiddenDashSearch.error !== undefined) {
+  throw forbiddenDashSearch.error;
+}
+if (forbiddenDashSearch.status === 0) {
+  throw new Error(
+    `Tracked project text must not contain en or em dashes. Use natural punctuation or wording instead:\n${forbiddenDashSearch.stdout.trimEnd()}`
+  );
+}
+if (forbiddenDashSearch.status !== 1) {
+  throw new Error(
+    `Unable to inspect tracked project text for forbidden dashes (git grep exited ${forbiddenDashSearch.status ?? "without a status"}):\n${forbiddenDashSearch.stderr.trimEnd()}`
+  );
+}
+
 const required = [
   "AGENTS.md",
   "CHANGELOG.md",

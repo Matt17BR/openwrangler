@@ -1,18 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-  <title id="title">Open Wrangler pivot grid</title>
-  <path
-    d="M36 28h88l-12 56H36a8 8 0 0 1-8-8V36a8 8 0 0 1 8-8Zm0 72h78l18 56H36a8 8 0 0 1-8-8v-40a8 8 0 0 1 8-8Zm0 72h100l-10 56H36a8 8 0 0 1-8-8v-40a8 8 0 0 1 8-8Z"
-    fill="#22B8B2"
-  />
-  <path
-    d="M140 28h80a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8h-92l12-56Zm-12 72h92a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8h-74l-18-56Zm24 72h68a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8h-78l10-56Z"
-    fill="#5A7DF0"
-  />
-  <path d="m112 100h16l18 56h-16l-18-56Z" fill="#F6C453" />
-  <path
-    d="M72 28v56M72 100v56M72 172v56M188 28v56M188 100v56M188 172v56"
-    stroke="#FFF"
-    stroke-opacity=".3"
-    stroke-width="4"
-  />
+  <title id="title">Open Wrangler tiled off-road convertible</title>
+  <rect x="16" y="16" width="224" height="224" rx="30" fill="#14295F" />
+  <rect x="31" y="116" width="40" height="29" rx="6" fill="#22B8B2" />
+  <rect x="76" y="116" width="40" height="29" rx="6" fill="#22B8B2" />
+  <rect x="121" y="116" width="40" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="166" y="116" width="44" height="29" rx="6" fill="#22B8B2" />
+  <rect x="215" y="121" width="18" height="24" rx="5" fill="#5A7DF0" />
+  <rect x="25" y="150" width="46" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="76" y="150" width="40" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="121" y="150" width="40" height="29" rx="6" fill="#22B8B2" />
+  <rect x="166" y="150" width="44" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="215" y="150" width="18" height="29" rx="5" fill="#22B8B2" />
+  <rect x="83" y="84" width="27" height="29" rx="5" fill="#5A7DF0" />
+  <rect x="90" y="71" width="16" height="11" rx="4" fill="#5A7DF0" />
+  <rect x="122" y="84" width="27" height="29" rx="5" fill="#5A7DF0" />
+  <rect x="129" y="71" width="16" height="11" rx="4" fill="#5A7DF0" />
+  <path d="m163 72 10-3 17 49h-15l-12-46Z" fill="#F6C453" />
+  <path d="M28 180h203v11H28z" fill="#0B1838" />
+  <circle cx="68" cy="188" r="31" fill="#0B1838" />
+  <circle cx="68" cy="188" r="22" fill="#263F7C" />
+  <circle cx="68" cy="188" r="17" fill="#5A7DF0" />
+  <circle cx="68" cy="188" r="7" fill="#14295F" />
+  <circle cx="192" cy="188" r="31" fill="#0B1838" />
+  <circle cx="192" cy="188" r="22" fill="#263F7C" />
+  <circle cx="192" cy="188" r="17" fill="#5A7DF0" />
+  <circle cx="192" cy="188" r="7" fill="#14295F" />
 </svg>

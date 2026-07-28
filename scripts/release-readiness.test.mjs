@@ -745,6 +745,19 @@ test("keeps the same compact editor support tiers in every README channel", () =
   assert.equal(stableLinks.get("checksummed GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
 });
 
+test("uses linked live badges instead of a prose stable status", () => {
+  assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Release status/iu);
+  for (const expected of [
+    "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
+    "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
+    "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
+    "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
+    "https://img.shields.io/github/license/Matt17BR/openwrangler"
+  ]) {
+    assert.ok(STABLE_README_RELEASE_SECTION.includes(expected));
+  }
+});
+
 test("rejects malformed and ambiguous package, Python, and VSIX metadata", () => {
   const problems = inspectStableReleaseReadiness(
     ready({

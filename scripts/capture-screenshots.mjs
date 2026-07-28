@@ -212,7 +212,7 @@ pl.DataFrame({
     "description": [
         "A very long value designed to verify truncation without losing the full accessible cell title " * 2,
         "combining marks: e\u0301 · emoji: 🧪📊 · CJK: 数据探索",
-        "Português — naïve façade — Ελληνικά",
+        "Português; naïve façade; Ελληνικά",
         "bidirectional text and punctuation (مرحبا بالعالم)",
     ],
 }).write_csv(unicode_path)

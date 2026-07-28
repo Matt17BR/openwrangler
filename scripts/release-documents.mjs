@@ -14,6 +14,15 @@ const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
 const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
 const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
+const CI_URL = "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml";
+const LICENSE_URL = "https://github.com/Matt17BR/openwrangler/blob/main/LICENSE";
+const STABLE_BADGES = `<p align="center">
+  <a href="${RELEASES_URL}"><img src="https://img.shields.io/github/v/release/Matt17BR/openwrangler?display_name=tag&amp;sort=semver" alt="Latest GitHub release"></a>
+  <a href="${CI_URL}"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="${MARKETPLACE_URL}"><img src="https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg" alt="Visual Studio Marketplace version"></a>
+  <a href="${OPEN_VSX_URL}"><img src="https://img.shields.io/open-vsx/v/Matt17BR/openwrangler?label=Open%20VSX" alt="Open VSX version"></a>
+  <a href="${LICENSE_URL}"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
+</p>`;
 const README_EDITOR_SUPPORT = `| Editor                      | Support        |
 | --------------------------- | -------------- |
 | VS Code                     | Release-tested |
@@ -47,13 +56,13 @@ npm run package -- --pre-release --out openwrangler.vsix
 
 On Windows, use \`py -m venv .venv\` and \`.venv\\Scripts\\python.exe\` in the equivalent commands.
 
-In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select \`openwrangler.vsix\`. Open Wrangler requires Python 3.10–3.14. It uses your configured or selected environment and asks before installing any missing package.
+In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select \`openwrangler.vsix\`. Open Wrangler requires Python 3.10 through 3.14. It uses your configured or selected environment and asks before installing any missing package.
 
 ${README_RELEASE_SECTION_END}`;
 
 export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** Stable
+${STABLE_BADGES}
 
 ## Install
 
@@ -65,7 +74,7 @@ For a downloaded VSIX, open the Extensions view and choose **Views and More Acti
 
 ${README_EDITOR_SUPPORT}
 
-Open Wrangler requires Python 3.10–3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
+Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -177,7 +186,7 @@ function inspectEvidence(evidence, trackedEvidencePaths) {
   }
   const humanText = evidence
     .replace(EVIDENCE_REFERENCE, "")
-    .replace(/[`*_~()[\]—–:;,.]/gu, " ")
+    .replace(/[`*_~()[\]\u2014\u2013:;,.]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   if (humanText.length < 8 || !/[\p{L}\p{N}]/u.test(humanText) || FUTURE_EVIDENCE.test(humanText)) {

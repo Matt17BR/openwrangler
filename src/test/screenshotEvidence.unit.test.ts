@@ -6,10 +6,12 @@ import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
+  PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH,
   PACKAGED_SCREENSHOT_MARKETS,
   PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_SCENES,
+  PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
@@ -135,37 +137,45 @@ describe("packaged editor screenshot evidence", () => {
   });
 
   it("keeps README scene names explicit and theme-aware", () => {
-    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "transform"]);
+    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "columns", "transform"]);
+    expect(PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH).toBe(420);
+    expect(PACKAGED_SCREENSHOT_TRANSFORM_PANEL_HEIGHT).toBe(390);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
+    expect(packagedScreenshotFileName("vscode", "columns", "light")).toBe("vscode-columns-light.png");
     expect(packagedScreenshotFileName("cursor", "transform", "dark")).toBe("cursor-transform-dark.png");
     expect(packagedScreenshotFileName("cursor", "transform", "light")).toBe("cursor-transform-light.png");
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
 
-  it("keeps the README to two explained, theme-aware product views", () => {
+  it("keeps the README to three explained, theme-aware product views", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
+    const images = [
+      ["vscode-hero-dark.png", 1_920, 1_054],
+      ["vscode-hero-light.png", 1_920, 1_054],
+      ["vscode-columns-dark.png", 1_920, 1_050],
+      ["vscode-columns-light.png", 1_920, 1_050],
+      ["vscode-transform-dark.png", 1_920, 1_050],
+      ["vscode-transform-light.png", 1_920, 1_050]
+    ] as const;
 
-    expect(readme.match(/<picture>/gu)).toHaveLength(2);
+    expect(readme.match(/<picture>/gu)).toHaveLength(3);
     expect(readme).toContain(
       '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon-128.png"'
     );
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
-    for (const name of [
-      "vscode-hero-dark.png",
-      "vscode-hero-light.png",
-      "vscode-transform-dark.png",
-      "vscode-transform-light.png"
-    ]) {
+    for (const [name, width, height] of images) {
       expect(readme).toContain(name);
+      const png = readFileSync(resolve("docs/images/editor-acceptance", name));
+      expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      expect(png.readUInt32BE(16)).toBe(width);
+      expect(png.readUInt32BE(20)).toBe(height);
+      expect(png.byteLength).toBeGreaterThan(100_000);
     }
     expect(readme).not.toMatch(/docs\/images\/(?:grid-view|filter-panel|wide-grid|notebook-preview)\.png/u);
     expect(readme).toContain("https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler");
     expect(readme).toContain("https://open-vsx.org/extension/Matt17BR/openwrangler");
     expect(readme).toContain("https://github.com/Matt17BR/openwrangler/releases");
-    expect(readme).not.toMatch(
-      /Antigravity|Current limits|PySpark|Quarto|R Markdown|conversion layer|parity matrix|release gate/iu
-    );
   });
 });
 

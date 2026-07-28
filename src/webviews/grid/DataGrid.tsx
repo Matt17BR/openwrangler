@@ -24,6 +24,7 @@ import {
   renderedRowSegmentSpacers,
   scrollTopForLogicalRow
 } from "./rowScrollModel";
+import { columnTypePresentation } from "../columnTypes";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -35,7 +36,8 @@ interface DataGridProps {
   busy?: boolean;
   projecting?: boolean;
   viewContextId?: string;
-  goToColumn?: string;
+  goToColumnId?: string;
+  goToColumnRequestId?: number;
   viewState?: GridViewState;
   viewStateRestoreVersion?: number;
   diff?: DataDiff;
@@ -91,7 +93,8 @@ export function DataGrid({
   busy = false,
   projecting = false,
   viewContextId,
-  goToColumn,
+  goToColumnId,
+  goToColumnRequestId,
   viewState = defaultViewState,
   viewStateRestoreVersion = 0,
   diff,
@@ -118,6 +121,7 @@ export function DataGrid({
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const handledGoToColumnRequestId = useRef<number | undefined>(undefined);
   const visibleColumnRangeHandler = useRef(onVisibleColumnRangeChange);
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
@@ -413,8 +417,14 @@ export function DataGrid({
   );
 
   useEffect(() => {
-    if (!goToColumn) return;
-    const index = metadata.schema.findIndex((column) => column.name === goToColumn);
+    if (
+      !goToColumnId ||
+      goToColumnRequestId === undefined ||
+      handledGoToColumnRequestId.current === goToColumnRequestId
+    ) {
+      return;
+    }
+    const index = metadata.schema.findIndex((column) => column.id === goToColumnId);
     if (index < 0) return;
     const animationFrame = window.requestAnimationFrame(() => {
       preserveGridFocusAfterScroll.current = false;
@@ -431,9 +441,10 @@ export function DataGrid({
           scrollLeft: scroller?.scrollLeft ?? currentViewState.viewport.scrollLeft
         }
       });
+      handledGoToColumnRequestId.current = goToColumnRequestId;
     });
     return () => window.cancelAnimationFrame(animationFrame);
-  }, [goToColumn, metadata.schema, reportViewState, widths]);
+  }, [goToColumnId, goToColumnRequestId, metadata.schema, reportViewState, widths]);
 
   useEffect(() => {
     if (!focusRequested.current) return;
@@ -489,7 +500,7 @@ export function DataGrid({
         <span>
           {page.totalRows === 0
             ? "No rows"
-            : `Loaded rows ${page.offset + 1}–${Math.min(page.offset + page.rows.length, page.totalRows)} of ${page.totalRows.toLocaleString()}`}
+            : `Loaded rows ${page.offset + 1} to ${Math.min(page.offset + page.rows.length, page.totalRows)} of ${page.totalRows.toLocaleString()}`}
         </span>
         <button
           type="button"
@@ -992,7 +1003,7 @@ function ColumnHeader({
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
     >
       <div className="columnHeader">
-        <span className={`typeIcon codicon ${typeIcon(column.type)}`} aria-hidden="true" />
+        <span className={`typeIcon codicon ${columnTypePresentation(column).icon}`} aria-hidden="true" />
         <span className="columnTitle">{column.name}</span>
         {activeSort && (
           <button
@@ -1236,14 +1247,6 @@ function selectedColumnPosition(schema: ColumnSchema[], selectedColumnId: string
 
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
-}
-
-function typeIcon(type: string): string {
-  if (["integer", "float", "decimal"].includes(type)) return "codicon-symbol-numeric";
-  if (type === "boolean") return "codicon-symbol-boolean";
-  if (type === "datetime" || type === "date") return "codicon-calendar";
-  if (type === "list" || type === "struct") return "codicon-json";
-  return "codicon-symbol-string";
 }
 
 function formatPercent(value: number, total: number): string {

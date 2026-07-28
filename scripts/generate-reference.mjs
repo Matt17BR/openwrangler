@@ -42,7 +42,7 @@ const output = await prettier.format(
         code(name),
         code(Array.isArray(setting.type) ? setting.type.join(" | ") : setting.type),
         code(JSON.stringify(setting.default)),
-        setting.enum ? setting.enum.map((value) => code(JSON.stringify(value))).join(", ") : "—",
+        setting.enum ? setting.enum.map((value) => code(JSON.stringify(value))).join(", ") : "None",
         escapeCell(setting.description)
       ])
     ),
@@ -138,7 +138,7 @@ function table(headers, rows) {
 }
 
 function parameterList(parameters) {
-  return parameters.length ? parameters.map(code).join(", ") : "—";
+  return parameters.length ? parameters.map(code).join(", ") : "None";
 }
 
 function code(value) {
