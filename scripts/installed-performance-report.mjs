@@ -1014,14 +1014,16 @@ function assertPublicEvidence(value, key = "") {
   }
   if (typeof value === "string") {
     const pathCandidate = value.replace(
-      /(^|[^\p{L}\p{N}._~-])((?!file:)[A-Za-z][A-Za-z0-9+.-]*):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:\/[A-Za-z0-9._~!$&'()*+\-=%:@/?#]*)?(?=$|[^\p{L}\p{N}._~!$&'()*+\-=%:@/?#])/giu,
+      /(^|[^\p{L}\p{N}])((?!file:)[A-Za-z][A-Za-z0-9+.-]*):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:[/?#][A-Za-z0-9._~!$&'()*+\-=%:@/?#]*)?(?=$|[^\p{L}\p{N}._~!$&'()*+\-=%:@/?#])/giu,
       "$1"
     );
     if (
       /\bfile:(?:\/+|\\+)/iu.test(pathCandidate) ||
-      /(?:^|[^\p{L}\p{N}._~-])[\\/]+/u.test(pathCandidate) ||
-      /(?:^|[^\p{L}\p{N}._~-])~[^\\/\s]*[\\/]/u.test(pathCandidate) ||
-      /(?:^|[^\p{L}\p{N}._~-])\.{1,2}[\\/]/u.test(pathCandidate)
+      /(?:^|[^\p{L}\p{N}])[\\/]+/u.test(pathCandidate) ||
+      /(?:^|[^\p{L}\p{N}])~[^\s]*/u.test(pathCandidate) ||
+      /(?:^|[^\p{L}\p{N}])\.{1,2}(?=$|[^\p{L}\p{N}])/u.test(pathCandidate) ||
+      /(?:^|[^\p{L}\p{N}])[A-Za-z]:[^\s]*/u.test(pathCandidate) ||
+      /(?:^|[^\p{L}\p{N}])(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}\s]+\}|%[^%\s]+%)(?:[\\/]|$)/u.test(pathCandidate)
     ) {
       throw new TypeError(`Installed performance evidence field ${key} contains a private path.`);
     }

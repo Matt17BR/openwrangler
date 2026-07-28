@@ -189,6 +189,10 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     "release at /etc/os-release",
     "release;/root/private-release",
     String.raw`release|\Users\alice\private-release`,
+    "release-/root/private-release",
+    "release./root/private-release",
+    "release_/root/private-release",
+    "release~/root/private-release",
     "root:////private-release",
     "//server",
     "//server/share/private-release",
@@ -198,13 +202,22 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     String.raw`C:\Users\alice\private-release`,
     "~/private-release",
     "~alice/private-release",
+    "~alice",
+    "~",
     "~+/private-release",
     "~+1/private-release",
     "~alice+tag/private-release",
     "home:~alice/private-release",
     "../private-release",
     "./private-release",
+    "..",
+    ".",
     "cwd:../private-release",
+    String.raw`C:Users\alice\private-release`,
+    "$HOME/private-release",
+    "${HOME}/private-release",
+    String.raw`%USERPROFILE%\private-release`,
+    "AMD Ryzen 7 / Radeon 780M",
     "x:///private-release",
     String.raw`\Users\alice\private-release`
   ]) {
@@ -257,6 +270,24 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     }
   );
   assert.equal(isInstalledPerformanceNumericGateError(labeledUrlError), true);
+
+  for (const publicUrl of [
+    "https://example.test?doc=public",
+    "https://example.test#public",
+    "https://example.test?doc=/public/path"
+  ]) {
+    const publicUrlQueryReport = structuredClone(failed);
+    publicUrlQueryReport.editors[1].provenance.platform.operatingSystemRelease = publicUrl;
+    let publicUrlQueryError;
+    assert.throws(
+      () => assertInstalledPerformanceReleaseGate(publicUrlQueryReport),
+      (error) => {
+        publicUrlQueryError = error;
+        return /parquet cold first-grid p95/u.test(error.message);
+      }
+    );
+    assert.equal(isInstalledPerformanceNumericGateError(publicUrlQueryError), true);
+  }
 
   for (const urlFollowedByPrivatePath of [
     "https://example.test,/root/private-release",
