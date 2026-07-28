@@ -1077,6 +1077,26 @@ async function exerciseReleasedJupyterExtension(
       "Changing the notebook start mode must make the next released-Jupyter session editable."
     );
     const polarsPage = await assertReleasedSessionPage(testing, polarsFrame, "3", "released-jupyter-polars-dataframe");
+    await waitFor(
+      () => testing.panelHydrated(polarsFrame.sessionId),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the exact released-Jupyter Polars panel to hydrate before its live preview",
+      () =>
+        JSON.stringify({
+          sessionId: polarsFrame.sessionId,
+          coordinator: testing.diagnostics(),
+          activeTab: activeEditorTabDiagnostic()
+        })
+    );
+    assert.equal(
+      await withAcceptanceOperationDeadline(
+        testing.synchronizePanel(polarsFrame.sessionId),
+        OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+        "the exact released-Jupyter Polars panel synchronization"
+      ),
+      true,
+      "The released-Jupyter Polars session must own a synchronized live dataframe panel before preview."
+    );
 
     recordAcceptanceProgress(`${phase}:polars-plan`);
     const preview = await testing.previewPanelStep({
