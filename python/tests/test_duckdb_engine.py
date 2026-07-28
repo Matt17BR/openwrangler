@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from math import isnan
 from pathlib import Path
@@ -144,10 +145,12 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
     engine = DuckDBEngine()
     frame = engine.ensure_row_ids(source_relation(), "projected-page")
     queries: list[str] = []
+    terminal_timezones: list[str] = []
     native_execute_rows = duckdb_runtime._execute_rows
 
     def capture_query(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
         queries.append(query)
+        terminal_timezones.append(str(connection.execute("SELECT current_setting('TimeZone')").fetchone()[0]))
         return native_execute_rows(connection, source_sql, query)
 
     monkeypatch.setattr(duckdb_runtime, "_execute_rows", capture_query)
@@ -167,6 +170,7 @@ def test_duckdb_page_uses_an_explicit_terminal_projection(monkeypatch: pytest.Mo
     assert '"group"' not in queries[0] and '"value"' not in queries[0]
     assert page["columnIds"] == ["stable:text", "stable:other"]
     assert [cell["display"] for cell in page["rows"][0]["values"]] == [" alpha-one ", "2"]
+    assert terminal_timezones == ["UTC"]
 
 
 def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Path) -> None:
@@ -178,6 +182,8 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     tsv_path.write_text("city\tvalue\nMilan\t1\nBerlin\t2\n", encoding="utf-8")
     jsonl_path = tmp_path / "sample.jsonl"
     jsonl_path.write_text('{"city":"Milan","value":1}\n{"city":"Berlin","value":2}\n', encoding="utf-8")
+    malformed_jsonl_path = tmp_path / "malformed.jsonl"
+    malformed_jsonl_path.write_text('{"city":"Milan","value":1}\n{"city":\n', encoding="utf-8")
     parquet_path = tmp_path / "sample.parquet"
     duckdb.sql("SELECT * FROM (VALUES ('Milan', 1), ('Berlin', 2)) AS data(city, value)").write_parquet(
         str(parquet_path)
@@ -188,11 +194,12 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
         engine._owned_connection()
         .sql(
             "SELECT current_setting('autoinstall_known_extensions'), "
-            "current_setting('autoload_known_extensions'), current_setting('preserve_insertion_order')"
+            "current_setting('autoload_known_extensions'), current_setting('preserve_insertion_order'), "
+            "current_setting('TimeZone')"
         )
         .fetchone()
     )
-    assert settings == (False, False, True)
+    assert settings == (False, False, True, "UTC")
 
     csv_frame = engine.read_file(
         str(csv_path),
@@ -208,6 +215,9 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     assert engine.read_file(str(tsv_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
     assert engine.read_file(str(jsonl_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
     assert engine.read_file(str(parquet_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
+    with pytest.raises(EngineError, match=r"newline-delimited JSON.*Malformed JSON") as malformed:
+        engine.read_file(str(malformed_jsonl_path))
+    assert "JSON support is unavailable" not in str(malformed.value)
 
     with pytest.raises(EngineError, match="does not support Excel"):
         engine.read_file(str(tmp_path / "unsupported.xlsx"))
@@ -226,6 +236,188 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     engine.close()
     with pytest.raises(EngineError, match="closed"):
         engine.read_file(str(csv_path))
+
+
+def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MissingJsonReader:
+        def read_json(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("Catalog Error: Table Function with name read_json_auto does not exist!")
+
+    engine = DuckDBEngine()
+    monkeypatch.setattr(engine, "_owned_connection", lambda: MissingJsonReader())
+
+    with pytest.raises(EngineError, match=r"JSON support is unavailable.*compatible DuckDB build"):
+        engine.read_file(str(tmp_path / "sample.jsonl"))
+    engine.close()
+
+
+def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_conversion_guards(monkeypatch)
+    path = tmp_path / "rich.parquet"
+    writer = duckdb.connect()
+    try:
+        writer.execute("SET TimeZone = 'America/New_York'")
+        writer.execute(
+            """
+            COPY (
+                SELECT * FROM (VALUES
+                    (
+                        'match',
+                        18446744073709551615::UBIGINT,
+                        1.2300::DECIMAL(10, 4),
+                        TIMESTAMPTZ '2026-01-01 00:30:00+01:00',
+                        INTERVAL '93784 seconds',
+                        from_hex('00ff'),
+                        [1, 2]::INTEGER[],
+                        {'label': 'é🙂', 'score': 7},
+                        'Infinity'::DOUBLE
+                    ),
+                    (
+                        'other',
+                        7::UBIGINT,
+                        2.5000::DECIMAL(10, 4),
+                        TIMESTAMPTZ '2026-01-02 10:00:00+00:00',
+                        INTERVAL '0 seconds',
+                        from_hex('61'),
+                        [3]::INTEGER[],
+                        {'label': 'x', 'score': 8},
+                        'NaN'::DOUBLE
+                    ),
+                    (
+                        'missing',
+                        NULL::UBIGINT,
+                        NULL::DECIMAL(10, 4),
+                        NULL::TIMESTAMPTZ,
+                        NULL::INTERVAL,
+                        NULL::BLOB,
+                        NULL::INTEGER[],
+                        NULL::STRUCT(label VARCHAR, score INTEGER),
+                        NULL::DOUBLE
+                    )
+                ) AS rich(label, huge, amount, occurred_at, elapsed, payload, items, record, floating)
+            ) TO ? (FORMAT PARQUET)
+            """,
+            [str(path)],
+        )
+    finally:
+        writer.close()
+
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    opened = manager.open_session(
+        {"kind": "file", "label": path.name, "path": str(path)},
+        backend="duckdb",
+        page_size=10,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    try:
+        schema = {column["name"]: column["type"] for column in opened["metadata"]["schema"]}
+        schema_ids = {column["name"]: column["id"] for column in opened["metadata"]["schema"]}
+        first_row = opened["page"]["rows"][0]["values"]
+
+        assert schema == {
+            "label": "string",
+            "huge": "integer",
+            "amount": "decimal",
+            "occurred_at": "datetime",
+            "elapsed": "duration",
+            "payload": "binary",
+            "items": "list",
+            "record": "struct",
+            "floating": "float",
+        }
+        assert [cell["kind"] for cell in first_row] == [
+            "string",
+            "integer",
+            "decimal",
+            "datetime",
+            "duration",
+            "binary",
+            "list",
+            "struct",
+            "infinity",
+        ]
+        assert first_row[1]["raw"] == "18446744073709551615"
+        assert first_row[2]["raw"] == "1.2300"
+        assert first_row[3]["raw"] == "2025-12-31T23:30:00+00:00"
+        assert first_row[4]["raw"] == 93784.0
+        assert first_row[5]["raw"] == "AP8="
+        assert first_row[6]["raw"] == [1, 2]
+        assert first_row[7]["raw"] == {"label": "é🙂", "score": 7}
+        assert opened["page"]["rows"][1]["values"][8]["kind"] == "nan"
+        assert all(cell["kind"] == "null" for cell in opened["page"]["rows"][2]["values"][1:])
+        json.dumps(opened, allow_nan=False)
+
+        summaries = manager.get_summary(
+            session_id,
+            0,
+            {"filters": [], "sort": []},
+            [schema_ids[name] for name in ["amount", "occurred_at", "items", "record"]],
+        )["summaries"]
+        assert [summary["type"] for summary in summaries] == ["decimal", "datetime", "list", "struct"]
+        assert summaries[0]["numeric"]["min"] == 1.23
+        assert summaries[1]["visualization"] == {
+            "kind": "datetime",
+            "min": "2025-12-31 23:30:00+00:00",
+            "max": "2026-01-02 10:00:00+00:00",
+        }
+        assert summaries[2]["topValues"][0]["value"] == "[1,2]"
+        assert {item["value"] for item in summaries[3]["topValues"]} == {
+            '{"label":"x","score":8}',
+            '{"label":"é🙂","score":7}',
+        }
+
+        filtered = manager.get_page(
+            session_id,
+            0,
+            0,
+            10,
+            {
+                "logic": "and",
+                "filters": [
+                    {
+                        "column": "amount",
+                        "type": "decimal",
+                        "logic": "and",
+                        "predicates": [{"operator": "gte", "value": "1.2"}],
+                    }
+                ],
+                "sort": [{"column": "occurred_at", "direction": "desc", "nulls": "last"}],
+            },
+        )["page"]
+        assert filtered["totalRows"] == 2
+        assert [row["values"][0]["raw"] for row in filtered["rows"]] == ["other", "match"]
+
+        exported_path = tmp_path / "rich-cleaned.parquet"
+        assert manager.export_data(session_id, 0, str(exported_path), "parquet")["shape"] == {
+            "rows": 3,
+            "columns": 9,
+        }
+        inspector = duckdb.connect()
+        try:
+            inspector.execute("SET TimeZone = 'UTC'")
+            exported = inspector.read_parquet(str(exported_path))
+            assert [str(value) for value in exported.types] == [
+                "VARCHAR",
+                "UBIGINT",
+                "DECIMAL(10,4)",
+                "TIMESTAMP WITH TIME ZONE",
+                "INTERVAL",
+                "BLOB",
+                "INTEGER[]",
+                'STRUCT("label" VARCHAR, score INTEGER)',
+                "DOUBLE",
+            ]
+            exported_row = exported.fetchone()
+            assert exported_row is not None
+            assert exported_row[3].isoformat() == "2025-12-31T23:30:00+00:00"
+        finally:
+            inspector.close()
+    finally:
+        manager.close_session(session_id, 0)
 
 
 def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: pytest.MonkeyPatch) -> None:

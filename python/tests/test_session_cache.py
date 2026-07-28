@@ -599,13 +599,15 @@ def test_polars_known_total_avoids_lazy_count_and_stays_native(monkeypatch) -> N
     ],
     ids=["grow", "shrink", "schema"],
 )
+@pytest.mark.parametrize("backend", ["polars", "duckdb"])
 def test_lazy_file_rejects_grow_shrink_and_schema_replacement_before_cached_page(
     tmp_path,
     replacement: str,
+    backend: str,
 ) -> None:
     path = write_values(tmp_path, 3)
     manager = SessionManager()
-    opened = manager.open_session(source(path), backend="polars", page_size=2)
+    opened = manager.open_session(source(path), backend=backend, page_size=2)
     session_id = opened["metadata"]["sessionId"]
     session = manager.sessions[session_id]
     assert session.source_fingerprint is not None

@@ -7491,10 +7491,18 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         [
           "import sys",
           "from pathlib import Path",
+          "import duckdb",
           "import polars as pl",
           "from openpyxl import Workbook",
           "root = Path(sys.argv[1])",
           "pl.DataFrame({'name': ['alpha', 'beta'], 'value': [1, 2], 'active': [True, False]}).write_parquet(root / 'sample.parquet')",
+          "connection = duckdb.connect(config={'autoinstall_known_extensions': False, 'autoload_known_extensions': False})",
+          "try:",
+          "    connection.execute(\"SET TimeZone = 'Pacific/Auckland'\")",
+          "    connection.execute(\"CREATE TABLE rich AS SELECT CAST('123456789012345678901234567890.12345678' AS DECIMAL(38,8)) AS exact_decimal, TIMESTAMPTZ '2026-07-16 14:30:00+02:00' AS zoned, [1, 2, NULL]::INTEGER[] AS items, {'label': 'alpha', 'score': 7} AS record UNION ALL SELECT CAST('-0.00000001' AS DECIMAL(38,8)), TIMESTAMPTZ '2026-01-01 00:15:00-08:00', []::INTEGER[], {'label': 'beta', 'score': NULL}\")",
+          "    connection.execute(\"COPY rich TO ? (FORMAT PARQUET)\", [str(root / 'sample-duckdb-rich.parquet')])",
+          "finally:",
+          "    connection.close()",
           "workbook = Workbook()",
           "sheet = workbook.active",
           "sheet.title = 'Overview'",
@@ -7511,7 +7519,8 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       ],
       { encoding: "utf8" }
     );
-    writeFileSync(path.join(directory, "sample-duckdb.parquet"), readFileSync(path.join(directory, "sample.parquet")));
+    const duckdbRichParquetUri = vscode.Uri.file(path.join(directory, "sample-duckdb-rich.parquet"));
+    const duckdbRichParquetSource = readFileSync(duckdbRichParquetUri.fsPath);
     const parquetLaunchUri = vscode.Uri.file(path.join(directory, "sample.parquet"));
     const parquetSource = readFileSync(parquetLaunchUri.fsPath);
     recordAcceptanceProgress("verify:file-inputs:canonical:polars:parquet:open");
@@ -7561,7 +7570,12 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       await exerciseLiveImportReconfiguration(testing, directory, config);
     }
 
-    const fixtures = [
+    const fixtures: Array<{
+      uri: vscode.Uri;
+      backend: "polars" | "duckdb" | "pandas";
+      shape: { rows: number; columns: number };
+      verify?: () => Promise<void>;
+    }> = [
       {
         uri: vscode.Uri.file(path.join(directory, "sample-pandas.tsv")),
         backend: "pandas" as const,
@@ -7593,9 +7607,10 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
         shape: { rows: 2, columns: 3 }
       },
       {
-        uri: vscode.Uri.file(path.join(directory, "sample-duckdb.parquet")),
+        uri: duckdbRichParquetUri,
         backend: "duckdb" as const,
-        shape: { rows: 2, columns: 3 }
+        shape: { rows: 2, columns: 4 },
+        verify: () => verifyDuckDBRichParquetPage(testing, duckdbRichParquetUri, duckdbRichParquetSource)
       },
       {
         uri: vscode.Uri.file(path.join(directory, "sample.xlsx")),
@@ -7635,6 +7650,7 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
           })
       );
       recordAcceptanceProgress(`${checkpoint}:opened`);
+      await fixture.verify?.();
       await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
       await waitFor(
         () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
@@ -7647,6 +7663,69 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
     await config.update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
     cleanupAcceptanceTemporaryDirectory(directory);
   }
+}
+
+async function verifyDuckDBRichParquetPage(testing: TestApi, source: vscode.Uri, originalBytes: Buffer): Promise<void> {
+  const active = testing.activeSession();
+  assert.ok(active, "The rich DuckDB Parquet fixture must publish an active session.");
+  assert.equal(active.metadata.backend, "duckdb");
+  assert.equal(active.metadata.source.path, source.fsPath);
+  assert.deepEqual(
+    active.metadata.schema.map((column) => [column.name, column.type]),
+    [
+      ["exact_decimal", "decimal"],
+      ["zoned", "datetime"],
+      ["items", "list"],
+      ["record", "struct"]
+    ]
+  );
+
+  const response = await testing.request({
+    kind: "getPage",
+    ...GRID_COLUMN_WINDOW,
+    viewRequestId: "packaged-duckdb-rich-parquet-page",
+    sessionId: active.sessionId,
+    revision: active.metadata.revision,
+    offset: 0,
+    limit: 20,
+    filterModel: active.metadata.filterModel
+  });
+  assert.equal(response.kind, "page", "The rich DuckDB Parquet fixture must return a typed page.");
+  if (response.kind !== "page") return;
+
+  assert.deepEqual(gridColumnCells(response.page, columnReference(response.metadata, "exact_decimal").id)[0], {
+    kind: "decimal",
+    raw: "123456789012345678901234567890.12345678",
+    display: "123456789012345678901234567890.12345678",
+    isNull: false,
+    isNaN: false
+  });
+  assert.deepEqual(gridColumnCells(response.page, columnReference(response.metadata, "zoned").id)[0], {
+    kind: "datetime",
+    raw: "2026-07-16T12:30:00+00:00",
+    display: "2026-07-16T12:30:00+00:00",
+    isNull: false,
+    isNaN: false
+  });
+  assert.deepEqual(gridColumnCells(response.page, columnReference(response.metadata, "items").id)[0], {
+    kind: "list",
+    raw: [1, 2, null],
+    display: "[1,2,null]",
+    isNull: false,
+    isNaN: false
+  });
+  assert.deepEqual(gridColumnCells(response.page, columnReference(response.metadata, "record").id)[0], {
+    kind: "struct",
+    raw: { label: "alpha", score: 7 },
+    display: '{"label":"alpha","score":7}',
+    isNull: false,
+    isNaN: false
+  });
+  assert.doesNotThrow(
+    () => JSON.parse(JSON.stringify(response.page.rows.map((row) => row.values))),
+    "The rich DuckDB page must remain strict-JSON-safe."
+  );
+  assert.deepEqual(readFileSync(source.fsPath), originalBytes, "Opening rich DuckDB Parquet data must not modify it.");
 }
 
 async function exerciseConfiguredFileImportOptions(testing: TestApi, directory: string): Promise<void> {

@@ -48,12 +48,12 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Surface                                      | Availability        | Status  | Recorded evidence                                       | Remaining acceptance gate                                    |
 | -------------------------------------------- | ------------------- | ------- | ------------------------------------------------------- | ------------------------------------------------------------ |
 | CSV and TSV file sessions                    | Yes                 | Partial | Lazy native reads plus packaged VS Code/Cursor imports  | Malformed/options and cross-platform matrix                  |
-| Parquet file sessions                        | Yes                 | Partial | Native typed reads, benchmark, and packaged editors     | Large mixed/nested fixture and cross-platform matrix         |
-| JSONL file sessions                          | Yes                 | Partial | Offline native read plus packaged VS Code/Cursor import | Malformed JSONL and import-state interaction                 |
+| Parquet file sessions                        | Yes                 | Partial | Native rich typed page plus packaged editor fixture     | Large-scale and full cross-platform/repeated matrix          |
+| JSONL file sessions                          | Yes                 | Partial | Native malformed-input diagnostic and packaged import   | Installed malformed/import-state interaction matrix          |
 | Excel file sessions                          | No                  | Planned | Explicit diagnostic directs users to Pandas or Polars   | Deferred; no DuckDB Excel claim                              |
 | `.duckdb` database/catalog/table browsing    | No                  | Planned | Not registered as a source kind                         | Deferred source/connection/security design                   |
 | Notebook variables and inline MIME rendering | No                  | Planned | DuckDB advertises file sources only                     | Deferred kernel ownership, formatter, and recovery design    |
-| Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native tests plus packaged VS Code/Cursor query matrix  | Large mixed data and cross-platform matrix                   |
+| Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native tests plus packaged rich-page/query matrix       | Large-scale mixed data and cross-platform matrix             |
 | Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence        |
 | Complete 27-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Full DuckDB-specific semantic edge matrix                    |
 | Draft preview, diff, apply, and history      | Preview/apply slice | Partial | Runtime and packaged preview/diff/apply/replay          | DuckDB edit/discard/undo interaction matrix                  |

@@ -2,7 +2,7 @@
 
 Open Wrangler is an open-source dataframe viewer and cleaner for VS Code-family desktop editors. VS Code and Cursor are first-class targets; other VS Code-based desktop forks may work, but support is experimental. Open a file or notebook dataframe, explore it in a fast virtualized grid, build a repeatable cleaning plan, and export engine-native Python or cleaned data—all without changing the source.
 
-Polars and Pandas are first-class backends. DuckDB provides a native file-backed path for larger local datasets.
+Polars and Pandas are first-class backends. DuckDB provides an experimental native file-backed preview for local datasets.
 
 <!-- open-wrangler-release-status:start -->
 
@@ -65,11 +65,11 @@ This stable release satisfies every in-scope row in the checked-in [feature pari
 
 ## Engines and formats
 
-| Backend | File sessions                   | Notebook variables | Notes                                                            |
-| ------- | ------------------------------- | ------------------ | ---------------------------------------------------------------- |
-| Polars  | CSV, TSV, Parquet, JSONL, Excel | Yes                | Native operations and lazy scans where the format allows         |
-| DuckDB  | CSV, TSV, Parquet, JSONL        | Not yet            | Native lazy relations; no Pandas, Polars, or Arrow conversion    |
-| Pandas  | CSV, TSV, Parquet, JSONL, Excel | Yes                | Position-safe support for duplicate and non-string column labels |
+| Backend          | File sessions                   | Notebook variables | Notes                                                            |
+| ---------------- | ------------------------------- | ------------------ | ---------------------------------------------------------------- |
+| Polars           | CSV, TSV, Parquet, JSONL, Excel | Yes                | Native operations and lazy scans where the format allows         |
+| DuckDB (preview) | CSV, TSV, Parquet, JSONL        | Not yet            | Native lazy relations; no Pandas, Polars, or Arrow conversion    |
+| Pandas           | CSV, TSV, Parquet, JSONL, Excel | Yes                | Position-safe support for duplicate and non-string column labels |
 
 `auto` mode tries Polars, then DuckDB, then Pandas, skipping unavailable or incompatible choices. You can pin a backend in the Open Wrangler settings.
 
@@ -86,7 +86,7 @@ Applied steps form a replayable history. The latest step can be edited, steps ca
 
 - PySpark is planned, but not implemented. The [engine proposal](https://github.com/Matt17BR/openwrangler/issues/36) requires distributed execution with no full-frame collection or implicit local-dataframe conversion.
 - R dataframes and Quarto/R Markdown integration are a [post-1.0 architecture spike](https://github.com/Matt17BR/openwrangler/issues/87), not a Python conversion layer.
-- DuckDB currently supports file-backed sessions only; Excel files and notebook variables use Polars or Pandas.
+- DuckDB remains an experimental file-backed preview. Excel files and notebook variables use Polars or Pandas, and full large-scale, repeated-performance, and cross-platform evidence is still pending.
 - Browser-hosted `vscode.dev` runtimes are outside the current scope.
 
 ## Develop and contribute

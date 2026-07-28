@@ -65,6 +65,11 @@ export function requiredDependencies(backend: DataBackend, source: SessionSource
       minimumVersion: "1.4.5",
       maximumVersionExclusive: "1.6"
     });
+    add({
+      importModule: "pytz",
+      distribution: "pytz",
+      installSpec: "pytz"
+    });
   } else {
     add({ importModule: backend, distribution: backend, installSpec: backend });
   }

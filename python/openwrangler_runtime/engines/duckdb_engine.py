@@ -127,10 +127,12 @@ class DuckDBEngine(DataFrameEngine):
                 try:
                     return connection.read_json(path, format="newline_delimited")
                 except Exception as error:
-                    raise EngineError(
-                        "DuckDB JSON support is unavailable in this interpreter. "
-                        "Install a compatible DuckDB build explicitly; Open Wrangler will not fetch extensions."
-                    ) from error
+                    if _json_reader_is_unavailable(error):
+                        raise EngineError(
+                            "DuckDB JSON support is unavailable in this interpreter. "
+                            "Install a compatible DuckDB build explicitly; Open Wrangler will not fetch extensions."
+                        ) from error
+                    raise EngineError(f"DuckDB could not open {path} as newline-delimited JSON: {error}") from error
             if extension in {".xlsx", ".xls"}:
                 raise EngineError("DuckDB does not support Excel input. Use the Pandas or Polars backend.")
             raise EngineError(f"Unsupported file extension for DuckDB backend: {extension}")
@@ -953,19 +955,51 @@ def _compose_sql(source_sql: str, query: str) -> str:
     return f"WITH ow AS ({source_sql}) {query}"
 
 
+def _json_reader_is_unavailable(error: Exception) -> bool:
+    message = str(error).casefold()
+    missing_table_function = (
+        "table function" in message
+        and "read_json" in message
+        and ("does not exist" in message or "not found" in message)
+    )
+    extension_context = any(marker in message for marker in ("extension 'json'", 'extension "json"', "json extension"))
+    extension_failure = extension_context and any(
+        marker in message
+        for marker in (
+            "not installed",
+            "not loaded",
+            "failed to load",
+            "could not load",
+            "unable to load",
+            "automatically install",
+            "auto-install",
+        )
+    )
+    return missing_table_function or extension_failure
+
+
 def _connect() -> Any:
     import duckdb
 
     # Open Wrangler never installs or autoloads DuckDB extensions. This keeps a
     # file open deterministic, offline, and confined to dependencies the user
     # explicitly installed in the selected interpreter.
-    return duckdb.connect(
+    connection = duckdb.connect(
         config={
             "autoinstall_known_extensions": False,
             "autoload_known_extensions": False,
             "preserve_insertion_order": True,
         }
     )
+    try:
+        # TIMESTAMPTZ values are rendered in the connection's configured zone.
+        # Pin every owned and terminal connection so pages, summaries, and
+        # exports do not vary with the host's local timezone.
+        connection.execute("SET TimeZone = 'UTC'")
+    except Exception:
+        connection.close()
+        raise
+    return connection
 
 
 def _execute_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
