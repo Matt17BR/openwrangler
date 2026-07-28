@@ -184,12 +184,19 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     "/root/private-release",
     "/mnt/private-release",
     "/opt/private-release",
+    "///root/private-release",
+    "/ root/private-release",
     "release at /etc/os-release",
+    "//server",
     "//server/share/private-release",
+    String.raw`\\server`,
     String.raw`\\server\share\private-release`,
     "C:/Users/alice/private-release",
     String.raw`C:\Users\alice\private-release`,
     "~/private-release",
+    "~alice/private-release",
+    "../private-release",
+    "./private-release",
     String.raw`\Users\alice\private-release`
   ]) {
     const privateNumericReport = structuredClone(failed);
@@ -216,6 +223,18 @@ test("the aggregate report gates both editors and every cold/warm/grid case", ()
     }
   );
   assert.equal(isInstalledPerformanceNumericGateError(publicUrlError), true);
+
+  const oneLetterUrlReport = structuredClone(failed);
+  oneLetterUrlReport.editors[1].provenance.platform.operatingSystemRelease = "x://example.test/public-release";
+  let oneLetterUrlError;
+  assert.throws(
+    () => assertInstalledPerformanceReleaseGate(oneLetterUrlReport),
+    (error) => {
+      oneLetterUrlError = error;
+      return /parquet cold first-grid p95/u.test(error.message);
+    }
+  );
+  assert.equal(isInstalledPerformanceNumericGateError(oneLetterUrlError), true);
 });
 
 test("numeric-only publication emits one final jointly revalidated report receipt", async () => {

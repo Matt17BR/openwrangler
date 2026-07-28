@@ -1014,12 +1014,13 @@ function assertPublicEvidence(value, key = "") {
   }
   if (
     typeof value === "string" &&
-    (/\bfile:\/\//iu.test(value) ||
-      /(?:^|[\s"'([{=,:])\/(?=$|[^/\s])/u.test(value) ||
-      /(?:^|[\s"'([{=,])(?:\\\\|\/\/)[^\\/\s]+[\\/][^\\/\s]+/u.test(value) ||
-      /(?:^|[\s"'([{=,])[A-Za-z]:[\\/]/u.test(value) ||
-      /(?:^|[\s"'([{=,])~[\\/]/u.test(value) ||
-      /(?:^|[\s"'([{=,])\\(?=$|[^\\\s])/u.test(value))
+    (/\bfile:(?:\/+|\\+)/iu.test(value) ||
+      /(?:^|[\s"'([{=,])\/+/u.test(value) ||
+      /:\/(?!\/)/u.test(value) ||
+      /(?:^|[\s"'([{=,:])\\+/u.test(value) ||
+      /(?:^|[\s"'([{=,])[A-Za-z]:(?:\\+|\/(?!\/))/u.test(value) ||
+      /(?:^|[\s"'([{=,])~(?:[A-Za-z0-9._-]+)?[\\/]/u.test(value) ||
+      /(?:^|[\s"'([{=,])\.{1,2}[\\/]/u.test(value))
   ) {
     throw new TypeError(`Installed performance evidence field ${key} contains a private path.`);
   }
