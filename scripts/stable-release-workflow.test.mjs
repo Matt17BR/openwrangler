@@ -11,12 +11,144 @@ test("ordinary stable release packages once and gates publishing behind exact-ar
 
 test("stable release inspector rejects unsafe publication and artifact drift", () => {
   const mutations = [
+    source.replace("Create the GitHub stable release after every acceptance job passes", "Validation-only workflow"),
     source.replace("default: false", "default: true"),
     source.replace("permissions:\n  contents: read", "permissions:\n  contents: write"),
+    source.replace("\njobs:\n", "\nenv:\n  OPEN_WRANGLER_EDITOR_DISPLAY: current\n\njobs:\n"),
+    source.replace("\njobs:\n", "\ndefaults:\n  run:\n    shell: bash\n\njobs:\n"),
+    source.replace(
+      "  linux-acceptance:\n    name: Linux release acceptance",
+      "  linux-acceptance:\n    env:\n      OPEN_WRANGLER_EDITOR_DISPLAY: current\n    name: Linux release acceptance"
+    ),
+    source.replace(
+      "  linux-acceptance:\n    name: Linux release acceptance",
+      "  linux-acceptance:\n    defaults:\n      run:\n        shell: bash\n    name: Linux release acceptance"
+    ),
+    source.replace(
+      "  package:\n    runs-on: ubuntu-24.04",
+      "  package:\n    container:\n      image: node:22\n      env:\n        NODE_OPTIONS: --require=/tmp/release-hook.cjs\n    runs-on: ubuntu-24.04"
+    ),
+    source.replace(
+      "  release:\n    name: Create GitHub stable release\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: ubuntu-24.04",
+      "  release:\n    name: Create GitHub stable release\n    needs: [package, acceptance-gate]\n    if: ${{ inputs.publish == true }}\n    runs-on: self-hosted"
+    ),
+    source.replace(
+      "  acceptance-gate:\n    name: Require every stable acceptance result",
+      "  acceptance-gate:\n    continue-on-error: true\n    name: Require every stable acceptance result"
+    ),
+    source.replace(
+      "      - name: Fail closed unless every required job succeeded",
+      "      - name: Fail closed unless every required job succeeded\n        continue-on-error: true"
+    ),
+    source.replace("      - run: npm test\n", "      - run: npm test\n        continue-on-error: true\n"),
+    source.replace("      - run: npm test\n", "      - run: npm test\n        if: ${{ false }}\n"),
+    source.replace(
+      "      - run: npm ci\n",
+      '      - run: npm ci && echo "NODE_OPTIONS=--require=/tmp/release-hook.cjs" >> "$GITHUB_ENV"\n'
+    ),
     source.replace("--out-dir canonical-release", "--out-dir canonical-release\n          --performance-evidence"),
     source.replace("artifact-ids: ${{ needs.package.outputs.artifact-id }}", "name: openwrangler-stable-release"),
+    source.replace(
+      "      - id: canonical\n        name: Verify the exact canonical stable artifact",
+      "      - id: canonical\n        name: Verify the exact canonical stable artifact\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - run: npm run test:python-environment-smoke",
+      "      - run: npm run test:python-environment-smoke\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - run: npm run test:extension-host\n        env:",
+      "      - run: npm run test:extension-host\n        shell: bash {0}\n        env:"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test packaged VS Code",
+      "      - id: packaged_editor\n        name: Test packaged VS Code\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors",
+      "      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "          --out ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json",
+      "          --out ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json || true"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX",
+      "      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: prepare_xvfb\n        name: Prepare pinned private Xvfb",
+      "      - id: prepare_xvfb\n        name: Prepare pinned private Xvfb\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH",
+      "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH\n        if: ${{ false }}"
+    ),
+    source.replace(
+      "      - id: canonical_artifact\n        name: Upload the canonical stable artifact set",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: canonical_artifact\n        name: Upload the canonical stable artifact set"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test packaged VS Code",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: packaged_editor\n        name: Test packaged VS Code"
+    ),
+    source.replace(
+      "      - id: cursor_smoke\n        name: Test pinned Cursor platform smoke",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: cursor_smoke\n        name: Test pinned Cursor platform smoke"
+    ),
+    source.replace(
+      "      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: installed_performance\n        name: Test the ordinary stable artifact in pinned editors"
+    ),
+    source.replace(
+      "      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: packaged_editor\n        name: Test released Jupyter in the exact packaged VSIX"
+    ),
+    source.replace(
+      "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH"
+    ),
+    source.replace(
+      "      - id: canonical_cursor\n        name: Reverify the exact canonical stable artifact for Cursor",
+      '      - run: printf replaced > "${{ steps.prepare_cursor_xvfb.outputs.executable }}"\n      - id: canonical_cursor\n        name: Reverify the exact canonical stable artifact for Cursor'
+    ),
+    source.replace(
+      "      - name: Create the stable GitHub release without rebuilding",
+      "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - name: Create the stable GitHub release without rebuilding"
+    ),
     source.replace('OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "1"', 'OPEN_WRANGLER_REAL_REMOTE_JUPYTER: "0"'),
     source.replace("OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor", "OPEN_WRANGLER_PACKAGED_EDITORS: vscode"),
+    source.replace(
+      "name: Test the full package in headless VS Code\n        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix\n        env:\n          OPEN_WRANGLER_PACKAGED_EDITORS: vscode",
+      "name: Test the full package in headless VS Code\n        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix\n        env:\n          OPEN_WRANGLER_PACKAGED_EDITORS: cursor"
+    ),
+    source.replace(
+      "      - id: packaged_vscode\n        name: Test the full package in headless VS Code",
+      "      - id: packaged_vscode\n        continue-on-error: true\n        name: Test the full package in headless VS Code"
+    ),
+    source.replace(
+      "      - id: packaged_cursor\n        name: Test the full package in private-display Cursor",
+      "      - id: packaged_cursor\n        continue-on-error: true\n        name: Test the full package in private-display Cursor"
+    ),
+    source.replace(
+      "OPEN_WRANGLER_EDITOR_DISPLAY: xvfb\n          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_cursor_xvfb.outputs.executable }}",
+      "OPEN_WRANGLER_EDITOR_DISPLAY: current\n          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_cursor_xvfb.outputs.executable }}"
+    ),
+    source.replace(
+      "OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_cursor_xvfb.outputs.executable }}",
+      "OPEN_WRANGLER_XVFB_EXECUTABLE: /usr/bin/Xvfb"
+    ),
+    source.replace(
+      'appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\\n`, "utf8");',
+      'appendFileSync(process.env.GITHUB_OUTPUT, "executable=/usr/bin/Xvfb\\n", "utf8");'
+    ),
+    source.replace("id: prepare_cursor_xvfb", "id: prepare_unverified_cursor_display"),
+    source.replace("id: canonical_vscode", "id: stale_canonical_vscode"),
+    source.replace("id: canonical_cursor", "id: stale_canonical_cursor"),
+    source.replace(
+      "path: ${{ steps.packaged_cursor.outputs.evidence_path }}",
+      "path: ${{ steps.packaged_vscode.outputs.evidence_path }}"
+    ),
     source.replace("if: ${{ inputs.publish == true }}", "if: ${{ inputs.publish != false }}"),
     source.replace("environment: publishing", "environment: stable-release"),
     source.replace('test "$REMOTE_SSH_RESULT" = "success"', 'test "$REMOTE_SSH_RESULT" != "failure"'),
@@ -26,12 +158,42 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       'git ls-remote --exit-code --refs origin "refs/tags/ignored"'
     ),
     source.replace(
+      '0) echo "Refusing to replace existing remote tag $RELEASE_TAG." >&2; exit 1 ;;',
+      '0) echo "Ignoring existing remote tag $RELEASE_TAG." ;;'
+    ),
+    source.replace(
+      '          test "$EVENT_REF_TYPE" = "branch"\n          test "$EVENT_REF" = "refs/heads/main"',
+      "          true\n          true"
+    ),
+    source.replace(
+      '          test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"\n          test -z "$(git status --porcelain --untracked-files=no)"\n          test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"',
+      "          true\n          true\n          true"
+    ),
+    source.replace(
       "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
       "softprops/action-gh-release@v2"
     ),
+    source.replace(
+      "          tag_name: ${{ inputs.release_tag }}",
+      "          tag_name: ${{ inputs.release_tag }}\n          repository: attacker/example"
+    ),
+    source.replace(
+      "      - name: Upload installed-performance evidence\n        if: ${{ steps.installed_performance.outcome == 'success' }}\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: stable-release-installed-performance\n          path: ${{ runner.temp }}/openwrangler-installed-performance-${{ github.run_id }}-${{ github.run_attempt }}.json\n          if-no-files-found: error\n          retention-days: 90\n          compression-level: 9\n          include-hidden-files: false\n",
+      ""
+    ),
+    source.replace(
+      "      - run: npm run test:coverage\n",
+      "      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a\n        with:\n          name: private-workspace\n          path: .\n      - run: npm run test:coverage\n"
+    ),
+    source.replace(
+      "  package:\n    runs-on: ubuntu-24.04",
+      "  package:\n    runs-on: ubuntu-24.04\n    container: &loop\n      loop: *loop"
+    ),
+    source.replace("    timeout-minutes: 60", "    timeout-minutes: .nan"),
     `${source}\n# ovsX publish must never appear in this workflow\n`
   ];
-  for (const candidate of mutations) {
+  for (const [index, candidate] of mutations.entries()) {
+    assert.notEqual(candidate, source, `mutation ${index + 1} must alter the workflow source`);
     assert.notDeepEqual(inspectStableReleaseWorkflow(candidate), []);
   }
 });

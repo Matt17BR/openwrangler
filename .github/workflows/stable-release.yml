@@ -167,6 +167,12 @@ jobs:
         env:
           VSCODE_TEST_VERSION: stable
       - run: npm run build:test-extension
+      - id: canonical_vscode
+        name: Reverify the exact canonical stable artifact for cross-platform VS Code
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test packaged VS Code
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -183,6 +189,12 @@ jobs:
           retention-days: 7
           compression-level: 9
           include-hidden-files: false
+      - id: canonical_cursor
+        name: Reverify the exact canonical stable artifact for cross-platform Cursor
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: cursor_smoke
         name: Test pinned Cursor platform smoke
         run: node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -256,18 +268,73 @@ jobs:
       - run: npm run audit:python
       - run: npm run benchmark:runtime
       - run: npm run build:test-extension
-      - id: packaged_editor
-        name: Test the full package in VS Code and Cursor
+      - id: canonical_vscode
+        name: Reverify the exact canonical stable artifact for VS Code
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - id: packaged_vscode
+        name: Test the full package in headless VS Code
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
         env:
-          OPEN_WRANGLER_PACKAGED_EDITORS: vscode,cursor
+          OPEN_WRANGLER_PACKAGED_EDITORS: vscode
           VSCODE_TEST_VERSION: stable
-      - name: Upload packaged-editor failure diagnostics
-        if: ${{ always() && steps.packaged_editor.outcome == 'failure' && steps.packaged_editor.outputs.evidence_ready == 'true' }}
+      - name: Upload VS Code failure diagnostics
+        if: ${{ always() && steps.packaged_vscode.outcome == 'failure' && steps.packaged_vscode.outputs.evidence_ready == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: stable-release-vscode-${{ runner.os }}-${{ github.run_attempt }}
-          path: ${{ steps.packaged_editor.outputs.evidence_path }}
+          path: ${{ steps.packaged_vscode.outputs.evidence_path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 9
+          include-hidden-files: false
+      - id: prepare_cursor_xvfb
+        name: Prepare pinned private Xvfb for Cursor
+        shell: node {0}
+        run: |
+          const { execFileSync } = require("node:child_process");
+          const { X_OK } = require("node:constants");
+          const { accessSync, appendFileSync, lstatSync } = require("node:fs");
+          const { isAbsolute } = require("node:path");
+
+          const output = execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"], {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "inherit"]
+          });
+          if (!/^[^\0\r\n]+\n?$/u.test(output)) {
+            throw new Error("The Xvfb preparer must print exactly one path.");
+          }
+          const executable = output.endsWith("\n") ? output.slice(0, -1) : output;
+          if (!isAbsolute(executable)) throw new Error("The prepared Xvfb path must be absolute.");
+          const stat = lstatSync(executable);
+          if (!stat.isFile() || stat.isSymbolicLink()) {
+            throw new Error("The prepared Xvfb path must be a regular, non-symlink file.");
+          }
+          accessSync(executable, X_OK);
+          appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
+      - id: canonical_cursor
+        name: Reverify the exact canonical stable artifact for Cursor
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - id: packaged_cursor
+        name: Test the full package in private-display Cursor
+        run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
+        env:
+          OPEN_WRANGLER_PACKAGED_EDITORS: cursor
+          OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
+          OPEN_WRANGLER_XVFB_EXECUTABLE: ${{ steps.prepare_cursor_xvfb.outputs.executable }}
+          VSCODE_TEST_VERSION: stable
+      - name: Upload Cursor failure diagnostics
+        if: ${{ always() && steps.packaged_cursor.outcome == 'failure' && steps.packaged_cursor.outputs.evidence_ready == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-release-cursor-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ steps.packaged_cursor.outputs.evidence_path }}
           if-no-files-found: error
           retention-days: 7
           compression-level: 9
@@ -407,6 +474,12 @@ jobs:
           }
           accessSync(executable, X_OK);
           appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`, "utf8");
+      - id: canonical_jupyter
+        name: Reverify the exact canonical stable artifact for released Jupyter
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: packaged_editor
         name: Test released Jupyter in the exact packaged VSIX
         run: /usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix
@@ -509,13 +582,19 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
+      - id: canonical_remote
+        name: Reverify the exact canonical stable artifact for Remote SSH
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - id: remote_workspace
         name: Test packaged VS Code over Remote SSH
         run: >-
           npm run test:remote-workspace --
-          ${{ steps.canonical.outputs.candidate_path }}
-          ${{ steps.canonical.outputs.candidate_sha256 }}
-          ${{ steps.canonical.outputs.candidate_bytes }}
+          ${{ steps.canonical_remote.outputs.candidate_path }}
+          ${{ steps.canonical_remote.outputs.candidate_sha256 }}
+          ${{ steps.canonical_remote.outputs.candidate_bytes }}
         env:
           OPEN_WRANGLER_EDITOR_DISPLAY: xvfb
           OPEN_WRANGLER_REMOTE_PYTHON: ${{ github.workspace }}/.remote-venv/bin/python
@@ -590,6 +669,12 @@ jobs:
             0) echo "Refusing to replace existing remote tag $RELEASE_TAG." >&2; exit 1 ;;
             *) exit "$status" ;;
           esac
+      - id: canonical_release
+        name: Reverify the exact canonical artifact for final publication
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - name: Create the stable GitHub release without rebuilding
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:

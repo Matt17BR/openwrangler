@@ -629,7 +629,7 @@ const INCOMPLETE_XVFB_DIAGNOSTIC =
 const UNREADABLE_EDITOR_DIAGNOSTIC = "Unreadable acceptance failure";
 const UNREADABLE_AGGREGATE_DIAGNOSTIC = "Nested acceptance failures were omitted because the aggregate was unreadable.";
 const CURSOR_HEADLESS_XVFB_REMEDIATION =
-  "Cursor aborted before the acceptance harness started on Linux's zero-window headless Ozone platform. This can be an editor-platform incompatibility; install Xvfb and rerun explicitly with OPEN_WRANGLER_EDITOR_DISPLAY=xvfb (and set OPEN_WRANGLER_XVFB_EXECUTABLE if the binary is not on PATH). The compatibility run remains isolated and invisible.";
+  "Cursor failed before the acceptance harness started on Linux's zero-window headless Ozone platform. This can be an editor-platform incompatibility; install Xvfb and rerun explicitly with OPEN_WRANGLER_EDITOR_DISPLAY=xvfb (and set OPEN_WRANGLER_XVFB_EXECUTABLE if the binary is not on PATH). The compatibility run remains isolated and invisible.";
 const EDITOR_DOWNLOAD_VERSION = /^(?:stable|insiders|(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/u;
 const ISOLATED_EDITOR_ARGS = [
   "--force-disable-user-env",
@@ -3347,6 +3347,7 @@ export async function runEditorAcceptancePhase(
       platform,
       displayMode,
       runId,
+      editorSpawned: true,
       exitState: observation.exitState,
       resultSnapshot: observation.resultSnapshot
     };
@@ -3926,13 +3927,15 @@ export function createEditorAcceptanceFailure(kind, summary, context, cause) {
 }
 
 function editorAcceptanceRemediation(kind, context, editorKey, progress, readProgress) {
+  const knownHeadlessCursorStartupFailure =
+    (kind === "premature-exit" && context.exitState?.error === undefined && context.exitState?.signal === "SIGABRT") ||
+    (kind === "outer-timeout" && context.timeoutKind === "inactivity");
   if (
-    kind === "premature-exit" &&
+    knownHeadlessCursorStartupFailure &&
     context.platform === "linux" &&
     context.displayMode === "headless" &&
     editorKey === "cursor" &&
-    context.exitState?.error === undefined &&
-    context.exitState?.signal === "SIGABRT" &&
+    context.editorSpawned === true &&
     readProgress &&
     context.treeVerifiedStopped !== false &&
     progress === `${context.phase}:runner-spawn`
