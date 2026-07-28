@@ -264,9 +264,8 @@ export function App() {
     (next: GridViewState) => {
       storeGridViewState(next);
       pendingGridViewState.current = next;
-      if (gridViewStateTimer.current === undefined) {
-        gridViewStateTimer.current = window.setTimeout(flushGridViewState, 100);
-      }
+      if (gridViewStateTimer.current !== undefined) window.clearTimeout(gridViewStateTimer.current);
+      gridViewStateTimer.current = window.setTimeout(flushGridViewState, 100);
     },
     [flushGridViewState, storeGridViewState]
   );

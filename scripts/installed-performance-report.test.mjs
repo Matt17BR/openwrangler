@@ -8,9 +8,13 @@ import test from "node:test";
 import {
   INSTALLED_PERFORMANCE_BOUNDARY,
   INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL,
+  INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
   INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL,
+  INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
   INSTALLED_PERFORMANCE_OUTLIER_POLICY,
   INSTALLED_PERFORMANCE_PHASE_PROTOCOL,
+  INSTALLED_PERFORMANCE_REPORT_PROTOCOL,
+  INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT,
   assertInstalledPerformanceEvidenceGate,
   assertInstalledPerformanceReleaseGate,
   buildInstalledPerformanceReport,
@@ -24,7 +28,8 @@ import {
 import { publishInstalledPerformanceReleaseResult } from "./run-installed-performance.mjs";
 
 const sha = (digit) => digit.repeat(64);
-const sample = (value) => Array.from({ length: 10 }, (_, index) => value + index / 100);
+const sample = (value, count = INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT) =>
+  Array.from({ length: count }, (_, index) => value + index / 100);
 
 test("duration summaries retain every sample and use nearest-rank p95", () => {
   const samples = [10, 1, 8, 3, 9, 2, 7, 4, 6, 5];
@@ -94,6 +99,30 @@ test("phase validation rejects provenance drift and source data disclosure", () 
       }),
     /shipped product configuration/u
   );
+
+  const shortFirstGrid = structuredClone(phase);
+  shortFirstGrid.measurement.samplesMs.pop();
+  shortFirstGrid.measurement.cacheProofs.pop();
+  assert.throws(() => validateInstalledPerformancePhase(shortFirstGrid), /exactly 10 samples/u);
+
+  const shortInteraction = interactionPhase("vscode");
+  shortInteraction.measurement.cachedSamplesMs.pop();
+  assert.throws(() => validateInstalledPerformancePhase(shortInteraction), /exactly 40 samples/u);
+
+  const smokeInteraction = interactionPhase("vscode");
+  smokeInteraction.fixture = { format: "parquet", rows: 5_000, columns: 8, sha256: sha("e") };
+  smokeInteraction.measurement.cachedSamplesMs = sample(10, INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT);
+  smokeInteraction.measurement.uncachedSamplesMs = sample(
+    50,
+    INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT
+  );
+  smokeInteraction.measurement.heartbeatSamplesMs = sample(
+    5,
+    INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT
+  );
+  assert.doesNotThrow(() => validateInstalledPerformancePhase(smokeInteraction));
+  smokeInteraction.measurement.uncachedSamplesMs.pop();
+  assert.throws(() => validateInstalledPerformancePhase(smokeInteraction), /exactly 10 samples/u);
 });
 
 test("cache evidence retains every proof and rejects forged eviction verification", () => {
@@ -685,7 +714,7 @@ test("candidate build provenance is bound to its release channel", () => {
   assert.throws(() => assertInstalledPerformanceReleaseGate(evidenceReport), /missing or unknown fields/u);
   const forgedReleaseReport = structuredClone(evidenceReport);
   delete forgedReleaseReport.evidenceGate;
-  forgedReleaseReport.protocol = "openwrangler-installed-performance-report-v6";
+  forgedReleaseReport.protocol = INSTALLED_PERFORMANCE_REPORT_PROTOCOL;
   forgedReleaseReport.releaseGate = evidenceReport.evidenceGate;
   assert.throws(() => assertInstalledPerformanceReleaseGate(forgedReleaseReport), /incompatible candidate provenance/u);
   assert.throws(() => assertInstalledPerformanceEvidenceGate(report), /missing or unknown fields/u);
@@ -716,7 +745,7 @@ test("aggregate verdicts retain dirty-source and missing-editor release failures
 
 test("numeric failure classification fails closed when any structural gate also fails", () => {
   const cursor = editorRun("cursor");
-  cursor.phases.at(-1).measurement.cachedSamplesMs[9] = 100;
+  cursor.phases.at(-1).measurement.cachedSamplesMs.splice(-3, 3, 100, 100, 100);
   const report = buildInstalledPerformanceReport({
     generatedAtUtc: "2026-07-27T00:00:00.000Z",
     candidate: candidate(),
@@ -954,7 +983,7 @@ function firstGridPhase(key, format, sourceCache, duration) {
       kind: "first-grid",
       boundary: INSTALLED_PERFORMANCE_BOUNDARY,
       sourceCache,
-      cacheProofs: Array.from({ length: 10 }, () => cacheProof(sourceCache)),
+      cacheProofs: Array.from({ length: INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT }, () => cacheProof(sourceCache)),
       samplesMs: sample(duration)
     }
   };
@@ -989,9 +1018,9 @@ function interactionPhase(key) {
     fixture: { format: "parquet", rows: fixture.rows, columns: fixture.columns, sha256: fixture.sha256 },
     measurement: {
       kind: "grid-interaction",
-      cachedSamplesMs: sample(10),
-      uncachedSamplesMs: sample(50),
-      heartbeatSamplesMs: sample(5),
+      cachedSamplesMs: sample(10, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
+      uncachedSamplesMs: sample(50, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
+      heartbeatSamplesMs: sample(5, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
       filter: { completed: true, latencyMs: 100, responsiveness: responsiveness() },
       sort: { completed: true, latencyMs: 110, responsiveness: responsiveness() },
       profiling: {
