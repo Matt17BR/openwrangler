@@ -3772,6 +3772,19 @@ test("acceptance failures publish complete structured diagnostics", async () => 
     assert.doesNotMatch(earlyCursorFailure.details.remediation, /OPEN_WRANGLER_EDITOR_DISPLAY=current/u);
     assert.equal(earlyCursorFailure.details.remediation.includes(directory), false);
 
+    const inactiveCursorFailure = createEditorAcceptanceFailure(
+      "outer-timeout",
+      "Cursor seed acceptance stopped making progress.",
+      {
+        ...earlyCursorContext,
+        elapsedMs: 180_032,
+        exitState: { code: null, signal: "SIGKILL" },
+        timeoutKind: "inactivity"
+      }
+    );
+    assert.match(inactiveCursorFailure.message, /OPEN_WRANGLER_EDITOR_DISPLAY=xvfb/u);
+    assert.match(inactiveCursorFailure.details.remediation, /isolated and invisible/u);
+
     const noRemediation = (overrides) =>
       createEditorAcceptanceFailure("premature-exit", "Editor exited before writing a result.", {
         ...earlyCursorContext,
@@ -3783,6 +3796,14 @@ test("acceptance failures publish complete structured diagnostics", async () => 
     assert.equal(noRemediation({ exitState: { code: null, signal: "SIGTERM" } }), undefined);
     assert.equal(noRemediation({ readProgress: false }), undefined);
     assert.equal(noRemediation({ treeVerifiedStopped: false }), undefined);
+    assert.equal(
+      createEditorAcceptanceFailure("outer-timeout", "Cursor reached the hard deadline.", {
+        ...earlyCursorContext,
+        exitState: { code: null, signal: "SIGKILL" },
+        timeoutKind: "hard"
+      }).details.remediation,
+      undefined
+    );
     writeAcceptanceProgress(progressPath, progressEnvelope("seed", "seed:harness-start"));
     assert.equal(noRemediation({}), undefined);
   } finally {

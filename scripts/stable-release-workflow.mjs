@@ -11,6 +11,9 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
+const PACKAGED_EDITOR_COMMAND =
+  "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
+const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
 const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
 const CANONICAL_PATHS = [
@@ -86,6 +89,58 @@ function inspectPinnedActions(workflow, problems) {
         problems.push(`${jobName} action ${step.uses} must be pinned to one full commit.`);
       }
     }
+  }
+}
+
+function inspectFailureUpload(jobSteps, editorStep, expectedName, label, problems) {
+  const editorIndex = jobSteps.indexOf(editorStep);
+  const upload = jobSteps[editorIndex + 1];
+  if (
+    editorIndex < 0 ||
+    upload?.uses !== UPLOAD_ACTION ||
+    upload?.if !==
+      `\${{ always() && steps.${editorStep?.id}.outcome == 'failure' && steps.${editorStep?.id}.outputs.evidence_ready == 'true' }}` ||
+    !exactKeys(upload.with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "retention-days",
+      "compression-level",
+      "include-hidden-files"
+    ]) ||
+    upload.with.name !== expectedName ||
+    upload.with.path !== `\${{ steps.${editorStep?.id}.outputs.evidence_path }}` ||
+    upload.with["if-no-files-found"] !== "error" ||
+    upload.with["retention-days"] !== 7 ||
+    upload.with["compression-level"] !== 9 ||
+    upload.with["include-hidden-files"] !== false
+  ) {
+    problems.push(`${label} must immediately upload only its sealed failure diagnostics.`);
+  }
+}
+
+function inspectCursorXvfbPreparation(jobSteps, cursorStep, problems) {
+  const preparations = jobSteps.filter((step) => step?.id === "prepare_cursor_xvfb");
+  const preparation = preparations[0];
+  const requiredScriptFragments = [
+    'execFileSync(process.execPath, ["scripts/prepare-xvfb.mjs", "--print-path"]',
+    "if (!/^[^\\0\\r\\n]+\\n?$/u.test(output))",
+    "if (!isAbsolute(executable))",
+    "lstatSync(executable)",
+    "!stat.isFile() || stat.isSymbolicLink()",
+    "accessSync(executable, X_OK)",
+    "appendFileSync(process.env.GITHUB_OUTPUT"
+  ];
+  if (
+    preparations.length !== 1 ||
+    !exactKeys(preparation, ["id", "name", "shell", "run"]) ||
+    preparation.name !== "Prepare pinned private Xvfb for Cursor" ||
+    preparation.shell !== "node {0}" ||
+    typeof preparation.run !== "string" ||
+    requiredScriptFragments.some((fragment) => !preparation.run.includes(fragment)) ||
+    jobSteps.indexOf(preparation) >= jobSteps.indexOf(cursorStep)
+  ) {
+    problems.push("linux-acceptance must prepare and verify one pinned private Xvfb before launching Cursor.");
   }
 }
 
@@ -244,13 +299,48 @@ export function inspectStableReleaseWorkflow(source) {
       problems.push(`linux-acceptance must run ${required}.`);
     }
   }
-  const linuxEditorStep = steps(linux).find(
-    (step) =>
-      command(step?.run) ===
-      "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix"
-  );
-  if (linuxEditorStep?.env?.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode,cursor") {
-    problems.push("linux-acceptance must run the full packaged harness in VS Code and Cursor under D-Bus.");
+  const linuxSteps = steps(linux);
+  const linuxEditorSteps = linuxSteps.filter((step) => command(step?.run) === PACKAGED_EDITOR_COMMAND);
+  const linuxVscodeStep = linuxEditorSteps.find((step) => step?.id === "packaged_vscode");
+  const linuxCursorStep = linuxEditorSteps.find((step) => step?.id === "packaged_cursor");
+  if (
+    linuxEditorSteps.length !== 2 ||
+    linuxVscodeStep?.name !== "Test the full package in headless VS Code" ||
+    !exactKeys(linuxVscodeStep?.env, ["OPEN_WRANGLER_PACKAGED_EDITORS", "VSCODE_TEST_VERSION"]) ||
+    linuxVscodeStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "vscode" ||
+    linuxVscodeStep.env.VSCODE_TEST_VERSION !== "stable" ||
+    linuxCursorStep?.name !== "Test the full package in private-display Cursor" ||
+    !exactKeys(linuxCursorStep?.env, [
+      "OPEN_WRANGLER_PACKAGED_EDITORS",
+      "OPEN_WRANGLER_EDITOR_DISPLAY",
+      "OPEN_WRANGLER_XVFB_EXECUTABLE",
+      "VSCODE_TEST_VERSION"
+    ]) ||
+    linuxCursorStep.env.OPEN_WRANGLER_PACKAGED_EDITORS !== "cursor" ||
+    linuxCursorStep.env.OPEN_WRANGLER_EDITOR_DISPLAY !== "xvfb" ||
+    linuxCursorStep.env.OPEN_WRANGLER_XVFB_EXECUTABLE !== PREPARED_CURSOR_XVFB ||
+    linuxCursorStep.env.VSCODE_TEST_VERSION !== "stable" ||
+    linuxSteps.indexOf(linuxVscodeStep) >= linuxSteps.indexOf(linuxCursorStep)
+  ) {
+    problems.push(
+      "linux-acceptance must test the exact package in headless VS Code and pinned private-Xvfb Cursor under D-Bus."
+    );
+  } else {
+    inspectFailureUpload(
+      linuxSteps,
+      linuxVscodeStep,
+      "stable-release-vscode-${{ runner.os }}-${{ github.run_attempt }}",
+      "linux-acceptance VS Code",
+      problems
+    );
+    inspectCursorXvfbPreparation(linuxSteps, linuxCursorStep, problems);
+    inspectFailureUpload(
+      linuxSteps,
+      linuxCursorStep,
+      "stable-release-cursor-${{ runner.os }}-${{ github.run_attempt }}",
+      "linux-acceptance Cursor",
+      problems
+    );
   }
 
   const performance = workflow.jobs["installed-performance"];
