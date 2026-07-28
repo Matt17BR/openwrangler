@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,7 +21,7 @@ function git(root, arguments_) {
 }
 
 function repository(context, packageJson = manifest()) {
-  const root = mkdtempSync(join(tmpdir(), "ow-registry-source-"));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-source-")));
   context.after(() => rmSync(root, { force: true, recursive: true }));
   git(root, ["init", "--quiet"]);
   git(root, ["config", "user.email", "registry-test@openwrangler.invalid"]);
