@@ -4804,21 +4804,41 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       };
     });
     await capturePage.mouse.move(Math.max(1, viewport.width - 8), Math.max(1, viewport.height - 8));
+    await clearNotifications();
     await capturePage
       .locator(".monaco-hover")
       .waitFor({ state: "hidden", timeout: 2_000 })
       .catch(() => {});
+    const transientUi = await inspectCaptureTransientUi();
     assert.equal(
-      await capturePage
-        .locator(
-          ".monaco-hover:visible, .quick-input-widget:visible, .monaco-dialog-box:visible, .notifications-toasts:visible"
-        )
-        .count(),
+      transientUi.length,
       0,
-      "A packaged screenshot must not contain transient workbench UI."
+      `A packaged screenshot must not contain transient workbench UI: ${JSON.stringify(transientUi)}`
     );
     if (scene) await assertPackagedScreenshotScene(scene);
     await captureWorkbenchScreenshot(capturePage, destination);
+  }
+
+  async function inspectCaptureTransientUi(): Promise<Array<{ kind: string; text: string }>> {
+    const selectors = [
+      ["hover", ".monaco-hover:visible"],
+      ["quick input", ".quick-input-widget:visible"],
+      ["dialog", ".monaco-dialog-box:visible"],
+      ["menu", ".context-view.monaco-menu-container:visible"],
+      [
+        "notification",
+        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+      ]
+    ] as const;
+    const entries = await Promise.all(
+      selectors.map(async ([kind, selector]) =>
+        (await capturePage.locator(selector).allInnerTexts()).map((text) => ({
+          kind,
+          text: text.replace(/\s+/gu, " ").trim().slice(0, 500)
+        }))
+      )
+    );
+    return entries.flat();
   }
 
   async function composeNativeViews(scene: "hero" | "transform"): Promise<void> {
@@ -5028,10 +5048,26 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     if (availableCommands.has("notifications.hideList")) {
       await vscode.commands.executeCommand("notifications.hideList");
     }
+    const notificationItems = capturePage.locator(
+      ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+    );
     await capturePage
-      .locator(".notifications-toasts")
+      .locator(
+        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+      )
+      .first()
       .waitFor({ state: "hidden", timeout: 10_000 })
-      .catch(() => {});
+      .catch(async (error: unknown) => {
+        const visible = (await notificationItems.allInnerTexts()).map((text) =>
+          text.replace(/\s+/gu, " ").trim().slice(0, 500)
+        );
+        throw new Error(
+          `Visible notifications remained after deterministic workbench cleanup: ${JSON.stringify(visible)}`,
+          {
+            cause: error
+          }
+        );
+      });
   }
 
   function contributedTheme(uiTheme: string, fallback: string): string {
