@@ -110,6 +110,7 @@ stages:
                     scriptLocation: inlineScript
                     inlineScript: |
                       set -euo pipefail
+                      node scripts/marketplace-identity-profile.mjs
                       npx --no-install vsce verify-pat Matt17BR --azure-credential
                       node scripts/verify-registry-release-artifact.mjs canonical-release
                       if [ "$RELEASE_PRERELEASE" = "true" ]; then
