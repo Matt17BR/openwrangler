@@ -64,6 +64,20 @@ describe("VSIX production entry allowlist", () => {
     expect(vscodeIgnore).toContain("vite*.config.ts");
   });
 
+  it("cleans and excludes Python wheel-build residue from production packages", () => {
+    const gitIgnore = readFileSync(join(process.cwd(), ".gitignore"), "utf8")
+      .split(/\r?\n/u)
+      .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
+    const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
+      .split(/\r?\n/u)
+      .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
+    const cleanScript = readFileSync(join(process.cwd(), "scripts", "clean.mjs"), "utf8");
+
+    expect(gitIgnore).toContain("python/build/");
+    expect(vscodeIgnore).toContain("python/build/**");
+    expect(cleanScript).toContain('"python/build"');
+  });
+
   it("requires and narrowly permits the production webview assets", () => {
     const result = inspectVsixEntries(requiredVsixEntries);
 
