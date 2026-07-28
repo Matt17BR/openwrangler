@@ -34,6 +34,7 @@ import {
 import type { Jupyter, JupyterServerCollection, KernelStatus } from "@vscode/jupyter-extension";
 import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
+import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
 import {
   normalizeNotebookOutputPayload,
@@ -573,6 +574,10 @@ export async function run(): Promise<void> {
       extension,
       vscode.Uri.joinPath(workspace, "fixtures", "[Live] sample.csv")
     );
+    if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
+      recordAcceptanceProgress("platform-smoke:screenshots");
+      await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
+    }
     recordAcceptanceProgress("platform-smoke:complete");
     console.log("Open Wrangler packaged platform smoke passed.");
     return;
@@ -4436,11 +4441,11 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     const opened = testing.activeSession();
     assert.ok(opened, "The screenshot fixture must publish one active session.");
     assert.deepEqual(opened.metadata.shape, { rows: 12, columns: 6 });
-    assert.deepEqual(opened.metadata.filterModel, { filters: [], sort: [] });
+    assert.deepEqual(opened.metadata.filterModel, { logic: "and", filters: [], sort: [] });
     assert.deepEqual(opened.metadata.steps, []);
     assert.equal(opened.metadata.draftStep, undefined);
     assert.deepEqual(opened.viewState, {
-      filterModel: { filters: [], sort: [] },
+      filterModel: { logic: "and", filters: [], sort: [] },
       columnWidths: {},
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
@@ -7604,9 +7609,14 @@ async function exercisePackagedFileInputs(testing: TestApi, workspace: vscode.Ur
       "utf8"
     );
     writeFileSync(path.join(directory, "configured.tsv"), "name|value\nalpha|1\nbeta|2\n", "utf8");
+    const damagedCsvPrefix = Buffer.from(
+      `name,value\n${"a".repeat(IMPORT_DETECTION_SAMPLE_BYTES - Buffer.byteLength("name,value\n", "utf8"))}`,
+      "utf8"
+    );
+    assert.equal(damagedCsvPrefix.length, IMPORT_DETECTION_SAMPLE_BYTES);
     writeFileSync(
       path.join(directory, "damaged.csv"),
-      Buffer.concat([Buffer.from("name,value\nbroken-", "utf8"), Buffer.from([0xff]), Buffer.from(",1\n", "utf8")])
+      Buffer.concat([damagedCsvPrefix, Buffer.from([0xff]), Buffer.from(",1\n", "utf8")])
     );
     writeFileSync(path.join(directory, "damaged.jsonl"), '{"name":"broken"\n', "utf8");
     writeFileSync(path.join(directory, "damaged.parquet"), "PAR1broken", "utf8");
