@@ -421,6 +421,7 @@ export async function inspectVsixArchive(bytes) {
   return Object.freeze({
     archiveEntries: Object.freeze([...entries]),
     entryDigests: Object.freeze([...entryDigests].map(([entry, sha256]) => Object.freeze([entry, sha256]))),
+    entrySizes: Object.freeze([...entrySizes].map(([entry, size]) => Object.freeze([entry, size]))),
     entryCount: entries.length,
     packagedPackageJson: text("extension/package.json"),
     packagedPythonVersionFile: text("extension/python/openwrangler_runtime/version.py"),

@@ -64,6 +64,14 @@ describe("VSIX production entry allowlist", () => {
     expect(vscodeIgnore).toContain("vite*.config.ts");
   });
 
+  it("excludes registry pipeline definitions from production packages", () => {
+    const vscodeIgnore = readFileSync(join(process.cwd(), ".vscodeignore"), "utf8")
+      .split(/\r?\n/u)
+      .filter((entry) => entry.length > 0 && !entry.startsWith("#"));
+
+    expect(vscodeIgnore).toContain("azure-pipelines-marketplace.yml");
+  });
+
   it("cleans and excludes Python wheel-build residue from production packages", () => {
     const gitIgnore = readFileSync(join(process.cwd(), ".gitignore"), "utf8")
       .split(/\r?\n/u)

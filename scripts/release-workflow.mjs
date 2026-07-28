@@ -10,7 +10,14 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
-const PREVIEW_RELEASE_JOB_NAMES = ["preview-metadata", "build", "validate", "release-acceptance", "release"];
+const PREVIEW_RELEASE_JOB_NAMES = [
+  "preview-metadata",
+  "build",
+  "validate",
+  "release-acceptance",
+  "release",
+  "promote-open-vsx"
+];
 const STABLE_CANDIDATE_ARTIFACT_PATHS = [
   "performance-evidence/openwrangler.vsix",
   "performance-evidence/openwrangler.vsix.sha256",
@@ -638,7 +645,7 @@ export function inspectReleaseWorkflow(contents) {
     PREVIEW_RELEASE_JOB_NAMES.some((name) => !hasOwn(workflow.jobs, name))
   ) {
     problems.push(
-      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, and release."
+      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, release, and promote-open-vsx."
     );
   }
 
@@ -857,6 +864,22 @@ export function inspectReleaseWorkflow(contents) {
     ) {
       problems.push("release.yml GitHub Release action must publish only the validated canonical files.");
     }
+  }
+
+  const openVsxPromotionJob = workflow.jobs["promote-open-vsx"];
+  if (
+    !isRecord(openVsxPromotionJob) ||
+    !isDeepStrictEqual(openVsxPromotionJob, {
+      needs: "release",
+      uses: "./.github/workflows/open-vsx-promotion.yml",
+      with: {
+        release_tag: EVENT_TAG
+      }
+    })
+  ) {
+    problems.push(
+      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
+    );
   }
 
   return problems;

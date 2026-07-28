@@ -2,6 +2,13 @@
 
 All notable changes to Open Wrangler are documented here. The project follows Semantic Versioning while prerelease versions remain unstable.
 
+## [Unreleased]
+
+### Changed
+
+- Added a protected, idempotent Open VSX promotion workflow for stable, preview, and historical GitHub Releases. Preview publication calls the reusable workflow directly after its GitHub prerelease is public; manually or externally published releases can use the release event; and protected-main recovery can backfill an existing tag such as `v1.0.1`. Every path checks out reviewed automation separately from the immutable release source, downloads the exact public GitHub assets without rebuilding, verifies the source commit, channel, manifest, checksum, and VSIX bytes before authentication and publication, then requires the public Open VSX metadata, publisher, checksum, and downloadable bytes to match.
+- Added the source-controlled Microsoft Marketplace promotion path for every GitHub Release. Automatic tag runs and protected-main manual backfills keep automation source separate from the selected immutable release commit, download and revalidate the exact channel-specific GitHub assets, publish stable or pre-release metadata with the personal `Matt17BR` workload identity through lockfile-pinned VSCE, and then require the public Marketplace upload SHA plus normalized package metadata and payload contents to match. Duplicate reruns are safe only when that proof succeeds; conflicting public versions fail closed.
+
 ## [1.0.1] - 2026-07-28
 
 ### Changed
@@ -18,8 +25,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
-- Bound packaged-editor grid discovery to the exact live session and inspect the newest retained Open Wrangler webviews first, so older hidden Cursor targets cannot starve the active-panel assertion.
-- Corrected the installed-editor release benchmark to map requested logical rows through the same bounded scroll-canvas constants as the production grid. Million-row acceptance now measures the intended cell instead of interpreting an uncompressed pixel offset as a different row.
 - Restored keyboard focus to a visible control when closing Filters / Sorts after entering through a column menu; a closed menu item or the document body can no longer be mistaken for a valid return target. Required multi-column checklists now use explicit group guidance instead of an invalid `aria-required` fieldset attribute.
 - Opened zero-byte, BOM-only, and whitespace-only CSV/TSV sources as explicit 0-row × 0-column datasets in Pandas, Polars, and DuckDB instead of surfacing raw parser failures. Non-empty malformed input still fails in its native reader, and opening never changes source bytes.
 - Kept the installed dataframe surface on the declared VS Code foreground and editor-background tokens instead of inheriting a subtly different workbench color from the host webview.

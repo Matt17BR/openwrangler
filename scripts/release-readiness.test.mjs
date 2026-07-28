@@ -1165,7 +1165,7 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   });
   assert.ok(
     extraWriteCapableReleaseJob.includes(
-      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, and release."
+      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, release, and promote-open-vsx."
     )
   );
 
@@ -1370,5 +1370,23 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   });
   assert.ok(
     postChecksumMutation.includes("release.yml release job must contain exactly download, checksum, and release steps.")
+  );
+
+  const missingDirectPromotion = mutate((workflow) => {
+    delete workflow.jobs["promote-open-vsx"];
+  });
+  assert.ok(
+    missingDirectPromotion.includes(
+      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
+    )
+  );
+
+  const eventOnlyPromotion = mutate((workflow) => {
+    workflow.jobs["promote-open-vsx"].uses = "./.github/workflows/not-the-reviewed-promotion.yml";
+  });
+  assert.ok(
+    eventOnlyPromotion.includes(
+      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
+    )
   );
 });

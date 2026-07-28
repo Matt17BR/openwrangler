@@ -1,0 +1,136 @@
+name: marketplace-$(Date:yyyyMMdd).$(Rev:r)
+
+trigger:
+  batch: true
+  branches:
+    exclude:
+      - "*"
+  tags:
+    include:
+      - "v*"
+
+pr: none
+
+parameters:
+  - name: marketplaceServiceConnection
+    displayName: Marketplace WIF service connection
+    type: string
+    default: openwrangler-marketplace-publishing
+    values:
+      - openwrangler-marketplace-publishing
+  - name: existingReleaseTag
+    displayName: Existing GitHub release tag (manual protected-main runs only)
+    type: string
+    default: ""
+
+stages:
+  - stage: Intake
+    displayName: Bind immutable release tag
+    jobs:
+      - job: Bind
+        displayName: Validate release source
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-24.04
+        workspace:
+          clean: all
+        steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+            fetchTags: true
+            persistCredentials: false
+          - task: NodeTool@0
+            displayName: Use Node.js 22
+            inputs:
+              versionSpec: 22.x
+              checkLatest: false
+          - script: node scripts/marketplace-release-intake.mjs
+            name: release_intake
+            displayName: Classify the exact tag and package channel
+            env:
+              BUILD_REASON: $(Build.Reason)
+              BUILD_SOURCEBRANCH: $(Build.SourceBranch)
+              BUILD_SOURCEVERSION: $(Build.SourceVersion)
+              EXISTING_RELEASE_TAG: ${{ parameters.existingReleaseTag }}
+
+  - stage: Promote
+    displayName: Promote canonical GitHub release to Marketplace
+    dependsOn: Intake
+    condition: and(succeeded(), eq(dependencies.Intake.outputs['Bind.release_intake.promote'], 'true'))
+    lockBehavior: sequential
+    jobs:
+      - deployment: Marketplace
+        displayName: Publish and verify Microsoft Marketplace
+        timeoutInMinutes: 240
+        pool:
+          vmImage: ubuntu-24.04
+        workspace:
+          clean: all
+        environment: openwrangler-marketplace-publishing
+        variables:
+          releaseCommit: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseCommit']]
+          releasePrerelease: $[stageDependencies.Intake.Bind.outputs['release_intake.releasePrerelease']]
+          releaseTag: $[stageDependencies.Intake.Bind.outputs['release_intake.releaseTag']]
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  fetchDepth: 0
+                  fetchTags: true
+                  persistCredentials: false
+                - task: NodeTool@0
+                  displayName: Use Node.js 22
+                  inputs:
+                    versionSpec: 22.x
+                    checkLatest: false
+                - script: npm ci --ignore-scripts
+                  displayName: Restore the reviewed lockfile
+                - script: node scripts/download-canonical-github-release.mjs canonical-release
+                  displayName: Download the exact public GitHub release
+                  env:
+                    OPEN_WRANGLER_GITHUB_RELEASE_ATTEMPTS: 210
+                    OPEN_WRANGLER_GITHUB_RELEASE_DELAY_MS: 60000
+                    RELEASE_PRERELEASE: $(releasePrerelease)
+                    RELEASE_TAG: $(releaseTag)
+                - script: node scripts/verify-registry-release-artifact.mjs canonical-release
+                  displayName: Verify the canonical release before authentication
+                  env:
+                    AUTOMATION_SHA: $(Build.SourceVersion)
+                    EXPECTED_SHA: $(releaseCommit)
+                    RELEASE_PRERELEASE: $(releasePrerelease)
+                    RELEASE_TAG: $(releaseTag)
+                - task: AzureCLI@2
+                  displayName: Publish with the federated Marketplace identity
+                  inputs:
+                    azureSubscription: ${{ parameters.marketplaceServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      npx --no-install vsce verify-pat Matt17BR --azure-credential
+                      node scripts/verify-registry-release-artifact.mjs canonical-release
+                      if [ "$RELEASE_PRERELEASE" = "true" ]; then
+                        npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --pre-release --skip-duplicate
+                      elif [ "$RELEASE_PRERELEASE" = "false" ]; then
+                        npx --no-install vsce publish --azure-credential --packagePath canonical-release/openwrangler.vsix --skip-duplicate
+                      else
+                        exit 64
+                      fi
+                    addSpnToEnvironment: false
+                    visibleAzLogin: false
+                    failOnStandardError: false
+                  env:
+                    AUTOMATION_SHA: $(Build.SourceVersion)
+                    EXPECTED_SHA: $(releaseCommit)
+                    RELEASE_PRERELEASE: $(releasePrerelease)
+                    RELEASE_TAG: $(releaseTag)
+                - script: node scripts/verify-marketplace-publication.mjs canonical-release
+                  displayName: Verify the public Marketplace payload
+                  env:
+                    AUTOMATION_SHA: $(Build.SourceVersion)
+                    EXPECTED_SHA: $(releaseCommit)
+                    RELEASE_PRERELEASE: $(releasePrerelease)
+                    RELEASE_TAG: $(releaseTag)
