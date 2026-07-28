@@ -1,10 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Open Wrangler faceted table</title>
-  <path d="M22 38 61 54v28L22 66V38Z" fill="#E8FFFD" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="m67 54 39-16v28L67 82V54Z" fill="#EAF2FF" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="M22 66 61 82v24L22 90V66Z" fill="#63DDD5" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="m67 82 39-16v24l-39 16V82Z" fill="#77A7FF" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="M41.5 46v28M86.5 46v28M41.5 74v24M86.5 74v24" stroke="#FFFFFF" stroke-opacity="0.52" stroke-width="2"/>
-  <circle cx="106" cy="25" r="10" fill="#FFE36D" stroke="#102A43" stroke-width="3"/>
-  <path d="M106 16v18M97 25h18" stroke="#102A43" stroke-width="2.5" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Open Wrangler pivot grid</title>
+  <path
+    d="M36 28h88l-12 56H36a8 8 0 0 1-8-8V36a8 8 0 0 1 8-8Zm0 72h78l18 56H36a8 8 0 0 1-8-8v-40a8 8 0 0 1 8-8Zm0 72h100l-10 56H36a8 8 0 0 1-8-8v-40a8 8 0 0 1 8-8Z"
+    fill="#22B8B2"
+  />
+  <path
+    d="M140 28h80a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8h-92l12-56Zm-12 72h92a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8h-74l-18-56Zm24 72h68a8 8 0 0 1 8 8v40a8 8 0 0 1-8 8h-78l10-56Z"
+    fill="#5A7DF0"
+  />
+  <path d="m112 100h16l18 56h-16l-18-56Z" fill="#F6C453" />
+  <path
+    d="M72 28v56M72 100v56M72 172v56M188 28v56M188 100v56M188 172v56"
+    stroke="#FFF"
+    stroke-opacity=".3"
+    stroke-width="4"
+  />
 </svg>
