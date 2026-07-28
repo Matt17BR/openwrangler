@@ -15,6 +15,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Fixed
 
 - Recognized Git credential-store's exact atomic approval and rejection rewrites after a stable-tag push, then scrubbed and removed the replacement without weakening the private-directory, identity, content, link-count, or mode checks.
+- Waited for Cursor's exact released-Jupyter Polars panel to hydrate and acknowledge its retained snapshot before acceptance sends a live preview, removing an editor-speed race without weakening live-panel coverage.
 
 ## [1.0.2] - 2026-07-28
 
