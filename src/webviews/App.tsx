@@ -12,7 +12,7 @@ import type {
   TransformStep,
   ValuesResponse
 } from "../shared/protocol";
-import { emptyFilterModel, type FilterModel } from "../shared/filterModel";
+import { compactFilterModel, emptyFilterModel, type FilterModel } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
@@ -81,6 +81,7 @@ export function App() {
   const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
   const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
+  const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
   const sidePanelOpenRef = useRef(false);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -964,6 +965,9 @@ export function App() {
         } else if (response.action === "selectStep") {
           if (response.stepId) requestStepInspection(response.stepId);
           else clearStepInspection();
+        } else if (response.action === "clearFilterColumn") {
+          if (typeof response.column !== "string") return;
+          clearFilterColumnActionRef.current(response.column);
         } else {
           if (!beginMutation()) return;
           const columnWindow = desiredColumnWindow.current;
@@ -1566,15 +1570,16 @@ export function App() {
     ) {
       return;
     }
+    const nextModel = compactFilterModel(model);
     const pendingPage = latestPageRequest.current;
-    const sameDesiredModel = sameFilterModel(model, filterModelRef.current);
-    if (sameDesiredModel && pendingPage && sameFilterModel(model, pendingPage.model)) {
+    const sameDesiredModel = sameFilterModel(nextModel, filterModelRef.current);
+    if (sameDesiredModel && pendingPage && sameFilterModel(nextModel, pendingPage.model)) {
       return;
     }
-    storeFilterModel(model);
+    storeFilterModel(nextModel);
     const currentMetadata = metadataRef.current;
     const failed = failedPageRequestRef.current;
-    if (sameDesiredModel && failed && sameFilterModel(model, failed.model)) {
+    if (sameDesiredModel && failed && sameFilterModel(nextModel, failed.model)) {
       requestPage(failed.offset, failed.model, {
         changesView: failed.changesView,
         viewContextId: failed.viewContextId,
@@ -1583,12 +1588,27 @@ export function App() {
       });
       return;
     }
-    if (sameDesiredModel && !pendingPage && currentMetadata && sameFilterModel(model, currentMetadata.filterModel)) {
+    if (
+      sameDesiredModel &&
+      !pendingPage &&
+      currentMetadata &&
+      sameFilterModel(nextModel, currentMetadata.filterModel)
+    ) {
       return;
     }
 
-    requestPage(0, model, { changesView: true });
+    requestPage(0, nextModel, { changesView: true });
   };
+
+  useEffect(() => {
+    clearFilterColumnActionRef.current = (column) => {
+      const current = filterModelRef.current;
+      applyFilters({
+        ...current,
+        filters: current.filters.filter((filter) => filter.column !== column)
+      });
+    };
+  });
 
   useEffect(() => {
     if (!sidePanelOpen || !metadata) return;
@@ -2184,9 +2204,11 @@ export function App() {
 
 interface EditorActionMessage {
   kind: "editorAction";
-  action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
+  action:
+    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
+  column?: string;
 }
 
 interface RequestImportOptionsChangeMessage {

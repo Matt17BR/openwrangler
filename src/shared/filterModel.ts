@@ -6,6 +6,22 @@ export type SortDirection = SortRule["direction"];
 export type PredicateOperator = PredicateFilter["operator"];
 export type ValueFilter = NonNullable<ColumnFilter["valueFilter"]>;
 
+interface EffectiveValueFilter {
+  selectedValues: readonly unknown[];
+  includeNulls: boolean;
+  includeNaN: boolean;
+}
+
+interface EffectiveColumnFilter {
+  valueFilter?: EffectiveValueFilter;
+  predicates: readonly unknown[];
+}
+
+interface EffectiveFilterModel {
+  filters: readonly EffectiveColumnFilter[];
+  sort: readonly unknown[];
+}
+
 const comparableColumnTypes: ReadonlySet<ColumnType> = new Set([
   "string",
   "integer",
@@ -68,14 +84,37 @@ export const emptyFilterModel = (): FilterModel => ({
   sort: []
 });
 
-export const hasActiveFilters = (model: FilterModel): boolean =>
-  model.filters.some(
-    (filter) =>
-      filter.predicates.length > 0 ||
-      (filter.valueFilter !== undefined &&
-        (filter.valueFilter.selectedValues.length > 0 ||
-          filter.valueFilter.includeNulls ||
-          filter.valueFilter.includeNaN))
-  );
+export const isActiveColumnFilter = (filter: EffectiveColumnFilter): boolean =>
+  filter.predicates.length > 0 ||
+  (filter.valueFilter !== undefined &&
+    (filter.valueFilter.selectedValues.length > 0 || filter.valueFilter.includeNulls || filter.valueFilter.includeNaN));
 
-export const hasActiveSort = (model: FilterModel): boolean => model.sort.length > 0;
+export const hasActiveFilters = (model: Pick<EffectiveFilterModel, "filters">): boolean =>
+  model.filters.some(isActiveColumnFilter);
+
+export const hasActiveSort = (model: Pick<EffectiveFilterModel, "sort">): boolean => model.sort.length > 0;
+
+export const hasActiveViewQuery = (model: EffectiveFilterModel): boolean =>
+  hasActiveFilters(model) || hasActiveSort(model);
+
+export const compactColumnFilter = (filter: ColumnFilter): ColumnFilter | undefined => {
+  const valueFilter =
+    filter.valueFilter &&
+    (filter.valueFilter.selectedValues.length > 0 || filter.valueFilter.includeNulls || filter.valueFilter.includeNaN)
+      ? filter.valueFilter
+      : undefined;
+  if (filter.predicates.length === 0 && !valueFilter) return undefined;
+  return {
+    column: filter.column,
+    type: filter.type,
+    ...(filter.logic === undefined ? {} : { logic: filter.logic }),
+    ...(valueFilter === undefined ? {} : { valueFilter }),
+    predicates: filter.predicates
+  };
+};
+
+export const compactFilterModel = (model: FilterModel): FilterModel => ({
+  ...(model.logic === undefined ? {} : { logic: model.logic }),
+  filters: model.filters.map(compactColumnFilter).filter((filter): filter is ColumnFilter => filter !== undefined),
+  sort: model.sort
+});

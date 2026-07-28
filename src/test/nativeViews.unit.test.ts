@@ -192,6 +192,60 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({ action: "openOperation" });
   });
 
+  it("makes each effective native filter node remove that column filter", async () => {
+    const filtered = noDraftSnapshot();
+    filtered.viewState.filterModel = {
+      logic: "and",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["Berlin"],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: [{ kind: "predicate", operator: "contains", value: "er" }]
+        },
+        {
+          column: "sales",
+          type: "float",
+          valueFilter: {
+            kind: "values",
+            selectedValues: [],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: [{ column: "city", direction: "asc", nulls: "last" }]
+    };
+    register(filtered);
+
+    const nodes = treeChildren("openWrangler.filters");
+    expect(nodes.map(nodePresentation)).toEqual([
+      ["city", "1 selected value · 1 condition"],
+      ["city", "Ascending · nulls last"]
+    ]);
+    expect(nodes[0]?.command).toEqual({
+      command: "openWrangler.clearViewFilterColumn",
+      title: "Remove city filter",
+      arguments: ["city"]
+    });
+
+    await command("openWrangler.clearViewFilterColumn")("city");
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "clearFilterColumn",
+      column: "city"
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.clearViewFilterColumn")("sales");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+  });
+
   it("does not forward editLatestStep while a draft is active", async () => {
     register(snapshotWithDraft());
     nativeMocks.showInformationMessage.mockImplementationOnce(() => new Promise<never>(() => undefined));

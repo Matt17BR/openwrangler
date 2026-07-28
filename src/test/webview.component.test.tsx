@@ -1300,6 +1300,52 @@ describe("App file import options", () => {
     webviewPostMessage.mockClear();
   });
 
+  it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {
+    const filteredMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        logic: "and",
+        filters: [
+          {
+            column: "city",
+            type: "string",
+            predicates: [{ kind: "predicate", operator: "equals", value: "Milan" }]
+          },
+          {
+            column: "sales",
+            type: "float",
+            predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
+          }
+        ],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: filteredMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    dispatchAppMessage({ kind: "editorAction", action: "clearFilterColumn", column: "city" });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
+    expect(pageRequest?.request.filterModel).toEqual({
+      logic: "and",
+      filters: [
+        {
+          column: "sales",
+          type: "float",
+          predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
+        }
+      ],
+      sort: filteredMetadata.filterModel.sort
+    });
+  });
+
   it("acknowledges the exact rendered snapshot only after React commits it", () => {
     const previousImplementation = webviewPostMessage.getMockImplementation();
     try {

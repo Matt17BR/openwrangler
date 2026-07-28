@@ -1202,9 +1202,11 @@ function hasExactKeys(
 }
 
 export interface EditorActionMessage {
-  action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
+  action:
+    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
+  column?: string;
 }
 
 const randomNonce = (): string => {

@@ -186,6 +186,43 @@ describe("OperationBuilder", () => {
     });
   });
 
+  it("keeps Filter rows unavailable for a structurally present but effective-empty viewing query", () => {
+    const onPreview = vi.fn();
+    render(
+      <OperationBuilder
+        metadata={metadata}
+        filterModel={{
+          logic: "or",
+          filters: [
+            {
+              column: "city",
+              type: "string",
+              logic: "or",
+              valueFilter: {
+                kind: "values",
+                selectedValues: [],
+                includeNulls: false,
+                includeNaN: false,
+                search: "stale search text"
+              },
+              predicates: []
+            }
+          ],
+          sort: []
+        }}
+        initialKind="filterRows"
+        onClose={() => undefined}
+        onPreview={onPreview}
+      />
+    );
+
+    expect(screen.getByText("0 filters")).toBeInTheDocument();
+    expect(screen.getByText("0 sorts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
   it("edits a saved stable filter step independently from an empty current view", () => {
     const onPreview = vi.fn();
     const duplicateColumns = [
@@ -300,7 +337,13 @@ describe("OperationBuilder", () => {
         <OperationBuilder
           metadata={{ ...metadata, schema: [...schema], shape: { rows: 2, columns: schema.length } }}
           filterModel={{
-            filters: [{ column: "value", type: "string", predicates: [] }],
+            filters: [
+              {
+                column: "value",
+                type: "string",
+                predicates: [{ kind: "predicate", operator: "equals", value: "selected" }]
+              }
+            ],
             sort: []
           }}
           initialKind="filterRows"

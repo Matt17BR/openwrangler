@@ -116,7 +116,11 @@ describe("FilterPanel", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /Berlin/ }));
     expect(onApply).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        filters: [expect.objectContaining({ valueFilter: expect.objectContaining({ selectedValues: [] }) })]
+        filters: [
+          expect.not.objectContaining({
+            valueFilter: expect.anything()
+          })
+        ]
       })
     );
     fireEvent.click(screen.getByRole("checkbox", { name: /Milan/ }));
@@ -284,11 +288,12 @@ describe("FilterPanel", () => {
     expect(numeric).toBeChecked();
     expect(text).not.toBeChecked();
     expect(screen.getAllByText("1", { selector: ".checkboxRow > span" })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Remove equals 1 (integer) filter from city" })).toBeInTheDocument();
 
     fireEvent.click(numeric);
     expect(onApply).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        filters: [expect.objectContaining({ valueFilter: expect.objectContaining({ selectedValues: [] }) })]
+        filters: []
       })
     );
     fireEvent.click(text);
@@ -301,6 +306,166 @@ describe("FilterPanel", () => {
         ]
       })
     );
+  });
+
+  it("removes a final value filter structurally without disturbing a sort on the same column", () => {
+    const onApply = vi.fn();
+    const model: FilterModel = {
+      logic: "and",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          logic: "and",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["Berlin"],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: [{ column: "city", direction: "asc", nulls: "last" }]
+    };
+    const rendered = render(
+      <FilterPanel
+        metadata={metadata}
+        model={model}
+        values={values}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Berlin/u }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      logic: "and",
+      filters: [],
+      sort: [{ column: "city", direction: "asc", nulls: "last" }]
+    });
+
+    const emptyModel = onApply.mock.calls.at(-1)?.[0] as FilterModel;
+    rendered.rerender(
+      <FilterPanel
+        metadata={metadata}
+        model={emptyModel}
+        values={values}
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    onApply.mockClear();
+    fireEvent.change(screen.getByLabelText("Condition combination"), { target: { value: "or" } });
+    expect(onApply).not.toHaveBeenCalled();
+    expect(screen.getByText("No active filters.")).toBeInTheDocument();
+  });
+
+  it("lists filters from every column and removes one value or predicate without clearing siblings or sorts", () => {
+    const onApply = vi.fn();
+    const model: FilterModel = {
+      logic: "or",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          logic: "and",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["Berlin", "Milan"],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: [{ kind: "predicate", operator: "contains", value: "i" }]
+        },
+        {
+          column: "sales",
+          type: "float",
+          logic: "or",
+          valueFilter: {
+            kind: "values",
+            selectedValues: [],
+            includeNulls: true,
+            includeNaN: false
+          },
+          predicates: [{ kind: "predicate", operator: "gt", value: 10 }]
+        }
+      ],
+      sort: [
+        { column: "city", direction: "asc", nulls: "last" },
+        { column: "sales", direction: "desc", nulls: "first" }
+      ]
+    };
+    const rendered = render(
+      <FilterPanel
+        metadata={metadata}
+        model={model}
+        values={values}
+        activeColumn="city"
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+
+    expect(screen.getByRole("region", { name: "city filters" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "sales filters" })).toBeInTheDocument();
+    expect(screen.getByText("2 filtered columns")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: 'Remove equals "Berlin" filter from city' }));
+    const afterValueRemoval = onApply.mock.calls.at(-1)?.[0] as FilterModel;
+    expect(afterValueRemoval.filters).toEqual([
+      expect.objectContaining({
+        column: "city",
+        valueFilter: expect.objectContaining({ selectedValues: ["Milan"] }),
+        predicates: [{ kind: "predicate", operator: "contains", value: "i" }]
+      }),
+      model.filters[1]
+    ]);
+    expect(afterValueRemoval.sort).toEqual(model.sort);
+
+    rendered.rerender(
+      <FilterPanel
+        metadata={metadata}
+        model={afterValueRemoval}
+        values={values}
+        activeColumn="city"
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: 'Remove contains "i" filter from city' }));
+    const afterPredicateRemoval = onApply.mock.calls.at(-1)?.[0] as FilterModel;
+    expect(afterPredicateRemoval.filters).toEqual([
+      expect.objectContaining({
+        column: "city",
+        valueFilter: expect.objectContaining({ selectedValues: ["Milan"] }),
+        predicates: []
+      }),
+      model.filters[1]
+    ]);
+    expect(afterPredicateRemoval.sort).toEqual(model.sort);
+
+    rendered.rerender(
+      <FilterPanel
+        metadata={metadata}
+        model={afterPredicateRemoval}
+        values={values}
+        activeColumn="city"
+        defaultAdvanced={true}
+        onApply={onApply}
+        onRequestValues={() => undefined}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter for sales" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      ...afterPredicateRemoval,
+      filters: [afterPredicateRemoval.filters[0]]
+    });
+    expect((onApply.mock.calls.at(-1)?.[0] as FilterModel).sort).toEqual(model.sort);
   });
 
   it("coerces predicate inputs according to the selected column type", () => {

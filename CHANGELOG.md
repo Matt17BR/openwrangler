@@ -15,6 +15,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Fixed
 
 - Kept every row reachable in multi-million-row grids by mapping the complete logical range onto a bounded Chromium-safe scroll canvas and rebasing the rendered row segment around the current viewport. Restored positions, keyboard navigation, and Previous/Next block actions now retain their exact logical target instead of being pulled back by browser scroll-height clamping.
+- Made viewing filters disappear structurally when their final value or predicate is removed, so stale searches and empty selections cannot remain as hidden no-op filters or enable an empty **Filter rows** cleaning step. The Filters / Sorts drawer now keeps every active column filter visible with type-safe summaries and independent value/predicate removal, while the native Filters tree can clear a whole column filter; all removal paths preserve sibling conditions and viewing sorts.
 
 ## [1.0.0] - 2026-07-28
 

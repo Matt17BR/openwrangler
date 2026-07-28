@@ -357,6 +357,66 @@ textarea {
   letter-spacing: 0.04em;
 }
 
+.activeFilterOverview {
+  border-top: 1px solid var(--vscode-panel-border);
+  display: grid;
+  gap: 7px;
+  padding: 9px 0;
+}
+
+.activeFilterOverview > header,
+.activeFilterGroup > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.activeFilterOverview > header {
+  font-size: 12px;
+}
+
+.activeFilterOverview p {
+  margin: 0;
+}
+
+.activeFilterList {
+  display: grid;
+  gap: 6px;
+}
+
+.activeFilterGroup {
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.activeFilterGroup > header > span {
+  display: grid;
+  min-width: 0;
+}
+
+.activeFilterGroup > header strong,
+.activeFilterGroup > header small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activeFilterGroup > header small {
+  color: var(--vscode-descriptionForeground);
+}
+
+.compactTextButton {
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  padding: 2px 4px;
+}
+
 .valueList {
   max-height: 132px;
   overflow: auto;
@@ -434,6 +494,26 @@ textarea {
   align-items: center;
   display: inline-flex;
   gap: 4px;
+}
+
+.rulePillButton {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.rulePillButton > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rulePillButton .codicon {
+  flex: 0 0 auto;
+  font-size: 12px;
 }
 
 .checkboxRow {

@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import type { FilterModel } from "../../shared/filterModel";
+import { hasActiveViewQuery, isActiveColumnFilter } from "../../shared/filterModel";
 import type {
   ByExampleProgram,
   ColumnReference,
@@ -351,6 +352,9 @@ export function OperationBuilder({
   const availableColumns = initialStep ? (metadata.latestStepInputSchema ?? []) : metadata.schema;
   const editPreflightError = initialStep ? savedStepEditError(initialStep, metadata.latestStepInputSchema) : undefined;
   const savedFilterModel = activeInitial?.kind === "filterRows" ? activeInitial.params.filterModel : undefined;
+  const selectedFilterQueryIsEmpty =
+    selectedKind === "filterRows" &&
+    (savedFilterModel ? !hasActiveViewQuery(savedFilterModel) : !hasActiveViewQuery(filterModel));
 
   useEffect(() => {
     if (!busy) return;
@@ -484,15 +488,7 @@ export function OperationBuilder({
                   <button type="button" className="secondaryButton" onClick={onClose}>
                     Cancel
                   </button>
-                  <button
-                    type="submit"
-                    disabled={
-                      editPreflightError !== undefined ||
-                      (selectedKind === "filterRows" &&
-                        (savedFilterModel ?? filterModel).filters.length === 0 &&
-                        (savedFilterModel ?? filterModel).sort.length === 0)
-                    }
-                  >
+                  <button type="submit" disabled={editPreflightError !== undefined || selectedFilterQueryIsEmpty}>
                     Preview changes
                   </button>
                 </footer>
@@ -602,7 +598,9 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
   if (kind === "filterRows") {
     const savedFilterModel = initialStep?.kind === "filterRows" ? initialStep.params.filterModel : undefined;
     const displayedFilterModel = savedFilterModel ?? filterModel;
-    const currentQueryIsEmpty = filterModel.filters.length === 0 && filterModel.sort.length === 0;
+    const currentQueryIsEmpty = !hasActiveViewQuery(filterModel);
+    const displayedFilterCount = displayedFilterModel.filters.filter(isActiveColumnFilter).length;
+    const currentFilterCount = filterModel.filters.filter(isActiveColumnFilter).length;
     return (
       <Fieldset legend={savedFilterModel ? "Saved cleaning query" : "Current viewing query"}>
         <p className="panelNote">
@@ -611,7 +609,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
             : "This explicit action copies the current viewing filters and sorts into the cleaning plan. Later viewing changes remain independent."}
         </p>
         <div className="querySummary">
-          <strong>{displayedFilterModel.filters.length} filters</strong>
+          <strong>{displayedFilterCount} filters</strong>
           <strong>{displayedFilterModel.sort.length} sorts</strong>
         </div>
         {savedFilterModel && (
@@ -623,8 +621,8 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
             <label className="checkboxField">
               <input name="filterSource" type="radio" value="current" disabled={currentQueryIsEmpty} />
               <span>
-                Replace it with the current viewing query ({filterModel.filters.length} filters,{" "}
-                {filterModel.sort.length} sorts)
+                Replace it with the current viewing query ({currentFilterCount} filters, {filterModel.sort.length}{" "}
+                sorts)
               </span>
             </label>
             {currentQueryIsEmpty && <small>Add a viewing filter or sort before replacing the saved query.</small>}
@@ -1252,7 +1250,9 @@ function transformFilterModel(filterModel: FilterModel, columns: ColumnSchema[])
 
   return {
     ...(filterModel.logic === undefined ? {} : { logic: filterModel.logic }),
-    filters: filterModel.filters.map((filter) => ({ ...filter, column: referenceForName(filter.column) })),
+    filters: filterModel.filters
+      .filter(isActiveColumnFilter)
+      .map((filter) => ({ ...filter, column: referenceForName(filter.column) })),
     sort: filterModel.sort.map((rule) => ({ ...rule, column: referenceForName(rule.column) }))
   };
 }
