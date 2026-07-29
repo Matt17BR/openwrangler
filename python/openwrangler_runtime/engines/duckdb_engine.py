@@ -136,10 +136,12 @@ class DuckDBEngine(DataFrameEngine):
                 try:
                     return connection.read_json(path, format="newline_delimited")
                 except Exception as error:
-                    raise EngineError(
-                        "DuckDB JSON support is unavailable in this interpreter. "
-                        "Install a compatible DuckDB build explicitly; Open Wrangler will not fetch extensions."
-                    ) from error
+                    if _json_reader_is_unavailable(error):
+                        raise EngineError(
+                            "DuckDB JSON support is unavailable in this interpreter. "
+                            "Install a compatible DuckDB build explicitly; Open Wrangler will not fetch extensions."
+                        ) from error
+                    raise EngineError(f"DuckDB could not open {path} as newline-delimited JSON: {error}") from error
             if extension in {".xlsx", ".xls"}:
                 raise EngineError("DuckDB does not support Excel input. Use the Pandas or Polars backend.")
             raise EngineError(f"Unsupported file extension for DuckDB backend: {extension}")
@@ -970,19 +972,67 @@ def _compose_sql(source_sql: str, query: str) -> str:
     return f"WITH ow AS ({source_sql}) {query}"
 
 
+def _json_reader_is_unavailable(error: Exception) -> bool:
+    error_type = type(error)
+    if error_type.__module__ not in {"_duckdb", "duckdb"}:
+        return False
+
+    headline = str(error).splitlines()[0].strip().casefold()
+    if error_type.__name__ == "CatalogException":
+        return headline.startswith(
+            (
+                "catalog error: table function with name read_json does not exist",
+                "catalog error: table function with name read_json_auto does not exist",
+            )
+        )
+
+    if error_type.__name__ not in {"HTTPException", "IOException", "InvalidInputException"}:
+        return False
+
+    return headline.startswith(
+        (
+            "extension autoloading error: an error occurred while trying to automatically install "
+            "the required extension 'json'",
+            "extension autoloading error: an error occurred while trying to automatically install "
+            'the required extension "json"',
+            "http error: failed to load extension 'json'",
+            'http error: failed to load extension "json"',
+            "io error: failed to load extension 'json'",
+            'io error: failed to load extension "json"',
+            "invalid input error: failed to load extension 'json'",
+            'invalid input error: failed to load extension "json"',
+        )
+    )
+
+
 def _connect() -> Any:
     import duckdb
 
     # Open Wrangler never installs or autoloads DuckDB extensions. This keeps a
     # file open deterministic, offline, and confined to dependencies the user
     # explicitly installed in the selected interpreter.
-    return duckdb.connect(
+    connection = duckdb.connect(
         config={
             "autoinstall_known_extensions": False,
             "autoload_known_extensions": False,
+            # DuckDB's external-file cache can retain a Windows file handle
+            # after a Parquet page completes. Live sessions fingerprint and
+            # reopen their immutable source for each terminal query, so holding
+            # that cache is both unnecessary and incompatible with atomic
+            # source replacement detection.
+            "enable_external_file_cache": False,
             "preserve_insertion_order": True,
         }
     )
+    try:
+        # TIMESTAMPTZ values are rendered in the connection's configured zone.
+        # Pin every owned and terminal connection so pages, summaries, and
+        # exports do not vary with the host's local timezone.
+        connection.execute("SET TimeZone = 'UTC'")
+    except Exception:
+        connection.close()
+        raise
+    return connection
 
 
 def _execute_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
