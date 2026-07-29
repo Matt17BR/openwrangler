@@ -43,6 +43,10 @@ interface OneShotAcceptanceAction<T> {
   readonly description: string;
 }
 
+interface AuthoritativelyReceiptedOneShotAcceptanceAction<T> extends OneShotAcceptanceAction<T> {
+  readonly authoritativeReceiptAfterClickFailure: () => Promise<T>;
+}
+
 export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
     super(`${description} may have been dispatched, but its browser click did not settle.`, { cause });
@@ -62,6 +66,38 @@ export async function invokeAcceptanceActionOnce<T>({
     throw new IndeterminateAcceptanceActionError(description, error);
   }
 
+  return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
+  click,
+  receipt,
+  authoritativeReceiptAfterClickFailure,
+  naturalDismissal,
+  description
+}: AuthoritativelyReceiptedOneShotAcceptanceAction<T>): Promise<T> {
+  try {
+    await click();
+  } catch (error) {
+    const indeterminate = new IndeterminateAcceptanceActionError(description, error);
+    try {
+      return await authoritativeReceiptAfterClickFailure();
+    } catch (receiptError) {
+      throw new AggregateError(
+        [indeterminate, receiptError],
+        `${description} did not settle and its authoritative receipt could not prove dispatch.`
+      );
+    }
+  }
+
+  return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+async function observeAcceptanceActionReceipt<T>(
+  receipt: () => Promise<T>,
+  naturalDismissal: (() => Promise<void>) | undefined,
+  description: string
+): Promise<T> {
   const receiptResult = receipt();
   if (!naturalDismissal) return receiptResult;
 

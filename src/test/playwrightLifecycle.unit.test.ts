@@ -4,6 +4,7 @@ import {
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
+  invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
@@ -104,6 +105,107 @@ describe("extension-host Playwright lifecycle", () => {
     expect(click).toHaveBeenCalledOnce();
     expect(receipt).not.toHaveBeenCalled();
     expect(naturalDismissal).not.toHaveBeenCalled();
+  });
+
+  it("accepts an authoritative receipt after an indeterminate click without retrying the action", async () => {
+    const events: string[] = [];
+    const clickFailure = new Error("CDP response was lost");
+    const click = vi.fn(async () => {
+      events.push("click");
+      throw clickFailure;
+    });
+    const receipt = vi.fn(async () => {
+      events.push("ordinary receipt");
+      return "ordinary receipt";
+    });
+    const authoritativeReceiptAfterClickFailure = vi.fn(async () => {
+      events.push("authoritative receipt");
+      return "opened session";
+    });
+    const naturalDismissal = vi.fn(async () => {
+      events.push("natural dismissal");
+    });
+
+    await expect(
+      invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "the notebook variable action",
+        click,
+        receipt,
+        authoritativeReceiptAfterClickFailure,
+        naturalDismissal
+      })
+    ).resolves.toBe("opened session");
+    expect(events).toEqual(["click", "authoritative receipt"]);
+    expect(click).toHaveBeenCalledOnce();
+    expect(receipt).not.toHaveBeenCalled();
+    expect(authoritativeReceiptAfterClickFailure).toHaveBeenCalledOnce();
+    expect(naturalDismissal).not.toHaveBeenCalled();
+  });
+
+  it("retains an indeterminate click and a missing authoritative receipt without retrying the action", async () => {
+    const clickFailure = new Error("CDP response was lost");
+    const receiptFailure = new Error("the session did not open");
+    const click = vi.fn().mockRejectedValue(clickFailure);
+    const receipt = vi.fn().mockResolvedValue("ordinary receipt");
+    const authoritativeReceiptAfterClickFailure = vi.fn().mockRejectedValue(receiptFailure);
+
+    await expect(
+      invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "the notebook variable action",
+        click,
+        receipt,
+        authoritativeReceiptAfterClickFailure
+      })
+    ).rejects.toMatchObject({
+      message: "the notebook variable action did not settle and its authoritative receipt could not prove dispatch.",
+      errors: [
+        expect.objectContaining({
+          name: "IndeterminateAcceptanceActionError",
+          cause: clickFailure
+        }),
+        receiptFailure
+      ]
+    });
+    expect(click).toHaveBeenCalledOnce();
+    expect(receipt).not.toHaveBeenCalled();
+    expect(authoritativeReceiptAfterClickFailure).toHaveBeenCalledOnce();
+  });
+
+  it("uses the ordinary receipt after a settled click and does not request authoritative recovery", async () => {
+    const click = vi.fn().mockResolvedValue(undefined);
+    const receipt = vi.fn().mockResolvedValue("ordinary receipt");
+    const authoritativeReceiptAfterClickFailure = vi.fn().mockResolvedValue("opened session");
+
+    await expect(
+      invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "the notebook variable action",
+        click,
+        receipt,
+        authoritativeReceiptAfterClickFailure
+      })
+    ).resolves.toBe("ordinary receipt");
+    expect(click).toHaveBeenCalledOnce();
+    expect(receipt).toHaveBeenCalledOnce();
+    expect(authoritativeReceiptAfterClickFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not treat an ordinary receipt failure as an indeterminate click", async () => {
+    const receiptFailure = new Error("the ordinary receipt is missing");
+    const click = vi.fn().mockResolvedValue(undefined);
+    const receipt = vi.fn().mockRejectedValue(receiptFailure);
+    const authoritativeReceiptAfterClickFailure = vi.fn().mockResolvedValue("opened session");
+
+    await expect(
+      invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "the notebook variable action",
+        click,
+        receipt,
+        authoritativeReceiptAfterClickFailure
+      })
+    ).rejects.toBe(receiptFailure);
+    expect(click).toHaveBeenCalledOnce();
+    expect(receipt).toHaveBeenCalledOnce();
+    expect(authoritativeReceiptAfterClickFailure).not.toHaveBeenCalled();
   });
 
   it("reacquires an acceptance action replaced during discovery or pre-click preparation", async () => {

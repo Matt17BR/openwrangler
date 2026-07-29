@@ -28,6 +28,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Made the released-Jupyter Variables acceptance action resolve its exact semantic row at the one real click instead of retaining a replaceable DOM handle. If Playwright loses only the click acknowledgement, the test may accept the resulting zero-to-one Open Wrangler session as an authoritative receipt, but it never clicks or reacquires after dispatch begins.
 - Removed the unintended horizontal bar from the gallery windshield and its Activity Bar counterpart, keeping every generated icon surface aligned to the same refined open-top vehicle mark.
 - Added post-publication checks that require Open VSX and the Visual Studio Marketplace to expose the canonical packaged gallery icon, including a valid Marketplace 72 pixel thumbnail that visually matches it.
 - Updated the native editor harness for VS Code 1.131's removal of the legacy macOS `Electron` compatibility path. Packaged and extension-host acceptance now resolve the bundle's declared executable instead of relying on that removed alias.
