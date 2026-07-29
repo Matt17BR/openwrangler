@@ -48,7 +48,7 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
-<img alt="Open Wrangler exploring regional orders with exact revenue statistics in matched light and dark VS Code themes" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png">
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"><img alt="Open Wrangler exploring regional orders with exact revenue statistics in matched light and dark VS Code themes" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"></a>
 
 _A live regional-orders file session with a virtualized grid and exact Revenue statistics. The light and dark
 halves use the same data and layout._
@@ -70,12 +70,13 @@ current source instead.
 Choose **Open Variable** from the notebook toolbar or Jupyter Variables to open the current dataframe as a live
 session, clean it, and insert generated code back into that same notebook.
 
-<img alt="Pandas saved output beside a live Polars notebook session with a draft data diff and native code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png">
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="Pandas saved output beside a live Polars notebook session with a draft data diff and native code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
 
 _Pandas saved output on the left; a live Polars formula draft, added-column diff, and executable Polars code on
 the right._
 
-DuckDB remains native for supported file sessions. Notebook relations are not yet supported.
+DuckDB remains native for supported file sessions. Notebook relations are not yet supported. See the
+[rich Parquet file gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md).
 
 PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting,
 paging, and profiling stay in Spark, while only bounded results return to the notebook runtime. File sessions,

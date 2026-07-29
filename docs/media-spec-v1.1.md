@@ -37,7 +37,8 @@ This specification replaces evidence-heavy README captures with two concise prod
 
 The README may link to a separate gallery rather than stacking more full-width images.
 
-- DuckDB: a file-backed rich Parquet session with decimal, time-zone, list, and struct columns; do not imply notebook support
+- DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a file-backed rich Parquet session with
+  decimal, time-zone, list, and struct columns; do not imply notebook support
 - PySpark: include only after packaged acceptance; label it `Experimental` and `Viewing only`
 - Cursor: one optional compatibility capture using the same orders fixture and composition
 
