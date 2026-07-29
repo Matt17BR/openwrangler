@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from math import isfinite, isinf, isnan
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -42,13 +43,34 @@ _PORTABLE_INTEGER_MAX = 10**38 - 1
 _PORTABLE_INTEGER_MIN = -_PORTABLE_INTEGER_MAX
 
 
-class DuckDBEngine(DataFrameEngine):
-    """Native, lazy DuckDB relation adapter.
+@dataclass(frozen=True, slots=True)
+class DuckDBSqlPlan:
+    """Connection-free metadata for a replayable native DuckDB relation."""
 
-    The engine-owned connection only constructs immutable relation plans. Every
-    terminal read replays the relation's self-contained SQL on a fresh
-    connection. File-backed sessions can therefore profile and page in parallel
-    without sharing a DuckDB cursor or connection.
+    sql: str
+    column_names: tuple[str, ...]
+    type_names: tuple[str, ...]
+
+    @property
+    def columns(self) -> list[str]:
+        return list(self.column_names)
+
+    @property
+    def types(self) -> list[str]:
+        return list(self.type_names)
+
+    def sql_query(self) -> str:
+        return self.sql
+
+
+class DuckDBEngine(DataFrameEngine):
+    """Native, lazy DuckDB SQL-plan adapter.
+
+    Session frames retain only immutable SQL and schema metadata. Native
+    DuckDBPyRelation objects exist inside one bounded connection scope and are
+    released before that connection closes. Every terminal read replays the
+    self-contained SQL on a fresh connection, so file-backed sessions can
+    profile and page in parallel without sharing a cursor or file owner.
     """
 
     name = "duckdb"
@@ -66,27 +88,37 @@ class DuckDBEngine(DataFrameEngine):
     )
 
     def __init__(self) -> None:
-        self._connection: Any | None = None
         self._active_connections: set[Any] = set()
         self._lifecycle_lock = RLock()
         self._closed = False
-        self._empty_source_frame: Any | None = None
+        self._empty_source_frame: DuckDBSqlPlan | None = None
 
     def detect(self, value: Any) -> bool:
+        if isinstance(value, DuckDBSqlPlan):
+            return True
         try:
             import duckdb
         except ImportError:
             return False
         return isinstance(value, duckdb.DuckDBPyRelation)
 
-    def normalize(self, value: Any) -> Any:
-        if not self.detect(value):
-            raise EngineError("DuckDB sessions require a DuckDBPyRelation.")
-        return value
+    def normalize(self, value: Any) -> DuckDBSqlPlan:
+        if isinstance(value, DuckDBSqlPlan):
+            return value
+        try:
+            import duckdb
+        except ImportError as error:
+            raise EngineError("DuckDB sessions require DuckDB.") from error
+        if not isinstance(value, duckdb.DuckDBPyRelation):
+            raise EngineError("DuckDB sessions require a native DuckDB SQL plan or DuckDBPyRelation.")
+        try:
+            return _snapshot_native_relation(value)
+        except Exception as error:
+            raise EngineError(f"DuckDB query failed: {error}") from error
 
     def interrupt(self) -> None:
         with self._lifecycle_lock:
-            connections = [connection for connection in [self._connection, *self._active_connections] if connection]
+            connections = list(self._active_connections)
         for connection in connections:
             try:
                 connection.interrupt()
@@ -100,51 +132,53 @@ class DuckDBEngine(DataFrameEngine):
             if self._closed:
                 return
             self._closed = True
-            connection = self._connection
-            self._connection = None
             self._empty_source_frame = None
-        if connection is not None:
-            connection.close()
 
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         options = options or {}
         extension = Path(path).suffix.lower()
-        connection = self._owned_connection()
         try:
-            if extension in {".csv", ".tsv"}:
-                encoding = str(options.get("encoding", "utf-8")).lower().replace("_", "-")
-                if encoding not in {"utf-8", "utf8"}:
-                    raise EngineError(
-                        f"DuckDB supports UTF-8 CSV input, not {encoding}. Use the Pandas backend for this encoding."
-                    )
-                if is_blank_delimited_file(path):
-                    row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
-                    self._empty_source_frame = connection.sql(
-                        f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE"
-                    )
-                    return self._empty_source_frame
-                return connection.read_csv(
-                    path,
-                    delimiter=options.get("delimiter", "\t" if extension == ".tsv" else ","),
-                    encoding="utf-8",
-                    quotechar=options.get("quoteChar", '"'),
-                    header=options.get("hasHeader", True),
-                )
-            if extension == ".parquet":
-                return connection.read_parquet(path)
-            if extension == ".jsonl":
-                try:
-                    return connection.read_json(path, format="newline_delimited")
-                except Exception as error:
-                    if _json_reader_is_unavailable(error):
+            with self._tracked_connection() as connection:
+                if extension in {".csv", ".tsv"}:
+                    encoding = str(options.get("encoding", "utf-8")).lower().replace("_", "-")
+                    if encoding not in {"utf-8", "utf8"}:
                         raise EngineError(
-                            "DuckDB JSON support is unavailable in this interpreter. "
-                            "Install a compatible DuckDB build explicitly; Open Wrangler will not fetch extensions."
-                        ) from error
-                    raise EngineError(f"DuckDB could not open {path} as newline-delimited JSON: {error}") from error
-            if extension in {".xlsx", ".xls"}:
-                raise EngineError("DuckDB does not support Excel input. Use the Pandas or Polars backend.")
-            raise EngineError(f"Unsupported file extension for DuckDB backend: {extension}")
+                            f"DuckDB supports UTF-8 CSV input, not {encoding}. "
+                            "Use the Pandas backend for this encoding."
+                        )
+                    if is_blank_delimited_file(path):
+                        row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
+                        frame = _snapshot_relation_factory(
+                            lambda: connection.sql(f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE")
+                        )
+                        self._empty_source_frame = frame
+                        return frame
+                    return _snapshot_relation_factory(
+                        lambda: connection.read_csv(
+                            path,
+                            delimiter=options.get("delimiter", "\t" if extension == ".tsv" else ","),
+                            encoding="utf-8",
+                            quotechar=options.get("quoteChar", '"'),
+                            header=options.get("hasHeader", True),
+                        )
+                    )
+                if extension == ".parquet":
+                    return _snapshot_relation_factory(lambda: connection.read_parquet(path))
+                if extension == ".jsonl":
+                    try:
+                        return _snapshot_relation_factory(
+                            lambda: connection.read_json(path, format="newline_delimited")
+                        )
+                    except Exception as error:
+                        if _json_reader_is_unavailable(error):
+                            raise EngineError(
+                                "DuckDB JSON support is unavailable in this interpreter. "
+                                "Install a compatible DuckDB build explicitly; Open Wrangler will not fetch extensions."
+                            ) from error
+                        raise EngineError(f"DuckDB could not open {path} as newline-delimited JSON: {error}") from error
+                if extension in {".xlsx", ".xls"}:
+                    raise EngineError("DuckDB does not support Excel input. Use the Pandas or Polars backend.")
+                raise EngineError(f"Unsupported file extension for DuckDB backend: {extension}")
         except EngineError:
             raise
         except Exception as error:
@@ -556,19 +590,12 @@ class DuckDBEngine(DataFrameEngine):
             return self._assign(frame, params["newColumn"], _by_example_expression(params["program"]))
         if kind == "customCode":
             visible = self._visible_relation(frame)
-            import duckdb
-
-            namespace: dict[str, Any] = {"df": visible, "duckdb": duckdb}
-            try:
-                exec(params["code"], namespace, namespace)
-            except Exception as error:
-                raise EngineError(f"Custom DuckDB code failed: {error}") from error
-            result = namespace.get("result")
-            if not self.detect(result):
-                raise EngineError("Custom DuckDB code must assign a DuckDBPyRelation to result.")
-            # Re-home the returned SQL on the engine connection so subsequent
-            # plans stay portable even if custom code used duckdb.sql().
-            return self._relation_from_sql(cast(Any, result).sql_query())
+            with self._terminal_connection(visible) as (connection, source_sql):
+                result_sql = _custom_result_sql(connection, source_sql, str(params["code"]))
+            # Rebind the SQL on another hardened connection. This rejects
+            # results that depend on a custom connection's temporary objects
+            # and guarantees no custom relation owner enters session state.
+            return self._relation_from_sql(result_sql)
         raise EngineError(f"DuckDB does not implement transformation: {kind}")
 
     def compile_plan(self, steps: Iterable[Mapping[str, Any]]) -> str:
@@ -591,11 +618,7 @@ class DuckDBEngine(DataFrameEngine):
         query = "SELECT * FROM ow" if row_id is None else f"SELECT * EXCLUDE ({_quote_ident(row_id)}) FROM ow"
         try:
             with self._terminal_connection(frame) as (connection, source_sql):
-                relation = connection.sql(_compose_sql(source_sql, query))
-                if format_name == "csv":
-                    relation.write_csv(path)
-                else:
-                    relation.write_parquet(path)
+                _write_relation_export(connection, _compose_sql(source_sql, query), path, format_name)
         except EngineError:
             raise
         except Exception as error:
@@ -720,21 +743,40 @@ class DuckDBEngine(DataFrameEngine):
             ]
         raise EngineError(f"DuckDB cannot compile transformation: {kind}")
 
-    def _owned_connection(self) -> Any:
+    @contextmanager
+    def _tracked_connection(self) -> Iterator[Any]:
         with self._lifecycle_lock:
             if self._closed:
                 raise EngineError("The DuckDB engine is closed.")
-            if self._connection is None:
-                self._connection = _connect()
-            return self._connection
+        connection = _connect()
+        with self._lifecycle_lock:
+            if self._closed:
+                connection.close()
+                raise EngineError("The DuckDB engine is closed.")
+            self._active_connections.add(connection)
+        failed = False
+        try:
+            yield connection
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            with self._lifecycle_lock:
+                self._active_connections.discard(connection)
+            try:
+                connection.close()
+            except Exception:
+                if not failed:
+                    raise
 
     def _relation(self, frame: Any, query: str) -> Any:
-        source_sql = self._retire_relation_owner(frame)
-        return self._relation_from_sql(_compose_sql(source_sql, query))
+        source = self.normalize(frame)
+        return self._relation_from_sql(_compose_sql(source.sql, query))
 
-    def _relation_from_sql(self, sql: str) -> Any:
+    def _relation_from_sql(self, sql: str) -> DuckDBSqlPlan:
         try:
-            return self._owned_connection().sql(sql)
+            with self._tracked_connection() as connection:
+                return _snapshot_relation_factory(lambda: connection.sql(sql))
         except EngineError:
             raise
         except Exception as error:
@@ -742,45 +784,14 @@ class DuckDBEngine(DataFrameEngine):
 
     @contextmanager
     def _terminal_connection(self, frame: Any) -> Iterator[tuple[Any, str]]:
-        with self._lifecycle_lock:
-            if self._closed:
-                raise EngineError("The DuckDB engine is closed.")
-        source_sql = self._retire_relation_owner(frame)
-        connection = _connect()
-        with self._lifecycle_lock:
-            if self._closed:
-                connection.close()
-                raise EngineError("The DuckDB engine is closed.")
-            self._active_connections.add(connection)
+        source = self.normalize(frame)
         try:
-            yield connection, source_sql
+            with self._tracked_connection() as connection:
+                yield connection, source.sql
         except EngineError:
             raise
         except Exception as error:
             raise EngineError(f"DuckDB query failed: {error}") from error
-        finally:
-            with self._lifecycle_lock:
-                self._active_connections.discard(connection)
-            connection.close()
-
-    def _retire_relation_owner(self, frame: Any) -> str:
-        """Retain SQL and retire the Python relation's file-owning connection."""
-
-        with self._lifecycle_lock:
-            if self._closed:
-                raise EngineError("The DuckDB engine is closed.")
-            try:
-                source_sql = str(frame.sql_query())
-            except Exception as error:
-                raise EngineError(f"DuckDB query failed: {error}") from error
-            connection = self._connection
-            self._connection = None
-        if connection is not None:
-            try:
-                connection.close()
-            except Exception as error:
-                raise EngineError(f"Could not release the DuckDB plan connection: {error}") from error
-        return source_sql
 
     def _terminal_rows(self, frame: Any, query: str) -> list[tuple[Any, ...]]:
         with self._terminal_connection(frame) as (connection, source_sql):
@@ -791,7 +802,7 @@ class DuckDBEngine(DataFrameEngine):
             return _execute_scalar(connection, source_sql, query)
 
     def _columns(self, frame: Any) -> list[str]:
-        return [str(column) for column in frame.columns]
+        return self.normalize(frame).columns
 
     def _row_id_column(self, frame: Any) -> str | None:
         return next((column for column in self._columns(frame) if column.startswith(INTERNAL_ROW_ID_PREFIX)), None)
@@ -1054,6 +1065,69 @@ def _connect() -> Any:
         connection.close()
         raise
     return connection
+
+
+def _snapshot_native_relation(relation: Any) -> DuckDBSqlPlan:
+    return DuckDBSqlPlan(
+        sql=str(relation.sql_query()),
+        column_names=tuple(str(column) for column in relation.columns),
+        type_names=tuple(str(column_type) for column_type in relation.types),
+    )
+
+
+def _snapshot_relation_factory(factory: Callable[[], Any]) -> DuckDBSqlPlan:
+    """Snapshot one native relation, then drop it before its owner closes."""
+
+    relation: Any = None
+    try:
+        relation = factory()
+        return _snapshot_native_relation(relation)
+    finally:
+        relation = None
+
+
+def _custom_result_sql(connection: Any, source_sql: str, code: str) -> str:
+    """Run custom code with a request-local native relation and retain only SQL."""
+
+    import duckdb
+
+    namespace: dict[str, Any] = {
+        "df": connection.sql(source_sql),
+        "duckdb": duckdb,
+    }
+    result: Any | None = None
+    try:
+        exec(code, namespace, namespace)
+        result = namespace.get("result")
+        if not isinstance(result, duckdb.DuckDBPyRelation):
+            raise EngineError("Custom DuckDB code must assign a DuckDBPyRelation to result.")
+        return str(result.sql_query())
+    except EngineError:
+        raise
+    except Exception as error:
+        raise EngineError(f"Custom DuckDB code failed: {error}") from None
+    finally:
+        namespace.clear()
+        result = None
+
+
+def _write_relation_export(
+    connection: Any,
+    sql: str,
+    path: str,
+    format_name: Literal["csv", "parquet"],
+) -> None:
+    """Write through a temporary relation that dies before connection close."""
+
+    relation: Any = None
+    try:
+        relation = connection.sql(sql)
+        if format_name == "csv":
+            relation.write_csv(path)
+        else:
+            relation.write_parquet(path)
+    finally:
+        relation = None
 
 
 def _execute_rows(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:

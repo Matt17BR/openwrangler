@@ -539,7 +539,7 @@ def _is_native_lazy_frame(frame: Any, backend: Backend) -> bool:
         return isinstance(frame, pl.LazyFrame)
     if backend == "duckdb":
         sql_query = getattr(frame, "sql_query", None)
-        return type(frame).__name__ == "DuckDBPyRelation" and callable(sql_query) and isinstance(sql_query(), str)
+        return type(frame).__name__ == "DuckDBSqlPlan" and callable(sql_query) and isinstance(sql_query(), str)
     return False
 
 
