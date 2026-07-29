@@ -56,6 +56,10 @@ test("README media is compact, portable, and composition-verified", () => {
   );
   assert.doesNotMatch(readme, /docs\/images\/editor-acceptance\/vscode-(?:hero|notebook)/u);
   assert.doesNotMatch(readme, /The image automatically follows your GitHub theme\./u);
+  assert.match(
+    readme,
+    /four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and 16 MiB[\s\S]{0,160}not dataframe limits/u
+  );
   assert.match(readme, /rich Parquet file gallery/u);
   assert.match(readme, /Notebook relations are not yet supported\./u);
 

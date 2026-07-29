@@ -63,9 +63,9 @@ halves use the same data and layout._
 ## Notebook workflows
 
 Displaying a Pandas or Polars dataframe can produce an inline preview after Jupyter grants kernel access. A saved
-inline output captures at most 10,000 rows and 100,000 cells, so it stays reproducible with the notebook. This
-snapshot bound is not a dataframe limit: live notebook variables and file sessions fetch bounded pages from the
-current source instead.
+inline output has four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and 16 MiB, so it stays
+reproducible with the notebook. These snapshot bounds are not dataframe limits: live notebook variables and file
+sessions fetch bounded pages from the current source instead.
 
 Choose **Open Variable** from the notebook toolbar or Jupyter Variables to open the current dataframe as a live
 session, clean it, and insert generated code back into that same notebook.
