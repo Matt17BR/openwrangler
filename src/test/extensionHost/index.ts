@@ -422,8 +422,9 @@ export async function run(): Promise<void> {
     contributions.commands?.find((command) => command.command === RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND),
     {
       command: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND,
-      title: "Open Wrangler: Open Notebook Variable",
+      title: "Open in Open Wrangler",
       shortTitle: "Open in Open Wrangler",
+      category: "Open Wrangler",
       icon: "media/activity-icon.svg"
     }
   );
@@ -505,7 +506,8 @@ export async function run(): Promise<void> {
   );
   const notebookVariableWhen = "notebookType == 'jupyter-notebook' && isWorkspaceTrusted";
   const notebookVariableWhenCompact =
-    "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && (config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)";
+    "notebookType == 'jupyter-notebook' && isWorkspaceTrusted && " +
+    "(config.notebook.globalToolbar != true || openWrangler.forceNotebookEditorTitleAction)";
   for (const [menu, when] of [
     ["editor/title", notebookVariableWhenCompact],
     ["notebook/toolbar", notebookVariableWhen]
@@ -3348,13 +3350,14 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
 
         const action =
           commandCount === 1
-            ? releasedCommandOwnedLabeledAction(titleActions, commandItems.first(), "button")
+            ? releasedCommandOwnedAction(titleActions, commandItems.first(), "button")
             : labelCount === 1
               ? byLabel.first()
               : undefined;
         const actionCount = action ? await action.count() : 0;
-        assert.ok(actionCount < 2, "The active editor title exposed duplicate command-owned labeled actions.");
+        assert.ok(actionCount < 2, "The active editor title exposed duplicate command-owned actions.");
         if (actionCount === 1 && action && (await action.isVisible()) && (await action.isEnabled())) {
+          await assertReleasedNotebookActionLabel(action, "active notebook editor title");
           const overflow = await probeReleasedNotebookToolbarOverflow(workbench);
           const surfaceMatches = await withReleasedNotebookOverflow(overflow, () =>
             releasedNotebookLaunchSurfaceMatches(workbench, "editor-title", overflow.inventory.visible)
@@ -3380,7 +3383,7 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
           }
           const refreshedAction =
             refreshedCommandCount === 1
-              ? releasedCommandOwnedLabeledAction(refreshedTitleActions, refreshedItems.first(), "button")
+              ? releasedCommandOwnedAction(refreshedTitleActions, refreshedItems.first(), "button")
               : refreshedLabelCount === 1
                 ? refreshedByLabel.first()
                 : undefined;
@@ -3392,6 +3395,7 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
           ) {
             continue;
           }
+          await assertReleasedNotebookActionLabel(refreshedAction, "refreshed active notebook editor title");
           const pinned = await pinVisibleEnabledReleasedNotebookAction(refreshedAction);
           if (!pinned) continue;
           return {
@@ -3436,14 +3440,15 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
         assert.ok(directLabelCount < 2, "The notebook toolbar exposed duplicate labeled Open Wrangler actions.");
         let directAction: Locator | undefined;
         if (directCount === 1) {
-          const direct = releasedCommandOwnedLabeledAction(toolbar, directItems.first(), "button");
+          const direct = releasedCommandOwnedAction(toolbar, directItems.first(), "button");
           const directOwnedCount = await direct.count();
-          assert.ok(directOwnedCount < 2, "The notebook toolbar exposed duplicate command-owned labeled actions.");
+          assert.ok(directOwnedCount < 2, "The notebook toolbar exposed duplicate command-owned actions.");
           if (directOwnedCount === 1) directAction = direct;
         } else if (directLabelCount === 1) {
           directAction = directByLabel.first();
         }
         if (directAction && (await directAction.isVisible()) && (await directAction.isEnabled())) {
+          await assertReleasedNotebookActionLabel(directAction, "released Jupyter notebook toolbar");
           const overflow = await probeReleasedNotebookToolbarOverflow(workbench);
           observedOverflowAction = {
             total: Math.max(observedOverflowAction.total, overflow.inventory.total),
@@ -3472,7 +3477,7 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
           }
           const refreshedAction =
             refreshedCommandCount === 1
-              ? releasedCommandOwnedLabeledAction(refreshedToolbar, refreshedItems.first(), "button")
+              ? releasedCommandOwnedAction(refreshedToolbar, refreshedItems.first(), "button")
               : refreshedLabelCount === 1
                 ? refreshedByLabel.first()
                 : undefined;
@@ -3484,6 +3489,7 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
           ) {
             continue;
           }
+          await assertReleasedNotebookActionLabel(refreshedAction, "refreshed released Jupyter notebook toolbar");
           const pinned = await pinVisibleEnabledReleasedNotebookAction(refreshedAction);
           if (!pinned) continue;
           return {
@@ -3559,19 +3565,37 @@ function notebookToolbarCommandAction(item: Locator, command: string): Locator {
   return item.locator(`:scope > .action-label[data-command-id="${command}"]`);
 }
 
-function releasedCommandOwnedLabeledAction(
+function releasedCommandOwnedAction(
   container: Locator,
   commandItem: Locator,
-  role: "button" | "menuitem"
+  role: "button" | "menuitem",
+  includeHidden = false
 ): Locator {
-  const exactLabel = container.getByRole(role, {
-    name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
-  });
-  return commandItem.and(exactLabel).or(
-    commandItem.getByRole(role, {
-      name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN
-    })
+  const actions = container.getByRole(role, { includeHidden });
+  return commandItem.and(actions).or(commandItem.getByRole(role));
+}
+
+async function assertReleasedNotebookActionLabel(action: Locator, surface: string): Promise<void> {
+  const evidence = await releasedNotebookActionLabelEvidence(action);
+  const accessibleName = evidence.ariaLabel || evidence.title || evidence.text;
+  assert.match(
+    accessibleName,
+    RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
+    `The ${surface} command must expose the exact accessible name ` +
+      `${JSON.stringify(RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN.source)}. ` +
+      `Observed: ${JSON.stringify(evidence)}`
   );
+}
+
+async function releasedNotebookActionLabelEvidence(
+  action: Locator
+): Promise<{ ariaLabel: string; title: string; text: string }> {
+  const bounded = (value: string | null): string => (value ?? "").trim().slice(0, 160);
+  return {
+    ariaLabel: bounded(await action.getAttribute("aria-label").catch(() => null)),
+    title: bounded(await action.getAttribute("title").catch(() => null)),
+    text: bounded(await action.textContent().catch(() => null))
+  };
 }
 
 async function pinVisibleEnabledReleasedNotebookAction(action: Locator): Promise<ElementHandle<unknown> | undefined> {
@@ -3732,20 +3756,20 @@ async function probeReleasedNotebookToolbarOverflow(workbench: Page): Promise<Re
       });
       const labelState = await releasedLocatorState(menuByLabel);
       const commandOwned =
-        commandState.total === 1
-          ? releasedCommandOwnedLabeledAction(menuContainer, menuItems.first(), "menuitem")
-          : undefined;
+        commandState.total === 1 ? releasedCommandOwnedAction(menuContainer, menuItems.first(), "menuitem") : undefined;
       const commandOwnedState = commandOwned
         ? await releasedLocatorState(commandOwned)
         : { total: 0, visible: 0, enabled: 0 };
       assert.ok(commandState.total < 2, "The notebook overflow exposed duplicate Open Wrangler variable actions.");
       assert.ok(labelState.total < 2, "The notebook overflow exposed duplicate labeled Open Wrangler actions.");
-      assert.ok(commandOwnedState.total < 2, "The notebook overflow exposed duplicate command-owned labeled actions.");
+      assert.ok(commandOwnedState.total < 2, "The notebook overflow exposed duplicate command-owned actions.");
       const inventory = commandState.total === 0 ? labelState : commandState;
       const actionState = commandState.total === 0 ? labelState : commandOwnedState;
       const ownedAction =
         commandState.total === 0 ? (labelState.total === 1 ? menuByLabel.first() : undefined) : commandOwned;
       if (actionState.total === 1 && actionState.visible === 1 && actionState.enabled === 1) {
+        assert.ok(ownedAction, "The manifest-owned notebook overflow action must remain addressable.");
+        await assertReleasedNotebookActionLabel(ownedAction, "released Jupyter notebook-toolbar overflow");
         pinnedAction = (await ownedAction?.elementHandle()) ?? undefined;
         assert.ok(pinnedAction, "The manifest-owned notebook overflow action must remain addressable.");
         assert.equal(
@@ -3841,21 +3865,40 @@ async function releasedNotebookToolbarDiagnostics(
         const toolbars = frame.locator(".notebook-editor .notebook-toolbar-container");
         const directCommand = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
         const directCommandState = await releasedLocatorState(directCommand);
-        const directAction =
-          directCommandState.total > 0
-            ? directCommandState
-            : await releasedLocatorState(
-                toolbars.getByRole("button", {
-                  name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
-                  includeHidden: true
-                })
-              );
+        const directActionLocator =
+          directCommandState.total === 1
+            ? releasedCommandOwnedAction(toolbars, directCommand.first(), "button", true)
+            : toolbars.getByRole("button", {
+                name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
+                includeHidden: true
+              });
+        const directAction = await releasedLocatorState(directActionLocator);
+        const directActionLabel =
+          directAction.total === 1 ? await releasedNotebookActionLabelEvidence(directActionLocator) : undefined;
+        const editorTitles = frame.locator(".part.editor .editor-group-container.active .editor-actions");
+        const editorTitleCommand = notebookToolbarCommandItems(editorTitles, RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND);
+        const editorTitleCommandState = await releasedLocatorState(editorTitleCommand);
+        const editorTitleActionLocator =
+          editorTitleCommandState.total === 1
+            ? releasedCommandOwnedAction(editorTitles, editorTitleCommand.first(), "button", true)
+            : editorTitles.getByRole("button", {
+                name: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN,
+                includeHidden: true
+              });
+        const editorTitleAction = await releasedLocatorState(editorTitleActionLocator);
+        const editorTitleActionLabel =
+          editorTitleAction.total === 1
+            ? await releasedNotebookActionLabelEvidence(editorTitleActionLocator)
+            : undefined;
         const jupyterExport = notebookToolbarCommandItems(toolbars, RELEASED_JUPYTER_EXPORT_COMMAND);
         return {
           notebookEditors: await releasedLocatorState(notebookEditors),
           toolbars: await releasedLocatorState(toolbars),
           toolbarButtons: await releasedLocatorState(toolbars.getByRole("button", { includeHidden: true })),
           directAction,
+          directActionLabel,
+          editorTitleAction,
+          editorTitleActionLabel,
           jupyterExport: await releasedLocatorState(jupyterExport),
           tableIcons: await toolbars
             .locator(".codicon-table")
@@ -3873,6 +3916,18 @@ async function releasedNotebookToolbarDiagnostics(
       directActions: result.directActions + Math.max(frame.directAction.total, 0),
       visibleDirectActions: result.visibleDirectActions + frame.directAction.visible,
       enabledDirectActions: result.enabledDirectActions + frame.directAction.enabled,
+      editorTitleActions: result.editorTitleActions + Math.max(frame.editorTitleAction.total, 0),
+      visibleEditorTitleActions: result.visibleEditorTitleActions + frame.editorTitleAction.visible,
+      enabledEditorTitleActions: result.enabledEditorTitleActions + frame.editorTitleAction.enabled,
+      labelMismatches:
+        result.labelMismatches +
+        [frame.directActionLabel, frame.editorTitleActionLabel].filter(
+          (evidence) =>
+            evidence !== undefined &&
+            !RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN.test(
+              evidence.ariaLabel || evidence.title || evidence.text
+            )
+        ).length,
       toolbarButtons: result.toolbarButtons + Math.max(frame.toolbarButtons.total, 0),
       jupyterExports: result.jupyterExports + Math.max(frame.jupyterExport.total, 0),
       tableIcons: result.tableIcons + Math.max(frame.tableIcons, 0)
@@ -3885,33 +3940,42 @@ async function releasedNotebookToolbarDiagnostics(
       directActions: 0,
       visibleDirectActions: 0,
       enabledDirectActions: 0,
+      editorTitleActions: 0,
+      visibleEditorTitleActions: 0,
+      enabledEditorTitleActions: 0,
+      labelMismatches: 0,
       toolbarButtons: 0,
       jupyterExports: 0,
       tableIcons: 0
     }
   );
+  const nativeActions = totals.directActions + totals.editorTitleActions;
+  const visibleNativeActions = totals.visibleDirectActions + totals.visibleEditorTitleActions;
+  const enabledNativeActions = totals.enabledDirectActions + totals.enabledEditorTitleActions;
   const classification =
     totals.visibleNotebookEditors === 0
       ? "notebook-missing"
-      : totals.toolbars === 0
-        ? "toolbar-missing"
-        : totals.visibleToolbars === 0
-          ? "toolbar-hidden"
-          : totals.directActions > 1 || observedOverflowAction.total > 1
-            ? "duplicate"
-            : totals.directActions > 0 && totals.visibleDirectActions === 0
-              ? "action-hidden"
-              : totals.visibleDirectActions > 0 && totals.enabledDirectActions === 0
-                ? "action-disabled"
-                : totals.jupyterExports === 0
-                  ? "scoped-context-unavailable"
-                  : totals.tableIcons > 0
-                    ? "label-mismatch"
-                    : lastStructuralFailure !== "none"
-                      ? "race"
-                      : registeredCommands.includes("openWrangler.openNotebookVariable")
-                        ? "contribution-suppressed"
-                        : "ambiguous";
+      : nativeActions + observedOverflowAction.total > 1
+        ? "duplicate"
+        : nativeActions > 0 && visibleNativeActions === 0
+          ? "action-hidden"
+          : visibleNativeActions > 0 && enabledNativeActions === 0
+            ? "action-disabled"
+            : totals.labelMismatches > 0
+              ? "label-mismatch"
+              : totals.toolbars === 0
+                ? "toolbar-missing"
+                : totals.visibleToolbars === 0
+                  ? "toolbar-hidden"
+                  : totals.jupyterExports === 0
+                    ? "scoped-context-unavailable"
+                    : totals.tableIcons > 0
+                      ? "icon-only-action-unresolved"
+                      : lastStructuralFailure !== "none"
+                        ? "race"
+                        : registeredCommands.includes("openWrangler.openNotebookVariable")
+                          ? "contribution-suppressed"
+                          : "ambiguous";
   return {
     classification,
     lastStructuralFailure,

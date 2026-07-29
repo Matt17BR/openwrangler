@@ -176,8 +176,9 @@ describe("notebook launch contributions", () => {
     expect(manifest.activationEvents).toContain("onNotebook:jupyter-notebook");
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openNotebookVariable",
-      title: "Open Wrangler: Open Notebook Variable",
+      title: "Open in Open Wrangler",
       shortTitle: "Open in Open Wrangler",
+      category: "Open Wrangler",
       icon: "media/activity-icon.svg"
     });
     expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({

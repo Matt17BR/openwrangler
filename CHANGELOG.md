@@ -24,6 +24,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Unified the notebook command's primary and compact labels as **Open in Open Wrangler**, so Cursor's pinned editor-title action and VS Code's global notebook toolbar expose the same accessible name. Released-Jupyter acceptance now resolves command ownership before validating that label and reports editor-title evidence separately.
 - Corrected the packaged Jupyter acceptance double to match the stable API contract: `getKernel()` returns only a kernel already started by the user and never synthesizes one during discovery. Split-notebook acceptance now proves an action from notebook A cannot advance notebook B beyond B's independent proactive-preview baseline.
 - Removed sampled-distribution labels from live numeric summaries and retained exact tails, inclusive maxima, deterministic constant/empty behavior, and complete population counts.
 
