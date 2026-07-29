@@ -136,6 +136,10 @@ interface ReleasedJupyterVariableAction {
   readonly row: Locator;
 }
 
+interface ReleasedJupyterDocumentRootElement {
+  readonly dataset: { readonly openWranglerAcceptanceClick?: string };
+}
+
 interface FakeJupyterApi {
   testing: {
     execute(uri: vscode.Uri, code: string): Promise<string>;
@@ -1500,7 +1504,7 @@ async function dispatchReleasedJupyterVariableAction(
     receipt: async () => {
       assert.equal(
         await viewerAction.documentRoot.evaluate(
-          (element) => (element as HTMLElement).dataset.openWranglerAcceptanceClick
+          (element) => (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceClick
         ),
         "seen",
         `The real released-Jupyter Variables action for ${variableName} must receive its browser click event.`
@@ -2586,7 +2590,9 @@ async function waitForReleasedJupyterVariableAction(
       );
       if (!listenerAttached) throw new ReleasedJupyterVariableActionReplacementError();
       assert.equal(
-        await documentRoot.evaluate((element) => (element as HTMLElement).dataset.openWranglerAcceptanceClick),
+        await documentRoot.evaluate(
+          (element) => (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceClick
+        ),
         "pending",
         `The released Jupyter Variables action for ${variableName} must arm its document-level click receipt.`
       );
