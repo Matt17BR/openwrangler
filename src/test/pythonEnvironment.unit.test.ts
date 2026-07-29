@@ -26,9 +26,14 @@ describe("Python environment requirements", () => {
       {
         importModule: "duckdb",
         distribution: "duckdb",
-        installSpec: "duckdb>=1.4.5,<1.6",
-        minimumVersion: "1.4.5",
+        installSpec: "duckdb>=1.5.4,<1.6",
+        minimumVersion: "1.5.4",
         maximumVersionExclusive: "1.6"
+      },
+      {
+        importModule: "pytz",
+        distribution: "pytz",
+        installSpec: "pytz"
       }
     ]);
     expect(requiredDependencies("pandas", parquet).map((item) => item.installSpec)).toEqual(["pandas", "pyarrow"]);

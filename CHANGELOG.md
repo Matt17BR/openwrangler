@@ -6,11 +6,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
-- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and unpersists only its owned indexed child without stopping the user Spark session. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, and generated-code insertion remain outside this preview.
+- Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and unpersists only its owned indexed child without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
 
 ### Changed
 
 - Added a bounded, source-only pull-request `Fast feedback` lane that runs deterministic static checks alongside canonical packaging and labels each failure class separately. The existing full `validate` gate remains unchanged and authoritative, so this scheduling improvement does not lower, remove, or bypass any merge or release requirement.
+- Made DuckDB rich Parquet pages deterministic across host time zones by pinning every owned and terminal connection to UTC. Dependency selection now requires the bounded-green `duckdb>=1.5.4,<1.6` range together with `pytz`; malformed JSONL remains an input diagnostic instead of being mislabeled as unavailable JSON support. Installed-editor acceptance now covers native DECIMAL, TIMESTAMPTZ, LIST, and STRUCT values plus source replacement and terminal cleanup. DuckDB remains a preview rather than a parity or first-class-engine claim.
+- Kept PySpark insights explicit even when insights-on-open is enabled, rejected unsupported nested Spark profile types before indexing, and changed base-frame paging to a bounded dense-row-identity range. Opening still indexes and counts the complete frame, while filtered or sorted pages retain their correct Spark ordering path.
 
 ## [1.0.3] - 2026-07-28
 
