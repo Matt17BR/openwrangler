@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from math import isnan
 from pathlib import Path
@@ -250,6 +251,91 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     engine.close()
     with pytest.raises(EngineError, match="closed"):
         engine.read_file(str(csv_path))
+
+
+def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(tmp_path: Path) -> None:
+    source = tmp_path / "replaceable.parquet"
+    replacement = tmp_path / "replaceable.parquet.replacement"
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            """
+            CREATE TABLE rich AS SELECT
+                CAST('123456789012345678901234567890.12345678' AS DECIMAL(38,8)) AS exact_decimal,
+                TIMESTAMPTZ '2026-07-16 14:30:00+02:00' AS zoned,
+                [1, 2, NULL]::INTEGER[] AS items,
+                {'label': 'alpha', 'score': 7} AS record
+            """
+        )
+        connection.execute("COPY rich TO ? (FORMAT PARQUET)", [str(source)])
+        connection.execute("COPY rich TO ? (FORMAT PARQUET)", [str(replacement)])
+    finally:
+        connection.close()
+
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    opened = manager.open_session(
+        {"kind": "file", "label": source.name, "path": str(source)},
+        backend="duckdb",
+        page_size=200,
+    )
+    session_id = opened["metadata"]["sessionId"]
+    try:
+        session = manager.sessions[session_id]
+        assert isinstance(session.engine, DuckDBEngine)
+        assert session.engine._connection is None
+        assert isinstance(session.original, duckdb.DuckDBPyRelation)
+        assert "parquet_scan" in session.original.sql_query().lower()
+        assert opened["metadata"]["shape"] == {"rows": 1, "columns": 4}
+        assert opened["page"]["rows"][0]["values"][0]["raw"] == "123456789012345678901234567890.12345678"
+
+        paged = manager.get_page(
+            session_id,
+            0,
+            0,
+            20,
+            {"logic": "and", "filters": [], "sort": []},
+        )
+        assert paged["page"]["rows"][0]["values"][0]["raw"] == "123456789012345678901234567890.12345678"
+        assert session.engine._connection is None
+
+        os.replace(replacement, source)
+        with pytest.raises(EngineError, match="changed or is no longer available"):
+            manager.get_page(
+                session_id,
+                0,
+                0,
+                20,
+                {"logic": "and", "filters": [], "sort": []},
+            )
+    finally:
+        manager.close_session(session_id, 0)
+        manager.close_all()
+
+
+def test_duckdb_relation_plan_retirement_closes_owner_without_relation_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "retired.csv"
+    source.write_text("value\n1\n", encoding="utf-8")
+    engine = DuckDBEngine()
+    frame = engine.read_file(str(source))
+    owner = engine._connection
+    assert owner is not None
+
+    def reject_relation_close(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("DuckDBPyRelation.close() executes an unexecuted relation")
+
+    monkeypatch.setattr(duckdb.DuckDBPyRelation, "close", reject_relation_close)
+    try:
+        sql = engine._retire_relation_owner(frame)
+        assert "read_csv" in sql.lower()
+        assert engine._connection is None
+        assert frame.columns == ["value"]
+        assert frame.sql_query() == sql
+        with pytest.raises(duckdb.ConnectionException, match="closed"):
+            owner.sql("SELECT 1")
+    finally:
+        engine.close()
 
 
 def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
@@ -1030,6 +1116,9 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
     assert opened["metadata"]["backend"] == "duckdb"
     assert opened["metadata"]["shape"] == {"rows": 3, "columns": 2}
     assert isinstance(manager.sessions[session_id].original, duckdb.DuckDBPyRelation)
+    session_engine = manager.sessions[session_id].engine
+    assert isinstance(session_engine, DuckDBEngine)
+    assert session_engine._connection is None
     assert "read_csv" in manager.sessions[session_id].original.sql_query().lower()
 
     operation = step(
