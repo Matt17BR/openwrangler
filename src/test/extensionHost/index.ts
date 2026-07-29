@@ -5589,7 +5589,11 @@ async function captureReleasedJupyterPySparkLive(
     const columnWidths = Object.fromEntries(
       active.metadata.schema.map((column) => [
         column.id,
-        ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name) ? 190 : 170
+        ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name)
+          ? 204
+          : ["segment", "channel"].includes(column.name)
+            ? 197
+            : 170
       ])
     );
     await testing.updateViewState(active.sessionId, {
@@ -5642,6 +5646,21 @@ async function captureReleasedJupyterPySparkLive(
       .getByText(/Loaded rows 1 to \d+ of 100,000/u)
       .count();
     assert.equal(loadedRows, 1, "The PySpark media scene must show the live 100,000-row source.");
+    const gridBox = await app.getByTestId("data-grid-scroller").boundingBox();
+    const channelBox = await app.locator('th[data-column="channel"]').boundingBox();
+    assert.ok(gridBox, "The PySpark media scene requires a measurable grid viewport.");
+    assert.ok(channelBox, "The PySpark media scene requires the complete channel header.");
+    const gridRight = gridBox.x + gridBox.width;
+    const channelRight = channelBox.x + channelBox.width;
+    assert.ok(
+      Math.abs(gridRight - channelRight) <= 1,
+      "The PySpark media scene must end cleanly after the complete channel column."
+    );
+    const nextColumnBox = await app.locator('th[data-column="product_family"]').boundingBox();
+    assert.ok(
+      !nextColumnBox || nextColumnBox.x >= gridRight,
+      "The PySpark media scene must not show a clipped product_family column."
+    );
 
     const commands = new Set(await vscode.commands.getCommands(true));
     if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
