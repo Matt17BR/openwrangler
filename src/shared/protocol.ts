@@ -2,6 +2,7 @@ export * from "./protocol.generated";
 
 import type {
   ColumnVisualization,
+  DataBackend,
   OpenWranglerRequest,
   DatasetStats,
   SessionSource,
@@ -17,6 +18,19 @@ export type BooleanVisualization = Extract<ColumnVisualization, { kind: "boolean
 export type DatetimeVisualization = Extract<ColumnVisualization, { kind: "datetime" }>;
 export type MissingValueByColumn = DatasetStats["missingValuesByColumn"][number];
 export type SessionBoundRequest = Extract<OpenWranglerRequest, { sessionId: string }>;
+
+export function dataBackendLabel(backend: DataBackend): string {
+  switch (backend) {
+    case "polars":
+      return "Polars";
+    case "duckdb":
+      return "DuckDB";
+    case "pandas":
+      return "Pandas";
+    case "pyspark":
+      return "PySpark";
+  }
+}
 
 export function isSessionBoundRequest(request: OpenWranglerRequest): request is SessionBoundRequest {
   return "sessionId" in request;

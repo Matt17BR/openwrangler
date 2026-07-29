@@ -19,12 +19,34 @@ import {
   createEditorAcceptancePrivateRootReceipt
 } from "./packaged-editor-orchestration.mjs";
 
-const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars"]);
+const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "pyspark"]);
+const BINARY_DEPENDENCIES = Object.freeze([
+  "ipykernel",
+  "pandas",
+  "polars",
+  "py4j",
+  "pyarrow",
+  "grpcio",
+  "grpcio-status",
+  "googleapis-common-protos",
+  "protobuf",
+  "zstandard"
+]);
 const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   ipykernel: "6.30.1",
   pandas: "2.3.3",
-  polars: "1.35.2"
+  polars: "1.35.2",
+  pyspark: "4.2.0",
+  py4j: "0.10.9.9",
+  pyarrow: "25.0.0",
+  grpcio: "1.83.0",
+  "grpcio-status": "1.83.0",
+  "googleapis-common-protos": "1.75.0",
+  protobuf: "7.35.1",
+  zstandard: "0.25.0"
 });
+const PYSPARK_SOURCE_REQUIREMENT =
+  "pyspark @ https://files.pythonhosted.org/packages/c3/33/c987434f5d50aa802779a004ca0fd45ee4350caab50554ad7283d5a22b50/pyspark-4.2.0.tar.gz#sha256=5ad689d53570ee1674193fd4f9bda065f0db3be9363a27d2a3406cc457b70b61";
 const BOUNDED_PYTHON_VERSION =
   /^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:(?:\.post|\.dev)[0-9]+)*(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/iu;
 const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
@@ -48,7 +70,7 @@ export function createRemoteJupyterAcceptanceToken(randomBytesImpl = randomBytes
 }
 
 export function acceptancePythonForPhase(phase, testPython, jupyterKernelPython) {
-  if (phase === "jupyter-deny" || phase === "jupyter-allow") {
+  if (phase === "jupyter-deny" || phase === "jupyter-allow" || phase === "jupyter-pyspark") {
     if (
       typeof jupyterKernelPython !== "string" ||
       !isAbsolute(jupyterKernelPython) ||
@@ -92,6 +114,7 @@ export async function createJupyterAcceptanceKernelPython(
 
   await probeJupyterAcceptancePython(basePython, {
     environment,
+    requirePySpark: false,
     label: "Released-Jupyter base dependency version probe",
     requireRuntimeAbsent: false,
     runCommand
@@ -127,10 +150,33 @@ export async function createJupyterAcceptanceKernelPython(
         "--no-input",
         "--no-warn-script-location",
         "--only-binary=:all:",
-        ...DEPENDENCIES.map((dependency) => `${dependency}==${RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]}`)
+        ...BINARY_DEPENDENCIES.map(
+          (dependency) => `${dependency}==${RELEASED_JUPYTER_COMPATIBILITY_VERSIONS[dependency]}`
+        )
       ],
       environment,
-      label: "Released-Jupyter private kernel dependency installation"
+      label: "Released-Jupyter private kernel binary dependency installation"
+    },
+    { timeoutMs: 240_000 }
+  );
+  assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
+  await runCommand(
+    {
+      executable: kernelPython,
+      args: [
+        "-I",
+        "-m",
+        "pip",
+        "--isolated",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--no-warn-script-location",
+        "--no-deps",
+        PYSPARK_SOURCE_REQUIREMENT
+      ],
+      environment,
+      label: "Released-Jupyter private kernel PySpark installation"
     },
     { timeoutMs: 240_000 }
   );
@@ -343,13 +389,17 @@ export async function probeJupyterAcceptancePython(
   {
     environment = createEditorAcceptanceEnvironment(),
     label = "Released-Jupyter Python dependency probe",
+    requirePySpark = true,
     requireRuntimeAbsent = true,
     runCommand = runBoundedEditorCommand
   } = {}
 ) {
-  if (typeof requireRuntimeAbsent !== "boolean") {
-    throw new Error("Released-Jupyter Python dependency probing requires an explicit runtime-absence policy.");
+  if (typeof requirePySpark !== "boolean" || typeof requireRuntimeAbsent !== "boolean") {
+    throw new Error(
+      "Released-Jupyter Python dependency probing requires explicit PySpark and runtime-absence policies."
+    );
   }
+  const dependencies = requirePySpark ? DEPENDENCIES : DEPENDENCIES.filter((dependency) => dependency !== "pyspark");
   const probe = [
     "import importlib.metadata",
     "import importlib.util",
@@ -357,10 +407,12 @@ export async function probeJupyterAcceptancePython(
     "import ipykernel",
     "import pandas",
     "import polars",
+    ...(requirePySpark ? ["import pyspark"] : []),
     "print(json.dumps({",
     '  "ipykernel": importlib.metadata.version("ipykernel"),',
     '  "pandas": importlib.metadata.version("pandas"),',
     '  "polars": importlib.metadata.version("polars"),',
+    ...(requirePySpark ? ['  "pyspark": importlib.metadata.version("pyspark"),'] : []),
     '  "openwranglerRuntimePresent": importlib.util.find_spec("openwrangler_runtime") is not None,',
     "}, sort_keys=True))"
   ].join("\n");
@@ -379,7 +431,7 @@ export async function probeJupyterAcceptancePython(
   } catch {
     throw new Error("Released-Jupyter Python dependency probe did not return its bounded JSON version report.");
   }
-  for (const dependency of DEPENDENCIES) {
+  for (const dependency of dependencies) {
     const version = versions?.[dependency];
     if (
       typeof version !== "string" ||

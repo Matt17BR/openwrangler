@@ -3049,6 +3049,49 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
   });
 
+  it("forces a Variables-view PySpark session into viewing mode", async () => {
+    const source: SessionSource = {
+      kind: "notebookVariable",
+      label: "spark_frame",
+      variableName: "spark_frame",
+      uri: "file:///workspace/example.ipynb"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") {
+        return {
+          ...openedResponse,
+          metadata: {
+            ...metadata,
+            backend: "pyspark",
+            mode: "viewing",
+            source,
+            capabilities: {
+              editable: false,
+              lazy: true,
+              cancel: false,
+              exportCsv: false,
+              exportParquet: false,
+              notebookInsert: false
+            }
+          }
+        };
+      }
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request },
+      { createViaFactory: true, delegateOpen: true, source, backend: "pyspark", backendPreference: "pyspark" }
+    );
+
+    await vi.waitFor(() =>
+      expect(request.mock.calls.find(([candidate]) => candidate.kind === "openSession")?.[0]).toMatchObject({
+        backend: "pyspark",
+        mode: "viewing"
+      })
+    );
+  });
+
   it("does not retry a failed live notebook open when renderer readiness arrives later", async () => {
     const source: SessionSource = {
       kind: "notebookVariable",

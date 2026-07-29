@@ -6,6 +6,7 @@ import {
   hasActiveSort,
   hasActiveViewQuery
 } from "../shared/filterModel";
+import { dataBackendLabel } from "../shared/protocol";
 
 describe("filter model", () => {
   it("starts empty", () => {
@@ -105,5 +106,11 @@ describe("filter model", () => {
     expect(hasActiveFilters(model)).toBe(false);
     expect(hasActiveViewQuery(model)).toBe(false);
     expect(compactFilterModel(model).filters).toEqual([]);
+  });
+});
+
+describe("data backend labels", () => {
+  it("uses the public PySpark spelling in editor UI", () => {
+    expect(dataBackendLabel("pyspark")).toBe("PySpark");
   });
 });

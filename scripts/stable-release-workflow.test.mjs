@@ -42,6 +42,8 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
     ),
     source.replace("      - run: npm test\n", "      - run: npm test\n        continue-on-error: true\n"),
     source.replace("      - run: npm test\n", "      - run: npm test\n        if: ${{ false }}\n"),
+    source.replace('"pyspark[connect]==4.2.0"', '"pyspark[connect]==4.1.0"'),
+    source.replace("      - name: Verify exact coverage runtimes", "      - name: Skip exact coverage runtimes"),
     source.replace(
       "      - run: npm ci\n",
       '      - run: npm ci && echo "NODE_OPTIONS=--require=/tmp/release-hook.cjs" >> "$GITHUB_ENV"\n'

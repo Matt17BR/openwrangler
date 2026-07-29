@@ -769,6 +769,54 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...metadata, backend: "duckdb" } })).toBe(true);
   });
 
+  it("accepts PySpark only for live notebook variables", () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "spark_frame",
+      variableName: "spark_frame",
+      uri: "file:///workspace/notebook.ipynb"
+    };
+    const request = {
+      kind: "openSession" as const,
+      source,
+      backend: "pyspark" as const,
+      mode: "viewing" as const,
+      pageSize: 200,
+      columnOffset: 0,
+      columnLimit: 16
+    };
+    const sparkMetadata = {
+      ...metadata,
+      backend: "pyspark" as const,
+      mode: "viewing" as const,
+      source,
+      capabilities: {
+        editable: false,
+        lazy: true,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      },
+      steps: []
+    };
+
+    expect(isOpenWranglerRequest(request)).toBe(true);
+    expect(isOpenWranglerRequest({ ...request, mode: "editing" })).toBe(false);
+    expect(isOpenWranglerResponse({ ...responses[1], metadata: sparkMetadata })).toBe(true);
+    expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...sparkMetadata, mode: "editing" } })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, source: metadata.source })).toBe(false);
+    expect(
+      isOpenWranglerRequest({
+        ...request,
+        source: { kind: "notebookOutput", label: "saved Spark output" }
+      })
+    ).toBe(false);
+    expect(isOpenWranglerResponse({ ...responses[1], metadata: { ...sparkMetadata, source: metadata.source } })).toBe(
+      false
+    );
+  });
+
   it("accepts only unique, non-empty stable IDs in summary projections", () => {
     const request = requests.find((candidate) => candidate.kind === "getSummary");
     expect(request?.kind).toBe("getSummary");

@@ -354,16 +354,19 @@ try {
             const pythonEnvironmentUserData = resolve(profile, "py");
             const jupyterAllowUserData = resolve(profile, "ja");
             const jupyterDenyUserData = resolve(profile, "jd");
+            const jupyterPySparkUserData = resolve(profile, "js");
             const jupyterRemoteUserData = resolve(profile, "jr");
             const restrictedUserData = resolve(profile, "r");
             const extensions = resolve(profile, "extensions");
             const jupyterExtensions = resolve(profile, "jx");
             let jupyterAllowEnvironment;
             let jupyterDenyEnvironment;
+            let jupyterPySparkEnvironment;
             let jupyterRemoteEnvironment;
             const workspace = resolve(profile, "Open Wrangler Demo");
             const jupyterAllowWorkspace = resolve(profile, "Open Wrangler Jupyter Allow");
             const jupyterDenyWorkspace = resolve(profile, "Open Wrangler Jupyter Deny");
+            const jupyterPySparkWorkspace = resolve(profile, "Open Wrangler Jupyter PySpark");
             const jupyterRemoteWorkspace = resolve(profile, "Open Wrangler Jupyter Remote");
             const acceptanceHarness = resolve(profile, "acceptance-harness");
             const acceptanceHarnessVsix = resolve(profile, "openwrangler-packaged-test-harness.vsix");
@@ -383,6 +386,7 @@ try {
                 ? {
                     "jupyter-deny": resolve(profile, "jupyter-deny-result.json"),
                     "jupyter-allow": resolve(profile, "jupyter-allow-result.json"),
+                    "jupyter-pyspark": resolve(profile, "jupyter-pyspark-result.json"),
                     ...(remoteJupyterEnabled
                       ? {
                           "jupyter-remote-setup": resolve(profile, "jupyter-remote-setup-result.json"),
@@ -403,6 +407,7 @@ try {
                 ? {
                     "jupyter-deny": randomUUID(),
                     "jupyter-allow": randomUUID(),
+                    "jupyter-pyspark": randomUUID(),
                     ...(remoteJupyterEnabled
                       ? {
                           "jupyter-remote-setup": randomUUID(),
@@ -445,6 +450,7 @@ try {
                   for (const jupyterWorkspace of [
                     jupyterAllowWorkspace,
                     jupyterDenyWorkspace,
+                    jupyterPySparkWorkspace,
                     ...(remoteJupyterEnabled ? [jupyterRemoteWorkspace] : [])
                   ]) {
                     mkdirSync(jupyterWorkspace, { recursive: true });
@@ -485,12 +491,17 @@ try {
                     resolve(profile, "kd"),
                     jupyterKernelPython
                   );
+                  jupyterPySparkEnvironment = writeJupyterAcceptanceEnvironment(
+                    resolve(profile, "ks"),
+                    jupyterKernelPython
+                  );
                   if (remoteJupyterEnabled) {
                     jupyterRemoteEnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kr"));
                   }
                   for (const jupyterUserData of [
                     jupyterAllowUserData,
                     jupyterDenyUserData,
+                    jupyterPySparkUserData,
                     ...(remoteJupyterEnabled ? [jupyterRemoteUserData] : [])
                   ]) {
                     writeEditorSettings(jupyterUserData, {
@@ -769,12 +780,30 @@ try {
                   });
                 }
                 if (acceptanceMode === "full" && jupyterExtensionInstallTarget) {
-                  for (const phase of ["jupyter-deny", "jupyter-allow"]) {
+                  for (const phase of ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]) {
+                    const phaseWorkspace =
+                      phase === "jupyter-deny"
+                        ? jupyterDenyWorkspace
+                        : phase === "jupyter-allow"
+                          ? jupyterAllowWorkspace
+                          : jupyterPySparkWorkspace;
+                    const phaseUserData =
+                      phase === "jupyter-deny"
+                        ? jupyterDenyUserData
+                        : phase === "jupyter-allow"
+                          ? jupyterAllowUserData
+                          : jupyterPySparkUserData;
+                    const phaseJupyterEnvironment =
+                      phase === "jupyter-deny"
+                        ? jupyterDenyEnvironment
+                        : phase === "jupyter-allow"
+                          ? jupyterAllowEnvironment
+                          : jupyterPySparkEnvironment;
                     activePhase = phase;
                     await runEditorAcceptancePhase({
                       editor: identifiedEditor,
-                      workspace: phase === "jupyter-deny" ? jupyterDenyWorkspace : jupyterAllowWorkspace,
-                      userData: phase === "jupyter-deny" ? jupyterDenyUserData : jupyterAllowUserData,
+                      workspace: phaseWorkspace,
+                      userData: phaseUserData,
                       extensions: jupyterExtensions,
                       developmentPaths: [],
                       testModule,
@@ -784,7 +813,7 @@ try {
                       runId: runIds[phase],
                       progressPath: progressPaths[phase],
                       requiresWorkbenchCdp: true,
-                      jupyterEnvironment: phase === "jupyter-deny" ? jupyterDenyEnvironment : jupyterAllowEnvironment
+                      jupyterEnvironment: phaseJupyterEnvironment
                     });
                   }
                   if (remoteJupyterEnabled) {

@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import type { DataBackend, SessionSource } from "../shared/protocol";
 
+export type FileDataBackend = Exclude<DataBackend, "pyspark">;
+
 export interface PythonDependency {
   importModule: string;
   distribution: string;
@@ -15,7 +17,11 @@ export interface BackendImportCapabilityFailure {
   detail: string;
 }
 
-export function automaticBackends(source: SessionSource): DataBackend[] {
+export function isFileDataBackend(backend: DataBackend): backend is FileDataBackend {
+  return backend === "polars" || backend === "duckdb" || backend === "pandas";
+}
+
+export function automaticBackends(source: SessionSource): FileDataBackend[] {
   const extension = source.path?.split(".").pop()?.toLowerCase();
   const encoding = source.importOptions?.encoding?.toLowerCase();
   if (encoding === "utf8-lossy") return ["pandas"];
@@ -28,7 +34,7 @@ export function automaticBackends(source: SessionSource): DataBackend[] {
 }
 
 export function backendImportCapabilityFailure(
-  backend: DataBackend,
+  backend: FileDataBackend,
   source: SessionSource
 ): BackendImportCapabilityFailure | undefined {
   if (!isDelimitedFile(source)) return undefined;
@@ -51,7 +57,7 @@ export function backendImportCapabilityFailure(
   return undefined;
 }
 
-export function requiredDependencies(backend: DataBackend, source: SessionSource): PythonDependency[] {
+export function requiredDependencies(backend: FileDataBackend, source: SessionSource): PythonDependency[] {
   const extension = source.path?.split(".").pop()?.toLowerCase();
   const dependencies = new Map<string, PythonDependency>();
   const add = (dependency: PythonDependency): void => {
@@ -117,7 +123,7 @@ function isMultibyteCodePoint(value: string): boolean {
   return [...value].length === 1 && Buffer.byteLength(value, "utf8") > 1;
 }
 
-function backendLabel(backend: DataBackend): string {
+function backendLabel(backend: FileDataBackend): string {
   if (backend === "duckdb") return "DuckDB";
   if (backend === "polars") return "Polars";
   return "Pandas";

@@ -53,7 +53,7 @@ export function decodePersistedSession(value: unknown): DecodedPersistedSessionS
   if (
     !isRecord(value) ||
     !hasExactKeys(value, ["backend", "cleaning"], ["view"]) ||
-    !isDataBackend(value.backend) ||
+    !isPersistableDataBackend(value.backend) ||
     !isRecord(value.cleaning) ||
     !hasExactKeys(value.cleaning, ["steps"], ["draftStep", "draftReplacesStepId"]) ||
     !Array.isArray(value.cleaning.steps)
@@ -96,7 +96,7 @@ function decodePersistedView(value: unknown): PersistedViewingState | undefined 
   return gridViewState ? { ...gridViewState, filterModel: value.filterModel } : undefined;
 }
 
-function isDataBackend(value: unknown): value is DataBackend {
+function isPersistableDataBackend(value: unknown): value is Exclude<DataBackend, "pyspark"> {
   return value === "polars" || value === "duckdb" || value === "pandas";
 }
 

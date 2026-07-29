@@ -79,15 +79,24 @@ diff, and executable native Polars code before Apply._
 
 DuckDB remains native for supported file sessions. Notebook relations are not yet supported.
 
+PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting,
+paging, and profiling stay in Spark, while only bounded results return to the notebook runtime. File sessions,
+cleaning steps, exports, and saved inline snapshots are not supported for PySpark yet. Opening a session currently
+indexes and counts the complete frame. Each requested grid page is checked in Spark before collection and then
+bounded again by serialized size, complex-value nodes, and nesting depth. These are page-transfer safeguards, not
+dataframe row limits. Insights stay off until requested because each profile runs Spark queries.
+
 ## Engines and formats
 
-| Engine           | Files                           | Notebook data                | How it runs                                                                 |
-| ---------------- | ------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| Polars           | CSV, TSV, Parquet, JSONL, Excel | DataFrame, LazyFrame, Series | Native; supported file formats use lazy scans. Notebook LazyFrames collect. |
-| Pandas           | CSV, TSV, Parquet, JSONL, Excel | DataFrame, Series            | Native, including duplicate column labels                                   |
-| DuckDB (preview) | CSV, TSV, Parquet, JSONL        | Not currently supported      | Native file-backed relations                                                |
+| Engine                    | Files                           | Notebook data                | How it runs                                                                 |
+| ------------------------- | ------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| Polars                    | CSV, TSV, Parquet, JSONL, Excel | DataFrame, LazyFrame, Series | Native; supported file formats use lazy scans. Notebook LazyFrames collect. |
+| Pandas                    | CSV, TSV, Parquet, JSONL, Excel | DataFrame, Series            | Native, including duplicate column labels                                   |
+| DuckDB, preview           | CSV, TSV, Parquet, JSONL        | Not currently supported      | Native file-backed relations                                                |
+| PySpark 4.2, experimental | Not currently supported         | DataFrame                    | Viewing-only Spark queries with bounded returned results                    |
 
-Automatic backend selection prefers Polars, then DuckDB, then Pandas. A backend can also be pinned in settings.
+Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
+Notebook variables are matched to their native supported dataframe type, including PySpark 4.2 DataFrames.
 
 ## From source to reusable code
 
@@ -117,7 +126,7 @@ universally faster.
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workbench and insights    | A calmer hierarchy and richer type-aware summaries in [#88](https://github.com/Matt17BR/openwrangler/issues/88)                                    |
 | Performance comparison    | Reproducible Open Wrangler and Data Wrangler measurements in [#91](https://github.com/Matt17BR/openwrangler/issues/91)                             |
-| PySpark                   | Distributed PySpark dataframe workflows in [#36](https://github.com/Matt17BR/openwrangler/issues/36)                                               |
+| PySpark                   | External clusters, cancellation, and realistic partitioned-data evidence in [#36](https://github.com/Matt17BR/openwrangler/issues/36)              |
 | More VS Code-based IDEs   | Broader compatibility checks for VS Code-based desktop IDEs in [#86](https://github.com/Matt17BR/openwrangler/issues/86)                           |
 | R, Quarto, and R Markdown | Explore native data-frame, tibble, and `data.table` support for Quarto and R Markdown in [#87](https://github.com/Matt17BR/openwrangler/issues/87) |
 

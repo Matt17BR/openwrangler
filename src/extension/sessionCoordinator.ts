@@ -1490,7 +1490,7 @@ export class SessionCoordinator implements vscode.Disposable {
     request: OpenSessionRequest,
     backend: SessionMetadata["backend"]
   ): DecodedPersistedSessionState | undefined {
-    if (!isPersistentSource(request.source)) return undefined;
+    if (!isPersistentSession(request.source, backend)) return undefined;
     const key = persistenceKey(request.source, backend);
     const stored = this.workspaceState?.get<Record<string, unknown>>(SESSION_STORAGE_KEY, {});
     const state = decodePersistedSession(stored?.[key]);
@@ -1498,7 +1498,7 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   private async persistSession(session: CoordinatedSession): Promise<void> {
-    if (!this.workspaceState || !isPersistentSource(session.openRequest.source)) return;
+    if (!this.workspaceState || !isPersistentSession(session.openRequest.source, session.metadata.backend)) return;
     const key = persistenceKey(session.openRequest.source, session.metadata.backend);
     const state = persistedSessionState(session.metadata, gridState(session.viewState));
     const task = this.persistenceTail
@@ -1518,7 +1518,7 @@ export class SessionCoordinator implements vscode.Disposable {
     isCurrent: () => boolean,
     commit: () => void
   ): Promise<boolean> {
-    if (!this.workspaceState || !isPersistentSource(session.openRequest.source)) {
+    if (!this.workspaceState || !isPersistentSession(session.openRequest.source, metadata.backend)) {
       if (!isCurrent()) return false;
       commit();
       return true;
@@ -1920,10 +1920,12 @@ function sessionRequestPriority(
   return request.kind === "getSummary" || request.kind === "getDatasetStats" ? "background" : "interactive";
 }
 
-function isPersistentSource(source: SessionSource): boolean {
+function isPersistentSession(source: SessionSource, backend: SessionMetadata["backend"]): boolean {
   // Saved notebook outputs are bounded value snapshots, not reopenable source
   // data. Their rows and viewing state stay in memory only for the owning panel.
-  return source.kind !== "notebookOutput";
+  // The experimental PySpark path likewise stays ephemeral until kernel,
+  // cluster, and replay recovery have dedicated acceptance evidence.
+  return source.kind !== "notebookOutput" && backend !== "pyspark";
 }
 
 function sameFileSourceIdentity(current: SessionSource, replacement: SessionSource): boolean {

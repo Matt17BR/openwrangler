@@ -141,7 +141,7 @@ export function DataGrid({
   useLayoutEffect(() => {
     restorationRef.current = { viewState, metadata, page, pageSize };
   }, [metadata, page, pageSize, viewState]);
-  const [showInsights, setShowInsights] = useState(insightsOnOpen);
+  const [showInsights, setShowInsights] = useState(metadata.backend === "pyspark" ? false : insightsOnOpen);
   const [viewport, setViewport] = useState({
     firstVisibleRow: viewState.viewport.firstVisibleRow,
     scrollLeft: 0,
@@ -509,7 +509,12 @@ export function DataGrid({
         >
           Next block
         </button>
-        <button type="button" className="secondaryButton" onClick={() => setShowInsights((current) => !current)}>
+        <button
+          type="button"
+          className="secondaryButton"
+          title={metadata.backend === "pyspark" ? "Runs Spark profiling queries for the visible columns." : undefined}
+          onClick={() => setShowInsights((current) => !current)}
+        >
           {showInsights ? "Hide" : "Show"} insights
         </button>
       </div>

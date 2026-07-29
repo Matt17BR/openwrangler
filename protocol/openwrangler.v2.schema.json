@@ -6,7 +6,7 @@
   "oneOf": [{ "$ref": "#/definitions/RuntimeRequestEnvelope" }, { "$ref": "#/definitions/RuntimeResponseEnvelope" }],
   "definitions": {
     "ProtocolVersion": { "type": "integer", "enum": [2] },
-    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas"] },
+    "DataBackend": { "type": "string", "enum": ["polars", "duckdb", "pandas", "pyspark"] },
     "SessionMode": { "type": "string", "enum": ["viewing", "editing"] },
     "RequestPriority": { "type": "string", "enum": ["interactive", "background"] },
     "SessionSource": {
@@ -1347,6 +1347,27 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "source", "pageSize", "columnOffset", "columnLimit"],
+      "not": {
+        "anyOf": [
+          {
+            "required": ["backend"],
+            "properties": {
+              "backend": { "const": "pyspark" },
+              "source": {
+                "required": ["kind"],
+                "properties": { "kind": { "enum": ["file", "notebookOutput"] } }
+              }
+            }
+          },
+          {
+            "required": ["backend", "mode"],
+            "properties": {
+              "backend": { "const": "pyspark" },
+              "mode": { "const": "editing" }
+            }
+          }
+        ]
+      },
       "dependencies": {
         "columnOffset": ["columnLimit"],
         "columnLimit": ["columnOffset"]

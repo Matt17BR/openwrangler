@@ -318,7 +318,11 @@ class SessionManager:
                 page_cache_bytes=0,
                 view_generation=0,
                 revision=0,
-                mode=mode or ("editing" if source.get("kind") == "file" else "viewing"),
+                mode=(
+                    "viewing"
+                    if not engine.capabilities.supports_editing
+                    else mode or ("editing" if source.get("kind") == "file" else "viewing")
+                ),
                 lock=session_lock,
                 admission_condition=threading.Condition(threading.Lock()),
                 profile_condition=threading.Condition(session_lock),
@@ -1262,7 +1266,7 @@ class SessionManager:
             "cancel": engine_capabilities.supports_request_cancellation,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,
             "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
-            "notebookInsert": source_kind == "notebookVariable",
+            "notebookInsert": source_kind == "notebookVariable" and engine_capabilities.supports_editing,
         }
 
     def _assert_revision(self, session: Session, revision: int) -> None:

@@ -61,6 +61,14 @@ describe("notebook output", () => {
         summaries: []
       })
     ).toBeUndefined();
+    expect(
+      normalizeNotebookOutputPayload({
+        mimeVersion: 2,
+        metadata: { ...metadata, backend: "pyspark" },
+        page,
+        summaries: []
+      })
+    ).toBeUndefined();
   });
 
   it("discards saved profiles so captured rows remain the only source of truth", () => {

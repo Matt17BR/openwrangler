@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { SessionSource } from "../../shared/protocol";
+import type { DataBackend, SessionSource } from "../../shared/protocol";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
@@ -10,12 +10,14 @@ interface NotebookVariableArgument {
   variableName?: unknown;
   expression?: unknown;
   title?: unknown;
+  type?: unknown;
   fileName?: unknown;
   notebookUri?: unknown;
   uri?: unknown;
   variable?: {
     name?: unknown;
     variableName?: unknown;
+    type?: unknown;
   };
 }
 
@@ -28,6 +30,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
     vscode.commands.registerCommand("openWrangler.launchDataViewer", async (...args: unknown[]) => {
       const notebookResolution = resolveNotebookAtCommandReceipt(args);
       const variableName = variableNameFromArgs(args);
+      const backend = backendFromArgs(args);
       if (!variableName) {
         vscode.window.showWarningMessage("Open Wrangler could not determine the notebook variable name to open.");
         return;
@@ -37,7 +40,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         return;
       }
 
-      await openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook);
+      await openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook, backend);
     })
   );
 
@@ -52,7 +55,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
 
       const variableName = await vscode.window.showInputBox({
         title: "Open Notebook Variable in Open Wrangler",
-        prompt: "Enter a Pandas or Polars dataframe variable name from the active notebook kernel.",
+        prompt: "Enter a Pandas, Polars, or PySpark dataframe variable name from the active notebook kernel.",
         validateInput: (value) =>
           /^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? undefined : "Enter a valid Python variable name."
       });
@@ -102,7 +105,8 @@ async function openLiveNotebookVariable(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   variableName: string,
-  notebook: vscode.NotebookDocument
+  notebook: vscode.NotebookDocument,
+  backend?: DataBackend
 ): Promise<void> {
   if (!isExactOpenNotebook(notebook)) {
     vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
@@ -115,7 +119,29 @@ async function openLiveNotebookVariable(
     variableName,
     uri: notebook.uri.toString()
   };
-  OpenWranglerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook), notebook), source);
+  const bridge = coordinator.createBridge(new KernelBridge(context, notebook), notebook);
+  if (backend) {
+    OpenWranglerPanel.create(context, bridge, source, backend);
+  } else {
+    OpenWranglerPanel.create(context, bridge, source);
+  }
+}
+
+const PYSPARK_DATAFRAME_TYPES = new Set([
+  "pyspark.sql.dataframe.DataFrame",
+  "pyspark.sql.classic.dataframe.DataFrame",
+  "pyspark.sql.connect.dataframe.DataFrame"
+]);
+
+function backendFromArgs(args: unknown[]): DataBackend | undefined {
+  for (const arg of args) {
+    if (typeof arg !== "object" || arg === null) continue;
+    const candidate = arg as NotebookVariableArgument;
+    for (const typeName of [candidate.type, candidate.variable?.type]) {
+      if (typeof typeName === "string" && PYSPARK_DATAFRAME_TYPES.has(typeName)) return "pyspark";
+    }
+  }
+  return undefined;
 }
 
 function variableNameFromArgs(args: unknown[]): string | undefined {

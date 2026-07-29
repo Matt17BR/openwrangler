@@ -18,6 +18,7 @@ const dependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   ipykernel: "6.30.1",
   pandas: "2.3.3",
   polars: "1.35.2",
+  pyspark: "4.2.0",
   openwranglerRuntimePresent,
   ...overrides
 });
@@ -44,6 +45,7 @@ test("released-Jupyter phases alone receive the dedicated kernel interpreter", (
   assert.equal(acceptancePythonForPhase("verify", normalPython, kernelPython), normalPython);
   assert.equal(acceptancePythonForPhase("jupyter-deny", normalPython, kernelPython), kernelPython);
   assert.equal(acceptancePythonForPhase("jupyter-allow", normalPython, kernelPython), kernelPython);
+  assert.equal(acceptancePythonForPhase("jupyter-pyspark", normalPython, kernelPython), kernelPython);
   assert.equal(acceptancePythonForPhase("jupyter-remote", normalPython, kernelPython), normalPython);
   assert.throws(
     () => acceptancePythonForPhase("jupyter-allow", normalPython, undefined),
@@ -208,7 +210,7 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.equal(process.env.OPEN_WRANGLER_TEST_PYTHON, previousTestPython);
     assert.notEqual(kernelPython, basePython);
     assert.equal(kernelPython, join(environmentDirectory, "v", "bin", "python"));
-    assert.equal(commands.length, 4);
+    assert.equal(commands.length, 5);
     assert.equal(commands[0].input.executable, basePython);
     assert.match(commands[0].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
     assert.equal(commands[1].input.executable, basePython);
@@ -216,13 +218,29 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.equal(commands[2].input.executable, kernelPython);
     assert.deepEqual(commands[2].input.args.slice(0, 5), ["-I", "-m", "pip", "--isolated", "install"]);
     assert.ok(commands[2].input.args.includes("--only-binary=:all:"));
-    assert.deepEqual(commands[2].input.args.slice(-3), ["ipykernel==6.30.1", "pandas==2.3.3", "polars==1.35.2"]);
+    assert.deepEqual(commands[2].input.args.slice(-10), [
+      "ipykernel==6.30.1",
+      "pandas==2.3.3",
+      "polars==1.35.2",
+      "py4j==0.10.9.9",
+      "pyarrow==25.0.0",
+      "grpcio==1.83.0",
+      "grpcio-status==1.83.0",
+      "googleapis-common-protos==1.75.0",
+      "protobuf==7.35.1",
+      "zstandard==0.25.0"
+    ]);
     assert.equal(
       commands[2].input.args.some((value) => /openwrangler.runtime/iu.test(value)),
       false
     );
+    assert.equal(commands[3].input.label, "Released-Jupyter private kernel PySpark installation");
     assert.equal(commands[3].input.executable, kernelPython);
-    assert.match(commands[3].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
+    assert.ok(commands[3].input.args.includes("--no-deps"));
+    assert.match(commands[3].input.args.at(-1), /^pyspark @ https:\/\/files\.pythonhosted\.org\/.+#sha256=/u);
+    assert.equal(commands[4].input.executable, kernelPython);
+    assert.match(commands[4].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
+    assert.match(commands[4].input.args.at(-1), /import pyspark/u);
     assert.equal(
       commands.every(({ input }) => input.environment === commandEnvironment),
       true
@@ -268,7 +286,10 @@ test("released-Jupyter rejects a private environment that does not retain its co
             writeFileSync(join(venvDirectory, "bin", "python"), "private interpreter placeholder\n");
             return { stdout: "" };
           }
-          if (input.label === "Released-Jupyter private kernel dependency installation") {
+          if (input.label === "Released-Jupyter private kernel binary dependency installation") {
+            return { stdout: "" };
+          }
+          if (input.label === "Released-Jupyter private kernel PySpark installation") {
             return { stdout: "" };
           }
           if (input.label === "Released-Jupyter private kernel dependency probe") {

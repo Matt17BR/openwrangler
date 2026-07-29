@@ -12,6 +12,7 @@ from openwrangler_runtime.engines import (
     EngineRegistry,
     PandasEngine,
     PolarsEngine,
+    PySparkEngine,
     default_engine_registry,
 )
 from openwrangler_runtime.session import SessionManager
@@ -58,8 +59,9 @@ def factory(engine: TrackedEngine) -> Callable[[], DataFrameEngine]:
 def test_default_registry_preserves_priority_and_creates_fresh_engines() -> None:
     registry = default_engine_registry()
 
-    assert registry.backends == ("polars", "duckdb", "pandas")
+    assert registry.backends == ("polars", "pyspark", "duckdb", "pandas")
     assert isinstance(registry.create("polars"), PolarsEngine)
+    assert isinstance(registry.create("pyspark"), PySparkEngine)
     assert isinstance(registry.create("duckdb"), DuckDBEngine)
     assert isinstance(registry.create("pandas"), PandasEngine)
     assert registry.create("polars") is not registry.create("polars")
@@ -81,6 +83,14 @@ def test_built_in_capabilities_are_immutable_and_match_current_behavior() -> Non
     assert polars.export_formats == pandas.export_formats
     assert not polars.supports_shutdown_interrupt
     assert not polars.supports_request_cancellation
+
+    pyspark = PySparkEngine.capabilities
+    assert pyspark.source_kinds == frozenset({"notebookVariable"})
+    assert not pyspark.supports_editing
+    assert pyspark.lazy_file_extensions == frozenset()
+    assert pyspark.export_formats == frozenset()
+    assert not pyspark.supports_shutdown_interrupt
+    assert not pyspark.supports_request_cancellation
 
     duckdb = DuckDBEngine.capabilities
     assert duckdb.source_kinds == frozenset({"file"})

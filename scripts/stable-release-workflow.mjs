@@ -8,7 +8,7 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
 const MAX_CONTRACT_DEPTH = 128;
 const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "b19439b19111c19d897baf3cd2cd23dc83876b13db2b7b0bc37f8de73a4215a6";
+const AUDITED_WORKFLOW_SHA256 = "a9f5504759780ebd39df0dd09c673138f456158e20b14cb122272fad5311cf87";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
@@ -16,6 +16,19 @@ const PUBLISH_TAG_COMMAND = "node scripts/push-stable-release-tag.mjs";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
+const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
+const PYSPARK_COVERAGE_INSTALL = 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"';
+const PYSPARK_COVERAGE_VERIFY_RUN = `python - <<'PY'
+import pandas
+import pyspark
+from packaging.version import Version
+
+assert pyspark.__version__ == "4.2.0", pyspark.__version__
+assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
+PY
+java -XshowSettings:properties -version 2>&1 |
+  grep -Eq '^[[:space:]]*java\\.specification\\.version = 17$'
+`;
 const PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
@@ -135,6 +148,47 @@ function steps(job) {
 
 function findRun(job, expected) {
   return steps(job).find((step) => command(step?.run) === expected);
+}
+
+function inspectCoverageRuntime(job, name, problems) {
+  const jobSteps = steps(job);
+  const coverage = jobSteps.find((step) => command(step?.run) === "npm run test:coverage");
+  const javaSteps = jobSteps.filter((step) => step?.uses === SETUP_JAVA_ACTION);
+  const javaStep = javaSteps[0];
+  if (
+    javaSteps.length !== 1 ||
+    !exactKeys(javaStep, ["uses", "with"]) ||
+    !exactKeys(javaStep.with, ["distribution", "java-version"]) ||
+    javaStep.with.distribution !== "temurin" ||
+    javaStep.with["java-version"] !== "17"
+  ) {
+    problems.push(`${name} coverage must provision one pinned Temurin Java 17 runtime.`);
+  }
+  const installs = jobSteps.filter((step) => command(step?.run) === PYSPARK_COVERAGE_INSTALL);
+  const install = installs[0];
+  if (installs.length !== 1 || !exactKeys(install, ["run"])) {
+    problems.push(`${name} coverage must install exact PySpark 4.2.0 and compatible Pandas.`);
+  }
+  const verifications = jobSteps.filter((step) => step?.name === "Verify exact coverage runtimes");
+  const verification = verifications[0];
+  if (
+    verifications.length !== 1 ||
+    !exactKeys(verification, ["name", "run"]) ||
+    command(verification.run) !== command(PYSPARK_COVERAGE_VERIFY_RUN)
+  ) {
+    problems.push(`${name} coverage must verify exact PySpark, Pandas, and Java runtimes.`);
+  }
+  if (
+    coverage === undefined ||
+    javaStep === undefined ||
+    install === undefined ||
+    verification === undefined ||
+    jobSteps.indexOf(javaStep) >= jobSteps.indexOf(coverage) ||
+    jobSteps.indexOf(install) >= jobSteps.indexOf(coverage) ||
+    jobSteps.indexOf(verification) >= jobSteps.indexOf(coverage)
+  ) {
+    problems.push(`${name} coverage runtime setup and verification must precede the coverage gate.`);
+  }
 }
 
 function inspectCheckout(job, name, problems) {
@@ -535,6 +589,7 @@ export function inspectStableReleaseWorkflow(source) {
       problems.push(`linux-acceptance must run ${required} exactly once as an unconditional required step.`);
     }
   }
+  inspectCoverageRuntime(linux, "linux-acceptance", problems);
   const linuxSteps = steps(linux);
   const linuxEditorSteps = linuxSteps.filter((step) => command(step?.run) === PACKAGED_EDITOR_COMMAND);
   const linuxVscodeStep = linuxEditorSteps.find((step) => step?.id === "packaged_vscode");
@@ -657,6 +712,18 @@ export function inspectStableReleaseWorkflow(source) {
     steps(jupyter).indexOf(jupyterPreparation) >= steps(jupyter).indexOf(jupyterStep)
   ) {
     problems.push("released-jupyter must prepare and verify one pinned private Xvfb before its editor gate.");
+  }
+  const javaSteps = steps(jupyter).filter((step) => step?.uses === SETUP_JAVA_ACTION);
+  const javaStep = javaSteps[0];
+  if (
+    javaSteps.length !== 1 ||
+    !exactKeys(javaStep, ["uses", "with"]) ||
+    !exactKeys(javaStep.with, ["distribution", "java-version"]) ||
+    javaStep.with.distribution !== "temurin" ||
+    javaStep.with["java-version"] !== "17" ||
+    steps(jupyter).indexOf(javaStep) >= steps(jupyter).indexOf(jupyterStep)
+  ) {
+    problems.push("released-jupyter must provision one pinned Temurin Java 17 before its PySpark editor gate.");
   }
   inspectAdjacentCanonicalVerification(
     steps(jupyter),

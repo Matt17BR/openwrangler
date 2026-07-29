@@ -12,6 +12,7 @@ import type {
   TransformStep,
   ValuesResponse
 } from "../shared/protocol";
+import { dataBackendLabel } from "../shared/protocol";
 import { compactFilterModel, emptyFilterModel, type FilterModel } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
@@ -1880,7 +1881,9 @@ export function App() {
                 }
               />
               <span className="modeBadge">{metadata.mode}</span>
-              <span className="backendBadge">{metadata.backend}</span>
+              <span className="backendBadge">
+                {metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend}
+              </span>
               {snapshotMode && <span className="modeBadge">Snapshot</span>}
               {inspectionMode && <span className="inspectionBadge">Step inspection</span>}
             </div>
@@ -2179,11 +2182,7 @@ export function App() {
               )}
             </header>
             <details className="draftCode">
-              <summary>
-                Generated{" "}
-                {metadata.backend === "duckdb" ? "DuckDB" : metadata.backend === "pandas" ? "Pandas" : "Polars"}
-                {" code · edit in Code Preview panel"}
-              </summary>
+              <summary>Generated {dataBackendLabel(metadata.backend)} code · edit in Code Preview panel</summary>
               <pre tabIndex={0} aria-label="Generated Python code preview">
                 <code>{generatedCode}</code>
               </pre>

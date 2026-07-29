@@ -168,6 +168,8 @@ const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE = "Open Notebook Variable i
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
+const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
+const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Open Wrangler Acceptance";
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
@@ -560,14 +562,29 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
-  if (phase === "jupyter-deny" || phase === "jupyter-allow" || phase === "jupyter-remote") {
+  if (
+    phase === "jupyter-deny" ||
+    phase === "jupyter-allow" ||
+    phase === "jupyter-pyspark" ||
+    phase === "jupyter-remote"
+  ) {
     assert.ok(testPython, "Released Jupyter acceptance requires the runner-selected host Python environment.");
     recordAcceptanceProgress(`${phase}:start`);
-    await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
+    if (phase === "jupyter-pyspark") {
+      await exerciseReleasedPySparkJupyterExtension(testing, extension, testPython);
+    } else {
+      await exerciseReleasedJupyterExtension(testing, extension, phase, testPython);
+    }
     recordAcceptanceProgress(`${phase}:complete`);
     console.log(
       `Open Wrangler released Jupyter ${
-        phase === "jupyter-deny" ? "denial" : phase === "jupyter-remote" ? "remote" : "allow"
+        phase === "jupyter-deny"
+          ? "denial"
+          : phase === "jupyter-remote"
+            ? "remote"
+            : phase === "jupyter-pyspark"
+              ? "PySpark"
+              : "allow"
       } acceptance passed.`
     );
     return;
@@ -706,7 +723,7 @@ function recordAcceptanceProgress(checkpoint: string): void {
   });
 }
 
-type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow" | "jupyter-remote";
+type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote";
 
 interface ReleasedJupyterKernelTarget {
   readonly label: string;
@@ -723,8 +740,9 @@ interface ReleasedJupyterKernelTarget {
 interface ReleasedVariableExpectation {
   readonly name: string;
   readonly type: string;
-  readonly backend: "pandas" | "polars";
+  readonly backend: "pandas" | "polars" | "pyspark";
   readonly firstValue: string;
+  readonly notebookInsert?: boolean;
 }
 
 async function exerciseReleasedJupyterExtension(
@@ -1186,6 +1204,400 @@ async function exerciseReleasedJupyterExtension(
   }
 }
 
+async function exerciseReleasedPySparkJupyterExtension(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  testPython: string
+): Promise<void> {
+  const phase: ReleasedJupyterPhase = "jupyter-pyspark";
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Released PySpark acceptance must start without a retained Open Wrangler session."
+  );
+  assert.ok(
+    !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
+    "File-backed Open Wrangler use must not acquire a hard Jupyter extension dependency."
+  );
+
+  const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
+  assert.equal(jupyterExtension.packageJSON.version, RELEASED_JUPYTER_EXTENSION_VERSION);
+
+  const kernelTarget = releasedJupyterKernelTarget(phase);
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-released-jupyter-pyspark-"));
+  const notebookPath = path.join(directory, "jupyter-pyspark.ipynb");
+  const notebookUri = vscode.Uri.file(notebookPath);
+  writeReleasedPySparkNotebook(notebookPath, extension.extensionPath);
+
+  let notebook: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress(`${phase}:notebook-open`);
+    notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    assertExactOpenNotebookDocument(notebook, "after opening the released PySpark fixture");
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, { viewColumn: vscode.ViewColumn.One });
+    assert.equal(notebookEditor.notebook, notebook);
+
+    const workbench = await connectToEditorWorkbench();
+    const jupyterApi = await jupyterExtension.activate();
+    assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for PySpark acceptance");
+    recordAcceptanceProgress(`${phase}:kernel-select`);
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
+
+    const visibleNotebook = await showExactReleasedNotebook(notebook);
+    await executeReleasedNotebookCell(
+      notebook,
+      0,
+      RELEASED_JUPYTER_RESTART_RESULT,
+      `${phase}:kernel-warmup`,
+      visibleNotebook
+    );
+    const warmKernel = releasedNotebookJsonResult(
+      notebook.cellAt(0),
+      RELEASED_JUPYTER_RESTART_RESULT,
+      "PySpark kernel warmup"
+    );
+    assertReleasedJupyterKernelIdentity(warmKernel, kernelTarget, testPython);
+    assert.equal(warmKernel.runtime, false, "The PySpark kernel must start without Open Wrangler preloaded.");
+
+    recordAcceptanceProgress(`${phase}:classic-variables`);
+    await showExactReleasedNotebook(notebook);
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    const classicEditor = await showExactReleasedNotebook(notebook);
+    await executeReleasedNotebookCell(
+      notebook,
+      1,
+      RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
+      `${phase}:classic-setup`,
+      classicEditor
+    );
+    const classicSetup = releasedNotebookJsonResult(
+      notebook.cellAt(1),
+      RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
+      "PySpark Classic setup"
+    );
+    assert.equal(classicSetup.sparkVersion, "4.2.0");
+    assert.equal(classicSetup.javaVersion, "17");
+    assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
+
+    await dispatchReleasedJupyterVariableAction(workbench, "spark_classic_frame", `${phase}:classic-action`);
+    const consent = await waitForReleasedJupyterConsent(workbench, testing);
+    await consent.allow.click();
+    await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    const classic = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "spark_classic_frame",
+        type: "pyspark.sql.classic.dataframe.DataFrame",
+        backend: "pyspark",
+        firstValue: "",
+        notebookInsert: false
+      },
+      "the PySpark Classic DataFrame opened from the real Jupyter Variables view"
+    );
+    assert.equal(classic.metadata.mode, "viewing");
+    assert.deepEqual(classic.metadata.capabilities, {
+      editable: false,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false
+    });
+    const classicPage = await assertReleasedPySparkPanelAndQueries(testing, classic, "classic");
+
+    recordAcceptanceProgress(`${phase}:classic-restart`);
+    await restartReleasedJupyterKernelAndWait(notebook);
+    await executeReleasedNotebookCell(
+      notebook,
+      0,
+      RELEASED_JUPYTER_RESTART_RESULT,
+      `${phase}:classic-restart-probe`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const replacementKernel = releasedNotebookJsonResult(
+      notebook.cellAt(0),
+      RELEASED_JUPYTER_RESTART_RESULT,
+      "PySpark replacement kernel"
+    );
+    assertReleasedJupyterKernelIdentity(replacementKernel, kernelTarget, testPython);
+    assert.notEqual(
+      Number(replacementKernel.pid),
+      Number(classicSetup.pid),
+      "Restarting the PySpark notebook must replace the kernel process."
+    );
+    assert.equal(
+      replacementKernel.runtime,
+      replacementKernel.bootstrap,
+      "Runtime availability in the replacement PySpark kernel must come from its own Open Wrangler bootstrap."
+    );
+
+    recordAcceptanceProgress(`${phase}:classic-restart-setup`);
+    await executeReleasedNotebookCell(
+      notebook,
+      1,
+      RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
+      `${phase}:classic-restart-setup`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const restartedClassicSetup = releasedNotebookJsonResult(
+      notebook.cellAt(1),
+      RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
+      "restarted PySpark Classic setup"
+    );
+    assert.equal(Number(restartedClassicSetup.pid), Number(replacementKernel.pid));
+    assert.notEqual(
+      restartedClassicSetup.sessionId,
+      classicSetup.sessionId,
+      "The replacement kernel must own a new user SparkSession."
+    );
+
+    recordAcceptanceProgress(`${phase}:classic-restart-replay`);
+    const replayedClassic = await withBoundedAcceptancePromise(
+      testing.request({
+        kind: "getPage",
+        ...GRID_COLUMN_WINDOW,
+        viewRequestId: "released-jupyter-pyspark-classic-restart-replay",
+        sessionId: classic.sessionId,
+        revision: classicPage.revision,
+        offset: 0,
+        limit: 1,
+        filterModel: classicPage.metadata.filterModel
+      }),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the released-Jupyter PySpark Classic page after kernel replacement"
+    );
+    assert.equal(replayedClassic.kind, "page");
+    if (replayedClassic.kind !== "page") {
+      throw new Error("The released-Jupyter PySpark Classic restart replay did not return a page.");
+    }
+    assert.equal(
+      replayedClassic.metadata.sessionId,
+      classic.sessionId,
+      "Kernel recovery must preserve the public Open Wrangler session identity."
+    );
+    assert.equal(replayedClassic.metadata.backend, "pyspark");
+    const replayedRecordId = replayedClassic.metadata.schema.find((column) => column.name === "record_id");
+    assert.ok(replayedRecordId);
+    assert.deepEqual(gridColumnDisplays(replayedClassic.page, replayedRecordId.id), ["2"]);
+
+    await disposePackagedSessionPanel(testing, classic.sessionId, "the released-Jupyter PySpark Classic session");
+
+    recordAcceptanceProgress(`${phase}:classic-owner-session`);
+    await executeReleasedNotebookCell(
+      notebook,
+      2,
+      RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
+      `${phase}:classic-owner-session`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const classicClose = releasedNotebookJsonResult(
+      notebook.cellAt(2),
+      RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
+      "PySpark Classic close"
+    );
+    assert.equal(classicClose.sessionId, restartedClassicSetup.sessionId);
+    assert.equal(classicClose.count, 3, "Closing Open Wrangler must leave the user's Classic SparkSession usable.");
+
+    recordAcceptanceProgress(`${phase}:connect-variables`);
+    await showExactReleasedNotebook(notebook);
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    const connectEditor = await showExactReleasedNotebook(notebook);
+    await executeReleasedNotebookCell(
+      notebook,
+      3,
+      RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
+      `${phase}:connect-setup`,
+      connectEditor
+    );
+    const connectSetup = releasedNotebookJsonResult(
+      notebook.cellAt(3),
+      RELEASED_JUPYTER_PYSPARK_SETUP_RESULT,
+      "local Spark Connect setup"
+    );
+    assert.equal(connectSetup.sparkVersion, "4.2.0");
+    assert.equal(connectSetup.module, "pyspark.sql.connect.dataframe");
+
+    await dispatchReleasedJupyterVariableAction(workbench, "spark_connect_frame", `${phase}:connect-action`);
+    const connect = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      {
+        name: "spark_connect_frame",
+        type: "pyspark.sql.connect.dataframe.DataFrame",
+        backend: "pyspark",
+        firstValue: "",
+        notebookInsert: false
+      },
+      "the local Spark Connect DataFrame opened from the real Jupyter Variables view"
+    );
+    await assertReleasedPySparkPanelAndQueries(testing, connect, "connect");
+    await disposePackagedSessionPanel(testing, connect.sessionId, "the released-Jupyter Spark Connect session");
+
+    recordAcceptanceProgress(`${phase}:connect-owner-session`);
+    await executeReleasedNotebookCell(
+      notebook,
+      4,
+      RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
+      `${phase}:connect-owner-session`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const connectClose = releasedNotebookJsonResult(
+      notebook.cellAt(4),
+      RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT,
+      "local Spark Connect close"
+    );
+    assert.equal(connectClose.sessionId, connectSetup.sessionId);
+    assert.equal(connectClose.count, 3, "Closing Open Wrangler must leave the user's Connect SparkSession usable.");
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    assert.equal(releasedJupyterSessionTabs().length, 0);
+    assert.ok(jupyterApi, "The released Jupyter API must remain active through PySpark cleanup.");
+  } finally {
+    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+async function dispatchReleasedJupyterVariableAction(
+  workbench: Page,
+  variableName: string,
+  checkpoint: string
+): Promise<void> {
+  const viewerAction = await waitForReleasedJupyterVariableAction(workbench, variableName, checkpoint);
+  await viewerAction.focus();
+  assert.equal(
+    await viewerAction.evaluate((element) => element.ownerDocument.activeElement === element),
+    true,
+    `The released Jupyter Variables action for ${variableName} must accept keyboard focus.`
+  );
+  await viewerAction.evaluate((element) => {
+    const root = element.ownerDocument.documentElement;
+    root.dataset.openWranglerAcceptanceClick = "pending";
+    element.addEventListener(
+      "click",
+      () => {
+        root.dataset.openWranglerAcceptanceClick = "seen";
+      },
+      { capture: true, once: true }
+    );
+  });
+  await withBoundedAcceptancePromise(
+    viewerAction.click(),
+    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+    `the real released-Jupyter Variables action for ${variableName}`
+  );
+  assert.equal(
+    await viewerAction.evaluate((element) => element.ownerDocument.documentElement.dataset.openWranglerAcceptanceClick),
+    "seen",
+    `The real released-Jupyter Variables action for ${variableName} must receive its browser click event.`
+  );
+  await waitFor(
+    () => releasedJupyterSessionTabs().length === 1,
+    10_000,
+    `the released Jupyter viewer delegation for ${variableName}`,
+    () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length })
+  );
+}
+
+async function assertReleasedPySparkPanelAndQueries(
+  testing: TestApi,
+  active: NonNullable<ReturnType<TestApi["activeSession"]>>,
+  variant: "classic" | "connect"
+): Promise<Extract<OpenWranglerResponse, { kind: "page" }>> {
+  await waitFor(
+    () => testing.panelHydrated(active.sessionId),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    `the released-Jupyter PySpark ${variant} panel to hydrate`,
+    () => JSON.stringify(testing.diagnostics())
+  );
+  assert.equal(
+    await withAcceptanceOperationDeadline(
+      testing.synchronizePanel(active.sessionId),
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      `the released-Jupyter PySpark ${variant} panel synchronization`
+    ),
+    true
+  );
+
+  const filterModel: FilterModel = {
+    logic: "and",
+    filters: [
+      {
+        column: "category",
+        type: "string",
+        logic: "and",
+        predicates: [{ kind: "predicate", operator: "equals", value: "alpha" }]
+      }
+    ],
+    sort: [{ column: "amount", direction: "desc", nulls: "last" }]
+  };
+  const first = await withBoundedAcceptancePromise(
+    testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: `released-jupyter-pyspark-${variant}-page-0`,
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      offset: 0,
+      limit: 1,
+      filterModel
+    }),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    `the released-Jupyter PySpark ${variant} filtered page`
+  );
+  assert.equal(first.kind, "page");
+  if (first.kind !== "page") throw new Error(`The PySpark ${variant} filtered page did not resolve.`);
+  assert.equal(first.page.totalRows, 2);
+  assert.deepEqual(first.metadata.filterModel, filterModel);
+  const recordId = first.metadata.schema.find((column) => column.name === "record_id");
+  const amount = first.metadata.schema.find((column) => column.name === "amount");
+  assert.ok(recordId);
+  assert.ok(amount);
+  assert.deepEqual(gridColumnDisplays(first.page, recordId.id), ["2"]);
+
+  const second = await withBoundedAcceptancePromise(
+    testing.request({
+      kind: "getPage",
+      ...GRID_COLUMN_WINDOW,
+      viewRequestId: `released-jupyter-pyspark-${variant}-page-1`,
+      sessionId: active.sessionId,
+      revision: first.revision,
+      offset: 1,
+      limit: 1,
+      filterModel
+    }),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    `the released-Jupyter PySpark ${variant} second page`
+  );
+  assert.equal(second.kind, "page");
+  if (second.kind !== "page") throw new Error(`The PySpark ${variant} second page did not resolve.`);
+  assert.deepEqual(gridColumnDisplays(second.page, recordId.id), ["3"]);
+
+  const summary = await withBoundedAcceptancePromise(
+    testing.request({
+      kind: "getSummary",
+      viewRequestId: `released-jupyter-pyspark-${variant}-summary`,
+      sessionId: active.sessionId,
+      revision: second.revision,
+      filterModel,
+      columnIds: [amount.id]
+    }),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    `the released-Jupyter PySpark ${variant} progressive summary`
+  );
+  assert.equal(summary.kind, "summary");
+  if (summary.kind !== "summary") throw new Error(`The PySpark ${variant} summary did not resolve.`);
+  assert.equal(summary.summaries.length, 1);
+  assert.equal(summary.summaries[0]?.columnId, amount.id);
+  assert.equal(summary.summaries[0]?.totalCount, 2);
+  assert.equal(summary.summaries[0]?.numeric?.min, 20);
+  assert.equal(summary.summaries[0]?.numeric?.max, 30);
+  return second;
+}
+
 function readReleasedRemoteJupyterDescriptor(runId: string): {
   readonly baseUrl: string;
   readonly token: string;
@@ -1398,6 +1810,112 @@ async function assertReleasedRemoteRuntimeTransfer(
     runtimeFile.startsWith(canonicalAcceptancePath(hostExtensionPath)),
     false,
     "The remote runtime must not resolve from the host extension installation."
+  );
+}
+
+function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: string): void {
+  const target = releasedJupyterKernelTarget("jupyter-pyspark");
+  const cell = (source: readonly string[]) => ({
+    cell_type: "code",
+    execution_count: null,
+    metadata: {},
+    outputs: [],
+    source: source.map((line) => `${line}\n`)
+  });
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        cell([
+          "import importlib.util",
+          "import json",
+          "import os",
+          "import sys",
+          `print(${JSON.stringify(RELEASED_JUPYTER_RESTART_RESULT)} + json.dumps({`,
+          "    'executable': sys.executable,",
+          "    'pid': os.getpid(),",
+          "    'runtime': importlib.util.find_spec('openwrangler_runtime') is not None,",
+          "    'bootstrap': ('__ow_bundle_root' in globals() and str(globals().get('__ow_bundle_root')) in sys.path),",
+          "    'setup': None,",
+          `    'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}),`,
+          "}, sort_keys=True))"
+        ]),
+        cell([
+          "import json",
+          "import os",
+          "from pyspark.sql import SparkSession",
+          "spark = (SparkSession.builder",
+          "    .master('local[2]')",
+          "    .appName('open-wrangler-packaged-classic')",
+          "    .config('spark.ui.enabled', 'false')",
+          "    .config('spark.driver.bindAddress', '127.0.0.1')",
+          "    .config('spark.driver.host', '127.0.0.1')",
+          "    .config('spark.sql.shuffle.partitions', '2')",
+          "    .getOrCreate())",
+          "spark.sparkContext.setLogLevel('ERROR')",
+          "spark_classic_frame = spark.createDataFrame([",
+          "    (1, 'beta', 10.0),",
+          "    (2, 'alpha', 30.0),",
+          "    (3, 'alpha', 20.0),",
+          "    (4, 'gamma', None),",
+          "], 'record_id long, category string, amount double').repartition(2)",
+          `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
+          "    'sparkVersion': spark.version,",
+          "    'javaVersion': spark.sparkContext._jvm.java.lang.System.getProperty('java.specification.version'),",
+          "    'module': type(spark_classic_frame).__module__,",
+          "    'pid': os.getpid(),",
+          "    'sessionId': f'{os.getpid()}:{id(spark)}',",
+          "}, sort_keys=True))"
+        ]),
+        cell([
+          "import json",
+          "_open_wrangler_classic_count = spark.range(3).count()",
+          `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT)} + json.dumps({`,
+          "    'count': _open_wrangler_classic_count,",
+          "    'sessionId': f'{os.getpid()}:{id(spark)}',",
+          "}, sort_keys=True))"
+        ]),
+        cell([
+          "import json",
+          "spark.stop()",
+          "connect_spark = (SparkSession.builder",
+          "    .remote('local[2]')",
+          "    .config('spark.sql.shuffle.partitions', '2')",
+          "    .getOrCreate())",
+          "spark_connect_frame = connect_spark.createDataFrame([",
+          "    (1, 'beta', 10.0),",
+          "    (2, 'alpha', 30.0),",
+          "    (3, 'alpha', 20.0),",
+          "    (4, 'gamma', None),",
+          "], 'record_id long, category string, amount double').repartition(2)",
+          `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
+          "    'sparkVersion': connect_spark.version,",
+          "    'module': type(spark_connect_frame).__module__,",
+          "    'sessionId': str(id(connect_spark)),",
+          "}, sort_keys=True))"
+        ]),
+        cell([
+          "import json",
+          "_open_wrangler_connect_count = connect_spark.range(3).count()",
+          "_open_wrangler_connect_session_id = str(id(connect_spark))",
+          "connect_spark.stop()",
+          `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT)} + json.dumps({`,
+          "    'count': _open_wrangler_connect_count,",
+          "    'sessionId': _open_wrangler_connect_session_id,",
+          "}, sort_keys=True))"
+        ])
+      ],
+      metadata: {
+        kernelspec: {
+          display_name: target.label,
+          language: "python",
+          name: target.name
+        },
+        language_info: { name: "python" }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
   );
 }
 
@@ -2173,7 +2691,7 @@ async function waitForReleasedVariableSession(
   assert.equal(active.metadata.source.kind, "notebookVariable");
   assert.equal(active.metadata.source.variableName, expected.name);
   assert.equal(active.metadata.source.uri, notebook.uri.toString());
-  assert.equal(active.metadata.capabilities.notebookInsert, true);
+  assert.equal(active.metadata.capabilities.notebookInsert, expected.notebookInsert ?? true);
   return active;
 }
 
