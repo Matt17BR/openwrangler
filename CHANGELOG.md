@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-29
+
 ### Added
 
 - Added an experimental, viewing-only PySpark 4.2 live-notebook path for Classic and local Spark Connect DataFrames. Grid projection, filtering, sorting, counts, profiles, and bounded value/page collection stay native to Spark; the adapter never converts through a local dataframe engine, never performs an unbounded collection, and unpersists only its owned indexed child without stopping the user Spark session. Real packaged VS Code acceptance now covers Jupyter Variables launch, filtering, sorting, paging, profiling, deterministic Classic kernel restart and replay, local Connect, cleanup, and Restricted Mode denial. Editing, exports, saved-output formatting, external or authenticated Spark Connect servers, cancellation, and generated-code insertion remain outside this preview.
