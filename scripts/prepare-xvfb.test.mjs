@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -14,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
+import { downloadPinnedPackage, prepareRepositoryLocalXvfb } from "./prepare-xvfb.mjs";
 
 const LINUX_ONLY = { skip: process.platform !== "linux" };
 
@@ -36,7 +39,11 @@ function testFixture() {
     packageArchitecture: "amd64",
     packageVersion: "1:test",
     snapshot: "20260720T000000Z",
-    url: "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_test_amd64.deb",
+    urls: [
+      "https://archive.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_test_amd64.deb",
+      "https://security.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_test_amd64.deb",
+      "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_test_amd64.deb"
+    ],
     size: packageBytes.length,
     sha256: sha256(packageBytes),
     executableSize: executableBytes.length,
@@ -51,7 +58,7 @@ function testFixture() {
     cacheRoot: join(root, "cache"),
     packageBytes,
     executableBytes,
-    manifest: { schemaVersion: 1, packages: { "ubuntu:99.99:x64": record } },
+    manifest: { schemaVersion: 2, packages: { "ubuntu:99.99:x64": record } },
     osReleaseText: 'ID="ubuntu"\nVERSION_ID="99.99"\n'
   };
 }
@@ -258,6 +265,330 @@ test("concurrent preparation publishes one complete cache entry", LINUX_ONLY, as
   assert.equal(extractions, 2);
 });
 
+test("rejects incomplete or reordered Xvfb origins before dependency or network work", LINUX_ONLY, async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const manifest = structuredClone(fixture.manifest);
+  manifest.packages["ubuntu:99.99:x64"].urls.reverse();
+  let called = false;
+
+  await assert.rejects(
+    prepareRepositoryLocalXvfb({
+      platform: "linux",
+      architecture: "x64",
+      osReleaseText: fixture.osReleaseText,
+      manifest,
+      cacheRoot: fixture.cacheRoot,
+      queryPackage: async () => {
+        called = true;
+      },
+      downloadPackage: async () => {
+        called = true;
+      }
+    }),
+    /ordered official Canonical HTTPS origins/u
+  );
+
+  assert.equal(called, false);
+  assert.equal(existsSync(fixture.cacheRoot), false);
+});
+
+test("fails over ordered Canonical origins for exactly two deterministic transient rounds", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const record = fixture.manifest.packages["ubuntu:99.99:x64"];
+  const destination = join(fixture.root, "xvfb.deb");
+  const outcomes = [
+    { kind: "http", status: 503 },
+    { kind: "transport", code: "ECONNRESET" },
+    { kind: "http", status: 429 },
+    { kind: "http", status: 502 },
+    { kind: "http", status: 504 },
+    { kind: "success" }
+  ];
+  const requests = [];
+  const waits = [];
+  const attemptLeases = [];
+  const attemptIdentities = [];
+  let cancelledResponses = 0;
+
+  try {
+    await downloadPinnedPackage({
+      urls: record.urls,
+      destination,
+      size: record.size,
+      sha256: record.sha256,
+      fetchImpl: async (url, options) => {
+        const lease = process.platform === "win32" ? undefined : openSync(destination, "r");
+        if (lease !== undefined) attemptLeases.push(lease);
+        const metadata =
+          lease === undefined ? lstatSync(destination, { bigint: true }) : fstatSync(lease, { bigint: true });
+        assert.equal(metadata.size, 0n, "every origin attempt must start from a fresh empty file");
+        attemptIdentities.push(`${metadata.dev}:${metadata.ino}`);
+        requests.push({ url, options });
+        const outcome = outcomes.shift();
+        if (outcome.kind !== "success") {
+          writeFileSync(destination, `rejected attempt ${requests.length}`, { flag: "w" });
+        }
+        if (outcome.kind === "transport") throw transportError(outcome.code);
+        return pinnedResponse({
+          url,
+          status: outcome.kind === "success" ? 200 : outcome.status,
+          bytes: outcome.kind === "success" ? fixture.packageBytes : Buffer.from("transient response"),
+          onCancel: () => {
+            cancelledResponses += 1;
+          }
+        });
+      },
+      waitBetweenRounds: async (delayMs, signal) => {
+        waits.push({ delayMs, signal });
+      }
+    });
+  } finally {
+    for (const lease of attemptLeases) closeSync(lease);
+  }
+
+  assert.equal(readFileSync(destination).equals(fixture.packageBytes), true);
+  assert.deepEqual(
+    requests.map(({ url }) => url),
+    [...record.urls, ...record.urls]
+  );
+  assert.equal(new Set(attemptIdentities).size, requests.length, "every attempt must own a fresh file identity");
+  const signal = requests[0].options.signal;
+  for (const { options } of requests) {
+    assert.equal(options.method, "GET");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.headers["user-agent"], "Open-Wrangler-Xvfb-Bootstrap/1");
+    assert.equal(options.signal, signal);
+  }
+  assert.equal(signal instanceof AbortSignal, true);
+  assert.deepEqual(
+    waits.map(({ delayMs }) => delayMs),
+    [1_000]
+  );
+  assert.equal(waits[0].signal, signal);
+  assert.equal(cancelledResponses, 4);
+});
+
+test("fails over when a successful response terminates with a typed transport error while streaming", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const record = fixture.manifest.packages["ubuntu:99.99:x64"];
+  const destination = join(fixture.root, "xvfb.deb");
+  const requests = [];
+  let waited = false;
+
+  await downloadPinnedPackage({
+    urls: record.urls,
+    destination,
+    size: record.size,
+    sha256: record.sha256,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (requests.length === 1) {
+        return streamingFailureResponse({
+          url,
+          bytes: fixture.packageBytes,
+          code: "UND_ERR_SOCKET"
+        });
+      }
+      return pinnedResponse({ url, status: 200, bytes: fixture.packageBytes });
+    },
+    waitBetweenRounds: async () => {
+      waited = true;
+    }
+  });
+
+  assert.deepEqual(
+    requests.map(({ url }) => url),
+    record.urls.slice(0, 2)
+  );
+  assert.equal(requests[0].options.signal, requests[1].options.signal);
+  assert.equal(waited, false);
+  assert.equal(readFileSync(destination).equals(fixture.packageBytes), true);
+});
+
+test("exhausts exactly two transient origin rounds and removes every owned attempt", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const record = fixture.manifest.packages["ubuntu:99.99:x64"];
+  const destination = join(fixture.root, "xvfb.deb");
+  const requests = [];
+  const waits = [];
+  let cancelledResponses = 0;
+
+  await assert.rejects(
+    downloadPinnedPackage({
+      urls: record.urls,
+      destination,
+      size: record.size,
+      sha256: record.sha256,
+      fetchImpl: async (url, options) => {
+        requests.push({ url, options });
+        return pinnedResponse({
+          url,
+          status: 503,
+          onCancel: () => {
+            cancelledResponses += 1;
+          }
+        });
+      },
+      waitBetweenRounds: async (delayMs) => {
+        waits.push(delayMs);
+      }
+    }),
+    /remained transiently unavailable after 2 rounds: HTTP 503/u
+  );
+
+  assert.deepEqual(
+    requests.map(({ url }) => url),
+    [...record.urls, ...record.urls]
+  );
+  assert.deepEqual(waits, [1_000]);
+  assert.equal(cancelledResponses, 6);
+  assert.equal(existsSync(destination), false);
+});
+
+test("does not fail over for permanent HTTP status, URL drift, or untyped fetch failure", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const record = fixture.manifest.packages["ubuntu:99.99:x64"];
+  const cases = [
+    {
+      name: "permanent status",
+      response: (url) => pinnedResponse({ url, status: 404 }),
+      expected: /returned HTTP 404/u
+    },
+    {
+      name: "URL drift",
+      response: (url) => pinnedResponse({ url: `${url}.changed`, status: 503 }),
+      expected: /unexpected final URL/u
+    },
+    {
+      name: "untyped fetch failure",
+      response: () => {
+        throw new TypeError("malformed fetch request");
+      },
+      expected: /malformed fetch request/u
+    }
+  ];
+
+  for (const testCase of cases) {
+    const destination = join(fixture.root, `${testCase.name.replaceAll(" ", "-")}.deb`);
+    let requests = 0;
+    let waited = false;
+    await assert.rejects(
+      downloadPinnedPackage({
+        urls: record.urls,
+        destination,
+        size: record.size,
+        sha256: record.sha256,
+        fetchImpl: async (url) => {
+          requests += 1;
+          return testCase.response(url);
+        },
+        waitBetweenRounds: async () => {
+          waited = true;
+        }
+      }),
+      testCase.expected
+    );
+    assert.equal(requests, 1, `${testCase.name} must not select another origin`);
+    assert.equal(waited, false);
+    assert.equal(existsSync(destination), false);
+  }
+});
+
+test("does not fail over after successful response bytes violate the pinned digest", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const record = fixture.manifest.packages["ubuntu:99.99:x64"];
+  const destination = join(fixture.root, "xvfb.deb");
+  let requests = 0;
+  let waited = false;
+
+  await assert.rejects(
+    downloadPinnedPackage({
+      urls: record.urls,
+      destination,
+      size: record.size,
+      sha256: record.sha256,
+      fetchImpl: async (url) => {
+        requests += 1;
+        return pinnedResponse({
+          url,
+          status: 200,
+          bytes: Buffer.alloc(fixture.packageBytes.length, 0x41)
+        });
+      },
+      waitBetweenRounds: async () => {
+        waited = true;
+      }
+    }),
+    /did not match its pinned digest/u
+  );
+
+  assert.equal(requests, 1);
+  assert.equal(waited, false);
+  assert.equal(existsSync(destination), false);
+});
+
+test("cancels rejected response bodies without turning content failures into failover", async (context) => {
+  const fixture = testFixture();
+  context.after(() => removeTestRoot(fixture.root));
+  const record = fixture.manifest.packages["ubuntu:99.99:x64"];
+  const cases = [
+    {
+      name: "wrong-length",
+      bytes: fixture.packageBytes,
+      contentLength: fixture.packageBytes.length + 1,
+      keepOpen: false,
+      expected: /length did not match its pinned size/u
+    },
+    {
+      name: "oversized",
+      bytes: Buffer.concat([fixture.packageBytes, Buffer.from("!")]),
+      contentLength: null,
+      keepOpen: true,
+      expected: /exceeded its pinned size/u
+    }
+  ];
+
+  for (const testCase of cases) {
+    const destination = join(fixture.root, `${testCase.name}.deb`);
+    let requests = 0;
+    let cancellations = 0;
+    await assert.rejects(
+      downloadPinnedPackage({
+        urls: record.urls,
+        destination,
+        size: record.size,
+        sha256: record.sha256,
+        fetchImpl: async (url) => {
+          requests += 1;
+          return pinnedResponse({
+            url,
+            status: 200,
+            bytes: testCase.bytes,
+            contentLength: testCase.contentLength,
+            keepOpen: testCase.keepOpen,
+            onCancel: () => {
+              cancellations += 1;
+            }
+          });
+        },
+        waitBetweenRounds: async () => {
+          throw new Error("content failures must not enter another download round");
+        }
+      }),
+      testCase.expected
+    );
+    assert.equal(requests, 1);
+    assert.equal(cancellations, 1);
+    assert.equal(existsSync(destination), false);
+  }
+});
+
 test("scheduled released-Jupyter acceptance uses only the prepared private Xvfb", () => {
   const workflow = readFileSync(new URL("../.github/workflows/released-jupyter.yml", import.meta.url), "utf8");
   const prepareStart = workflow.indexOf("      - id: prepare_xvfb\n");
@@ -283,6 +614,66 @@ test("scheduled released-Jupyter acceptance uses only the prepared private Xvfb"
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function transportError(code) {
+  const cause = new Error("transient transport failure");
+  cause.code = code;
+  const error = new TypeError("fetch failed");
+  error.cause = cause;
+  return error;
+}
+
+function streamingFailureResponse({ url, bytes, code }) {
+  let pulls = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      if (pulls === 1) {
+        controller.enqueue(bytes.subarray(0, Math.max(1, Math.floor(bytes.length / 2))));
+        return;
+      }
+      controller.error(transportError(code));
+    }
+  });
+  return {
+    ok: true,
+    status: 200,
+    url,
+    headers: new Headers({ "content-length": String(bytes.length) }),
+    body
+  };
+}
+
+function pinnedResponse({
+  url,
+  status,
+  bytes = Buffer.from("temporary failure"),
+  contentLength = bytes.length,
+  keepOpen = false,
+  onCancel = () => undefined
+}) {
+  let offset = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (offset === bytes.length) {
+        if (!keepOpen) controller.close();
+        return;
+      }
+      controller.enqueue(bytes.subarray(offset));
+      offset = bytes.length;
+    },
+    cancel() {
+      onCancel();
+    }
+  });
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    url,
+    headers: new Headers(status === 200 && contentLength !== null ? { "content-length": String(contentLength) } : {}),
+    body
+  };
 }
 
 function removeTestRoot(path) {

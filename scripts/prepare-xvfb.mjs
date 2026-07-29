@@ -28,6 +28,24 @@ const DEFAULT_CACHE_ROOT = resolve(REPOSITORY_ROOT, "tmp", "tooling", "xvfb");
 const DPKG_DEB = "/usr/bin/dpkg-deb";
 const DPKG_QUERY = "/usr/bin/dpkg-query";
 const DOWNLOAD_TIMEOUT_MS = 60_000;
+const DOWNLOAD_ROUNDS = 2;
+const DOWNLOAD_ROUND_DELAY_MS = 1_000;
+const DOWNLOAD_ORIGINS = Object.freeze(["archive.ubuntu.com", "security.ubuntu.com", "snapshot.ubuntu.com"]);
+const RETRYABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET"
+]);
 const HASH_BUFFER_BYTES = 64 * 1024;
 const MANIFEST_KEYS = new Set(["schemaVersion", "packages"]);
 const PACKAGE_KEYS = new Set([
@@ -38,7 +56,7 @@ const PACKAGE_KEYS = new Set([
   "packageArchitecture",
   "packageVersion",
   "snapshot",
-  "url",
+  "urls",
   "size",
   "sha256",
   "executableSize",
@@ -85,7 +103,7 @@ export function parseOsRelease(text) {
 export function loadXvfbManifest(path = DEFAULT_MANIFEST_PATH) {
   const raw = JSON.parse(readFileSync(path, "utf8"));
   assertExactKeys(raw, MANIFEST_KEYS, "Xvfb package manifest");
-  if (raw.schemaVersion !== 1) throw new Error("The Xvfb package manifest version is unsupported.");
+  if (raw.schemaVersion !== 2) throw new Error("The Xvfb package manifest version is unsupported.");
   if (!isPlainObject(raw.packages) || Object.keys(raw.packages).length === 0) {
     throw new Error("The Xvfb package manifest must contain at least one package.");
   }
@@ -93,7 +111,7 @@ export function loadXvfbManifest(path = DEFAULT_MANIFEST_PATH) {
   for (const [key, value] of Object.entries(raw.packages)) {
     packages[key] = validatePackageRecord(key, value);
   }
-  return { schemaVersion: 1, packages };
+  return { schemaVersion: 2, packages };
 }
 
 export async function prepareRepositoryLocalXvfb({
@@ -189,7 +207,7 @@ async function ensurePinnedPackage(cacheRoot, record, downloadPackage) {
   let published = false;
   try {
     await downloadPackage({
-      url: record.url,
+      urls: record.urls,
       destination: temporaryPath,
       size: record.size,
       sha256: record.sha256
@@ -209,34 +227,95 @@ async function ensurePinnedPackage(cacheRoot, record, downloadPackage) {
   return packagePath;
 }
 
-export async function downloadPinnedPackage({ url, destination, size, sha256, fetchImpl = globalThis.fetch }) {
+export async function downloadPinnedPackage({
+  urls,
+  destination,
+  size,
+  sha256,
+  fetchImpl = globalThis.fetch,
+  waitBetweenRounds = waitForDownloadRound
+}) {
   if (typeof fetchImpl !== "function") throw new Error("A Fetch implementation is required to download Xvfb.");
-  validateDownloadUrl(url);
+  if (typeof waitBetweenRounds !== "function") throw new Error("An Xvfb download round waiter is required.");
+  validateDownloadUrls(urls);
   if (!Number.isSafeInteger(size) || size <= 0) throw new Error("The pinned Xvfb package size is invalid.");
   if (!SHA256.test(sha256)) throw new Error("The pinned Xvfb package digest is invalid.");
   if (!isAbsolute(destination)) throw new Error("The Xvfb download destination must be absolute.");
 
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new Error("The Xvfb package download timed out.")),
+    DOWNLOAD_TIMEOUT_MS
+  );
+  let lastTransientError;
+  try {
+    for (let round = 0; round < DOWNLOAD_ROUNDS; round += 1) {
+      for (const url of urls) {
+        if (controller.signal.aborted) throw abortReason(controller.signal);
+        try {
+          await downloadPinnedPackageAttempt({
+            url,
+            destination,
+            size,
+            sha256,
+            fetchImpl,
+            signal: controller.signal
+          });
+          return;
+        } catch (error) {
+          if (controller.signal.aborted) throw abortReason(controller.signal);
+          if (!(error instanceof RetryableXvfbDownloadError)) throw error;
+          lastTransientError = error;
+        }
+      }
+      if (round + 1 < DOWNLOAD_ROUNDS) {
+        await waitBetweenRounds(DOWNLOAD_ROUND_DELAY_MS, controller.signal);
+        if (controller.signal.aborted) throw abortReason(controller.signal);
+      }
+    }
+    throw new Error(
+      `The pinned Xvfb package origins remained transiently unavailable after ${DOWNLOAD_ROUNDS} rounds: ${lastTransientError?.message ?? "unknown transient failure"}`
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function downloadPinnedPackageAttempt({ url, destination, size, sha256, fetchImpl, signal }) {
   const fd = openSync(
     destination,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
     0o600
   );
   const receipt = fileReceiptFromStat(fstatSync(fd, { bigint: true }));
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new Error("The Xvfb package download timed out.")),
-    DOWNLOAD_TIMEOUT_MS
-  );
   let completed = false;
+  let response;
+  let reader;
+  let responseBodyCompleted = false;
   try {
-    const response = await fetchImpl(url, {
-      method: "GET",
-      redirect: "error",
-      signal: controller.signal,
-      headers: { "user-agent": "Open-Wrangler-Xvfb-Bootstrap/1" }
-    });
-    if (!response.ok || response.status !== 200 || response.url !== url) {
-      throw new Error(`The Xvfb package download returned HTTP ${response.status}.`);
+    try {
+      response = await fetchImpl(url, {
+        method: "GET",
+        redirect: "error",
+        signal,
+        headers: { "user-agent": "Open-Wrangler-Xvfb-Bootstrap/1" }
+      });
+    } catch (error) {
+      const transportCode = retryableTransportCode(error);
+      if (transportCode !== undefined && !signal.aborted) {
+        throw new RetryableXvfbDownloadError(`transport ${transportCode}`);
+      }
+      throw error;
+    }
+    if (signal.aborted) throw abortReason(signal);
+    if (response.url !== url) {
+      throw new Error("The Xvfb package download returned an unexpected final URL.");
+    }
+    if (!response.ok || response.status !== 200) {
+      if (!RETRYABLE_HTTP_STATUSES.has(response.status)) {
+        throw new Error(`The Xvfb package download returned HTTP ${response.status}.`);
+      }
+      throw new RetryableXvfbDownloadError(`HTTP ${response.status}`);
     }
     const contentEncoding = response.headers.get("content-encoding");
     if (contentEncoding && contentEncoding !== "identity") {
@@ -247,16 +326,27 @@ export async function downloadPinnedPackage({ url, destination, size, sha256, fe
       throw new Error("The Xvfb package download length did not match its pinned size.");
     }
     if (!response.body) throw new Error("The Xvfb package download returned no body.");
-    const reader = response.body.getReader();
+    reader = response.body.getReader();
     const digest = createHash("sha256");
     let bytes = 0;
     while (true) {
-      const { done, value } = await reader.read();
+      let result;
+      try {
+        result = await reader.read();
+      } catch (error) {
+        const transportCode = retryableTransportCode(error);
+        if (transportCode !== undefined && !signal.aborted) {
+          throw new RetryableXvfbDownloadError(`transport ${transportCode}`);
+        }
+        throw error;
+      }
+      if (signal.aborted) throw abortReason(signal);
+      const { done, value } = result;
+      if (done) responseBodyCompleted = true;
       if (done) break;
       if (!(value instanceof Uint8Array)) throw new Error("The Xvfb package download returned an invalid chunk.");
       bytes += value.byteLength;
       if (bytes > size) {
-        controller.abort();
         throw new Error("The Xvfb package download exceeded its pinned size.");
       }
       digest.update(value);
@@ -268,10 +358,66 @@ export async function downloadPinnedPackage({ url, destination, size, sha256, fe
     fsyncSync(fd);
     completed = true;
   } finally {
-    clearTimeout(timeout);
+    if (!completed && !responseBodyCompleted && response?.body) {
+      await releaseResponseBody(response, reader);
+    }
     closeSync(fd);
     if (!completed) removeOwnedFile(destination, receipt);
   }
+}
+
+class RetryableXvfbDownloadError extends Error {}
+
+async function releaseResponseBody(response, reader) {
+  try {
+    if (reader) await reader.cancel();
+    else await response.body.cancel();
+  } catch {
+    // Preserve the already classified failure while still releasing a locked reader below.
+  } finally {
+    if (reader) {
+      try {
+        reader.releaseLock();
+      } catch {
+        // An errored stream may have already released its lock.
+      }
+    }
+  }
+}
+
+function retryableTransportCode(error) {
+  const visited = new Set();
+  let current = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object" && !visited.has(current); depth += 1) {
+    visited.add(current);
+    if (typeof current.code === "string" && RETRYABLE_TRANSPORT_CODES.has(current.code)) {
+      return current.code;
+    }
+    current = current.cause;
+  }
+  return undefined;
+}
+
+function waitForDownloadRound(delayMs, signal) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (signal.aborted) {
+      rejectPromise(abortReason(signal));
+      return;
+    }
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolvePromise();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      rejectPromise(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function abortReason(signal) {
+  return signal.reason instanceof Error ? signal.reason : new Error("The Xvfb package download was aborted.");
 }
 
 async function verifyHostDependencies(record, queryPackage) {
@@ -325,7 +471,6 @@ function validatePackageRecord(key, value) {
     "packageArchitecture",
     "packageVersion",
     "snapshot",
-    "url",
     "sha256",
     "executableSha256",
     "license",
@@ -349,7 +494,11 @@ function validatePackageRecord(key, value) {
     throw new Error(`The Xvfb package record ${key} does not match its host tuple.`);
   }
   if (!SNAPSHOT.test(value.snapshot)) throw new Error(`The Xvfb package record ${key} has an invalid snapshot.`);
-  validateDownloadUrl(value.url, value.snapshot);
+  validateDownloadUrls(value.urls, {
+    snapshot: value.snapshot,
+    packageVersion: value.packageVersion,
+    packageArchitecture: value.packageArchitecture
+  });
   if (!Number.isSafeInteger(value.size) || value.size <= 0 || value.size > 4 * 1024 * 1024) {
     throw new Error(`The Xvfb package record ${key} has an invalid package size.`);
   }
@@ -388,33 +537,66 @@ function validatePackageRecord(key, value) {
   }
   return Object.freeze({
     ...value,
+    urls: Object.freeze([...value.urls]),
     requiredPackages: Object.freeze([...value.requiredPackages]),
     exactPackageVersions: Object.freeze({ ...value.exactPackageVersions })
   });
 }
 
-function validateDownloadUrl(value, snapshot) {
+function validateDownloadUrls(values, expected = {}) {
+  if (!Array.isArray(values) || values.length !== DOWNLOAD_ORIGINS.length || new Set(values).size !== values.length) {
+    throw new Error("The pinned Xvfb package URLs must contain the complete ordered Canonical origin set.");
+  }
+  const parsed = values.map((value, index) => parseDownloadUrl(value, DOWNLOAD_ORIGINS[index]));
+  const archivePath = parsed[0].pathname;
+  if (parsed[1].pathname !== archivePath) {
+    throw new Error("The pinned Xvfb archive and security URLs must use the same exact package path.");
+  }
+  const snapshotMatch =
+    /^\/ubuntu\/(\d{8}T\d{6}Z)(\/pool\/universe\/x\/xorg-server\/xvfb_[a-zA-Z0-9.+~-]+_amd64\.deb)$/u.exec(
+      parsed[2].pathname
+    );
+  if (!snapshotMatch || `/ubuntu${snapshotMatch[2]}` !== archivePath) {
+    throw new Error("The pinned Xvfb snapshot URL must use the timestamped form of the exact package path.");
+  }
+  if (expected.snapshot !== undefined && snapshotMatch[1] !== expected.snapshot) {
+    throw new Error("The pinned Xvfb snapshot URL does not match the package snapshot.");
+  }
+  if (expected.packageVersion !== undefined || expected.packageArchitecture !== undefined) {
+    const version = expected.packageVersion?.replace(/^\d+:/u, "");
+    const fileName = `xvfb_${version}_${expected.packageArchitecture}.deb`;
+    if (!archivePath.endsWith(`/${fileName}`)) {
+      throw new Error("The pinned Xvfb URLs do not match the exact package version and architecture.");
+    }
+  }
+}
+
+function parseDownloadUrl(value, expectedOrigin) {
   let url;
   try {
     url = new URL(value);
   } catch {
-    throw new Error("The pinned Xvfb package URL is invalid.");
+    throw new Error("A pinned Xvfb package URL is invalid.");
   }
   if (
     url.protocol !== "https:" ||
-    url.hostname !== "snapshot.ubuntu.com" ||
+    url.hostname !== expectedOrigin ||
+    url.href !== value ||
     url.port ||
     url.username ||
     url.password ||
     url.search ||
     url.hash
   ) {
-    throw new Error("The pinned Xvfb package URL must use the official Ubuntu snapshot service.");
+    throw new Error("The pinned Xvfb package URLs must use the ordered official Canonical HTTPS origins.");
   }
-  const expectedPrefix = snapshot ? `/ubuntu/${snapshot}/pool/universe/x/xorg-server/` : "/ubuntu/";
-  if (!url.pathname.startsWith(expectedPrefix) || !/\/xvfb_[a-zA-Z0-9.+~-]+_amd64\.deb$/u.test(url.pathname)) {
-    throw new Error("The pinned Xvfb package URL has an unexpected archive path.");
+  if (
+    expectedOrigin !== "snapshot.ubuntu.com" &&
+    !/^\/ubuntu\/pool\/universe\/x\/xorg-server\/xvfb_[a-zA-Z0-9.+~-]+_amd64\.deb$/u.test(url.pathname)
+  ) {
+    throw new Error("A pinned Xvfb package URL has an unexpected archive path.");
   }
+  return url;
 }
 
 function ensurePrivateCacheRoot(cacheRoot) {
