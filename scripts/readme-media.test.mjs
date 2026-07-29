@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { PNG } from "pngjs";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -30,6 +31,14 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(compositor, /pixelmatch/u);
   assert.match(compositor, /sRGB/u);
   assert.doesNotMatch(compositor, /rotate\(|clip-path:\s*polygon|transform:\s*scale\(/u);
+  assert.match(
+    compositor,
+    /name: "pyspark-live-notebook",[\s\S]{0,180}width: 1_920,[\s\S]{0,80}height: 640,[\s\S]{0,300}nativeSource: "pyspark"/u
+  );
+  assert.doesNotMatch(
+    compositor,
+    /pysparkCard|pysparkHeader|pysparkStage|pysparkFooter|engineBadge|statusBadge|radial-gradient/u
+  );
   assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
   assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
@@ -39,6 +48,8 @@ test("README media is compact, portable, and composition-verified", () => {
   );
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
+  assert.match(captureScript, /FROM range\(100000\) AS rows\(row_id\)/u);
+  assert.match(captureScript, /duckdb_rich = duckdb_manager\.open_session[\s\S]{0,300}page_size=200/u);
   assert.match(captureScript, /DECIMAL\(14, 2\)/u);
   assert.match(captureScript, /TIMESTAMPTZ/u);
   assert.match(captureScript, /STRUCT\(label VARCHAR, score INTEGER\)/u);
@@ -99,7 +110,7 @@ test("README media is compact, portable, and composition-verified", () => {
   const galleryImage = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.1", "gallery", "duckdb-rich-parquet.png")
   );
-  assert.equal(galleryImage.readUInt32BE(16), 1_440);
+  assert.equal(galleryImage.readUInt32BE(16), 1_920);
   assert.equal(galleryImage.readUInt32BE(20), 640);
   assert.ok(galleryImage.byteLength < 300 * 1_024);
   assert.match(gallery, /file-backed DuckDB Parquet source/u);
@@ -117,10 +128,20 @@ test("README media is compact, portable, and composition-verified", () => {
   const pysparkImage = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.1", "gallery", "pyspark-live-notebook.png")
   );
-  assert.equal(pysparkImage.readUInt32BE(16), 1_440);
+  const nativePysparkImage = readFileSync(
+    resolve(root, "docs", "images", "editor-acceptance", "vscode-notebook-pyspark-dark.png")
+  );
+  assert.equal(nativePysparkImage.readUInt32BE(16), 1_920);
+  assert.equal(nativePysparkImage.readUInt32BE(20), 640);
+  assert.equal(pysparkImage.readUInt32BE(16), 1_920);
   assert.equal(pysparkImage.readUInt32BE(20), 640);
   assert.ok(pysparkImage.byteLength < 300 * 1_024);
   assert.ok(pngChunkTypes(pysparkImage).includes("sRGB"));
+  assert.deepEqual(
+    PNG.sync.read(pysparkImage).data,
+    PNG.sync.read(nativePysparkImage).data,
+    "The PySpark gallery image must preserve every pixel from the native packaged-editor capture."
+  );
   assert.match(gallery, /real packaged VS Code and Jupyter path/u);
   assert.match(gallery, /experimental, viewing-only live notebook session/u);
   assert.match(gallery, /No PySpark file opening, cleaning, data export, code insertion, or saved inline snapshot/u);

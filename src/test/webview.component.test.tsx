@@ -1353,6 +1353,26 @@ describe("App file import options", () => {
     webviewPostMessage.mockClear();
   });
 
+  it("labels PySpark sessions as experimental and viewing-only", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        capabilities: { ...metadata.capabilities, editable: false }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByText("Experimental")).toHaveAttribute("title", "PySpark support is experimental.");
+    expect(screen.getByText("Viewing only")).toBeVisible();
+    expect(screen.getByText("PySpark")).toBeVisible();
+    expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
+  });
+
   it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {
     const filteredMetadata: SessionMetadata = {
       ...metadata,

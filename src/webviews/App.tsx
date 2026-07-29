@@ -1880,7 +1880,12 @@ export function App() {
                   }))
                 }
               />
-              <span className="modeBadge">{metadata.mode}</span>
+              {metadata.backend === "pyspark" && (
+                <span className="experimentalBadge" title="PySpark support is experimental.">
+                  Experimental
+                </span>
+              )}
+              <span className="modeBadge">{metadata.backend === "pyspark" ? "Viewing only" : metadata.mode}</span>
               <span className="backendBadge">
                 {metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend}
               </span>

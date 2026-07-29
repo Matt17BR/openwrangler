@@ -182,8 +182,7 @@ const RELEASED_JUPYTER_CONSENT_MESSAGE =
 const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
 const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
-const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN =
-  /^(?:Open Variable|Open Wrangler: Open Notebook Variable)$/u;
+const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wrangler$/u;
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
 const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
@@ -424,7 +423,7 @@ export async function run(): Promise<void> {
     {
       command: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND,
       title: "Open Wrangler: Open Notebook Variable",
-      shortTitle: "Open Variable",
+      shortTitle: "Open in Open Wrangler",
       icon: "media/activity-icon.svg"
     }
   );
@@ -3279,13 +3278,31 @@ async function clickReleasedNotebookVariableAction(
 function assertReleasedNotebookActionLabelOwnership(): void {
   const owners: Array<{ extensionId: string; command: string }> = [];
   for (const extension of vscode.extensions.all) {
-    const commands = (extension.packageJSON as { contributes?: { commands?: unknown } }).contributes?.commands;
+    const contributions = (
+      extension.packageJSON as {
+        contributes?: {
+          commands?: unknown;
+          menus?: { "notebook/toolbar"?: unknown };
+        };
+      }
+    ).contributes;
+    const commands = contributions?.commands;
     if (!Array.isArray(commands)) continue;
+    const toolbarItems = contributions?.menus?.["notebook/toolbar"];
+    if (!Array.isArray(toolbarItems)) continue;
+    const toolbarCommands = new Set(
+      toolbarItems.flatMap((candidate) => {
+        if (typeof candidate !== "object" || candidate === null) return [];
+        const command = (candidate as { command?: unknown }).command;
+        return typeof command === "string" ? [command] : [];
+      })
+    );
     for (const candidate of commands) {
       if (typeof candidate !== "object" || candidate === null) continue;
       const command = candidate as { command?: unknown; title?: unknown; shortTitle?: unknown };
       if (
         typeof command.command === "string" &&
+        toolbarCommands.has(command.command) &&
         ((typeof command.title === "string" &&
           RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN.test(command.title)) ||
           (typeof command.shortTitle === "string" &&
@@ -5627,12 +5644,12 @@ async function captureReleasedJupyterPolarsDraft(
   assert.equal(active.metadata.draftStep?.id, "released-jupyter-double");
 
   const doubleUnits = columnReference(active.metadata, "double_units");
-  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
+  const baselineWidths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
   const doubleUnitsPosition = active.metadata.schema.findIndex((column) => column.id === doubleUnits.id);
   assert.ok(doubleUnitsPosition >= 0, "The Polars notebook screenshot requires the draft output column.");
   await testing.updateViewState(sessionId, {
     ...active.viewState,
-    columnWidths: widths,
+    columnWidths: baselineWidths,
     selectedColumnId: columnReference(active.metadata, "units").id,
     viewport: { firstVisibleRow: 0, scrollLeft: 0 }
   });
@@ -5690,6 +5707,74 @@ async function captureReleasedJupyterPolarsDraft(
   await hideInsights.waitFor({ state: "visible", timeout: 10_000 });
   await hideInsights.click();
   await app.getByRole("button", { name: "Show insights", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  const firstVisibleColumn = columnReference(active.metadata, "product_family");
+  const firstVisibleColumnPosition = active.metadata.schema.findIndex((column) => column.id === firstVisibleColumn.id);
+  assert.ok(
+    firstVisibleColumnPosition >= 0 && firstVisibleColumnPosition < doubleUnitsPosition,
+    "The Polars notebook screenshot requires product_family before its computed draft output."
+  );
+  assert.equal(
+    doubleUnitsPosition,
+    active.metadata.schema.length - 1,
+    "The Polars notebook screenshot requires the computed draft output to remain the final column."
+  );
+  const gridScroller = app.getByTestId("data-grid-scroller");
+  const measuredGrid = await gridScroller.evaluate((element) => {
+    const scroller = element as {
+      clientWidth: number;
+      querySelector(selector: string): { getBoundingClientRect(): { width: number } } | null;
+    };
+    const rowHeader = scroller.querySelector("th.rowHeader");
+    return {
+      clientWidth: scroller.clientWidth,
+      rowHeaderWidth: rowHeader?.getBoundingClientRect().width ?? 0
+    };
+  });
+  const rowHeaderWidth = Math.round(measuredGrid.rowHeaderWidth);
+  const visibleDataWidth = measuredGrid.clientWidth - rowHeaderWidth;
+  const visibleColumnCount = doubleUnitsPosition - firstVisibleColumnPosition + 1;
+  const alignedBaseWidth = Math.floor(visibleDataWidth / visibleColumnCount);
+  const alignedWidthRemainder = visibleDataWidth % visibleColumnCount;
+  assert.ok(
+    Number.isSafeInteger(visibleDataWidth) &&
+      visibleDataWidth > 0 &&
+      rowHeaderWidth > 0 &&
+      alignedBaseWidth >= 80 &&
+      alignedBaseWidth + Number(alignedWidthRemainder > 0) <= 640,
+    `The native Polars grid cannot fit its complete gallery suffix: ${JSON.stringify({
+      ...measuredGrid,
+      rowHeaderWidth,
+      visibleDataWidth,
+      visibleColumnCount,
+      alignedBaseWidth,
+      alignedWidthRemainder
+    })}`
+  );
+  const alignedWidths = Object.fromEntries(
+    active.metadata.schema.map((column) => {
+      if (column.position < firstVisibleColumnPosition) return [column.id, 230];
+      const visiblePosition = column.position - firstVisibleColumnPosition;
+      return [column.id, alignedBaseWidth + Number(visiblePosition < alignedWidthRemainder)];
+    })
+  );
+  const alignedScrollLeft = active.metadata.schema
+    .slice(0, firstVisibleColumnPosition)
+    .reduce((total, column) => total + (alignedWidths[column.id] ?? 0), 0);
+  const alignedViewState = testing.activeSession()?.viewState;
+  assert.ok(alignedViewState, "The Polars notebook screenshot requires its confirmed presentation state.");
+  await testing.updateViewState(sessionId, {
+    ...alignedViewState,
+    columnWidths: alignedWidths,
+    selectedColumnId: doubleUnits.id,
+    viewport: { firstVisibleRow: 0, scrollLeft: alignedScrollLeft }
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The Polars notebook screenshot must synchronize its column-aligned gallery viewport."
+  );
+
   const addedCells = app.locator(`td[data-grid-column="${doubleUnitsPosition}"][data-grid-row]`);
   await addedCells.nth(5).waitFor({ state: "visible", timeout: 10_000 });
   assert.deepEqual(
@@ -5702,8 +5787,30 @@ async function captureReleasedJupyterPolarsDraft(
     Array(6).fill("added"),
     "The computed Polars draft values must retain their added-column diff state."
   );
-  const gridViewport = await app.getByTestId("data-grid-scroller").boundingBox();
+  const gridViewport = await gridScroller.boundingBox();
   assert.ok(gridViewport, "The Polars notebook screenshot requires a measurable grid viewport.");
+  const rowHeader = await app.locator("th.rowHeader").first().boundingBox();
+  const firstVisibleHeader = await app.locator('th[data-column="product_family"]').boundingBox();
+  const precedingHeader = await app.locator('th[data-column="channel"]').boundingBox();
+  const doubleUnitsHeader = await app.locator('th[data-column="double_units"]').boundingBox();
+  assert.ok(rowHeader, "The Polars notebook screenshot requires a measurable row header.");
+  assert.ok(firstVisibleHeader, "The first visible Polars data column must have measurable geometry.");
+  assert.ok(doubleUnitsHeader, "The computed Polars draft header must have measurable geometry.");
+  const dataViewportLeft = rowHeader.x + rowHeader.width;
+  const gridViewportRight = gridViewport.x + gridViewport.width;
+  assert.ok(
+    Math.abs(firstVisibleHeader.x - dataViewportLeft) <= 1,
+    "The Polars notebook screenshot must begin at the complete product_family column boundary."
+  );
+  assert.ok(
+    !precedingHeader || precedingHeader.x + precedingHeader.width <= dataViewportLeft + 1,
+    "No partially visible data column may remain to the left of product_family in the Polars screenshot."
+  );
+  assert.ok(
+    doubleUnitsHeader.x >= dataViewportLeft - 1 &&
+      doubleUnitsHeader.x + doubleUnitsHeader.width <= gridViewportRight + 1,
+    "The complete computed double_units header must remain inside the Polars screenshot viewport."
+  );
   for (let index = 0; index < 3; index += 1) {
     const cell = await addedCells.nth(index).boundingBox();
     assert.ok(cell, `Computed Polars draft row ${index + 1} must have measurable geometry.`);
@@ -5810,7 +5917,7 @@ async function captureReleasedJupyterPySparkLive(
     await clearReleasedJupyterScreenshotTransientUi(workbench);
 
     const selectedColumn = columnReference(active.metadata, "revenue");
-    const columnWidths = Object.fromEntries(
+    const baselineColumnWidths = Object.fromEntries(
       active.metadata.schema.map((column) => [
         column.id,
         ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name)
@@ -5822,7 +5929,7 @@ async function captureReleasedJupyterPySparkLive(
     );
     await testing.updateViewState(active.sessionId, {
       ...active.viewState,
-      columnWidths,
+      columnWidths: baselineColumnWidths,
       selectedColumnId: selectedColumn.id,
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
@@ -5834,7 +5941,24 @@ async function captureReleasedJupyterPySparkLive(
     const backendBadge = app.locator(".backendBadge").first();
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "PYSPARK");
-    assert.equal((await app.locator(".modeBadge").first().innerText()).trim().toLowerCase(), "viewing");
+    const experimentalBadge = app.locator(".experimentalBadge").first();
+    const modeBadge = app.locator(".modeBadge").first();
+    assert.equal((await experimentalBadge.innerText()).trim(), "EXPERIMENTAL");
+    assert.equal((await modeBadge.innerText()).trim(), "VIEWING ONLY");
+    const toolbarBox = await app.locator(".toolbar").boundingBox();
+    const badgeBoxes = await Promise.all([
+      experimentalBadge.boundingBox(),
+      modeBadge.boundingBox(),
+      backendBadge.boundingBox()
+    ]);
+    assert.ok(toolbarBox, "The PySpark media scene requires a measurable workbench toolbar.");
+    assert.ok(
+      badgeBoxes.every(
+        (badge) =>
+          badge !== null && badge.x >= toolbarBox.x && badge.x + badge.width <= toolbarBox.x + toolbarBox.width + 1
+      ),
+      "The PySpark engine, maturity, and viewing-only badges must remain fully inside the workbench toolbar."
+    );
     assert.equal(await app.getByRole("button", { name: "Add step" }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Apply step" }).count(), 0);
 
@@ -5862,6 +5986,95 @@ async function captureReleasedJupyterPySparkLive(
       throw new Error(`PySpark selected-column Insights did not finish: ${JSON.stringify(summary.slice(0, 2_000))}`);
     }
 
+    const featuredColumns = ["order_id", "market", "revenue", "fulfilled", "order_date", "segment", "channel"];
+    assert.deepEqual(
+      active.metadata.schema.slice(0, featuredColumns.length).map((column) => column.name),
+      featuredColumns,
+      "The PySpark media scene requires its featured columns to remain the schema prefix."
+    );
+    const gridScroller = app.getByTestId("data-grid-scroller");
+    const measuredGrid = await gridScroller.evaluate((element) => {
+      const scroller = element as {
+        clientWidth: number;
+        querySelector(selector: string): { getBoundingClientRect(): { width: number } } | null;
+      };
+      const rowHeader = scroller.querySelector("th.rowHeader");
+      return {
+        clientWidth: scroller.clientWidth,
+        rowHeaderWidth: rowHeader?.getBoundingClientRect().width ?? 0
+      };
+    });
+    const rowHeaderWidth = Math.round(measuredGrid.rowHeaderWidth);
+    const featuredDataWidth = measuredGrid.clientWidth - rowHeaderWidth;
+    const featuredBaseWidth = Math.floor(featuredDataWidth / featuredColumns.length);
+    const featuredWidthRemainder = featuredDataWidth % featuredColumns.length;
+    assert.ok(
+      Number.isSafeInteger(featuredDataWidth) &&
+        featuredDataWidth > 0 &&
+        rowHeaderWidth > 0 &&
+        featuredBaseWidth >= 80 &&
+        featuredBaseWidth + Number(featuredWidthRemainder > 0) <= 640,
+      `The native PySpark grid cannot fit its complete featured prefix: ${JSON.stringify({
+        ...measuredGrid,
+        rowHeaderWidth,
+        featuredDataWidth,
+        featuredBaseWidth,
+        featuredWidthRemainder
+      })}`
+    );
+    const alignedColumnWidths = Object.fromEntries(
+      active.metadata.schema.map((column) => [
+        column.id,
+        column.position < featuredColumns.length
+          ? featuredBaseWidth + Number(column.position < featuredWidthRemainder)
+          : 170
+      ])
+    );
+    const confirmedViewState = testing.activeSession()?.viewState;
+    assert.ok(confirmedViewState, "The PySpark media scene requires its confirmed presentation state.");
+    await testing.updateViewState(active.sessionId, {
+      ...confirmedViewState,
+      columnWidths: alignedColumnWidths,
+      selectedColumnId: selectedColumn.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(
+      await testing.synchronizePanel(active.sessionId),
+      true,
+      "The PySpark media scene must synchronize its exact featured-column fit."
+    );
+    const channelColumn = columnReference(active.metadata, "channel");
+    const firstPassGridBox = await gridScroller.boundingBox();
+    const firstPassChannelBox = await app.locator('th[data-column="channel"]').boundingBox();
+    assert.ok(firstPassGridBox, "The first PySpark media fit requires a measurable grid viewport.");
+    assert.ok(firstPassChannelBox, "The first PySpark media fit requires a measurable channel header.");
+    const widthCorrection = Math.round(
+      firstPassGridBox.x + firstPassGridBox.width - (firstPassChannelBox.x + firstPassChannelBox.width)
+    );
+    if (Math.abs(widthCorrection) > 1) {
+      const correctedChannelWidth = alignedColumnWidths[channelColumn.id] + widthCorrection;
+      assert.ok(
+        correctedChannelWidth >= 80 && correctedChannelWidth <= 640,
+        `The native PySpark grid produced an invalid final-column correction: ${JSON.stringify({
+          widthCorrection,
+          correctedChannelWidth
+        })}`
+      );
+      const correctedViewState = testing.activeSession()?.viewState;
+      assert.ok(correctedViewState, "The PySpark media correction requires its confirmed presentation state.");
+      await testing.updateViewState(active.sessionId, {
+        ...correctedViewState,
+        columnWidths: { ...alignedColumnWidths, [channelColumn.id]: correctedChannelWidth },
+        selectedColumnId: selectedColumn.id,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      });
+      assert.equal(
+        await testing.synchronizePanel(active.sessionId),
+        true,
+        "The PySpark media scene must synchronize its native final-column correction."
+      );
+    }
+
     if ((await app.getByRole("button", { name: "Hide insights" }).count()) > 0) {
       throw new Error("The PySpark media scene must not enable multi-column grid profiling.");
     }
@@ -5870,12 +6083,21 @@ async function captureReleasedJupyterPySparkLive(
       .getByText(/Loaded rows 1 to \d+ of 100,000/u)
       .count();
     assert.equal(loadedRows, 1, "The PySpark media scene must show the live 100,000-row source.");
-    const gridBox = await app.getByTestId("data-grid-scroller").boundingBox();
+    const gridBox = await gridScroller.boundingBox();
+    const rowHeaderBox = await app.locator("th.rowHeader").first().boundingBox();
+    const orderIdBox = await app.locator('th[data-column="order_id"]').boundingBox();
     const channelBox = await app.locator('th[data-column="channel"]').boundingBox();
     assert.ok(gridBox, "The PySpark media scene requires a measurable grid viewport.");
+    assert.ok(rowHeaderBox, "The PySpark media scene requires a measurable row header.");
+    assert.ok(orderIdBox, "The PySpark media scene requires the complete order_id header.");
     assert.ok(channelBox, "The PySpark media scene requires the complete channel header.");
+    const dataViewportLeft = rowHeaderBox.x + rowHeaderBox.width;
     const gridRight = gridBox.x + gridBox.width;
     const channelRight = channelBox.x + channelBox.width;
+    assert.ok(
+      Math.abs(orderIdBox.x - dataViewportLeft) <= 1,
+      "The PySpark media scene must begin cleanly at the complete order_id column."
+    );
     assert.ok(
       Math.abs(gridRight - channelRight) <= 1,
       "The PySpark media scene must end cleanly after the complete channel column."

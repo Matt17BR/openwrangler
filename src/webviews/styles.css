@@ -158,6 +158,17 @@ textarea {
   text-transform: uppercase;
 }
 
+.experimentalBadge {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+  border-radius: 999px;
+  color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 1px 7px;
+  text-transform: uppercase;
+}
+
 .backendBadge {
   border: 1px solid var(--vscode-panel-border);
   border-radius: 999px;
@@ -171,7 +182,15 @@ textarea {
 .toolbarActions {
   display: flex;
   align-items: center;
+  flex: 0 1 auto;
   gap: 8px;
+  min-width: 0;
+}
+
+.toolbarActions > button,
+.toolbarActions > span {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .toolbarButton {
@@ -262,19 +281,25 @@ textarea {
 .goToColumn {
   display: flex;
   align-items: center;
+  flex: 1 1 241px;
   gap: 6px;
   margin: 0;
+  min-width: 140px;
   color: var(--vscode-descriptionForeground);
   font-size: 12px;
 }
 
 .columnSearchControl {
+  flex: 1 1 auto;
+  min-width: 80px;
   position: relative;
 }
 
 .columnSearchControl input {
+  box-sizing: border-box;
+  min-width: 0;
   padding-left: 25px;
-  width: 190px;
+  width: 100%;
 }
 
 .columnSearchInputIcon {

@@ -1,7 +1,9 @@
 # Open Wrangler v1.1 media specification
 
 This specification replaces evidence-heavy README captures with two concise product views and a linked notebook
-gallery. Every published image comes from the packaged extension running in an isolated editor profile.
+gallery. Editor and notebook images come from the packaged extension running in an isolated profile. The DuckDB
+file gallery uses the same production webview bundle and bundled native runtime in the deterministic browser
+harness so its rich Parquet fixture can be reproduced without presenting a mocked interface.
 
 ## Brand asset contract
 
@@ -45,20 +47,22 @@ gallery. Every published image comes from the packaged extension running in an i
 
 The README may link to a separate gallery rather than stacking more full-width images.
 
-- DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a file-backed rich Parquet session with
-  decimal, time-zone, list, and struct columns; do not imply notebook support
+- DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a deterministic 100,000-row file-backed
+  1920 x 640 rich Parquet session captured from the production webview and native DuckDB runtime in the browser
+  harness, with decimal, time-zone, list, and struct columns; do not imply notebook support
 - Polars: `docs/images/readme/v1.1/gallery/notebook-polars.png`, an unaltered 1920 x 760 packaged-editor capture
   of a live native Polars notebook session, including its generated Polars code
-- PySpark: `docs/images/readme/v1.1/gallery/pyspark-live-notebook.png`, a real packaged VS Code and released
-  Jupyter capture of a deterministic 100,000-row by 15-column Classic DataFrame
+- PySpark: `docs/images/readme/v1.1/gallery/pyspark-live-notebook.png`, the unaltered 1920 x 640 native packaged
+  VS Code and released-Jupyter capture of a deterministic 100,000-row by 15-column Classic DataFrame; the
+  compositor may add only the sRGB metadata chunk and must not crop, scale, frame, badge, or decorate it
 - The PySpark panel must say `Experimental` and `Viewing only`; it must not imply file opening, cleaning, export,
   code insertion, saved-output, or DuckDB notebook support
 - Cursor: one optional compatibility capture using the same orders fixture and composition
 
 ## Capture checklist
 
-- Use production bundles and a packaged VSIX
-- Use isolated editor profiles and deterministic local fixtures
+- Use production bundles throughout; use the packaged VSIX for every editor/notebook capture
+- Use isolated editor profiles for packaged captures and deterministic local fixtures throughout
 - Hide test names, temporary paths, notifications, hovers, and cursor focus rings
 - Show complete headings, labels, operations, summaries, and generated code without clipping or overlap
 - Use VS Code's named default light and dark themes; never choose the first installed theme by contribution order

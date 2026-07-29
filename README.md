@@ -68,9 +68,9 @@ Notebook Preview Provider**.
 
 The inline table exposes every captured column, 10/20/50/100-row pages, and horizontal scrolling. When one exact
 live variable produced the output, **Open in Open Wrangler** opens its complete current value; **Open saved
-snapshot** keeps the portable captured result available as a fallback. The toolbar's branded **Open Variable**
-action discovers supported variables from the selected kernel and shows their engine and dataframe type instead
-of asking for a name.
+snapshot** keeps the portable captured result available as a fallback. The toolbar's branded **Open in Open
+Wrangler** action discovers supported variables from the selected kernel and shows their engine and dataframe
+type instead of asking for a name.
 
 Files and live variables are not capped at 10,000 rows: the workbench pages from the current source. Only a saved
 inline snapshot is bounded for notebook portability, with headline ceilings of 10,000 rows, 2,048 columns,
@@ -82,8 +82,8 @@ _A real packaged VS Code notebook with Open Wrangler's Pandas inline preview._
 
 The [engine gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) also shows a live
 native Polars notebook draft with generated Polars code, a native DuckDB rich-Parquet file session, and the
-experimental PySpark notebook viewer. DuckDB notebook relations are not yet supported; Open Wrangler does not
-silently convert them to Pandas.
+experimental PySpark notebook viewer. [DuckDB notebook relations are not yet supported](https://github.com/Matt17BR/openwrangler/issues/157);
+Open Wrangler does not silently convert them to Pandas.
 
 PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting, paging,
 and requested profiles stay in Spark; only bounded results return to the notebook runtime. File sessions,
@@ -131,12 +131,12 @@ universally faster.
 
 ## Roadmap
 
-| Target              | Window            | Focus                                                                                                                                                                                                                                       |
-| ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v1.1.1              | Early August 2026 | Automatic and typed notebook previews, clearer file entry points, exact distributions, responsive insights, and release-quality media                                                                                                       |
-| v1.1.2              | Late August 2026  | Reproducible Open Wrangler/Data Wrangler performance comparison in [#91](https://github.com/Matt17BR/openwrangler/issues/91) and follow-up UX hardening                                                                                     |
-| v1.2                | Q4 2026           | Workbench hierarchy [#88](https://github.com/Matt17BR/openwrangler/issues/88), broader VS Code-fork checks [#86](https://github.com/Matt17BR/openwrangler/issues/86), and PySpark [#36](https://github.com/Matt17BR/openwrangler/issues/36) |
-| Research after v1.2 | Unscheduled       | Native R data frames, tibbles, `data.table`, Quarto, and R Markdown [#87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                                                               |
+| Target              | Window           | Focus                                                                                                                                                                                                                                       |
+| ------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v1.1.1              | 29 July 2026     | Released: automatic and typed notebook previews, clearer file entry points, exact distributions, responsive insights, and release-quality media                                                                                             |
+| v1.1.2              | Late August 2026 | Reproducible Open Wrangler/Data Wrangler performance comparison in [#91](https://github.com/Matt17BR/openwrangler/issues/91) and follow-up UX hardening                                                                                     |
+| v1.2                | Q4 2026          | Workbench hierarchy [#88](https://github.com/Matt17BR/openwrangler/issues/88), broader VS Code-fork checks [#86](https://github.com/Matt17BR/openwrangler/issues/86), and PySpark [#36](https://github.com/Matt17BR/openwrangler/issues/36) |
+| Research after v1.2 | Unscheduled      | Native DuckDB notebook relations [#157](https://github.com/Matt17BR/openwrangler/issues/157), plus native R data frames, tibbles, `data.table`, Quarto, and R Markdown [#87](https://github.com/Matt17BR/openwrangler/issues/87)            |
 
 Critical regressions ship as soon as their release gates pass. The working cadence is roughly biweekly patch
 trains and six-to-eight-week minor releases; target windows are planning guidance, not guarantees.

@@ -7,9 +7,9 @@ license-clean fixtures without implying support that the extension does not prov
 
 ![Open Wrangler displaying a file-backed DuckDB Parquet source with decimal, time-zone, list, and struct columns](images/readme/v1.1/gallery/duckdb-rich-parquet.png)
 
-This scene uses the production webview bundle and a native DuckDB session over a real Parquet file. Decimal,
-time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries. DuckDB notebook
-relations are not currently supported.
+This scene uses the production webview bundle and a native DuckDB session over a deterministic 100,000-row
+Parquet file. Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and
+summaries. DuckDB notebook relations are not currently supported.
 
 ## Polars live notebook
 

@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
@@ -178,7 +178,7 @@
       {
         "command": "openWrangler.openNotebookVariable",
         "title": "Open Wrangler: Open Notebook Variable",
-        "shortTitle": "Open Variable",
+        "shortTitle": "Open in Open Wrangler",
         "icon": "media/activity-icon.svg"
       },
       {

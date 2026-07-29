@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-29
+
 ### Added
 
 - Added proactive Pandas and Polars notebook previews for trusted, visible notebooks with user-started kernels. When Microsoft Data Wrangler is installed, Open Wrangler asks which extension should own automatic dataframe rendering and exposes a command to change that choice for new or restarted kernels.
@@ -16,6 +18,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Limited automatic formatter preparation to exact visible notebook documents and made stable Jupyter lookup observation-only. Background API-opened notebooks cause no kernel lookup, while a visible notebook change bypasses pending retry backoff as soon as a user-started kernel becomes available.
 - Expanded the responsive Insights drawer to use the available workbench width without clipping selected-column statistics or distributions.
+- Labeled PySpark sessions explicitly as **Experimental** and **Viewing only** in the workbench instead of relying on documentation or engine context.
 - Kept Python pickle files deliberately outside the file surface because deserialization can execute arbitrary code; unsupported `.pkl` and `.pickle` paths are rejected before any runtime reader is invoked.
 - Updated the notebook, engine, safety, performance, and post-1.1 roadmap documentation to distinguish live paged sources from bounded saved snapshots and native file support from planned notebook support.
 

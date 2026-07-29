@@ -177,7 +177,7 @@ describe("notebook launch contributions", () => {
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openNotebookVariable",
       title: "Open Wrangler: Open Notebook Variable",
-      shortTitle: "Open Variable",
+      shortTitle: "Open in Open Wrangler",
       icon: "media/activity-icon.svg"
     });
     expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({
