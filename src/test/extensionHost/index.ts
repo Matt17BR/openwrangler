@@ -37,6 +37,7 @@ import type { PythonExtension } from "@vscode/python-extension";
 import { DEFAULT_SESSION_OPEN_TIMEOUT_MS, getSetting } from "../../extension/configuration";
 import { IMPORT_DETECTION_SAMPLE_BYTES } from "../../extension/files/importDetection";
 import { insertGeneratedNotebookCell } from "../../extension/notebooks/notebookInsertion";
+import type { SessionSchedulerState } from "../../extension/sessionCoordinator";
 import {
   normalizeNotebookOutputPayload,
   OPEN_WRANGLER_MIME_V2,
@@ -95,6 +96,7 @@ interface TestApi {
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<Extract<OpenWranglerResponse, { kind: "sessionOpened" }> | undefined>;
   panelHydrated(sessionId: string): boolean;
+  sessionSchedulerState(sessionId: string): SessionSchedulerState | undefined;
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics(): {
     activeSessionId?: string;
@@ -8745,7 +8747,26 @@ async function verifyDuckDBRichParquetPage(testing: TestApi, source: vscode.Uri,
 
   const replacement = `${source.fsPath}.replacement`;
   writeFileSync(replacement, Buffer.concat([originalBytes, Buffer.from([0])]));
-  renameSync(replacement, source.fsPath);
+  let replacementCommitted = false;
+  await waitFor(
+    () => {
+      const state = testing.sessionSchedulerState(active.sessionId);
+      if (!state?.quiescent) return false;
+      // Keep the final scheduler check and source replacement in one
+      // extension-host turn. A late webview request cannot start between them.
+      renameSync(replacement, source.fsPath);
+      replacementCommitted = true;
+      return true;
+    },
+    10_000,
+    "the rich DuckDB session scheduler to quiesce before source replacement",
+    () =>
+      JSON.stringify({
+        scheduler: testing.sessionSchedulerState(active.sessionId),
+        coordinator: testing.diagnostics()
+      })
+  );
+  assert.equal(replacementCommitted, true, "The rich DuckDB source replacement must commit exactly once.");
 
   const invalidated = await testing.request({
     kind: "getPage",

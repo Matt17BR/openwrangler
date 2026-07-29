@@ -6,6 +6,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from math import isnan
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import duckdb
@@ -270,7 +271,9 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
         engine.read_file(str(csv_path))
 
 
-def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(tmp_path: Path) -> None:
+def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "replaceable.parquet"
     replacement = tmp_path / "replaceable.parquet.replacement"
     connection = duckdb.connect()
@@ -315,6 +318,37 @@ def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(tmp_pa
         )
         assert paged["page"]["rows"][0]["values"][0]["raw"] == "123456789012345678901234567890.12345678"
         assert isinstance(session.filtered, DuckDBSqlPlan)
+
+        native_execute_rows = duckdb_runtime._execute_rows
+        summary_read_completed = Event()
+        release_summary_connection = Event()
+
+        def hold_completed_summary_read(connection: Any, source_sql: str, query: str) -> list[tuple[Any, ...]]:
+            result = native_execute_rows(connection, source_sql, query)
+            if "count(DISTINCT" in query:
+                summary_read_completed.set()
+                if not release_summary_connection.wait(timeout=10):
+                    raise AssertionError("Timed out releasing the completed DuckDB summary read.")
+            return result
+
+        monkeypatch.setattr(duckdb_runtime, "_execute_rows", hold_completed_summary_read)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            summary_future = pool.submit(session.engine.summaries, session.filtered, [(0, "c:exact_decimal")])
+            assert summary_read_completed.wait(timeout=10)
+            with session.engine._lifecycle_lock:
+                assert len(session.engine._active_connections) == 1
+            page_future = pool.submit(session.engine.page, session.filtered, 0, 20, total_rows=1)
+            try:
+                concurrent_page = page_future.result(timeout=10)
+                assert concurrent_page["rows"][0]["values"][0]["raw"] == ("123456789012345678901234567890.12345678")
+                with session.engine._lifecycle_lock:
+                    assert len(session.engine._active_connections) == 1
+            finally:
+                release_summary_connection.set()
+            concurrent_summary = summary_future.result(timeout=10)
+        assert concurrent_summary[0]["columnId"] == "c:exact_decimal"
+        with session.engine._lifecycle_lock:
+            assert session.engine._active_connections == set()
 
         os.replace(replacement, source)
         with pytest.raises(EngineError, match="changed or is no longer available"):
