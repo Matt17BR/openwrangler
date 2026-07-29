@@ -1,11 +1,59 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inspectPreviewReadme } from "./release-documents.mjs";
 import { inspectPerformanceEvidenceSourceReadiness, inspectStableSourceReadiness } from "./release-readiness.mjs";
 import { inspectReleaseWorkflow, inspectStableCandidateWorkflow } from "./release-workflow.mjs";
+import { inspectStableReleaseWorkflow } from "./stable-release-workflow.mjs";
+import { inspectMarketplacePromotionPipeline, inspectMarketplaceVsceLock } from "./marketplace-promotion-workflow.mjs";
+import { inspectOpenVsxPromotionWorkflow } from "./open-vsx-promotion-workflow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const forbiddenDashSearch = spawnSync(
+  "git",
+  [
+    "grep",
+    "-I",
+    "-n",
+    "--full-name",
+    "-e",
+    "\u2013",
+    "-e",
+    "\u2014",
+    "--",
+    ".",
+    ":(exclude).git/**",
+    ":(exclude).venv/**",
+    ":(exclude)venv/**",
+    ":(exclude)node_modules/**",
+    ":(exclude)vendor/**",
+    ":(exclude)dist/**",
+    ":(exclude)out/**",
+    ":(exclude)build/**",
+    ":(exclude)coverage/**",
+    ":(exclude)tmp/**"
+  ],
+  {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true
+  }
+);
+if (forbiddenDashSearch.error !== undefined) {
+  throw forbiddenDashSearch.error;
+}
+if (forbiddenDashSearch.status === 0) {
+  throw new Error(
+    `Tracked project text must not contain en or em dashes. Use natural punctuation or wording instead:\n${forbiddenDashSearch.stdout.trimEnd()}`
+  );
+}
+if (forbiddenDashSearch.status !== 1) {
+  throw new Error(
+    `Unable to inspect tracked project text for forbidden dashes (git grep exited ${forbiddenDashSearch.status ?? "without a status"}):\n${forbiddenDashSearch.stderr.trimEnd()}`
+  );
+}
+
 const required = [
   "AGENTS.md",
   "CHANGELOG.md",
@@ -24,7 +72,9 @@ if (missing.length > 0) {
   throw new Error(`Missing required documentation: ${missing.join(", ")}`);
 }
 
-const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
+const packageJsonSource = readFileSync(resolve(root, "package.json"), "utf8");
+const packageLockSource = readFileSync(resolve(root, "package-lock.json"), "utf8");
+const packageJson = JSON.parse(packageJsonSource);
 const readme = readFileSync(resolve(root, "README.md"), "utf8");
 const featureParity = readFileSync(resolve(root, "docs/feature-parity.md"), "utf8");
 const trackedEvidencePaths = new Set(
@@ -76,6 +126,31 @@ const stableCandidateWorkflowProblems = inspectStableCandidateWorkflow(
 );
 if (stableCandidateWorkflowProblems.length > 0) {
   throw new Error(`Stable candidate workflow contract is stale:\n- ${stableCandidateWorkflowProblems.join("\n- ")}`);
+}
+const stableReleaseWorkflowProblems = inspectStableReleaseWorkflow(
+  readFileSync(resolve(root, ".github/workflows/stable-release.yml"), "utf8")
+);
+if (stableReleaseWorkflowProblems.length > 0) {
+  throw new Error(`Stable release workflow contract is stale:\n- ${stableReleaseWorkflowProblems.join("\n- ")}`);
+}
+const marketplacePromotionProblems = inspectMarketplacePromotionPipeline(
+  readFileSync(resolve(root, "azure-pipelines-marketplace.yml"), "utf8")
+);
+if (marketplacePromotionProblems.length > 0) {
+  throw new Error(`Marketplace promotion pipeline contract is stale:\n- ${marketplacePromotionProblems.join("\n- ")}`);
+}
+const marketplaceVsceLockProblems = inspectMarketplaceVsceLock({
+  packageJson: packageJsonSource,
+  packageLock: packageLockSource
+});
+if (marketplaceVsceLockProblems.length > 0) {
+  throw new Error(`Marketplace VSCE dependency lock is stale:\n- ${marketplaceVsceLockProblems.join("\n- ")}`);
+}
+const openVsxPromotionProblems = inspectOpenVsxPromotionWorkflow(
+  readFileSync(resolve(root, ".github/workflows/open-vsx-promotion.yml"), "utf8")
+);
+if (openVsxPromotionProblems.length > 0) {
+  throw new Error(`Open VSX promotion workflow contract is stale:\n- ${openVsxPromotionProblems.join("\n- ")}`);
 }
 const changelog = readFileSync(resolve(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## [${packageJson.version}]`)) {

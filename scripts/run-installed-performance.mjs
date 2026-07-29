@@ -2331,18 +2331,27 @@ function runInstalledPerformanceHarnessBuild(environment) {
   });
 }
 
-async function createInstalledPerformanceVsix(destination, { preRelease }) {
+export function installedPerformanceVsixOptions(destination, { preRelease } = {}) {
+  if (typeof destination !== "string" || destination.length === 0) {
+    throw new TypeError("Guarded installed-performance packaging requires one candidate path.");
+  }
   if (typeof preRelease !== "boolean") {
     throw new TypeError("Guarded installed-performance packaging requires an explicit release channel.");
   }
-  assertAbsent(destination, "guarded installed-performance candidate");
-  await createVSIX({
+  return Object.freeze({
     cwd: root,
     packagePath: destination,
     preRelease,
+    gitHubIssueLinking: false,
     allowStarActivation: false,
     allowMissingRepository: false
   });
+}
+
+async function createInstalledPerformanceVsix(destination, channel) {
+  const options = installedPerformanceVsixOptions(destination, channel);
+  assertAbsent(destination, "guarded installed-performance candidate");
+  await createVSIX(options);
 }
 
 async function verifyInstalledPerformanceVsix(receipt, _environment) {

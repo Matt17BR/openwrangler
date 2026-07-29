@@ -25,6 +25,7 @@ from .base import (
     ensure_output_columns_available,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_blank_delimited_file,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -69,6 +70,7 @@ class DuckDBEngine(DataFrameEngine):
         self._active_connections: set[Any] = set()
         self._lifecycle_lock = RLock()
         self._closed = False
+        self._empty_source_frame: Any | None = None
 
     def detect(self, value: Any) -> bool:
         try:
@@ -100,6 +102,7 @@ class DuckDBEngine(DataFrameEngine):
             self._closed = True
             connection = self._connection
             self._connection = None
+            self._empty_source_frame = None
         if connection is not None:
             connection.close()
 
@@ -114,6 +117,12 @@ class DuckDBEngine(DataFrameEngine):
                     raise EngineError(
                         f"DuckDB supports UTF-8 CSV input, not {encoding}. Use the Pandas backend for this encoding."
                     )
+                if is_blank_delimited_file(path):
+                    row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
+                    self._empty_source_frame = connection.sql(
+                        f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE"
+                    )
+                    return self._empty_source_frame
                 return connection.read_csv(
                     path,
                     delimiter=options.get("delimiter", "\t" if extension == ".tsv" else ","),
@@ -158,6 +167,14 @@ class DuckDBEngine(DataFrameEngine):
                     f"{previous!r} and {column!r}. Rename one column or use Pandas/Polars."
                 )
             by_casefold[folded] = column
+
+    def validate_internal_row_id_namespace(self, frame: Any, allowed_internal: Any | None = None) -> None:
+        # DuckDB cannot construct a relation with no columns. A blank delimited
+        # source therefore uses one engine-owned, zero-row private sentinel that
+        # stays invisible to schema, shape, pages, profiling, and exports.
+        if allowed_internal is None and frame is self._empty_source_frame:
+            return
+        super().validate_internal_row_id_namespace(frame, allowed_internal)
 
     def ensure_row_ids(self, frame: Any, token: str) -> Any:
         frame = self.normalize(frame)
@@ -956,26 +973,36 @@ def _compose_sql(source_sql: str, query: str) -> str:
 
 
 def _json_reader_is_unavailable(error: Exception) -> bool:
-    message = str(error).casefold()
-    missing_table_function = (
-        "table function" in message
-        and "read_json" in message
-        and ("does not exist" in message or "not found" in message)
-    )
-    extension_context = any(marker in message for marker in ("extension 'json'", 'extension "json"', "json extension"))
-    extension_failure = extension_context and any(
-        marker in message
-        for marker in (
-            "not installed",
-            "not loaded",
-            "failed to load",
-            "could not load",
-            "unable to load",
-            "automatically install",
-            "auto-install",
+    error_type = type(error)
+    if error_type.__module__ not in {"_duckdb", "duckdb"}:
+        return False
+
+    headline = str(error).splitlines()[0].strip().casefold()
+    if error_type.__name__ == "CatalogException":
+        return headline.startswith(
+            (
+                "catalog error: table function with name read_json does not exist",
+                "catalog error: table function with name read_json_auto does not exist",
+            )
+        )
+
+    if error_type.__name__ not in {"HTTPException", "IOException", "InvalidInputException"}:
+        return False
+
+    return headline.startswith(
+        (
+            "extension autoloading error: an error occurred while trying to automatically install "
+            "the required extension 'json'",
+            "extension autoloading error: an error occurred while trying to automatically install "
+            'the required extension "json"',
+            "http error: failed to load extension 'json'",
+            'http error: failed to load extension "json"',
+            "io error: failed to load extension 'json'",
+            'io error: failed to load extension "json"',
+            "invalid input error: failed to load extension 'json'",
+            'invalid input error: failed to load extension "json"',
         )
     )
-    return missing_table_function or extension_failure
 
 
 def _connect() -> Any:

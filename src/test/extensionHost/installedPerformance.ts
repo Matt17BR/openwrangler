@@ -17,7 +17,12 @@ import type { OpenWranglerRequest, OpenWranglerResponse, SessionMetadata } from 
 import { parseStrictJson } from "../../shared/strictJson.cjs";
 import { publishInstalledPerformanceFragment, type InstalledPerformanceArtifactReceipt } from "./fragmentPublication";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
-import { measureRendererGridScroll, rendererHasUsableGridGeometry } from "./rendererGridScrollMeasurement";
+import {
+  installedPerformanceGridRowHeight,
+  installedPerformanceMaximumCanvasHeight,
+  measureRendererGridScroll,
+  rendererHasUsableGridGeometry
+} from "./rendererGridScrollMeasurement";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v5";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
@@ -586,7 +591,8 @@ async function scrollGridToRow(
     totalRows,
     totalColumns,
     expectedText: String(expectedValue),
-    rowHeight: 29,
+    rowHeight: installedPerformanceGridRowHeight,
+    maximumCanvasHeight: installedPerformanceMaximumCanvasHeight,
     timeoutMs: GRID_DISCOVERY_TIMEOUT_MS
   });
   return roundMilliseconds(duration);

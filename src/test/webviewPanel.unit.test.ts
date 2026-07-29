@@ -463,6 +463,62 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
+  it("routes screenshot-evidence drafts through the live panel snapshot", async () => {
+    const draft = {
+      id: "screenshot-uppercase",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [
+          {
+            rowNumber: 0,
+            columnId: "c:0",
+            column: "city",
+            before: page.rows[0]!.values[0]!,
+            after: { kind: "string", raw: "BERLIN", display: "BERLIN", isNull: false, isNaN: false }
+          }
+        ],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest) =>
+      candidate.kind === "previewStep" ? preview : openedResponse
+    );
+    const harness = createPanelHarness({ request }, { openResponse: openedResponse });
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    const previewRequest = {
+      kind: "previewStep",
+      sessionId: "session",
+      revision: 0,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    } satisfies Extract<OpenWranglerRequest, { kind: "previewStep" }>;
+
+    const snapshot = await OpenWranglerPanel.previewStepForSessionForTesting(previewRequest);
+
+    expect(snapshot?.metadata.draftStep).toEqual(draft);
+    expect(snapshot?.metadata.revision).toBe(1);
+    expect(snapshot?.page.rows[0]?.values[0]?.display).toBe("Berlin");
+    expect(request).toHaveBeenLastCalledWith(previewRequest, undefined);
+    expect(harness.posted).toContainEqual(preview);
+  });
+
   it("replays retained state when an unhydrated renderer pulls its snapshot", async () => {
     const source: SessionSource = {
       kind: "file",
@@ -1595,6 +1651,77 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
   });
 
+  it("runs the confirmed dependency install from an initial error and reopens only after success", async () => {
+    const missing: OpenWranglerResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Polars is missing fastexcel>=0.9.",
+      recoverable: true
+    };
+    let openCalls = 0;
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      }
+      if (candidate.kind !== "openSession") throw new Error(`Unexpected request ${candidate.kind}`);
+      openCalls += 1;
+      return openCalls === 1 ? missing : openedResponse;
+    });
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
+      if (command === "openWrangler.installRuntimeDependencies") return true;
+      return undefined;
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    await harness.open();
+    harness.posted.length = 0;
+    executeCommand.mockClear();
+
+    await harness.receive({ kind: "installRuntimeDependencies" });
+
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(request.mock.calls.map(([candidate]) => candidate.kind)).toEqual(["openSession", "openSession"]);
+    expect(harness.posted).toEqual([
+      { kind: "runtimeDependencyInstallState", busy: true },
+      openedResponse,
+      { kind: "runtimeDependencyInstallState", busy: false }
+    ]);
+  });
+
+  it("keeps an initial dependency error retryable when installation is declined", async () => {
+    const missing: OpenWranglerResponse = {
+      kind: "error",
+      code: "missing_dependencies",
+      message: "Polars is missing fastexcel>=0.9.",
+      recoverable: true
+    };
+    const request = vi.fn(async (): Promise<OpenWranglerResponse> => missing);
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
+      if (command === "openWrangler.installRuntimeDependencies") return false;
+      return undefined;
+    });
+    const harness = createPanelHarness({ request }, { delegateOpen: true });
+    await harness.open();
+    harness.posted.length = 0;
+    executeCommand.mockClear();
+
+    for (const malformed of [
+      { kind: "installRuntimeDependencies", unexpected: true },
+      { kind: "installRuntimeDependencies", confirmed: true }
+    ]) {
+      await harness.receive(malformed);
+    }
+    expect(executeCommand).not.toHaveBeenCalled();
+
+    await harness.receive({ kind: "installRuntimeDependencies" });
+
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.installRuntimeDependencies");
+    expect(request).toHaveBeenCalledOnce();
+    expect(harness.posted).toEqual([
+      { kind: "runtimeDependencyInstallState", busy: true },
+      { kind: "runtimeDependencyInstallState", busy: false }
+    ]);
+  });
+
   it("atomically publishes a successful live import reconfiguration and retains its source and revision", async () => {
     const source: SessionSource = {
       kind: "file",
@@ -1726,6 +1853,57 @@ describe("OpenWranglerPanel retained view state", () => {
     panelPromptMocks.showInputBox.mockReset();
     await harness.receive({ kind: "changeImportOptions" });
     expect(promptPicksAt(0)[0]).toMatchObject({ value: ";", description: "Current" });
+  });
+
+  it("uses live workbook sheet names for Excel reconfiguration without asking users to type one", async () => {
+    const source: SessionSource = {
+      kind: "file",
+      label: "workbook.xlsx",
+      path: "/workspace/workbook.xlsx",
+      uri: "file:///workspace/workbook.xlsx",
+      importOptions: { sheetIndex: 0 }
+    };
+    const initial = responseForSource(source);
+    const listExcelSheets = vi.fn(async () => ["Overview", "Sales", "2024"]);
+    const reconfigureFileSession = vi.fn(
+      async (_sessionId: string, _revision: number, nextSource: SessionSource): Promise<OpenWranglerResponse> =>
+        responseForSource(nextSource, 1)
+    );
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async () => initial),
+        listExcelSheets,
+        reconfigureFileSession
+      },
+      { source, openResponse: initial }
+    );
+    await harness.open();
+    harness.posted.length = 0;
+    panelPromptMocks.showQuickPick.mockImplementationOnce(async (items) =>
+      (items as PromptPick[]).find(({ value }) => value === "Sales")
+    );
+
+    await harness.receive({ kind: "changeImportOptions" });
+
+    expect(listExcelSheets).toHaveBeenCalledWith("session", source, "polars", {
+      cancellation: expect.objectContaining({
+        isCancellationRequested: false,
+        onCancellationRequested: expect.any(Function)
+      })
+    });
+    expect(promptPicksAt(0).map(({ label }) => label)).toEqual(["Overview", "Sales", "2024"]);
+    expect(panelPromptMocks.showInputBox).not.toHaveBeenCalled();
+    expect(reconfigureFileSession).toHaveBeenCalledWith(
+      "session",
+      0,
+      { ...source, importOptions: { sheetName: "Sales" } },
+      {
+        cancellation: expect.objectContaining({
+          isCancellationRequested: false,
+          onCancellationRequested: expect.any(Function)
+        })
+      }
+    );
   });
 
   it("remembers an initial non-default file configuration only after session open is confirmed", async () => {

@@ -1,0 +1,116 @@
+name: Promote GitHub release to Open VSX
+
+on:
+  release:
+    types:
+      - published
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Canonical GitHub release tag to promote
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing canonical GitHub release tag to promote
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-vsx-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote exact public GitHub release
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment: publishing
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+    steps:
+      - name: Check out reviewed promotion code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - id: automation_source
+        name: Require the reviewed protected branch
+        shell: bash
+        run: |
+          test "$(git rev-parse --verify HEAD^{commit})" = "$(git rev-parse --verify refs/remotes/origin/main^{commit})"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          printf 'automation_commit=%s\n' "$(git rev-parse --verify HEAD^{commit})" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Check out the exact release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          path: release-source
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - id: release_source
+        name: Bind the release tag, commit, and channel
+        run: node scripts/registry-release-source.mjs release-source
+      - name: Require the public tag at the bound commit
+        env:
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+        run: node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source
+      - name: Download the exact public GitHub release
+        env:
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: node scripts/download-canonical-github-release.mjs canonical-release
+      - name: Verify the downloaded release before authentication
+        env:
+          AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: node scripts/verify-registry-release-artifact.mjs canonical-release
+      - name: Verify the Open VSX publisher token
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --no-install ovsx verify-pat Matt17BR
+      - name: Reverify the release before Open VSX preflight
+        env:
+          AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: node scripts/verify-registry-release-artifact.mjs canonical-release
+      - name: Reject a conflicting Open VSX version
+        env:
+          AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: node scripts/verify-open-vsx-github-release.mjs canonical-release --preflight
+      - name: Reverify the release before Open VSX publication
+        env:
+          AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: node scripts/verify-registry-release-artifact.mjs canonical-release
+      - name: Publish the exact GitHub release VSIX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
+      - name: Verify the exact public Open VSX release
+        env:
+          AUTOMATION_SHA: ${{ steps.automation_source.outputs.automation_commit }}
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+          RELEASE_PRERELEASE: ${{ steps.release_source.outputs.release_prerelease }}
+        run: node scripts/verify-open-vsx-github-release.mjs canonical-release --verify
+      - name: Recheck the immutable public tag
+        env:
+          EXPECTED_SHA: ${{ steps.release_source.outputs.release_commit }}
+        run: node scripts/prepare-stable-candidate-tag.mjs --require-remote release-source

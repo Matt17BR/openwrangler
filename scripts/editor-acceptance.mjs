@@ -101,6 +101,8 @@ const XVFB_DIAGNOSTIC_MAX_BYTES = 16 * 1024;
 const EDITOR_OUTPUT_CLOSE_TIMEOUT_MS = 5_000;
 const EDITOR_DEBUG_PORT_RELEASE_GRACE_MS = 100;
 export const MACOS_EDITOR_IPC_PATH_LIMIT_BYTES = 103;
+const LINUX_EDITOR_IPC_PATH_LIMIT_BYTES = 108;
+const LINUX_EDITOR_IPC_SUFFIX_BUDGET_BYTES = 64;
 const OVERSIZED_EDITOR_DIAGNOSTIC =
   "Diagnostic text was suppressed because its complete value exceeded the fixed safety limit.";
 const SENSITIVE_EDITOR_DIAGNOSTIC = "Sensitive harness details were suppressed.";
@@ -1140,6 +1142,74 @@ function isolateLinuxEditorEnvironment(environment, mode, display) {
       }
     }
   };
+}
+
+function linuxEditorPhaseLaunchDirectory(environment, phaseEnvironment, platform) {
+  if (platform !== "linux") return undefined;
+  const runtimeDirectory = phaseEnvironment.XDG_RUNTIME_DIR;
+  if (
+    typeof runtimeDirectory !== "string" ||
+    !isAbsolute(runtimeDirectory) ||
+    Buffer.byteLength(runtimeDirectory, "utf8") + 1 + LINUX_EDITOR_IPC_SUFFIX_BUDGET_BYTES <
+      LINUX_EDITOR_IPC_PATH_LIMIT_BYTES
+  ) {
+    return undefined;
+  }
+
+  const privateRoot = environment[TEMP_ROOT_ENV];
+  if (typeof privateRoot !== "string" || !isAbsolute(privateRoot)) {
+    throw new Error(
+      "Linux editor acceptance cannot shorten an oversized runtime socket path without its owned private root."
+    );
+  }
+  const resolvedRoot = resolve(privateRoot);
+  const resolvedRuntime = resolve(runtimeDirectory);
+  const relativeRuntime = relative(resolvedRoot, resolvedRuntime);
+  if (
+    relativeRuntime.length === 0 ||
+    relativeRuntime === ".." ||
+    relativeRuntime.startsWith(`..${sep}`) ||
+    isAbsolute(relativeRuntime) ||
+    relativeRuntime.includes(sep)
+  ) {
+    throw new Error(
+      "Linux editor acceptance requires an oversized runtime directory to be one direct child of its owned private root."
+    );
+  }
+
+  let rootMetadata;
+  let runtimeMetadata;
+  let canonicalRoot;
+  let canonicalRuntime;
+  try {
+    rootMetadata = lstatSync(resolvedRoot, { bigint: true });
+    runtimeMetadata = lstatSync(resolvedRuntime, { bigint: true });
+    canonicalRoot = realpathSync(resolvedRoot);
+    canonicalRuntime = realpathSync(resolvedRuntime);
+  } catch {
+    throw new Error("Linux editor acceptance could not verify its oversized private runtime directory.");
+  }
+  const expectedUid = typeof process.getuid === "function" ? BigInt(process.getuid()) : undefined;
+  if (
+    !rootMetadata.isDirectory() ||
+    rootMetadata.isSymbolicLink() ||
+    !runtimeMetadata.isDirectory() ||
+    runtimeMetadata.isSymbolicLink() ||
+    (rootMetadata.mode & 0o777n) !== 0o700n ||
+    (runtimeMetadata.mode & 0o777n) !== 0o700n ||
+    (expectedUid !== undefined && (rootMetadata.uid !== expectedUid || runtimeMetadata.uid !== expectedUid)) ||
+    relative(canonicalRoot, canonicalRuntime) !== relativeRuntime
+  ) {
+    throw new Error("Linux editor acceptance rejected an unowned or redirected private runtime directory.");
+  }
+
+  // VS Code and Cursor derive a Unix-domain IPC socket below XDG_RUNTIME_DIR.
+  // A deeply nested checkout can make that absolute name exceed Linux's
+  // sockaddr_un limit before the acceptance harness starts. Keep the real
+  // directory inside the one owned private root, launch from that root, and
+  // expose only its direct-child name to the editor.
+  phaseEnvironment.XDG_RUNTIME_DIR = relativeRuntime;
+  return resolvedRoot;
 }
 
 export async function readXvfbDisplayNumber(child, exit, timeoutMs) {
@@ -3227,6 +3297,7 @@ export async function runEditorAcceptancePhase(
       platform
     );
     Object.assign(phaseEnvironment, jupyterEnvironmentOverrides);
+    const launchDirectory = linuxEditorPhaseLaunchDirectory(environment, phaseEnvironment, platform);
     child = launchProcess(
       editor.executable,
       [
@@ -3251,6 +3322,7 @@ export async function runEditorAcceptancePhase(
         detached: platform !== "win32",
         env: phaseEnvironment,
         encoding: "utf8",
+        ...(launchDirectory ? { cwd: launchDirectory } : {}),
         stdio: ["ignore", "pipe", "pipe"]
       },
       { platform, supervisorReceipt }

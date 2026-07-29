@@ -47,37 +47,37 @@
 | `openWrangler.defaultBackend`       | `string`  | `"auto"`                                       | `"auto"`, `"polars"`, `"duckdb"`, `"pandas"` | Default backend for file-backed sessions. Auto prefers Polars, then DuckDB, and falls back to Pandas when required.                                 |
 | `openWrangler.fileStartMode`        | `string`  | `"editing"`                                    | `"editing"`, `"viewing"`                     | Initial mode for file-backed sessions. Editing remains non-destructive until an explicit export.                                                    |
 | `openWrangler.notebookStartMode`    | `string`  | `"viewing"`                                    | `"viewing"`, `"editing"`                     | Initial mode for notebook dataframe sessions.                                                                                                       |
-| `openWrangler.enabledFileTypes`     | `array`   | `["csv","tsv","parquet","jsonl","xlsx","xls"]` | —                                            | File types accepted by Open Wrangler launch commands and offered by its file picker. Explicit Reopen Editor With selection remains available.       |
-| `openWrangler.insightsOnOpen`       | `boolean` | `true`                                         | —                                            | Show progressive per-column insights when a grid opens.                                                                                             |
+| `openWrangler.enabledFileTypes`     | `array`   | `["csv","tsv","parquet","jsonl","xlsx","xls"]` | None                                         | File types accepted by Open Wrangler launch commands and offered by its file picker. Explicit Reopen Editor With selection remains available.       |
+| `openWrangler.insightsOnOpen`       | `boolean` | `true`                                         | None                                         | Show progressive per-column insights when a grid opens.                                                                                             |
 | `openWrangler.filterMode`           | `string`  | `"basic"`                                      | `"basic"`, `"advanced"`                      | Default filter builder. Advanced mode exposes AND/OR condition composition.                                                                         |
-| `openWrangler.defaultColumnWidth`   | `number`  | `190`                                          | —                                            | Initial grid column width in CSS pixels.                                                                                                            |
-| `openWrangler.fetchBlockSize`       | `number`  | `200`                                          | —                                            | Number of rows fetched for each virtual grid block.                                                                                                 |
-| `openWrangler.fetchColumnBlockSize` | `number`  | `16`                                           | —                                            | Number of dataframe columns fetched for each horizontal grid block.                                                                                 |
+| `openWrangler.defaultColumnWidth`   | `number`  | `190`                                          | None                                         | Initial grid column width in CSS pixels.                                                                                                            |
+| `openWrangler.fetchBlockSize`       | `number`  | `200`                                          | None                                         | Number of rows fetched for each virtual grid block.                                                                                                 |
+| `openWrangler.fetchColumnBlockSize` | `number`  | `16`                                           | None                                         | Number of dataframe columns fetched for each horizontal grid block.                                                                                 |
 | `openWrangler.panelRevealBehavior`  | `string`  | `"onDraft"`                                    | `"onDraft"`, `"always"`, `"never"`           | When to reveal the bottom-panel Code Preview.                                                                                                       |
-| `openWrangler.pythonPath`           | `string`  | `""`                                           | —                                            | Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter. |
-| `openWrangler.sessionOpenTimeoutMs` | `number`  | `60000`                                        | —                                            | Maximum duration for opening a dataframe session, including cold engine and notebook-kernel initialization.                                         |
-| `openWrangler.requestTimeoutMs`     | `number`  | `30000`                                        | —                                            | Maximum duration for runtime requests other than session opening before recovery restarts and replays the session.                                  |
+| `openWrangler.pythonPath`           | `string`  | `""`                                           | None                                         | Optional Python 3.10-3.14 executable override. When empty, Open Wrangler uses the selected Python extension environment, then a system interpreter. |
+| `openWrangler.sessionOpenTimeoutMs` | `number`  | `60000`                                        | None                                         | Maximum duration for opening a dataframe session, including cold engine and notebook-kernel initialization.                                         |
+| `openWrangler.requestTimeoutMs`     | `number`  | `30000`                                        | None                                         | Maximum duration for runtime requests other than session opening before recovery restarts and replays the session.                                  |
 
 ## Transformation operations
 
 | Kind                 | Title                     | Group              | Required parameters                         | Optional parameters                     |
 | -------------------- | ------------------------- | ------------------ | ------------------------------------------- | --------------------------------------- |
-| `sortRows`           | Sort rows                 | Rows / order       | `rules`                                     | —                                       |
-| `filterRows`         | Filter rows               | Rows / order       | `filterModel`                               | —                                       |
-| `dropMissingRows`    | Drop missing rows         | Rows / order       | —                                           | `columns`, `how`                        |
-| `dropDuplicates`     | Drop duplicate rows       | Rows / order       | —                                           | `columns`, `keep`                       |
-| `selectColumns`      | Select columns            | Columns / types    | `columns`                                   | —                                       |
-| `dropColumns`        | Drop columns              | Columns / types    | `columns`                                   | —                                       |
-| `renameColumn`       | Rename column             | Columns / types    | `column`, `newName`                         | —                                       |
-| `cloneColumn`        | Clone column              | Columns / types    | `column`, `newName`                         | —                                       |
-| `castColumn`         | Convert column type       | Columns / types    | `column`, `dtype`                           | —                                       |
+| `sortRows`           | Sort rows                 | Rows / order       | `rules`                                     | None                                    |
+| `filterRows`         | Filter rows               | Rows / order       | `filterModel`                               | None                                    |
+| `dropMissingRows`    | Drop missing rows         | Rows / order       | None                                        | `columns`, `how`                        |
+| `dropDuplicates`     | Drop duplicate rows       | Rows / order       | None                                        | `columns`, `keep`                       |
+| `selectColumns`      | Select columns            | Columns / types    | `columns`                                   | None                                    |
+| `dropColumns`        | Drop columns              | Columns / types    | `columns`                                   | None                                    |
+| `renameColumn`       | Rename column             | Columns / types    | `column`, `newName`                         | None                                    |
+| `cloneColumn`        | Clone column              | Columns / types    | `column`, `newName`                         | None                                    |
+| `castColumn`         | Convert column type       | Columns / types    | `column`, `dtype`                           | None                                    |
 | `formula`            | Create formula column     | Columns / types    | `leftColumn`, `operator`, `newColumn`       | `rightColumn`, `value`                  |
-| `textLength`         | Text length               | Columns / types    | `column`, `newColumn`                       | —                                       |
+| `textLength`         | Text length               | Columns / types    | `column`, `newColumn`                       | None                                    |
 | `oneHotEncode`       | One-hot encode            | Categorical / text | `columns`                                   | `prefixSeparator`, `dropOriginal`       |
 | `multiLabelBinarize` | Multi-label binarize      | Categorical / text | `column`, `delimiter`                       | `prefix`, `dropOriginal`                |
 | `findReplace`        | Find and replace          | Categorical / text | `column`, `find`, `replacement`             | `regex`, `newColumn`                    |
 | `stripText`          | Strip text                | Categorical / text | `column`                                    | `characters`, `newColumn`               |
-| `splitText`          | Split text                | Categorical / text | `column`, `delimiter`, `index`, `newColumn` | —                                       |
+| `splitText`          | Split text                | Categorical / text | `column`, `delimiter`, `index`, `newColumn` | None                                    |
 | `capitalizeText`     | Capitalize text           | Categorical / text | `column`                                    | `newColumn`                             |
 | `lowerText`          | Lowercase text            | Categorical / text | `column`                                    | `newColumn`                             |
 | `upperText`          | Uppercase text            | Categorical / text | `column`                                    | `newColumn`                             |
@@ -86,9 +86,9 @@
 | `floorNumber`        | Floor number              | Numeric / datetime | `column`                                    | `newColumn`                             |
 | `ceilNumber`         | Ceiling number            | Numeric / datetime | `column`                                    | `newColumn`                             |
 | `formatDatetime`     | Format datetime           | Numeric / datetime | `column`, `format`                          | `newColumn`                             |
-| `groupBy`            | Group and aggregate       | Aggregation        | `keys`, `aggregations`                      | —                                       |
+| `groupBy`            | Group and aggregate       | Aggregation        | `keys`, `aggregations`                      | None                                    |
 | `byExample`          | Transform by example      | By example         | `sourceColumns`, `newColumn`, `examples`    | `program`, `warnings`, `candidateCount` |
-| `customCode`         | Custom engine-native code | Custom             | `code`                                      | —                                       |
+| `customCode`         | Custom engine-native code | Custom             | `code`                                      | None                                    |
 
 ## Runtime protocol v2
 

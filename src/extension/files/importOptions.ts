@@ -1,6 +1,8 @@
+import { open } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SessionSource } from "../../shared/protocol";
+import { detectedImportOptionsFromSample, IMPORT_DETECTION_SAMPLE_BYTES } from "./importDetection";
 
 type ImportOptions = NonNullable<SessionSource["importOptions"]>;
 
@@ -16,6 +18,8 @@ type ExcelSheetMode = "name" | "index";
 
 type ExcelSheetModePick = ValuePick<ExcelSheetMode>;
 
+type ExcelSheetPick = ValuePick<string>;
+
 export function defaultImportOptions(uri: vscode.Uri): ImportOptions | undefined {
   const extension = path.extname(uri.fsPath).toLowerCase();
   if (extension === ".csv" || extension === ".tsv") {
@@ -30,17 +34,37 @@ export function defaultImportOptions(uri: vscode.Uri): ImportOptions | undefined
   return undefined;
 }
 
+export async function detectImportOptions(uri: vscode.Uri): Promise<ImportOptions | undefined> {
+  const defaults = defaultImportOptions(uri);
+  if (!defaults || (uri.scheme !== "file" && uri.scheme !== "vscode-remote")) return defaults;
+  const extension = path.extname(uri.fsPath).toLowerCase();
+  if (extension !== ".csv" && extension !== ".tsv") return defaults;
+
+  let handle;
+  try {
+    handle = await open(uri.fsPath, "r");
+    const sample = Buffer.allocUnsafe(IMPORT_DETECTION_SAMPLE_BYTES);
+    const { bytesRead } = await handle.read(sample, 0, sample.length, 0);
+    return detectedImportOptionsFromSample(uri.fsPath, sample.subarray(0, bytesRead));
+  } catch {
+    return defaults;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 export async function promptImportOptions(
   uri: vscode.Uri,
   currentImportOptions?: ImportOptions,
-  cancellation?: vscode.CancellationToken
+  cancellation?: vscode.CancellationToken,
+  sheetNames?: readonly string[]
 ): Promise<ImportOptions | undefined> {
   ensureNotCancelled(cancellation);
   const defaults = defaultImportOptions(uri);
   if (!defaults) return undefined;
   const extension = path.extname(uri.fsPath).toLowerCase();
   if (extension === ".xlsx" || extension === ".xls") {
-    return promptExcelImportOptions(currentImportOptions, cancellation);
+    return promptExcelImportOptions(currentImportOptions, cancellation, sheetNames);
   }
 
   const currentDelimiter = validCharacter(currentImportOptions?.delimiter) ?? defaults.delimiter ?? ",";
@@ -120,8 +144,31 @@ export class ImportCancelledError extends Error {}
 
 async function promptExcelImportOptions(
   currentImportOptions?: ImportOptions,
-  cancellation?: vscode.CancellationToken
+  cancellation?: vscode.CancellationToken,
+  sheetNames?: readonly string[]
 ): Promise<ImportOptions> {
+  const availableSheets = validExcelSheetNames(sheetNames);
+  if (availableSheets) {
+    const currentSheetName = nonBlank(currentImportOptions?.sheetName);
+    const currentIndex = validSheetIndex(currentImportOptions?.sheetIndex) ? currentImportOptions.sheetIndex : 0;
+    const current =
+      (currentSheetName !== undefined && availableSheets.includes(currentSheetName)
+        ? currentSheetName
+        : availableSheets[currentIndex]) ?? availableSheets[0]!;
+    const sheet = await vscode.window.showQuickPick(
+      excelSheetChoices(availableSheets, current),
+      {
+        title: "Excel sheet",
+        placeHolder: "Choose a worksheet",
+        ignoreFocusOut: true
+      },
+      cancellation
+    );
+    ensureNotCancelled(cancellation);
+    if (!sheet) throw new ImportCancelledError();
+    return { sheetName: sheet.value };
+  }
+
   const currentSheetName = nonBlank(currentImportOptions?.sheetName);
   const currentSheetIndex = validSheetIndex(currentImportOptions?.sheetIndex) ? currentImportOptions.sheetIndex : 0;
   const currentMode: ExcelSheetMode = currentSheetName === undefined ? "index" : "name";
@@ -168,6 +215,16 @@ async function promptExcelImportOptions(
   if (sheetIndex === undefined) throw new ImportCancelledError();
   if (validateSheetIndex(sheetIndex)) throw new Error("Expected a non-negative, zero-based Excel sheet index.");
   return { sheetIndex: Number(sheetIndex) };
+}
+
+function excelSheetChoices(sheetNames: readonly string[], current: string): ExcelSheetPick[] {
+  const choices = sheetNames.map((sheetName, index): ExcelSheetPick => ({
+    label: sheetName,
+    description: sheetName === current ? "Current" : undefined,
+    detail: `Worksheet ${index + 1} of ${sheetNames.length}`,
+    value: sheetName
+  }));
+  return promoteCurrent(choices, current);
 }
 
 function excelSheetModeChoices(
@@ -256,6 +313,16 @@ function validCharacter(value: string | undefined): string | undefined {
 
 function validSheetIndex(value: number | undefined): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validExcelSheetNames(values: readonly string[] | undefined): readonly string[] | undefined {
+  if (!values || values.length < 1 || values.length > 4_096) return undefined;
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!nonBlank(value) || seen.has(value)) return undefined;
+    seen.add(value);
+  }
+  return values;
 }
 
 function nonBlank(value: string | undefined): string | undefined {

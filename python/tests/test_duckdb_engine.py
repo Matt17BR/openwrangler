@@ -219,6 +219,18 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
         engine.read_file(str(malformed_jsonl_path))
     assert "JSON support is unavailable" not in str(malformed.value)
 
+    adversarial_missing_path = tmp_path / "missing" / "json extension not loaded.jsonl"
+    with pytest.raises(EngineError, match="newline-delimited JSON") as adversarial_missing:
+        engine.read_file(str(adversarial_missing_path))
+    assert "JSON support is unavailable" not in str(adversarial_missing.value)
+
+    adversarial_malformed_path = tmp_path / "malformed" / "json extension not loaded.jsonl"
+    adversarial_malformed_path.parent.mkdir()
+    adversarial_malformed_path.write_text('{"city":\n', encoding="utf-8")
+    with pytest.raises(EngineError, match=r"newline-delimited JSON.*Malformed JSON") as adversarial_malformed:
+        engine.read_file(str(adversarial_malformed_path))
+    assert "JSON support is unavailable" not in str(adversarial_malformed.value)
+
     with pytest.raises(EngineError, match="does not support Excel"):
         engine.read_file(str(tmp_path / "unsupported.xlsx"))
     with pytest.raises(EngineError, match="supports UTF-8"):
@@ -243,7 +255,7 @@ def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
 ) -> None:
     class MissingJsonReader:
         def read_json(self, *_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError("Catalog Error: Table Function with name read_json_auto does not exist!")
+            raise duckdb.CatalogException("Catalog Error: Table Function with name read_json_auto does not exist!")
 
     engine = DuckDBEngine()
     monkeypatch.setattr(engine, "_owned_connection", lambda: MissingJsonReader())
@@ -251,6 +263,30 @@ def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
     with pytest.raises(EngineError, match=r"JSON support is unavailable.*compatible DuckDB build"):
         engine.read_file(str(tmp_path / "sample.jsonl"))
     engine.close()
+
+
+def test_duckdb_json_reader_availability_classifier_requires_anchored_duckdb_diagnostic() -> None:
+    assert duckdb_runtime._json_reader_is_unavailable(
+        duckdb.CatalogException("Catalog Error: Table Function with name read_json_auto does not exist!")
+    )
+    assert duckdb_runtime._json_reader_is_unavailable(
+        duckdb.HTTPException(
+            "Extension Autoloading Error: An error occurred while trying to automatically install "
+            "the required extension 'json': download failed"
+        )
+    )
+
+    assert not duckdb_runtime._json_reader_is_unavailable(
+        RuntimeError("Catalog Error: Table Function with name read_json_auto does not exist!")
+    )
+    assert not duckdb_runtime._json_reader_is_unavailable(
+        duckdb.IOException('IO Error: No files found that match "/tmp/json extension not loaded.jsonl"')
+    )
+    assert not duckdb_runtime._json_reader_is_unavailable(
+        duckdb.InvalidInputException(
+            "Invalid Input Error: Malformed JSON in file \"/tmp/extension 'json' not installed.jsonl\""
+        )
+    )
 
 
 def test_duckdb_rich_parquet_is_utc_native_and_strict_json_safe(

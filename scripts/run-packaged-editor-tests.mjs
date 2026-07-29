@@ -191,9 +191,12 @@ try {
           if (acceptanceMode !== "full" && acceptanceMode !== "platform-smoke") {
             throw new Error('OPEN_WRANGLER_PACKAGED_MODE must be "full" or "platform-smoke".');
           }
-          if (acceptanceMode === "platform-smoke" && (requested?.length !== 1 || requested[0] !== "cursor")) {
+          if (
+            acceptanceMode === "platform-smoke" &&
+            (requested?.length !== 1 || !["vscode", "cursor"].includes(requested[0]))
+          ) {
             throw new Error(
-              'OPEN_WRANGLER_PACKAGED_MODE="platform-smoke" requires OPEN_WRANGLER_PACKAGED_EDITORS="cursor".'
+              'OPEN_WRANGLER_PACKAGED_MODE="platform-smoke" requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.'
             );
           }
           const supportedEditorKeys = new Set(["vscode", "cursor"]);
