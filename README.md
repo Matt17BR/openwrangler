@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128" alt="Open Wrangler logo">
+  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.svg" width="144" height="144" alt="Open Wrangler logo">
 </p>
 
 <h1 align="center">Open Wrangler</h1>
@@ -62,10 +62,10 @@ halves use the same data and layout._
 
 ## Notebook workflows
 
-Displaying a Pandas or Polars dataframe can produce an inline preview after Jupyter grants kernel access. A saved
-inline output has four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and 16 MiB, so it stays
-reproducible with the notebook. These snapshot bounds are not dataframe limits: live notebook variables and file
-sessions fetch bounded pages from the current source instead.
+Files and live notebook variables are not capped at 10,000 rows: the grid fetches bounded pages from the current
+source. After Jupyter grants kernel access, displaying a Pandas or Polars dataframe can also produce a portable
+inline preview. Only that saved snapshot has four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and
+16 MiB, so it stays reproducible with the notebook.
 
 Choose **Open Variable** from the notebook toolbar or Jupyter Variables to open the current dataframe as a live
 session, clean it, and insert generated code back into that same notebook.
@@ -78,12 +78,10 @@ the right._
 DuckDB remains native for supported file sessions. Notebook relations are not yet supported. See the
 [rich Parquet file gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md).
 
-PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting,
-paging, and profiling stay in Spark, while only bounded results return to the notebook runtime. File sessions,
-cleaning steps, exports, and saved inline snapshots are not supported for PySpark yet. Opening a session currently
-indexes and counts the complete frame. Each requested grid page is checked in Spark before collection and then
-bounded again by serialized size, complex-value nodes, and nesting depth. These are page-transfer safeguards, not
-dataframe row limits. Insights stay off until requested because each profile runs Spark queries. See the
+PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting, paging,
+and requested profiles stay in Spark; only bounded results return to the notebook runtime. File sessions,
+cleaning, exports, code insertion, and saved inline snapshots are not supported. Opening currently indexes and
+counts the complete frame, while per-page transfer safeguards are not dataframe row limits. See the
 [real packaged PySpark notebook capture](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#pyspark-classic-live-notebook).
 
 ## Engines and formats

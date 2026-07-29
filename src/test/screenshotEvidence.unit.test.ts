@@ -175,7 +175,9 @@ describe("packaged editor screenshot evidence", () => {
     expect(packageJson.scripts?.["brand:render-check"]).toContain("--render-check");
     expect(packageJson.scripts?.["test:webview-acceptance"]).toContain("npm run brand:render-check");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
-    expect(readme).toContain('<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png"');
+    expect(readme).toContain(
+      '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.svg" width="144" height="144"'
+    );
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
     expect(readme).not.toContain("The image automatically follows your GitHub theme.");
     expect(readme).not.toMatch(/\b10,?000-row\b/iu);
