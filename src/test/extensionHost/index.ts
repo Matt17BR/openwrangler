@@ -5616,20 +5616,23 @@ async function captureReleasedJupyterPySparkLive(
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
     await drawer.getByRole("heading", { name: "revenue" }).waitFor({ state: "visible", timeout: 10_000 });
     const insightsDeadline = Date.now() + 60_000;
-    do {
-      const summary = await drawer.innerText();
+    let insightsReady = false;
+    let summary = "";
+    while (Date.now() < insightsDeadline) {
+      summary = await drawer.innerText();
       if (
         summary.includes("Rows\n100,000") &&
         !summary.includes("Profiling selected column") &&
         ["Min", "Max", "Mean", "Median"].every((label) => new RegExp(`\\b${label}\\b`, "u").test(summary))
       ) {
+        insightsReady = true;
         break;
       }
-      if (Date.now() >= insightsDeadline) {
-        throw new Error(`PySpark selected-column Insights did not finish: ${JSON.stringify(summary.slice(0, 2_000))}`);
-      }
       await workbench.waitForTimeout(50);
-    } while (true);
+    }
+    if (!insightsReady) {
+      throw new Error(`PySpark selected-column Insights did not finish: ${JSON.stringify(summary.slice(0, 2_000))}`);
+    }
 
     if ((await app.getByRole("button", { name: "Hide insights" }).count()) > 0) {
       throw new Error("The PySpark media scene must not enable multi-column grid profiling.");
