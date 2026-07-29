@@ -56,6 +56,7 @@ import type {
 } from "../../shared/protocol";
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
+  acquirePreparedAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
   isRetiredRendererTarget,
@@ -129,6 +130,17 @@ interface ExtensionApi {
   testing?: TestApi;
 }
 
+interface ReleasedJupyterVariableActionElement {
+  readonly isConnected: boolean;
+  readonly ownerDocument: {
+    readonly activeElement: unknown;
+    readonly documentElement: {
+      readonly dataset: { openWranglerAcceptanceClick?: string };
+    };
+  };
+  addEventListener(type: "click", listener: () => void, options: { readonly capture: true; readonly once: true }): void;
+}
+
 interface FakeJupyterApi {
   testing: {
     execute(uri: vscode.Uri, code: string): Promise<string>;
@@ -154,6 +166,7 @@ const NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS = 1_000;
 const NOTEBOOK_RENDERER_TARGET_LIMIT = 64;
 const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS = 120_000;
+const RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS = 1_000;
 const RELEASED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
 const RELEASED_JUPYTER_CONSENT_MESSAGE =
   "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?";
@@ -1467,39 +1480,29 @@ async function dispatchReleasedJupyterVariableAction(
   checkpoint: string
 ): Promise<void> {
   const viewerAction = await waitForReleasedJupyterVariableAction(workbench, variableName, checkpoint);
-  await viewerAction.focus();
-  assert.equal(
-    await viewerAction.evaluate((element) => element.ownerDocument.activeElement === element),
-    true,
-    `The released Jupyter Variables action for ${variableName} must accept keyboard focus.`
-  );
-  await viewerAction.evaluate((element) => {
-    const root = element.ownerDocument.documentElement;
-    root.dataset.openWranglerAcceptanceClick = "pending";
-    element.addEventListener(
-      "click",
-      () => {
-        root.dataset.openWranglerAcceptanceClick = "seen";
-      },
-      { capture: true, once: true }
-    );
-  });
-  await withBoundedAcceptancePromise(
-    viewerAction.click(),
-    WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-    `the real released-Jupyter Variables action for ${variableName}`
-  );
-  assert.equal(
-    await viewerAction.evaluate((element) => element.ownerDocument.documentElement.dataset.openWranglerAcceptanceClick),
-    "seen",
-    `The real released-Jupyter Variables action for ${variableName} must receive its browser click event.`
-  );
-  await waitFor(
-    () => releasedJupyterSessionTabs().length === 1,
-    10_000,
-    `the released Jupyter viewer delegation for ${variableName}`,
-    () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length })
-  );
+  try {
+    await invokeAcceptanceActionOnce({
+      description: `the real released-Jupyter Variables action for ${variableName}`,
+      click: () => viewerAction.click({ timeout: 2_000 }),
+      receipt: async () => {
+        assert.equal(
+          await viewerAction.evaluate(
+            (element) => element.ownerDocument.documentElement.dataset.openWranglerAcceptanceClick
+          ),
+          "seen",
+          `The real released-Jupyter Variables action for ${variableName} must receive its browser click event.`
+        );
+        await waitFor(
+          () => releasedJupyterSessionTabs().length === 1,
+          10_000,
+          `the released Jupyter viewer delegation for ${variableName}`,
+          () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length })
+        );
+      }
+    });
+  } finally {
+    await viewerAction.dispose();
+  }
 }
 
 async function assertReleasedPySparkPanelAndQueries(
@@ -2421,39 +2424,142 @@ async function waitForReleasedJupyterVariableAction(
   workbench: Page,
   variableName: string,
   checkpoint: string
-): Promise<Locator> {
+): Promise<ElementHandle<ReleasedJupyterVariableActionElement>> {
   recordAcceptanceProgress(`${checkpoint}:wait`);
-  const deadline = Date.now() + RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS;
-  do {
-    for (const frame of releasedWorkbenchFrames(workbench)) {
-      try {
-        const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
-        if ((await table.count()) === 0 || !(await table.isVisible())) continue;
-        const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
-        if ((await cell.count()) === 0 || !(await cell.isVisible())) continue;
-        const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
-        await row.hover();
-        const actions = row.getByRole("button", {
-          name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION,
-          exact: true
-        });
-        if ((await actions.count()) !== 1) continue;
-        const action = actions.first();
-        if ((await action.isVisible()) && (await action.isEnabled())) {
-          recordAcceptanceProgress(`${checkpoint}:ready`);
-          return action;
+  const viewerAction = await acquirePreparedAcceptanceAction({
+    timeoutMs: RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS,
+    intervalMs: 100,
+    acquire: async () => {
+      for (const frame of releasedWorkbenchFrames(workbench)) {
+        try {
+          const table = frame.getByRole("table", { name: "Variables", exact: true }).first();
+          if ((await table.count()) === 0 || !(await table.isVisible())) continue;
+          const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
+          if ((await cell.count()) === 0 || !(await cell.isVisible())) continue;
+          const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
+          await row.hover({ timeout: 1_000 });
+          const actions = row.getByRole("button", {
+            name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION,
+            exact: true
+          });
+          if ((await actions.count()) !== 1) continue;
+          const action = await actions.first().elementHandle({
+            timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS
+          });
+          if (action) return action as ElementHandle<ReleasedJupyterVariableActionElement>;
+        } catch (error) {
+          if (!isReleasedJupyterVariableActionReplacement(error)) {
+            throw error;
+          }
+          // The Variables view can replace a row while its real kernel refreshes.
         }
-      } catch {
-        // The Variables view can replace a row while its real kernel refreshes.
       }
-    }
-    await workbench.waitForTimeout(100);
-  } while (Date.now() < deadline);
+      return undefined;
+    },
+    prepare: async (action) => {
+      const [visible, enabled] = await withReleasedJupyterVariableActionPrepareDeadline(
+        Promise.all([action.isVisible(), action.isEnabled()]),
+        "visibility and enabled-state probes"
+      );
+      if (!visible || !enabled) {
+        throw new ReleasedJupyterVariableActionReplacementError();
+      }
+      await withReleasedJupyterVariableActionPrepareDeadline(action.focus(), "focus");
+      const focusState = await withReleasedJupyterVariableActionPrepareDeadline(
+        action.evaluate((element) => ({
+          connected:
+            typeof element === "object" && element !== null && "isConnected" in element && element.isConnected === true,
+          focused:
+            typeof element === "object" &&
+            element !== null &&
+            "ownerDocument" in element &&
+            element.ownerDocument.activeElement === element
+        })),
+        "focus assertion"
+      );
+      if (!focusState.connected) throw new ReleasedJupyterVariableActionReplacementError();
+      assert.equal(
+        focusState.focused,
+        true,
+        `The released Jupyter Variables action for ${variableName} must accept keyboard focus.`
+      );
+      const listenerAttached = await withReleasedJupyterVariableActionPrepareDeadline(
+        action.evaluate((element) => {
+          if (
+            typeof element !== "object" ||
+            element === null ||
+            !("isConnected" in element) ||
+            element.isConnected !== true ||
+            !("ownerDocument" in element) ||
+            !("addEventListener" in element) ||
+            typeof element.addEventListener !== "function"
+          ) {
+            return false;
+          }
+          const root = element.ownerDocument.documentElement;
+          root.dataset.openWranglerAcceptanceClick = "pending";
+          element.addEventListener(
+            "click",
+            () => {
+              root.dataset.openWranglerAcceptanceClick = "seen";
+            },
+            { capture: true, once: true }
+          );
+          return true;
+        }),
+        "click-listener setup"
+      );
+      if (!listenerAttached) throw new ReleasedJupyterVariableActionReplacementError();
+    },
+    dispose: (action) => action.dispose(),
+    isRetryablePreparationError: isReleasedJupyterVariableActionReplacement,
+    wait: (durationMs) => workbench.waitForTimeout(durationMs)
+  });
+
+  if (viewerAction) {
+    recordAcceptanceProgress(`${checkpoint}:ready`);
+    return viewerAction;
+  }
 
   const diagnostics = await releasedWorkbenchDiagnostics(workbench, variableName);
   throw new Error(
     `Timed out waiting for ${variableName} in the released Jupyter Variables view: ${JSON.stringify(diagnostics)}`
   );
+}
+
+class ReleasedJupyterVariableActionReplacementError extends Error {}
+
+function isReleasedJupyterVariableActionReplacement(error: unknown): boolean {
+  if (error instanceof ReleasedJupyterVariableActionReplacementError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /(?:element|node).*(?:detached|not attached|not connected)/iu.test(message) ||
+    ((error as { name?: unknown } | undefined)?.name === "TimeoutError" &&
+      /^(?:elementHandle|locator)\.(?:elementHandle|hover): Timeout \d+ms exceeded/u.test(message))
+  );
+}
+
+async function withReleasedJupyterVariableActionPrepareDeadline<T>(
+  operation: PromiseLike<T>,
+  description: string
+): Promise<T> {
+  try {
+    return await withAcceptanceOperationDeadline(
+      operation,
+      RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS,
+      `the released Jupyter Variables action ${description}`
+    );
+  } catch (error) {
+    if (isReleasedJupyterVariableActionReplacement(error)) throw error;
+    if (
+      error instanceof Error &&
+      error.message ===
+        `Timed out waiting for the released Jupyter Variables action ${description} after ${RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS} ms.`
+    ) {
+      throw new ReleasedJupyterVariableActionReplacementError();
+    }
+    throw error;
+  }
 }
 
 function releasedWorkbenchFrames(workbench: Page): Frame[] {
