@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from math import isnan
 from pathlib import Path
@@ -250,6 +251,34 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     engine.close()
     with pytest.raises(EngineError, match="closed"):
         engine.read_file(str(csv_path))
+
+
+def test_duckdb_terminal_page_releases_parquet_for_atomic_replacement(tmp_path: Path) -> None:
+    source = tmp_path / "replaceable.parquet"
+    replacement = tmp_path / "replaceable.parquet.replacement"
+    duckdb.sql("SELECT 1 AS value").write_parquet(str(source))
+    duckdb.sql("SELECT 2 AS value").write_parquet(str(replacement))
+
+    engine = DuckDBEngine()
+    try:
+        frame = engine.ensure_row_ids(engine.read_file(str(source)), "replaceable")
+        page = engine.page(frame, 0, 10, total_rows=1, column_projection=[(0, "stable:value")])
+        assert page["rows"][0]["values"][0]["raw"] == 1
+
+        os.replace(replacement, source)
+        refreshed = engine.read_file(str(source))
+        assert (
+            engine.page(
+                refreshed,
+                0,
+                10,
+                total_rows=1,
+                column_projection=[(0, "stable:value")],
+            )["rows"][0]["values"][0]["raw"]
+            == 2
+        )
+    finally:
+        engine.close()
 
 
 def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
