@@ -12,7 +12,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
-- Disabled DuckDB's external-file cache and release each relation's current result state after retaining its immutable SQL, so completed Parquet reads release their Windows file handles and source replacement can produce the intended recoverable reopen diagnostic.
+- Disabled DuckDB's external-file cache and explicitly retire each relation plan's engine-owned connection after retaining its immutable SQL. This avoids `DuckDBPyRelation.close()`, which can execute an unexecuted relation without destroying its connection owner, so completed Parquet reads release their Windows file handles and source replacement produces the intended recoverable reopen diagnostic.
 
 ## [1.0.3] - 2026-07-28
 

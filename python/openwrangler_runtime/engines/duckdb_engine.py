@@ -729,7 +729,7 @@ class DuckDBEngine(DataFrameEngine):
             return self._connection
 
     def _relation(self, frame: Any, query: str) -> Any:
-        source_sql = self._release_relation_result(frame)
+        source_sql = self._retire_relation_owner(frame)
         return self._relation_from_sql(_compose_sql(source_sql, query))
 
     def _relation_from_sql(self, sql: str) -> Any:
@@ -745,7 +745,7 @@ class DuckDBEngine(DataFrameEngine):
         with self._lifecycle_lock:
             if self._closed:
                 raise EngineError("The DuckDB engine is closed.")
-        source_sql = self._release_relation_result(frame)
+        source_sql = self._retire_relation_owner(frame)
         connection = _connect()
         with self._lifecycle_lock:
             if self._closed:
@@ -763,17 +763,23 @@ class DuckDBEngine(DataFrameEngine):
                 self._active_connections.discard(connection)
             connection.close()
 
-    def _release_relation_result(self, frame: Any) -> str:
-        """Retain immutable SQL while releasing DuckDB's current result state."""
+    def _retire_relation_owner(self, frame: Any) -> str:
+        """Retain SQL and retire the Python relation's file-owning connection."""
 
         with self._lifecycle_lock:
             if self._closed:
                 raise EngineError("The DuckDB engine is closed.")
             try:
                 source_sql = str(frame.sql_query())
-                frame.close()
             except Exception as error:
                 raise EngineError(f"DuckDB query failed: {error}") from error
+            connection = self._connection
+            self._connection = None
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception as error:
+                raise EngineError(f"Could not release the DuckDB plan connection: {error}") from error
         return source_sql
 
     def _terminal_rows(self, frame: Any, query: str) -> list[tuple[Any, ...]]:
