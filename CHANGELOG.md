@@ -10,7 +10,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Rebuilt the README media around three compact, portable product views: a realistic file-backed dataframe, an automatic Pandas notebook snapshot, and a live Polars notebook draft with summaries, diff, and generated code. The copy now distinguishes saved snapshots from live variables, describes DuckDB's current file-only scope, and treats benchmark fixture sizes as evidence points rather than row limits.
+- Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
+- Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for 100,000-row by 15-column Pandas and Polars dataframes. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
+- Composed the packaged workbench and notebook evidence into fixed-size sRGB images for GitHub, the Visual Studio Marketplace, and Open VSX. The workbench requires exact revenue minimum, maximum, mean, and median values, while README copy distinguishes bounded saved snapshots from live paged sources and benchmark evidence from dataframe limits.
+- Added a real packaged VS Code and released-Jupyter PySpark Classic gallery capture over a deterministic 100,000-row by 15-column DataFrame. The media and README label PySpark experimental and viewing-only, without implying file, cleaning, export, code-insertion, or saved-output support.
+- Added a separate native DuckDB file gallery generated from a real rich Parquet source with decimal, time-zone, list, and struct columns, while keeping notebook relations explicitly unsupported.
 - Replaced the all-column Insights drawer with focused Column, Dataset, and Filters views. Column shows one stable selected identity with exact numeric min, max, mean, median, and standard deviation plus explicit datetime, boolean, categorical, null, NaN, and top-value details. Dataset statistics and filter values now run only while their matching view is active, so opening Insights no longer starts a whole-schema profiling queue.
+- Updated the release guide to reflect the activated personal `Matt17BR` Marketplace workload identity, the automatic pipeline's proven `v1.0.3` handoff, and the still-pending non-blocking Open VSX namespace claim.
 - Added a bounded, source-only pull-request `Fast feedback` lane that runs deterministic static checks alongside canonical packaging and labels each failure class separately. The existing full `validate` gate remains unchanged and authoritative, so this scheduling improvement does not lower, remove, or bypass any merge or release requirement.
 - Made DuckDB rich Parquet pages deterministic across host time zones by pinning every owned and terminal connection to UTC. Dependency selection now requires the bounded-green `duckdb>=1.5.4,<1.6` range together with `pytz`; malformed JSONL remains an input diagnostic instead of being mislabeled as unavailable JSON support. Installed-editor acceptance now covers native DECIMAL, TIMESTAMPTZ, LIST, and STRUCT values plus source replacement and terminal cleanup. DuckDB remains a preview rather than a parity or first-class-engine claim.
 - Kept PySpark insights explicit even when insights-on-open is enabled, rejected unsupported nested Spark profile types before indexing, and changed base-frame paging to a bounded dense-row-identity range. Opening still indexes and counts the complete frame, while filtered or sorted pages retain their correct Spark ordering path.
@@ -23,12 +30,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Replaced retained DuckDB relations with immutable, connection-free SQL and schema plans. Open, paging, transforms, custom code, and exports now release each request-local `DuckDBPyRelation` before closing its owner, so DuckDB 1.5 cannot retain a Windows Parquet handle through the relation's connection reference. The runtime stays native and never calls `DuckDBPyRelation.close()` or converts through another engine.
 
 ## [1.0.3] - 2026-07-28
-
-### Changed
-
-- Rebuilt the README media around three compact, portable product views: a realistic file-backed dataframe, an automatic Pandas notebook snapshot, and a live Polars notebook draft with summaries, diff, and generated code. The copy now distinguishes saved snapshots from live variables, describes DuckDB's current file-only scope, and treats benchmark fixture sizes as evidence points rather than row limits.
-- Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
-- Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for a 2,500-row Pandas dataframe and a 2,500-row Polars dataframe. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
 
 ### Fixed
 

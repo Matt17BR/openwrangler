@@ -6,7 +6,6 @@ import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
-  PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH,
   PACKAGED_SCREENSHOT_MARKETS,
   PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
@@ -32,7 +31,7 @@ describe("packaged editor screenshot evidence", () => {
     const notes = rows.map((row) => row[14]);
 
     expect(PACKAGED_SCREENSHOT_DATA_PROVENANCE).toContain("Deterministic synthetic");
-    expect(PACKAGED_SCREENSHOT_ROW_COUNT).toBe(10_000);
+    expect(PACKAGED_SCREENSHOT_ROW_COUNT).toBe(100_000);
     expect(PACKAGED_SCREENSHOT_COLUMNS).toHaveLength(15);
     expect(lines).toHaveLength(PACKAGED_SCREENSHOT_ROW_COUNT + 1);
     expect(lines[0]).toBe(PACKAGED_SCREENSHOT_COLUMNS.join(","));
@@ -45,10 +44,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(new Set(orderIds).size).toBe(PACKAGED_SCREENSHOT_ROW_COUNT);
     expect(new Set(markets)).toEqual(new Set(PACKAGED_SCREENSHOT_MARKETS));
     for (const market of PACKAGED_SCREENSHOT_MARKETS) {
-      expect(markets.filter((value) => value === market).length).toBeGreaterThan(1_000);
+      expect(markets.filter((value) => value === market).length).toBeGreaterThan(10_000);
     }
     expect(revenues.filter((value) => value === "").length).toBeGreaterThan(50);
-    expect(new Set(revenues.filter(Boolean)).size).toBeGreaterThan(8_000);
+    expect(new Set(revenues.filter(Boolean)).size).toBeGreaterThan(20_000);
     expect(Math.min(...revenues.filter(Boolean).map(Number))).toBeGreaterThan(50);
     expect(Math.max(...revenues.filter(Boolean).map(Number))).toBeGreaterThan(10_000);
     expect(fulfillment).toContain("true");
@@ -67,7 +66,7 @@ describe("packaged editor screenshot evidence", () => {
       /(?:celonis|mmazzarelli|dropbox|@(?:gmail|celonis)|\/home\/|\\users\\|(?:sample|fixture|test)[-_ ]?(?:data|value)?)/iu
     );
     expect(createHash("sha256").update(csv).digest("hex")).toBe(
-      "4beafb09e558146895114812046a1a9f08cac14f883466195ded700c8506e35d"
+      "9bb0afb081ade0a7d4a680a4cf292118f4cfa6ed3de874584d63e8e3c5cf09d1"
     );
     expect(packagedScreenshotRow(0)).toEqual([
       "2400001",
@@ -87,20 +86,20 @@ describe("packaged editor screenshot evidence", () => {
       'Renewal review follows the Q2 pilot, with "steady adoption" reported across the regional account'
     ]);
     expect(packagedScreenshotRow(PACKAGED_SCREENSHOT_ROW_COUNT - 1)).toEqual([
-      "2410000",
+      "2500000",
       "DACH",
-      "83.53",
+      "782.72",
       "true",
-      "2024-03-13",
+      "2024-05-23",
       "Public sector",
       "Online",
       "Analytics",
       "1",
-      "93.18",
+      "873.18",
       "10.36",
-      "30.25",
+      "377.43",
       "Standard",
-      "2025-04-08",
+      "2025-06-10",
       "Procurement requested a consolidated proposal covering support levels and implementation milestones"
     ]);
     expect(() => packagedScreenshotRow(-1)).toThrow(RangeError);
@@ -136,29 +135,31 @@ describe("packaged editor screenshot evidence", () => {
   });
 
   it("keeps README scene names explicit across file and notebook workflows", () => {
-    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "notebook-pandas", "notebook-polars"]);
-    expect(PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH).toBe(420);
+    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "notebook-pandas", "notebook-polars", "notebook-pyspark"]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pandas", "dark")).toBe("vscode-notebook-pandas-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-pyspark", "dark")).toBe("vscode-notebook-pyspark-dark.png");
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
 
-  it("keeps the README to three concise static product views", () => {
+  it("keeps the README to two concise portable product views", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
     const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
+      icon?: string;
       scripts?: Record<string, string>;
     };
+    const buildWebviews = readFileSync(resolve("scripts/build-webviews.mjs"), "utf8");
     const icon = readFileSync(resolve("assets/icon.png"));
     const standardIcon = readFileSync(resolve("assets/icon-256.png"));
     const compactIcon = readFileSync(resolve("assets/icon-128.png"));
     const iconSvg = readFileSync(resolve("assets/icon.svg"), "utf8");
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
+    const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
-      ["vscode-hero-dark.png", 1_920, 834],
-      ["vscode-notebook-pandas-dark.png", 1_920, 450],
-      ["vscode-notebook-polars-dark.png", 1_920, 760]
+      ["workbench.png", 1_440, 720],
+      ["notebooks.png", 1_440, 600]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
@@ -176,14 +177,23 @@ describe("packaged editor screenshot evidence", () => {
     expect(packageJson.scripts?.check).toContain("npm run brand:check");
     expect(packageJson.scripts?.["brand:render-check"]).toContain("--render-check");
     expect(packageJson.scripts?.["test:webview-acceptance"]).toContain("npm run brand:render-check");
+    expect(packageJson.icon).toBe("media/icon.png");
+    expect(viteConfig).toContain('publicDir: notebookRendererBuild ? false : "assets"');
+    expect(viteConfig).toContain('outDir: "media"');
+    expect(buildWebviews).toContain('readFileSync(resolve("assets", "icon.png"))');
+    expect(buildWebviews).toContain('readFileSync(resolve("media", "icon.png"))');
+    expect(buildWebviews).toContain("packagedIcon.equals(sourceIcon)");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
-    expect(readme).toContain('<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png"');
+    expect(readme).toContain(
+      '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128"'
+    );
+    expect(readme).not.toMatch(/<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/iu);
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
     expect(readme).not.toContain("The image automatically follows your GitHub theme.");
     expect(readme).not.toMatch(/\b10,?000-row\b/iu);
     for (const [name, width, height] of images) {
       expect(readme).toContain(name);
-      const png = readFileSync(resolve("docs/images/editor-acceptance", name));
+      const png = readFileSync(resolve("docs/images/readme/v1.1", name));
       expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
       expect(png.readUInt32BE(16)).toBe(width);
       expect(png.readUInt32BE(20)).toBe(height);
@@ -191,6 +201,9 @@ describe("packaged editor screenshot evidence", () => {
     }
     for (const omitted of [
       "vscode-hero-light.png",
+      "vscode-hero-dark.png",
+      "vscode-notebook-pandas-dark.png",
+      "vscode-notebook-polars-dark.png",
       "vscode-columns-dark.png",
       "vscode-columns-light.png",
       "vscode-transform-dark.png",

@@ -46,6 +46,7 @@ const payloads = JSON.parse(
 import json
 import __main__
 from pathlib import Path
+import duckdb
 import nbformat
 from nbclient import NotebookClient
 import pandas as pd
@@ -259,6 +260,54 @@ summary_families["metadata"]["stats"] = manager.get_dataset_stats(
     {"logic": "and", "filters": [], "sort": []},
 )["stats"]
 
+duckdb_path = root / "tmp" / "screenshots" / "regional-orders-rich.parquet"
+duckdb_connection = duckdb.connect()
+try:
+    duckdb_connection.execute("SET TimeZone='UTC'")
+    duckdb_connection.execute(
+        """
+        CREATE TABLE regional_orders AS
+        SELECT * FROM (
+            VALUES
+                (12840.50::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-02 09:15:00+02:00', ['renewal', 'priority']::VARCHAR[], {'label': 'Alpine Systems', 'score': 92}::STRUCT(label VARCHAR, score INTEGER), 'DACH', 'Expansion'),
+                (9750.25::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-02 08:30:00+00:00', ['new logo', 'partner']::VARCHAR[], {'label': 'Northstar Labs', 'score': 78}::STRUCT(label VARCHAR, score INTEGER), 'Nordics', 'Active'),
+                (15420.00::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-03 11:45:00-04:00', ['enterprise']::VARCHAR[], {'label': 'Atlas Retail', 'score': 88}::STRUCT(label VARCHAR, score INTEGER), 'Benelux', 'Renewal review'),
+                (6890.75::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-04 16:05:00+01:00', ['self-service', 'growth']::VARCHAR[], {'label': 'Meridian Works', 'score': 71}::STRUCT(label VARCHAR, score INTEGER), 'UK & Ireland', 'Active'),
+                (21350.10::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-05 13:20:00+02:00', ['strategic', 'multi-year']::VARCHAR[], {'label': 'Riviera Energy', 'score': 96}::STRUCT(label VARCHAR, score INTEGER), 'France', 'Expansion'),
+                (11225.40::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-06 10:10:00+02:00', ['renewal']::VARCHAR[], {'label': 'Aster Mobility', 'score': 84}::STRUCT(label VARCHAR, score INTEGER), 'Italy', 'Active'),
+                (8420.65::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-07 14:55:00+02:00', ['partner', 'enablement']::VARCHAR[], {'label': 'Iberia Cloud', 'score': 76}::STRUCT(label VARCHAR, score INTEGER), 'Iberia', 'Expansion'),
+                (18795.30::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-08 12:25:00+03:00', ['enterprise', 'priority']::VARCHAR[], {'label': 'Baltic Horizon', 'score': 90}::STRUCT(label VARCHAR, score INTEGER), 'Nordics', 'Renewal review'),
+                (5360.00::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-09 09:40:00+02:00', []::VARCHAR[], {'label': 'Delta Services', 'score': 64}::STRUCT(label VARCHAR, score INTEGER), 'Benelux', 'Active'),
+                (24680.90::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-10 17:35:00+02:00', ['strategic', 'renewal', 'priority']::VARCHAR[], {'label': 'Central Digital', 'score': 98}::STRUCT(label VARCHAR, score INTEGER), 'DACH', 'Expansion'),
+                (NULL::DECIMAL(14, 2), NULL::TIMESTAMPTZ, NULL::VARCHAR[], NULL::STRUCT(label VARCHAR, score INTEGER), 'France', 'Pending'),
+                (7345.80::DECIMAL(14, 2), TIMESTAMPTZ '2026-06-12 15:00:00+00:00', ['new logo']::VARCHAR[], {'label': 'Harbor Analytics', 'score': NULL}::STRUCT(label VARCHAR, score INTEGER), 'UK & Ireland', 'Active')
+        ) AS orders(revenue, processed_at, tags, account, market, status)
+        """
+    )
+    duckdb_connection.execute("COPY regional_orders TO ? (FORMAT PARQUET)", [str(duckdb_path)])
+finally:
+    duckdb_connection.close()
+
+duckdb_manager = SessionManager()
+duckdb_rich = duckdb_manager.open_session(
+    {"kind": "file", "label": "regional-orders-rich.parquet", "path": str(duckdb_path)},
+    backend="duckdb",
+    page_size=12,
+    column_offset=0,
+    column_limit=6,
+)
+duckdb_rich_id = duckdb_rich["metadata"]["sessionId"]
+duckdb_rich["harnessSummaries"] = duckdb_manager.get_summary(
+    duckdb_rich_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+)["summaries"]
+duckdb_rich["metadata"]["stats"] = duckdb_manager.get_dataset_stats(
+    duckdb_rich_id,
+    0,
+    {"logic": "and", "filters": [], "sort": []},
+)["stats"]
+
 notebook = nbformat.read(root / "fixtures" / "example.ipynb", as_version=4)
 client = NotebookClient(notebook, timeout=60, kernel_name="python3", resources={"metadata": {"path": str(root)}})
 client.execute()
@@ -293,6 +342,7 @@ print(json.dumps({
     "empty": empty,
     "unicode": unicode,
     "summaryFamilies": summary_families,
+    "duckdbRich": duckdb_rich,
     "notebook": mime_payload,
 }))
 `
@@ -453,6 +503,14 @@ writeWebviewHarness(
   "acceptance/grid-high-contrast-light-1280.png",
   {},
   { theme: "highContrastLight" }
+);
+writeWebviewHarness(
+  "duckdb-rich-parquet.html",
+  payloads.duckdbRich,
+  {},
+  "readme/v1.1/gallery/duckdb-rich-parquet.png",
+  {},
+  { width: 1440, height: 640, defaultColumnWidth: 210 }
 );
 for (const zoom of [0.8, 1.5, 2]) {
   writeWebviewHarness(

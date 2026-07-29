@@ -9,7 +9,10 @@ This specification replaces evidence-heavy README captures with two concise prod
 - `npm run brand:check` verifies the SVG and PNG hashes against the generated manifest without requiring a browser
 - `npm run brand:render-check` uses the lockfile-pinned Playwright Chromium to prove every PNG still matches the SVG master pixel for pixel
 - `npm run test:webview-acceptance` runs the pixel-exact brand check in the browser-enabled visual CI lane
-- `assets/icon.png` remains the 512 pixel extension and registry icon
+- `assets/icon.png` is the 512 pixel README and registry master and renders at 128 CSS pixels for a sharp,
+  registry-portable presentation; arbitrary SVGs are not accepted by registry README validation
+- the production Vite build copies that tracked 512 pixel master to disposable `media/icon.png` and fails if the
+  packaged copy is not byte-identical
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
 
 ## README workbench image
@@ -19,25 +22,32 @@ This specification replaces evidence-heavy README captures with two concise prod
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders CSV with dates, categories, currency, quantities, nulls, and realistic customer and product labels
 - State: automatic CSV import, `revenue` selected, selected-column Insights visible with min, max, mean, and median
-- Composition: matched dark and light captures with identical geometry, combined into one diagonal split
+- Composition: a light-theme grid overview and a focused dark-theme Insights crop from the same source state,
+  selected column, and packaged session, combined into one diagonal split
 - Framing: extension UI dominates the image; editor chrome remains visible enough to establish VS Code context
 
 ## README notebook image
 
 - Output: `docs/images/readme/v1.1/notebooks.png`
-- Canvas: 1440 x 520 pixels
+- Canvas: 1440 x 600 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders frames
-- Left panel: `orders-analysis.ipynb`, Pandas `orders_df`, saved Open Wrangler snapshot
-- Right panel: `orders-analysis.ipynb`, Polars `orders_df`, live formula draft with data diff and complete native Polars code visible
+- Top card: `orders-analysis.ipynb`, Pandas `notebook_showcase`, saved Open Wrangler snapshot
+- Bottom card: `orders-analysis.ipynb`, Polars `polars_frame`, live formula draft with computed values,
+  added-column diff, and complete native Polars code visible
 - Labels: small `Pandas snapshot` and `Polars live session` captions outside the product UI
+- Composition: two full-width focus bands so notebook output, draft values, and code remain legible at registry width
 
 ## Linked gallery
 
 The README may link to a separate gallery rather than stacking more full-width images.
 
-- DuckDB: a file-backed rich Parquet session with decimal, time-zone, list, and struct columns; do not imply notebook support
-- PySpark: include only after packaged acceptance; label it `Experimental` and `Viewing only`
+- DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a file-backed rich Parquet session with
+  decimal, time-zone, list, and struct columns; do not imply notebook support
+- PySpark: `docs/images/readme/v1.1/gallery/pyspark-live-notebook.png`, a real packaged VS Code and released
+  Jupyter capture of a deterministic 100,000-row by 15-column Classic DataFrame
+- The PySpark panel must say `Experimental` and `Viewing only`; it must not imply file opening, cleaning, export,
+  code insertion, saved-output, or DuckDB notebook support
 - Cursor: one optional compatibility capture using the same orders fixture and composition
 
 ## Capture checklist
