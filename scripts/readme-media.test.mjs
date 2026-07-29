@@ -61,7 +61,7 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
   assert.match(
     readme,
-    /live notebook variables are not capped at 10,000 rows[\s\S]{0,260}Only that saved snapshot has four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and\s+16 MiB/u
+    /live notebook variables are not capped at 10,000 rows[\s\S]{0,280}Only that saved snapshot is bounded for notebook portability, with headline ceilings of 10,000\s+rows, 2,048 columns, 100,000 cells, and 16 MiB\.[\s\S]{0,100}Live variables continue to page from the current source\./u
   );
   assert.match(readme, /rich Parquet file gallery/u);
   assert.match(readme, /Notebook relations are not yet supported\./u);

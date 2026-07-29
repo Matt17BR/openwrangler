@@ -64,8 +64,8 @@ halves use the same data and layout._
 
 Files and live notebook variables are not capped at 10,000 rows: the grid fetches bounded pages from the current
 source. After Jupyter grants kernel access, displaying a Pandas or Polars dataframe can also produce a portable
-inline preview. Only that saved snapshot has four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and
-16 MiB, so it stays reproducible with the notebook.
+inline preview. Only that saved snapshot is bounded for notebook portability, with headline ceilings of 10,000
+rows, 2,048 columns, 100,000 cells, and 16 MiB. Live variables continue to page from the current source.
 
 Choose **Open Variable** from the notebook toolbar or Jupyter Variables to open the current dataframe as a live
 session, clean it, and insert generated code back into that same notebook.
