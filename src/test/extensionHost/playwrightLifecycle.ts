@@ -18,6 +18,13 @@ interface AcceptancePollOptions {
   readonly wait?: (durationMs: number) => Promise<void>;
 }
 
+interface PreparedAcceptanceActionOptions<T> extends AcceptancePollOptions {
+  readonly acquire: () => Promise<T | undefined>;
+  readonly prepare: (action: T) => Promise<void>;
+  readonly dispose: (action: T) => Promise<void>;
+  readonly isRetryablePreparationError: (error: unknown) => boolean;
+}
+
 interface RendererButtonProbe {
   count(): Promise<number>;
   isVisible(): Promise<boolean>;
@@ -104,6 +111,55 @@ export async function pollAcceptanceCondition(
     if (await probe()) return true;
     const remainingMs = deadline - now();
     if (remainingMs <= 0) return false;
+    await wait(Math.min(intervalMs, remainingMs));
+  }
+}
+
+export async function acquirePreparedAcceptanceAction<T>({
+  acquire,
+  prepare,
+  dispose,
+  isRetryablePreparationError,
+  timeoutMs,
+  intervalMs,
+  now = Date.now,
+  wait = waitForPollInterval
+}: PreparedAcceptanceActionOptions<T>): Promise<T | undefined> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Acceptance-action preparation requires a positive safe-integer timeout.");
+  }
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 1) {
+    throw new Error("Acceptance-action preparation requires a positive safe-integer interval.");
+  }
+
+  const deadline = now() + timeoutMs;
+  let firstAttempt = true;
+  while (true) {
+    if (!firstAttempt && now() >= deadline) return undefined;
+    firstAttempt = false;
+
+    let candidate: T | undefined;
+    try {
+      candidate = await acquire();
+    } catch (error) {
+      if (!isRetryablePreparationError(error)) throw error;
+    }
+
+    if (candidate !== undefined) {
+      let transferred = false;
+      try {
+        await prepare(candidate);
+        transferred = true;
+        return candidate;
+      } catch (error) {
+        if (!isRetryablePreparationError(error)) throw error;
+      } finally {
+        if (!transferred) await dispose(candidate);
+      }
+    }
+
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) return undefined;
     await wait(Math.min(intervalMs, remainingMs));
   }
 }

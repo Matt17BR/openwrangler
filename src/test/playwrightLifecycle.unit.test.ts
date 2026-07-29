@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  acquirePreparedAcceptanceAction,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
@@ -103,6 +104,72 @@ describe("extension-host Playwright lifecycle", () => {
     expect(click).toHaveBeenCalledOnce();
     expect(receipt).not.toHaveBeenCalled();
     expect(naturalDismissal).not.toHaveBeenCalled();
+  });
+
+  it("reacquires an acceptance action replaced during discovery or pre-click preparation", async () => {
+    const replaced = new Error("element was detached");
+    const staleAction = { id: "stale" };
+    const readyAction = { id: "ready" };
+    const acquire = vi
+      .fn()
+      .mockRejectedValueOnce(replaced)
+      .mockResolvedValueOnce(staleAction)
+      .mockResolvedValueOnce(readyAction);
+    const prepare = vi.fn(async (action: { id: string }) => {
+      if (action === staleAction) throw replaced;
+    });
+    const dispose = vi.fn().mockResolvedValue(undefined);
+    let currentTime = 0;
+    const wait = vi.fn(async (durationMs: number) => {
+      currentTime += durationMs;
+    });
+
+    await expect(
+      acquirePreparedAcceptanceAction({
+        acquire,
+        prepare,
+        dispose,
+        isRetryablePreparationError: (error) => error === replaced,
+        timeoutMs: 100,
+        intervalMs: 10,
+        now: () => currentTime,
+        wait
+      })
+    ).resolves.toBe(readyAction);
+    expect(acquire).toHaveBeenCalledTimes(3);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledWith(staleAction);
+    expect(wait).toHaveBeenCalledTimes(2);
+  });
+
+  it("never reacquires after a prepared acceptance action enters its one-shot click", async () => {
+    const action = { id: "ready" };
+    const acquire = vi.fn().mockResolvedValue(action);
+    const prepared = await acquirePreparedAcceptanceAction({
+      acquire,
+      prepare: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn().mockResolvedValue(undefined),
+      isRetryablePreparationError: () => true,
+      timeoutMs: 100,
+      intervalMs: 10
+    });
+    expect(prepared).toBe(action);
+
+    const clickFailure = new Error("the browser click did not settle");
+    const click = vi.fn().mockRejectedValue(clickFailure);
+    await expect(
+      invokeAcceptanceActionOnce({
+        description: "the prepared variable action",
+        click,
+        receipt: vi.fn().mockResolvedValue("opened")
+      })
+    ).rejects.toMatchObject({
+      name: "IndeterminateAcceptanceActionError",
+      cause: clickFailure
+    });
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
   });
 
   it("retains both a missing receipt and failed natural dismissal", async () => {
