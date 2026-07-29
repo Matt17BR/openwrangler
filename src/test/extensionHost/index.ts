@@ -5638,7 +5638,7 @@ async function captureReleasedJupyterPySparkLive(
       throw new Error("The PySpark media scene must not enable multi-column grid profiling.");
     }
     const loadedRows = await app
-      .locator(".gridFooter")
+      .locator(".gridControls")
       .getByText(/Loaded rows 1 to \d+ of 100,000/u)
       .count();
     assert.equal(loadedRows, 1, "The PySpark media scene must show the live 100,000-row source.");
