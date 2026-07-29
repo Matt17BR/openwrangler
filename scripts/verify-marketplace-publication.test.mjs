@@ -137,7 +137,7 @@ function gallery(candidateSha256, overrides = {}, extraProperties = []) {
 }
 
 function fetchFixture(galleryBody, publicVsix, { defaultIcon = galleryIcon, smallIcon = smallGalleryIcon } = {}) {
-  return async (url) => {
+  return async (url, options) => {
     if (url.includes("/extensionquery?")) {
       return new Response(JSON.stringify(galleryBody), {
         status: 200,
@@ -145,12 +145,14 @@ function fetchFixture(galleryBody, publicVsix, { defaultIcon = galleryIcon, smal
       });
     }
     if (url === defaultIconUrl) {
+      assert.ok(options.signal instanceof AbortSignal);
       return new Response(defaultIcon, {
         status: 200,
         headers: { "content-type": "image/png" }
       });
     }
     if (url === smallIconUrl) {
+      assert.ok(options.signal instanceof AbortSignal);
       return new Response(smallIcon, {
         status: 200,
         headers: { "content-type": "image/png" }
@@ -301,6 +303,49 @@ test("rejects a malformed Marketplace small icon derivative", async (context) =>
     }),
     /expected 72 by 72 pixel derivative/u
   );
+});
+
+test("rejects an unrelated Marketplace small icon with the expected dimensions", async (context) => {
+  const candidate = await fixture(context);
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(gallery(candidate.candidateSha256), candidate.candidate, {
+        smallIcon: png(72, 72, 199)
+      }),
+      prerelease: false,
+      version
+    }),
+    /does not visually match/u
+  );
+});
+
+test("retries a bounded transient Marketplace icon transport failure", async (context) => {
+  const candidate = await fixture(context);
+  const success = fetchFixture(gallery(candidate.candidateSha256), candidate.candidate);
+  let defaultIconRequests = 0;
+  let sleeps = 0;
+  const receipt = await verifyMarketplacePublication({
+    attempts: 2,
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: async (url, options) => {
+      if (url === defaultIconUrl && defaultIconRequests++ === 0) {
+        throw new TypeError("temporary transport failure");
+      }
+      return success(url, options);
+    },
+    prerelease: false,
+    sleep: async () => {
+      sleeps += 1;
+    },
+    version
+  });
+  assert.equal(receipt.version, version);
+  assert.equal(defaultIconRequests, 2);
+  assert.equal(sleeps, 1);
 });
 
 test("reports an exhausted non-public Marketplace version as pending", async (context) => {

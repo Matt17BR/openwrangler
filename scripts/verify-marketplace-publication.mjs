@@ -18,6 +18,9 @@ const GALLERY_QUERY_URL =
 const GALLERY_JSON_MAX_BYTES = 8 * 1024 * 1024;
 const GALLERY_ICON_MAX_BYTES = 2 * 1024 * 1024;
 const SMALL_ICON_MAX_BYTES = 256 * 1024;
+const MARKETPLACE_REQUEST_TIMEOUT_MS = 15_000;
+const ICON_COMPARISON_GRID_SIZE = 12;
+const ICON_MAX_NORMALIZED_DIFFERENCE = 0.03;
 const DEFAULT_ICON_ASSET = "Microsoft.VisualStudio.Services.Icons.Default";
 const SMALL_ICON_ASSET = "Microsoft.VisualStudio.Services.Icons.Small";
 const VSIX_ASSET = "Microsoft.VisualStudio.Services.VSIXPackage";
@@ -103,6 +106,41 @@ function pngDimensions(bytes, label) {
     throw new Error(`${label} has invalid PNG dimensions.`);
   }
   return Object.freeze({ height, width });
+}
+
+function premultipliedCellAverage(image, column, row) {
+  const left = Math.floor((column * image.width) / ICON_COMPARISON_GRID_SIZE);
+  const right = Math.floor(((column + 1) * image.width) / ICON_COMPARISON_GRID_SIZE);
+  const top = Math.floor((row * image.height) / ICON_COMPARISON_GRID_SIZE);
+  const bottom = Math.floor(((row + 1) * image.height) / ICON_COMPARISON_GRID_SIZE);
+  const totals = [0, 0, 0, 0];
+  let pixels = 0;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      const alpha = image.data[offset + 3] / 255;
+      totals[0] += image.data[offset] * alpha;
+      totals[1] += image.data[offset + 1] * alpha;
+      totals[2] += image.data[offset + 2] * alpha;
+      totals[3] += image.data[offset + 3];
+      pixels += 1;
+    }
+  }
+  return totals.map((total) => total / pixels);
+}
+
+function normalizedIconDifference(left, right) {
+  let difference = 0;
+  for (let row = 0; row < ICON_COMPARISON_GRID_SIZE; row += 1) {
+    for (let column = 0; column < ICON_COMPARISON_GRID_SIZE; column += 1) {
+      const leftCell = premultipliedCellAverage(left, column, row);
+      const rightCell = premultipliedCellAverage(right, column, row);
+      for (let channel = 0; channel < 4; channel += 1) {
+        difference += Math.abs(leftCell[channel] - rightCell[channel]);
+      }
+    }
+  }
+  return difference / (ICON_COMPARISON_GRID_SIZE ** 2 * 4 * 255);
 }
 
 function exactAssetSource(files, assetType, version) {
@@ -230,13 +268,25 @@ function assertSameVsixSemantics(canonical, published) {
 }
 
 async function readMarketplaceAsset(fetchImpl, url, maximumBytes, label) {
-  const response = await fetchImpl(url, {
-    headers: {
-      Accept: "image/png",
-      "User-Agent": "OpenWrangler-marketplace-verifier/1"
-    },
-    redirect: "follow"
-  });
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      headers: {
+        Accept: "image/png",
+        "User-Agent": "OpenWrangler-marketplace-verifier/1"
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(MARKETPLACE_REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    if (
+      error instanceof TypeError ||
+      (typeof error === "object" && error !== null && (error.name === "AbortError" || error.name === "TimeoutError"))
+    ) {
+      throw new MarketplacePublicationPendingError(`${label} request was temporarily unavailable.`);
+    }
+    throw error;
+  }
   if (response.status === 404 || response.status === 429 || response.status >= 500) {
     throw new MarketplacePublicationPendingError(`${label} is not available yet (${response.status}).`);
   }
@@ -314,6 +364,15 @@ async function queryPublicMarketplace({
   ) {
     throw new Error("Marketplace serves a default gallery icon that differs from the canonical VSIX.");
   }
+  let decodedDefaultIcon;
+  try {
+    decodedDefaultIcon = PNG.sync.read(defaultIcon);
+    if (decodedDefaultIcon.width !== 512 || decodedDefaultIcon.height !== 512) {
+      throw new Error("decoded dimensions differ");
+    }
+  } catch (error) {
+    throw new Error("Marketplace default gallery icon is not a valid 512 by 512 pixel PNG.", { cause: error });
+  }
 
   const smallIcon = await readMarketplaceAsset(
     fetchImpl,
@@ -325,13 +384,17 @@ async function queryPublicMarketplace({
   if (smallDimensions.width !== 72 || smallDimensions.height !== 72) {
     throw new Error("Marketplace small gallery icon is not the expected 72 by 72 pixel derivative.");
   }
+  let decodedSmallIcon;
   try {
-    const decoded = PNG.sync.read(smallIcon);
-    if (decoded.width !== 72 || decoded.height !== 72) {
+    decodedSmallIcon = PNG.sync.read(smallIcon);
+    if (decodedSmallIcon.width !== 72 || decodedSmallIcon.height !== 72) {
       throw new Error("decoded dimensions differ");
     }
   } catch (error) {
     throw new Error("Marketplace small gallery icon is not a valid 72 by 72 pixel PNG.", { cause: error });
+  }
+  if (normalizedIconDifference(decodedDefaultIcon, decodedSmallIcon) > ICON_MAX_NORMALIZED_DIFFERENCE) {
+    throw new Error("Marketplace small gallery icon does not visually match the canonical VSIX icon.");
   }
 
   const packageUrl = `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${MARKETPLACE_PUBLISHER}/vsextensions/${MARKETPLACE_EXTENSION}/${version}/vspackage`;

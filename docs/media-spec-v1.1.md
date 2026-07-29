@@ -15,7 +15,7 @@ This specification replaces evidence-heavy README captures with two concise prod
   and fails if any packaged copy is not byte-identical
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
 - release postflight requires Open VSX and the Visual Studio Marketplace to serve the packaged 512 pixel icon
-  byte for byte; the Marketplace must also expose its valid 72 pixel derived thumbnail
+  byte for byte; the Marketplace must also expose a valid 72 pixel thumbnail that visually matches that master
 
 ## README workbench image
 
