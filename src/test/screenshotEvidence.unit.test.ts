@@ -148,7 +148,10 @@ describe("packaged editor screenshot evidence", () => {
   it("keeps the README to three concise static product views", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
     const icon = readFileSync(resolve("assets/icon.png"));
+    const standardIcon = readFileSync(resolve("assets/icon-256.png"));
     const compactIcon = readFileSync(resolve("assets/icon-128.png"));
+    const iconSvg = readFileSync(resolve("assets/icon.svg"), "utf8");
+    const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const images = [
       ["vscode-hero-dark.png", 1_920, 834],
       ["vscode-notebook-pandas-dark.png", 1_920, 450],
@@ -157,8 +160,16 @@ describe("packaged editor screenshot evidence", () => {
 
     expect(icon.readUInt32BE(16)).toBe(512);
     expect(icon.readUInt32BE(20)).toBe(512);
+    expect(standardIcon.readUInt32BE(16)).toBe(256);
+    expect(standardIcon.readUInt32BE(20)).toBe(256);
     expect(compactIcon.readUInt32BE(16)).toBe(128);
     expect(compactIcon.readUInt32BE(20)).toBe(128);
+    expect(iconSvg).toContain('viewBox="0 0 512 512"');
+    expect(iconSvg).toContain("Open Wrangler data-cell off-road vehicle");
+    expect(iconSvg).not.toMatch(/<(?:script|foreignObject|image|use|filter)\b/iu);
+    expect(activityIconSvg).toContain('viewBox="0 0 24 24"');
+    expect(activityIconSvg).toContain("currentColor");
+    expect(activityIconSvg).not.toMatch(/#[\da-f]{3,8}\b/iu);
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
     expect(readme).toContain('<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png"');
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');

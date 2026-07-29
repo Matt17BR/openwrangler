@@ -108,6 +108,7 @@ const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
   "media/codePreview.js",
   "media/codicon.ttf",
   "media/icon-128.png",
+  "media/icon-256.png",
   "media/icon.png",
   "media/icon.svg",
   "media/notebookRenderer.js",

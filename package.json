@@ -95,6 +95,8 @@
     "test:coverage:ts": "vitest run --coverage",
     "test:coverage:python": "node scripts/run-python.mjs -m pytest python/tests -q --cov=openwrangler_runtime --cov-report=term --cov-report=xml:tmp/coverage/python.xml --cov-fail-under=78",
     "license:check": "node scripts/check-licenses.mjs",
+    "brand:generate": "node scripts/generate-brand-assets.mjs --contact-sheet",
+    "brand:check": "node scripts/generate-brand-assets.mjs --check",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "test:visual": "npm run build && node scripts/capture-screenshots.mjs --verify",
     "test:accessibility": "node scripts/test-webview-accessibility.mjs",

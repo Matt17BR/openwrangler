@@ -1,19 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <g fill="currentColor">
-    <rect x="2" y="10" width="4" height="3" rx=".7" />
-    <rect x="6.5" y="10" width="4" height="3" rx=".7" />
-    <rect x="11" y="10" width="4" height="3" rx=".7" />
-    <rect x="15.5" y="10" width="4.5" height="3" rx=".7" />
-    <rect x="20.5" y="10.5" width="1.5" height="2.5" rx=".5" />
-    <rect x="2" y="13.5" width="4" height="3" rx=".7" />
-    <rect x="6.5" y="13.5" width="4" height="3" rx=".7" />
-    <rect x="11" y="13.5" width="4" height="3" rx=".7" />
-    <rect x="15.5" y="13.5" width="4.5" height="3" rx=".7" />
-    <rect x="20.5" y="13.5" width="1.5" height="3" rx=".5" />
-    <rect x="7.2" y="7" width="2.6" height="2.5" rx=".6" />
-    <rect x="11.2" y="7" width="2.6" height="2.5" rx=".6" />
-    <path d="m15.2 5.8 1.2-.4 1.6 4.2h-1.5l-1.3-3.8Z" />
-    <circle cx="6" cy="17" r="2.5" />
-    <circle cx="18" cy="17" r="2.5" />
+    <rect x="1.5" y="10" width="4.3" height="2.7" rx=".65" />
+    <rect x="6.45" y="10" width="3.55" height="2.7" rx=".65" />
+    <rect x="10.65" y="10" width="3.8" height="2.7" rx=".65" />
+    <rect x="15.1" y="10" width="4.1" height="2.7" rx=".65" />
+    <rect x="19.8" y="10.55" width="1.7" height="2.15" rx=".5" />
+    <rect x="1.5" y="13.35" width="4.3" height="2.7" rx=".65" />
+    <rect x="6.45" y="13.35" width="3.55" height="2.7" rx=".65" />
+    <rect x="10.65" y="13.35" width="3.8" height="2.7" rx=".65" />
+    <rect x="15.1" y="13.35" width="4.1" height="2.7" rx=".65" />
+    <rect x="19.8" y="13.35" width="1.7" height="2.7" rx=".5" />
+    <rect x="7" y="7.45" width="2.55" height="2.1" rx=".55" />
+    <rect x="11.05" y="7.45" width="2.55" height="2.1" rx=".55" />
+    <path d="m14.4 5.55 1.2-.35 1.55 4.25h-1.45L14.4 5.55Z" />
+    <path d="M15.2 5.75h3.1v1.05h-2.8z" />
+    <rect x="1" y="15.75" width="21" height="1.15" rx=".5" />
+  </g>
+  <g fill="none" stroke="currentColor" stroke-width="1.7">
+    <circle cx="5.75" cy="17.1" r="2.55" />
+    <circle cx="17.8" cy="17.1" r="2.55" />
   </g>
 </svg>
