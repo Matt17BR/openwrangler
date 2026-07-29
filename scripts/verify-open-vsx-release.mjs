@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseStrictJson } from "./strict-json.mjs";
 import { verifyCanonicalReleaseArtifact } from "./verify-canonical-release-artifact.mjs";
+import { inspectVsixArchive } from "./vsix-archive.mjs";
 
 const OPEN_VSX_ROOT = "https://open-vsx.org";
 const OPEN_VSX_NAMESPACE = "Matt17BR";
@@ -15,6 +16,7 @@ const LOWER_SHA256 = /^[0-9a-f]{64}$/u;
 const STABLE_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/u;
 const METADATA_MAX_BYTES = 1024 * 1024;
 const VSIX_MAX_BYTES = 32 * 1024 * 1024;
+const ICON_MAX_BYTES = 2 * 1024 * 1024;
 const POST_PUBLISH_ATTEMPTS = 91;
 const POST_PUBLISH_DELAY_MS = 10_000;
 const OPEN_VSX_REQUEST_TIMEOUT_MS = 15_000;
@@ -63,6 +65,7 @@ function exactPublicUrls(root, version) {
   return Object.freeze({
     api,
     download: `${fileRoot}/${OPEN_VSX_NAMESPACE}.${OPEN_VSX_EXTENSION}-${encodedVersion}.vsix`,
+    icon: `${fileRoot}/icon.png`,
     sha256: `${fileRoot}/${OPEN_VSX_NAMESPACE}.${OPEN_VSX_EXTENSION}-${encodedVersion}.sha256`
   });
 }
@@ -85,6 +88,7 @@ function validateMetadata(metadata, { channel, urls, version }) {
     metadata.deprecated !== false ||
     publisher.loginName !== OPEN_VSX_NAMESPACE ||
     files.download !== urls.download ||
+    files.icon !== urls.icon ||
     files.sha256 !== urls.sha256 ||
     downloads.universal !== urls.download ||
     allVersions[version] !== urls.api
@@ -104,6 +108,7 @@ export async function verifyOpenVsxReleaseOnce({
   candidateSha256,
   channel = "stable",
   fetchImpl = fetch,
+  inspectCandidate = inspectVsixArchive,
   root = OPEN_VSX_ROOT,
   version
 }) {
@@ -139,6 +144,17 @@ export async function verifyOpenVsxReleaseOnce({
   const metadataBytes = await readBoundedResponse(response, METADATA_MAX_BYTES, "Open VSX metadata");
   const metadata = parseStrictJson(metadataBytes.toString("utf8"), { maxBytes: METADATA_MAX_BYTES });
   validateMetadata(metadata, { channel, urls, version });
+  const candidateArchive = await inspectCandidate(candidateBytes);
+  const candidateIconSize = new Map(candidateArchive.entrySizes).get("extension/media/icon.png");
+  const candidateIconSha256 = new Map(candidateArchive.entryDigests).get("extension/media/icon.png");
+  if (
+    !Number.isSafeInteger(candidateIconSize) ||
+    candidateIconSize < 1 ||
+    candidateIconSize > ICON_MAX_BYTES ||
+    !LOWER_SHA256.test(candidateIconSha256)
+  ) {
+    throw new Error("The canonical VSIX does not expose one bounded gallery icon receipt.");
+  }
 
   const checksumResponse = await fetchImpl(urls.sha256, {
     headers: { accept: "text/plain", "user-agent": "openwrangler-stable-release" },
@@ -185,6 +201,27 @@ export async function verifyOpenVsxReleaseOnce({
   ) {
     throw new Error("Open VSX serves different bytes from the accepted canonical VSIX.");
   }
+
+  const iconResponse = await fetchImpl(urls.icon, {
+    headers: { accept: "image/png", "user-agent": "openwrangler-stable-release" },
+    redirect: "follow",
+    signal: AbortSignal.timeout(OPEN_VSX_REQUEST_TIMEOUT_MS)
+  });
+  if (isTransientStatus(iconResponse.status)) {
+    await readBoundedResponse(iconResponse, METADATA_MAX_BYTES, "Open VSX icon response");
+    return Object.freeze({ status: "transient" });
+  }
+  if (iconResponse.status !== 200) {
+    await readBoundedResponse(iconResponse, METADATA_MAX_BYTES, "Open VSX icon error");
+    throw new Error(`Open VSX icon failed with HTTP ${iconResponse.status}.`);
+  }
+  const publicIcon = await readBoundedResponse(iconResponse, ICON_MAX_BYTES, "Open VSX icon");
+  if (
+    publicIcon.length !== candidateIconSize ||
+    createHash("sha256").update(publicIcon).digest("hex") !== candidateIconSha256
+  ) {
+    throw new Error("Open VSX serves a gallery icon that differs from the canonical VSIX.");
+  }
   return Object.freeze({
     publishedBy: metadata.publishedBy.loginName,
     status: "exact",
@@ -201,6 +238,7 @@ export async function waitForOpenVsxRelease({
   delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
   delayMs = POST_PUBLISH_DELAY_MS,
   fetchImpl = fetch,
+  inspectCandidate = inspectVsixArchive,
   root = OPEN_VSX_ROOT,
   version
 }) {
@@ -215,6 +253,7 @@ export async function waitForOpenVsxRelease({
         candidateSha256,
         channel,
         fetchImpl,
+        inspectCandidate,
         root,
         version
       });

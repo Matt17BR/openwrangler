@@ -14,6 +14,8 @@ This specification replaces evidence-heavy README captures with two concise prod
 - the production Vite build copies both canonical SVGs and all three generated PNGs into disposable `media/`
   and fails if any packaged copy is not byte-identical
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
+- release postflight requires Open VSX and the Visual Studio Marketplace to serve the packaged 512 pixel icon
+  byte for byte; the Marketplace must also expose its valid 72 pixel derived thumbnail
 
 ## README workbench image
 
@@ -58,5 +60,5 @@ The README may link to a separate gallery rather than stacking more full-width i
 - Show complete headings, labels, operations, summaries, and generated code without clipping or overlap
 - Keep the main subject legible at the README display width
 - Use static PNGs with an sRGB profile and target 300 KiB or less for each primary README image
-- Verify the final files on GitHub, Visual Studio Marketplace, and Open VSX
+- Verify the final files and corrected logo on GitHub, Visual Studio Marketplace, and Open VSX
 - Treat scale and performance statements as benchmark claims, not screenshot captions
