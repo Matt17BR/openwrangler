@@ -6,7 +6,8 @@ This specification replaces evidence-heavy README captures with two concise prod
 
 - `assets/icon.svg` is the single editable gallery-icon master
 - `npm run brand:generate` renders exact 128, 256, and 512 pixel PNGs and local light/dark contact sheets
-- `npm run brand:check` proves the committed PNGs still match the SVG master
+- `npm run brand:check` verifies the SVG and PNG hashes against the generated manifest without requiring a browser
+- `npm run brand:render-check` uses the lockfile-pinned Playwright Chromium to prove every PNG still matches the SVG master pixel for pixel
 - `assets/icon.png` remains the 512 pixel extension and registry icon
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
 

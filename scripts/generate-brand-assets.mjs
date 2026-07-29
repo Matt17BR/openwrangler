@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -11,6 +12,7 @@ const assetsDirectory = resolve(root, "assets");
 const reviewDirectory = resolve(root, "tmp", "brand-review");
 const iconSourcePath = resolve(assetsDirectory, "icon.svg");
 const activitySourcePath = resolve(assetsDirectory, "activity-icon.svg");
+const manifestPath = resolve(root, "scripts", "brand-assets.manifest.json");
 const outputs = new Map([
   [128, resolve(assetsDirectory, "icon-128.png")],
   [256, resolve(assetsDirectory, "icon-256.png")],
@@ -18,13 +20,20 @@ const outputs = new Map([
 ]);
 const contactSheetSizes = [16, 24, 32, 48, 72, 128];
 const requestedCheck = process.argv.includes("--check");
+const requestedRenderCheck = process.argv.includes("--render-check");
 const requestedContactSheet = process.argv.includes("--contact-sheet");
 const unexpectedArguments = process.argv
   .slice(2)
-  .filter((argument) => argument !== "--check" && argument !== "--contact-sheet");
+  .filter((argument) => argument !== "--check" && argument !== "--render-check" && argument !== "--contact-sheet");
 
 if (unexpectedArguments.length > 0) {
   throw new Error(`Unknown brand asset option: ${unexpectedArguments.join(", ")}`);
+}
+if (requestedCheck && requestedRenderCheck) {
+  throw new Error("Brand asset checking accepts either --check or --render-check, not both.");
+}
+if (requestedCheck && requestedContactSheet) {
+  throw new Error("Manifest checking does not render contact sheets.");
 }
 
 const iconSource = readFileSync(iconSourcePath, "utf8");
@@ -35,48 +44,59 @@ if (!activitySource.includes("currentColor")) {
   throw new Error("The Activity Bar icon must derive every visible mark from currentColor.");
 }
 
-const temporaryDirectory = mkdtempSync(join(tmpdir(), "openwrangler-brand-"));
-const browser = await chromium.launch({ headless: true });
+if (requestedCheck) {
+  assertAssetManifest(iconSource, activitySource);
+  console.log("Brand sources and PNG assets match the generated manifest.");
+  process.exitCode = 0;
+} else {
+  await renderBrandAssets();
+}
 
-try {
-  const rendered = new Map();
-  for (const [size, destination] of outputs) {
-    const temporaryPath = resolve(temporaryDirectory, basename(destination));
-    await renderSvg(browser, iconSource, size, temporaryPath);
-    assertPng(temporaryPath, size, size);
-    rendered.set(size, temporaryPath);
-  }
+async function renderBrandAssets() {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "openwrangler-brand-"));
+  const browser = await chromium.launch({ headless: true });
 
-  if (requestedCheck) {
+  try {
+    const rendered = new Map();
     for (const [size, destination] of outputs) {
-      assertEquivalentPng(rendered.get(size), destination, size);
+      const temporaryPath = resolve(temporaryDirectory, basename(destination));
+      await renderSvg(browser, iconSource, size, temporaryPath);
+      assertPng(temporaryPath, size, size);
+      rendered.set(size, temporaryPath);
     }
-  } else {
-    for (const [size, destination] of outputs) {
-      writeFileSync(destination, readFileSync(rendered.get(size)));
+
+    if (requestedRenderCheck) {
+      for (const [size, destination] of outputs) {
+        assertEquivalentPng(rendered.get(size), destination, size);
+      }
+    } else {
+      for (const [size, destination] of outputs) {
+        writeFileSync(destination, readFileSync(rendered.get(size)));
+      }
+      writeAssetManifest(iconSource, activitySource);
     }
-  }
 
-  if (requestedContactSheet) {
-    mkdirSync(reviewDirectory, { recursive: true });
-    const gallerySheetPath = resolve(reviewDirectory, "icon-contact-sheet.png");
-    const activitySheetPath = resolve(reviewDirectory, "activity-icon-contact-sheet.png");
-    await renderGalleryContactSheet(browser, iconSource, gallerySheetPath);
-    await renderActivityContactSheet(browser, activitySource, activitySheetPath);
-    assertPng(gallerySheetPath, 1_480, 1_320);
-    assertPng(activitySheetPath, 1_100, 430);
-    console.log(`Rendered ${gallerySheetPath}`);
-    console.log(`Rendered ${activitySheetPath}`);
-  }
+    if (requestedContactSheet) {
+      mkdirSync(reviewDirectory, { recursive: true });
+      const gallerySheetPath = resolve(reviewDirectory, "icon-contact-sheet.png");
+      const activitySheetPath = resolve(reviewDirectory, "activity-icon-contact-sheet.png");
+      await renderGalleryContactSheet(browser, iconSource, gallerySheetPath);
+      await renderActivityContactSheet(browser, activitySource, activitySheetPath);
+      assertPng(gallerySheetPath, 1_480, 1_320);
+      assertPng(activitySheetPath, 1_100, 430);
+      console.log(`Rendered ${gallerySheetPath}`);
+      console.log(`Rendered ${activitySheetPath}`);
+    }
 
-  console.log(
-    requestedCheck
-      ? "Brand SVG sources and generated PNG assets match."
-      : "Generated 128, 256, and 512 pixel brand PNG assets."
-  );
-} finally {
-  await browser.close();
-  rmSync(temporaryDirectory, { force: true, recursive: true });
+    console.log(
+      requestedRenderCheck
+        ? "Brand SVG sources and generated PNG assets match pixel for pixel."
+        : "Generated 128, 256, and 512 pixel brand PNG assets."
+    );
+  } finally {
+    await browser.close();
+    rmSync(temporaryDirectory, { force: true, recursive: true });
+  }
 }
 
 function assertSafeSvg(source, label, expectedViewBox) {
@@ -128,6 +148,53 @@ function assertEquivalentPng(actualPath, expectedPath, size) {
   if (differences !== 0) {
     throw new Error(`${basename(expectedPath)} differs from the SVG master at ${differences} pixels.`);
   }
+}
+
+function writeAssetManifest(icon, activity) {
+  const manifest = {
+    version: 1,
+    sources: {
+      "activity-icon.svg": sha256(activity),
+      "icon.svg": sha256(icon)
+    },
+    outputs: Object.fromEntries(
+      [...outputs.entries()].map(([size, path]) => [
+        basename(path),
+        {
+          size,
+          sha256: sha256(readFileSync(path))
+        }
+      ])
+    )
+  };
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+function assertAssetManifest(icon, activity) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    throw new Error("The generated brand asset manifest is missing or malformed.");
+  }
+  if (
+    manifest?.version !== 1 ||
+    manifest.sources?.["icon.svg"] !== sha256(icon) ||
+    manifest.sources?.["activity-icon.svg"] !== sha256(activity)
+  ) {
+    throw new Error("The brand SVG sources differ from the generated asset manifest.");
+  }
+  for (const [size, path] of outputs) {
+    assertPng(path, size, size);
+    const entry = manifest.outputs?.[basename(path)];
+    if (entry?.size !== size || entry?.sha256 !== sha256(readFileSync(path))) {
+      throw new Error(`${basename(path)} differs from the generated brand asset manifest.`);
+    }
+  }
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function renderGalleryContactSheet(activeBrowser, source, destination) {

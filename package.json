@@ -97,6 +97,7 @@
     "license:check": "node scripts/check-licenses.mjs",
     "brand:generate": "node scripts/generate-brand-assets.mjs --contact-sheet",
     "brand:check": "node scripts/generate-brand-assets.mjs --check",
+    "brand:render-check": "node scripts/generate-brand-assets.mjs --render-check",
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "test:visual": "npm run build && node scripts/capture-screenshots.mjs --verify",
     "test:accessibility": "node scripts/test-webview-accessibility.mjs",
