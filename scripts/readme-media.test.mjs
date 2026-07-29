@@ -10,6 +10,7 @@ test("README media is compact, portable, and composition-verified", () => {
   const compositor = readFileSync(resolve(root, "scripts", "compose-readme-media.mjs"), "utf8");
   const captureScript = readFileSync(resolve(root, "scripts", "capture-screenshots.mjs"), "utf8");
   const packagedEditorRunner = readFileSync(resolve(root, "scripts", "run-packaged-editor-tests.mjs"), "utf8");
+  const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
 
@@ -17,6 +18,10 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
   assert.match(packageJson.scripts?.["test:webview-acceptance"] ?? "", /npm run verify:readme-media/u);
   assert.match(packageJson.scripts?.["test:scripts"] ?? "", /scripts\/readme-media\.test\.mjs/u);
+  for (const asset of ["activity-icon.svg", "icon.svg", "icon-128.png", "icon-256.png", "icon.png"]) {
+    assert.ok(buildWebviews.includes(`"${asset}"`), `The production build must verify ${asset}.`);
+  }
+  assert.match(buildWebviews, /packaged\.equals\(source\)/u);
   assert.match(compositor, /vscode-hero-dark\.png/u);
   assert.match(compositor, /vscode-hero-light\.png/u);
   assert.match(compositor, /vscode-notebook-pandas-dark\.png/u);
@@ -27,6 +32,10 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
   assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
+  assert.match(
+    readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8"),
+    /platform-smoke:file-action:screenshots[\s\S]{0,1500}\$\{editorKey\}-file-title-action\.png[\s\S]{0,1500}\$\{editorKey\}-tab-context-menu\.png/u
+  );
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
   assert.match(captureScript, /DECIMAL\(14, 2\)/u);

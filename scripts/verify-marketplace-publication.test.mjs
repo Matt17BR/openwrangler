@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { PNG } from "pngjs";
 import { ZipFile } from "yazl";
 import {
   MARKETPLACE_VSIX_SHA256_PROPERTY,
@@ -22,6 +23,26 @@ const packageJson = Object.freeze({
   engines: { vscode: "^1.105.0" },
   extensionKind: ["workspace"]
 });
+const defaultIconUrl =
+  "https://matt17br.gallerycdn.vsassets.io/extensions/matt17br/openwrangler/1.0.2/build/Microsoft.VisualStudio.Services.Icons.Default";
+const smallIconUrl =
+  "https://matt17br.gallerycdn.vsassets.io/extensions/matt17br/openwrangler/1.0.2/build/Microsoft.VisualStudio.Services.Icons.Small";
+const vsixAssetUrl =
+  "https://matt17br.gallerycdn.vsassets.io/extensions/matt17br/openwrangler/1.0.2/build/Microsoft.VisualStudio.Services.VSIXPackage";
+
+function png(width, height, red = 0) {
+  const image = new PNG({ height, width });
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    image.data[offset] = red;
+    image.data[offset + 1] = 92;
+    image.data[offset + 2] = 180;
+    image.data[offset + 3] = 255;
+  }
+  return PNG.sync.write(image);
+}
+
+const galleryIcon = png(512, 512, 33);
+const smallGalleryIcon = png(72, 72, 33);
 
 function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, preReleaseProperty = "") {
   return new Map([
@@ -43,8 +64,8 @@ function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, pr
     ["extension/media/codePreview.js", "export {};"],
     ["extension/media/notebookRenderer.js", "export function activate() {}"],
     ["extension/media/activity-icon.svg", "<svg></svg>"],
-    ["extension/media/icon.png", "icon"],
-    ["extension/media/icon-128.png", "icon"],
+    ["extension/media/icon.png", galleryIcon],
+    ["extension/media/icon-128.png", png(128, 128, 33)],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
     ["extension/python/openwrangler_runtime/version.py", `__version__ = "${version}"\n`]
@@ -87,9 +108,16 @@ function gallery(candidateSha256, overrides = {}, extraProperties = []) {
                 flags: "validated",
                 files: [
                   {
+                    assetType: "Microsoft.VisualStudio.Services.Icons.Default",
+                    source: defaultIconUrl
+                  },
+                  {
+                    assetType: "Microsoft.VisualStudio.Services.Icons.Small",
+                    source: smallIconUrl
+                  },
+                  {
                     assetType: "Microsoft.VisualStudio.Services.VSIXPackage",
-                    source:
-                      "https://matt17br.gallerycdn.vsassets.io/extensions/matt17br/openwrangler/1.0.2/build/Microsoft.VisualStudio.Services.VSIXPackage"
+                    source: vsixAssetUrl
                   }
                 ],
                 properties: [
@@ -108,12 +136,26 @@ function gallery(candidateSha256, overrides = {}, extraProperties = []) {
   };
 }
 
-function fetchFixture(galleryBody, publicVsix) {
-  return async (url) => {
+function fetchFixture(galleryBody, publicVsix, { defaultIcon = galleryIcon, smallIcon = smallGalleryIcon } = {}) {
+  return async (url, options) => {
     if (url.includes("/extensionquery?")) {
       return new Response(JSON.stringify(galleryBody), {
         status: 200,
         headers: { "content-type": "application/json" }
+      });
+    }
+    if (url === defaultIconUrl) {
+      assert.ok(options.signal instanceof AbortSignal);
+      return new Response(defaultIcon, {
+        status: 200,
+        headers: { "content-type": "image/png" }
+      });
+    }
+    if (url === smallIconUrl) {
+      assert.ok(options.signal instanceof AbortSignal);
+      return new Response(smallIcon, {
+        status: 200,
+        headers: { "content-type": "image/png" }
       });
     }
     return new Response(publicVsix, {
@@ -227,6 +269,83 @@ test("rejects public payload drift even when Marketplace reports the canonical u
     }),
     /entries or payload bytes differ/u
   );
+});
+
+test("rejects a Marketplace default icon that differs from the canonical VSIX", async (context) => {
+  const candidate = await fixture(context);
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(gallery(candidate.candidateSha256), candidate.candidate, {
+        defaultIcon: png(512, 512, 99)
+      }),
+      prerelease: false,
+      version
+    }),
+    /default gallery icon that differs/u
+  );
+});
+
+test("rejects a malformed Marketplace small icon derivative", async (context) => {
+  const candidate = await fixture(context);
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(gallery(candidate.candidateSha256), candidate.candidate, {
+        smallIcon: png(64, 64, 33)
+      }),
+      prerelease: false,
+      version
+    }),
+    /expected 72 by 72 pixel derivative/u
+  );
+});
+
+test("rejects an unrelated Marketplace small icon with the expected dimensions", async (context) => {
+  const candidate = await fixture(context);
+  await assert.rejects(
+    verifyMarketplacePublication({
+      attempts: 1,
+      candidatePath: candidate.candidatePath,
+      candidateSha256: candidate.candidateSha256,
+      fetchImpl: fetchFixture(gallery(candidate.candidateSha256), candidate.candidate, {
+        smallIcon: png(72, 72, 199)
+      }),
+      prerelease: false,
+      version
+    }),
+    /does not visually match/u
+  );
+});
+
+test("retries a bounded transient Marketplace icon transport failure", async (context) => {
+  const candidate = await fixture(context);
+  const success = fetchFixture(gallery(candidate.candidateSha256), candidate.candidate);
+  let defaultIconRequests = 0;
+  let sleeps = 0;
+  const receipt = await verifyMarketplacePublication({
+    attempts: 2,
+    candidatePath: candidate.candidatePath,
+    candidateSha256: candidate.candidateSha256,
+    fetchImpl: async (url, options) => {
+      if (url === defaultIconUrl && defaultIconRequests++ === 0) {
+        throw new TypeError("temporary transport failure");
+      }
+      return success(url, options);
+    },
+    prerelease: false,
+    sleep: async () => {
+      sleeps += 1;
+    },
+    version
+  });
+  assert.equal(receipt.version, version);
+  assert.equal(defaultIconRequests, 2);
+  assert.equal(sleeps, 1);
 });
 
 test("reports an exhausted non-public Marketplace version as pending", async (context) => {

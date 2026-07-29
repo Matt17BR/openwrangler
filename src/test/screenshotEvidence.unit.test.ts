@@ -180,9 +180,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(packageJson.icon).toBe("media/icon.png");
     expect(viteConfig).toContain('publicDir: notebookRendererBuild ? false : "assets"');
     expect(viteConfig).toContain('outDir: "media"');
-    expect(buildWebviews).toContain('readFileSync(resolve("assets", "icon.png"))');
-    expect(buildWebviews).toContain('readFileSync(resolve("media", "icon.png"))');
-    expect(buildWebviews).toContain("packagedIcon.equals(sourceIcon)");
+    expect(buildWebviews).toContain('["activity-icon.svg", "icon.svg", "icon-128.png", "icon-256.png", "icon.png"]');
+    expect(buildWebviews).toContain('readFileSync(resolve("assets", asset))');
+    expect(buildWebviews).toContain('readFileSync(resolve("media", asset))');
+    expect(buildWebviews).toContain("packaged.equals(source)");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
     expect(readme).toContain(
       '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128"'

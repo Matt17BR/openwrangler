@@ -9,7 +9,14 @@ const candidateBytes = Buffer.from("canonical-vsix");
 const candidateSha256 = createHash("sha256").update(candidateBytes).digest("hex");
 const api = `${root}/api/Matt17BR/openwrangler/${version}`;
 const download = `${api}/file/Matt17BR.openwrangler-${version}.vsix`;
+const icon = `${api}/file/icon.png`;
 const checksum = `${api}/file/Matt17BR.openwrangler-${version}.sha256`;
+const candidateIcon = Buffer.from("canonical-icon");
+const candidateIconSha256 = createHash("sha256").update(candidateIcon).digest("hex");
+const inspectCandidate = async () => ({
+  entryDigests: [["extension/media/icon.png", candidateIconSha256]],
+  entrySizes: [["extension/media/icon.png", candidateIcon.length]]
+});
 
 function metadata(overrides = {}) {
   return {
@@ -18,7 +25,7 @@ function metadata(overrides = {}) {
     displayName: "Open Wrangler",
     downloadable: true,
     downloads: { universal: download },
-    files: { download, sha256: checksum },
+    files: { download, icon, sha256: checksum },
     name: "openwrangler",
     namespace: "Matt17BR",
     preRelease: false,
@@ -36,11 +43,17 @@ function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), { status });
 }
 
-function exactFetch({ manifest = metadata(), sha = candidateSha256, vsix = candidateBytes } = {}) {
+function exactFetch({
+  galleryIcon = candidateIcon,
+  manifest = metadata(),
+  sha = candidateSha256,
+  vsix = candidateBytes
+} = {}) {
   return async (url) => {
     if (url === api) return jsonResponse(manifest);
     if (url === checksum) return new Response(sha);
     if (url === download) return new Response(vsix);
+    if (url === icon) return new Response(galleryIcon);
     throw new Error(`Unexpected Open VSX URL: ${url}`);
   };
 }
@@ -50,6 +63,7 @@ function verify(fetchImpl) {
     candidateBytes,
     candidateSha256,
     fetchImpl,
+    inspectCandidate,
     root,
     version
   });
@@ -73,6 +87,7 @@ test("verifies preview metadata only for an explicitly preview candidate", async
         candidateSha256,
         channel: "preview",
         fetchImpl: exactFetch({ manifest: preview }),
+        inspectCandidate,
         root,
         version
       })
@@ -96,10 +111,15 @@ test("rejects conflicting metadata, checksum, bytes, and preview versions", asyn
   await assert.rejects(verify(exactFetch({ sha: "f".repeat(64) })), /checksum conflicts/u);
   await assert.rejects(verify(exactFetch({ vsix: Buffer.from("different") })), /different bytes/u);
   await assert.rejects(
+    verify(exactFetch({ galleryIcon: Buffer.from("different-icon") })),
+    /gallery icon that differs/u
+  );
+  await assert.rejects(
     verifyOpenVsxReleaseOnce({
       candidateBytes,
       candidateSha256,
       fetchImpl: exactFetch(),
+      inspectCandidate,
       root,
       version: "1.0.1-beta.1"
     }),
@@ -119,6 +139,7 @@ test("post-publish verification retries only missing or transient public metadat
     }
     if (url === checksum) return new Response(candidateSha256);
     if (url === download) return new Response(candidateBytes);
+    if (url === icon) return new Response(candidateIcon);
     throw new Error(`Unexpected Open VSX URL: ${url}`);
   };
   const result = await waitForOpenVsxRelease({
@@ -130,6 +151,7 @@ test("post-publish verification retries only missing or transient public metadat
     },
     delayMs: 7,
     fetchImpl,
+    inspectCandidate,
     root,
     version
   });
@@ -145,6 +167,7 @@ test("post-publish verification remains bounded and fails closed", async () => {
       candidateSha256,
       delay: async () => {},
       fetchImpl: async () => jsonResponse({ error: "missing" }, 404),
+      inspectCandidate,
       root,
       version
     }),
@@ -156,6 +179,7 @@ test("post-publish verification remains bounded and fails closed", async () => {
       candidateBytes,
       candidateSha256,
       fetchImpl: exactFetch(),
+      inspectCandidate,
       root,
       version
     }),
@@ -176,8 +200,10 @@ test("default post-publish verification covers the reviewed fifteen-minute propa
       }
       if (url === checksum) return new Response(candidateSha256);
       if (url === download) return new Response(candidateBytes);
+      if (url === icon) return new Response(candidateIcon);
       throw new Error(`Unexpected Open VSX URL: ${url}`);
     },
+    inspectCandidate,
     root,
     version
   });

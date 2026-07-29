@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { PNG } from "pngjs";
 import { parseStrictJson } from "./strict-json.mjs";
 import { verifyRegistryReleaseArtifactFromCheckout } from "./verify-registry-release-artifact.mjs";
 import { inspectVsixArchive, MAX_VSIX_BYTES, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
@@ -15,6 +16,15 @@ const MARKETPLACE_EXTENSION = "openwrangler";
 const GALLERY_QUERY_URL =
   "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery?api-version=7.2-preview.1";
 const GALLERY_JSON_MAX_BYTES = 8 * 1024 * 1024;
+const GALLERY_ICON_MAX_BYTES = 2 * 1024 * 1024;
+const SMALL_ICON_MAX_BYTES = 256 * 1024;
+const MARKETPLACE_REQUEST_TIMEOUT_MS = 15_000;
+const ICON_COMPARISON_GRID_SIZE = 12;
+const ICON_MAX_NORMALIZED_DIFFERENCE = 0.03;
+const DEFAULT_ICON_ASSET = "Microsoft.VisualStudio.Services.Icons.Default";
+const SMALL_ICON_ASSET = "Microsoft.VisualStudio.Services.Icons.Small";
+const VSIX_ASSET = "Microsoft.VisualStudio.Services.VSIXPackage";
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export class MarketplacePublicationPendingError extends Error {}
 
@@ -80,6 +90,93 @@ function flagSet(flags) {
   );
 }
 
+function pngDimensions(bytes, label) {
+  if (
+    !Buffer.isBuffer(bytes) ||
+    bytes.length < 24 ||
+    !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) ||
+    bytes.readUInt32BE(8) !== 13 ||
+    bytes.toString("ascii", 12, 16) !== "IHDR"
+  ) {
+    throw new Error(`${label} is not a canonical PNG image.`);
+  }
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  if (width < 1 || height < 1) {
+    throw new Error(`${label} has invalid PNG dimensions.`);
+  }
+  return Object.freeze({ height, width });
+}
+
+function premultipliedCellAverage(image, column, row) {
+  const left = Math.floor((column * image.width) / ICON_COMPARISON_GRID_SIZE);
+  const right = Math.floor(((column + 1) * image.width) / ICON_COMPARISON_GRID_SIZE);
+  const top = Math.floor((row * image.height) / ICON_COMPARISON_GRID_SIZE);
+  const bottom = Math.floor(((row + 1) * image.height) / ICON_COMPARISON_GRID_SIZE);
+  const totals = [0, 0, 0, 0];
+  let pixels = 0;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * image.width + x) * 4;
+      const alpha = image.data[offset + 3] / 255;
+      totals[0] += image.data[offset] * alpha;
+      totals[1] += image.data[offset + 1] * alpha;
+      totals[2] += image.data[offset + 2] * alpha;
+      totals[3] += image.data[offset + 3];
+      pixels += 1;
+    }
+  }
+  return totals.map((total) => total / pixels);
+}
+
+function normalizedIconDifference(left, right) {
+  let difference = 0;
+  for (let row = 0; row < ICON_COMPARISON_GRID_SIZE; row += 1) {
+    for (let column = 0; column < ICON_COMPARISON_GRID_SIZE; column += 1) {
+      const leftCell = premultipliedCellAverage(left, column, row);
+      const rightCell = premultipliedCellAverage(right, column, row);
+      for (let channel = 0; channel < 4; channel += 1) {
+        difference += Math.abs(leftCell[channel] - rightCell[channel]);
+      }
+    }
+  }
+  return difference / (ICON_COMPARISON_GRID_SIZE ** 2 * 4 * 255);
+}
+
+function exactAssetSource(files, assetType, version) {
+  if (!Array.isArray(files)) {
+    throw new MarketplacePublicationPendingError("Marketplace has not exposed public version assets yet.");
+  }
+  const matches = files.filter((file) => file?.assetType === assetType);
+  if (matches.length === 0) {
+    throw new MarketplacePublicationPendingError(`Marketplace has not exposed ${assetType} yet.`);
+  }
+  if (matches.length !== 1 || typeof matches[0].source !== "string") {
+    throw new Error(`Marketplace returned ambiguous or malformed ${assetType} metadata.`);
+  }
+  let source;
+  try {
+    source = new URL(matches[0].source);
+  } catch (error) {
+    throw new Error(`Marketplace returned an invalid ${assetType} URL.`, { cause: error });
+  }
+  const expectedPrefix = `/extensions/${MARKETPLACE_PUBLISHER.toLowerCase()}/${MARKETPLACE_EXTENSION}/${version}/`;
+  if (
+    source.protocol !== "https:" ||
+    source.username !== "" ||
+    source.password !== "" ||
+    source.port !== "" ||
+    source.search !== "" ||
+    source.hash !== "" ||
+    source.hostname.toLowerCase() !== `${MARKETPLACE_PUBLISHER.toLowerCase()}.gallerycdn.vsassets.io` ||
+    !source.pathname.toLowerCase().startsWith(expectedPrefix.toLowerCase()) ||
+    !source.pathname.endsWith(`/${assetType}`)
+  ) {
+    throw new Error(`Marketplace returned an unexpected ${assetType} URL.`);
+  }
+  return source.href;
+}
+
 function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson, prerelease) {
   const extensions = gallery?.results?.[0]?.extensions;
   if (!Array.isArray(extensions) || extensions.length === 0) {
@@ -137,13 +234,11 @@ function exactMarketplaceVersion(gallery, version, candidateSha256, packageJson,
   if ((prerelease && publishedPrerelease !== "true") || (!prerelease && publishedPrerelease !== undefined)) {
     throw new Error("Marketplace pre-release metadata differs from the canonical package channel.");
   }
-  const vsixAssets = Array.isArray(published.files)
-    ? published.files.filter((file) => file?.assetType === "Microsoft.VisualStudio.Services.VSIXPackage")
-    : [];
-  if (vsixAssets.length !== 1 || typeof vsixAssets[0].source !== "string") {
-    throw new MarketplacePublicationPendingError("Marketplace has not exposed one public VSIX asset yet.");
-  }
-  return published;
+  return Object.freeze({
+    defaultIconUrl: exactAssetSource(published.files, DEFAULT_ICON_ASSET, version),
+    smallIconUrl: exactAssetSource(published.files, SMALL_ICON_ASSET, version),
+    vsixUrl: exactAssetSource(published.files, VSIX_ASSET, version)
+  });
 }
 
 function semanticEntries(archive) {
@@ -172,7 +267,47 @@ function assertSameVsixSemantics(canonical, published) {
   }
 }
 
-async function queryPublicMarketplace({ candidateSha256, fetchImpl, packageJson, prerelease, version }) {
+async function readMarketplaceAsset(fetchImpl, url, maximumBytes, label) {
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      headers: {
+        Accept: "image/png",
+        "User-Agent": "OpenWrangler-marketplace-verifier/1"
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(MARKETPLACE_REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    if (
+      error instanceof TypeError ||
+      (typeof error === "object" && error !== null && (error.name === "AbortError" || error.name === "TimeoutError"))
+    ) {
+      throw new MarketplacePublicationPendingError(`${label} request was temporarily unavailable.`);
+    }
+    throw error;
+  }
+  if (response.status === 404 || response.status === 429 || response.status >= 500) {
+    throw new MarketplacePublicationPendingError(`${label} is not available yet (${response.status}).`);
+  }
+  if (!response.ok) {
+    throw new Error(`${label} download failed with HTTP ${response.status}.`);
+  }
+  if (!/^image\/png(?:\s*;|$)/iu.test(response.headers.get("content-type") ?? "")) {
+    throw new Error(`${label} does not use the image/png media type.`);
+  }
+  return readResponseBytes(response, maximumBytes, label);
+}
+
+async function queryPublicMarketplace({
+  candidateIconSha256,
+  candidateIconSize,
+  candidateSha256,
+  fetchImpl,
+  packageJson,
+  prerelease,
+  version
+}) {
   const queryResponse = await fetchImpl(GALLERY_QUERY_URL, {
     method: "POST",
     headers: {
@@ -212,7 +347,55 @@ async function queryPublicMarketplace({ candidateSha256, fetchImpl, packageJson,
   } catch (error) {
     throw new Error("Marketplace gallery response is not valid bounded strict JSON.", { cause: error });
   }
-  exactMarketplaceVersion(gallery, version, candidateSha256, packageJson, prerelease);
+  const assets = exactMarketplaceVersion(gallery, version, candidateSha256, packageJson, prerelease);
+
+  const defaultIcon = await readMarketplaceAsset(
+    fetchImpl,
+    assets.defaultIconUrl,
+    GALLERY_ICON_MAX_BYTES,
+    "Marketplace default gallery icon"
+  );
+  const defaultDimensions = pngDimensions(defaultIcon, "Marketplace default gallery icon");
+  if (
+    defaultDimensions.width !== 512 ||
+    defaultDimensions.height !== 512 ||
+    defaultIcon.length !== candidateIconSize ||
+    createHash("sha256").update(defaultIcon).digest("hex") !== candidateIconSha256
+  ) {
+    throw new Error("Marketplace serves a default gallery icon that differs from the canonical VSIX.");
+  }
+  let decodedDefaultIcon;
+  try {
+    decodedDefaultIcon = PNG.sync.read(defaultIcon);
+    if (decodedDefaultIcon.width !== 512 || decodedDefaultIcon.height !== 512) {
+      throw new Error("decoded dimensions differ");
+    }
+  } catch (error) {
+    throw new Error("Marketplace default gallery icon is not a valid 512 by 512 pixel PNG.", { cause: error });
+  }
+
+  const smallIcon = await readMarketplaceAsset(
+    fetchImpl,
+    assets.smallIconUrl,
+    SMALL_ICON_MAX_BYTES,
+    "Marketplace small gallery icon"
+  );
+  const smallDimensions = pngDimensions(smallIcon, "Marketplace small gallery icon");
+  if (smallDimensions.width !== 72 || smallDimensions.height !== 72) {
+    throw new Error("Marketplace small gallery icon is not the expected 72 by 72 pixel derivative.");
+  }
+  let decodedSmallIcon;
+  try {
+    decodedSmallIcon = PNG.sync.read(smallIcon);
+    if (decodedSmallIcon.width !== 72 || decodedSmallIcon.height !== 72) {
+      throw new Error("decoded dimensions differ");
+    }
+  } catch (error) {
+    throw new Error("Marketplace small gallery icon is not a valid 72 by 72 pixel PNG.", { cause: error });
+  }
+  if (normalizedIconDifference(decodedDefaultIcon, decodedSmallIcon) > ICON_MAX_NORMALIZED_DIFFERENCE) {
+    throw new Error("Marketplace small gallery icon does not visually match the canonical VSIX icon.");
+  }
 
   const packageUrl = `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${MARKETPLACE_PUBLISHER}/vsextensions/${MARKETPLACE_EXTENSION}/${version}/vspackage`;
   const packageResponse = await fetchImpl(packageUrl, {
@@ -264,6 +447,17 @@ export async function verifyMarketplacePublication({
     throw new Error("Canonical Marketplace candidate changed before public verification.");
   }
   const canonicalArchive = await inspectVsixArchive(candidate.bytes);
+  const candidateIconSize = new Map(canonicalArchive.entrySizes).get("extension/media/icon.png");
+  const candidateIconSha256 = new Map(canonicalArchive.entryDigests).get("extension/media/icon.png");
+  if (
+    !Number.isSafeInteger(candidateIconSize) ||
+    candidateIconSize < 1 ||
+    candidateIconSize > GALLERY_ICON_MAX_BYTES ||
+    typeof candidateIconSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(candidateIconSha256)
+  ) {
+    throw new Error("Canonical Marketplace candidate does not expose one bounded gallery icon receipt.");
+  }
   const packageJson = parseStrictJson(canonicalArchive.packagedPackageJson);
   const preReleaseProblems = inspectVsixPreReleaseMetadata(
     canonicalArchive.packagedPackageJson,
@@ -282,6 +476,8 @@ export async function verifyMarketplacePublication({
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       const publishedBytes = await queryPublicMarketplace({
+        candidateIconSha256,
+        candidateIconSize,
         candidateSha256,
         fetchImpl,
         packageJson,
