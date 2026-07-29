@@ -101,7 +101,7 @@
     "capture:screenshots": "node scripts/capture-screenshots.mjs",
     "test:visual": "npm run build && node scripts/capture-screenshots.mjs --verify",
     "test:accessibility": "node scripts/test-webview-accessibility.mjs",
-    "test:webview-acceptance": "npm run test:visual && npm run test:accessibility",
+    "test:webview-acceptance": "npm run brand:render-check && npm run test:visual && npm run test:accessibility",
     "benchmark:runtime": "node scripts/run-python.mjs python/benchmarks/runtime_performance.py --strict --fixture-dir tmp/performance --json-out tmp/performance/report.json",
     "benchmark:installed": "node scripts/run-installed-performance.mjs",
     "prepackage": "npm run clean && npm run build && npm run check && npm test",
