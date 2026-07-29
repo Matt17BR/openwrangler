@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="112" height="112" alt="Open Wrangler logo">
+  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.svg" width="128" height="128" alt="Open Wrangler logo">
 </p>
 
 <h1 align="center">Open Wrangler</h1>
@@ -48,10 +48,10 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
-<img alt="Open Wrangler exploring synthetic regional orders data with column summaries in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-hero-dark.png">
+<img alt="Open Wrangler exploring regional orders with exact revenue statistics in matched light and dark VS Code themes" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png">
 
-_Explore synthetic regional orders data with a virtualized grid, progressive insights, and selected-column
-statistics._
+_A live regional-orders file session with a virtualized grid and exact Revenue statistics. The light and dark
+halves use the same data and layout._
 
 ## Quick start
 
@@ -62,20 +62,18 @@ statistics._
 
 ## Notebook workflows
 
-Displaying a Pandas or Polars dataframe can produce an inline preview after Jupyter grants kernel access. Inline
-output is a bounded saved snapshot, so it remains reproducible with the notebook. Choose **Open Variable** from
-the notebook toolbar or Jupyter Variables to open the current dataframe as a live session, clean it, and insert
-generated code back into that same notebook.
+Displaying a Pandas or Polars dataframe can produce an inline preview after Jupyter grants kernel access. A saved
+inline output captures at most 10,000 rows and 100,000 cells, so it stays reproducible with the notebook. This
+snapshot bound is not a dataframe limit: live notebook variables and file sessions fetch bounded pages from the
+current source instead.
 
-<img alt="Automatic inline Open Wrangler preview of a Pandas dataframe in a Jupyter notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-notebook-pandas-dark.png">
+Choose **Open Variable** from the notebook toolbar or Jupyter Variables to open the current dataframe as a live
+session, clean it, and insert generated code back into that same notebook.
 
-_Automatic Pandas output in a real Jupyter notebook. The inline result is a saved snapshot; Open Variable starts
-a live session against the current dataframe._
+<img alt="Pandas saved output beside a live Polars notebook session with a draft data diff and native code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png">
 
-<img alt="Live Polars notebook variable with a formula preview, column summaries, data diff, and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/editor-acceptance/vscode-notebook-polars-dark.png">
-
-_A live Polars variable in Editing mode, previewing a formula step with type-aware summaries, an added-column
-diff, and executable native Polars code before Apply._
+_Pandas saved output on the left; a live Polars formula draft, added-column diff, and executable Polars code on
+the right._
 
 DuckDB remains native for supported file sessions. Notebook relations are not yet supported.
 
