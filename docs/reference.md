@@ -10,7 +10,7 @@
 | `openWrangler.openPath`                      | Open Wrangler: Open File Path                            |
 | `openWrangler.changeImportOptions`           | Open Wrangler: Change Import Options                     |
 | `openWrangler.launchDataViewer`              | Open Wrangler: Launch Selected Notebook Variable         |
-| `openWrangler.openNotebookVariable`          | Open Wrangler: Open Notebook Variable                    |
+| `openWrangler.openNotebookVariable`          | Open in Open Wrangler                                    |
 | `openWrangler.checkJupyterIntegration`       | Open Wrangler: Check Jupyter Integration                 |
 | `openWrangler.chooseNotebookPreviewProvider` | Open Wrangler: Choose Notebook Preview Provider          |
 | `openWrangler.changeRuntime`                 | Open Wrangler: Change Runtime                            |
