@@ -19,6 +19,7 @@ from openwrangler_runtime.engines.base import (
     generated_view_value_helper_lines,
     typed_selection_value,
 )
+from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
 from openwrangler_runtime.session import SessionManager
 
 _VIEW_LITERAL_CONTRACT = json.loads(
@@ -130,8 +131,26 @@ def _filtered_labels(frame: Any, backend: str) -> list[str]:
     if backend == "pandas":
         return frame["label"].tolist()
     if backend == "duckdb":
+        if isinstance(frame, DuckDBSqlPlan):
+            connection = duckdb.connect(config={"enable_external_file_cache": False})
+            try:
+                return [
+                    str(row[0]) for row in connection.execute(f'SELECT "label" FROM ({frame.sql}) AS ow').fetchall()
+                ]
+            finally:
+                connection.close()
         return [str(row[0]) for row in frame.project('"label"').fetchall()]
     return frame.get_column("label").to_list()
+
+
+def _duckdb_rows(frame: Any) -> list[tuple[Any, ...]]:
+    if not isinstance(frame, DuckDBSqlPlan):
+        return list(frame.fetchall())
+    connection = duckdb.connect(config={"enable_external_file_cache": False})
+    try:
+        return list(connection.execute(frame.sql).fetchall())
+    finally:
+        connection.close()
 
 
 def _engine(backend: str) -> Any:
@@ -202,8 +221,8 @@ def test_duckdb_live_and_generated_filters_accept_shared_literal_contract(case):
     frame = _empty_duckdb_contract_frame(case["type"])
     model = _value_selection_model(case["type"], case["value"])
 
-    assert engine.apply_filter_model(frame, model).fetchall() == []
-    assert _execute_generated_filter(engine, frame, model).fetchall() == []
+    assert _duckdb_rows(engine.apply_filter_model(frame, model)) == []
+    assert _duckdb_rows(_execute_generated_filter(engine, frame, model)) == []
 
 
 @pytest.mark.parametrize("case", _VIEW_LITERAL_CONTRACT["rejected"], ids=lambda case: f"{case['type']}:{case['value']}")
