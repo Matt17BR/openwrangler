@@ -58,7 +58,6 @@ import type { GridViewState, PersistedViewingState } from "../../shared/viewStat
 import {
   acquirePreparedAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
-  invokeAcceptanceActionOnce,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
@@ -3260,10 +3259,11 @@ async function clickReleasedNotebookVariableAction(
       "The exact released-Jupyter notebook tab must remain active before clicking its Open Wrangler action."
     );
     dispatchStarted = true;
-    return await invokeAcceptanceActionOnce({
+    return await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
       description: pinned.description,
       activate: () => pinned.action.click({ timeout: 2_000 }),
       receipt: () => waitForReleasedNotebookVariablePicker(workbench),
+      authoritativeReceiptAfterActivationFailure: () => waitForReleasedNotebookVariablePicker(workbench),
       naturalDismissal: pinned.overflowMenu
         ? () => pinned.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })
         : undefined

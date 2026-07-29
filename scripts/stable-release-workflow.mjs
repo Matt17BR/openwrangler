@@ -8,7 +8,7 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
 const MAX_CONTRACT_DEPTH = 128;
 const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "a9f5504759780ebd39df0dd09c673138f456158e20b14cb122272fad5311cf87";
+const AUDITED_WORKFLOW_SHA256 = "1588f5e687cb20088d81e2a962b75ef2db1696f8b034a96726c1d25d98b6c439";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
@@ -34,6 +34,30 @@ const PACKAGED_EDITOR_COMMAND =
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
 const CONSUMERS = ["cross-platform", "linux-acceptance", "installed-performance", "released-jupyter", "remote-ssh"];
 const JOBS = ["package", ...CONSUMERS, "acceptance-gate", "release"];
+const REMOTE_SSH_SYSTEM_ANCESTOR_REPAIR = [
+  "system_runtime_ancestors=(",
+  "  /usr",
+  "  /etc",
+  ")",
+  'runner_uid="$(id -u)"',
+  'for directory in "${system_runtime_ancestors[@]}"; do',
+  '  test -d "$directory"',
+  '  test ! -L "$directory"',
+  '  test "$(realpath "$directory")" = "$directory"',
+  `  owner="$(stat --format='%u' "$directory")"`,
+  '  test "$owner" = "0" || test "$owner" = "$runner_uid"',
+  "done",
+  'sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"',
+  'sudo chmod go-w -- "${system_runtime_ancestors[@]}"',
+  'for directory in / "${system_runtime_ancestors[@]}"; do',
+  '  test -d "$directory"',
+  '  test ! -L "$directory"',
+  '  test "$(realpath "$directory")" = "$directory"',
+  `  test "$(stat --format='%u:%g' "$directory")" = "0:0"`,
+  `  test -z "$(find "$directory" -maxdepth 0 -perm /022 -print -quit)"`,
+  '  test ! -w "$directory"',
+  "done"
+].join("\n");
 const CANONICAL_PATHS = [
   "canonical-release/openwrangler.vsix",
   "canonical-release/openwrangler.vsix.sha256",
@@ -735,8 +759,21 @@ export function inspectStableReleaseWorkflow(source) {
   );
 
   const remote = workflow.jobs["remote-ssh"];
+  const remoteHostSteps = steps(remote).filter((step) => step?.name === "Prepare namespace-capable acceptance host");
+  const remoteHost = remoteHostSteps[0];
   const remoteStep = steps(remote).find((step) => step?.id === "remote_workspace");
   const remoteRun = command(remoteStep?.run);
+  if (
+    remoteHostSteps.length !== 1 ||
+    !exactKeys(remoteHost, ["name", "run"]) ||
+    typeof remoteHost.run !== "string" ||
+    !remoteHost.run.includes(REMOTE_SSH_SYSTEM_ANCESTOR_REPAIR) ||
+    steps(remote).indexOf(remoteHost) >= steps(remote).indexOf(remoteStep)
+  ) {
+    problems.push(
+      "remote-ssh must canonically restore only the trusted /usr and /etc ancestors before namespace acceptance."
+    );
+  }
   if (
     !exactKeys(remoteStep, ["id", "name", "run", "env"]) ||
     remoteStep.name !== "Test packaged VS Code over Remote SSH" ||

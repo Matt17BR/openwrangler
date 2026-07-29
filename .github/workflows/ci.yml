@@ -396,6 +396,28 @@ jobs:
             procps \
             python3-venv \
             x11-xkb-utils
+          system_runtime_ancestors=(
+            /usr
+            /etc
+          )
+          runner_uid="$(id -u)"
+          for directory in "${system_runtime_ancestors[@]}"; do
+            test -d "$directory"
+            test ! -L "$directory"
+            test "$(realpath "$directory")" = "$directory"
+            owner="$(stat --format='%u' "$directory")"
+            test "$owner" = "0" || test "$owner" = "$runner_uid"
+          done
+          sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"
+          sudo chmod go-w -- "${system_runtime_ancestors[@]}"
+          for directory in / "${system_runtime_ancestors[@]}"; do
+            test -d "$directory"
+            test ! -L "$directory"
+            test "$(realpath "$directory")" = "$directory"
+            test "$(stat --format='%u:%g' "$directory")" = "0:0"
+            test -z "$(find "$directory" -maxdepth 0 -perm /022 -print -quit)"
+            test ! -w "$directory"
+          done
           system_runtime_roots=(
             /usr/share/fontconfig
             /usr/share/fonts
