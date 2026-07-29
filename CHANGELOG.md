@@ -10,8 +10,6 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Switched the README masthead to the self-contained vector brand master, keeping the logo crisp across GitHub,
-  the Visual Studio Marketplace, and Open VSX while retaining the generated 512-pixel registry icon.
 - Replaced the all-column Insights drawer with focused Column, Dataset, and Filters views. Column shows one stable selected identity with exact numeric min, max, mean, median, and standard deviation plus explicit datetime, boolean, categorical, null, NaN, and top-value details. Dataset statistics and filter values now run only while their matching view is active, so opening Insights no longer starts a whole-schema profiling queue.
 - Updated the release guide to reflect the activated personal `Matt17BR` Marketplace workload identity, the automatic pipeline's proven `v1.0.3` handoff, and the still-pending non-blocking Open VSX namespace claim.
 - Added a bounded, source-only pull-request `Fast feedback` lane that runs deterministic static checks alongside canonical packaging and labels each failure class separately. The existing full `validate` gate remains unchanged and authoritative, so this scheduling improvement does not lower, remove, or bypass any merge or release requirement.

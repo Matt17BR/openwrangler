@@ -57,8 +57,8 @@ test("README media is compact, portable, and composition-verified", () => {
   );
   assert.doesNotMatch(readme, /docs\/images\/editor-acceptance\/vscode-(?:hero|notebook)/u);
   assert.doesNotMatch(readme, /The image automatically follows your GitHub theme\./u);
-  assert.match(readme, /assets\/icon\.svg" width="144" height="144"/u);
-  assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.png[^>]+Open Wrangler logo/u);
+  assert.match(readme, /assets\/icon\.png" width="128" height="128"/u);
+  assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
   assert.match(
     readme,
     /live notebook variables are not capped at 10,000 rows[\s\S]{0,260}Only that saved snapshot has four safety ceilings: 10,000 rows, 2,048 columns, 100,000 cells, and\s+16 MiB/u

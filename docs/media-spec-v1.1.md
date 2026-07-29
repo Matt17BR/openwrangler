@@ -9,8 +9,8 @@ This specification replaces evidence-heavy README captures with two concise prod
 - `npm run brand:check` verifies the SVG and PNG hashes against the generated manifest without requiring a browser
 - `npm run brand:render-check` uses the lockfile-pinned Playwright Chromium to prove every PNG still matches the SVG master pixel for pixel
 - `npm run test:webview-acceptance` runs the pixel-exact brand check in the browser-enabled visual CI lane
-- the README masthead uses the vector master directly; `assets/icon.png` remains the 512 pixel extension and registry icon
-- The README uses that 512 pixel PNG at 128 CSS pixels for a sharp, registry-portable presentation
+- `assets/icon.png` is the 512 pixel extension and registry icon and renders at 128 CSS pixels in the README for a
+  sharp, registry-portable presentation; arbitrary SVGs are not accepted by registry README validation
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
 
 ## README workbench image
