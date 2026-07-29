@@ -194,12 +194,13 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
         engine._owned_connection()
         .sql(
             "SELECT current_setting('autoinstall_known_extensions'), "
-            "current_setting('autoload_known_extensions'), current_setting('preserve_insertion_order'), "
+            "current_setting('autoload_known_extensions'), current_setting('enable_external_file_cache'), "
+            "current_setting('preserve_insertion_order'), "
             "current_setting('TimeZone')"
         )
         .fetchone()
     )
-    assert settings == (False, False, True, "UTC")
+    assert settings == (False, False, False, True, "UTC")
 
     csv_frame = engine.read_file(
         str(csv_path),
@@ -215,6 +216,7 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     assert engine.read_file(str(tsv_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
     assert engine.read_file(str(jsonl_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
     assert engine.read_file(str(parquet_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
+    assert engine._owned_connection().sql("FROM duckdb_external_file_cache()").fetchall() == []
     with pytest.raises(EngineError, match=r"newline-delimited JSON.*Malformed JSON") as malformed:
         engine.read_file(str(malformed_jsonl_path))
     assert "JSON support is unavailable" not in str(malformed.value)
