@@ -641,7 +641,7 @@ test("requires one exact positive stable release and install section in both REA
     `# Open Wrangler\n\n<!--\n${STABLE_README_RELEASE_SECTION}\n-->\n`,
     `# Open Wrangler\n\n<div hidden>\n${STABLE_README_RELEASE_SECTION}\n</div>\n`,
     `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION}\n\n${STABLE_README_RELEASE_SECTION}\n`,
-    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed VSIX", "VSIX")}\n`
+    `# Open Wrangler\n\n${STABLE_README_RELEASE_SECTION.replace("checksummed GitHub Release", "GitHub Release")}\n`
   ]) {
     const problems = inspectStableReleaseReadiness(ready({ readme }));
     assert.ok(problems.some((problem) => problem.startsWith("README.md must")));
@@ -726,16 +726,35 @@ test("keeps the same compact editor support tiers in every README channel", () =
     PERFORMANCE_EVIDENCE_README_RELEASE_SECTION,
     STABLE_README_RELEASE_SECTION
   ]) {
-    assert.match(section, /\| VS Code\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
-    assert.match(section, /\| Cursor\s+\| First-class\s+\| Full automated and release matrix\s+\|/u);
-    assert.match(section, /\| Other VS Code-based IDEs, including Antigravity\s+\| Experimental\s+\|/u);
+    assert.match(section, /\| VS Code\s+\| Release-tested\s+\|/u);
+    assert.match(section, /\| Cursor\s+\| Release-tested\s+\|/u);
+    assert.match(section, /\| Other VS Code desktop forks\s+\| Experimental\s+\|/u);
     assert.match(section, /\| Browser-hosted `vscode\.dev`\s+\| Unsupported\s+\|/u);
-    assert.match(section, /Open VSX publication can make Open Wrangler discoverable there/u);
-    assert.match(section, /it does not certify compatibility/u);
-    assert.match(
-      section,
-      /Experimental editors receive isolated functional smokes and do not inherit the VS Code\/Cursor support guarantee/u
-    );
+    assert.doesNotMatch(section, /VS Code and Cursor are release-tested\./u);
+    assert.doesNotMatch(section, /Other VS Code desktop forks may work, but support is experimental\./u);
+    assert.doesNotMatch(section, /Antigravity|release gate|parity matrix/iu);
+  }
+  const stableLinks = new Map(
+    [...STABLE_README_RELEASE_SECTION.matchAll(/\[([^\]]+)\]\(([^)]+)\)/gu)].map((match) => [match[1], match[2]])
+  );
+  assert.equal(
+    stableLinks.get("Visual Studio Marketplace"),
+    "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler"
+  );
+  assert.equal(stableLinks.get("Open VSX"), "https://open-vsx.org/extension/Matt17BR/openwrangler");
+  assert.equal(stableLinks.get("checksummed GitHub Release"), "https://github.com/Matt17BR/openwrangler/releases");
+});
+
+test("uses linked live badges instead of a prose stable status", () => {
+  assert.doesNotMatch(STABLE_README_RELEASE_SECTION, /Release status/iu);
+  for (const expected of [
+    "https://img.shields.io/github/v/release/Matt17BR/openwrangler",
+    "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main",
+    "https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg",
+    "https://img.shields.io/open-vsx/v/Matt17BR/openwrangler",
+    "https://img.shields.io/github/license/Matt17BR/openwrangler"
+  ]) {
+    assert.ok(STABLE_README_RELEASE_SECTION.includes(expected));
   }
 });
 
@@ -1159,7 +1178,7 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   });
   assert.ok(
     extraWriteCapableReleaseJob.includes(
-      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, and release."
+      "release.yml jobs must be exactly preview-metadata, build, validate, release-acceptance, release, and promote-open-vsx."
     )
   );
 
@@ -1364,5 +1383,23 @@ test("structurally gates preview-only tag workflow before build, upload, and rel
   });
   assert.ok(
     postChecksumMutation.includes("release.yml release job must contain exactly download, checksum, and release steps.")
+  );
+
+  const missingDirectPromotion = mutate((workflow) => {
+    delete workflow.jobs["promote-open-vsx"];
+  });
+  assert.ok(
+    missingDirectPromotion.includes(
+      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
+    )
+  );
+
+  const eventOnlyPromotion = mutate((workflow) => {
+    workflow.jobs["promote-open-vsx"].uses = "./.github/workflows/not-the-reviewed-promotion.yml";
+  });
+  assert.ok(
+    eventOnlyPromotion.includes(
+      "release.yml must directly call the protected Open VSX promotion workflow after GitHub preview publication."
+    )
   );
 });

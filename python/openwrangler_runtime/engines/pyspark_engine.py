@@ -6,6 +6,7 @@ from datetime import timedelta
 from importlib import import_module
 from math import isfinite
 from typing import Any, Literal
+from weakref import WeakSet
 
 from .base import (
     INTERNAL_ROW_ID_PREFIX,
@@ -33,6 +34,7 @@ _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _SUPPORTED_PYSPARK_VERSION = re.compile(r"^4\.2(?:\.|$)")
 _SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
+_UNSUPPORTED_PROFILE_TYPE_ROOTS = frozenset({"variant", "time", "geometry", "geography"})
 
 
 class PySparkEngine(DataFrameEngine):
@@ -51,9 +53,8 @@ class PySparkEngine(DataFrameEngine):
 
     def __init__(self) -> None:
         self._owned_frame: Any | None = None
-        self._owned_frame_identity: int | None = None
         self._owned_row_count: int | None = None
-        self._ordered_frame_identities: set[int] = set()
+        self._ordered_frames: WeakSet[Any] = WeakSet()
         self._closed = False
 
     def detect(self, value: Any) -> bool:
@@ -86,7 +87,7 @@ class PySparkEngine(DataFrameEngine):
     def shape(self, frame: Any) -> dict[str, int]:
         rows = (
             self._owned_row_count
-            if id(frame) == self._owned_frame_identity and self._owned_row_count is not None
+            if frame is self._owned_frame and self._owned_row_count is not None
             else int(frame.count())
         )
         return {"rows": int(rows), "columns": len(self._visible_columns(frame))}
@@ -104,7 +105,6 @@ class PySparkEngine(DataFrameEngine):
         indexed = frame.zipWithIndex(row_id)
         persisted = indexed.persist()
         self._owned_frame = persisted
-        self._owned_frame_identity = id(persisted)
         try:
             self._owned_row_count = int(persisted.count())
         except Exception:
@@ -198,7 +198,7 @@ class PySparkEngine(DataFrameEngine):
             if row_id is not None:
                 sort_expressions.append(_spark_column(functions, row_id).asc())
             result = result.orderBy(*sort_expressions)
-            self._ordered_frame_identities.add(id(result))
+            self._ordered_frames.add(result)
         return result
 
     def page(
@@ -220,7 +220,7 @@ class PySparkEngine(DataFrameEngine):
         row_id = self._row_id_column(frame)
 
         ordered = frame
-        if id(frame) not in self._ordered_frame_identities and row_id is not None:
+        if frame not in self._ordered_frames and row_id is not None:
             ordered = frame.orderBy(_spark_column(functions, row_id).asc())
         windowed = ordered.offset(int(offset)).limit(int(limit))
         terminal_names = [*([row_id] if row_id is not None else []), *selected_columns]
@@ -477,9 +477,8 @@ class PySparkEngine(DataFrameEngine):
         self._closed = True
         owned = self._owned_frame
         self._owned_frame = None
-        self._owned_frame_identity = None
         self._owned_row_count = None
-        self._ordered_frame_identities.clear()
+        self._ordered_frames.clear()
         if owned is not None:
             owned.unpersist(blocking=False)
 
@@ -566,11 +565,34 @@ class PySparkEngine(DataFrameEngine):
             raise EngineError(f"The experimental PySpark backend requires PySpark 4.2.x, not {version or 'unknown'}.")
         if not callable(getattr(frame, "zipWithIndex", None)):
             raise EngineError("This PySpark dataframe does not provide the required native zipWithIndex operation.")
+        unsupported: list[tuple[str, str]] = []
+        for field in frame.schema.fields:
+            raw_type = str(field.dataType.simpleString())
+            if _is_unsupported_profile_type(raw_type):
+                unsupported.append((str(field.name), raw_type))
+        if unsupported:
+            details = ", ".join(f"{name!r} ({raw_type})" for name, raw_type in unsupported)
+            raise EngineError(
+                "The experimental PySpark backend cannot open this dataframe because required viewing profiles "
+                f"are unavailable for {details}. Convert these columns in Spark to strings or another orderable "
+                "Spark SQL type before opening them in Open Wrangler."
+            )
 
 
 def _spark_column(functions: Any, name: str) -> Any:
     escaped = name.replace("`", "``")
     return functions.col(f"`{escaped}`")
+
+
+def _is_unsupported_profile_type(raw_type: str) -> bool:
+    lowered = raw_type.strip().lower()
+    root = lowered.split("(", 1)[0]
+    if root in _UNSUPPORTED_PROFILE_TYPE_ROOTS:
+        return True
+    # Calendar intervals and year-month interval values cannot be decoded
+    # after the grouping actions required by header statistics. Day-time
+    # intervals are natively collectable and remain supported.
+    return lowered == "interval" or lowered.startswith(("interval year", "interval month"))
 
 
 def _spark_python_value(value: Any) -> Any:

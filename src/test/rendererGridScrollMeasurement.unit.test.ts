@@ -1,6 +1,8 @@
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
+  installedPerformanceGridRowHeight,
+  installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
   rendererHasUsableGridGeometry,
   type RendererGridMeasurementElement,
@@ -8,6 +10,7 @@ import {
   type RendererGridScrollMeasurementInput,
   type RendererUsableGridGeometryInput
 } from "./extensionHost/rendererGridScrollMeasurement";
+import { gridRowHeight, maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
 interface MutableStyle {
   display: string;
@@ -17,6 +20,7 @@ interface MutableStyle {
 
 class FakeElement implements RendererGridMeasurementElement {
   isConnected = true;
+  clientHeight = 600;
   parentElement: FakeElement | null = null;
   textContent: string | null = null;
   scrollTop = 0;
@@ -118,11 +122,17 @@ const input: RendererGridScrollMeasurementInput = {
   totalRows: 1_000,
   totalColumns: 50,
   expectedText: "400",
-  rowHeight: 29,
+  rowHeight: installedPerformanceGridRowHeight,
+  maximumCanvasHeight: installedPerformanceMaximumCanvasHeight,
   timeoutMs: 1_000
 };
 
 describe("renderer-local grid scroll measurement", () => {
+  it("keeps its serialized measurement constants aligned with the production grid", () => {
+    expect(installedPerformanceGridRowHeight).toBe(gridRowHeight);
+    expect(installedPerformanceMaximumCanvasHeight).toBe(maximumGridScrollCanvasHeight);
+  });
+
   it("accepts required cells only when the production scroller and viewport visibly intersect them", () => {
     const runtime = new FakeRuntime();
     const requiredCells = { cells: [[400, 0] as const] };
@@ -197,6 +207,21 @@ describe("renderer-local grid scroll measurement", () => {
     await expect(measurement).resolves.toBe(32);
     expect(runtime.animationFrames.size).toBe(0);
     expect(runtime.timers.size).toBe(0);
+  });
+
+  it("uses the production compressed-scroll mapping for million-row grids", async () => {
+    const runtime = new FakeRuntime();
+    runtime.grid.attributes.set("aria-rowcount", "1000001");
+    const compressedInput = { ...input, totalRows: 1_000_000 };
+    const measurement = measureRendererGridScroll(compressedInput, runtime);
+
+    expect(runtime.scroller.scrollTop).toBeCloseTo(
+      (400 / 999_999) * (installedPerformanceMaximumCanvasHeight - runtime.scroller.clientHeight)
+    );
+    runtime.advanceFrame();
+    runtime.advanceFrame();
+
+    await expect(measurement).resolves.toBe(32);
   });
 
   it("does not accept mismatched text, hidden cells, or zero-area geometry", async () => {

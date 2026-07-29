@@ -33,6 +33,7 @@ export class OpenWranglerPanel {
   private importChangeTail: Promise<void> = Promise.resolve();
   private currentImportChangeTask: Promise<void> | undefined;
   private nativeImportCommand: Promise<boolean> | undefined;
+  private runtimeDependencyInstallTask: Promise<void> | undefined;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
@@ -134,6 +135,18 @@ export class OpenWranglerPanel {
     const synchronization = target.rendererSynchronizationIdentity;
     if (!synchronization) return false;
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
+  }
+
+  static async previewStepForSessionForTesting(
+    request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
+  ): Promise<SessionOpenedResponse | undefined> {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === request.sessionId);
+    if (!target?.rendererReady || target.disposed) return undefined;
+    await target.forward(request);
+    return target.snapshot?.metadata.draftStep?.id === request.step.id &&
+      target.snapshot.metadata.revision > request.revision
+      ? target.snapshot
+      : undefined;
   }
 
   static panelHydratedForSession(sessionId: string): boolean {
@@ -338,6 +351,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "installRuntimeDependencies") {
+      await this.installRuntimeDependencies();
+      return;
+    }
+
     if (this.changingImportOptions) {
       await this.post({
         kind: "error",
@@ -420,6 +438,51 @@ export class OpenWranglerPanel {
     return command;
   }
 
+  private installRuntimeDependencies(): Promise<void> {
+    if (this.runtimeDependencyInstallTask) return this.runtimeDependencyInstallTask;
+    const task = (async () => {
+      await this.opening?.catch(() => undefined);
+      if (
+        this.disposed ||
+        this.sessionId ||
+        this.openResponse?.kind !== "error" ||
+        this.openResponse.code !== "missing_dependencies"
+      ) {
+        return;
+      }
+      await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: true });
+      try {
+        const installed = await vscode.commands.executeCommand<boolean>("openWrangler.installRuntimeDependencies");
+        if (!installed || this.disposed || this.sessionId) return;
+        this.openResponse = undefined;
+        await this.open();
+      } catch (error) {
+        if (!this.disposed) {
+          await this.post({
+            kind: "error",
+            code: "dependency_install_failed",
+            message: error instanceof Error ? error.message : String(error),
+            recoverable: true
+          });
+        }
+      } finally {
+        if (!this.disposed) {
+          await this.panel.webview.postMessage({ kind: "runtimeDependencyInstallState", busy: false });
+        }
+      }
+    })();
+    this.runtimeDependencyInstallTask = task;
+    void task.then(
+      () => {
+        if (this.runtimeDependencyInstallTask === task) this.runtimeDependencyInstallTask = undefined;
+      },
+      () => {
+        if (this.runtimeDependencyInstallTask === task) this.runtimeDependencyInstallTask = undefined;
+      }
+    );
+    return task;
+  }
+
   private async changeImportOptions(generation: number): Promise<void> {
     if (this.disposed || generation !== this.openAttemptGeneration || !canChangeImportOptions(this.source)) {
       return;
@@ -453,7 +516,17 @@ export class OpenWranglerPanel {
 
       let importOptions: NonNullable<SessionSource["importOptions"]> | undefined;
       try {
-        importOptions = await promptImportOptions(uri, this.source.importOptions, cancellation.token);
+        const extension = path.extname(uri.fsPath).toLowerCase();
+        const isExcelSource = extension === ".xlsx" || extension === ".xls";
+        const sheetNames =
+          isExcelSource && this.sessionId && this.snapshot?.metadata.backend
+            ? await this.bridge.listExcelSheets?.(this.sessionId, this.source, this.snapshot.metadata.backend, {
+                cancellation: cancellation.token
+              })
+            : undefined;
+        if (this.disposed || generation !== this.openAttemptGeneration) return;
+        if (cancellation.token.isCancellationRequested) throw new ImportCancelledError();
+        importOptions = await promptImportOptions(uri, this.source.importOptions, cancellation.token, sheetNames);
       } catch (error) {
         if (error instanceof ImportCancelledError) {
           if (this.disposed || generation !== this.openAttemptGeneration) return;
@@ -1043,6 +1116,9 @@ export class OpenWranglerPanel {
           }
         : undefined;
     }
+    if (message.kind === "installRuntimeDependencies") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;
+    }
     if (
       message.kind !== "runtimeRequest" ||
       !hasExactKeys(message, ["kind", "request"], ["viewContextId"]) ||
@@ -1142,6 +1218,7 @@ type WebviewRequest =
   | { kind: "updateViewState"; state: GridViewState }
   | { kind: "clearStepInspection" }
   | { kind: "changeImportOptions"; actionId?: string }
+  | { kind: "installRuntimeDependencies" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;
@@ -1205,9 +1282,11 @@ function hasExactKeys(
 }
 
 export interface EditorActionMessage {
-  action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
+  action:
+    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
+  column?: string;
 }
 
 const randomNonce = (): string => {

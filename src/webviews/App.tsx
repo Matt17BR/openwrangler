@@ -13,13 +13,14 @@ import type {
   ValuesResponse
 } from "../shared/protocol";
 import { dataBackendLabel } from "../shared/protocol";
-import { emptyFilterModel, type FilterModel } from "../shared/filterModel";
+import { compactFilterModel, emptyFilterModel, type FilterModel } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
 import { SummaryPanel } from "./summary/SummaryPanel";
 import { OperationBuilder } from "./operations/OperationBuilder";
+import { ColumnSearch } from "./ColumnSearch";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
@@ -37,6 +38,15 @@ function scheduleWebviewFocusRestoration(restore: () => void): number {
   });
 }
 
+function canRestoreFocusTo(target: HTMLElement | null | undefined): target is HTMLElement {
+  return Boolean(
+    target?.isConnected &&
+    target.tabIndex >= 0 &&
+    !target.matches(":disabled") &&
+    target.closest("[inert], [hidden], details:not([open])") === null
+  );
+}
+
 export function App() {
   const [metadata, setMetadata] = useState<SessionMetadata | undefined>();
   const [page, setPage] = useState<GridPage | undefined>();
@@ -44,6 +54,7 @@ export function App() {
   const [filterModel, setFilterModel] = useState<FilterModel>(emptyFilterModel);
   const [columnValues, setColumnValues] = useState<ReadonlyMap<string, ValuesResponse>>(() => new Map());
   const [foregroundError, setForegroundError] = useState<string | undefined>();
+  const [foregroundErrorCode, setForegroundErrorCode] = useState<string | undefined>();
   const [backgroundDiagnostics, setBackgroundDiagnostics] = useState<ReadonlyMap<string, BackgroundDiagnostic>>(
     () => new Map()
   );
@@ -52,7 +63,8 @@ export function App() {
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
-  const [goToColumn, setGoToColumn] = useState("");
+  const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
+  const [goToColumnRequest, setGoToColumnRequest] = useState<{ columnId: string; requestId: number } | undefined>();
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [operationOpen, setOperationOpen] = useState(false);
@@ -82,6 +94,7 @@ export function App() {
   const columnValuesRef = useRef<ReadonlyMap<string, ValuesResponse>>(new Map());
   const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
+  const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
   const sidePanelOpenRef = useRef(false);
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
@@ -159,9 +172,7 @@ export function App() {
     const returnTarget = operationReturnFocus.current;
     operationReturnFocus.current = null;
     const frame = scheduleWebviewFocusRestoration(() => {
-      const targetIsAvailable =
-        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
-      if (targetIsAvailable) {
+      if (canRestoreFocusTo(returnTarget)) {
         returnTarget.focus();
         return;
       }
@@ -826,6 +837,7 @@ export function App() {
         | RequestImportOptionsChangeMessage
         | RendererSynchronizationMessage
         | ImportOptionsStateMessage
+        | RuntimeDependencyInstallStateMessage
         | SessionPresentationMessage
         | ViewStateMessage
         | StepInspectionResultMessage
@@ -851,6 +863,10 @@ export function App() {
       }
       if (response.kind === "importOptionsState") {
         updateImportOptionsPending(response.busy);
+        return;
+      }
+      if (response.kind === "runtimeDependencyInstallState") {
+        setRuntimeDependencyInstallPending(response.busy);
         return;
       }
       if (response.kind === "sessionPresentation") {
@@ -965,6 +981,9 @@ export function App() {
         } else if (response.action === "selectStep") {
           if (response.stepId) requestStepInspection(response.stepId);
           else clearStepInspection();
+        } else if (response.action === "clearFilterColumn") {
+          if (typeof response.column !== "string") return;
+          clearFilterColumnActionRef.current(response.column);
         } else {
           if (!beginMutation()) return;
           const columnWindow = desiredColumnWindow.current;
@@ -983,6 +1002,7 @@ export function App() {
       }
 
       if (response.kind === "error") {
+        setForegroundErrorCode(response.code);
         if (response.viewRequestId) {
           const pendingPage = latestPageRequest.current;
           if (pendingPage?.viewRequestId === response.viewRequestId) {
@@ -1035,6 +1055,7 @@ export function App() {
           acknowledgedRendererSynchronizationId.current = undefined;
           setLoading(false);
           setProjectionLoading(false);
+          setRuntimeDependencyInstallPending(false);
         }
         setForegroundError(response.message);
         return;
@@ -1066,6 +1087,8 @@ export function App() {
             acknowledgedRendererSynchronizationId.current = undefined;
             setLoading(false);
             setProjectionLoading(false);
+            setForegroundErrorCode(undefined);
+            setRuntimeDependencyInstallPending(false);
             setForegroundError("Opening the dataframe was cancelled.");
           }
           return;
@@ -1109,7 +1132,9 @@ export function App() {
         setMutationPending(false);
         setLoading(false);
         setProjectionLoading(false);
+        setRuntimeDependencyInstallPending(false);
         setForegroundError(undefined);
+        setForegroundErrorCode(undefined);
         storeFailedPageRequest(undefined);
         storeGridViewState(emptyGridViewState());
         storePendingStepInspection(undefined);
@@ -1567,15 +1592,16 @@ export function App() {
     ) {
       return;
     }
+    const nextModel = compactFilterModel(model);
     const pendingPage = latestPageRequest.current;
-    const sameDesiredModel = sameFilterModel(model, filterModelRef.current);
-    if (sameDesiredModel && pendingPage && sameFilterModel(model, pendingPage.model)) {
+    const sameDesiredModel = sameFilterModel(nextModel, filterModelRef.current);
+    if (sameDesiredModel && pendingPage && sameFilterModel(nextModel, pendingPage.model)) {
       return;
     }
-    storeFilterModel(model);
+    storeFilterModel(nextModel);
     const currentMetadata = metadataRef.current;
     const failed = failedPageRequestRef.current;
-    if (sameDesiredModel && failed && sameFilterModel(model, failed.model)) {
+    if (sameDesiredModel && failed && sameFilterModel(nextModel, failed.model)) {
       requestPage(failed.offset, failed.model, {
         changesView: failed.changesView,
         viewContextId: failed.viewContextId,
@@ -1584,12 +1610,27 @@ export function App() {
       });
       return;
     }
-    if (sameDesiredModel && !pendingPage && currentMetadata && sameFilterModel(model, currentMetadata.filterModel)) {
+    if (
+      sameDesiredModel &&
+      !pendingPage &&
+      currentMetadata &&
+      sameFilterModel(nextModel, currentMetadata.filterModel)
+    ) {
       return;
     }
 
-    requestPage(0, model, { changesView: true });
+    requestPage(0, nextModel, { changesView: true });
   };
+
+  useEffect(() => {
+    clearFilterColumnActionRef.current = (column) => {
+      const current = filterModelRef.current;
+      applyFilters({
+        ...current,
+        filters: current.filters.filter((filter) => filter.column !== column)
+      });
+    };
+  });
 
   useEffect(() => {
     if (!sidePanelOpen || !metadata) return;
@@ -1682,9 +1723,7 @@ export function App() {
     const returnTarget = sidePanelReturnFocus.current;
     sidePanelReturnFocus.current = null;
     scheduleWebviewFocusRestoration(() => {
-      const targetIsAvailable =
-        returnTarget?.isConnected && !returnTarget.matches(":disabled") && returnTarget.closest("[inert]") === null;
-      if (targetIsAvailable) returnTarget.focus();
+      if (canRestoreFocusTo(returnTarget)) returnTarget.focus();
       else sidePanelToggleRef.current?.focus();
     });
   };
@@ -1756,14 +1795,30 @@ export function App() {
   const projectionStatusId = projectionLoading ? "column-projection-status" : undefined;
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
   const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
+  const installDependencyDisabled = loading || runtimeDependencyInstallPending;
 
   if (foregroundError && !metadata) {
     return (
       <main className="app app-error">
         <h1>Open Wrangler</h1>
         <p role="alert">{foregroundError}</p>
-        {webviewConfig.canChangeImportOptions && (
-          <>
+        <div className="errorActions">
+          {foregroundErrorCode === "missing_dependencies" && (
+            <button
+              type="button"
+              className="toolbarButton"
+              disabled={installDependencyDisabled}
+              aria-busy={runtimeDependencyInstallPending || undefined}
+              onClick={(event) => {
+                event.currentTarget.blur();
+                setRuntimeDependencyInstallPending(true);
+                vscode.postMessage({ kind: "installRuntimeDependencies" });
+              }}
+            >
+              <span className="codicon codicon-cloud-download" aria-hidden="true" /> Install required dependency
+            </button>
+          )}
+          {webviewConfig.canChangeImportOptions && (
             <button
               type="button"
               className="toolbarButton"
@@ -1775,19 +1830,24 @@ export function App() {
             >
               <span className="codicon codicon-settings-gear" aria-hidden="true" /> Import options
             </button>
-            {importOptionsPending && (
-              <span className="importOptionsStatus" role="status" aria-live="polite">
-                Updating import options…
-              </span>
-            )}
-          </>
+          )}
+        </div>
+        {importOptionsPending && (
+          <span className="importOptionsStatus" role="status" aria-live="polite">
+            Updating import options…
+          </span>
+        )}
+        {runtimeDependencyInstallPending && (
+          <span className="importOptionsStatus" role="status" aria-live="polite">
+            Waiting for dependency confirmation…
+          </span>
         )}
       </main>
     );
   }
 
   return (
-    <main className="app" tabIndex={-1} onKeyDown={handleKeyboardShortcut}>
+    <main className="app" data-session-id={metadata?.sessionId} tabIndex={-1} onKeyDown={handleKeyboardShortcut}>
       <div
         className="appWorkspace"
         data-testid="app-workspace"
@@ -1853,20 +1913,16 @@ export function App() {
               >
                 {inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
               </button>
-              <label className="goToColumn">
-                <span>Column</span>
-                <input
-                  list="openwrangler-columns"
-                  value={goToColumn}
-                  placeholder="Search columns"
-                  onChange={(event) => setGoToColumn(event.target.value)}
-                />
-                <datalist id="openwrangler-columns">
-                  {(displayMetadata ?? metadata).schema.map((column) => (
-                    <option key={column.id} value={column.name} />
-                  ))}
-                </datalist>
-              </label>
+              <ColumnSearch
+                columns={(displayMetadata ?? metadata).schema}
+                selectedColumnId={goToColumnRequest?.columnId}
+                onSelect={(columnId) =>
+                  setGoToColumnRequest((current) => ({
+                    columnId,
+                    requestId: (current?.requestId ?? 0) + 1
+                  }))
+                }
+              />
               <span className="modeBadge">{metadata.mode}</span>
               <span className="backendBadge">
                 {metadata.backend === "pyspark" ? dataBackendLabel(metadata.backend) : metadata.backend}
@@ -1961,7 +2017,7 @@ export function App() {
             </header>
             {pendingStepInspection && (
               <div role="status" aria-live="polite">
-                Loading inspection rows {pendingStepInspection.offset + 1}–{pendingStepInspection.offset + pageSize}…
+                Loading inspection rows {pendingStepInspection.offset + 1} to {pendingStepInspection.offset + pageSize}…
               </div>
             )}
             {stepInspectionError && (
@@ -2046,7 +2102,8 @@ export function App() {
                 viewContextId={
                   inspectionMode ? `inspection:${stepInspectionTarget?.stepId ?? "loading"}` : activeViewContextId
                 }
-                goToColumn={goToColumn}
+                goToColumnId={goToColumnRequest?.columnId}
+                goToColumnRequestId={goToColumnRequest?.requestId}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={
                   inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
@@ -2058,15 +2115,21 @@ export function App() {
                 viewControlsDisabledReason={
                   importOptionsPending ? "View controls are unavailable while import options are changing." : undefined
                 }
+                sortRules={inspectionMode ? [] : filterModel.sort}
                 onSortColumn={(column, direction) =>
                   inspectionMode
                     ? undefined
                     : applyFilters({
                         ...filterModel,
-                        sort: [
-                          ...filterModel.sort.filter((rule) => rule.column !== column),
-                          { column, direction, nulls: "last" }
-                        ]
+                        sort: [{ column, direction, nulls: "last" }]
+                      })
+                }
+                onClearSortColumn={(column) =>
+                  inspectionMode
+                    ? undefined
+                    : applyFilters({
+                        ...filterModel,
+                        sort: filterModel.sort.filter((rule) => rule.column !== column)
                       })
                 }
                 onOpenFilter={(column) => {
@@ -2100,7 +2163,12 @@ export function App() {
                   onClick={closeSidePanel}
                 />
               </div>
-              <SummaryPanel metadata={metadata} summaries={summaries} schemaById={schemaById} />
+              <SummaryPanel
+                metadata={metadata}
+                summaries={summaries}
+                schemaById={schemaById}
+                selectedColumnId={gridViewState.selectedColumnId}
+              />
               <FilterPanel
                 key={filterColumn}
                 metadata={metadata}
@@ -2143,7 +2211,7 @@ export function App() {
                 </div>
               )}
             </header>
-            <details className="draftCode" open>
+            <details className="draftCode">
               <summary>Generated {dataBackendLabel(metadata.backend)} code · edit in Code Preview panel</summary>
               <pre tabIndex={0} aria-label="Generated Python code preview">
                 <code>{generatedCode}</code>
@@ -2172,9 +2240,11 @@ export function App() {
 
 interface EditorActionMessage {
   kind: "editorAction";
-  action: "openOperation" | "editLatest" | "selectStep" | "applyDraft" | "discardDraft" | "undoStep";
+  action:
+    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
+  column?: string;
 }
 
 interface RequestImportOptionsChangeMessage {
@@ -2191,6 +2261,11 @@ interface RendererSynchronizationMessage {
 
 interface ImportOptionsStateMessage {
   kind: "importOptionsState";
+  busy: boolean;
+}
+
+interface RuntimeDependencyInstallStateMessage {
+  kind: "runtimeDependencyInstallState";
   busy: boolean;
 }
 

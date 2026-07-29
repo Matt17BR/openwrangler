@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { inspectVsixArchive, readBoundedVsixFileSnapshot } from "./vsix-archive.mjs";
 import {
   inspectNotebookRendererBundle,
+  inspectPackagedReadmeSource,
   inspectReadmeSourceSrcsets,
   inspectVsixPreReleaseMetadata
 } from "./vsix-contents.mjs";
@@ -30,7 +32,11 @@ if (preReleaseProblems.length > 0) {
 
 const bundleRelativeCodicon = /url\((?:["'])?\.\/codicon\.ttf(?:\?[^)"']*)?(?:["'])?\)/u;
 const webviewFontPolicy = /font-src \$\{webview\.cspSource\};/u;
-const readmeSourceProblems = inspectReadmeSourceSrcsets(packagedReadme);
+const sourceReadme = readFileSync(resolve(root, "README.md"), "utf8");
+const readmeSourceProblems = [
+  ...inspectPackagedReadmeSource(sourceReadme, packagedReadme),
+  ...inspectReadmeSourceSrcsets(packagedReadme)
+];
 const notebookRendererProblems = inspectNotebookRendererBundle(notebookRenderer);
 
 if (!bundleRelativeCodicon.test(webviewCss)) {

@@ -44,6 +44,16 @@ export interface SessionPresentation {
 export interface OpenWranglerBridge {
   request(request: OpenWranglerRequest, options?: BridgeRequestOptions): Promise<OpenWranglerResponse>;
   /**
+   * Lists the worksheets in the exact workbook owned by a live file session.
+   * The coordinator translates public session identity before delegation.
+   */
+  listExcelSheets?(
+    sessionId: string,
+    source: SessionSource,
+    backend: DataBackend,
+    options?: BridgeRequestOptions
+  ): Promise<readonly string[] | undefined>;
+  /**
    * Atomically replaces the private runtime behind an existing file session
    * after opening the same source with different import options. This is a
    * host-only lifecycle operation and is intentionally absent from protocol v2.

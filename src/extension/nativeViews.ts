@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as vscode from "vscode";
+import { isActiveColumnFilter } from "../shared/filterModel";
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
 import { dataBackendLabel } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
@@ -55,14 +56,22 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
 }
 
 class ViewNode extends vscode.TreeItem {
-  constructor(label: string, description: string, icon: string, command?: vscode.Command, contextValue?: string) {
+  constructor(
+    label: string,
+    description: string,
+    icon: string,
+    command?: vscode.Command,
+    contextValue?: string,
+    disabledReason?: string
+  ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
     this.iconPath = new vscode.ThemeIcon(icon);
     this.command = command;
     this.contextValue = contextValue;
-    this.tooltip = `${label}: ${description}`;
-    this.accessibilityInformation = { label: `${label}, ${description}` };
+    const detail = disabledReason ? `${description}. ${disabledReason}` : description;
+    this.tooltip = `${label}: ${detail}`;
+    this.accessibilityInformation = { label: `${label}, ${detail}` };
   }
 }
 
@@ -189,6 +198,20 @@ export function registerNativeViews(
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
   context.subscriptions.push(
     contextSubscription,
+    vscode.commands.registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
+      const snapshot = coordinator.activeSession();
+      if (
+        typeof column !== "string" ||
+        !snapshot?.viewState.filterModel.filters.some(
+          (filter) => filter.column === column && isActiveColumnFilter(filter)
+        )
+      ) {
+        return;
+      }
+      if (!OpenWranglerPanel.sendEditorAction({ action: "clearFilterColumn", column })) {
+        void vscode.window.showInformationMessage("Open the active dataframe editor before removing a viewing filter.");
+      }
+    }),
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
@@ -486,7 +509,7 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
     (operation) =>
       new ViewNode(
         operation.title,
-        !editable ? "Viewing mode" : metadata.draftStep ? "Apply or discard the current draft" : operation.group,
+        operation.group,
         operation.icon,
         canStart
           ? {
@@ -494,7 +517,13 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
               title: `Start ${operation.title}`,
               arguments: [operation.kind]
             }
-          : undefined
+          : undefined,
+        undefined,
+        !editable
+          ? "Available in editing mode"
+          : metadata.draftStep
+            ? "Apply or discard the current draft first"
+            : undefined
       )
   );
 }
@@ -502,12 +531,11 @@ function operationNodes(metadata: SessionMetadata | undefined): ViewNode[] {
 function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const { metadata, stepInspection } = snapshot;
   const nodes: ViewNode[] = [
-    new ViewNode(
-      "Original data",
-      stepInspection ? "Show the confirmed dataframe view" : "Selected · confirmed dataframe view",
-      "database",
-      { command: "openWrangler.selectStep", title: "Show original data", arguments: [] }
-    )
+    new ViewNode("Original data", stepInspection ? "Show current view" : "Selected", "database", {
+      command: "openWrangler.selectStep",
+      title: "Show original data",
+      arguments: []
+    })
   ];
   nodes.push(
     ...metadata.steps.map((step, index) => {
@@ -533,7 +561,7 @@ function cleaningStepNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   );
   if (metadata.draftStep) {
     const draft = operationByKind(metadata.draftStep.kind);
-    nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing — apply or discard", draft.icon));
+    nodes.push(new ViewNode(`Draft · ${draft.title}`, "Previewing. Apply or discard.", draft.icon));
   }
   return nodes;
 }
@@ -566,12 +594,18 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
 }
 
 function filterNodes(model: FilterModel): ViewNode[] {
-  const filters = model.filters.map(
+  const filters = model.filters.filter(isActiveColumnFilter).map(
     (filter) =>
       new ViewNode(
         filter.column,
-        `${filter.predicates.length} predicates${filter.valueFilter ? " · values" : ""}`,
-        "filter"
+        filterNodeDescription(filter),
+        "filter",
+        {
+          command: "openWrangler.clearViewFilterColumn",
+          title: `Remove ${filter.column} filter`,
+          arguments: [filter.column]
+        },
+        "openWrangler.viewFilter"
       )
   );
   const sorts = model.sort.map(
@@ -584,7 +618,20 @@ function filterNodes(model: FilterModel): ViewNode[] {
   );
   return filters.length || sorts.length
     ? [...filters, ...sorts]
-    : [new ViewNode("No filters or sorts", "Viewing state is separate from cleaning steps", "filter")];
+    : [new ViewNode("No filters or sorts", "Current view", "filter")];
+}
+
+function filterNodeDescription(filter: FilterModel["filters"][number]): string {
+  const parts: string[] = [];
+  if (filter.valueFilter) {
+    const selected = filter.valueFilter.selectedValues.length;
+    if (selected > 0) parts.push(`${selected} selected ${selected === 1 ? "value" : "values"}`);
+    if (filter.valueFilter.includeNulls) parts.push("null");
+    if (filter.valueFilter.includeNaN) parts.push("NaN");
+  }
+  const predicates = filter.predicates.length;
+  if (predicates > 0) parts.push(`${predicates} ${predicates === 1 ? "condition" : "conditions"}`);
+  return parts.join(" · ");
 }
 
 function placeholderCode(snapshot: ActiveSessionSnapshot | undefined): string {

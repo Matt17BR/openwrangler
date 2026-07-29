@@ -1,3 +1,6 @@
+export const installedPerformanceGridRowHeight = 29;
+export const installedPerformanceMaximumCanvasHeight = 16_000_000;
+
 export interface RendererGridScrollMeasurementInput {
   row: number;
   column: number;
@@ -5,6 +8,7 @@ export interface RendererGridScrollMeasurementInput {
   totalColumns: number;
   expectedText: string;
   rowHeight: number;
+  maximumCanvasHeight: number;
   timeoutMs: number;
 }
 
@@ -19,6 +23,7 @@ interface RendererRectangle {
 
 export interface RendererGridMeasurementElement {
   readonly isConnected: boolean;
+  readonly clientHeight: number;
   readonly parentElement: RendererGridMeasurementElement | null;
   readonly textContent: string | null;
   scrollTop: number;
@@ -117,6 +122,17 @@ export function measureRendererGridScroll(
   const viewportWidth = runtime.innerWidth || runtime.document.documentElement?.clientWidth || 0;
   const viewportHeight = runtime.innerHeight || runtime.document.documentElement?.clientHeight || 0;
   const targetSelector = `[data-grid-row="${input.row}"][data-grid-column="${input.column}"]`;
+  const logicalHeight = input.totalRows * input.rowHeight;
+  const scrollViewportHeight = Math.max(
+    input.rowHeight,
+    Math.min(scroller.clientHeight, input.maximumCanvasHeight / 2)
+  );
+  const targetScrollTop =
+    logicalHeight <= input.maximumCanvasHeight
+      ? input.row * input.rowHeight
+      : input.totalRows <= 1
+        ? 0
+        : (input.row / (input.totalRows - 1)) * (input.maximumCanvasHeight - scrollViewportHeight);
 
   const hasVisibleStyle = (element: RendererGridMeasurementElement): boolean => {
     let current: RendererGridMeasurementElement | null = element;
@@ -302,7 +318,7 @@ export function measureRendererGridScroll(
     }, input.timeoutMs);
     try {
       started = runtime.performance.now();
-      scroller.scrollTop = input.row * input.rowHeight;
+      scroller.scrollTop = targetScrollTop;
       lastDiagnostic = observeCommittedTarget(0, 0).diagnostic;
     } catch (error) {
       fail(error instanceof Error ? error : new Error(String(error)));

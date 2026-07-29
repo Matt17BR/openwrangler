@@ -13,6 +13,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  fast-feedback:
+    name: Fast feedback
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Formatting
+        run: npm run format:check
+      - name: ESLint
+        run: npm run lint
+      - name: Strict TypeScript
+        run: npm run typecheck
+      - name: Protocol freshness
+        run: npm run protocol:check
+      - name: Reference freshness
+        run: npm run reference:check
+      - name: Documentation freshness
+        run: npm run docs:check
+      - name: Production license inventory
+        run: npm run license:check
+      - name: Workflow contracts
+        run: node --test scripts/ci-workflow.test.mjs
+
   canonical-vsix:
     runs-on: ubuntu-latest
     steps:

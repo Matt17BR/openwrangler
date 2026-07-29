@@ -1,10 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Open Wrangler faceted table</title>
-  <path d="M22 38 61 54v28L22 66V38Z" fill="#E8FFFD" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="m67 54 39-16v28L67 82V54Z" fill="#EAF2FF" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="M22 66 61 82v24L22 90V66Z" fill="#63DDD5" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="m67 82 39-16v24l-39 16V82Z" fill="#77A7FF" stroke="#102A43" stroke-width="3" stroke-linejoin="round"/>
-  <path d="M41.5 46v28M86.5 46v28M41.5 74v24M86.5 74v24" stroke="#FFFFFF" stroke-opacity="0.52" stroke-width="2"/>
-  <circle cx="106" cy="25" r="10" fill="#FFE36D" stroke="#102A43" stroke-width="3"/>
-  <path d="M106 16v18M97 25h18" stroke="#102A43" stroke-width="2.5" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Open Wrangler tiled off-road convertible</title>
+  <rect x="16" y="16" width="224" height="224" rx="30" fill="#14295F" />
+  <rect x="31" y="116" width="40" height="29" rx="6" fill="#22B8B2" />
+  <rect x="76" y="116" width="40" height="29" rx="6" fill="#22B8B2" />
+  <rect x="121" y="116" width="40" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="166" y="116" width="44" height="29" rx="6" fill="#22B8B2" />
+  <rect x="215" y="121" width="18" height="24" rx="5" fill="#5A7DF0" />
+  <rect x="25" y="150" width="46" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="76" y="150" width="40" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="121" y="150" width="40" height="29" rx="6" fill="#22B8B2" />
+  <rect x="166" y="150" width="44" height="29" rx="6" fill="#5A7DF0" />
+  <rect x="215" y="150" width="18" height="29" rx="5" fill="#22B8B2" />
+  <rect x="83" y="84" width="27" height="29" rx="5" fill="#5A7DF0" />
+  <rect x="90" y="71" width="16" height="11" rx="4" fill="#5A7DF0" />
+  <rect x="122" y="84" width="27" height="29" rx="5" fill="#5A7DF0" />
+  <rect x="129" y="71" width="16" height="11" rx="4" fill="#5A7DF0" />
+  <path d="m163 72 10-3 17 49h-15l-12-46Z" fill="#F6C453" />
+  <path d="M28 180h203v11H28z" fill="#0B1838" />
+  <circle cx="68" cy="188" r="31" fill="#0B1838" />
+  <circle cx="68" cy="188" r="22" fill="#263F7C" />
+  <circle cx="68" cy="188" r="17" fill="#5A7DF0" />
+  <circle cx="68" cy="188" r="7" fill="#14295F" />
+  <circle cx="192" cy="188" r="31" fill="#0B1838" />
+  <circle cx="192" cy="188" r="22" fill="#263F7C" />
+  <circle cx="192" cy="188" r="17" fill="#5A7DF0" />
+  <circle cx="192" cy="188" r="7" fill="#14295F" />
 </svg>

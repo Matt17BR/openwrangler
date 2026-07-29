@@ -28,6 +28,7 @@ from .base import (
     ensure_output_columns_available,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_blank_delimited_file,
     is_internal_row_id_label,
     normalize_cell,
     normalize_page_projection,
@@ -81,11 +82,15 @@ class PandasEngine(DataFrameEngine):
                 if any(isinstance(value, str) and len(value.encode("utf-8")) > 1 for value in (delimiter, quote_char))
                 else None
             )
+            actual_encoding = "utf-8" if lossy_utf8 else requested_encoding
+            encoding_errors: Literal["replace", "strict"] = "replace" if lossy_utf8 else "strict"
+            if is_blank_delimited_file(path, encoding=actual_encoding, errors=encoding_errors):
+                return pd.DataFrame()
             return pd.read_csv(
                 path,
                 sep=delimiter,
-                encoding="utf-8" if lossy_utf8 else requested_encoding,
-                encoding_errors="replace" if lossy_utf8 else "strict",
+                encoding=actual_encoding,
+                encoding_errors=encoding_errors,
                 quotechar=quote_char,
                 header=0 if options.get("hasHeader", True) else None,
                 engine=parser_engine,

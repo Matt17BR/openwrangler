@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import __main__
+import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import SessionManager
@@ -93,6 +94,28 @@ def test_detects_classic_and_connect_dataframes(spark_session: Any) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "raw_type",
+    [
+        "variant",
+        "time(6)",
+        "geometry(4326)",
+        "geography(any)",
+        "interval",
+        "interval year",
+        "interval month",
+        "interval year to month",
+    ],
+)
+def test_classifies_exact_non_profileable_spark_types(raw_type: str) -> None:
+    assert pyspark_engine_module._is_unsupported_profile_type(raw_type)
+
+
+@pytest.mark.parametrize("raw_type", ["void", "custom_type", "interval day to second"])
+def test_does_not_blanket_reject_unknown_or_supported_interval_types(raw_type: str) -> None:
+    assert not pyspark_engine_module._is_unsupported_profile_type(raw_type)
+
+
 def test_rejects_streaming_duplicate_casefold_and_private_schemas(spark_session: Any) -> None:
     engine = PySparkEngine()
     duplicate = spark_session.createDataFrame([(1, 2)], ["value", "value"])
@@ -110,6 +133,47 @@ def test_rejects_streaming_duplicate_casefold_and_private_schemas(spark_session:
     streaming = spark_session.readStream.format("rate").load()
     with pytest.raises(EngineError, match="Streaming"):
         engine.validate_column_addressability(streaming)
+
+
+def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    variant = spark_session.sql("""SELECT parse_json('{"region":"eu"}') AS payload""")
+    monkeypatch.setattr(__main__, "open_wrangler_variant_frame", variant, raising=False)
+    manager = SessionManager()
+
+    with pytest.raises(
+        EngineError,
+        match=r"required viewing profiles.*'payload' \(variant\).*Convert these columns in Spark",
+    ):
+        manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "variableName": "open_wrangler_variant_frame",
+                "label": "open_wrangler_variant_frame",
+            },
+            backend="pyspark",
+        )
+    assert manager.sessions == {}
+
+    # Spark's void type is also semantically unknown to the shared type
+    # classifier, but it supports the required native grouping operations.
+    # Exact unsupported Spark types must fail closed without rejecting every
+    # column that happens to map to the public "unknown" semantic type.
+    supported_unknown = spark_session.sql("SELECT CAST(NULL AS VOID) AS payload")
+    engine = PySparkEngine()
+    engine.validate_column_addressability(supported_unknown)
+    assert engine.schema(supported_unknown) == [
+        {
+            "id": "c:0",
+            "name": "payload",
+            "position": 0,
+            "rawType": "void",
+            "type": "unknown",
+            "nullable": True,
+        }
+    ]
 
 
 def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,6 +234,42 @@ def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.M
     engine.close()
     engine.close()
     assert indexed.unpersist_calls == 1
+
+
+def test_sorted_state_uses_live_frame_identity_not_reusable_numeric_ids(
+    spark_session: Any,
+    sample_frame: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    functions = import_module("pyspark.sql.functions")
+    engine, indexed = _open_engine(sample_frame, "identity")
+    try:
+        # This simulates the CPython object-ID reuse that made the previous
+        # integer-ID side table misclassify an unrelated frame as ordered.
+        monkeypatch.setattr(pyspark_engine_module, "id", lambda _value: 1, raising=False)
+        engine.apply_filter_model(
+            indexed,
+            {
+                "logic": "and",
+                "filters": [],
+                "sort": [{"column": "name", "direction": "asc", "nulls": "last"}],
+            },
+        )
+
+        row_id = engine.internal_row_id_column(indexed)
+        assert isinstance(row_id, str)
+        unrelated_descending = indexed.orderBy(functions.col(f"`{row_id.replace('`', '``')}`").desc())
+        page = engine.page(
+            unrelated_descending,
+            0,
+            10,
+            total_rows=5,
+            column_projection=[(0, "name-id")],
+        )
+        identities = [int(row["id"].rsplit(":", 1)[1]) for row in page["rows"]]
+        assert identities == [0, 1, 2, 3, 4]
+    finally:
+        engine.close()
 
 
 def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(

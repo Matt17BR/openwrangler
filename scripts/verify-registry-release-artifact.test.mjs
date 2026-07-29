@@ -1,0 +1,214 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { ZipFile } from "yazl";
+import {
+  verifyRegistryReleaseArtifact,
+  verifyRegistryReleaseArtifactFromCheckout
+} from "./verify-registry-release-artifact.mjs";
+
+const expectedCommit = "a".repeat(40);
+const releaseTag = "v0.3.0";
+const sourceManifest = Object.freeze({
+  name: "openwrangler",
+  publisher: "Matt17BR",
+  version: "0.3.0",
+  preview: true
+});
+const previewProperty = '<Property Id="Microsoft.VisualStudio.Code.PreRelease" Value="true" />';
+
+function createVsix(packageJson = sourceManifest, property = previewProperty) {
+  const zip = new ZipFile();
+  for (const [name, value] of [
+    ["[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>'],
+    [
+      "extension.vsixmanifest",
+      `<?xml version="1.0" encoding="utf-8"?><PackageManifest xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"><Metadata><Identity Id="openwrangler" Publisher="Matt17BR" Version="0.3.0" /><Properties>${property}</Properties></Metadata></PackageManifest>`
+    ],
+    ["extension/package.json", JSON.stringify(packageJson)],
+    ["extension/LICENSE.txt", "MIT License\n"],
+    ["extension/readme.md", "# Open Wrangler\n"],
+    ["extension/changelog.md", "# Changelog\n"],
+    ["extension/THIRD_PARTY_NOTICES.md", "# Third-party notices\n"],
+    ["extension/dist/extension/activate.js", "export {};"],
+    ["extension/dist/extension/webviewPanel.js", "export {};"],
+    ["extension/media/webview.js", "export {};"],
+    ["extension/media/webview.css", "@font-face{src:url('./codicon.ttf')}"],
+    ["extension/media/codicon.ttf", "font"],
+    ["extension/media/codePreview.js", "export {};"],
+    ["extension/media/notebookRenderer.js", "export function activate() {}"],
+    ["extension/media/activity-icon.svg", "<svg></svg>"],
+    ["extension/media/icon.png", "icon"],
+    ["extension/media/icon-128.png", "icon"],
+    ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
+    ["extension/python/openwrangler_runtime/server.py", "pass\n"],
+    ["extension/python/openwrangler_runtime/version.py", '__version__ = "0.3.0"\n']
+  ]) {
+    zip.addBuffer(Buffer.from(value), name);
+  }
+  return new Promise((resolveBytes, rejectBytes) => {
+    const chunks = [];
+    let length = 0;
+    zip.outputStream.on("data", (chunk) => {
+      chunks.push(chunk);
+      length += chunk.length;
+    });
+    zip.outputStream.once("error", rejectBytes);
+    zip.outputStream.once("end", () => resolveBytes(Buffer.concat(chunks, length)));
+    zip.end();
+  });
+}
+
+async function fixture(context, packageJson = sourceManifest, property = previewProperty) {
+  const directory = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-preview-")));
+  context.after(() => rmSync(directory, { force: true, recursive: true }));
+  const vsix = await createVsix(packageJson, property);
+  const digest = createHash("sha256").update(vsix).digest("hex");
+  writeFileSync(join(directory, "openwrangler.vsix"), vsix);
+  writeFileSync(join(directory, "openwrangler.vsix.sha256"), `${digest}  openwrangler.vsix\n`);
+  return { digest, directory, vsix };
+}
+
+test("preview registry consumer binds checksum, tag source, package identity, and VSIX pre-release metadata", async (context) => {
+  const release = await fixture(context);
+  assert.deepEqual(
+    await verifyRegistryReleaseArtifact({
+      directory: release.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    {
+      candidateBytes: release.vsix.length,
+      candidatePath: join(release.directory, "openwrangler.vsix"),
+      candidateSha256: release.digest,
+      extensionId: "Matt17BR.openwrangler",
+      prerelease: true,
+      releaseTag,
+      sourceCommit: expectedCommit,
+      version: "0.3.0"
+    }
+  );
+});
+
+test("preview registry consumer rejects stable flags, source drift, extra files, and checksum drift", async (context) => {
+  const stableFlag = await fixture(context, { ...sourceManifest, preview: false });
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: stableFlag.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /invalid|does not match/u
+  );
+
+  const sourceDrift = await fixture(context);
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: sourceDrift.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify({ ...sourceManifest, version: "0.3.1" })
+    }),
+    /selected release source is invalid/u
+  );
+
+  const packagedManifestDrift = await fixture(context, {
+    ...sourceManifest,
+    description: "different packaged metadata"
+  });
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: packagedManifestDrift.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /does not match/u
+  );
+
+  const extra = await fixture(context);
+  writeFileSync(join(extra.directory, "unexpected.txt"), "x");
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: extra.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /exactly its VSIX and checksum/u
+  );
+
+  const checksum = await fixture(context);
+  writeFileSync(join(checksum.directory, "openwrangler.vsix.sha256"), `${"b".repeat(64)}  openwrangler.vsix\n`);
+  await assert.rejects(
+    verifyRegistryReleaseArtifact({
+      directory: checksum.directory,
+      expectedCommit,
+      prerelease: true,
+      releaseTag,
+      sourcePackageJson: JSON.stringify(sourceManifest)
+    }),
+    /checksum/u
+  );
+});
+
+test("historical verification keeps current automation HEAD separate from the immutable release tag", async (context) => {
+  const release = await fixture(context);
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-registry-history-")));
+  context.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...arguments_) =>
+    execFileSync("git", arguments_, {
+      cwd: root,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+      windowsHide: true
+    }).trim();
+  git("init", "--initial-branch=main");
+  git("config", "user.email", "tests@openwrangler.invalid");
+  git("config", "user.name", "Open Wrangler tests");
+  writeFileSync(join(root, "package.json"), `${JSON.stringify(sourceManifest)}\n`);
+  git("add", "package.json");
+  git("commit", "-m", "release source");
+  const taggedCommit = git("rev-parse", "HEAD");
+  git("tag", releaseTag);
+  mkdirSync(join(root, "scripts"));
+  writeFileSync(join(root, "scripts", "promotion.mjs"), "export {};\n");
+  git("add", "scripts/promotion.mjs");
+  git("commit", "-m", "add later automation");
+  const automationCommit = git("rev-parse", "HEAD");
+
+  const receipt = await verifyRegistryReleaseArtifactFromCheckout({
+    automationCommit,
+    directory: release.directory,
+    expectedCommit: taggedCommit,
+    prerelease: true,
+    releaseTag,
+    root
+  });
+  assert.equal(receipt.sourceCommit, taggedCommit);
+  assert.notEqual(automationCommit, taggedCommit);
+
+  await assert.rejects(
+    verifyRegistryReleaseArtifactFromCheckout({
+      automationCommit,
+      directory: release.directory,
+      expectedCommit: automationCommit,
+      prerelease: true,
+      releaseTag,
+      root
+    }),
+    /no longer resolves/u
+  );
+});

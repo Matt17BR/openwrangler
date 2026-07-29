@@ -47,6 +47,39 @@ describe("SessionCoordinator", () => {
     expect(observeRejection.mock.calls[0][0]).toBeTypeOf("function");
   });
 
+  it("translates live Excel sheet discovery through the confirmed runtime identity only", async () => {
+    const source = {
+      kind: "file" as const,
+      label: "workbook.xlsx",
+      path: "/workspace/workbook.xlsx",
+      uri: "file:///workspace/workbook.xlsx",
+      importOptions: { sheetIndex: 0 }
+    };
+    const runtimeOpened = openedResponse("private-excel", "polars");
+    runtimeOpened.metadata = { ...runtimeOpened.metadata, source };
+    const listExcelSheets = vi.fn(async () => ["Overview", "Sales"]);
+    const delegate: OpenWranglerBridge = {
+      request: vi.fn(async (): Promise<OpenWranglerResponse> => runtimeOpened),
+      listExcelSheets
+    };
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge(delegate);
+    const opened = await bridge.request({ ...openRequest, source });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the workbook session to open.");
+
+    await expect(bridge.listExcelSheets?.(opened.metadata.sessionId, source, "polars")).resolves.toEqual([
+      "Overview",
+      "Sales"
+    ]);
+    expect(listExcelSheets).toHaveBeenCalledWith("private-excel", source, "polars", undefined);
+
+    await expect(
+      bridge.listExcelSheets?.(opened.metadata.sessionId, { ...source, path: "/workspace/other.xlsx" }, "polars")
+    ).resolves.toBeUndefined();
+    await expect(bridge.listExcelSheets?.(opened.metadata.sessionId, source, "pandas")).resolves.toBeUndefined();
+    expect(listExcelSheets).toHaveBeenCalledOnce();
+  });
+
   it("keeps bounded notebook-output snapshots ephemeral and ignores stale persisted state", async () => {
     const source = { kind: "notebookOutput" as const, label: "Saved sales preview" };
     const runtimeOpened = openedResponse();
