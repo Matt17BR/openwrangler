@@ -1174,12 +1174,13 @@ test("editor downloads never retry an attempt whose process tree was not release
   assert.equal(calls, 1);
 });
 
-test("downloaded macOS editors use the official CLI resolver instead of the GUI binary", () => {
-  const executable = "/Applications/Visual Studio Code.app/Contents/MacOS/Electron";
-  assert.equal(
-    resolveDownloadedEditorCliPath(executable, "darwin"),
-    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
-  );
+test("downloaded macOS editors use the official CLI resolver for current and legacy GUI binaries", () => {
+  for (const executableName of ["Code", "Electron"]) {
+    assert.equal(
+      resolveDownloadedEditorCliPath(`/Applications/Visual Studio Code.app/Contents/MacOS/${executableName}`, "darwin"),
+      "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    );
+  }
   assert.equal(resolveDownloadedEditorCliPath("C:\\VSCode\\Code.exe", "win32"), "C:\\VSCode\\bin\\code.cmd");
   assert.equal(
     resolveDownloadedEditorCliPath("C:\\VSCode Insiders\\Code - Insiders.exe", "win32"),
