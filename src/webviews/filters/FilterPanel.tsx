@@ -10,7 +10,9 @@ import type {
 } from "../../shared/filterModel";
 import {
   ambiguousViewColumnMessage,
+  compactColumnFilter,
   countViewColumnNames,
+  isActiveColumnFilter,
   supportsTypedViewComparison,
   viewPredicateOperators
 } from "../../shared/filterModel";
@@ -45,9 +47,13 @@ export function FilterPanel({
   const [predicateValue, setPredicateValue] = useState("");
   const [secondPredicateValue, setSecondPredicateValue] = useState("");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const modelSortKey = sortRulesKey(model.sort);
+  const [sortEditor, setSortEditor] = useState(() => ({ modelKey: modelSortKey, rules: model.sort }));
+  const draftSort = sortEditor.modelKey === modelSortKey ? sortEditor.rules : model.sort;
   const [sortOpen, setSortOpen] = useState(model.sort.length > 0);
   const [advanced, setAdvanced] = useState(defaultAdvanced);
   const viewColumnNameCounts = useMemo(() => countViewColumnNames(metadata?.schema ?? []), [metadata?.schema]);
+  const activeFilters = model.filters.filter(isActiveColumnFilter);
 
   useEffect(() => {
     const requestedColumnChanged = previousRequestedColumn.current !== requestedColumn;
@@ -77,7 +83,7 @@ export function FilterPanel({
     : (availableOperators[0] ?? "isNull");
   const columnValueResponse = activeColumn && !activeColumnAmbiguous ? values.get(activeColumn) : undefined;
 
-  const activeFilter = model.filters.find((item) => item.column === activeColumn);
+  const activeFilter = activeFilters.find((item) => item.column === activeColumn);
   const selectedValues = new Map(
     (activeFilter?.valueFilter?.selectedValues ?? []).map((value) => [selectionValueKey(value), value])
   );
@@ -87,9 +93,53 @@ export function FilterPanel({
   }
 
   const updateFilter = (nextFilter: ColumnFilter) => {
-    if (viewQueryControlsDisabled || !nextFilter.column) return;
-    const filters = model.filters.filter((item) => item.column !== nextFilter.column);
-    onApply({ ...model, filters: [...filters, nextFilter] });
+    if (disabled || !nextFilter.column) return;
+    const compactFilter = compactColumnFilter(nextFilter);
+    let replaced = false;
+    const filters = model.filters.flatMap((item) => {
+      if (item.column !== nextFilter.column) return isActiveColumnFilter(item) ? [item] : [];
+      if (replaced) return [];
+      replaced = true;
+      return compactFilter ? [compactFilter] : [];
+    });
+    if (!replaced && compactFilter) filters.push(compactFilter);
+    onApply({ ...model, filters });
+  };
+
+  const removeColumnFilter = (column: string) => {
+    if (disabled) return;
+    onApply({ ...model, filters: activeFilters.filter((item) => item.column !== column) });
+  };
+
+  const removePredicate = (filter: ColumnFilter, index: number) => {
+    if (disabled) return;
+    updateFilter({
+      ...filter,
+      predicates: filter.predicates.filter((_, candidateIndex) => candidateIndex !== index)
+    });
+  };
+
+  const removeSelectedValue = (filter: ColumnFilter, value: unknown) => {
+    if (disabled || !filter.valueFilter) return;
+    const key = selectionValueKey(value);
+    updateFilter({
+      ...filter,
+      valueFilter: {
+        ...filter.valueFilter,
+        selectedValues: filter.valueFilter.selectedValues.filter((candidate) => selectionValueKey(candidate) !== key)
+      }
+    });
+  };
+
+  const removeValueFlag = (filter: ColumnFilter, flag: "includeNulls" | "includeNaN") => {
+    if (disabled || !filter.valueFilter) return;
+    updateFilter({
+      ...filter,
+      valueFilter: {
+        ...filter.valueFilter,
+        [flag]: false
+      }
+    });
   };
 
   const toggleValue = (value: unknown) => {
@@ -106,7 +156,7 @@ export function FilterPanel({
     updateFilter({
       column: activeColumn,
       type: columnSchema.type,
-      logic: model.filters.find((item) => item.column === activeColumn)?.logic ?? "and",
+      logic: activeFilter?.logic ?? "and",
       valueFilter: {
         kind: "values",
         selectedValues: [...nextSelected.values()],
@@ -114,7 +164,7 @@ export function FilterPanel({
         includeNaN: false,
         search
       },
-      predicates: model.filters.find((item) => item.column === activeColumn)?.predicates ?? []
+      predicates: activeFilter?.predicates ?? []
     });
   };
 
@@ -128,7 +178,7 @@ export function FilterPanel({
     ) {
       return;
     }
-    const existing = model.filters.find((item) => item.column === activeColumn);
+    const existing = activeFilter;
     const predicate = createPredicate(activePredicateOperator, predicateValue, secondPredicateValue, columnSchema.type);
     updateFilter({
       column: activeColumn,
@@ -143,14 +193,32 @@ export function FilterPanel({
 
   const applySort = () => {
     if (viewQueryControlsDisabled || !columnSchema || !activeColumn || !supportsTypedComparison) return;
-    onApply({
-      ...model,
-      sort: [
-        ...model.sort.filter((rule) => rule.column !== activeColumn),
-        { column: activeColumn, direction: sortDirection, nulls: "last" }
-      ]
+    const existingIndex = draftSort.findIndex((rule) => rule.column === activeColumn);
+    const nextRule = { column: activeColumn, direction: sortDirection, nulls: "last" as const };
+    setSortEditor({
+      modelKey: modelSortKey,
+      rules:
+        existingIndex < 0
+          ? [...draftSort, nextRule]
+          : draftSort.map((rule, index) => (index === existingIndex ? nextRule : rule))
     });
   };
+
+  const removeSort = (index: number) => {
+    if (disabled) return;
+    setSortEditor({ modelKey: modelSortKey, rules: draftSort.filter((_, ruleIndex) => ruleIndex !== index) });
+  };
+
+  const toggleSortDirection = (index: number) => {
+    if (disabled) return;
+    setSortEditor({
+      modelKey: modelSortKey,
+      rules: draftSort.map((rule, ruleIndex) =>
+        ruleIndex === index ? { ...rule, direction: rule.direction === "asc" ? "desc" : "asc" } : rule
+      )
+    });
+  };
+  const sortDirty = !sameSortRules(draftSort, model.sort);
 
   const clearColumn = () => {
     if (disabled || !columnSchema || !activeColumn) return;
@@ -169,6 +237,16 @@ export function FilterPanel({
           Clear all
         </button>
       </div>
+
+      <ActiveFilterOverview
+        filters={activeFilters}
+        metadata={metadata}
+        disabled={disabled}
+        onRemoveColumn={removeColumnFilter}
+        onRemovePredicate={removePredicate}
+        onRemoveSelectedValue={removeSelectedValue}
+        onRemoveValueFlag={removeValueFlag}
+      />
 
       <details className="filterSection" open>
         <summary>FILTERS</summary>
@@ -263,11 +341,12 @@ export function FilterPanel({
           {advanced && (
             <select
               aria-label="Condition combination"
-              value={model.filters.find((item) => item.column === activeColumn)?.logic ?? "and"}
+              value={activeFilter?.logic ?? "and"}
               disabled={viewQueryControlsDisabled || !hasActiveColumn}
               onChange={(event) => {
                 if (!columnSchema || !activeColumn) return;
-                const existing = model.filters.find((item) => item.column === activeColumn);
+                const existing = activeFilter;
+                if (!existing) return;
                 updateFilter({
                   column: activeColumn,
                   type: columnSchema.type,
@@ -331,15 +410,6 @@ export function FilterPanel({
           </p>
         )}
 
-        <div className="activeRules">
-          {(model.filters.find((item) => item.column === activeColumn)?.predicates ?? []).map((predicate, index) => (
-            <span key={`${predicate.operator}-${index}`} className="rulePill">
-              {predicate.operator}
-              {predicate.value === undefined ? "" : ` ${String(predicate.value)}`}
-            </span>
-          ))}
-        </div>
-
         <button type="button" disabled={disabled || !hasActiveColumn} onClick={clearColumn}>
           Clear column
         </button>
@@ -377,24 +447,291 @@ export function FilterPanel({
             disabled={viewQueryControlsDisabled || !hasActiveColumn || !supportsTypedComparison}
             onClick={applySort}
           >
-            Add sort
+            {draftSort.some((rule) => rule.column === activeColumn) ? "Update sort" : "Add to sort"}
           </button>
         </div>
-        <div className="activeRules">
-          {model.sort.length === 0 && <span className="mutedText">No active sorts.</span>}
-          {model.sort.map((rule) => (
-            <span key={rule.column} className="rulePill">
-              {rule.column} {rule.direction === "asc" ? "asc" : "desc"}
-            </span>
-          ))}
+        <p className="panelNote">
+          {draftSort.some((rule) => rule.column === activeColumn)
+            ? "Update this column in place without changing its priority."
+            : "Add this column after the existing rules. Header sorting replaces this list with one primary sort."}{" "}
+          Changes stay local until you apply the sort order.
+        </p>
+        <div className="sortRulesHeader">
+          <strong>Active sort order</strong>
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={disabled || draftSort.length === 0}
+            onClick={() => setSortEditor({ modelKey: modelSortKey, rules: [] })}
+          >
+            Clear all sorts
+          </button>
+        </div>
+        <div className="activeRules" aria-live="polite">
+          {draftSort.length === 0 && <span className="mutedText">No active sorts.</span>}
+          {draftSort.length > 0 && (
+            <ol className="sortRuleList" aria-label="Active sort order">
+              {draftSort.map((rule, index) => {
+                const directionLabel = rule.direction === "asc" ? "ascending" : "descending";
+                const nextDirectionLabel = rule.direction === "asc" ? "descending" : "ascending";
+                return (
+                  <li key={rule.column} className="sortRule">
+                    <span className="sortRulePriority" aria-hidden="true">
+                      {index + 1}
+                    </span>
+                    <span className="sortRuleColumn">{rule.column}</span>
+                    <button
+                      type="button"
+                      className="secondaryButton sortDirectionButton"
+                      disabled={disabled}
+                      aria-label={`Change sort ${index + 1}, ${rule.column}, to ${nextDirectionLabel}`}
+                      onClick={() => toggleSortDirection(index)}
+                    >
+                      <span
+                        className={`codicon ${rule.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"}`}
+                        aria-hidden="true"
+                      />
+                      {directionLabel}
+                    </button>
+                    <button
+                      type="button"
+                      className="iconButton codicon codicon-close"
+                      disabled={disabled}
+                      aria-label={`Remove sort ${index + 1}, ${rule.column}, ${directionLabel}`}
+                      onClick={() => removeSort(index)}
+                    />
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+        <div className="sortApplyActions">
+          <button
+            type="button"
+            disabled={disabled || !sortDirty}
+            onClick={() => onApply({ ...model, sort: draftSort })}
+          >
+            Apply sort order
+          </button>
+          <button
+            type="button"
+            className="secondaryButton"
+            disabled={disabled || !sortDirty}
+            onClick={() => setSortEditor({ modelKey: modelSortKey, rules: model.sort })}
+          >
+            Discard sort changes
+          </button>
         </div>
       </details>
     </section>
   );
 }
 
+const sameSortRules = (left: FilterModel["sort"], right: FilterModel["sort"]): boolean =>
+  left.length === right.length &&
+  left.every(
+    (rule, index) =>
+      rule.column === right[index]?.column &&
+      rule.direction === right[index]?.direction &&
+      rule.nulls === right[index]?.nulls
+  );
+
+const sortRulesKey = (rules: FilterModel["sort"]): string =>
+  JSON.stringify(rules.map((rule) => [rule.column, rule.direction, rule.nulls]));
+
+interface ActiveFilterOverviewProps {
+  filters: ColumnFilter[];
+  metadata: SessionMetadata;
+  disabled: boolean;
+  onRemoveColumn(column: string): void;
+  onRemovePredicate(filter: ColumnFilter, index: number): void;
+  onRemoveSelectedValue(filter: ColumnFilter, value: unknown): void;
+  onRemoveValueFlag(filter: ColumnFilter, flag: "includeNulls" | "includeNaN"): void;
+}
+
+function ActiveFilterOverview({
+  filters,
+  metadata,
+  disabled,
+  onRemoveColumn,
+  onRemovePredicate,
+  onRemoveSelectedValue,
+  onRemoveValueFlag
+}: ActiveFilterOverviewProps) {
+  return (
+    <section className="activeFilterOverview" aria-label="Active filters">
+      <header>
+        <strong>Active filters</strong>
+        <span className="mutedText">
+          {filters.length} filtered {filters.length === 1 ? "column" : "columns"}
+        </span>
+      </header>
+      {filters.length === 0 ? (
+        <p className="mutedText">No active filters.</p>
+      ) : (
+        <div className="activeFilterList">
+          {filters.map((filter) => {
+            const columnLabel = activeFilterColumnLabel(filter.column, metadata);
+            return (
+              <section key={filter.column} className="activeFilterGroup" aria-label={`${columnLabel} filters`}>
+                <header>
+                  <span>
+                    <strong>{columnLabel}</strong>
+                    <small>{filter.logic === "or" ? "Match any" : "Match all"}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="compactTextButton"
+                    disabled={disabled}
+                    aria-label={`Clear filter for ${columnLabel}`}
+                    onClick={() => onRemoveColumn(filter.column)}
+                  >
+                    Clear
+                  </button>
+                </header>
+                <div className="activeRules">
+                  {(filter.valueFilter?.selectedValues ?? []).map((value) => {
+                    const summary = `equals ${filterValueLabel(value)}`;
+                    return (
+                      <FilterRuleButton
+                        key={`value:${selectionValueKey(value)}`}
+                        columnLabel={columnLabel}
+                        summary={summary}
+                        disabled={disabled}
+                        onClick={() => onRemoveSelectedValue(filter, value)}
+                      />
+                    );
+                  })}
+                  {filter.valueFilter?.includeNulls && (
+                    <FilterRuleButton
+                      columnLabel={columnLabel}
+                      summary="is null"
+                      disabled={disabled}
+                      onClick={() => onRemoveValueFlag(filter, "includeNulls")}
+                    />
+                  )}
+                  {filter.valueFilter?.includeNaN && (
+                    <FilterRuleButton
+                      columnLabel={columnLabel}
+                      summary="is NaN"
+                      disabled={disabled}
+                      onClick={() => onRemoveValueFlag(filter, "includeNaN")}
+                    />
+                  )}
+                  {filter.predicates.map((predicate, index) => (
+                    <FilterRuleButton
+                      key={`predicate:${predicate.operator}:${index}`}
+                      columnLabel={columnLabel}
+                      summary={predicateLabel(predicate)}
+                      disabled={disabled}
+                      onClick={() => onRemovePredicate(filter, index)}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FilterRuleButton({
+  columnLabel,
+  summary,
+  disabled,
+  onClick
+}: {
+  columnLabel: string;
+  summary: string;
+  disabled: boolean;
+  onClick(): void;
+}) {
+  return (
+    <button
+      type="button"
+      className="rulePill rulePillButton"
+      disabled={disabled}
+      aria-label={`Remove ${summary} filter from ${columnLabel}`}
+      title={`Remove ${summary} filter from ${columnLabel}`}
+      onClick={onClick}
+    >
+      <span>{summary}</span>
+      <span className="codicon codicon-close" aria-hidden="true" />
+    </button>
+  );
+}
+
 const columnOptionLabel = (name: string, position: number, nameCounts: ReadonlyMap<string, number>): string =>
   (nameCounts.get(name) ?? 0) > 1 ? `${name} (column ${position + 1})` : name;
+
+const activeFilterColumnLabel = (name: string, metadata: SessionMetadata): string => {
+  const display = name === "" ? "(empty name)" : name;
+  const matches = metadata.schema.filter((column) => column.name === name);
+  if (matches.length === 1) return display;
+  if (matches.length > 1) return `${display} (ambiguous duplicate name)`;
+  return `${display} (unavailable column)`;
+};
+
+const predicateLabels: Readonly<Record<PredicateOperator, string>> = {
+  equals: "equals",
+  notEquals: "does not equal",
+  contains: "contains",
+  startsWith: "starts with",
+  endsWith: "ends with",
+  gt: "is greater than",
+  gte: "is at least",
+  lt: "is less than",
+  lte: "is at most",
+  between: "is between",
+  isNull: "is null",
+  isNotNull: "is not null",
+  isNaN: "is NaN",
+  isNotNaN: "is not NaN"
+};
+
+const predicateLabel = (predicate: PredicateFilter): string => {
+  const operator = predicateLabels[predicate.operator];
+  if (!operatorRequiresValue(predicate.operator)) return operator;
+  const value = filterValueLabel(predicate.value);
+  return predicate.operator === "between"
+    ? `${operator} ${value} and ${filterValueLabel(predicate.secondValue)}`
+    : `${operator} ${value}`;
+};
+
+const filterValueLabel = (value: unknown): string => {
+  if (isTypedSelectionToken(value)) {
+    const display = value.cell.isNull
+      ? "null"
+      : value.cell.isNaN
+        ? "NaN"
+        : value.cell.kind === "string"
+          ? quotedCompactText(value.cell.display)
+          : compactText(value.cell.display);
+    return `${display} (${value.cell.kind})`;
+  }
+  if (typeof value === "string") return quotedCompactText(value);
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN (number)";
+    if (value === Number.POSITIVE_INFINITY) return "Infinity (number)";
+    if (value === Number.NEGATIVE_INFINITY) return "-Infinity (number)";
+    return `${String(value)} (number)`;
+  }
+  if (typeof value === "boolean") return `${String(value)} (boolean)`;
+  if (value === undefined) return "(missing value)";
+  try {
+    return `${compactText(JSON.stringify(value))} (${Array.isArray(value) ? "array" : "object"})`;
+  } catch {
+    return "(unprintable value)";
+  }
+};
+
+const quotedCompactText = (value: string): string => compactText(JSON.stringify(value));
+
+const compactText = (value: string): string => (value.length <= 48 ? value : `${value.slice(0, 45)}…`);
 
 const selectionValueKey = (value: unknown): string => {
   if (isTypedSelectionToken(value)) {

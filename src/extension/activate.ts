@@ -8,7 +8,7 @@ import { registerRuntimeCommands } from "./runtimeCommands";
 import { registerNativeViews, type NotebookInsertionDiagnosticStatus } from "./nativeViews";
 import { OpenWranglerPanel } from "./webviewPanel";
 import type { GridViewState } from "../shared/viewState";
-import type { OpenWranglerResponse } from "../shared/protocol";
+import type { OpenWranglerRequest, OpenWranglerResponse, SessionOpenedResponse } from "../shared/protocol";
 
 export interface OpenWranglerTestApi {
   request: ReturnType<SessionCoordinator["createBridge"]>["request"];
@@ -16,6 +16,9 @@ export interface OpenWranglerTestApi {
   activeSession: SessionCoordinator["activeSession"];
   updateViewState(sessionId: string, state: GridViewState): Promise<void>;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  previewPanelStep(
+    request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
+  ): Promise<SessionOpenedResponse | undefined>;
   panelHydrated(sessionId: string): boolean;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
   requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
@@ -72,6 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
         activeSession: () => coordinator.activeSession(),
         updateViewState: async (sessionId, state) => coordinatedBridge.updateViewState?.(sessionId, state),
         synchronizePanel: (sessionId) => OpenWranglerPanel.synchronizePanelForSession(sessionId),
+        previewPanelStep: (request) => OpenWranglerPanel.previewStepForSessionForTesting(request),
         panelHydrated: (sessionId) => OpenWranglerPanel.panelHydratedForSession(sessionId),
         cancelViewRequests: (sessionId, viewRequestIds) =>
           coordinatedBridge.cancelViewRequests?.(sessionId, viewRequestIds),

@@ -12,15 +12,23 @@ const FEATURE_PARITY_HEADING = "Feature parity matrix";
 const README_RELEASE_SECTION_START = "<!-- open-wrangler-release-status:start -->";
 const README_RELEASE_SECTION_END = "<!-- open-wrangler-release-status:end -->";
 const RELEASES_URL = "https://github.com/Matt17BR/openwrangler/releases";
-const FEATURE_PARITY_URL = "https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md";
-const README_EDITOR_SUPPORT = `| Editor                                          | Support      | Release coverage                                       |
-| ----------------------------------------------- | ------------ | ------------------------------------------------------ |
-| VS Code                                         | First-class  | Full automated and release matrix                      |
-| Cursor                                          | First-class  | Full automated and release matrix                      |
-| Other VS Code-based IDEs, including Antigravity | Experimental | Best-effort; bounded smokes after Open VSX publication |
-| Browser-hosted \`vscode.dev\`                     | Unsupported  | No local Python/runtime extension host                 |
-
-Google says [Antigravity's editor is based on VS Code and downloads extensions from Open VSX](https://antigravity.google/docs/editor?app=antigravity). Open VSX publication can make Open Wrangler discoverable there; it does not certify compatibility. Experimental editors receive isolated functional smokes and do not inherit the VS Code/Cursor support guarantee.`;
+const MARKETPLACE_URL = "https://marketplace.visualstudio.com/items?itemName=Matt17BR.openwrangler";
+const OPEN_VSX_URL = "https://open-vsx.org/extension/Matt17BR/openwrangler";
+const CI_URL = "https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml";
+const LICENSE_URL = "https://github.com/Matt17BR/openwrangler/blob/main/LICENSE";
+const STABLE_BADGES = `<p align="center">
+  <a href="${RELEASES_URL}"><img src="https://img.shields.io/github/v/release/Matt17BR/openwrangler?display_name=tag&amp;sort=semver" alt="Latest GitHub release"></a>
+  <a href="${CI_URL}"><img src="https://github.com/Matt17BR/openwrangler/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="${MARKETPLACE_URL}"><img src="https://vsmarketplacebadges.dev/version-short/Matt17BR.openwrangler.svg" alt="Visual Studio Marketplace version"></a>
+  <a href="${OPEN_VSX_URL}"><img src="https://img.shields.io/open-vsx/v/Matt17BR/openwrangler?label=Open%20VSX" alt="Open VSX version"></a>
+  <a href="${LICENSE_URL}"><img src="https://img.shields.io/github/license/Matt17BR/openwrangler" alt="MIT license"></a>
+</p>`;
+const README_EDITOR_SUPPORT = `| Editor                      | Support        |
+| --------------------------- | -------------- |
+| VS Code                     | Release-tested |
+| Cursor                      | Release-tested |
+| Other VS Code desktop forks | Experimental   |
+| Browser-hosted \`vscode.dev\` | Unsupported    |`;
 const CHANGELOG_CATEGORIES = new Set(["Added", "Changed", "Fixed", "Removed", "Security"]);
 const ISO_DATE = /^(?:0|[1-9]\d{3,})-(\d{2})-(\d{2})$/u;
 const CHANGELOG_HEADING = /^\[([^\]\r\n]+)\] - ([^\r\n]+)$/u;
@@ -31,15 +39,13 @@ const FUTURE_EVIDENCE =
 
 export const PREVIEW_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** Active preview. Prebuilt releases are not published yet; the [1.0 parity matrix](${FEATURE_PARITY_URL}) remains open.
+> **Release status:** Preview. Interfaces and behavior may change between builds.
 
 ## Install
 
-Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
-
 ${README_EDITOR_SUPPORT}
 
-To try the current preview from a clone of this repository:
+Build the preview VSIX from a clone:
 
 \`\`\`bash
 npm install
@@ -50,47 +56,37 @@ npm run package -- --pre-release --out openwrangler.vsix
 
 On Windows, use \`py -m venv .venv\` and \`.venv\\Scripts\\python.exe\` in the equivalent commands.
 
-In the Extensions view, choose **Views and More Actions → Install from VSIX…**, select \`openwrangler.vsix\`, then open a supported data file and choose **Open in Open Wrangler** from its editor action or context menu.
-
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. Multi-root workspaces follow the environment selected for each source, and open sessions recover when that selection changes. It checks only the packages required for the chosen backend and file format. If anything is missing, it names the exact interpreter and dependencies and asks before running \`pip\`; it never installs packages silently. If an editor or machine stops during that change, the environment stays blocked until the guarded revalidation command proves it is consistent.
-
-Cold engine and notebook-kernel startup has its own bounded timeout, separate from recovery timeouts after a session is open; both are configurable in Open Wrangler settings.
-
-Open Wrangler itself remains a preview and does not yet claim complete Microsoft Data Wrangler parity.
+In the Extensions view, choose **Views and More Actions → Install from VSIX…** and select \`openwrangler.vsix\`. Open Wrangler requires Python 3.10 through 3.14. It uses your configured or selected environment and asks before installing any missing package.
 
 ${README_RELEASE_SECTION_END}`;
 
 export const STABLE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** Stable. Install the checksummed VSIX from [GitHub Releases](${RELEASES_URL}).
+${STABLE_BADGES}
 
 ## Install
 
-Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
+- [Visual Studio Marketplace](${MARKETPLACE_URL})
+- [Open VSX](${OPEN_VSX_URL})
+- Manual or offline install from a [checksummed GitHub Release](${RELEASES_URL})
+
+For a downloaded VSIX, open the Extensions view and choose **Views and More Actions → Install from VSIX…**.
 
 ${README_EDITOR_SUPPORT}
 
-Download both \`openwrangler.vsix\` and \`openwrangler.vsix.sha256\` from the matching [GitHub Release](${RELEASES_URL}), verify the checksum, then choose **Views and More Actions → Install from VSIX…** in the Extensions view.
-
-Open Wrangler resolves your configured Python path, selected Python environment, or a system interpreter in that order. It checks only the packages required for the chosen backend and file format, names the exact interpreter and dependencies, and asks before running \`pip\`; it never installs packages silently.
-
-This stable release satisfies every in-scope row in the checked-in [feature parity matrix](${FEATURE_PARITY_URL}).
+Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python path, selected environment, or a supported system interpreter. Missing packages are listed before the extension offers an explicit, confirm-before-install action.
 
 ${README_RELEASE_SECTION_END}`;
 
 export const PERFORMANCE_EVIDENCE_README_RELEASE_SECTION = `${README_RELEASE_SECTION_START}
 
-> **Release status:** 1.0 validation candidate, not a stable release. The final two installed-editor performance rows remain open in the [feature parity matrix](${FEATURE_PARITY_URL}).
+> **Release status:** Validation candidate. This build is not for distribution.
 
 ## Install
 
-Open Wrangler requires Python 3.10–3.14 and a compatible desktop editor.
-
 ${README_EDITOR_SUPPORT}
 
-There is no public installation for this evidence-only candidate. It is built and installed only inside isolated hosted validation and must not be published to GitHub Releases, the Visual Studio Marketplace, or Open VSX.
-
-After the hosted evidence is green, the two remaining rows must be marked complete and a fresh all-green stable candidate must be built. The evidence-only VSIX is never renamed or promoted.
+This candidate is installed only by the isolated validation workflow. Use a stable release for normal installation.
 
 ${README_RELEASE_SECTION_END}`;
 
@@ -190,7 +186,7 @@ function inspectEvidence(evidence, trackedEvidencePaths) {
   }
   const humanText = evidence
     .replace(EVIDENCE_REFERENCE, "")
-    .replace(/[`*_~()[\]—–:;,.]/gu, " ")
+    .replace(/[`*_~()[\]\u2014\u2013:;,.]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   if (humanText.length < 8 || !/[\p{L}\p{N}]/u.test(humanText) || FUTURE_EVIDENCE.test(humanText)) {

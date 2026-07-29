@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       publish:
-        description: Create the GitHub stable release after every acceptance job passes
+        description: Publish to GitHub and Open VSX and trigger Marketplace promotion
         required: true
         default: false
         type: boolean
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: stable-release-${{ github.sha }}
+  group: stable-release-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -49,23 +49,15 @@ jobs:
           test "$(git rev-parse --verify HEAD^{commit})" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain --untracked-files=no)"
           test "$(git rev-parse --verify refs/remotes/origin/main^{commit})" = "$EXPECTED_SHA"
-      - name: Reject an existing remote release tag
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set +e
-          git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null
-          status=$?
-          set -e
-          case "$status" in
-            2) ;;
-            0) echo "Refusing to replace existing remote tag $RELEASE_TAG." >&2; exit 1 ;;
-            *) exit "$status" ;;
-          esac
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
           cache: npm
+      - name: Require the remote release tag to be absent or exact
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
@@ -625,11 +617,11 @@ jobs:
           test "$REMOTE_SSH_RESULT" = "success"
 
   release:
-    name: Create GitHub stable release
+    name: Publish GitHub/Open VSX and trigger Marketplace
     needs: [package, acceptance-gate]
     if: ${{ inputs.publish == true }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 40
     environment: publishing
     permissions:
       contents: write
@@ -656,37 +648,58 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
       - run: npm run verify:vsix -- canonical-release/openwrangler.vsix
-      - name: Recheck that the remote release tag is absent
+      - name: Recheck that the remote release tag is absent or exact
         env:
+          EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          set +e
-          git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" >/dev/null
-          status=$?
-          set -e
-          case "$status" in
-            2) ;;
-            0) echo "Refusing to replace existing remote tag $RELEASE_TAG." >&2; exit 1 ;;
-            *) exit "$status" ;;
-          esac
+        run: node scripts/prepare-stable-candidate-tag.mjs --verify-remote
       - id: canonical_release
         name: Reverify the exact canonical artifact for final publication
         env:
           EXPECTED_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/verify-canonical-release-artifact.mjs canonical-release
-      - name: Create the stable GitHub release without rebuilding
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          tag_name: ${{ inputs.release_tag }}
-          target_commitish: ${{ github.sha }}
-          name: Open Wrangler ${{ inputs.release_tag }}
-          draft: false
-          prerelease: false
-          make_latest: true
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            canonical-release/openwrangler.vsix
-            canonical-release/openwrangler.vsix.sha256
-            canonical-release/openwrangler.vsix.provenance.json
+      - name: Publish or verify the exact lightweight release tag
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/push-stable-release-tag.mjs
+      - name: Publish or verify the exact GitHub stable release
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/publish-github-stable-release.mjs canonical-release
+      - name: Verify the Open VSX publisher token
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --no-install ovsx verify-pat Matt17BR
+      - id: canonical_open_vsx_preflight
+        name: Reverify the exact canonical artifact before Open VSX preflight
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - name: Reject a conflicting existing Open VSX version
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-open-vsx-release.mjs canonical-release --preflight
+      - id: canonical_open_vsx_publish
+        name: Reverify the exact canonical artifact before Open VSX publication
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-canonical-release-artifact.mjs canonical-release
+      - name: Publish the exact stable VSIX to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --no-install ovsx publish --skip-duplicate canonical-release/openwrangler.vsix
+      - name: Verify the exact public Open VSX release
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-open-vsx-release.mjs canonical-release --verify

@@ -25,6 +25,7 @@ from .base import (
     ensure_output_columns_available,
     generated_view_value_helper_lines,
     infer_semantic_type,
+    is_blank_delimited_file,
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
@@ -69,6 +70,7 @@ class DuckDBEngine(DataFrameEngine):
         self._active_connections: set[Any] = set()
         self._lifecycle_lock = RLock()
         self._closed = False
+        self._empty_source_frame: Any | None = None
 
     def detect(self, value: Any) -> bool:
         try:
@@ -100,6 +102,7 @@ class DuckDBEngine(DataFrameEngine):
             self._closed = True
             connection = self._connection
             self._connection = None
+            self._empty_source_frame = None
         if connection is not None:
             connection.close()
 
@@ -114,6 +117,12 @@ class DuckDBEngine(DataFrameEngine):
                     raise EngineError(
                         f"DuckDB supports UTF-8 CSV input, not {encoding}. Use the Pandas backend for this encoding."
                     )
+                if is_blank_delimited_file(path):
+                    row_id = f"{INTERNAL_ROW_ID_PREFIX}empty_source"
+                    self._empty_source_frame = connection.sql(
+                        f"SELECT CAST(NULL AS BIGINT) AS {_quote_ident(row_id)} WHERE FALSE"
+                    )
+                    return self._empty_source_frame
                 return connection.read_csv(
                     path,
                     delimiter=options.get("delimiter", "\t" if extension == ".tsv" else ","),
@@ -156,6 +165,14 @@ class DuckDBEngine(DataFrameEngine):
                     f"{previous!r} and {column!r}. Rename one column or use Pandas/Polars."
                 )
             by_casefold[folded] = column
+
+    def validate_internal_row_id_namespace(self, frame: Any, allowed_internal: Any | None = None) -> None:
+        # DuckDB cannot construct a relation with no columns. A blank delimited
+        # source therefore uses one engine-owned, zero-row private sentinel that
+        # stays invisible to schema, shape, pages, profiling, and exports.
+        if allowed_internal is None and frame is self._empty_source_frame:
+            return
+        super().validate_internal_row_id_namespace(frame, allowed_internal)
 
     def ensure_row_ids(self, frame: Any, token: str) -> Any:
         frame = self.normalize(frame)

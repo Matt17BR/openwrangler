@@ -11,8 +11,7 @@ const fileMocks = vi.hoisted(() => ({
   createPanel: vi.fn(),
   panelConstructor: vi.fn(),
   changeActiveImportOptions: vi.fn(async () => false),
-  promptImportOptions: vi.fn<(uri: unknown) => Promise<unknown>>(async () => undefined),
-  defaultImportOptions: vi.fn(() => undefined),
+  detectImportOptions: vi.fn<(uri: unknown) => Promise<unknown>>(async () => undefined),
   stat: vi.fn(async () => ({ type: 1 })),
   showWarningMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
@@ -28,8 +27,7 @@ const fileMocks = vi.hoisted(() => ({
   activeTextUri: undefined as unknown,
   enabledFileTypes: ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"],
   defaultBackend: "auto",
-  workspaceValues: new Map<string, unknown>(),
-  ImportCancelledError: class ImportCancelledError extends Error {}
+  workspaceValues: new Map<string, unknown>()
 }));
 
 vi.mock("vscode", () => {
@@ -148,9 +146,7 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 vi.mock("../extension/files/importOptions", () => ({
-  defaultImportOptions: fileMocks.defaultImportOptions,
-  promptImportOptions: fileMocks.promptImportOptions,
-  ImportCancelledError: fileMocks.ImportCancelledError
+  detectImportOptions: fileMocks.detectImportOptions
 }));
 
 vi.mock("../extension/configuration", () => ({
@@ -173,9 +169,8 @@ describe("file launch command", () => {
     fileMocks.panelConstructor.mockClear();
     fileMocks.changeActiveImportOptions.mockReset();
     fileMocks.changeActiveImportOptions.mockResolvedValue(false);
-    fileMocks.promptImportOptions.mockReset();
-    fileMocks.promptImportOptions.mockResolvedValue(undefined);
-    fileMocks.defaultImportOptions.mockClear();
+    fileMocks.detectImportOptions.mockReset();
+    fileMocks.detectImportOptions.mockResolvedValue(undefined);
     fileMocks.stat.mockReset();
     fileMocks.stat.mockResolvedValue({ type: vscode.FileType.File });
     fileMocks.showWarningMessage.mockClear();
@@ -288,7 +283,7 @@ describe("file launch command", () => {
       authority: "ssh-remote+host",
       path: "/workspace/FRAME.CSV"
     });
-    fileMocks.promptImportOptions.mockResolvedValue({
+    fileMocks.detectImportOptions.mockResolvedValue({
       delimiter: ",",
       encoding: "utf-8",
       quoteChar: '"',
@@ -353,15 +348,6 @@ describe("file launch command", () => {
     expect(fileMocks.showWarningMessage).toHaveBeenCalledWith(
       "Choose a regular data file, not a special filesystem resource."
     );
-    expect(fileMocks.createPanel).not.toHaveBeenCalled();
-  });
-
-  it("does not open a panel after import configuration is cancelled", async () => {
-    fileMocks.promptImportOptions.mockRejectedValueOnce(new fileMocks.ImportCancelledError());
-    register();
-
-    await command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.csv"));
-
     expect(fileMocks.createPanel).not.toHaveBeenCalled();
   });
 
@@ -475,7 +461,7 @@ describe("file launch command", () => {
     expect(fileMocks.customEditorProviderOptions).toMatchObject({
       supportsMultipleEditorsPerDocument: false
     });
-    expect(fileMocks.defaultImportOptions).not.toHaveBeenCalled();
+    expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
   });
 
   it("keeps an explicit confirmed Parquet preference pinned without adding import options", async () => {

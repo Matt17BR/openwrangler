@@ -24,6 +24,7 @@ import {
   cleanupInstalledPerformancePrivateRoot,
   collectInstalledPerformanceEditorRuns,
   installInstalledPerformanceCandidate,
+  installedPerformanceVsixOptions,
   installedPerformanceDisplayMode,
   installedPerformanceReportGateForOptions,
   PERFORMANCE_EVIDENCE_ARTIFACT_KIND,
@@ -1354,6 +1355,21 @@ test("guarded self-packaging is preview-only and stable evidence must use canoni
       verifyCandidate: () => assert.fail("stable self-packaging must fail before verification")
     }),
     /must consume the canonical release artifact/u
+  );
+});
+
+test("product VSCE packaging disables GitHub issue-link rewriting", () => {
+  assert.deepEqual(installedPerformanceVsixOptions("/private/candidate.vsix", { preRelease: true }), {
+    cwd: resolve(import.meta.dirname, ".."),
+    packagePath: "/private/candidate.vsix",
+    preRelease: true,
+    gitHubIssueLinking: false,
+    allowStarActivation: false,
+    allowMissingRepository: false
+  });
+  assert.throws(
+    () => installedPerformanceVsixOptions("/private/candidate.vsix"),
+    /requires an explicit release channel/u
   );
 });
 

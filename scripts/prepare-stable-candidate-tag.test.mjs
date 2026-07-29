@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { prepareStableCandidateTag } from "./prepare-stable-candidate-tag.mjs";
+import { inspectRemoteStableTagOutput, prepareStableCandidateTag } from "./prepare-stable-candidate-tag.mjs";
 
 function git(root, args) {
   return execFileSync("git", args, {
@@ -105,6 +105,74 @@ test("rejects a stale checkout, dirty tracked source, and noncanonical inputs", 
         releaseTag: "v1.0.0^{commit}",
         root: repository.root
       }),
+    /canonical v<major>/u
+  );
+});
+
+test("accepts an absent, exact lightweight, or exact annotated remote tag idempotently", () => {
+  const expectedCommit = "a".repeat(40);
+  assert.equal(inspectRemoteStableTagOutput({ expectedCommit, output: "", releaseTag: "v1.0.1" }).exists, false);
+  assert.deepEqual(
+    inspectRemoteStableTagOutput({
+      expectedCommit,
+      output: `${expectedCommit}\trefs/tags/v1.0.1\n`,
+      releaseTag: "v1.0.1"
+    }),
+    {
+      annotated: false,
+      exists: true,
+      releaseTag: "v1.0.1",
+      sourceCommit: expectedCommit
+    }
+  );
+  assert.equal(
+    inspectRemoteStableTagOutput({
+      expectedCommit,
+      output: `${"b".repeat(40)}\trefs/tags/v1.0.1\n${expectedCommit}\trefs/tags/v1.0.1^{}\n`,
+      releaseTag: "v1.0.1"
+    }).annotated,
+    true
+  );
+});
+
+test("required remote release intake rejects an absent tag", () => {
+  assert.throws(
+    () =>
+      inspectRemoteStableTagOutput({
+        expectedCommit: "a".repeat(40),
+        output: "",
+        releaseTag: "v1.0.1",
+        requirePresent: true
+      }),
+    /does not exist/u
+  );
+});
+
+test("rejects conflicting, duplicated, malformed, and noncanonical remote tags", () => {
+  const expectedCommit = "a".repeat(40);
+  for (const output of [
+    `${"b".repeat(40)}\trefs/tags/v1.0.1\n`,
+    `${"b".repeat(40)}\trefs/tags/v1.0.1\n${"c".repeat(40)}\trefs/tags/v1.0.1^{}\n`,
+    `${expectedCommit}\trefs/tags/v1.0.1\n${expectedCommit}\trefs/tags/v1.0.1\n`,
+    `${expectedCommit}\trefs/tags/v1.0.2\n`,
+    `not-a-commit\trefs/tags/v1.0.1\n`
+  ]) {
+    assert.throws(
+      () => inspectRemoteStableTagOutput({ expectedCommit, output, releaseTag: "v1.0.1" }),
+      /remote release tag response|existing remote RELEASE_TAG/u
+    );
+  }
+  assert.throws(
+    () =>
+      inspectRemoteStableTagOutput({
+        expectedCommit: expectedCommit.toUpperCase(),
+        output: "",
+        releaseTag: "v1.0.1"
+      }),
+    /lowercase full Git commit/u
+  );
+  assert.throws(
+    () => inspectRemoteStableTagOutput({ expectedCommit, output: "", releaseTag: "v1.0.1-beta.1" }),
     /canonical v<major>/u
   );
 });
