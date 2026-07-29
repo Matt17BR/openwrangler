@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
   <title id="title">Open Wrangler data-cell off-road vehicle</title>
-  <rect x="24" y="24" width="464" height="464" rx="104" fill="#0B1734" />
-  <path d="M76 398h360" fill="none" stroke="#172A54" stroke-linecap="round" stroke-width="18" />
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="#0B1734" />
 
-  <g aria-hidden="true">
+  <g transform="translate(256 280) scale(1.08) translate(-256 -306)" aria-hidden="true">
+    <path d="M76 398h360" fill="none" stroke="#172A54" stroke-linecap="round" stroke-width="18" />
     <rect x="180" y="186" width="54" height="66" rx="12" fill="#6F8BFF" />
     <rect x="190" y="166" width="34" height="26" rx="10" fill="#6F8BFF" />
     <rect x="246" y="186" width="54" height="66" rx="12" fill="#20C5BD" />

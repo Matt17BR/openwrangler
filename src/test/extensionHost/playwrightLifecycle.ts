@@ -37,31 +37,67 @@ interface KeyboardKeyPair {
 }
 
 interface OneShotAcceptanceAction<T> {
-  readonly click: () => Promise<void>;
+  readonly activate: () => Promise<void>;
   readonly receipt: () => Promise<T>;
   readonly naturalDismissal?: () => Promise<void>;
   readonly description: string;
 }
 
+interface AuthoritativelyReceiptedOneShotAcceptanceAction<T> extends OneShotAcceptanceAction<T> {
+  readonly authoritativeReceiptAfterActivationFailure: () => Promise<T>;
+}
+
 export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
-    super(`${description} may have been dispatched, but its browser click did not settle.`, { cause });
+    super(`${description} may have been dispatched, but its one-shot user activation did not settle.`, { cause });
     this.name = "IndeterminateAcceptanceActionError";
   }
 }
 
 export async function invokeAcceptanceActionOnce<T>({
-  click,
+  activate,
   receipt,
   naturalDismissal,
   description
 }: OneShotAcceptanceAction<T>): Promise<T> {
   try {
-    await click();
+    await activate();
   } catch (error) {
     throw new IndeterminateAcceptanceActionError(description, error);
   }
 
+  return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
+  activate,
+  receipt,
+  authoritativeReceiptAfterActivationFailure,
+  naturalDismissal,
+  description
+}: AuthoritativelyReceiptedOneShotAcceptanceAction<T>): Promise<T> {
+  try {
+    await activate();
+  } catch (error) {
+    const indeterminate = new IndeterminateAcceptanceActionError(description, error);
+    try {
+      return await authoritativeReceiptAfterActivationFailure();
+    } catch (receiptError) {
+      throw new AggregateError(
+        [indeterminate, receiptError],
+        `${description} did not settle and its authoritative receipt could not prove dispatch.`
+      );
+    }
+  }
+
+  return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+async function observeAcceptanceActionReceipt<T>(
+  receipt: () => Promise<T>,
+  naturalDismissal: (() => Promise<void>) | undefined,
+  description: string
+): Promise<T> {
   const receiptResult = receipt();
   if (!naturalDismissal) return receiptResult;
 

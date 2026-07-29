@@ -64,6 +64,21 @@ async function renderBrandAssets() {
       assertPng(temporaryPath, size, size);
       rendered.set(size, temporaryPath);
     }
+    const renderedActivityPath = resolve(temporaryDirectory, "activity-icon.png");
+    await renderSvg(browser, activitySource, 24, renderedActivityPath);
+    assertPng(renderedActivityPath, 24, 24);
+    assertMaximumTransparentInsets(rendered.get(512), {
+      top: 8,
+      right: 8,
+      bottom: 8,
+      left: 8
+    });
+    assertMaximumTransparentInsets(renderedActivityPath, {
+      top: 1,
+      right: 0,
+      bottom: 1,
+      left: 0
+    });
 
     if (requestedRenderCheck) {
       for (const [size, destination] of outputs) {
@@ -133,6 +148,41 @@ function assertPng(path, expectedWidth, expectedHeight) {
   const png = PNG.sync.read(readFileSync(path));
   if (png.width !== expectedWidth || png.height !== expectedHeight) {
     throw new Error(`${basename(path)} is ${png.width}x${png.height}; expected ${expectedWidth}x${expectedHeight}.`);
+  }
+}
+
+function assertMaximumTransparentInsets(path, maximumInsets) {
+  const png = PNG.sync.read(readFileSync(path));
+  let minX = png.width;
+  let minY = png.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      if (png.data[(y * png.width + x) * 4 + 3] === 0) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < 0 || maxY < 0) {
+    throw new Error(`${basename(path)} rendered without any visible pixels.`);
+  }
+  const actualInsets = {
+    top: minY,
+    right: png.width - maxX - 1,
+    bottom: png.height - maxY - 1,
+    left: minX
+  };
+  for (const side of ["top", "right", "bottom", "left"]) {
+    if (actualInsets[side] > maximumInsets[side]) {
+      throw new Error(
+        `${basename(path)} leaves ${actualInsets[side]} transparent pixels on the ${side}; expected at most ${maximumInsets[side]}.`
+      );
+    }
   }
 }
 

@@ -59,6 +59,7 @@ import {
   acquirePreparedAcceptanceAction,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
+  invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
@@ -129,15 +130,23 @@ interface ExtensionApi {
   testing?: TestApi;
 }
 
-interface ReleasedJupyterVariableActionElement {
-  readonly isConnected: boolean;
-  readonly ownerDocument: {
-    readonly activeElement: unknown;
-    readonly documentElement: {
-      readonly dataset: { openWranglerAcceptanceClick?: string };
-    };
-  };
-  addEventListener(type: "click", listener: () => void, options: { readonly capture: true; readonly once: true }): void;
+interface ReleasedJupyterVariableAction {
+  readonly action: Locator;
+  readonly documentRoot: Locator;
+}
+
+interface ReleasedJupyterDocumentRootElement {
+  readonly dataset: { readonly openWranglerAcceptanceActivation?: string };
+}
+
+interface ReleasedJupyterActivationEvent {
+  readonly detail?: number;
+  readonly isTrusted?: boolean;
+  readonly composedPath?: () => readonly unknown[];
+}
+
+interface ReleasedJupyterActivationPathElement {
+  readonly tagName?: string;
 }
 
 interface FakeJupyterApi {
@@ -877,54 +886,11 @@ async function exerciseReleasedJupyterExtension(
       "The private released-Jupyter kernel must not inherit an installed Open Wrangler runtime before bootstrap."
     );
 
-    const viewerAction = await waitForReleasedJupyterVariableAction(workbench, "pandas_frame", `${phase}:variables`);
-    assertExactOpenNotebookDocument(notebook, "after resolving the pandas_frame action from Jupyter Variables");
+    assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
 
     recordAcceptanceProgress(`${phase}:variables-action`);
-    await viewerAction.focus();
-    assert.equal(
-      await viewerAction.evaluate((element) => element.ownerDocument.activeElement === element),
-      true,
-      "The released Jupyter Variables action must accept keyboard focus."
-    );
-    await viewerAction.evaluate((element) => {
-      const root = element.ownerDocument.documentElement;
-      root.dataset.openWranglerAcceptanceClick = "pending";
-      element.addEventListener(
-        "click",
-        () => {
-          root.dataset.openWranglerAcceptanceClick = "seen";
-        },
-        { capture: true, once: true }
-      );
-    });
-    await withBoundedAcceptancePromise(
-      viewerAction.click(),
-      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-      "the real released-Jupyter Variables action"
-    );
-    assert.equal(
-      await viewerAction.evaluate(
-        (element) => element.ownerDocument.documentElement.dataset.openWranglerAcceptanceClick
-      ),
-      "seen",
-      "The real released-Jupyter Variables action must receive its browser click event."
-    );
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
     recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
-    try {
-      await waitFor(
-        () => releasedJupyterSessionTabs().length === 1,
-        10_000,
-        "the released Jupyter viewer delegation to create exactly one Open Wrangler panel",
-        () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length, coordinator: testing.diagnostics() })
-      );
-    } catch (error) {
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)} Workbench: ${JSON.stringify(
-          await boundedImportPromptDiagnostics(workbench)
-        )}`
-      );
-    }
     recordAcceptanceProgress(`${phase}:variables-panel-created`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
     assertExactOpenNotebookDocument(notebook, "while the released Jupyter consent belongs to the fixture notebook");
@@ -1314,7 +1280,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(classicSetup.javaVersion, "17");
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
 
-    await dispatchReleasedJupyterVariableAction(workbench, "spark_classic_frame", `${phase}:classic-action`);
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
     await consent.allow.click();
     await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
@@ -1440,7 +1406,7 @@ async function exerciseReleasedPySparkJupyterExtension(
       await showExactReleasedNotebook(notebook);
       await vscode.commands.executeCommand("jupyter.openVariableView");
       await showExactReleasedNotebook(notebook);
-      await dispatchReleasedJupyterVariableAction(workbench, "spark_orders_frame", `${phase}:orders-action`);
+      await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_orders_frame", `${phase}:orders-action`);
       const orders = await waitForReleasedVariableSession(
         workbench,
         testing,
@@ -1482,7 +1448,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(connectSetup.sparkVersion, "4.2.0");
     assert.equal(connectSetup.module, "pyspark.sql.connect.dataframe");
 
-    await dispatchReleasedJupyterVariableAction(workbench, "spark_connect_frame", `${phase}:connect-action`);
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_connect_frame", `${phase}:connect-action`);
     const connect = await waitForReleasedVariableSession(
       workbench,
       testing,
@@ -1525,33 +1491,47 @@ async function exerciseReleasedPySparkJupyterExtension(
 
 async function dispatchReleasedJupyterVariableAction(
   workbench: Page,
+  notebook: vscode.NotebookDocument,
   variableName: string,
   checkpoint: string
 ): Promise<void> {
   const viewerAction = await waitForReleasedJupyterVariableAction(workbench, variableName, checkpoint);
-  try {
-    await invokeAcceptanceActionOnce({
-      description: `the real released-Jupyter Variables action for ${variableName}`,
-      click: () => viewerAction.click({ timeout: 2_000 }),
-      receipt: async () => {
-        assert.equal(
-          await viewerAction.evaluate(
-            (element) => element.ownerDocument.documentElement.dataset.openWranglerAcceptanceClick
-          ),
-          "seen",
-          `The real released-Jupyter Variables action for ${variableName} must receive its browser click event.`
-        );
-        await waitFor(
-          () => releasedJupyterSessionTabs().length === 1,
-          10_000,
-          `the released Jupyter viewer delegation for ${variableName}`,
-          () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length })
-        );
-      }
-    });
-  } finally {
-    await viewerAction.dispose();
-  }
+  assert.equal(
+    releasedJupyterSessionTabs().length,
+    0,
+    `The real released-Jupyter Variables action for ${variableName} requires a zero-tab receipt baseline.`
+  );
+  assertExactOpenNotebookDocument(
+    notebook,
+    `immediately before dispatching the released-Jupyter Variables action for ${variableName}`
+  );
+  recordAcceptanceProgress(`${checkpoint}:dispatch`);
+  await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+    description: `the real released-Jupyter Variables action for ${variableName}`,
+    activate: () => viewerAction.action.press("Enter", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    receipt: async () => {
+      assert.equal(
+        await viewerAction.documentRoot.evaluate(
+          (element) =>
+            (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceActivation
+        ),
+        "seen",
+        `The real released-Jupyter Variables action for ${variableName} must receive one trusted keyboard activation.`
+      );
+      await waitForReleasedJupyterVariableActionReceipt(variableName);
+    },
+    authoritativeReceiptAfterActivationFailure: () => waitForReleasedJupyterVariableActionReceipt(variableName)
+  });
+  recordAcceptanceProgress(`${checkpoint}:receipt`);
+}
+
+async function waitForReleasedJupyterVariableActionReceipt(variableName: string): Promise<void> {
+  await waitFor(
+    () => releasedJupyterSessionTabs().length === 1,
+    10_000,
+    `the released Jupyter viewer delegation for ${variableName}`,
+    () => JSON.stringify({ tabCount: releasedJupyterSessionTabs().length })
+  );
 }
 
 async function assertReleasedPySparkPanelAndQueries(
@@ -2524,7 +2504,7 @@ async function waitForReleasedJupyterVariableAction(
   workbench: Page,
   variableName: string,
   checkpoint: string
-): Promise<ElementHandle<ReleasedJupyterVariableActionElement>> {
+): Promise<ReleasedJupyterVariableAction> {
   recordAcceptanceProgress(`${checkpoint}:wait`);
   const viewerAction = await acquirePreparedAcceptanceAction({
     timeoutMs: RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS,
@@ -2537,16 +2517,17 @@ async function waitForReleasedJupyterVariableAction(
           const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
           if ((await cell.count()) === 0 || !(await cell.isVisible())) continue;
           const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
-          await row.hover({ timeout: 1_000 });
           const actions = row.getByRole("button", {
             name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION,
             exact: true
           });
           if ((await actions.count()) !== 1) continue;
-          const action = await actions.first().elementHandle({
+          const action = actions.first();
+          await action.waitFor({
+            state: "visible",
             timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS
           });
-          if (action) return action as ElementHandle<ReleasedJupyterVariableActionElement>;
+          return { action, documentRoot: frame.locator("html") };
         } catch (error) {
           if (!isReleasedJupyterVariableActionReplacement(error)) {
             throw error;
@@ -2556,15 +2537,21 @@ async function waitForReleasedJupyterVariableAction(
       }
       return undefined;
     },
-    prepare: async (action) => {
+    prepare: async ({ action, documentRoot }) => {
       const [visible, enabled] = await withReleasedJupyterVariableActionPrepareDeadline(
-        Promise.all([action.isVisible(), action.isEnabled()]),
+        Promise.all([
+          action.isVisible(),
+          action.isEnabled({ timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS })
+        ]),
         "visibility and enabled-state probes"
       );
       if (!visible || !enabled) {
         throw new ReleasedJupyterVariableActionReplacementError();
       }
-      await withReleasedJupyterVariableActionPrepareDeadline(action.focus(), "focus");
+      await withReleasedJupyterVariableActionPrepareDeadline(
+        action.focus({ timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS }),
+        "focus"
+      );
       const focusState = await withReleasedJupyterVariableActionPrepareDeadline(
         action.evaluate((element) => ({
           connected:
@@ -2597,21 +2584,40 @@ async function waitForReleasedJupyterVariableAction(
             return false;
           }
           const root = element.ownerDocument.documentElement;
-          root.dataset.openWranglerAcceptanceClick = "pending";
-          element.addEventListener(
+          root.dataset.openWranglerAcceptanceActivation = "pending";
+          root.addEventListener(
             "click",
-            () => {
-              root.dataset.openWranglerAcceptanceClick = "seen";
+            (event: unknown) => {
+              const candidateEvent = event as unknown as ReleasedJupyterActivationEvent;
+              const composedPath = candidateEvent.composedPath?.() ?? [];
+              const keyboardButtonActivation =
+                candidateEvent.isTrusted === true &&
+                candidateEvent.detail === 0 &&
+                composedPath.some((candidate: unknown) => {
+                  if (typeof candidate !== "object" || candidate === null) return false;
+                  return (candidate as ReleasedJupyterActivationPathElement).tagName === "BUTTON";
+                });
+              if (keyboardButtonActivation) {
+                root.dataset.openWranglerAcceptanceActivation = "seen";
+              }
             },
-            { capture: true, once: true }
+            { capture: true }
           );
           return true;
         }),
         "click-listener setup"
       );
       if (!listenerAttached) throw new ReleasedJupyterVariableActionReplacementError();
+      assert.equal(
+        await documentRoot.evaluate(
+          (element) =>
+            (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceActivation
+        ),
+        "pending",
+        `The released Jupyter Variables action for ${variableName} must arm its trusted keyboard receipt.`
+      );
     },
-    dispose: (action) => action.dispose(),
+    dispose: async () => undefined,
     isRetryablePreparationError: isReleasedJupyterVariableActionReplacement,
     wait: (durationMs) => workbench.waitForTimeout(durationMs)
   });
@@ -2635,7 +2641,9 @@ function isReleasedJupyterVariableActionReplacement(error: unknown): boolean {
   return (
     /(?:element|node).*(?:detached|not attached|not connected)/iu.test(message) ||
     ((error as { name?: unknown } | undefined)?.name === "TimeoutError" &&
-      /^(?:elementHandle|locator)\.(?:elementHandle|hover): Timeout \d+ms exceeded/u.test(message))
+      /^(?:elementHandle|locator)\.(?:elementHandle|focus|hover|isEnabled|waitFor): Timeout \d+ms exceeded/u.test(
+        message
+      ))
   );
 }
 
@@ -3151,7 +3159,7 @@ async function clickReleasedNotebookVariableAction(
     dispatchStarted = true;
     return await invokeAcceptanceActionOnce({
       description: pinned.description,
-      click: () => pinned.action.click({ timeout: 2_000 }),
+      activate: () => pinned.action.click({ timeout: 2_000 }),
       receipt: () => waitForReleasedNotebookVariableInput(workbench),
       naturalDismissal: pinned.overflowMenu
         ? () => pinned.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })

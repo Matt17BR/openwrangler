@@ -14,6 +14,8 @@ This specification replaces evidence-heavy README captures with two concise prod
 - the production Vite build copies both canonical SVGs and all three generated PNGs into disposable `media/`
   and fails if any packaged copy is not byte-identical
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
+- generated gallery icons leave at most 8 transparent pixels at 512 pixels, and the 24 pixel Activity Bar
+  rendering reaches the outer pixel columns with no more than one transparent row above or below
 - release postflight requires Open VSX and the Visual Studio Marketplace to serve the packaged 512 pixel icon
   byte for byte; the Marketplace must also expose a valid 72 pixel thumbnail that visually matches that master
 
