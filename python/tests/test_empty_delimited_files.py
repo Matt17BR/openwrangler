@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 import polars as pl
 import pytest
 
 from openwrangler_runtime.engines.base import EngineError
+from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
 from openwrangler_runtime.session import SessionManager
 
 
@@ -51,7 +51,7 @@ def test_blank_delimited_sources_open_as_native_zero_by_zero_datasets(
         {
             "pandas": pd.DataFrame,
             "polars": pl.LazyFrame,
-            "duckdb": duckdb.DuckDBPyRelation,
+            "duckdb": DuckDBSqlPlan,
         }[backend],
     )
     assert opened["page"] == {

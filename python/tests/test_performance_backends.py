@@ -12,7 +12,7 @@ import pytest
     ("backend", "expected_frame_suffix", "expected_lazy"),
     [
         ("pandas", "DataFrame", False),
-        ("duckdb", "DuckDBPyRelation", True),
+        ("duckdb", "DuckDBSqlPlan", True),
     ],
 )
 def test_opt_in_native_backend_smoke_reports_provenance_and_resource_boundaries(
