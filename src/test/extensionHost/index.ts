@@ -5465,7 +5465,10 @@ async function captureReleasedJupyterPolarsDraft(
   assert.equal(active.metadata.source.variableName, "polars_frame");
   assert.equal(active.metadata.draftStep?.id, "released-jupyter-double");
 
-  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
+  const doubleUnits = columnReference(active.metadata, "double_units");
+  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 190]));
+  const doubleUnitsPosition = active.metadata.schema.findIndex((column) => column.id === doubleUnits.id);
+  assert.ok(doubleUnitsPosition >= 0, "The Polars notebook screenshot requires the draft output column.");
   await testing.updateViewState(sessionId, {
     ...active.viewState,
     columnWidths: widths,
@@ -5489,7 +5492,17 @@ async function captureReleasedJupyterPolarsDraft(
     1,
     "The Polars notebook screenshot must open the Code Preview panel."
   );
-  await waitForReleasedJupyterCodePreview(workbench, "double_units");
+  const codePreview = await waitForReleasedJupyterCodePreview(workbench, "double_units");
+  const codeText = await codePreview.innerText();
+  assert.ok(codeText.includes("import polars as pl"), "The Polars notebook screenshot must show its native import.");
+  assert.ok(
+    codeText.includes("pl.col('units') * pl.lit(2)"),
+    "The Polars notebook screenshot must show its native formula expression."
+  );
+  assert.ok(
+    codeText.includes(".alias('double_units')"),
+    "The Polars notebook screenshot must show the generated output alias."
+  );
   const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "The Polars notebook screenshot requires the exact live Open Wrangler renderer.");
@@ -5498,7 +5511,44 @@ async function captureReleasedJupyterPolarsDraft(
   assert.equal((await backendBadge.innerText()).trim(), "POLARS");
   await app.getByRole("button", { name: "Apply step" }).waitFor({ state: "visible", timeout: 10_000 });
   await app.getByRole("button", { name: "Discard" }).waitFor({ state: "visible", timeout: 10_000 });
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("double_units");
+  await app.getByRole("option", { name: /^double_units,/u }).waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === doubleUnits.id,
+    10_000,
+    "the Polars notebook screenshot to navigate to its computed draft column"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The Polars notebook screenshot must synchronize after navigating to the draft column."
+  );
+  const hideInsights = app.getByRole("button", { name: "Hide insights", exact: true });
+  await hideInsights.waitFor({ state: "visible", timeout: 10_000 });
+  await hideInsights.click();
+  await app.getByRole("button", { name: "Show insights", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  const addedCells = app.locator(`td[data-grid-column="${doubleUnitsPosition}"][data-grid-row]`);
+  await addedCells.nth(5).waitFor({ state: "visible", timeout: 10_000 });
+  assert.deepEqual(
+    (await addedCells.allInnerTexts()).slice(0, 6).map((value) => value.trim()),
+    ["6", "20", "10", "24", "14", "4"],
+    "The Polars notebook screenshot must show six computed draft values."
+  );
+  assert.deepEqual(
+    await Promise.all(Array.from({ length: 6 }, (_, index) => addedCells.nth(index).getAttribute("data-diff-state"))),
+    Array(6).fill("added"),
+    "The computed Polars draft values must retain their added-column diff state."
+  );
+  await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  await codePreview.focus();
   await clearReleasedJupyterScreenshotTransientUi(workbench);
+  assert.equal(
+    testing.activeSession()?.metadata.draftStep?.id,
+    "released-jupyter-double",
+    "Screenshot cleanup must not discard the Polars draft."
+  );
   mkdirSync(outputDirectory, { recursive: true });
   recordAcceptanceProgress("jupyter-allow:screenshot:polars");
   await captureWorkbenchScreenshot(

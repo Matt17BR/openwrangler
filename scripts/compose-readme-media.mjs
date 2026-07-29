@@ -215,12 +215,12 @@ function renderNotebooks(sources) {
           <header class="cardHeader">
             <div>
               <h1>Pandas saved snapshot</h1>
-              <p>100,000 x 15 source, bounded reproducible output</p>
+              <p>orders-analysis.ipynb · 100,000 x 15 source</p>
             </div>
             <span class="engineBadge pandasBadge">Pandas</span>
           </header>
           <div class="cardBody pandasBody">
-            <div class="crop pandasOverview">
+            <div class="crop pandasContext">
               <img src="${sources.pandas.dataUrl}" alt="">
             </div>
             <div class="crop pandasDetail">
@@ -232,18 +232,13 @@ function renderNotebooks(sources) {
           <header class="cardHeader">
             <div>
               <h1>Polars live session</h1>
-              <p>100,000 x 15 variable, native draft and code</p>
+              <p>orders-analysis.ipynb · 100,000 x 15 live variable</p>
             </div>
             <span class="engineBadge polarsBadge">Polars</span>
           </header>
           <div class="cardBody polarsBody">
-            <div class="crop polarsOverview">
-              <div class="polarsContext">
-                <img src="${sources.polars.dataUrl}" alt="">
-              </div>
-              <div class="polarsDraft">
-                <img src="${sources.polars.dataUrl}" alt="">
-              </div>
+            <div class="crop polarsPreview">
+              <img src="${sources.polars.dataUrl}" alt="">
             </div>
             <div class="crop polarsCode">
               <img src="${sources.polars.dataUrl}" alt="">
@@ -261,10 +256,11 @@ function renderNotebooks(sources) {
       .notebookGrid {
         box-sizing: border-box;
         display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: 184px 308px;
         height: 100%;
-        padding: 16px;
+        padding: 10px;
         width: 100%;
       }
       .notebookCard {
@@ -279,20 +275,20 @@ function renderNotebooks(sources) {
         align-items: center;
         box-sizing: border-box;
         display: flex;
-        height: 48px;
+        height: 40px;
         justify-content: space-between;
-        padding: 7px 11px 7px 13px;
+        padding: 5px 10px 5px 12px;
       }
       .cardHeader h1 {
         color: #f8fafc;
-        font-size: 15px;
-        line-height: 18px;
+        font-size: 14px;
+        line-height: 16px;
         margin: 0;
       }
       .cardHeader p {
         color: #94a3b8;
-        font-size: 10px;
-        line-height: 13px;
+        font-size: 9px;
+        line-height: 11px;
         margin: 1px 0 0;
       }
       .engineBadge {
@@ -308,11 +304,10 @@ function renderNotebooks(sources) {
       .polarsBadge { color: #fbbf24; }
       .cardBody {
         box-sizing: border-box;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        height: 440px;
-        padding: 8px;
+        display: grid;
+        gap: 6px;
+        height: calc(100% - 40px);
+        padding: 6px;
       }
       .crop {
         background: #181818;
@@ -326,50 +321,31 @@ function renderNotebooks(sources) {
         position: absolute;
         transform-origin: left top;
       }
-      .pandasOverview { height: 152px; }
-      .pandasOverview img {
-        left: 0;
-        top: -4px;
-        transform: scale(0.42);
+      .pandasBody {
+        grid-template-rows: 30px minmax(0, 1fr);
       }
-      .pandasDetail {
-        flex: 1;
+      .pandasContext img {
+        left: -73px;
+        top: -157px;
+        transform: scale(1.08);
       }
       .pandasDetail img {
-        left: -49px;
-        top: -88px;
-        transform: scale(0.68);
+        left: -109px;
+        top: -261px;
+        transform: scale(1.14);
       }
-      .polarsOverview { height: 238px; }
-      .polarsContext,
-      .polarsDraft {
-        overflow: hidden;
-        position: relative;
+      .polarsBody {
+        grid-template-rows: 98px minmax(0, 1fr);
       }
-      .polarsContext {
-        border-bottom: 1px solid #334155;
-        height: 58px;
-      }
-      .polarsDraft {
-        height: 180px;
-      }
-      .polarsContext img {
-        left: -42px;
-        top: 0;
-        transform: scale(1);
-      }
-      .polarsDraft img {
-        left: -68px;
-        top: -82px;
-        transform: scale(1);
-      }
-      .polarsCode {
-        flex: 1;
+      .polarsPreview img {
+        left: -582px;
+        top: -213px;
+        transform: scale(1.04);
       }
       .polarsCode img {
-        left: -45px;
-        top: -378px;
-        transform: scale(0.75);
+        left: -71px;
+        top: -608px;
+        transform: scale(1.04);
       }
     `
   );

@@ -86,15 +86,16 @@ counts the complete frame, while per-page transfer safeguards are not dataframe 
 
 ## Engines and formats
 
-| Engine                    | Files                           | Notebook data                | How it runs                                                                 |
-| ------------------------- | ------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| Polars                    | CSV, TSV, Parquet, JSONL, Excel | DataFrame, LazyFrame, Series | Native; supported file formats use lazy scans. Notebook LazyFrames collect. |
-| Pandas                    | CSV, TSV, Parquet, JSONL, Excel | DataFrame, Series            | Native, including duplicate column labels                                   |
-| DuckDB, preview           | CSV, TSV, Parquet, JSONL        | Not currently supported      | Native file-backed relations                                                |
-| PySpark 4.2, experimental | Not currently supported         | DataFrame                    | Viewing-only Spark queries with bounded returned results                    |
+| Engine                    | Files                           | Notebook data                | How it runs                                                               |
+| ------------------------- | ------------------------------- | ---------------------------- | ------------------------------------------------------------------------- |
+| Polars                    | CSV, TSV, Parquet, JSONL, Excel | DataFrame, LazyFrame, Series | Native; CSV, TSV, Parquet, and JSONL use lazy scans. Excel loads eagerly. |
+| Pandas                    | CSV, TSV, Parquet, JSONL, Excel | DataFrame, Series            | Native, including duplicate column labels                                 |
+| DuckDB, preview           | CSV, TSV, Parquet, JSONL        | Not currently supported      | Native file-backed relations                                              |
+| PySpark 4.2, experimental | Not currently supported         | DataFrame                    | Viewing-only Spark queries with bounded returned results                  |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their native supported dataframe type, including PySpark 4.2 DataFrames.
+Polars LazyFrames collect when opened from a notebook.
 
 ## From source to reusable code
 

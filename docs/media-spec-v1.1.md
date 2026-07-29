@@ -29,9 +29,11 @@ This specification replaces evidence-heavy README captures with two concise prod
 - Canvas: 1440 x 520 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders frames
-- Left panel: `orders-analysis.ipynb`, Pandas `notebook_showcase`, saved Open Wrangler snapshot
-- Right panel: `orders-analysis.ipynb`, Polars `polars_frame`, live formula draft with data diff and complete native Polars code visible
+- Top card: `orders-analysis.ipynb`, Pandas `notebook_showcase`, saved Open Wrangler snapshot
+- Bottom card: `orders-analysis.ipynb`, Polars `polars_frame`, live formula draft with computed values,
+  added-column diff, and complete native Polars code visible
 - Labels: small `Pandas snapshot` and `Polars live session` captions outside the product UI
+- Composition: two full-width focus bands so notebook output, draft values, and code remain legible at registry width
 
 ## Linked gallery
 
