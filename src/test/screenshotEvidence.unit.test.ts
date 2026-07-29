@@ -6,7 +6,6 @@ import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
-  PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH,
   PACKAGED_SCREENSHOT_MARKETS,
   PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
@@ -32,7 +31,7 @@ describe("packaged editor screenshot evidence", () => {
     const notes = rows.map((row) => row[14]);
 
     expect(PACKAGED_SCREENSHOT_DATA_PROVENANCE).toContain("Deterministic synthetic");
-    expect(PACKAGED_SCREENSHOT_ROW_COUNT).toBe(10_000);
+    expect(PACKAGED_SCREENSHOT_ROW_COUNT).toBe(100_000);
     expect(PACKAGED_SCREENSHOT_COLUMNS).toHaveLength(15);
     expect(lines).toHaveLength(PACKAGED_SCREENSHOT_ROW_COUNT + 1);
     expect(lines[0]).toBe(PACKAGED_SCREENSHOT_COLUMNS.join(","));
@@ -45,10 +44,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(new Set(orderIds).size).toBe(PACKAGED_SCREENSHOT_ROW_COUNT);
     expect(new Set(markets)).toEqual(new Set(PACKAGED_SCREENSHOT_MARKETS));
     for (const market of PACKAGED_SCREENSHOT_MARKETS) {
-      expect(markets.filter((value) => value === market).length).toBeGreaterThan(1_000);
+      expect(markets.filter((value) => value === market).length).toBeGreaterThan(10_000);
     }
     expect(revenues.filter((value) => value === "").length).toBeGreaterThan(50);
-    expect(new Set(revenues.filter(Boolean)).size).toBeGreaterThan(8_000);
+    expect(new Set(revenues.filter(Boolean)).size).toBeGreaterThan(20_000);
     expect(Math.min(...revenues.filter(Boolean).map(Number))).toBeGreaterThan(50);
     expect(Math.max(...revenues.filter(Boolean).map(Number))).toBeGreaterThan(10_000);
     expect(fulfillment).toContain("true");
@@ -67,7 +66,7 @@ describe("packaged editor screenshot evidence", () => {
       /(?:celonis|mmazzarelli|dropbox|@(?:gmail|celonis)|\/home\/|\\users\\|(?:sample|fixture|test)[-_ ]?(?:data|value)?)/iu
     );
     expect(createHash("sha256").update(csv).digest("hex")).toBe(
-      "4beafb09e558146895114812046a1a9f08cac14f883466195ded700c8506e35d"
+      "9bb0afb081ade0a7d4a680a4cf292118f4cfa6ed3de874584d63e8e3c5cf09d1"
     );
     expect(packagedScreenshotRow(0)).toEqual([
       "2400001",
@@ -87,20 +86,20 @@ describe("packaged editor screenshot evidence", () => {
       'Renewal review follows the Q2 pilot, with "steady adoption" reported across the regional account'
     ]);
     expect(packagedScreenshotRow(PACKAGED_SCREENSHOT_ROW_COUNT - 1)).toEqual([
-      "2410000",
+      "2500000",
       "DACH",
-      "83.53",
+      "782.72",
       "true",
-      "2024-03-13",
+      "2024-05-23",
       "Public sector",
       "Online",
       "Analytics",
       "1",
-      "93.18",
+      "873.18",
       "10.36",
-      "30.25",
+      "377.43",
       "Standard",
-      "2025-04-08",
+      "2025-06-10",
       "Procurement requested a consolidated proposal covering support levels and implementation milestones"
     ]);
     expect(() => packagedScreenshotRow(-1)).toThrow(RangeError);
@@ -137,7 +136,6 @@ describe("packaged editor screenshot evidence", () => {
 
   it("keeps README scene names explicit across file and notebook workflows", () => {
     expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "notebook-pandas", "notebook-polars"]);
-    expect(PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH).toBe(420);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pandas", "dark")).toBe("vscode-notebook-pandas-dark.png");

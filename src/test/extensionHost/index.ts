@@ -70,7 +70,6 @@ import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescrip
 import {
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
-  PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
@@ -791,7 +790,12 @@ async function exerciseReleasedJupyterExtension(
 
   const kernelTarget = releasedJupyterKernelTarget(phase);
   const directory = mkdtempSync(path.join(tmpdir(), `openwrangler-released-jupyter-${phase}-`));
-  const notebookPath = path.join(directory, `${phase}.ipynb`);
+  const notebookPath = path.join(
+    directory,
+    phase === "jupyter-allow" && process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
+      ? "orders-analysis.ipynb"
+      : `${phase}.ipynb`
+  );
   const notebookUri = vscode.Uri.file(notebookPath);
   const setupMarker = `OPEN_WRANGLER_SETUP_${phase.replace("jupyter-", "").toUpperCase()}`;
   writeReleasedJupyterNotebook(notebookPath, setupMarker, kernelTarget, extension.extensionPath);
@@ -1014,10 +1018,26 @@ async function exerciseReleasedJupyterExtension(
     );
     assert.ok(pandasMimePayload, "The released-Jupyter MIME v2 item must satisfy the saved-output contract.");
     assert.equal(pandasMimePayload.metadata.source.label, "DataFrame");
-    assert.deepEqual(pandasMimePayload.metadata.shape, { rows: 2_500, columns: 6 });
+    assert.deepEqual(pandasMimePayload.metadata.shape, { rows: 100_000, columns: 15 });
     assert.deepEqual(
       pandasMimePayload.metadata.schema.map((column) => column.name),
-      ["order_id", "market", "revenue", "fulfilled", "order_date", "channel"]
+      [
+        "order_id",
+        "market",
+        "revenue",
+        "fulfilled",
+        "order_date",
+        "segment",
+        "channel",
+        "product_family",
+        "units",
+        "unit_price",
+        "discount_pct",
+        "gross_margin",
+        "priority",
+        "renewal_date",
+        "account_status"
+      ]
     );
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
@@ -1939,24 +1959,46 @@ function writeReleasedJupyterNotebook(
     "import polars as pl",
     "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
     "pandas_series = pd.Series([5, 6], name='series_value')",
-    "showcase_rows = 2500",
+    "showcase_rows = 100000",
     "showcase_markets = ['DACH', 'Nordics', 'Iberia', 'France', 'Italy', 'Benelux', 'UK & Ireland']",
+    "showcase_segments = ['Enterprise', 'Mid-market', 'Public sector', 'Small business']",
     "showcase_channels = ['Direct', 'Partner', 'Online']",
+    "showcase_products = ['Analytics', 'Automation', 'Data platform', 'Operations', 'Planning']",
+    "showcase_priorities = ['High', 'Standard', 'Strategic']",
+    "showcase_statuses = ['Active', 'Expansion', 'Renewal review']",
     "notebook_showcase = pd.DataFrame({",
-    "    'order_id': list(range(24001, 24001 + showcase_rows)),",
+    "    'order_id': list(range(2400001, 2400001 + showcase_rows)),",
     "    'market': [showcase_markets[index % len(showcase_markets)] for index in range(showcase_rows)],",
     "    'revenue': [round(620.50 + ((index * 7919) % 1850000) / 100, 2) for index in range(showcase_rows)],",
     "    'fulfilled': [index % 7 != 2 for index in range(showcase_rows)],",
     "    'order_date': pd.to_datetime('2026-01-01') + pd.to_timedelta([index % 365 for index in range(showcase_rows)], unit='D'),",
+    "    'segment': [showcase_segments[index % len(showcase_segments)] for index in range(showcase_rows)],",
     "    'channel': [showcase_channels[index % len(showcase_channels)] for index in range(showcase_rows)],",
+    "    'product_family': [showcase_products[index % len(showcase_products)] for index in range(showcase_rows)],",
+    "    'units': [1 + ((index * 7 + 2) % 12) for index in range(showcase_rows)],",
+    "    'unit_price': [round(79 + ((index * 3571) % 92000) / 100, 2) for index in range(showcase_rows)],",
+    "    'discount_pct': [round(((index * 37) % 1800) / 100, 2) for index in range(showcase_rows)],",
+    "    'gross_margin': [round(180 + ((index * 1451) % 610000) / 100, 2) for index in range(showcase_rows)],",
+    "    'priority': [showcase_priorities[index % len(showcase_priorities)] for index in range(showcase_rows)],",
+    "    'renewal_date': pd.to_datetime('2027-01-01') + pd.to_timedelta([index % 365 for index in range(showcase_rows)], unit='D'),",
+    "    'account_status': [showcase_statuses[index % len(showcase_statuses)] for index in range(showcase_rows)],",
     "})",
     "polars_frame = pl.DataFrame({",
     "    'units': [1 + ((index * 7 + 2) % 12) for index in range(showcase_rows)],",
+    "    'order_id': list(range(2400001, 2400001 + showcase_rows)),",
     "    'market': [showcase_markets[index % len(showcase_markets)] for index in range(showcase_rows)],",
     "    'revenue': [round(620.50 + ((index * 6151) % 1250000) / 100, 2) for index in range(showcase_rows)],",
     "    'fulfilled': [index % 7 != 2 for index in range(showcase_rows)],",
     "    'order_date': [date(2026, 1, 1) + timedelta(days=index % 365) for index in range(showcase_rows)],",
+    "    'segment': [showcase_segments[index % len(showcase_segments)] for index in range(showcase_rows)],",
     "    'channel': [showcase_channels[index % len(showcase_channels)] for index in range(showcase_rows)],",
+    "    'product_family': [showcase_products[index % len(showcase_products)] for index in range(showcase_rows)],",
+    "    'unit_price': [round(79 + ((index * 3571) % 92000) / 100, 2) for index in range(showcase_rows)],",
+    "    'discount_pct': [round(((index * 37) % 1800) / 100, 2) for index in range(showcase_rows)],",
+    "    'gross_margin': [round(180 + ((index * 1451) % 610000) / 100, 2) for index in range(showcase_rows)],",
+    "    'priority': [showcase_priorities[index % len(showcase_priorities)] for index in range(showcase_rows)],",
+    "    'renewal_date': [date(2027, 1, 1) + timedelta(days=index % 365) for index in range(showcase_rows)],",
+    "    'account_status': [showcase_statuses[index % len(showcase_statuses)] for index in range(showcase_rows)],",
     "})",
     "polars_series = pl.Series('series_value', [7, 8])",
     `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
@@ -5307,8 +5349,24 @@ async function captureReleasedJupyterPandasPreview(
   });
   assert.ok(preview, "The Pandas notebook action must remain inside its exact rendered preview.");
   assert.deepEqual(preview, {
-    title: "Open Wrangler preview: DataFrame (pandas) - 2500 x 6",
-    headers: ["order_id", "market", "revenue", "fulfilled", "order_date", "channel"],
+    title: "Open Wrangler preview: DataFrame (pandas) - 100000 x 15",
+    headers: [
+      "order_id",
+      "market",
+      "revenue",
+      "fulfilled",
+      "order_date",
+      "segment",
+      "channel",
+      "product_family",
+      "units",
+      "unit_price",
+      "discount_pct",
+      "gross_margin",
+      "priority",
+      "renewal_date",
+      "account_status"
+    ],
     rows: 20,
     width: preview?.width,
     height: preview?.height
@@ -5537,8 +5595,15 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     const app = await exactSessionApp(gridTarget.frame, opened.sessionId);
     assert.ok(app, "The screenshot fixture must expose its exact live application root.");
     const revenue = columnReference(opened.metadata, "revenue");
-    const columnWidths = await fitFeaturedGridColumns(opened.sessionId, revenue.id);
-    assert.deepEqual(testing.activeSession()?.viewState.columnWidths, columnWidths);
+    await testing.updateViewState(opened.sessionId, {
+      ...opened.viewState,
+      selectedColumnId: revenue.id
+    });
+    assert.equal(
+      await testing.synchronizePanel(opened.sessionId),
+      true,
+      "The screenshot fixture must synchronize its selected revenue column."
+    );
     assert.equal(testing.activeSession()?.viewState.selectedColumnId, revenue.id);
   } catch (error) {
     const active = testing.activeSession();
@@ -5577,14 +5642,16 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     await prepareWorkbenchForEvidence();
     await hideCodePreviewPanel();
     const hero = testing.activeSession();
-    assert.ok(hero, "The screenshot fixture must remain active while its complete Summary is composed.");
-    await primeExactDatasetStats(hero.sessionId);
-    await composeNativeViews("hero");
-    await resizePrimarySidebar(PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH);
+    assert.ok(hero, "The screenshot fixture must remain active while selected-column Insights is composed.");
+    await closeVisibleWorkbenchPart(capturePage, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+    await openSelectedColumnInsights(hero.sessionId, "revenue");
     assert.equal(
       await testing.synchronizePanel(hero.sessionId),
       true,
-      "The complete Summary screenshot must synchronize with the exact renderer."
+      "Selected-column Insights must synchronize with the exact renderer."
     );
     await fitFeaturedGridColumns(hero.sessionId, columnReference(hero.metadata, "revenue").id);
     recordAcceptanceProgress("verify:screenshots:hero-dark");
@@ -5655,7 +5722,6 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       10_000,
       `${theme} to activate before screenshot capture`
     );
-    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
     await clearNotifications();
     await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
     await new Promise((resolve) => setTimeout(resolve, 800));
@@ -5788,203 +5854,36 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     return columnWidths;
   }
 
-  async function resizePrimarySidebar(targetWidth: number): Promise<void> {
-    const sidebar = capturePage.locator(".part.sidebar:visible").first();
-    await sidebar.waitFor({ state: "visible", timeout: 10_000 });
-    const bounds = await sidebar.boundingBox();
-    assert.ok(bounds, "The README hero requires measurable primary-sidebar geometry.");
-    if (Math.abs(bounds.width - targetWidth) <= 2) return;
-    const sash = await nearestWorkbenchSash("vertical", bounds.x + bounds.width);
-    assert.ok(sash, "The README hero requires the primary-sidebar resize sash.");
-    const startX = sash.x + sash.width / 2;
-    const startY = Math.max(bounds.y + 20, Math.min(bounds.y + bounds.height - 20, bounds.y + bounds.height / 2));
-    await capturePage.mouse.move(startX, startY);
-    await capturePage.mouse.down();
-    await capturePage.mouse.move(startX + targetWidth - bounds.width, startY, { steps: 12 });
-    await capturePage.mouse.up();
-    await waitForWorkbenchPartSize(sidebar, "width", targetWidth, "the README hero sidebar");
-  }
-
-  async function nearestWorkbenchSash(
-    orientation: "horizontal" | "vertical",
-    targetPosition: number
-  ): Promise<{ x: number; y: number; width: number; height: number } | undefined> {
-    const candidates = capturePage.locator(`.monaco-sash.${orientation}:visible`);
-    let nearest:
-      | {
-          bounds: { x: number; y: number; width: number; height: number };
-          distance: number;
-        }
-      | undefined;
-    for (let index = 0; index < (await candidates.count()); index += 1) {
-      const bounds = await candidates.nth(index).boundingBox();
-      if (!bounds) continue;
-      const position = orientation === "vertical" ? bounds.x + bounds.width / 2 : bounds.y + bounds.height / 2;
-      const distance = Math.abs(position - targetPosition);
-      if (!nearest || distance < nearest.distance) nearest = { bounds, distance };
-    }
-    return nearest && nearest.distance <= 12 ? nearest.bounds : undefined;
-  }
-
-  async function waitForWorkbenchPartSize(
-    part: Locator,
-    dimension: "height" | "width",
-    expected: number,
-    label: string
-  ): Promise<void> {
-    const deadline = Date.now() + 10_000;
-    let actual: number | undefined;
-    do {
-      actual = (await part.boundingBox())?.[dimension];
-      if (actual !== undefined && Math.abs(actual - expected) <= 3) return;
-      await capturePage.waitForTimeout(25);
-    } while (Date.now() < deadline);
-    throw new Error(`${label} must measure ${expected}px; observed ${String(actual)}px.`);
-  }
-
-  async function primeExactDatasetStats(sessionId: string): Promise<void> {
+  async function openSelectedColumnInsights(sessionId: string, expectedColumn: string): Promise<void> {
     const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
     const app = await exactSessionApp(target.frame, sessionId);
-    assert.ok(app, "Dataset statistics composition requires the exact live Open Wrangler renderer.");
+    assert.ok(app, "Selected-column Insights requires the exact live Open Wrangler renderer.");
     const toggle = app.getByRole("button", { name: "Insights & filters" });
-    await toggle.click();
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
     const drawer = app.getByRole("complementary", { name: "Insights and filters" });
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
-    await waitFor(
-      () => testing.activeSession()?.metadata.stats !== undefined,
-      30_000,
-      "exact dataset statistics before README screenshot capture"
-    );
-    await drawer.getByRole("button", { name: "Close panel" }).click();
-    await drawer.waitFor({ state: "hidden", timeout: 10_000 });
-  }
-
-  async function composeNativeViews(scene: "hero"): Promise<void> {
-    const desired = new Map<string, boolean>([
-      ["Operations", false],
-      ["Summary", true],
-      ["Filters / Sorts", false],
-      ["Cleaning Steps", false]
-    ]);
-    const sidebar = capturePage.locator(".part.sidebar:visible");
-    for (const [label, expanded] of desired) {
-      const title = sidebar.getByText(label, { exact: true }).first();
-      await title.waitFor({ state: "visible", timeout: 10_000 });
-      const header = title.locator("xpath=ancestor::*[contains(@class, 'pane-header')][1]");
-      assert.equal(await header.count(), 1, `The ${label} native view must expose one pane header.`);
-      if ((await nativeViewExpanded(header)) !== expanded) {
-        await header.click();
-        const deadline = Date.now() + 5_000;
-        while ((await nativeViewExpanded(header)) !== expanded && Date.now() < deadline) {
-          await capturePage.waitForTimeout(25);
-        }
-      }
-      assert.equal(await nativeViewExpanded(header), expanded, `${label} must match the ${scene} scene composition.`);
-    }
-  }
-
-  async function nativeViewExpanded(header: Locator): Promise<boolean> {
-    const ariaExpanded = await header.getAttribute("aria-expanded");
-    if (ariaExpanded !== null) return ariaExpanded === "true";
-    return (await header.getAttribute("class"))?.split(/\s+/u).includes("expanded") ?? false;
-  }
-
-  async function assertHeroNativeViewComposition(): Promise<void> {
-    const active = testing.activeSession();
-    assert.ok(active?.metadata.stats, "The hero Summary must publish exact dataset statistics.");
-    const sidebar = capturePage.locator(".part.sidebar:visible").first();
-    await sidebar.waitFor({ state: "visible", timeout: 10_000 });
-    const deadline = Date.now() + 15_000;
-    let measurement:
-      | {
-          width: number;
-          rowCount: number;
-          missingLabels: string[];
-          clippedParts: string[];
-          profilingVisible: boolean;
-          overlaps: string[];
-        }
-      | undefined;
+    await drawer.getByRole("tab", { name: "Column" }).waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("heading", { name: expectedColumn }).waitFor({ state: "visible", timeout: 10_000 });
+    const deadline = Date.now() + 30_000;
     do {
-      measurement = await sidebar.evaluate(
-        (root, expected) => {
-          type EvidenceElement = {
-            readonly innerText: string;
-            readonly scrollWidth: number;
-            readonly clientWidth: number;
-            getBoundingClientRect(): {
-              readonly bottom: number;
-              readonly height: number;
-              readonly top: number;
-              readonly width: number;
-            };
-            querySelectorAll(selector: string): ArrayLike<EvidenceElement>;
-          };
-          const rootElement = root as unknown as EvidenceElement;
-          const visible = (element: EvidenceElement): boolean => {
-            const bounds = element.getBoundingClientRect();
-            return bounds.width > 0 && bounds.height > 0;
-          };
-          const headers = Array.from(rootElement.querySelectorAll(".pane-header")).filter(visible);
-          const header = (label: string) =>
-            headers.find((candidate) => candidate.innerText.replace(/\s+/gu, " ").trim() === label);
-          const rows = Array.from(rootElement.querySelectorAll(".monaco-list-row")).filter(visible);
-          const matchingRows = expected.labels.map((label) =>
-            rows.find((row) => row.innerText.replace(/\s+/gu, " ").trim().startsWith(label))
-          );
-          const clippedParts = matchingRows.flatMap((row, index) =>
-            Array.from(row?.querySelectorAll(".label-name, .label-description, .monaco-highlighted-label") ?? [])
-              .filter(visible)
-              .filter((part) => part.scrollWidth > part.clientWidth + 1)
-              .map(() => expected.labels[index] ?? "")
-          );
-          const operations = header("Operations")?.getBoundingClientRect();
-          const summary = header("Summary")?.getBoundingClientRect();
-          const filters = header("Filters / Sorts")?.getBoundingClientRect();
-          const first = matchingRows[0]?.getBoundingClientRect();
-          const last = matchingRows.at(-1)?.getBoundingClientRect();
-          const overlaps = [
-            operations && summary && operations.bottom > summary.top + 1 ? "Operations and Summary headers" : "",
-            summary && first && summary.bottom > first.top + 1 ? "Summary header and first row" : "",
-            last && filters && last.bottom > filters.top + 1 ? "Summary rows and Filters header" : ""
-          ].filter(Boolean);
-          return {
-            width: rootElement.getBoundingClientRect().width,
-            rowCount: matchingRows.filter(Boolean).length,
-            missingLabels: expected.labels.filter((_, index) => !matchingRows[index]),
-            clippedParts,
-            profilingVisible: rows.some((row) => /\bProfiling\b/u.test(row.innerText)),
-            overlaps
-          };
-        },
-        {
-          labels: [
-            active.metadata.source.label,
-            "Shape",
-            "Columns",
-            "Selected column",
-            "Missing cells",
-            "Duplicate rows"
-          ]
-        }
-      );
+      const summary = await drawer.innerText();
       if (
-        Math.abs(measurement.width - PACKAGED_SCREENSHOT_HERO_SIDEBAR_WIDTH) <= 3 &&
-        measurement.rowCount === 6 &&
-        measurement.missingLabels.length === 0 &&
-        measurement.clippedParts.length === 0 &&
-        !measurement.profilingVisible &&
-        measurement.overlaps.length === 0
+        !summary.includes("Profiling selected column") &&
+        ["Min", "Max", "Mean", "Median"].every((label) => new RegExp(`\\b${label}\\b`, "u").test(summary))
       ) {
         return;
       }
       await capturePage.waitForTimeout(50);
     } while (Date.now() < deadline);
-    throw new Error(`The hero native Summary is cramped or incomplete: ${JSON.stringify(measurement)}`);
+    throw new Error(`Selected-column Insights did not publish complete numeric statistics for ${expectedColumn}.`);
   }
 
   async function assertPackagedScreenshotScene(scene: "hero"): Promise<void> {
-    await assertHeroNativeViewComposition();
+    assert.equal(
+      await capturePage.locator(".part.sidebar:visible").count(),
+      0,
+      "The compact hero must not retain a competing native sidebar."
+    );
     const active = testing.activeSession();
     assert.ok(active, "Screenshot geometry requires the active packaged dataframe session.");
     const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
@@ -6004,6 +5903,10 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           clippedCells: number;
           clippedControls: string[];
           revenueSummary: string;
+          insightsHeading: string;
+          insightsStats: Record<string, string>;
+          insightsOverflow: number;
+          insightsContained: boolean;
           draftVisible: boolean;
           columnSearchOpen: boolean;
         }
@@ -6072,6 +5975,11 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
           const revenueHeader = headers.find((header) => header.dataset.column === "revenue");
+          const insights = appRoot.querySelector("#openwrangler-insights-panel");
+          const insightLabels = Array.from(insights?.querySelectorAll(".summaryStatGrid dt") ?? []);
+          const insightValues = Array.from(insights?.querySelectorAll(".summaryStatGrid dd") ?? []);
+          const insightsBounds = insights?.getBoundingClientRect();
+          const workspaceBounds = workspace.getBoundingClientRect();
           const draft = appRoot.querySelector('.draftPanel[aria-label="Draft preview"]');
           const columnSearch = appRoot.querySelector(".columnSearchPopup");
           return {
@@ -6086,6 +5994,16 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             clippedCells: visibleCells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length,
             clippedControls,
             revenueSummary: revenueHeader?.querySelector(".exactSummaryStats")?.innerText ?? "",
+            insightsHeading: insights?.querySelector(".summaryColumnHeader h2")?.innerText ?? "",
+            insightsStats: Object.fromEntries(
+              insightLabels.map((label, index) => [label.innerText, insightValues[index]?.innerText ?? ""])
+            ),
+            insightsOverflow: insights ? insights.scrollWidth - insights.clientWidth : Number.POSITIVE_INFINITY,
+            insightsContained: Boolean(
+              insightsBounds &&
+              insightsBounds.left >= workspaceBounds.left - 1 &&
+              insightsBounds.right <= workspaceBounds.right + 1
+            ),
             draftVisible: Boolean(draft),
             columnSearchOpen: Boolean(columnSearch)
           };
@@ -6107,6 +6025,13 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         measurement.clippedControls.length === 0 &&
         /\bMin\b/u.test(measurement.revenueSummary) &&
         /\bMax\b/u.test(measurement.revenueSummary) &&
+        measurement.insightsHeading === "revenue" &&
+        ["Min", "Max", "Mean", "Median"].every((label) => {
+          const value = measurement?.insightsStats[label];
+          return typeof value === "string" && value.length > 0 && value !== "n/a";
+        }) &&
+        measurement.insightsOverflow <= 1 &&
+        measurement.insightsContained &&
         !measurement.draftVisible &&
         !measurement.columnSearchOpen;
       if (ready) return;
