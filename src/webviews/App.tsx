@@ -18,14 +18,13 @@ import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
-import { SummaryPanel } from "./summary/SummaryPanel";
+import { SummaryPanel, summaryPanelId, summaryTabId, type SummaryPanelView } from "./summary/SummaryPanel";
 import { OperationBuilder } from "./operations/OperationBuilder";
 import { ColumnSearch } from "./ColumnSearch";
 import { vscode } from "./vscodeApi";
 
 const webviewConfig = readWebviewConfig();
 const pageSize = webviewConfig.fetchBlockSize;
-const drawerSummaryConcurrency = 4;
 const sessionSnapshotRetryDelaysMs = [250, 500, 1_000, 2_000, 4_000, 8_000] as const;
 const viewRequestEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 let lastViewRequestSequence = 0;
@@ -67,6 +66,7 @@ export function App() {
   const [goToColumnRequest, setGoToColumnRequest] = useState<{ columnId: string; requestId: number } | undefined>();
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
+  const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
   const [operationOpen, setOperationOpen] = useState(false);
   const [operationKind, setOperationKind] = useState<OperationKind | undefined>();
   const [editingStep, setEditingStep] = useState<TransformStep | undefined>();
@@ -96,6 +96,7 @@ export function App() {
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
   const sidePanelOpenRef = useRef(false);
+  const summaryPanelViewRef = useRef<SummaryPanelView>("column");
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
   const latestPageRequest = useRef<PendingPageRequest | undefined>(undefined);
   const failedPageRequestRef = useRef<PendingPageRequest | undefined>(undefined);
@@ -103,10 +104,6 @@ export function App() {
   const pendingBackgroundRequests = useRef(new Map<string, PendingBackgroundRequest>());
   const pendingSummaryByColumnId = useRef(new Map<string, string>());
   const summaryOwnersByColumnId = useRef(new Map<string, Set<SummaryRequestOwner>>());
-  const drawerSummaryQueue = useRef<string[]>([]);
-  const drawerSummaryQueued = useRef(new Set<string>());
-  const drawerSummaryActive = useRef(new Set<string>());
-  const drawerSummaryExhausted = useRef(new Set<string>());
   const pendingStatsRequest = useRef<string | undefined>(undefined);
   const latestValuesByColumn = useRef(new Map<string, string>());
   const retryTimers = useRef(new Map<number, PendingBackgroundRequest>());
@@ -344,10 +341,6 @@ export function App() {
   }, []);
 
   const clearDrawerSummaryScheduling = useCallback((): void => {
-    drawerSummaryQueue.current = [];
-    drawerSummaryQueued.current.clear();
-    drawerSummaryActive.current.clear();
-    drawerSummaryExhausted.current.clear();
     for (const columnId of [...summaryOwnersByColumnId.current.keys()]) dropSummaryOwner(columnId, "drawer");
   }, [dropSummaryOwner]);
 
@@ -487,70 +480,6 @@ export function App() {
     [cancelBackgroundRequests, dropSummaryOwner]
   );
 
-  const pumpDrawerSummaryProfiling = useCallback((): void => {
-    const currentMetadata = metadataRef.current;
-    const confirmed = confirmedView.current;
-    if (
-      !sidePanelOpenRef.current ||
-      !currentMetadata ||
-      !confirmed ||
-      !canProfileConfirmedView(confirmed.viewContextId)
-    ) {
-      return;
-    }
-
-    while (drawerSummaryActive.current.size < drawerSummaryConcurrency && drawerSummaryQueue.current.length > 0) {
-      const columnId = drawerSummaryQueue.current.shift();
-      if (!columnId) continue;
-      drawerSummaryQueued.current.delete(columnId);
-      if (
-        !currentMetadata.schema.some((candidate) => candidate.id === columnId) ||
-        summariesRef.current.some((summary) => summary.columnId === columnId)
-      ) {
-        continue;
-      }
-
-      sendSummaryColumn(columnId, 1, "drawer");
-      if (pendingSummaryByColumnId.current.has(columnId)) {
-        drawerSummaryActive.current.add(columnId);
-        continue;
-      }
-
-      dropSummaryOwner(columnId, "drawer");
-      drawerSummaryQueue.current.unshift(columnId);
-      drawerSummaryQueued.current.add(columnId);
-      break;
-    }
-  }, [canProfileConfirmedView, dropSummaryOwner, sendSummaryColumn]);
-
-  const finishDrawerSummaryColumn = useCallback(
-    (columnId: string, exhausted = false): void => {
-      if (!drawerSummaryActive.current.delete(columnId)) return;
-      if (exhausted) drawerSummaryExhausted.current.add(columnId);
-      dropSummaryOwner(columnId, "drawer");
-      pumpDrawerSummaryProfiling();
-    },
-    [dropSummaryOwner, pumpDrawerSummaryProfiling]
-  );
-
-  const enqueueDrawerSummaryColumns = useCallback((): void => {
-    const currentMetadata = metadataRef.current;
-    if (!sidePanelOpenRef.current || !currentMetadata) return;
-    for (const { id } of currentMetadata.schema) {
-      if (
-        summariesRef.current.some((summary) => summary.columnId === id) ||
-        drawerSummaryQueued.current.has(id) ||
-        drawerSummaryActive.current.has(id) ||
-        drawerSummaryExhausted.current.has(id)
-      ) {
-        continue;
-      }
-      drawerSummaryQueue.current.push(id);
-      drawerSummaryQueued.current.add(id);
-    }
-    pumpDrawerSummaryProfiling();
-  }, [pumpDrawerSummaryProfiling]);
-
   const updateVisibleSummaryColumns = useCallback(
     (columnIds: string[]) => {
       const next = new Set(columnIds);
@@ -574,6 +503,7 @@ export function App() {
       const confirmed = confirmedView.current;
       if (
         !sidePanelOpenRef.current ||
+        summaryPanelViewRef.current !== "dataset" ||
         !currentMetadata ||
         currentMetadata.stats ||
         !confirmed ||
@@ -652,14 +582,12 @@ export function App() {
       }
       storeImportOptionsPending(pending);
       if (!pending && wasPending && metadataRef.current) {
-        enqueueDrawerSummaryColumns();
         restartProfilingForConfirmedView();
       }
     },
     [
       cancelBackgroundRequests,
       clearDrawerSummaryScheduling,
-      enqueueDrawerSummaryColumns,
       restartProfilingForConfirmedView,
       storeImportOptionsPending
     ]
@@ -1031,10 +959,7 @@ export function App() {
               next.set(backgroundDiagnosticKey(pending), { message: response.message, pending });
               return next;
             });
-            const retryScheduled = scheduleBackgroundRetry(pending);
-            if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.columnId, true);
-          } else if (pending.kind === "summary") {
-            finishDrawerSummaryColumn(pending.columnId, true);
+            scheduleBackgroundRetry(pending);
           }
           return;
         }
@@ -1113,8 +1038,7 @@ export function App() {
         if (pending) {
           pendingBackgroundRequests.current.delete(response.viewRequestId);
           releaseBackgroundRequest(response.viewRequestId, pending);
-          const retryScheduled = scheduleBackgroundRetry(pending);
-          if (pending.kind === "summary" && !retryScheduled) finishDrawerSummaryColumn(pending.columnId, true);
+          scheduleBackgroundRetry(pending);
         }
         return;
       }
@@ -1251,10 +1175,8 @@ export function App() {
         if (!pending || pending.kind !== "summary") return;
         pendingBackgroundRequests.current.delete(response.viewRequestId);
         releaseBackgroundRequest(response.viewRequestId, pending);
-        if (!canProfileConfirmedView(pending.viewContextId) || response.revision !== confirmedView.current?.revision) {
-          finishDrawerSummaryColumn(pending.columnId, true);
+        if (!canProfileConfirmedView(pending.viewContextId) || response.revision !== confirmedView.current?.revision)
           return;
-        }
         const merged = new Map(summariesRef.current.map((summary) => [summary.columnId, summary]));
         for (const summary of response.summaries) merged.set(summary.columnId, summary);
         const schemaOrder = new Map(metadataRef.current?.schema.map((column, index) => [column.id, index]) ?? []);
@@ -1266,7 +1188,6 @@ export function App() {
           )
         );
         clearBackgroundDiagnostic(pending);
-        finishDrawerSummaryColumn(pending.columnId);
         return;
       }
 
@@ -1326,7 +1247,6 @@ export function App() {
     clearBackgroundDiagnostic,
     clearStepInspection,
     confirmView,
-    finishDrawerSummaryColumn,
     nextViewRequestId,
     pruneSummaryOwners,
     releaseBackgroundRequest,
@@ -1410,6 +1330,11 @@ export function App() {
   }, [rendererNeedsSnapshot]);
 
   const schemaById = useMemo(() => new Map(metadata?.schema.map((column) => [column.id, column]) ?? []), [metadata]);
+  const selectedSummaryColumnId = useMemo(() => {
+    const selectedColumnId = gridViewState.selectedColumnId;
+    if (selectedColumnId && schemaById.has(selectedColumnId)) return selectedColumnId;
+    return metadata?.schema[0]?.id;
+  }, [gridViewState.selectedColumnId, metadata?.schema, schemaById]);
   const inspectionMode = Boolean(stepInspectionTarget);
   const displayMetadata = useMemo<SessionMetadata | undefined>(() => {
     if (!metadata || !stepInspection) return metadata;
@@ -1514,7 +1439,7 @@ export function App() {
     if (importOptionsPendingRef.current || stepInspectionTargetRef.current) return;
     const currentMetadata = metadataRef.current;
     const confirmed = confirmedView.current;
-    if (!currentMetadata?.schema.some((candidate) => candidate.name === column)) return;
+    if (currentMetadata?.schema.filter((candidate) => candidate.name === column).length !== 1) return;
     const viewRequestId = nextViewRequestId();
     const valuesFilterModel = filterModelForColumnValues(currentMetadata.filterModel, column);
     if (!currentMetadata || !confirmed || !canProfileConfirmedView(confirmed.viewContextId)) return;
@@ -1633,10 +1558,29 @@ export function App() {
   });
 
   useEffect(() => {
-    if (!sidePanelOpen || !metadata) return;
-    enqueueDrawerSummaryColumns();
-    requestStatsForConfirmedView();
-  }, [activeViewContextId, enqueueDrawerSummaryColumns, metadata, requestStatsForConfirmedView, sidePanelOpen]);
+    if (!sidePanelOpen || !metadata || importOptionsPending) return;
+
+    const desiredColumnId = summaryPanelView === "column" ? selectedSummaryColumnId : undefined;
+    for (const [columnId, owners] of [...summaryOwnersByColumnId.current]) {
+      if (owners.has("drawer") && columnId !== desiredColumnId) releaseSummaryOwner(columnId, "drawer");
+    }
+
+    if (desiredColumnId) sendSummaryColumn(desiredColumnId, 1, "drawer");
+    if (summaryPanelView === "dataset") requestStatsForConfirmedView();
+    else cancelBackgroundRequests((pending) => pending.kind === "stats");
+    if (summaryPanelView !== "filters") cancelBackgroundRequests((pending) => pending.kind === "values");
+  }, [
+    activeViewContextId,
+    cancelBackgroundRequests,
+    importOptionsPending,
+    metadata,
+    releaseSummaryOwner,
+    requestStatsForConfirmedView,
+    selectedSummaryColumnId,
+    sendSummaryColumn,
+    sidePanelOpen,
+    summaryPanelView
+  ]);
 
   const previewStep = (step: TransformStep, replaceStepId?: string) => {
     if (!beginMutation()) return;
@@ -1708,6 +1652,16 @@ export function App() {
     setEditingStep(latest);
     setOperationKind(latest.kind);
     setOperationOpen(true);
+  };
+
+  const selectSummaryPanelView = (view: SummaryPanelView) => {
+    summaryPanelViewRef.current = view;
+    setSummaryPanelView(view);
+    if (view !== "filters") return;
+    const selectedColumn = selectedSummaryColumnId ? schemaById.get(selectedSummaryColumnId) : undefined;
+    if (!selectedColumn) return;
+    setFilterColumn(selectedColumn.name);
+    requestValues(selectedColumn.name);
   };
 
   const closeSidePanel = () => {
@@ -1897,6 +1851,7 @@ export function App() {
                 ref={sidePanelToggleRef}
                 type="button"
                 className="toolbarButton"
+                aria-label={inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
                 aria-expanded={sidePanelOpen}
                 aria-controls="openwrangler-insights-panel"
                 disabled={inspectionMode || importOptionsPending}
@@ -1907,11 +1862,13 @@ export function App() {
                     return;
                   }
                   sidePanelReturnFocus.current = event.currentTarget;
+                  summaryPanelViewRef.current = "column";
+                  setSummaryPanelView("column");
                   sidePanelOpenRef.current = true;
                   setSidePanelOpen(true);
                 }}
               >
-                {inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
+                {inspectionMode ? "Filters paused during inspection" : "Insights"}
               </button>
               <ColumnSearch
                 columns={(displayMetadata ?? metadata).schema}
@@ -2137,6 +2094,8 @@ export function App() {
                   sidePanelReturnFocus.current =
                     document.activeElement instanceof HTMLElement ? document.activeElement : sidePanelToggleRef.current;
                   setFilterColumn(column);
+                  summaryPanelViewRef.current = "filters";
+                  setSummaryPanelView("filters");
                   sidePanelOpenRef.current = true;
                   setSidePanelOpen(true);
                   requestValues(column);
@@ -2154,7 +2113,7 @@ export function App() {
           {sidePanelOpen && !inspectionMode && (
             <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Insights and filters">
               <div className="drawerHeader">
-                <strong>Insights & filters</strong>
+                <strong>Insights</strong>
                 <button
                   ref={sidePanelCloseRef}
                   type="button"
@@ -2167,19 +2126,30 @@ export function App() {
                 metadata={metadata}
                 summaries={summaries}
                 schemaById={schemaById}
-                selectedColumnId={gridViewState.selectedColumnId}
+                selectedColumnId={selectedSummaryColumnId}
+                activeView={summaryPanelView}
+                onSelectView={selectSummaryPanelView}
               />
-              <FilterPanel
-                key={filterColumn}
-                metadata={metadata}
-                model={filterModel}
-                values={columnValues}
-                activeColumn={filterColumn}
-                defaultAdvanced={webviewConfig.filterMode === "advanced"}
-                disabled={mutationPending || importOptionsPending}
-                onApply={applyFilters}
-                onRequestValues={requestValues}
-              />
+              {summaryPanelView === "filters" && (
+                <div
+                  id={summaryPanelId("filters")}
+                  className="filtersViewContent"
+                  role="tabpanel"
+                  aria-labelledby={summaryTabId("filters")}
+                >
+                  <FilterPanel
+                    key={filterColumn}
+                    metadata={metadata}
+                    model={filterModel}
+                    values={columnValues}
+                    activeColumn={filterColumn}
+                    defaultAdvanced={webviewConfig.filterMode === "advanced"}
+                    disabled={mutationPending || importOptionsPending}
+                    onApply={applyFilters}
+                    onRequestValues={requestValues}
+                  />
+                </div>
+              )}
             </aside>
           )}
         </section>

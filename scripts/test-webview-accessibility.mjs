@@ -227,17 +227,72 @@ async function verifyInsightsDrawerWorkflow(browser) {
     if ((await panel.getAttribute("aria-modal")) !== null) {
       throw new Error(`${harness} incorrectly exposed the narrow Insights drawer as modal.`);
     }
-    const close = page.getByRole("button", { name: "Close panel" });
+    await page.getByRole("button", { name: "Close panel" }).waitFor();
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Close panel");
     const summaryPanel = panel.locator("section.summaryPanel");
-    await summaryPanel.getByText("value (column 1)", { exact: true }).waitFor();
-    await summaryPanel.getByText("value (column 2)", { exact: true }).waitFor();
-    await close.press("Escape");
+    const tabs = summaryPanel.getByRole("tab");
+    if ((await tabs.allTextContents()).map((text) => text.trim()).join(",") !== "Column,Dataset,Filters") {
+      throw new Error(`${harness} did not expose the Column, Dataset, and Filters Insights tabs.`);
+    }
+
+    const columnTab = summaryPanel.getByRole("tab", { name: "Column" });
+    const datasetTab = summaryPanel.getByRole("tab", { name: "Dataset" });
+    const filtersTab = summaryPanel.getByRole("tab", { name: "Filters" });
+    if ((await columnTab.getAttribute("aria-selected")) !== "true") {
+      throw new Error(`${harness} did not open Insights on the selected-column view.`);
+    }
+    const columnPanel = summaryPanel.getByRole("tabpanel", { name: "Column" });
+    await columnPanel.getByRole("heading", { name: "value (column 1)" }).waitFor();
+    if (await columnPanel.getByRole("heading", { name: "value (column 2)" }).count()) {
+      throw new Error(`${harness} rendered an unselected duplicate column in the selected-column view.`);
+    }
+
+    await page.addScriptTag({ path: axePath });
+    await scanPageAccessibility(page, `${harness} (Column tab)`);
+
+    await columnTab.focus();
+    await page.keyboard.press("ArrowRight");
+    await summaryPanel.getByRole("tabpanel", { name: "Dataset" }).waitFor();
+    if ((await datasetTab.getAttribute("aria-selected")) !== "true" || !(await datasetTab.evaluate(isActiveTab))) {
+      throw new Error(`${harness} did not keyboard-select and focus the Dataset tab.`);
+    }
+    await summaryPanel.getByRole("heading", { name: "Dataset" }).waitFor();
+    await scanPageAccessibility(page, `${harness} (Dataset tab)`);
+
+    await page.keyboard.press("ArrowRight");
+    const filtersPanel = panel.getByRole("tabpanel", { name: "Filters" });
+    await filtersPanel.waitFor();
+    if ((await filtersTab.getAttribute("aria-selected")) !== "true" || !(await filtersTab.evaluate(isActiveTab))) {
+      throw new Error(`${harness} did not keyboard-select and focus the Filters tab.`);
+    }
+    await filtersPanel.getByRole("heading", { name: "Filters / Sorts" }).waitFor();
+    await filtersPanel.getByRole("status").filter({ hasText: '2 columns share the displayed name "value"' }).waitFor();
+    for (const optionName of ["value (column 1)", "value (column 2)"]) {
+      const options = filtersPanel.locator("option", { hasText: optionName });
+      if ((await options.count()) !== 2) {
+        throw new Error(`${harness} did not preserve positional duplicate labels in both column selectors.`);
+      }
+    }
+    await filtersPanel
+      .locator("summary")
+      .filter({ hasText: /^SORTS$/u })
+      .click();
+    await filtersPanel.getByLabel("Sort direction").waitFor();
+    await filtersPanel.getByRole("button", { name: "Add to sort" }).waitFor();
+    await scanPageAccessibility(page, `${harness} (Filters tab)`);
+
+    await filtersTab.focus();
+    await page.keyboard.press("Home");
+    await summaryPanel.getByRole("tabpanel", { name: "Column" }).waitFor();
+    if ((await columnTab.getAttribute("aria-selected")) !== "true" || !(await columnTab.evaluate(isActiveTab))) {
+      throw new Error(`${harness} did not return keyboard focus to the Column tab.`);
+    }
+    await page.keyboard.press("Escape");
     await panel.waitFor({ state: "detached" });
     await page.waitForFunction(
       () =>
         document.activeElement instanceof HTMLButtonElement &&
-        document.activeElement.textContent?.trim() === "Insights & filters"
+        document.activeElement.getAttribute("aria-label") === "Insights & filters"
     );
     if (!(await toggle.evaluate((element) => document.activeElement === element))) {
       throw new Error(`${harness} did not restore focus to the exact Insights opener.`);
@@ -245,6 +300,31 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.close();
   }
   console.log("Insights drawer focus, duplicate labels, and summary-family semantics verified.");
+}
+
+async function scanPageAccessibility(page, harness) {
+  const result = await withTimeout(
+    page.evaluate(async () => {
+      return globalThis.axe.run(document, {
+        runOnly: {
+          type: "tag",
+          values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]
+        }
+      });
+    }),
+    30_000,
+    `${harness} axe scan`
+  );
+  const violations = result.violations.filter((violation) => violation.impact !== "minor");
+  if (violations.length === 0) {
+    console.log(`Accessibility verified: ${harness}`);
+  } else {
+    failures.push({ harness, violations });
+  }
+}
+
+function isActiveTab(element) {
+  return element === document.activeElement;
 }
 
 if (failures.length > 0) {
@@ -497,7 +577,7 @@ async function verifyFilterKeyboardWorkflow(browser) {
       () => {
         const active = document.activeElement;
         if (!(active instanceof HTMLButtonElement)) return false;
-        return ["Filter…", "Insights & filters"].includes(active.textContent?.trim() ?? "");
+        return active.textContent?.trim() === "Filter…" || active.getAttribute("aria-label") === "Insights & filters";
       },
       undefined,
       { timeout: 2_000 }
