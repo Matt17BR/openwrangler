@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from math import isnan
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines.base import EngineError, typed_selection_value
-from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine
+from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
@@ -45,14 +46,30 @@ def source_relation() -> Any:
     )
 
 
+def rows(frame: Any) -> list[tuple[Any, ...]]:
+    if not isinstance(frame, DuckDBSqlPlan):
+        return list(frame.fetchall())
+    connection = duckdb.connect(
+        config={
+            "autoinstall_known_extensions": False,
+            "autoload_known_extensions": False,
+            "enable_external_file_cache": False,
+        }
+    )
+    try:
+        return list(connection.execute(frame.sql).fetchall())
+    finally:
+        connection.close()
+
+
 def records(frame: Any) -> list[dict[str, Any]]:
-    return [dict(zip(frame.columns, row, strict=True)) for row in frame.fetchall()]
+    return [dict(zip(frame.columns, row, strict=True)) for row in rows(frame)]
 
 
 def assert_same_relation(left: Any, right: Any) -> None:
     assert list(left.columns) == list(right.columns)
-    left_rows = left.fetchall()
-    right_rows = right.fetchall()
+    left_rows = rows(left)
+    right_rows = rows(right)
     assert len(left_rows) == len(right_rows)
     for left_row, right_row in zip(left_rows, right_rows, strict=True):
         assert len(left_row) == len(right_row)
@@ -191,33 +208,33 @@ def test_duckdb_file_readers_are_lazy_hardened_and_export_natively(tmp_path: Pat
     )
 
     engine = DuckDBEngine()
-    settings = (
-        engine._owned_connection()
-        .sql(
+    settings_connection = duckdb_runtime._connect()
+    try:
+        settings = settings_connection.execute(
             "SELECT current_setting('autoinstall_known_extensions'), "
             "current_setting('autoload_known_extensions'), current_setting('enable_external_file_cache'), "
             "current_setting('preserve_insertion_order'), "
             "current_setting('TimeZone')"
-        )
-        .fetchone()
-    )
+        ).fetchone()
+        assert settings_connection.execute("FROM duckdb_external_file_cache()").fetchall() == []
+    finally:
+        settings_connection.close()
     assert settings == (False, False, False, True, "UTC")
 
     csv_frame = engine.read_file(
         str(csv_path),
         {"delimiter": ";", "encoding": "utf-8", "quoteChar": '"', "hasHeader": True},
     )
-    assert isinstance(csv_frame, duckdb.DuckDBPyRelation)
+    assert isinstance(csv_frame, DuckDBSqlPlan)
     assert "read_csv" in csv_frame.sql_query().lower()
     assert engine.shape(csv_frame) == {"rows": 2, "columns": 2}
-    assert engine.read_file(str(unicode_delimiter_path), {"delimiter": "§"}).fetchall() == [
+    assert rows(engine.read_file(str(unicode_delimiter_path), {"delimiter": "§"})) == [
         ("Milan", 1),
         ("Berlin", 2),
     ]
-    assert engine.read_file(str(tsv_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
-    assert engine.read_file(str(jsonl_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
-    assert engine.read_file(str(parquet_path)).fetchall() == [("Milan", 1), ("Berlin", 2)]
-    assert engine._owned_connection().sql("FROM duckdb_external_file_cache()").fetchall() == []
+    assert rows(engine.read_file(str(tsv_path))) == [("Milan", 1), ("Berlin", 2)]
+    assert rows(engine.read_file(str(jsonl_path))) == [("Milan", 1), ("Berlin", 2)]
+    assert rows(engine.read_file(str(parquet_path))) == [("Milan", 1), ("Berlin", 2)]
     with pytest.raises(EngineError, match=r"newline-delimited JSON.*Malformed JSON") as malformed:
         engine.read_file(str(malformed_jsonl_path))
     assert "JSON support is unavailable" not in str(malformed.value)
@@ -282,8 +299,9 @@ def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(tmp_pa
     try:
         session = manager.sessions[session_id]
         assert isinstance(session.engine, DuckDBEngine)
-        assert session.engine._connection is None
-        assert isinstance(session.original, duckdb.DuckDBPyRelation)
+        assert isinstance(session.original, DuckDBSqlPlan)
+        assert isinstance(session.committed, DuckDBSqlPlan)
+        assert isinstance(session.filtered, DuckDBSqlPlan)
         assert "parquet_scan" in session.original.sql_query().lower()
         assert opened["metadata"]["shape"] == {"rows": 1, "columns": 4}
         assert opened["page"]["rows"][0]["values"][0]["raw"] == "123456789012345678901234567890.12345678"
@@ -296,7 +314,7 @@ def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(tmp_pa
             {"logic": "and", "filters": [], "sort": []},
         )
         assert paged["page"]["rows"][0]["values"][0]["raw"] == "123456789012345678901234567890.12345678"
-        assert session.engine._connection is None
+        assert isinstance(session.filtered, DuckDBSqlPlan)
 
         os.replace(replacement, source)
         with pytest.raises(EngineError, match="changed or is no longer available"):
@@ -312,30 +330,110 @@ def test_duckdb_live_session_releases_rich_parquet_for_atomic_replacement(tmp_pa
         manager.close_all()
 
 
-def test_duckdb_relation_plan_retirement_closes_owner_without_relation_close(
+def test_duckdb_session_releases_every_temporary_relation_before_connection_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "retired.csv"
-    source.write_text("value\n1\n", encoding="utf-8")
-    engine = DuckDBEngine()
-    frame = engine.read_file(str(source))
-    owner = engine._connection
-    assert owner is not None
+    source = tmp_path / "detached.csv"
+    source.write_text("value\n1\n2\n", encoding="utf-8")
+    destination = tmp_path / "detached.parquet"
+    native_connect = duckdb_runtime._connect
+    native_project = duckdb.DuckDBPyRelation.project
+    relation_refs: list[weakref.ReferenceType[Any]] = []
+    connections: list[Any] = []
 
     def reject_relation_close(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("DuckDBPyRelation.close() executes an unexecuted relation")
 
+    class TrackedConnection:
+        def __init__(self) -> None:
+            self.inner = native_connect()
+            self.closed = False
+            connections.append(self)
+
+        def _capture(self, relation: Any) -> Any:
+            relation_refs.append(weakref.ref(relation))
+            return relation
+
+        def sql(self, *args: Any, **kwargs: Any) -> Any:
+            return self._capture(self.inner.sql(*args, **kwargs))
+
+        def read_csv(self, *args: Any, **kwargs: Any) -> Any:
+            return self._capture(self.inner.read_csv(*args, **kwargs))
+
+        def read_parquet(self, *args: Any, **kwargs: Any) -> Any:
+            return self._capture(self.inner.read_parquet(*args, **kwargs))
+
+        def read_json(self, *args: Any, **kwargs: Any) -> Any:
+            return self._capture(self.inner.read_json(*args, **kwargs))
+
+        def close(self) -> None:
+            self.inner.close()
+            self.closed = True
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.inner, name)
+
+    def tracked_connect() -> TrackedConnection:
+        return TrackedConnection()
+
+    def tracked_project(relation: Any, *args: Any, **kwargs: Any) -> Any:
+        projected = native_project(relation, *args, **kwargs)
+        relation_refs.append(weakref.ref(projected))
+        return projected
+
+    def assert_fully_detached() -> None:
+        assert relation_refs
+        assert all(reference() is None for reference in relation_refs)
+        assert all(connection.closed for connection in connections)
+        for connection in connections:
+            with pytest.raises(duckdb.ConnectionException, match="closed"):
+                connection.inner.execute("SELECT 1")
+
+    monkeypatch.setattr(duckdb_runtime, "_connect", tracked_connect)
     monkeypatch.setattr(duckdb.DuckDBPyRelation, "close", reject_relation_close)
+    monkeypatch.setattr(duckdb.DuckDBPyRelation, "project", tracked_project)
+
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    opened = manager.open_session(
+        {"kind": "file", "label": source.name, "path": str(source)},
+        backend="duckdb",
+        page_size=2,
+    )
+    session_id = opened["metadata"]["sessionId"]
     try:
-        sql = engine._retire_relation_owner(frame)
-        assert "read_csv" in sql.lower()
-        assert engine._connection is None
-        assert frame.columns == ["value"]
-        assert frame.sql_query() == sql
-        with pytest.raises(duckdb.ConnectionException, match="closed"):
-            owner.sql("SELECT 1")
+        session = manager.sessions[session_id]
+        assert all(
+            isinstance(frame, DuckDBSqlPlan) for frame in (session.original, session.committed, session.filtered)
+        )
+        assert_fully_detached()
+
+        manager.get_page(
+            session_id,
+            0,
+            0,
+            20,
+            {"logic": "and", "filters": [], "sort": []},
+        )
+        assert_fully_detached()
+
+        operation = step("customCode", code="result = df.project('value + 1 AS value')")
+        preview = manager.preview_step(session_id, 0, operation, 0, 20)
+        assert preview["revision"] == 1
+        assert isinstance(session.draft_frame, DuckDBSqlPlan)
+        assert_fully_detached()
+
+        applied = manager.apply_draft(session_id, 1, 0, 20)
+        assert applied["revision"] == 2
+        assert isinstance(session.committed, DuckDBSqlPlan)
+        assert isinstance(session.filtered, DuckDBSqlPlan)
+        assert_fully_detached()
+
+        manager.export_data(session_id, 2, str(destination), "parquet")
+        assert rows(duckdb.read_parquet(str(destination))) == [(2,), (3,)]
+        assert_fully_detached()
     finally:
-        engine.close()
+        manager.close_session(session_id, manager.sessions[session_id].revision)
+        manager.close_all()
 
 
 def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
@@ -345,8 +443,11 @@ def test_duckdb_jsonl_missing_reader_retains_dependency_guidance(
         def read_json(self, *_args: Any, **_kwargs: Any) -> Any:
             raise duckdb.CatalogException("Catalog Error: Table Function with name read_json_auto does not exist!")
 
+        def close(self) -> None:
+            return None
+
     engine = DuckDBEngine()
-    monkeypatch.setattr(engine, "_owned_connection", lambda: MissingJsonReader())
+    monkeypatch.setattr(duckdb_runtime, "_connect", MissingJsonReader)
 
     with pytest.raises(EngineError, match=r"JSON support is unavailable.*compatible DuckDB build"):
         engine.read_file(str(tmp_path / "sample.jsonl"))
@@ -658,7 +759,7 @@ def test_duckdb_non_float_include_nan_value_filter_is_an_explicit_false_conditio
     transformed = engine.apply_transform(frame, operation)
     generated = execute_generated(engine, frame, [operation])
 
-    assert transformed.fetchall() == []
+    assert rows(transformed) == []
     assert_same_relation(transformed, generated)
 
 
@@ -1001,11 +1102,11 @@ def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
     ]
     drop_any = bound_step("dropMissingRows", columns=missing_columns, how="any")
     drop_all = bound_step("dropMissingRows", columns=missing_columns, how="all")
-    assert len(engine.apply_transform(missing, drop_any).fetchall()) == 1
-    assert len(engine.apply_transform(missing, drop_all).fetchall()) == 4
+    assert len(rows(engine.apply_transform(missing, drop_any))) == 1
+    assert len(rows(engine.apply_transform(missing, drop_all))) == 4
     assert_same_relation(engine.apply_transform(missing, drop_any), execute_generated(engine, missing, [drop_any]))
     drop_all_columns = bound_step("dropMissingRows", columns=[], how="any")
-    assert len(engine.apply_transform(missing, drop_all_columns).fetchall()) == 1
+    assert len(rows(engine.apply_transform(missing, drop_all_columns))) == 1
     assert_same_relation(
         engine.apply_transform(missing, drop_all_columns),
         execute_generated(engine, missing, [drop_all_columns]),
@@ -1020,10 +1121,10 @@ def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
     ]
     keep_last = bound_step("dropDuplicates", columns=duplicate_columns, keep="last")
     keep_none = bound_step("dropDuplicates", columns=duplicate_columns, keep="none")
-    assert [row[0] for row in engine.apply_transform(duplicate, keep_last).fetchall()] == ["a", "b", "c"]
-    assert [row[0] for row in engine.apply_transform(duplicate, keep_none).fetchall()] == ["c"]
+    assert [row[0] for row in rows(engine.apply_transform(duplicate, keep_last))] == ["a", "b", "c"]
+    assert [row[0] for row in rows(engine.apply_transform(duplicate, keep_none))] == ["c"]
     keep_all = bound_step("dropDuplicates", keep="first")
-    assert [row[0] for row in engine.apply_transform(duplicate, keep_all).fetchall()] == ["a", "b", "c"]
+    assert [row[0] for row in rows(engine.apply_transform(duplicate, keep_all))] == ["a", "b", "c"]
     assert_same_relation(
         engine.apply_transform(duplicate, keep_all),
         execute_generated(engine, duplicate, [keep_all]),
@@ -1073,7 +1174,7 @@ def test_duckdb_missing_modes_encoders_collisions_and_custom_failures() -> None:
         dropOriginal=False,
     )
     scalar_result = engine.apply_transform(scalar_categories, scalar_operation)
-    assert scalar_result.columns == [
+    assert list(scalar_result.columns) == [
         "value",
         "flag",
         "day",
@@ -1115,10 +1216,9 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
     session_id = opened["metadata"]["sessionId"]
     assert opened["metadata"]["backend"] == "duckdb"
     assert opened["metadata"]["shape"] == {"rows": 3, "columns": 2}
-    assert isinstance(manager.sessions[session_id].original, duckdb.DuckDBPyRelation)
+    assert isinstance(manager.sessions[session_id].original, DuckDBSqlPlan)
     session_engine = manager.sessions[session_id].engine
     assert isinstance(session_engine, DuckDBEngine)
-    assert session_engine._connection is None
     assert "read_csv" in manager.sessions[session_id].original.sql_query().lower()
 
     operation = step(

@@ -10,6 +10,7 @@ import pytest
 
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines import DuckDBEngine, PandasEngine, PolarsEngine
+from openwrangler_runtime.engines.duckdb_engine import DuckDBSqlPlan
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import validate_step
 
@@ -187,6 +188,13 @@ def column_values(frame: Any, column: str) -> list[int]:
         frame = frame.collect()
     if isinstance(frame, pl.DataFrame):
         return frame.get_column(column).to_list()
+    if isinstance(frame, DuckDBSqlPlan):
+        identifier = '"' + column.replace('"', '""') + '"'
+        connection = duckdb.connect(config={"enable_external_file_cache": False})
+        try:
+            return [row[0] for row in connection.execute(f"SELECT {identifier} FROM ({frame.sql}) AS ow").fetchall()]
+        finally:
+            connection.close()
     return [row[0] for row in frame.project(f'"{column}"').fetchall()]
 
 
@@ -321,7 +329,7 @@ def test_checked_by_example_integer_arithmetic_preserves_nulls(engine: Any) -> N
         elif isinstance(result, pl.DataFrame):
             values = result.get_column("result").to_list()
         else:
-            values = [row[0] for row in result.project('"result"').fetchall()]
+            values = column_values(result, "result")
         assert pd.isna(values[0])
         assert values[1] == 2
 
