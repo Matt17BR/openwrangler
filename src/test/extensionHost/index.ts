@@ -4146,6 +4146,35 @@ async function exercisePackagedPlatformSmoke(
     true,
     "The installed Open Wrangler gallery entry must render its packaged icon."
   );
+  const screenshotOutput = process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS;
+  if (screenshotOutput) {
+    const commands = new Set(await vscode.commands.getCommands(true));
+    const auxiliaryBar = page.locator(".part.auxiliarybar");
+    if ((await auxiliaryBar.count()) > 0 && (await auxiliaryBar.isVisible())) {
+      const closeAuxiliaryBar = commands.has("workbench.action.closeAuxiliaryBar")
+        ? "workbench.action.closeAuxiliaryBar"
+        : commands.has("workbench.action.toggleAuxiliaryBar")
+          ? "workbench.action.toggleAuxiliaryBar"
+          : undefined;
+      if (closeAuxiliaryBar) {
+        await vscode.commands.executeCommand(closeAuxiliaryBar);
+        await auxiliaryBar.waitFor({ state: "hidden", timeout: 10_000 });
+      }
+    }
+    const sidebar = page.locator(".part.sidebar");
+    if ((await sidebar.count()) > 0 && (await sidebar.isVisible())) {
+      const closeSidebar = commands.has("workbench.action.closeSidebar")
+        ? "workbench.action.closeSidebar"
+        : commands.has("workbench.action.toggleSidebarVisibility")
+          ? "workbench.action.toggleSidebarVisibility"
+          : undefined;
+      if (closeSidebar) {
+        await vscode.commands.executeCommand(closeSidebar);
+        await sidebar.waitFor({ state: "hidden", timeout: 10_000 });
+      }
+    }
+    await clearReleasedJupyterScreenshotTransientUi(page);
+  }
 
   recordAcceptanceProgress("platform-smoke:file-action");
   await vscode.commands.executeCommand("vscode.open", fixture, {
@@ -4163,6 +4192,28 @@ async function exercisePackagedPlatformSmoke(
   await page.bringToFront();
   const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
   await titleAction.waitFor({ state: "visible", timeout: 10_000 });
+  if (screenshotOutput) {
+    recordAcceptanceProgress("platform-smoke:file-action:screenshots");
+    mkdirSync(screenshotOutput, { recursive: true });
+    await titleAction.hover();
+    await page
+      .locator(".monaco-hover:visible")
+      .filter({ hasText: "Open in Open Wrangler" })
+      .waitFor({ state: "visible", timeout: 2_000 })
+      .catch(() => {});
+    await captureWorkbenchScreenshot(page, path.resolve(screenshotOutput, `${editorKey}-file-title-action.png`));
+    await page.keyboard.press("Escape");
+
+    const sourceTab = activeEditorGroup
+      .locator(".tabs-container .tab.active")
+      .filter({ hasText: path.basename(fixture.fsPath) })
+      .last();
+    const { menu } = await openEditorTabContextMenu(page, sourceTab, "Open in Open Wrangler");
+    await captureWorkbenchScreenshot(page, path.resolve(screenshotOutput, `${editorKey}-tab-context-menu.png`));
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "hidden", timeout: 3_000 });
+    await titleAction.waitFor({ state: "visible", timeout: 3_000 });
+  }
   await titleAction.click();
   await waitForAutomaticDelimitedImport(page, testing, fixture, "platform-smoke:import");
   await waitFor(

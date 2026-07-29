@@ -6,8 +6,11 @@ rmSync(resolve("media"), { force: true, recursive: true });
 await build({ mode: "production" });
 await build({ mode: "notebook-renderer" });
 
-const sourceIcon = readFileSync(resolve("assets", "icon.png"));
-const packagedIcon = readFileSync(resolve("media", "icon.png"));
-if (!packagedIcon.equals(sourceIcon)) {
-  throw new Error("The packaged gallery icon differs from the generated 512 pixel brand asset.");
+const packagedBrandAssets = ["activity-icon.svg", "icon.svg", "icon-128.png", "icon-256.png", "icon.png"];
+for (const asset of packagedBrandAssets) {
+  const source = readFileSync(resolve("assets", asset));
+  const packaged = readFileSync(resolve("media", asset));
+  if (!packaged.equals(source)) {
+    throw new Error(`The packaged ${asset} differs from its canonical brand asset.`);
+  }
 }

@@ -13,7 +13,6 @@
     <rect x="7" y="7.45" width="2.55" height="2.1" rx=".55" />
     <rect x="11.05" y="7.45" width="2.55" height="2.1" rx=".55" />
     <path d="m14.4 5.55 1.2-.35 1.55 4.25h-1.45L14.4 5.55Z" />
-    <path d="M15.2 5.75h3.1v1.05h-2.8z" />
     <rect x="1" y="15.75" width="21" height="1.15" rx=".5" />
   </g>
   <g fill="none" stroke="currentColor" stroke-width="1.7">

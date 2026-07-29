@@ -28,6 +28,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Removed the unintended horizontal bar from the gallery windshield and its Activity Bar counterpart, keeping every generated icon surface aligned to the same refined open-top vehicle mark.
 - Updated the native editor harness for VS Code 1.131's removal of the legacy macOS `Electron` compatibility path. Packaged and extension-host acceptance now resolve the bundle's declared executable instead of relying on that removed alias.
 - Made pinned private-Xvfb preparation resilient to transient Canonical download outages by rotating through ordered, manifest-pinned archive, security, and timestamped snapshot origins for two bounded rounds. The one authoritative size/SHA-256 and all no-redirect, exclusive-file, ownership, extraction, and no-editor-fallback checks remain unchanged.
 - Replaced retained DuckDB relations with immutable, connection-free SQL and schema plans. Open, paging, transforms, custom code, and exports now release each request-local `DuckDBPyRelation` before closing its owner, so DuckDB 1.5 cannot retain a Windows Parquet handle through the relation's connection reference. The runtime stays native and never calls `DuckDBPyRelation.close()` or converts through another engine.
