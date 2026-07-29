@@ -59,6 +59,7 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 vi.mock("../extension/notebooks/kernelBridge", () => ({
+  shouldRegisterNotebookFormatters: () => true,
   KernelBridge: class {
     constructor(_context: ExtensionContext, document: NotebookDocument) {
       rendererMocks.kernelNotebookUris.push((document.uri as Uri).toString());
