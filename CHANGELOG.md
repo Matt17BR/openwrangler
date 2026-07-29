@@ -19,6 +19,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Made pinned private-Xvfb preparation resilient to transient Canonical download outages by rotating through ordered, manifest-pinned archive, security, and timestamped snapshot origins for two bounded rounds. The one authoritative size/SHA-256 and all no-redirect, exclusive-file, ownership, extraction, and no-editor-fallback checks remain unchanged.
 - Replaced retained DuckDB relations with immutable, connection-free SQL and schema plans. Open, paging, transforms, custom code, and exports now release each request-local `DuckDBPyRelation` before closing its owner, so DuckDB 1.5 cannot retain a Windows Parquet handle through the relation's connection reference. The runtime stays native and never calls `DuckDBPyRelation.close()` or converts through another engine.
 
 ## [1.0.3] - 2026-07-28

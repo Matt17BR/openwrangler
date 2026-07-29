@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "packages": {
     "ubuntu:24.04:x64": {
       "cacheKey": "ubuntu-24.04-amd64-xvfb-21.1.12-1ubuntu1.6",
@@ -9,7 +9,11 @@
       "packageArchitecture": "amd64",
       "packageVersion": "2:21.1.12-1ubuntu1.6",
       "snapshot": "20260720T000000Z",
-      "url": "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1.6_amd64.deb",
+      "urls": [
+        "https://archive.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1.6_amd64.deb",
+        "https://security.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1.6_amd64.deb",
+        "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_21.1.12-1ubuntu1.6_amd64.deb"
+      ],
       "size": 876922,
       "sha256": "9188c2ab6394dfe6aa53f782f6bfa22b7eb6febfe51a48e0e36af35cd2f64307",
       "executableSize": 2064864,
@@ -44,7 +48,11 @@
       "packageArchitecture": "amd64",
       "packageVersion": "2:21.1.22-1ubuntu1",
       "snapshot": "20260720T000000Z",
-      "url": "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_21.1.22-1ubuntu1_amd64.deb",
+      "urls": [
+        "https://archive.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_21.1.22-1ubuntu1_amd64.deb",
+        "https://security.ubuntu.com/ubuntu/pool/universe/x/xorg-server/xvfb_21.1.22-1ubuntu1_amd64.deb",
+        "https://snapshot.ubuntu.com/ubuntu/20260720T000000Z/pool/universe/x/xorg-server/xvfb_21.1.22-1ubuntu1_amd64.deb"
+      ],
       "size": 898476,
       "sha256": "d430679ffd9864f0c29c7b1edd434b42aa37ad3f622a7f58a76f62cef7e86ba4",
       "executableSize": 2142760,
