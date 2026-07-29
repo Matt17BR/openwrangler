@@ -238,6 +238,50 @@ def test_rejects_nested_non_profileable_types_before_indexing(
     assert manager.sessions == {}
 
 
+@pytest.mark.parametrize(
+    ("first_name", "second_name"),
+    [
+        ("x", "x"),
+        ("Value", "value"),
+    ],
+)
+def test_rejects_ambiguous_nested_struct_fields_before_indexing(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    first_name: str,
+    second_name: str,
+) -> None:
+    frame = spark_session.sql(f"SELECT named_struct('{first_name}', 1, '{second_name}', 2) AS payload")
+    monkeypatch.setattr(__main__, "open_wrangler_ambiguous_nested", frame, raising=False)
+    indexing_calls = 0
+
+    def fail_if_indexed(self: PySparkEngine, value: Any, token: str) -> Any:
+        del self, value, token
+        nonlocal indexing_calls
+        indexing_calls += 1
+        raise AssertionError("Ambiguous nested fields must fail before Spark indexing.")
+
+    monkeypatch.setattr(PySparkEngine, "ensure_row_ids", fail_if_indexed)
+    manager = SessionManager()
+    with pytest.raises(
+        EngineError,
+        match=(
+            rf"nested struct fields.*{re.escape(first_name)}.*"
+            rf"{re.escape(second_name)}.*Rename the conflicting nested fields"
+        ),
+    ):
+        manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "variableName": "open_wrangler_ambiguous_nested",
+                "label": "open_wrangler_ambiguous_nested",
+            },
+            backend="pyspark",
+        )
+    assert indexing_calls == 0
+    assert manager.sessions == {}
+
+
 def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.MonkeyPatch) -> None:
     class IndexedFrame:
         columns = [f"{INTERNAL_ROW_ID_PREFIX}unit"]
@@ -367,13 +411,20 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
 ) -> None:
     engine, indexed = _open_engine(sample_frame, "native")
     dataframe_type = type(indexed)
+    original_collect = dataframe_type.collect
+    collected_projections: list[tuple[str, ...]] = []
 
     def forbidden(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("A forbidden dataframe conversion path was called.")
 
+    def observed_collect(value: Any) -> Any:
+        collected_projections.append(tuple(value.columns))
+        return original_collect(value)
+
     for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
         if hasattr(dataframe_type, method_name):
             monkeypatch.setattr(dataframe_type, method_name, forbidden)
+    monkeypatch.setattr(dataframe_type, "collect", observed_collect)
 
     try:
         shape = engine.shape(indexed)
@@ -509,6 +560,8 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
         assert not has_more
         assert [(item["value"], item["count"]) for item in values] == [("ALPHA", 1), ("alpha", 1)]
         assert all("selectionValue" in item for item in values)
+        assert collected_projections.count(("count", "__ow_value")) >= 2
+        assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()
 
@@ -586,6 +639,69 @@ def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: A
     assert spark_session.range(1).count() == 1
 
 
+def test_nested_decimals_keep_exact_page_precision(spark_session: Any) -> None:
+    exact = "12345678901234567890.123456789012345678"
+    frame = spark_session.sql(
+        f"""
+        SELECT named_struct(
+          'amount', CAST('{exact}' AS DECIMAL(38, 18)),
+          'items', array(CAST('{exact}' AS DECIMAL(38, 18))),
+          'by_key', map('x', CAST('{exact}' AS DECIMAL(38, 18)))
+        ) AS payload
+        """
+    )
+    engine, indexed = _open_engine(frame, "nested-decimal-page")
+    try:
+        page = engine.page(
+            indexed,
+            0,
+            1,
+            total_rows=1,
+            column_projection=[(0, "payload-id")],
+        )
+        assert page["rows"][0]["values"][0]["raw"] == {
+            "amount": exact,
+            "items": [exact],
+            "by_key": {"x": exact},
+        }
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_nested_negative_zero_uses_native_profile_equality(spark_session: Any) -> None:
+    frame = spark_session.sql(
+        """
+        SELECT
+          array(CAST('-0.0' AS DOUBLE)) AS array_value,
+          map('x', CAST('-0.0' AS DOUBLE)) AS map_value,
+          named_struct('x', CAST('-0.0' AS DOUBLE)) AS struct_value
+        UNION ALL
+        SELECT
+          array(CAST('0.0' AS DOUBLE)),
+          map('x', CAST('0.0' AS DOUBLE)),
+          named_struct('x', CAST('0.0' AS DOUBLE))
+        """
+    )
+    engine, indexed = _open_engine(frame, "nested-negative-zero")
+    try:
+        for position, column_name in enumerate(("array_value", "map_value", "struct_value")):
+            summary = engine.summaries(indexed, [(position, f"{column_name}-id")])[0]
+            assert summary["distinctCount"] == 1
+            assert len(summary["topValues"]) == 1
+            assert summary["topValues"][0]["count"] == 2
+
+            values, has_more = engine.column_values(indexed, column_name, limit=10)
+            assert not has_more
+            assert len(values) == 1
+            assert values[0]["count"] == 2
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
 @pytest.mark.parametrize(
     "expression",
     [
@@ -627,6 +743,52 @@ def test_large_variable_width_page_values_fail_before_terminal_collection(
                     column_projection=[(0, "payload-id")],
                 )
         assert collected_projections == [("__ow_page_value_bytes",)]
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_large_profile_values_fail_before_terminal_collection(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = spark_session.sql(
+        """
+        SELECT
+          repeat('x', 128) AS text_value,
+          encode(repeat('x', 128), 'UTF-8') AS binary_value,
+          array_repeat(repeat('x', 8), 32) AS array_value,
+          map('payload', repeat('x', 128)) AS map_value,
+          named_struct('payload', repeat('x', 128)) AS struct_value
+        """
+    )
+    engine, indexed = _open_engine(frame, "large-profile-values")
+    dataframe_type = type(indexed)
+    original_collect = dataframe_type.collect
+    collected_projections: list[tuple[str, ...]] = []
+
+    def guarded_collect(value: Any) -> Any:
+        projection = tuple(value.columns)
+        collected_projections.append(projection)
+        if "__ow_value" in projection:
+            raise AssertionError("Oversized profile values must not cross into the notebook process.")
+        return original_collect(value)
+
+    try:
+        with monkeypatch.context() as profile_patch:
+            profile_patch.setattr(pyspark_engine_module, "PYSPARK_PROFILE_TRANSPORT_BYTE_LIMIT", 32)
+            profile_patch.setattr(dataframe_type, "collect", guarded_collect)
+            for position, column_name in enumerate(
+                ("text_value", "binary_value", "array_value", "map_value", "struct_value")
+            ):
+                with pytest.raises(EngineError, match=r"at most 32 UTF-8 bytes"):
+                    engine.summaries(indexed, [(position, f"{column_name}-id")])
+                with pytest.raises(EngineError, match=r"at most 32 UTF-8 bytes"):
+                    engine.column_values(indexed, column_name, limit=10)
+        assert collected_projections.count(("__ow_profile_value_bytes",)) == 10
+        assert all("__ow_value" not in projection for projection in collected_projections)
+        assert all("__ow_group_key" not in projection for projection in collected_projections)
     finally:
         engine.close()
 
@@ -710,6 +872,21 @@ def test_page_protocol_byte_budget_accepts_only_the_exact_boundary(
         page_patch.setattr(pyspark_engine_module, "PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT", exact_size - 1)
         with pytest.raises(EngineError, match=rf"at most {exact_size - 1:,} serialized bytes"):
             pyspark_engine_module._validate_page_protocol_size(page)
+
+
+def test_profile_protocol_byte_budget_accepts_only_the_exact_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = [{"value": 'quoted "value"', "count": 1}]
+    exact_size = len(json.dumps(values, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+    with monkeypatch.context() as profile_patch:
+        profile_patch.setattr(pyspark_engine_module, "PYSPARK_PROFILE_PROTOCOL_BYTE_LIMIT", exact_size)
+        pyspark_engine_module._validate_profile_protocol_size(values, "column values")
+
+    with monkeypatch.context() as profile_patch:
+        profile_patch.setattr(pyspark_engine_module, "PYSPARK_PROFILE_PROTOCOL_BYTE_LIMIT", exact_size - 1)
+        with pytest.raises(EngineError, match=rf"at most {exact_size - 1:,} serialized bytes"):
+            pyspark_engine_module._validate_profile_protocol_size(values, "column values")
 
 
 def test_session_manager_detects_live_variable_and_disables_mutation_capabilities(

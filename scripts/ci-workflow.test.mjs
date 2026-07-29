@@ -614,6 +614,34 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
   ]);
 });
 
+test("coverage provisions the exact PySpark runtime before enforcing the unchanged floor", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const steps = workflow?.jobs?.coverage?.steps;
+  assert.ok(Array.isArray(steps), "CI must retain the required coverage job.");
+
+  const java = steps.find((step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@"));
+  assert.deepEqual(java?.with, {
+    distribution: "temurin",
+    "java-version": "17"
+  });
+  const install = steps.find(
+    (step) => step?.run === 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"'
+  );
+  assert.ok(install);
+  const verification = steps.find((step) => step?.name === "Verify exact coverage runtimes");
+  assert.equal(verification?.shell, "bash");
+  assert.match(verification?.run ?? "", /pyspark\.__version__ == "4\.2\.0"/u);
+  assert.match(verification?.run ?? "", /Version\("2\.2"\).*Version\("3"\)/u);
+  assert.match(verification?.run ?? "", /java\\\.specification\\\.version = 17/u);
+
+  const coverage = steps.find((step) => step?.run === "npm run test:coverage");
+  assert.ok(coverage);
+  assert.ok(steps.indexOf(java) < steps.indexOf(coverage));
+  assert.ok(steps.indexOf(install) < steps.indexOf(coverage));
+  assert.ok(steps.indexOf(verification) < steps.indexOf(coverage));
+});
+
 test("PySpark notebook viewing has one unconditional exact-runtime CI job", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);

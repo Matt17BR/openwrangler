@@ -9,7 +9,19 @@ const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
+const PYSPARK_COVERAGE_VERIFY_RUN = `python - <<'PY'
+import pandas
+import pyspark
+from packaging.version import Version
+
+assert pyspark.__version__ == "4.2.0", pyspark.__version__
+assert Version("2.2") <= Version(pandas.__version__) < Version("3"), pandas.__version__
+PY
+java -XshowSettings:properties -version 2>&1 |
+  grep -Eq '^[[:space:]]*java\\.specification\\.version = 17$'
+`;
 const PREVIEW_RELEASE_JOB_NAMES = [
   "preview-metadata",
   "build",
@@ -421,10 +433,23 @@ const PREVIEW_RELEASE_ACCEPTANCE_JOB = {
         cache: "pip"
       }
     },
+    {
+      uses: SETUP_JAVA_ACTION,
+      with: {
+        distribution: "temurin",
+        "java-version": "17"
+      }
+    },
     { run: "npm ci" },
     { run: "npx playwright-core install --with-deps chromium" },
     { run: "python -m pip install --upgrade pip" },
     { run: 'python -m pip install -e "python[dev]"' },
+    { run: 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"' },
+    {
+      name: "Verify exact coverage runtimes",
+      shell: "bash",
+      run: PYSPARK_COVERAGE_VERIFY_RUN
+    },
     {
       uses: DOWNLOAD_ACTION,
       with: {
