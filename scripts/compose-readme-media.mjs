@@ -238,7 +238,12 @@ function renderNotebooks(sources) {
           </header>
           <div class="cardBody polarsBody">
             <div class="crop polarsOverview">
-              <img src="${sources.polars.dataUrl}" alt="">
+              <div class="polarsContext">
+                <img src="${sources.polars.dataUrl}" alt="">
+              </div>
+              <div class="polarsDraft">
+                <img src="${sources.polars.dataUrl}" alt="">
+              </div>
             </div>
             <div class="crop polarsCode">
               <img src="${sources.polars.dataUrl}" alt="">
@@ -336,10 +341,27 @@ function renderNotebooks(sources) {
         transform: scale(0.68);
       }
       .polarsOverview { height: 238px; }
-      .polarsOverview img {
-        left: -544px;
+      .polarsContext,
+      .polarsDraft {
+        overflow: hidden;
+        position: relative;
+      }
+      .polarsContext {
+        border-bottom: 1px solid #334155;
+        height: 58px;
+      }
+      .polarsDraft {
+        height: 180px;
+      }
+      .polarsContext img {
+        left: -42px;
         top: 0;
-        transform: scale(0.64);
+        transform: scale(1);
+      }
+      .polarsDraft img {
+        left: -68px;
+        top: -82px;
+        transform: scale(1);
       }
       .polarsCode {
         flex: 1;
