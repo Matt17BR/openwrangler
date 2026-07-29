@@ -313,11 +313,36 @@ def register_formatters(shell: Any | None = None) -> bool:
     for dataframe_type in _available_dataframe_types():
         formatter.for_type(
             dataframe_type,
-            lambda value: {MIME_TYPE_V2: build_payload(value, label=type(value).__name__)},
+            lambda value, shell=active_shell: {MIME_TYPE_V2: _build_formatter_payload(value, shell)},
         )
         _suppress_default_html_formatter(html_formatter, dataframe_type)
         registered = True
     return registered
+
+
+def _build_formatter_payload(value: Any, shell: Any) -> dict[str, Any]:
+    variable_name = _unique_user_variable_name(value, shell)
+    return build_payload(
+        value,
+        label=variable_name or type(value).__name__,
+        variable_name=variable_name,
+    )
+
+
+def _unique_user_variable_name(value: Any, shell: Any) -> str | None:
+    """Return a safe live link only when one canonical user variable owns the value."""
+    namespace = getattr(shell, "user_ns", None)
+    if not isinstance(namespace, dict):
+        return None
+    matches: list[str] = []
+    for name, candidate in namespace.items():
+        if not isinstance(name, str) or not _is_python_identifier(name) or name.startswith("_"):
+            continue
+        if candidate is value:
+            matches.append(name)
+            if len(matches) > 1:
+                return None
+    return matches[0] if matches else None
 
 
 def _suppress_default_html_formatter(html_formatter: Any, dataframe_type: type[Any]) -> None:

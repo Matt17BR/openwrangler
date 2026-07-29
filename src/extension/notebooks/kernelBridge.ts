@@ -13,7 +13,7 @@ import { isRuntimeResponseEnvelope } from "../../shared/protocolValidation";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../dataBridge";
 import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
-import { runtimeRequestTimeoutMs } from "../configuration";
+import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 
 export class KernelBridge implements OpenWranglerBridge {
@@ -25,10 +25,13 @@ export class KernelBridge implements OpenWranglerBridge {
   private kernelObservation: KernelObservation | undefined;
   private lifecycleVersion = 0;
   private readonly notebookUri: vscode.Uri;
+  private readonly kernelInvalidatedEmitter = new vscode.EventEmitter<void>();
+  readonly onDidInvalidateKernel = this.kernelInvalidatedEmitter.event;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly notebookDocument: vscode.NotebookDocument
+    private readonly notebookDocument: vscode.NotebookDocument,
+    private readonly registerNotebookFormatters = true
   ) {
     this.notebookUri = notebookDocument.uri;
     this.lifecycle = new RestartableKernel(() => this.acquireKernel());
@@ -46,6 +49,47 @@ export class KernelBridge implements OpenWranglerBridge {
     this.sessionKernels.clear();
     this.retiredSessionIds.clear();
     this.cleanupAttempts = new WeakMap();
+  }
+
+  async prepareNotebookFormatter(): Promise<void> {
+    if (!this.registerNotebookFormatters) return;
+    this.assertNotebookProvenance();
+    const tokenSource = new vscode.CancellationTokenSource();
+    const requestLifecycleVersion = this.lifecycleVersion;
+    let requestObservation: KernelObservation | undefined;
+    const abort = (): void => {
+      tokenSource.cancel();
+      this.invalidateLifecycle(requestObservation, requestLifecycleVersion);
+    };
+    try {
+      await withKernelTimeout(
+        this.lifecycle.run(
+          async (acquired) => {
+            requestObservation = this.observeKernelStatus(acquired);
+            await this.ensureKernelAgent(acquired.kernel, tokenSource.token, true);
+          },
+          async () => undefined,
+          {
+            retryAfterDispatch: true,
+            shouldRetry: (_error, phase) =>
+              !tokenSource.token.isCancellationRequested && phase !== "acquire" && phase !== "beforeDispatch",
+            beforeDispatch: () => this.assertNotebookProvenance()
+          }
+        ),
+        30_000,
+        abort,
+        undefined,
+        abort
+      );
+      this.assertNotebookProvenance();
+    } finally {
+      tokenSource.dispose();
+    }
+  }
+
+  dispose(): void {
+    this.onIdle();
+    this.kernelInvalidatedEmitter.dispose();
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
@@ -90,7 +134,7 @@ export class KernelBridge implements OpenWranglerBridge {
           const observation = this.observeKernelStatus(acquired);
           requestObservation = observation;
           try {
-            await this.ensureKernelAgent(acquired.kernel, tokenSource.token);
+            await this.ensureKernelAgent(acquired.kernel, tokenSource.token, this.registerNotebookFormatters);
           } catch (error) {
             this.invalidateLifecycle(observation);
             throw error;
@@ -240,14 +284,17 @@ export class KernelBridge implements OpenWranglerBridge {
     return parseKernelResponse(await this.executePython(kernel, framed.code, token), framed.marker, framed.requestId);
   }
 
-  private async ensureKernelAgent(kernel: Kernel, token: vscode.CancellationToken): Promise<void> {
+  private async ensureKernelAgent(
+    kernel: Kernel,
+    token: vscode.CancellationToken,
+    registerNotebookFormatters: boolean
+  ): Promise<void> {
     this.assertNotebookProvenance();
     await this.executePython(
       kernel,
       `${this.bootstrapCode}
 import openwrangler_runtime.kernel_agent as __ow_kernel_agent
-import openwrangler_runtime.notebook as __ow_notebook
-__ow_notebook.register_formatters()
+${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_notebook\n__ow_notebook.register_formatters()" : ""}
 `,
       token
     );
@@ -297,6 +344,7 @@ __ow_notebook.register_formatters()
       const subscription = acquired.kernel.onDidChangeStatus((status) => {
         if (this.kernelObservation !== observation || !invalidatesKernelLifecycle(status)) return;
         this.invalidateLifecycle(observation);
+        this.kernelInvalidatedEmitter.fire();
       });
       observation.subscription = subscription;
       // A conforming VS Code Event does not fire while a listener is registered,
@@ -367,6 +415,15 @@ interface AcquiredKernel {
 interface KernelObservation {
   readonly kernel: Kernel;
   subscription?: vscode.Disposable;
+}
+
+export type NotebookPreviewProvider = "ask" | "openWrangler" | "dataWrangler" | "disabled";
+
+export function shouldRegisterNotebookFormatters(): boolean {
+  const preference = getSetting<NotebookPreviewProvider>("notebookPreviewProvider", "ask");
+  if (preference === "openWrangler") return true;
+  if (preference === "dataWrangler" || preference === "disabled") return false;
+  return vscode.extensions.getExtension("ms-toolsai.datawrangler") === undefined;
 }
 
 function invalidatesKernelLifecycle(status: KernelStatus): boolean {

@@ -569,6 +569,50 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
     assert spark_session.range(1).count() == 1
 
 
+def test_numeric_histogram_is_exact_for_a_large_filtered_view(spark_session: Any) -> None:
+    functions = import_module("pyspark.sql.functions")
+    source = (
+        spark_session.range(5_000)
+        .select(functions.col("id").cast("double").alias("value"))
+        .unionByName(spark_session.createDataFrame([(1_000_000.0,)], "value double"))
+    )
+    engine = PySparkEngine()
+    try:
+        frame = engine.apply_filter_model(
+            source,
+            {
+                "logic": "and",
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "float",
+                        "logic": "and",
+                        "predicates": [{"operator": "gte", "value": 500}],
+                    }
+                ],
+                "sort": [],
+            },
+        )
+
+        summary = engine.summaries(frame, [(0, "value-id")])[0]
+        bins = summary["visualization"]["bins"]
+
+        assert summary["numeric"]["min"] == 500.0
+        assert summary["numeric"]["max"] == 1_000_000.0
+        assert "sampled" not in summary["visualization"]
+        assert len(bins) == 20
+        assert bins[0]["min"] == summary["numeric"]["min"]
+        assert bins[-1]["max"] == summary["numeric"]["max"]
+        assert bins[-1]["count"] == 1
+        assert sum(bin_["count"] for bin_ in bins) == 4_501
+        assert all(left["max"] == right["min"] for left, right in zip(bins, bins[1:], strict=False))
+        assert [bin_["max"] - bin_["min"] for bin_ in bins] == pytest.approx(
+            [bins[0]["max"] - bins[0]["min"]] * len(bins)
+        )
+    finally:
+        engine.close()
+
+
 def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: Any) -> None:
     frame = spark_session.sql(
         """

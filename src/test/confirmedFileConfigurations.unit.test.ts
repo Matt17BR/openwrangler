@@ -170,7 +170,8 @@ describe("confirmed file configurations", () => {
 
   it.each([
     ["Parquet", "/workspace/data.parquet", "duckdb" as const, "auto" as const],
-    ["JSONL", "/workspace/data.jsonl", "pandas" as const, "pandas" as const]
+    ["JSONL", "/workspace/data.jsonl", "pandas" as const, "pandas" as const],
+    ["NDJSON", "/workspace/data.ndjson", "polars" as const, "auto" as const]
   ])(
     "retains the resolved backend and logical preference for %s without inventing import options",
     async (_label, file, backend, backendPreference) => {
@@ -191,6 +192,16 @@ describe("confirmed file configurations", () => {
       entries: [{ uri: uri.toString(), backend: "duckdb", backendPreference: "auto", importOptions: {} }]
     });
 
+    expect(confirmedFileConfiguration(workspaceState, uri)).toBeUndefined();
+  });
+
+  it.each(["pkl", "pickle"])("never retains a Python pickle source configuration (%s)", async (extension) => {
+    const workspaceState = new MemoryMemento();
+    const uri = vscode.Uri.file(`/workspace/untrusted.${extension}`);
+
+    await rememberConfirmedFileConfiguration(workspaceState, uri, undefined, "pandas", "pandas");
+
+    expect(workspaceState.get(CONFIRMED_FILE_CONFIGURATIONS_STORAGE_KEY)).toBeUndefined();
     expect(confirmedFileConfiguration(workspaceState, uri)).toBeUndefined();
   });
 

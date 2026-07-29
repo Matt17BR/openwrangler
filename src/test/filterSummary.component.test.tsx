@@ -931,6 +931,14 @@ describe("SummaryPanel", () => {
     expect(screen.getByText("Min").nextElementSibling).toHaveTextContent("10");
     expect(screen.getByText("Max").nextElementSibling).toHaveTextContent("12");
     expect(screen.getByText("Mean").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.getByRole("heading", { name: "Distribution" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "Sampled numeric distribution with 2 bins; range 10 to 12." })
+    ).toBeVisible();
+    expect(screen.getAllByRole("graphics-symbol").map((bin) => bin.getAttribute("aria-label"))).toEqual([
+      "10-11: 1 row",
+      "11-12: 2 rows"
+    ]);
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
   });
 

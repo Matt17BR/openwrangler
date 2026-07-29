@@ -29,13 +29,15 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
+    numeric_histogram_bin_count,
+    numeric_histogram_edges,
     numeric_visualization,
+    numeric_visualization_from_bin_counts,
     resolve_excel_sheet_selector,
     typed_selection_value,
     validate_view_predicate_operator,
 )
 
-SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
@@ -73,7 +75,7 @@ class PolarsEngine(DataFrameEngine):
     capabilities = EngineCapabilities(
         source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
         supports_editing=True,
-        lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl"}),
+        lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl", ".ndjson"}),
         export_formats=frozenset({"csv", "parquet"}),
         supports_shutdown_interrupt=False,
         supports_request_cancellation=False,
@@ -128,7 +130,7 @@ class PolarsEngine(DataFrameEngine):
             )
         if extension == ".parquet":
             return _scan_literal_file(pl.scan_parquet, path)
-        if extension == ".jsonl":
+        if extension in {".jsonl", ".ndjson"}:
             return _scan_literal_file(pl.scan_ndjson, path)
         if extension in {".xlsx", ".xls"}:
             sheet_selector = resolve_excel_sheet_selector(options)
@@ -442,6 +444,9 @@ class PolarsEngine(DataFrameEngine):
                 ]
             )
             if semantic_type in {"integer", "float", "decimal"}:
+                finite_expression = (
+                    expression.filter(expression.is_finite()) if semantic_type == "float" else expression.drop_nulls()
+                )
                 metric_expressions.extend(
                     [
                         valid_expression.min().alias(f"{prefix}min"),
@@ -449,6 +454,10 @@ class PolarsEngine(DataFrameEngine):
                         valid_expression.mean().alias(f"{prefix}mean"),
                         valid_expression.median().alias(f"{prefix}median"),
                         valid_expression.std().alias(f"{prefix}std"),
+                        finite_expression.min().alias(f"{prefix}hist_min"),
+                        finite_expression.max().alias(f"{prefix}hist_max"),
+                        finite_expression.len().alias(f"{prefix}hist_count"),
+                        finite_expression.cast(pl.Float64).n_unique().alias(f"{prefix}hist_distinct"),
                     ]
                 )
             elif semantic_type == "boolean":
@@ -481,34 +490,66 @@ class PolarsEngine(DataFrameEngine):
         top_results = self._collect_lazy_top_results(definitions, top_queries)
         total_count = int(metrics["__open_wrangler_total"])
 
-        numeric_sample_queries = []
-        numeric_sample_columns = []
-        numeric_sampled: dict[str, bool] = {}
+        numeric_histogram_queries = []
+        numeric_histogram_columns = []
+        numeric_histograms: dict[str, dict[str, Any]] = {}
         for column, _, _, semantic_type, prefix, _ in definitions:
             if semantic_type not in {"integer", "float", "decimal"}:
                 continue
-            valid_count = total_count - int(metrics[f"{prefix}null"]) - int(metrics[f"{prefix}nan"])
-            stride = max(
-                1, (valid_count + SUMMARY_VISUALIZATION_SAMPLE_LIMIT - 1) // SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+            finite_count = int(metrics[f"{prefix}hist_count"])
+            bin_count = numeric_histogram_bin_count(
+                finite_count,
+                int(metrics[f"{prefix}hist_distinct"]),
             )
-            valid_expression = pl.col(column).drop_nulls()
-            if semantic_type == "float":
-                valid_expression = valid_expression.drop_nans()
-            numeric_sample_queries.append(
-                frame.select(valid_expression.alias(column))
-                .gather_every(stride)
-                .head(SUMMARY_VISUALIZATION_SAMPLE_LIMIT)
+            minimum = _maybe_float(metrics[f"{prefix}hist_min"])
+            maximum = _maybe_float(metrics[f"{prefix}hist_max"])
+            edges = numeric_histogram_edges(minimum, maximum, bin_count)
+            if not edges:
+                numeric_histograms[column] = {"kind": "numeric", "bins": []}
+                continue
+            if minimum == maximum:
+                numeric_histograms[column] = numeric_visualization_from_bin_counts(
+                    minimum,
+                    maximum,
+                    [finite_count],
+                )
+                continue
+
+            numeric_value = pl.col(column).cast(pl.Float64, strict=False)
+            finite = (
+                pl.col(column).is_finite().fill_null(False)
+                if semantic_type == "float"
+                else pl.col(column).is_not_null()
             )
-            numeric_sample_columns.append(column)
-            numeric_sampled[column] = valid_count > SUMMARY_VISUALIZATION_SAMPLE_LIMIT
-        numeric_samples = {
-            column: sample
-            for column, sample in zip(
-                numeric_sample_columns,
-                pl.collect_all(numeric_sample_queries, engine="streaming") if numeric_sample_queries else [],
-                strict=True,
+            count_expressions = []
+            for bin_index in range(bin_count):
+                if bin_index == 0:
+                    interval = numeric_value < pl.lit(edges[1])
+                elif bin_index == bin_count - 1:
+                    interval = numeric_value >= pl.lit(edges[bin_index])
+                else:
+                    interval = (numeric_value >= pl.lit(edges[bin_index])) & (
+                        numeric_value < pl.lit(edges[bin_index + 1])
+                    )
+                count_expressions.append(
+                    (finite & interval.fill_null(False)).sum().alias(f"__open_wrangler_hist_{bin_index}")
+                )
+            numeric_histogram_queries.append(frame.select(count_expressions))
+            numeric_histogram_columns.append((column, minimum, maximum))
+
+        numeric_histogram_results = (
+            pl.collect_all(numeric_histogram_queries, engine="streaming") if numeric_histogram_queries else []
+        )
+        for (column, minimum, maximum), histogram in zip(
+            numeric_histogram_columns,
+            numeric_histogram_results,
+            strict=True,
+        ):
+            numeric_histograms[column] = numeric_visualization_from_bin_counts(
+                minimum,
+                maximum,
+                histogram.row(0),
             )
-        }
 
         summaries = []
         for index, (column, column_id, raw_type, semantic_type, prefix, _) in enumerate(definitions):
@@ -535,12 +576,9 @@ class PolarsEngine(DataFrameEngine):
                     "std": _maybe_float(metrics[f"{prefix}std"]),
                 }
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
-                numeric_sample = numeric_samples.get(column)
-                if numeric_sample is None:  # pragma: no cover - guarded by numeric_sample_queries
-                    raise EngineError(f"The numeric profile sample for {column} is missing.")
-                visualization = numeric_visualization(numeric_sample.get_column(column))
-                if numeric_sampled[column]:
-                    visualization["sampled"] = True
+                visualization = numeric_histograms.get(column)
+                if visualization is None:  # pragma: no cover - guarded by numeric histogram construction
+                    raise EngineError(f"The numeric profile distribution for {column} is missing.")
                 summary["visualization"] = visualization
             elif semantic_type == "boolean":
                 summary["visualization"] = {

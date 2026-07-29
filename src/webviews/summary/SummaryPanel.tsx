@@ -1,5 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ColumnSchema, ColumnSummary, SessionMetadata, ValueCount } from "../../shared/protocol";
+import { NumericHistogram } from "../visualizations/NumericHistogram";
 
 export type SummaryPanelView = "column" | "dataset" | "filters";
 
@@ -144,6 +145,13 @@ function SelectedColumnSummary({
             <dd>{summary.distinctCount?.toLocaleString() ?? "n/a"}</dd>
             <TypeSpecificStats summary={summary} />
           </dl>
+
+          {summary.visualization?.kind === "numeric" && (
+            <section className="summaryDistributionChart" aria-labelledby={`summary-distribution-${summary.columnId}`}>
+              <h3 id={`summary-distribution-${summary.columnId}`}>Distribution</h3>
+              <NumericHistogram visualization={summary.visualization} />
+            </section>
+          )}
 
           <TopValues summary={summary} />
         </>

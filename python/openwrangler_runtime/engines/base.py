@@ -4,6 +4,7 @@ import json
 import re
 from abc import ABC, abstractmethod
 from base64 import b64encode
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -852,25 +853,72 @@ def numeric_visualization(values: Iterable[Any], max_bins: int = 20) -> dict[str
 
     minimum = min(finite_numbers)
     maximum = max(finite_numbers)
-    if minimum == maximum:
-        return {"kind": "numeric", "bins": [{"min": minimum, "max": maximum, "count": len(finite_numbers)}]}
-
-    bin_count = min(max_bins, max(1, len(set(finite_numbers))))
-    width = (maximum - minimum) / bin_count
+    bin_count = numeric_histogram_bin_count(len(finite_numbers), len(set(finite_numbers)), max_bins)
+    edges = numeric_histogram_edges(minimum, maximum, bin_count)
     counts = [0 for _ in range(bin_count)]
     for value in finite_numbers:
-        index = min(int((value - minimum) / width), bin_count - 1)
+        # ``bisect_right`` assigns an exact interior boundary to the following
+        # [min, max) interval. Clamp the exact maximum into the inclusive final
+        # interval.
+        index = min(max(0, bisect_right(edges, value) - 1), bin_count - 1)
         counts[index] += 1
+    return numeric_visualization_from_bin_counts(minimum, maximum, counts)
 
+
+def numeric_histogram_bin_count(value_count: int, distinct_count: int, max_bins: int = 20) -> int:
+    """Return the deterministic bounded bin count for an exact histogram."""
+
+    if value_count <= 0 or distinct_count <= 0:
+        return 0
+    return min(max(1, int(max_bins)), int(value_count), int(distinct_count))
+
+
+def numeric_histogram_edges(minimum: Any, maximum: Any, bin_count: int) -> list[float]:
+    """Return equal-width display-space edges with exact outer endpoints."""
+
+    lower = _maybe_float(minimum)
+    upper = _maybe_float(maximum)
+    if lower is None or upper is None or not isfinite(lower) or not isfinite(upper) or lower > upper or bin_count <= 0:
+        return []
+    if lower == upper:
+        return [lower, upper]
+
+    edges = [lower]
+    for index in range(1, bin_count):
+        fraction = index / bin_count
+        # Weighted interpolation avoids overflowing ``upper - lower`` for
+        # otherwise representable endpoints near opposite float extremes.
+        edge = (lower * (1.0 - fraction)) + (upper * fraction)
+        edges.append(min(upper, max(edges[-1], edge)))
+    edges.append(upper)
+    return edges
+
+
+def numeric_visualization_from_bin_counts(
+    minimum: Any,
+    maximum: Any,
+    counts: Iterable[Any],
+) -> dict[str, Any]:
+    """Build a protocol visualization from engine-native exact bin counts."""
+
+    normalized_counts = [max(0, int(count or 0)) for count in counts]
+    edges = numeric_histogram_edges(minimum, maximum, len(normalized_counts))
+    if not edges or not normalized_counts:
+        return {"kind": "numeric", "bins": []}
+    if edges[0] == edges[-1]:
+        return {
+            "kind": "numeric",
+            "bins": [{"min": edges[0], "max": edges[-1], "count": sum(normalized_counts)}],
+        }
     return {
         "kind": "numeric",
         "bins": [
             {
-                "min": minimum + (width * index),
-                "max": maximum if index == bin_count - 1 else minimum + (width * (index + 1)),
+                "min": edges[index],
+                "max": edges[index + 1],
                 "count": count,
             }
-            for index, count in enumerate(counts)
+            for index, count in enumerate(normalized_counts)
         ],
     }
 

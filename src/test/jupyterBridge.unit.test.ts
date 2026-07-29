@@ -13,10 +13,14 @@ const notebookMocks = vi.hoisted(() => ({
   activeEditorReads: 0,
   showWarningMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
-  showInputBox: vi.fn(async () => undefined as string | undefined),
+  showQuickPick: vi.fn(async (items: readonly unknown[], _options?: unknown) => items[0]),
   createPanel: vi.fn(),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
-  getKernel: vi.fn(async () => ({})),
+  executeCode: vi.fn((code: string) => discoveryOutputs(code)),
+  getKernel: vi.fn(async () => ({
+    language: "python",
+    executeCode: notebookMocks.executeCode
+  })),
   activateJupyter: vi.fn(async () => ({ kernels: { getKernel: notebookMocks.getKernel } }))
 }));
 
@@ -96,6 +100,16 @@ vi.mock("vscode", () => {
       readonly notebookType = "jupyter-notebook"
     ) {}
   }
+  class CancellationTokenSource {
+    readonly token = {
+      isCancellationRequested: false,
+      onCancellationRequested: () => ({ dispose: () => undefined })
+    };
+    cancel(): void {
+      this.token.isCancellationRequested = true;
+    }
+    dispose(): void {}
+  }
   function uriComponents(value: string): {
     scheme: string;
     authority?: string;
@@ -127,6 +141,7 @@ vi.mock("vscode", () => {
   return {
     Uri,
     TabInputNotebook,
+    CancellationTokenSource,
     commands: {
       registerCommand: (id: string, handler: CommandHandler) => {
         notebookMocks.commands.set(id, handler);
@@ -147,9 +162,10 @@ vi.mock("vscode", () => {
       },
       showWarningMessage: notebookMocks.showWarningMessage,
       showInformationMessage: notebookMocks.showInformationMessage,
-      showInputBox: notebookMocks.showInputBox
+      showQuickPick: notebookMocks.showQuickPick
     },
     workspace: {
+      isTrusted: true,
       get notebookDocuments() {
         return notebookMocks.notebookDocuments;
       }
@@ -165,6 +181,7 @@ vi.mock("../extension/webviewPanel", () => ({
 }));
 
 vi.mock("../extension/notebooks/kernelBridge", () => ({
+  shouldRegisterNotebookFormatters: () => true,
   KernelBridge: class {
     constructor(_context: ExtensionContext, document: NotebookDocument) {
       notebookMocks.kernelOrigins.push({ uri: document.uri.toString(), document });
@@ -174,6 +191,7 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
 
 import * as vscode from "vscode";
 import { registerNotebookCommands } from "../extension/notebooks/jupyterBridge";
+import { buildNotebookVariableDiscoveryCode } from "../extension/notebooks/notebookVariableDiscovery";
 
 describe("notebook command provenance", () => {
   beforeEach(() => {
@@ -184,11 +202,17 @@ describe("notebook command provenance", () => {
     notebookMocks.activeEditorReads = 0;
     notebookMocks.showWarningMessage.mockClear();
     notebookMocks.showInformationMessage.mockClear();
-    notebookMocks.showInputBox.mockReset();
-    notebookMocks.showInputBox.mockResolvedValue(undefined);
+    notebookMocks.showQuickPick.mockReset();
+    notebookMocks.showQuickPick.mockImplementation(async (items) => items[0]);
     notebookMocks.createPanel.mockReset();
     notebookMocks.kernelOrigins.length = 0;
-    notebookMocks.getKernel.mockClear();
+    notebookMocks.executeCode.mockReset();
+    notebookMocks.executeCode.mockImplementation((code) => discoveryOutputs(code));
+    notebookMocks.getKernel.mockReset();
+    notebookMocks.getKernel.mockResolvedValue({
+      language: "python",
+      executeCode: notebookMocks.executeCode
+    });
     notebookMocks.activateJupyter.mockReset();
     notebookMocks.activateJupyter.mockResolvedValue({ kernels: { getKernel: notebookMocks.getKernel } });
   });
@@ -662,12 +686,11 @@ describe("notebook command provenance", () => {
     const overlappingReplacement = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original, overlappingReplacement);
     notebookMocks.activeNotebookEditor = editor(original);
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.kernelOrigins).toEqual([]);
     expect(notebookMocks.createPanel).not.toHaveBeenCalled();
@@ -677,7 +700,6 @@ describe("notebook command provenance", () => {
     const original = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")({
@@ -686,7 +708,7 @@ describe("notebook command provenance", () => {
       source: "notebookToolbar"
     });
 
-    expect(notebookMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(notebookMocks.showQuickPick).toHaveBeenCalledOnce();
     expect(notebookMocks.kernelOrigins).toEqual([{ uri: original.uri.toString(), document: original }]);
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
   });
@@ -697,12 +719,11 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.push(editorNotebook, tabNotebook);
     notebookMocks.activeNotebookEditor = editor(editorNotebook);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(tabNotebook.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
@@ -715,12 +736,11 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.push(explicitNotebook, activeNotebook);
     notebookMocks.activeNotebookEditor = editor(activeNotebook);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(activeNotebook.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")(explicitNotebook.uri);
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
@@ -732,12 +752,11 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")(vscode.Uri.parse(original.uri.toString()));
 
-    expect(notebookMocks.showInputBox).toHaveBeenCalledOnce();
+    expect(notebookMocks.showQuickPick).toHaveBeenCalledOnce();
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
   });
 
@@ -746,12 +765,11 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
     notebookMocks.activeTabInput = { uri: vscode.Uri.parse("file:///workspace/source.py") };
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
@@ -763,12 +781,11 @@ describe("notebook command provenance", () => {
     const duplicate = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original, duplicate);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Close duplicate notebook views and try again."
@@ -779,12 +796,11 @@ describe("notebook command provenance", () => {
     const original = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "different-notebook-type");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
@@ -796,12 +812,11 @@ describe("notebook command provenance", () => {
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "quarto-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")();
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
@@ -811,12 +826,11 @@ describe("notebook command provenance", () => {
   it("rejects a direct non-Jupyter notebook origin without active editor or tab state", async () => {
     const original = notebook("file:///workspace/shared.ipynb", "quarto-notebook");
     notebookMocks.notebookDocuments.push(original);
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const { coordinator } = register();
 
     await command("openWrangler.openNotebookVariable")(original.uri);
 
-    expect(notebookMocks.showInputBox).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler could not identify one active notebook. Return to one notebook and try again."
@@ -827,7 +841,6 @@ describe("notebook command provenance", () => {
     const original = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const privateEditorGetter = vi.fn(() => {
       throw new Error("private notebook editor context must not be read");
     });
@@ -845,7 +858,6 @@ describe("notebook command provenance", () => {
     const original = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockResolvedValue("frame");
     const uriGetter = vi.fn(() => vscode.Uri.parse("file:///workspace/private.ipynb"));
     const toolbarContext = { ui: true, source: "notebookToolbar" };
     Object.defineProperty(toolbarContext, "uri", { get: uriGetter });
@@ -862,11 +874,11 @@ describe("notebook command provenance", () => {
     const replacement = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeTabInput = new vscode.TabInputNotebook(original.uri, "jupyter-notebook");
-    notebookMocks.showInputBox.mockImplementationOnce(async () => {
+    notebookMocks.showQuickPick.mockImplementationOnce(async (items) => {
       closeNotebook(original);
       notebookMocks.notebookDocuments.splice(0, 1, replacement);
       notebookMocks.activeTabInput = new vscode.TabInputNotebook(replacement.uri, "jupyter-notebook");
-      return "frame";
+      return items[0];
     });
     const { coordinator } = register();
 
@@ -879,16 +891,235 @@ describe("notebook command provenance", () => {
     );
   });
 
+  it("populates a branded typed picker with concrete dataframe backends", async () => {
+    const original = notebook("file:///workspace/typed.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.executeCode.mockImplementationOnce((code) =>
+      discoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [
+          { name: "duck_relation", type: "_duckdb.DuckDBPyRelation", backend: "duckdb" },
+          { name: "pandas_frame", type: "pandas.core.frame.DataFrame", backend: "pandas" },
+          { name: "pandas_series", type: "pandas.core.series.Series", backend: "pandas" },
+          { name: "polars_frame", type: "polars.dataframe.frame.DataFrame", backend: "polars" },
+          { name: "polars_lazy", type: "polars.lazyframe.frame.LazyFrame", backend: "polars" },
+          { name: "polars_series", type: "polars.series.series.Series", backend: "polars" },
+          {
+            name: "spark_classic",
+            type: "pyspark.sql.classic.dataframe.DataFrame",
+            backend: "pyspark"
+          },
+          {
+            name: "spark_connect",
+            type: "pyspark.sql.connect.dataframe.DataFrame",
+            backend: "pyspark"
+          }
+        ]
+      })
+    );
+    notebookMocks.showQuickPick.mockImplementationOnce(async (items) =>
+      items.find(
+        (item) => typeof item === "object" && item !== null && (item as { label?: unknown }).label === "spark_connect"
+      )
+    );
+    const { context, coordinator, coordinatedBridge } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    const [items, options] = notebookMocks.showQuickPick.mock.calls[0] ?? [];
+    expect(options).toMatchObject({
+      title: "Open Wrangler: Open Notebook Variable",
+      placeHolder: "Open Wrangler: Select a dataframe variable from the active Jupyter kernel",
+      matchOnDescription: true,
+      matchOnDetail: true
+    });
+    expect(items).toEqual([
+      expect.objectContaining({
+        label: "duck_relation",
+        description: "DuckDB · DuckDBPyRelation",
+        detail: "_duckdb.DuckDBPyRelation · Live notebook opening is not supported"
+      }),
+      expect.objectContaining({
+        label: "pandas_frame",
+        description: "Pandas · DataFrame",
+        detail: "pandas.core.frame.DataFrame · Live notebook session"
+      }),
+      expect.objectContaining({ label: "pandas_series", description: "Pandas · Series" }),
+      expect.objectContaining({ label: "polars_frame", description: "Polars · DataFrame" }),
+      expect.objectContaining({ label: "polars_lazy", description: "Polars · LazyFrame" }),
+      expect.objectContaining({ label: "polars_series", description: "Polars · Series" }),
+      expect.objectContaining({ label: "spark_classic", description: "PySpark Classic · DataFrame" }),
+      expect.objectContaining({
+        label: "spark_connect",
+        description: "PySpark Connect · DataFrame",
+        detail: "pyspark.sql.connect.dataframe.DataFrame · Live viewing-only session"
+      })
+    ]);
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      coordinatedBridge,
+      {
+        kind: "notebookVariable",
+        label: "spark_connect",
+        variableName: "spark_connect",
+        uri: original.uri.toString()
+      },
+      "pyspark"
+    );
+  });
+
+  it("treats picker cancellation as actionless", async () => {
+    const original = notebook("file:///workspace/cancelled.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.showQuickPick.mockResolvedValueOnce(undefined);
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.executeCode).toHaveBeenCalledOnce();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.createPanel).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed discovery response before showing the picker", async () => {
+    const original = notebook("file:///workspace/malformed.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.executeCode.mockImplementationOnce((code) => discoveryOutputs(code, '{"protocolVersion":1'));
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler received a malformed notebook variable discovery response."
+    );
+  });
+
+  it("rejects an oversized discovery response before parsing or showing the picker", async () => {
+    const original = notebook("file:///workspace/oversized.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.executeCode.mockImplementationOnce((code) => discoveryOutputs(code, "x".repeat(70 * 1024)));
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler rejected an oversized notebook variable discovery response."
+    );
+  });
+
+  it("rejects an excessive zero-byte output stream", async () => {
+    const original = notebook("file:///workspace/output-flood.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.executeCode.mockImplementationOnce(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (let index = 0; index < 129; index += 1) {
+          yield {
+            items: [
+              {
+                mime: "application/x.notebook.stream.stdout",
+                data: new Uint8Array()
+              }
+            ]
+          };
+        }
+      }
+    }));
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Open Wrangler rejected an oversized notebook variable discovery response."
+    );
+  });
+
+  it("does not request a replacement notebook kernel after Jupyter activation", async () => {
+    const original = notebook("file:///workspace/discovery-replaced.ipynb");
+    const replacement = notebook("file:///workspace/discovery-replaced.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.activateJupyter.mockImplementationOnce(async () => {
+      closeNotebook(original);
+      notebookMocks.notebookDocuments.splice(0, 1, replacement);
+      notebookMocks.activeNotebookEditor = editor(replacement);
+      return { kernels: { getKernel: notebookMocks.getKernel } };
+    });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.getKernel).not.toHaveBeenCalled();
+    expect(notebookMocks.executeCode).not.toHaveBeenCalled();
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The originating notebook is no longer open. Reopen it and try again."
+    );
+  });
+
+  it("discards discovery output produced after the exact notebook is replaced", async () => {
+    const original = notebook("file:///workspace/discovery-output-replaced.ipynb");
+    const replacement = notebook("file:///workspace/discovery-output-replaced.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.executeCode.mockImplementationOnce((code) => {
+      const output = discoveryOutputs(code);
+      return {
+        async *[Symbol.asyncIterator]() {
+          const next = await output[Symbol.asyncIterator]().next();
+          closeNotebook(original);
+          notebookMocks.notebookDocuments.splice(0, 1, replacement);
+          notebookMocks.activeNotebookEditor = editor(replacement);
+          if (!next.done) yield next.value;
+        }
+      };
+    });
+    const { coordinator } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The originating notebook is no longer open. Reopen it and try again."
+    );
+  });
+
+  it("discovers types without repr, shape, count, collection, or dataframe imports", () => {
+    const code = buildNotebookVariableDiscoveryCode("0123456789abcdef0123456789abcdef");
+
+    expect(code).not.toContain("repr(");
+    expect(code).not.toContain(".shape");
+    expect(code).not.toContain(".count(");
+    expect(code).not.toContain(".collect(");
+    expect(code).not.toMatch(/import (pandas|polars|pyspark|duckdb)/);
+    expect(code).toContain("if __ow_scanned > 4096:");
+  });
+
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {
     const original = notebook("file:///workspace/shared.ipynb");
     const replacement = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
-    notebookMocks.showInputBox.mockImplementationOnce(async () => {
+    notebookMocks.showQuickPick.mockImplementationOnce(async (items) => {
       closeNotebook(original);
       notebookMocks.notebookDocuments.splice(0, 1, replacement);
       notebookMocks.activeNotebookEditor = editor(replacement);
-      return "frame";
+      return items[0];
     });
     const { coordinator } = register();
 
@@ -930,7 +1161,7 @@ describe("notebook command provenance", () => {
     const replacement = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
-    let resolveKernel!: (kernel: object) => void;
+    let resolveKernel!: (kernel: Awaited<ReturnType<typeof notebookMocks.getKernel>>) => void;
     notebookMocks.getKernel.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -944,7 +1175,10 @@ describe("notebook command provenance", () => {
     closeNotebook(original);
     notebookMocks.notebookDocuments.splice(0, 1, replacement);
     notebookMocks.activeNotebookEditor = editor(replacement);
-    resolveKernel({});
+    resolveKernel({
+      language: "python",
+      executeCode: notebookMocks.executeCode
+    });
     await checking;
 
     expect(notebookMocks.showInformationMessage).not.toHaveBeenCalled();
@@ -959,7 +1193,7 @@ describe("notebook command provenance", () => {
     const overlappingReplacement = notebook("file:///workspace/shared.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
-    let resolveKernel!: (kernel: object) => void;
+    let resolveKernel!: (kernel: Awaited<ReturnType<typeof notebookMocks.getKernel>>) => void;
     notebookMocks.getKernel.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
@@ -971,7 +1205,10 @@ describe("notebook command provenance", () => {
     const checking = command("openWrangler.checkJupyterIntegration")();
     await vi.waitFor(() => expect(notebookMocks.getKernel).toHaveBeenCalledWith(original.uri));
     notebookMocks.notebookDocuments.push(overlappingReplacement);
-    resolveKernel({});
+    resolveKernel({
+      language: "python",
+      executeCode: notebookMocks.executeCode
+    });
     await checking;
 
     expect(notebookMocks.showInformationMessage).not.toHaveBeenCalled();
@@ -1017,4 +1254,39 @@ function editor(document: NotebookDocument): NotebookEditor {
 
 function serializedFileUri(path: string): Record<string, unknown> {
   return { $mid: 1, scheme: "file", path };
+}
+
+function discoveryOutputs(
+  code: string,
+  payload: unknown = {
+    protocolVersion: 1,
+    truncated: false,
+    variables: [
+      {
+        name: "frame",
+        type: "pandas.core.frame.DataFrame",
+        backend: "pandas"
+      }
+    ]
+  }
+): AsyncIterable<{ items: Array<{ mime: string; data: Uint8Array }> }> {
+  const marker = code.match(/__OPEN_WRANGLER_VARIABLES_START_([a-f0-9]{32})__/)?.[1];
+  if (!marker) throw new Error("Expected notebook discovery code to contain a response marker.");
+  const text = [
+    `__OPEN_WRANGLER_VARIABLES_START_${marker}__`,
+    typeof payload === "string" ? payload : JSON.stringify(payload),
+    `__OPEN_WRANGLER_VARIABLES_END_${marker}__`
+  ].join("\n");
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield {
+        items: [
+          {
+            mime: "application/x.notebook.stream.stdout",
+            data: Buffer.from(text, "utf8")
+          }
+        ]
+      };
+    }
+  };
 }

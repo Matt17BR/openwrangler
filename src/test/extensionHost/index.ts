@@ -156,6 +156,7 @@ interface FakeJupyterApi {
     setDenied(value: boolean): void;
     denialCalls(): number;
     stats(uri: vscode.Uri): { generation: number; executions: number } | undefined;
+    lookupCalls(uri: vscode.Uri): number;
   };
 }
 
@@ -181,11 +182,10 @@ const RELEASED_JUPYTER_CONSENT_MESSAGE =
 const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
 const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
-const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN =
-  /^(?:Open Variable|Open Wrangler: Open Notebook Variable)$/u;
+const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wrangler$/u;
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
-const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE = "Open Notebook Variable in Open Wrangler";
+const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
@@ -337,6 +337,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
+    "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
     "openWrangler.changeRuntime",
     "openWrangler.clearRuntime",
@@ -405,7 +406,7 @@ export async function run(): Promise<void> {
     {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
-      icon: "$(open-preview)"
+      icon: "media/activity-icon.svg"
     }
   );
   assert.deepEqual(
@@ -422,12 +423,12 @@ export async function run(): Promise<void> {
     {
       command: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND,
       title: "Open Wrangler: Open Notebook Variable",
-      shortTitle: "Open Variable",
-      icon: "$(table)"
+      shortTitle: "Open in Open Wrangler",
+      icon: "media/activity-icon.svg"
     }
   );
   const fileResourcePredicate =
-    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i";
+    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -452,7 +453,7 @@ export async function run(): Promise<void> {
     );
     assert.match(
       loadedRemoteAction.when ?? "",
-      /resourceExtname =~ \/\\\.\(csv\|tsv\|parquet\|jsonl\|xlsx\|xls\)\$\/i/u,
+      /resourceExtname =~ \/\\\.\(csv\|tsv\|parquet\|jsonl\|ndjson\|xlsx\|xls\)\$\/i/u,
       "Remote SSH must preserve the supported data-file extension predicate."
     );
   }
@@ -810,11 +811,15 @@ async function exerciseReleasedJupyterExtension(
   writeReleasedJupyterNotebook(notebookPath, setupMarker, kernelTarget, extension.extensionPath);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalNotebookStartMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
+  const originalNotebookPreviewProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  )?.workspaceValue;
 
   let notebook: vscode.NotebookDocument | undefined;
   let rendererLoadObserver: NotebookRendererLoadObserver | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
   try {
+    await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
     recordAcceptanceProgress(`${phase}:notebook-open`);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
     assertExactOpenNotebookDocument(notebook, "after opening the released-Jupyter fixture");
@@ -857,43 +862,15 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(warmKernel.hostExtensionVisible, false);
     }
 
-    assertExactVisibleReleasedNotebookEditor(
-      notebook,
-      variableNotebookEditor,
-      "immediately before opening the real Jupyter Variables view"
-    );
-    await vscode.commands.executeCommand("jupyter.openVariableView");
-    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
-    assertExactVisibleReleasedNotebookEditor(
-      notebook,
-      variableNotebookEditor,
-      "after opening the real Jupyter Variables view"
-    );
-
-    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
     assert.equal(
-      jupyterExtension.isActive,
-      true,
-      "Executing the fixture must activate the released Jupyter extension."
+      releasedJupyterSessionTabs().length,
+      0,
+      "Automatic notebook-preview preparation must begin without creating an Open Wrangler session panel."
     );
-    const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
-    assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
-    assert.equal(initialKernel.pid, warmKernel.pid, "The Variables refresh must remain on the exact warmed kernel.");
-    assert.equal(initialKernel.setup, setupMarker);
-    assert.equal(
-      initialKernel.runtime,
-      false,
-      "The private released-Jupyter kernel must not inherit an installed Open Wrangler runtime before bootstrap."
-    );
-
-    assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
-
-    recordAcceptanceProgress(`${phase}:variables-action`);
-    await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
-    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
-    recordAcceptanceProgress(`${phase}:variables-panel-created`);
+    recordAcceptanceProgress(`${phase}:proactive-formatter`);
+    await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
-    assertExactOpenNotebookDocument(notebook, "while the released Jupyter consent belongs to the fixture notebook");
+    assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
 
     if (phase === "jupyter-deny") {
       recordAcceptanceProgress("jupyter-deny:consent");
@@ -901,8 +878,11 @@ async function exerciseReleasedJupyterExtension(
       await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
       await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
       assert.equal(testing.diagnostics().sessionCount, 0);
-      await closeReleasedJupyterSessionTabs();
-      assert.equal(testing.diagnostics().sessionCount, 0);
+      assert.equal(
+        releasedJupyterSessionTabs().length,
+        0,
+        "Denying proactive formatter access must not leave a session panel."
+      );
 
       recordAcceptanceProgress("jupyter-deny:persisted-denial");
       assertExactOpenNotebookDocument(notebook, "before retrying the denied released Jupyter permission");
@@ -932,23 +912,24 @@ async function exerciseReleasedJupyterExtension(
     recordAcceptanceProgress(`${phase}:consent`);
     await consent.allow.click();
     await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    const pandasFrame = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
-      "the Pandas DataFrame opened from the real Jupyter Variables view"
+    assert.equal(
+      releasedJupyterSessionTabs().length,
+      0,
+      "Allowing proactive formatter access must not create an Open Wrangler session panel."
     );
 
-    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
-    await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
-    if (kernelTarget.remote) {
-      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
-    }
-    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
-    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
+    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
+    assert.equal(
+      jupyterExtension.isActive,
+      true,
+      "Executing the fixture must activate the released Jupyter extension."
+    );
+    const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
+    assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
+    assert.equal(initialKernel.pid, warmKernel.pid, "The formatter must remain on the exact warmed kernel.");
+    assert.equal(initialKernel.setup, setupMarker);
 
-    recordAcceptanceProgress(`${phase}:mime-v2`);
+    recordAcceptanceProgress(`${phase}:proactive-mime-v2`);
     const renderedCell = new vscode.NotebookRange(1, 2);
     const executionEditor = await showExactReleasedNotebook(notebook);
     executionEditor.selection = renderedCell;
@@ -959,11 +940,17 @@ async function exerciseReleasedJupyterExtension(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the released-Jupyter MIME cell to become visible before execution"
     );
-    await executeReleasedNotebookCell(notebook, 1, undefined, `${phase}:mime-cell`, executionEditor);
+    await executeReleasedNotebookCellUntilMime(
+      notebook,
+      1,
+      OPEN_WRANGLER_MIME_V2,
+      `${phase}:proactive-mime-cell`,
+      executionEditor
+    );
     const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
-      "A formatter registered through the released kernel API must emit the Open Wrangler MIME v2 payload. " +
+      "Proactive formatter installation must emit Open Wrangler MIME v2 before any Open Wrangler command. " +
         `Actual MIME types: ${JSON.stringify(pandasOutputMimes)}. ` +
         `Output: ${JSON.stringify(notebookCellOutputText(notebook.cellAt(1)).slice(0, 2_000))}.`
     );
@@ -983,7 +970,8 @@ async function exerciseReleasedJupyterExtension(
       JSON.parse(new TextDecoder().decode(pandasMimeItem.data)) as unknown
     );
     assert.ok(pandasMimePayload, "The released-Jupyter MIME v2 item must satisfy the saved-output contract.");
-    assert.equal(pandasMimePayload.metadata.source.label, "DataFrame");
+    assert.equal(pandasMimePayload.metadata.source.label, "notebook_showcase");
+    assert.equal(pandasMimePayload.metadata.source.variableName, "notebook_showcase");
     assert.deepEqual(pandasMimePayload.metadata.shape, { rows: 100_000, columns: 15 });
     assert.deepEqual(
       pandasMimePayload.metadata.schema.map((column) => column.name),
@@ -1005,6 +993,46 @@ async function exerciseReleasedJupyterExtension(
         "account_status"
       ]
     );
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "Producing an automatic notebook preview must not implicitly open a dataframe session."
+    );
+
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      variableNotebookEditor,
+      "immediately before opening the real Jupyter Variables view"
+    );
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      variableNotebookEditor,
+      "after opening the real Jupyter Variables view"
+    );
+
+    assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
+
+    recordAcceptanceProgress(`${phase}:variables-action`);
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
+    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
+    recordAcceptanceProgress(`${phase}:variables-panel-created`);
+    const pandasFrame = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
+      "the Pandas DataFrame opened from the real Jupyter Variables view"
+    );
+
+    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
+    await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
+    if (kernelTarget.remote) {
+      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
+    }
+    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
+    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
     await showExactReleasedNotebook(notebook);
@@ -1035,36 +1063,74 @@ async function exerciseReleasedJupyterExtension(
       phase === "jupyter-allow" && screenshotOutput
         ? await prepareReleasedJupyterScreenshotWorkbench(workbench, notebook, rendererEditor)
         : undefined;
-    let rendererButton: NotebookRendererButton;
     try {
-      rendererButton = await waitForNotebookRendererButton(workbench, "DataFrame");
-    } catch (error) {
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
-          releasedNotebookRendererHostDiagnostics(notebook, 1)
-        )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
-      );
-    }
-    try {
+      let rendererButton: NotebookRendererButton;
+      try {
+        rendererButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open in Open Wrangler");
+      } catch (error) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
+            releasedNotebookRendererHostDiagnostics(notebook, 1)
+          )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
+        );
+      }
       if (phase === "jupyter-allow" && screenshotOutput) {
         await captureReleasedJupyterPandasPreview(workbench, rendererButton, screenshotOutput);
       }
-      await rendererButton.click();
+      try {
+        await rendererButton.click();
+      } finally {
+        await rendererButton.dispose();
+      }
+      const liveShowcase = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "notebook_showcase",
+          type: "DataFrame",
+          backend: "pandas",
+          firstValue: "2400001"
+        },
+        "the live notebook_showcase variable opened from the primary MIME-v2 renderer action"
+      );
+      assert.deepEqual(liveShowcase.metadata.shape, { rows: 100_000, columns: 15 });
+      await assertReleasedSessionPage(
+        testing,
+        liveShowcase,
+        "2400001",
+        "released-jupyter-renderer-live-notebook-showcase"
+      );
+      await disposePackagedSessionPanel(
+        testing,
+        liveShowcase.sessionId,
+        "the released-Jupyter live MIME variable session"
+      );
+
+      const snapshotEditor = await showExactReleasedNotebook(notebook);
+      snapshotEditor.selection = renderedCell;
+      snapshotEditor.selections = [renderedCell];
+      snapshotEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
+      const snapshotButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open saved snapshot");
+      try {
+        await snapshotButton.click();
+      } finally {
+        await snapshotButton.dispose();
+      }
+      await waitFor(
+        () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "the released-Jupyter MIME v2 saved snapshot fallback"
+      );
+      const snapshot = testing.activeSession();
+      assert.ok(snapshot, "The renderer's saved-snapshot action must publish a snapshot session.");
+      assert.equal(snapshot.metadata.source.kind, "notebookOutput");
+      assert.equal(snapshot.metadata.source.label, "notebook_showcase");
+      assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
+      await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
     } finally {
-      await rendererButton.dispose();
+      await restoreScreenshotWorkbench?.();
     }
-    await waitFor(
-      () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the released-Jupyter MIME v2 renderer snapshot"
-    );
-    const snapshot = testing.activeSession();
-    assert.ok(snapshot, "The released-Jupyter renderer action must publish a snapshot session.");
-    assert.equal(snapshot.metadata.source.kind, "notebookOutput");
-    assert.equal(snapshot.metadata.source.label, "DataFrame");
-    assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
-    await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
-    await restoreScreenshotWorkbench?.();
 
     recordAcceptanceProgress(`${phase}:pandas-series`);
     const pandasSeries = await openReleasedVariableSession(
@@ -1199,6 +1265,11 @@ async function exerciseReleasedJupyterExtension(
     await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
     remoteServerCollection?.dispose();
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+    await configuration.update(
+      "notebookPreviewProvider",
+      originalNotebookPreviewProvider,
+      vscode.ConfigurationTarget.Workspace
+    );
     cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
@@ -2466,6 +2537,29 @@ async function executeReleasedNotebookCell(
   }
 }
 
+async function executeReleasedNotebookCellUntilMime(
+  notebook: vscode.NotebookDocument,
+  index: number,
+  mime: string,
+  checkpoint: string,
+  expectedEditor: vscode.NotebookEditor
+): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  let attempt = 0;
+  let observedMimes: string[] = [];
+  do {
+    attempt += 1;
+    await executeReleasedNotebookCell(notebook, index, undefined, `${checkpoint}:attempt-${attempt}`, expectedEditor);
+    observedMimes = notebook.cellAt(index).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    if (observedMimes.includes(mime)) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Timed out waiting for proactive notebook formatter MIME ${JSON.stringify(mime)}. ` +
+      `Observed: ${JSON.stringify(observedMimes)}.`
+  );
+}
+
 function notebookCellOutputText(cell: vscode.NotebookCell): string {
   return cell.outputs
     .flatMap((output) => output.items)
@@ -2718,7 +2812,7 @@ async function waitForReleasedJupyterConsent(
   } while (Date.now() < deadline);
   if (!dialog) {
     throw new Error(
-      "Timed out waiting for released Jupyter kernel consent after the Open Wrangler panel opened. " +
+      "Timed out waiting for released Jupyter kernel consent during proactive formatter preparation. " +
         `State: ${JSON.stringify({
           tabCount: releasedJupyterSessionTabs().length,
           coordinator: testing.diagnostics(),
@@ -3096,13 +3190,20 @@ async function invokeReleasedNotebookToolbarVariable(
     notebook,
     "The exact released-Jupyter notebook must be active before its Open Wrangler toolbar action."
   );
-  const input = await clickReleasedNotebookVariableAction(workbench, notebook);
+  const picker = await clickReleasedNotebookVariableAction(workbench, notebook);
   assertActiveNotebookTab(
     notebook,
-    "The exact released-Jupyter notebook tab must remain active after its toolbar action opens the variable input."
+    "The exact released-Jupyter notebook tab must remain active after its toolbar action opens the variable picker."
   );
-  await input.fill(variableName);
-  await input.press("Enter");
+  const deadline = Date.now() + 10_000;
+  let row: Locator | undefined;
+  do {
+    row = await releasedJupyterQuickPickRow(picker, variableName);
+    if (row) break;
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  assert.ok(row, `The Open Wrangler notebook-variable picker did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
   assertExactOpenNotebookDocument(notebook, "after submitting the Open Wrangler notebook toolbar variable");
 }
 
@@ -3160,7 +3261,7 @@ async function clickReleasedNotebookVariableAction(
     return await invokeAcceptanceActionOnce({
       description: pinned.description,
       activate: () => pinned.action.click({ timeout: 2_000 }),
-      receipt: () => waitForReleasedNotebookVariableInput(workbench),
+      receipt: () => waitForReleasedNotebookVariablePicker(workbench),
       naturalDismissal: pinned.overflowMenu
         ? () => pinned.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })
         : undefined
@@ -3177,13 +3278,31 @@ async function clickReleasedNotebookVariableAction(
 function assertReleasedNotebookActionLabelOwnership(): void {
   const owners: Array<{ extensionId: string; command: string }> = [];
   for (const extension of vscode.extensions.all) {
-    const commands = (extension.packageJSON as { contributes?: { commands?: unknown } }).contributes?.commands;
+    const contributions = (
+      extension.packageJSON as {
+        contributes?: {
+          commands?: unknown;
+          menus?: { "notebook/toolbar"?: unknown };
+        };
+      }
+    ).contributes;
+    const commands = contributions?.commands;
     if (!Array.isArray(commands)) continue;
+    const toolbarItems = contributions?.menus?.["notebook/toolbar"];
+    if (!Array.isArray(toolbarItems)) continue;
+    const toolbarCommands = new Set(
+      toolbarItems.flatMap((candidate) => {
+        if (typeof candidate !== "object" || candidate === null) return [];
+        const command = (candidate as { command?: unknown }).command;
+        return typeof command === "string" ? [command] : [];
+      })
+    );
     for (const candidate of commands) {
       if (typeof candidate !== "object" || candidate === null) continue;
       const command = candidate as { command?: unknown; title?: unknown; shortTitle?: unknown };
       if (
         typeof command.command === "string" &&
+        toolbarCommands.has(command.command) &&
         ((typeof command.title === "string" &&
           RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN.test(command.title)) ||
           (typeof command.shortTitle === "string" &&
@@ -3808,7 +3927,7 @@ async function releasedNotebookToolbarDiagnostics(
   };
 }
 
-async function waitForReleasedNotebookVariableInput(workbench: Page): Promise<Locator> {
+async function waitForReleasedNotebookVariablePicker(workbench: Page): Promise<Locator> {
   const deadline = Date.now() + 10_000;
   do {
     const matches: Locator[] = [];
@@ -3824,21 +3943,21 @@ async function waitForReleasedNotebookVariableInput(workbench: Page): Promise<Lo
             .textContent()
             .catch(() => "")
         )?.trim();
-        if (title !== RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE) continue;
+        if (title !== RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE) continue;
         const input = widget.locator(".quick-input-box input").first();
-        if ((await input.count()) > 0 && (await input.isVisible())) matches.push(input);
+        if ((await input.count()) > 0 && (await input.isVisible())) matches.push(widget);
       }
     }
     if (matches.length === 1) return matches[0]!;
     assert.ok(
       matches.length < 2,
-      "The notebook-toolbar action exposed multiple visible Open Wrangler variable inputs."
+      "The notebook-toolbar action exposed multiple visible Open Wrangler variable pickers."
     );
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
   const diagnostics = await boundedImportPromptDiagnostics(workbench);
   throw new Error(
-    "Timed out waiting for the Open Wrangler notebook-toolbar variable input. " +
+    "Timed out waiting for the Open Wrangler notebook-toolbar variable picker. " +
       `Quick inputs: ${JSON.stringify(diagnostics.quickInputs)}. ` +
       `Notifications: ${JSON.stringify(diagnostics.notifications)}. ` +
       `Dialogs: ${JSON.stringify(diagnostics.dialogs)}. ` +
@@ -5466,7 +5585,7 @@ async function captureReleasedJupyterPandasPreview(
   });
   assert.ok(preview, "The Pandas notebook action must remain inside its exact rendered preview.");
   assert.deepEqual(preview, {
-    title: "Open Wrangler preview: DataFrame (pandas) - 100000 x 15",
+    title: "Open Wrangler preview: notebook_showcase (pandas) - 100000 x 15",
     headers: [
       "order_id",
       "market",
@@ -5525,12 +5644,12 @@ async function captureReleasedJupyterPolarsDraft(
   assert.equal(active.metadata.draftStep?.id, "released-jupyter-double");
 
   const doubleUnits = columnReference(active.metadata, "double_units");
-  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
+  const baselineWidths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
   const doubleUnitsPosition = active.metadata.schema.findIndex((column) => column.id === doubleUnits.id);
   assert.ok(doubleUnitsPosition >= 0, "The Polars notebook screenshot requires the draft output column.");
   await testing.updateViewState(sessionId, {
     ...active.viewState,
-    columnWidths: widths,
+    columnWidths: baselineWidths,
     selectedColumnId: columnReference(active.metadata, "units").id,
     viewport: { firstVisibleRow: 0, scrollLeft: 0 }
   });
@@ -5588,6 +5707,74 @@ async function captureReleasedJupyterPolarsDraft(
   await hideInsights.waitFor({ state: "visible", timeout: 10_000 });
   await hideInsights.click();
   await app.getByRole("button", { name: "Show insights", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  const firstVisibleColumn = columnReference(active.metadata, "product_family");
+  const firstVisibleColumnPosition = active.metadata.schema.findIndex((column) => column.id === firstVisibleColumn.id);
+  assert.ok(
+    firstVisibleColumnPosition >= 0 && firstVisibleColumnPosition < doubleUnitsPosition,
+    "The Polars notebook screenshot requires product_family before its computed draft output."
+  );
+  assert.equal(
+    doubleUnitsPosition,
+    active.metadata.schema.length - 1,
+    "The Polars notebook screenshot requires the computed draft output to remain the final column."
+  );
+  const gridScroller = app.getByTestId("data-grid-scroller");
+  const measuredGrid = await gridScroller.evaluate((element) => {
+    const scroller = element as {
+      clientWidth: number;
+      querySelector(selector: string): { getBoundingClientRect(): { width: number } } | null;
+    };
+    const rowHeader = scroller.querySelector("th.rowHeader");
+    return {
+      clientWidth: scroller.clientWidth,
+      rowHeaderWidth: rowHeader?.getBoundingClientRect().width ?? 0
+    };
+  });
+  const rowHeaderWidth = Math.round(measuredGrid.rowHeaderWidth);
+  const visibleDataWidth = measuredGrid.clientWidth - rowHeaderWidth;
+  const visibleColumnCount = doubleUnitsPosition - firstVisibleColumnPosition + 1;
+  const alignedBaseWidth = Math.floor(visibleDataWidth / visibleColumnCount);
+  const alignedWidthRemainder = visibleDataWidth % visibleColumnCount;
+  assert.ok(
+    Number.isSafeInteger(visibleDataWidth) &&
+      visibleDataWidth > 0 &&
+      rowHeaderWidth > 0 &&
+      alignedBaseWidth >= 80 &&
+      alignedBaseWidth + Number(alignedWidthRemainder > 0) <= 640,
+    `The native Polars grid cannot fit its complete gallery suffix: ${JSON.stringify({
+      ...measuredGrid,
+      rowHeaderWidth,
+      visibleDataWidth,
+      visibleColumnCount,
+      alignedBaseWidth,
+      alignedWidthRemainder
+    })}`
+  );
+  const alignedWidths = Object.fromEntries(
+    active.metadata.schema.map((column) => {
+      if (column.position < firstVisibleColumnPosition) return [column.id, 230];
+      const visiblePosition = column.position - firstVisibleColumnPosition;
+      return [column.id, alignedBaseWidth + Number(visiblePosition < alignedWidthRemainder)];
+    })
+  );
+  const alignedScrollLeft = active.metadata.schema
+    .slice(0, firstVisibleColumnPosition)
+    .reduce((total, column) => total + (alignedWidths[column.id] ?? 0), 0);
+  const alignedViewState = testing.activeSession()?.viewState;
+  assert.ok(alignedViewState, "The Polars notebook screenshot requires its confirmed presentation state.");
+  await testing.updateViewState(sessionId, {
+    ...alignedViewState,
+    columnWidths: alignedWidths,
+    selectedColumnId: doubleUnits.id,
+    viewport: { firstVisibleRow: 0, scrollLeft: alignedScrollLeft }
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The Polars notebook screenshot must synchronize its column-aligned gallery viewport."
+  );
+
   const addedCells = app.locator(`td[data-grid-column="${doubleUnitsPosition}"][data-grid-row]`);
   await addedCells.nth(5).waitFor({ state: "visible", timeout: 10_000 });
   assert.deepEqual(
@@ -5600,8 +5787,30 @@ async function captureReleasedJupyterPolarsDraft(
     Array(6).fill("added"),
     "The computed Polars draft values must retain their added-column diff state."
   );
-  const gridViewport = await app.getByTestId("data-grid-scroller").boundingBox();
+  const gridViewport = await gridScroller.boundingBox();
   assert.ok(gridViewport, "The Polars notebook screenshot requires a measurable grid viewport.");
+  const rowHeader = await app.locator("th.rowHeader").first().boundingBox();
+  const firstVisibleHeader = await app.locator('th[data-column="product_family"]').boundingBox();
+  const precedingHeader = await app.locator('th[data-column="channel"]').boundingBox();
+  const doubleUnitsHeader = await app.locator('th[data-column="double_units"]').boundingBox();
+  assert.ok(rowHeader, "The Polars notebook screenshot requires a measurable row header.");
+  assert.ok(firstVisibleHeader, "The first visible Polars data column must have measurable geometry.");
+  assert.ok(doubleUnitsHeader, "The computed Polars draft header must have measurable geometry.");
+  const dataViewportLeft = rowHeader.x + rowHeader.width;
+  const gridViewportRight = gridViewport.x + gridViewport.width;
+  assert.ok(
+    Math.abs(firstVisibleHeader.x - dataViewportLeft) <= 1,
+    "The Polars notebook screenshot must begin at the complete product_family column boundary."
+  );
+  assert.ok(
+    !precedingHeader || precedingHeader.x + precedingHeader.width <= dataViewportLeft + 1,
+    "No partially visible data column may remain to the left of product_family in the Polars screenshot."
+  );
+  assert.ok(
+    doubleUnitsHeader.x >= dataViewportLeft - 1 &&
+      doubleUnitsHeader.x + doubleUnitsHeader.width <= gridViewportRight + 1,
+    "The complete computed double_units header must remain inside the Polars screenshot viewport."
+  );
   for (let index = 0; index < 3; index += 1) {
     const cell = await addedCells.nth(index).boundingBox();
     assert.ok(cell, `Computed Polars draft row ${index + 1} must have measurable geometry.`);
@@ -5708,7 +5917,7 @@ async function captureReleasedJupyterPySparkLive(
     await clearReleasedJupyterScreenshotTransientUi(workbench);
 
     const selectedColumn = columnReference(active.metadata, "revenue");
-    const columnWidths = Object.fromEntries(
+    const baselineColumnWidths = Object.fromEntries(
       active.metadata.schema.map((column) => [
         column.id,
         ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name)
@@ -5720,7 +5929,7 @@ async function captureReleasedJupyterPySparkLive(
     );
     await testing.updateViewState(active.sessionId, {
       ...active.viewState,
-      columnWidths,
+      columnWidths: baselineColumnWidths,
       selectedColumnId: selectedColumn.id,
       viewport: { firstVisibleRow: 0, scrollLeft: 0 }
     });
@@ -5732,7 +5941,24 @@ async function captureReleasedJupyterPySparkLive(
     const backendBadge = app.locator(".backendBadge").first();
     await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
     assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "PYSPARK");
-    assert.equal((await app.locator(".modeBadge").first().innerText()).trim().toLowerCase(), "viewing");
+    const experimentalBadge = app.locator(".experimentalBadge").first();
+    const modeBadge = app.locator(".modeBadge").first();
+    assert.equal((await experimentalBadge.innerText()).trim(), "EXPERIMENTAL");
+    assert.equal((await modeBadge.innerText()).trim(), "VIEWING ONLY");
+    const toolbarBox = await app.locator(".toolbar").boundingBox();
+    const badgeBoxes = await Promise.all([
+      experimentalBadge.boundingBox(),
+      modeBadge.boundingBox(),
+      backendBadge.boundingBox()
+    ]);
+    assert.ok(toolbarBox, "The PySpark media scene requires a measurable workbench toolbar.");
+    assert.ok(
+      badgeBoxes.every(
+        (badge) =>
+          badge !== null && badge.x >= toolbarBox.x && badge.x + badge.width <= toolbarBox.x + toolbarBox.width + 1
+      ),
+      "The PySpark engine, maturity, and viewing-only badges must remain fully inside the workbench toolbar."
+    );
     assert.equal(await app.getByRole("button", { name: "Add step" }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Apply step" }).count(), 0);
 
@@ -5760,6 +5986,95 @@ async function captureReleasedJupyterPySparkLive(
       throw new Error(`PySpark selected-column Insights did not finish: ${JSON.stringify(summary.slice(0, 2_000))}`);
     }
 
+    const featuredColumns = ["order_id", "market", "revenue", "fulfilled", "order_date", "segment", "channel"];
+    assert.deepEqual(
+      active.metadata.schema.slice(0, featuredColumns.length).map((column) => column.name),
+      featuredColumns,
+      "The PySpark media scene requires its featured columns to remain the schema prefix."
+    );
+    const gridScroller = app.getByTestId("data-grid-scroller");
+    const measuredGrid = await gridScroller.evaluate((element) => {
+      const scroller = element as {
+        clientWidth: number;
+        querySelector(selector: string): { getBoundingClientRect(): { width: number } } | null;
+      };
+      const rowHeader = scroller.querySelector("th.rowHeader");
+      return {
+        clientWidth: scroller.clientWidth,
+        rowHeaderWidth: rowHeader?.getBoundingClientRect().width ?? 0
+      };
+    });
+    const rowHeaderWidth = Math.round(measuredGrid.rowHeaderWidth);
+    const featuredDataWidth = measuredGrid.clientWidth - rowHeaderWidth;
+    const featuredBaseWidth = Math.floor(featuredDataWidth / featuredColumns.length);
+    const featuredWidthRemainder = featuredDataWidth % featuredColumns.length;
+    assert.ok(
+      Number.isSafeInteger(featuredDataWidth) &&
+        featuredDataWidth > 0 &&
+        rowHeaderWidth > 0 &&
+        featuredBaseWidth >= 80 &&
+        featuredBaseWidth + Number(featuredWidthRemainder > 0) <= 640,
+      `The native PySpark grid cannot fit its complete featured prefix: ${JSON.stringify({
+        ...measuredGrid,
+        rowHeaderWidth,
+        featuredDataWidth,
+        featuredBaseWidth,
+        featuredWidthRemainder
+      })}`
+    );
+    const alignedColumnWidths = Object.fromEntries(
+      active.metadata.schema.map((column) => [
+        column.id,
+        column.position < featuredColumns.length
+          ? featuredBaseWidth + Number(column.position < featuredWidthRemainder)
+          : 170
+      ])
+    );
+    const confirmedViewState = testing.activeSession()?.viewState;
+    assert.ok(confirmedViewState, "The PySpark media scene requires its confirmed presentation state.");
+    await testing.updateViewState(active.sessionId, {
+      ...confirmedViewState,
+      columnWidths: alignedColumnWidths,
+      selectedColumnId: selectedColumn.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(
+      await testing.synchronizePanel(active.sessionId),
+      true,
+      "The PySpark media scene must synchronize its exact featured-column fit."
+    );
+    const channelColumn = columnReference(active.metadata, "channel");
+    const firstPassGridBox = await gridScroller.boundingBox();
+    const firstPassChannelBox = await app.locator('th[data-column="channel"]').boundingBox();
+    assert.ok(firstPassGridBox, "The first PySpark media fit requires a measurable grid viewport.");
+    assert.ok(firstPassChannelBox, "The first PySpark media fit requires a measurable channel header.");
+    const widthCorrection = Math.round(
+      firstPassGridBox.x + firstPassGridBox.width - (firstPassChannelBox.x + firstPassChannelBox.width)
+    );
+    if (Math.abs(widthCorrection) > 1) {
+      const correctedChannelWidth = alignedColumnWidths[channelColumn.id] + widthCorrection;
+      assert.ok(
+        correctedChannelWidth >= 80 && correctedChannelWidth <= 640,
+        `The native PySpark grid produced an invalid final-column correction: ${JSON.stringify({
+          widthCorrection,
+          correctedChannelWidth
+        })}`
+      );
+      const correctedViewState = testing.activeSession()?.viewState;
+      assert.ok(correctedViewState, "The PySpark media correction requires its confirmed presentation state.");
+      await testing.updateViewState(active.sessionId, {
+        ...correctedViewState,
+        columnWidths: { ...alignedColumnWidths, [channelColumn.id]: correctedChannelWidth },
+        selectedColumnId: selectedColumn.id,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      });
+      assert.equal(
+        await testing.synchronizePanel(active.sessionId),
+        true,
+        "The PySpark media scene must synchronize its native final-column correction."
+      );
+    }
+
     if ((await app.getByRole("button", { name: "Hide insights" }).count()) > 0) {
       throw new Error("The PySpark media scene must not enable multi-column grid profiling.");
     }
@@ -5768,12 +6083,21 @@ async function captureReleasedJupyterPySparkLive(
       .getByText(/Loaded rows 1 to \d+ of 100,000/u)
       .count();
     assert.equal(loadedRows, 1, "The PySpark media scene must show the live 100,000-row source.");
-    const gridBox = await app.getByTestId("data-grid-scroller").boundingBox();
+    const gridBox = await gridScroller.boundingBox();
+    const rowHeaderBox = await app.locator("th.rowHeader").first().boundingBox();
+    const orderIdBox = await app.locator('th[data-column="order_id"]').boundingBox();
     const channelBox = await app.locator('th[data-column="channel"]').boundingBox();
     assert.ok(gridBox, "The PySpark media scene requires a measurable grid viewport.");
+    assert.ok(rowHeaderBox, "The PySpark media scene requires a measurable row header.");
+    assert.ok(orderIdBox, "The PySpark media scene requires the complete order_id header.");
     assert.ok(channelBox, "The PySpark media scene requires the complete channel header.");
+    const dataViewportLeft = rowHeaderBox.x + rowHeaderBox.width;
     const gridRight = gridBox.x + gridBox.width;
     const channelRight = channelBox.x + channelBox.width;
+    assert.ok(
+      Math.abs(orderIdBox.x - dataViewportLeft) <= 1,
+      "The PySpark media scene must begin cleanly at the complete order_id column."
+    );
     assert.ok(
       Math.abs(gridRight - channelRight) <= 1,
       "The PySpark media scene must end cleanly after the complete channel column."
@@ -5881,13 +6205,6 @@ async function clearReleasedJupyterScreenshotTransientUi(workbench: Page): Promi
 }
 
 function releasedJupyterScreenshotTheme(): string {
-  for (const extension of vscode.extensions.all) {
-    const themes = extension.packageJSON.contributes?.themes as
-      Array<{ id?: unknown; label?: unknown; uiTheme?: unknown }> | undefined;
-    const dark = themes?.find((theme) => theme.uiTheme === "vs-dark");
-    if (typeof dark?.id === "string" && dark.id.length > 0) return dark.id;
-    if (typeof dark?.label === "string" && dark.label.length > 0) return dark.label;
-  }
   return "Default Dark Modern";
 }
 
@@ -7884,7 +8201,8 @@ async function exercisePackagedSavedSnapshot(
     );
 
     const workbench = await connectToEditorWorkbench();
-    const button = await waitForNotebookRendererButton(workbench, label);
+    await (await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler")).dispose();
+    const button = await waitForNotebookRendererButton(workbench, label, "Open saved snapshot");
     recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
     try {
       await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
@@ -8145,7 +8463,7 @@ async function exercisePackagedSameGroupRendererSwitch(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer-same-group:restored-button");
-    await (await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable")).dispose();
+    await (await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open in Open Wrangler")).dispose();
     recordAcceptanceProgress("verify:notebook-renderer-same-group:complete");
   } finally {
     const switchedTab = switchedNotebook ? notebookTab(switchedNotebook.uri) : undefined;
@@ -8265,9 +8583,14 @@ async function exercisePackagedRendererProvenance(
     secondNotebook = openedSecondNotebook;
     recordAcceptanceProgress("verify:notebook-renderer:opened-b");
     assert.equal(
+      jupyter.testing.lookupCalls(openedSecondNotebook.uri),
+      0,
+      "Opening notebook B through the API without a visible editor must not start proactive formatter work."
+    );
+    assert.equal(
       jupyter.testing.stats(openedSecondNotebook.uri),
       undefined,
-      "Notebook B must not acquire a kernel before notebook A's renderer action."
+      "An API-opened background notebook must not start or execute a kernel."
     );
     recordAcceptanceProgress("verify:notebook-renderer:show-a");
     const originEditor = await vscode.window.showNotebookDocument(originNotebook, {
@@ -8283,6 +8606,12 @@ async function exercisePackagedRendererProvenance(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer:shown-b");
+    await waitFor(
+      () => jupyter.testing.lookupCalls(openedSecondNotebook.uri) > 0,
+      10_000,
+      "the proactive preview coordinator to inspect visible notebook B for an already-started kernel"
+    );
+    const secondKernelBaseline = jupyter.testing.stats(openedSecondNotebook.uri);
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
       openedSecondNotebook,
@@ -8291,7 +8620,11 @@ async function exercisePackagedRendererProvenance(
 
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
-    const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    const originButton = await waitForNotebookRendererButton(
+      workbench,
+      "renderer provenance A",
+      "Open in Open Wrangler"
+    );
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
       openedSecondNotebook,
@@ -8353,10 +8686,10 @@ async function exercisePackagedRendererProvenance(
       "101",
       "The renderer event must read notebook A's kernel variable."
     );
-    assert.equal(
+    assert.deepEqual(
       jupyter.testing.stats(openedSecondNotebook.uri),
-      undefined,
-      "Notebook A's renderer event must not acquire notebook B's active kernel."
+      secondKernelBaseline,
+      "Notebook A's renderer event must not advance notebook B beyond its own proactive-preview baseline."
     );
 
     recordAcceptanceProgress("verify:notebook-renderer:insertion");

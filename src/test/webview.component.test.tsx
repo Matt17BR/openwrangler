@@ -295,12 +295,19 @@ describe("DataGrid", () => {
         name: "Sampled numeric distribution with 2 bins; range 1 to 4."
       })
     ).toBeVisible();
+    const bins = within(numericHeader).getAllByRole("graphics-symbol");
+    expect(bins).toHaveLength(2);
+    expect(bins[0]).toHaveAccessibleName("1-2.5: 2 rows");
+    expect(bins[1]).toHaveAccessibleName("2.5-4: 2 rows");
+    expect(bins[1]).toHaveAttribute("tabindex", "0");
     expect(screen.getByRole("img", { name: "boolean distribution: true 3, false 1." })).toHaveTextContent(
       "True 3False 1"
     );
-    expect(screen.getByRole("img", { name: /categorical distribution: alpha: 3, beta: 1/u })).toHaveTextContent(
-      "alpha3beta1"
-    );
+    const categoricalChart = screen.getByRole("img", {
+      name: /categorical distribution: alpha: 3, beta: 1/u
+    });
+    expect(categoricalChart).toHaveTextContent("alpha3beta1");
+    expect(within(categoricalChart).getByText("alpha")).toHaveAttribute("title", "alpha");
     expect(
       screen.getByRole("img", {
         name: "datetime distribution: minimum 2024-01-01, maximum 2024-04-01."
@@ -1344,6 +1351,26 @@ describe("App file import options", () => {
 
   beforeEach(() => {
     webviewPostMessage.mockClear();
+  });
+
+  it("labels PySpark sessions as experimental and viewing-only", async () => {
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        capabilities: { ...metadata.capabilities, editable: false }
+      },
+      page,
+      summaries: []
+    });
+
+    expect(await screen.findByText("Experimental")).toHaveAttribute("title", "PySpark support is experimental.");
+    expect(screen.getByText("Viewing only")).toBeVisible();
+    expect(screen.getByText("PySpark")).toBeVisible();
+    expect(screen.queryByText(/^viewing$/iu)).not.toBeInTheDocument();
   });
 
   it("removes one native-tree column filter while preserving sibling filters and all sorts", async () => {

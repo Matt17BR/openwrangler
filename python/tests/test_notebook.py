@@ -322,6 +322,46 @@ def test_formatter_registration_emits_v2_for_both_engines():
     assert polars_bundle[notebook.MIME_TYPE_V2]["mimeVersion"] == 2
 
 
+def test_formatter_links_one_canonical_user_variable_to_the_complete_live_value():
+    formatter = FakeFormatter()
+    frame = pd.DataFrame({"value": range(250)})
+    shell = type(
+        "FakeShell",
+        (),
+        {
+            "user_ns": {"frame": frame, "_hidden": frame, "not valid": frame},
+            "display_formatter": type("DisplayFormatter", (), {"mimebundle_formatter": formatter})(),
+        },
+    )()
+
+    assert notebook.register_formatters(shell) is True
+    payload = formatter.registered[pd.DataFrame](frame)[notebook.MIME_TYPE_V2]
+
+    assert payload["metadata"]["source"]["variableName"] == "frame"
+    assert payload["metadata"]["source"]["label"] == "frame"
+    assert payload["metadata"]["shape"]["rows"] == 250
+    assert len(payload["page"]["rows"]) == 200
+
+
+def test_formatter_omits_an_ambiguous_live_variable_link():
+    formatter = FakeFormatter()
+    frame = pd.DataFrame({"value": [1]})
+    shell = type(
+        "FakeShell",
+        (),
+        {
+            "user_ns": {"frame": frame, "alias": frame},
+            "display_formatter": type("DisplayFormatter", (), {"mimebundle_formatter": formatter})(),
+        },
+    )()
+
+    assert notebook.register_formatters(shell) is True
+    payload = formatter.registered[pd.DataFrame](frame)[notebook.MIME_TYPE_V2]
+
+    assert "variableName" not in payload["metadata"]["source"]
+    assert payload["metadata"]["source"]["label"] == "DataFrame"
+
+
 def test_formatter_registration_prefers_open_wrangler_without_overriding_explicit_html():
     formatter = FakeFormatter()
     html_formatter = FakeHtmlFormatter()

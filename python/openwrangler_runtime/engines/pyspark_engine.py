@@ -26,7 +26,9 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
-    numeric_visualization,
+    numeric_histogram_bin_count,
+    numeric_histogram_edges,
+    numeric_visualization_from_bin_counts,
     typed_selection_value,
     validate_view_predicate_operator,
 )
@@ -35,7 +37,6 @@ _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _SUPPORTED_PYSPARK_VERSION = re.compile(r"^4\.2(?:\.|$)")
-_SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 _UNSUPPORTED_PROFILE_TYPE_ROOTS = frozenset({"variant", "time", "geometry", "geography"})
 PYSPARK_PAGE_CELL_LIMIT = 100_000
 PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
@@ -327,6 +328,11 @@ class PySparkEngine(DataFrameEngine):
             column = _spark_column(functions, column_name)
             nan = functions.isnan(column) if column_type == "float" else functions.lit(False)
             valid = column.isNotNull() & ~nan
+            finite = (
+                valid & (column != functions.lit(float("inf"))) & (column != functions.lit(float("-inf")))
+                if column_type == "float"
+                else valid
+            )
             grouped_value = self._groupable_value(functions, column, data_type)
             display_value = self._profile_display_value(functions, column, data_type)
 
@@ -338,6 +344,7 @@ class PySparkEngine(DataFrameEngine):
             ]
             if column_type in {"integer", "float", "decimal"}:
                 valid_column = functions.when(valid, column)
+                finite_column = functions.when(finite, column)
                 metric_expressions.extend(
                     [
                         functions.min(valid_column).alias("__ow_min"),
@@ -345,6 +352,12 @@ class PySparkEngine(DataFrameEngine):
                         functions.avg(valid_column).alias("__ow_mean"),
                         functions.median(valid_column).alias("__ow_median"),
                         functions.stddev_samp(valid_column).alias("__ow_std"),
+                        functions.min(finite_column).alias("__ow_hist_min"),
+                        functions.max(finite_column).alias("__ow_hist_max"),
+                        functions.sum(functions.when(finite, 1).otherwise(0)).alias("__ow_hist_count"),
+                        functions.countDistinct(functions.when(finite, column.cast("double"))).alias(
+                            "__ow_hist_distinct"
+                        ),
                     ]
                 )
             elif column_type == "boolean":
@@ -425,16 +438,16 @@ class PySparkEngine(DataFrameEngine):
                     "std": _finite_float(metrics["__ow_std"]),
                 }
                 summary["numeric"] = {key: value for key, value in numeric.items() if value is not None}
-                sample_rows = (
-                    frame.where(valid)
-                    .select(column.alias("__ow_value"))
-                    .limit(_SUMMARY_VISUALIZATION_SAMPLE_LIMIT)
-                    .collect()
+                summary["visualization"] = _numeric_visualization(
+                    functions,
+                    frame,
+                    column,
+                    finite,
+                    metrics["__ow_hist_min"],
+                    metrics["__ow_hist_max"],
+                    int(metrics["__ow_hist_count"] or 0),
+                    int(metrics["__ow_hist_distinct"] or 0),
                 )
-                visualization = numeric_visualization(_spark_python_value(row["__ow_value"]) for row in sample_rows)
-                if valid_count > _SUMMARY_VISUALIZATION_SAMPLE_LIMIT:
-                    visualization["sampled"] = True
-                summary["visualization"] = visualization
             elif column_type == "boolean":
                 summary["visualization"] = {
                     "kind": "boolean",
@@ -1058,6 +1071,51 @@ def _spark_python_value(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_spark_python_value(item) for item in value]
     return value
+
+
+def _numeric_visualization(
+    functions: Any,
+    frame: Any,
+    column: Any,
+    finite: Any,
+    minimum: Any,
+    maximum: Any,
+    finite_count: int,
+    distinct_count: int,
+) -> dict[str, Any]:
+    bin_count = numeric_histogram_bin_count(finite_count, distinct_count)
+    minimum_float = _finite_float(minimum)
+    maximum_float = _finite_float(maximum)
+    edges = numeric_histogram_edges(minimum_float, maximum_float, bin_count)
+    if not edges:
+        return {"kind": "numeric", "bins": []}
+    if minimum_float == maximum_float:
+        return numeric_visualization_from_bin_counts(
+            minimum_float,
+            maximum_float,
+            [finite_count],
+        )
+
+    numeric_value = column.cast("double")
+    count_expressions = []
+    for bin_index in range(bin_count):
+        if bin_index == 0:
+            interval = numeric_value < functions.lit(edges[1])
+        elif bin_index == bin_count - 1:
+            interval = numeric_value >= functions.lit(edges[bin_index])
+        else:
+            interval = (numeric_value >= functions.lit(edges[bin_index])) & (
+                numeric_value < functions.lit(edges[bin_index + 1])
+            )
+        count_expressions.append(
+            functions.sum(functions.when(finite & interval, 1).otherwise(0)).alias(f"__ow_hist_{bin_index}")
+        )
+    counts = frame.agg(*count_expressions).collect()[0]
+    return numeric_visualization_from_bin_counts(
+        minimum_float,
+        maximum_float,
+        (counts[f"__ow_hist_{index}"] for index in range(bin_count)),
+    )
 
 
 def _finite_float(value: Any) -> float | None:

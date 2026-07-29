@@ -126,10 +126,13 @@ const backendPin = (configured: DataBackend | "auto"): DataBackend | undefined =
   configured === "auto" ? undefined : configured;
 
 const allFileTypes = ["csv", "tsv", "parquet", "jsonl", "xlsx", "xls"] as const;
-const supportedFileTypes = new Set<string>(allFileTypes);
+const supportedFileTypes = new Set<string>([...allFileTypes, "ndjson"]);
 const supportedSchemes = new Set(["file", "vscode-remote"]);
 
-const getEnabledFileTypes = (): string[] => getSetting<string[]>("enabledFileTypes", [...allFileTypes]);
+const getEnabledFileTypes = (): string[] => {
+  const configured = getSetting<string[]>("enabledFileTypes", [...allFileTypes]);
+  return configured.flatMap((extension) => (extension === "jsonl" ? ["jsonl", "ndjson"] : [extension]));
+};
 
 const fileType = (uri: vscode.Uri): string => path.extname(uri.fsPath).slice(1).toLowerCase();
 
@@ -157,7 +160,9 @@ const validateFileTarget = async (uri: vscode.Uri, requireEnabledType = true): P
 
   const extension = fileType(uri);
   if (!supportedFileTypes.has(extension)) {
-    await vscode.window.showWarningMessage("Open Wrangler supports CSV, TSV, Parquet, JSONL, XLSX, and XLS files.");
+    await vscode.window.showWarningMessage(
+      "Open Wrangler supports CSV, TSV, Parquet, JSONL/NDJSON, XLSX, and XLS files."
+    );
     return false;
   }
   if (requireEnabledType && !getEnabledFileTypes().includes(extension)) {

@@ -4,6 +4,29 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-30
+
+### Added
+
+- Added proactive Pandas and Polars notebook previews for trusted, visible notebooks with user-started kernels. When Microsoft Data Wrangler is installed, Open Wrangler asks which extension should own automatic dataframe rendering and exposes a command to change that choice for new or restarted kernels.
+- Added bounded, typed notebook-variable discovery for Pandas, Polars, PySpark, and recognized DuckDB relations. Supported values open from a branded notebook action without typing a variable name; DuckDB relations remain visibly unavailable instead of being converted through another engine.
+- Added 10, 20, 50, and 100-row paging across every captured column in the inline MIME-v2 renderer. A uniquely linked live variable now opens as the primary action, while the complete portable capture remains available through **Open saved snapshot**.
+- Added exact finite-value histograms for Pandas, Polars, DuckDB, and PySpark. Native/lazy engines return only aggregate bin counts, and every bin exposes its interval and count by pointer hover, keyboard focus, and accessible name.
+- Added `.ndjson` as an exact JSONL alias across file entry points and all supported file engines.
+
+### Changed
+
+- Limited automatic formatter preparation to exact visible notebook documents and made stable Jupyter lookup observation-only. Background API-opened notebooks cause no kernel lookup, while a visible notebook change bypasses pending retry backoff as soon as a user-started kernel becomes available.
+- Expanded the responsive Insights drawer to use the available workbench width without clipping selected-column statistics or distributions.
+- Labeled PySpark sessions explicitly as **Experimental** and **Viewing only** in the workbench instead of relying on documentation or engine context.
+- Kept Python pickle files deliberately outside the file surface because deserialization can execute arbitrary code; unsupported `.pkl` and `.pickle` paths are rejected before any runtime reader is invoked.
+- Updated the notebook, engine, safety, performance, and post-1.1 roadmap documentation to distinguish live paged sources from bounded saved snapshots and native file support from planned notebook support.
+
+### Fixed
+
+- Corrected the packaged Jupyter acceptance double to match the stable API contract: `getKernel()` returns only a kernel already started by the user and never synthesizes one during discovery. Split-notebook acceptance now proves an action from notebook A cannot advance notebook B beyond B's independent proactive-preview baseline.
+- Removed sampled-distribution labels from live numeric summaries and retained exact tails, inclusive maxima, deterministic constant/empty behavior, and complete population counts.
+
 ## [1.1.0] - 2026-07-29
 
 ### Added

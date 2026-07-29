@@ -2747,6 +2747,7 @@ let denied = false;
 let denialCalls = 0;
 let generation = 0;
 const kernels = new Map();
+const kernelLookupCalls = new Map();
 
 class AcceptanceKernel {
   constructor(key) {
@@ -2862,11 +2863,17 @@ async function executeForTesting(kernel, code) {
 const api = {
   kernels: {
     getKernel(uri) {
+      const key = keyFor(uri);
+      kernelLookupCalls.set(key, (kernelLookupCalls.get(key) || 0) + 1);
       if (denied) {
         denialCalls += 1;
         throw new Error("Jupyter kernel access denied for acceptance testing");
       }
-      return kernelFor(uri);
+      // Match @vscode/jupyter-extension's stable contract: getKernel() only
+      // returns a user-started kernel and must never synthesize one for an
+      // API lookup. The testing.execute()/restart() helpers below model the
+      // user-owned start paths used by packaged acceptance.
+      return kernels.get(key);
     }
   },
   testing: {
@@ -2891,6 +2898,9 @@ const api = {
     stats(uri) {
       const kernel = kernels.get(keyFor(uri));
       return kernel ? { generation: kernel.generation, executions: kernel.executions } : undefined;
+    },
+    lookupCalls(uri) {
+      return kernelLookupCalls.get(keyFor(uri)) || 0;
     }
   }
 };
@@ -2899,6 +2909,7 @@ exports.activate = function () { return api; };
 exports.deactivate = function () {
   for (const kernel of kernels.values()) kernel.invalidate();
   kernels.clear();
+  kernelLookupCalls.clear();
 };
 `
   );

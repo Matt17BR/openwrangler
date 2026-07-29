@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
@@ -118,6 +118,7 @@
     "onCommand:openWrangler.openPath",
     "onCommand:openWrangler.launchDataViewer",
     "onCommand:openWrangler.openNotebookVariable",
+    "onCommand:openWrangler.chooseNotebookPreviewProvider",
     "onCommand:openWrangler.checkJupyterIntegration",
     "onCommand:openWrangler.changeRuntime",
     "onCommand:openWrangler.clearRuntime",
@@ -158,7 +159,7 @@
       {
         "command": "openWrangler.openFile",
         "title": "Open in Open Wrangler",
-        "icon": "$(open-preview)"
+        "icon": "media/activity-icon.svg"
       },
       {
         "command": "openWrangler.openPath",
@@ -177,12 +178,16 @@
       {
         "command": "openWrangler.openNotebookVariable",
         "title": "Open Wrangler: Open Notebook Variable",
-        "shortTitle": "Open Variable",
-        "icon": "$(table)"
+        "shortTitle": "Open in Open Wrangler",
+        "icon": "media/activity-icon.svg"
       },
       {
         "command": "openWrangler.checkJupyterIntegration",
         "title": "Open Wrangler: Check Jupyter Integration"
+      },
+      {
+        "command": "openWrangler.chooseNotebookPreviewProvider",
+        "title": "Open Wrangler: Choose Notebook Preview Provider"
       },
       {
         "command": "openWrangler.changeRuntime",
@@ -381,6 +386,9 @@
             "filenamePattern": "*.jsonl"
           },
           {
+            "filenamePattern": "*.ndjson"
+          },
+          {
             "filenamePattern": "*.xlsx"
           },
           {
@@ -410,7 +418,7 @@
           {
             "id": "openData",
             "title": "Open a data source",
-            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL, or Excel, or launch Open Wrangler from a notebook dataframe."
+            "description": "Use [Open File Path](command:openWrangler.openPath) for CSV, TSV, Parquet, JSONL/NDJSON, or Excel, or launch Open Wrangler from a notebook dataframe."
           },
           {
             "id": "explore",
@@ -434,14 +442,14 @@
       "explorer/context": [
         {
           "command": "openWrangler.openFile",
-          "when": "!explorerResourceIsFolder && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i",
+          "when": "!explorerResourceIsFolder && resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i",
           "group": "navigation@50"
         }
       ],
       "editor/title": [
         {
           "command": "openWrangler.openFile",
-          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
           "group": "navigation@1"
         },
         {
@@ -458,7 +466,7 @@
       "editor/title/context": [
         {
           "command": "openWrangler.openFile",
-          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
+          "when": "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i && (!activeCustomEditorId || activeCustomEditorId != openWrangler.viewer)",
           "group": "navigation@50"
         },
         {
@@ -557,6 +565,23 @@
           "default": "viewing",
           "description": "Initial mode for notebook dataframe sessions."
         },
+        "openWrangler.notebookPreviewProvider": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "openWrangler",
+            "dataWrangler",
+            "disabled"
+          ],
+          "enumDescriptions": [
+            "Ask once when Microsoft Data Wrangler is also installed; otherwise use Open Wrangler.",
+            "Use Open Wrangler for supported automatic dataframe notebook previews.",
+            "Leave automatic dataframe notebook previews to Microsoft Data Wrangler.",
+            "Do not install an automatic dataframe notebook preview formatter."
+          ],
+          "default": "ask",
+          "description": "Chooses which extension owns automatic dataframe output previews when another notebook renderer is installed. Explicit openwrangler_runtime.notebook.show(...) output remains available."
+        },
         "openWrangler.enabledFileTypes": {
           "type": "array",
           "items": {
@@ -579,7 +604,7 @@
             "xlsx",
             "xls"
           ],
-          "description": "File types accepted by Open Wrangler launch commands and offered by its file picker. Explicit Reopen Editor With selection remains available."
+          "description": "File types accepted by Open Wrangler launch commands and offered by its file picker. The JSONL option includes both .jsonl and .ndjson files. Explicit Reopen Editor With selection remains available."
         },
         "openWrangler.insightsOnOpen": {
           "type": "boolean",

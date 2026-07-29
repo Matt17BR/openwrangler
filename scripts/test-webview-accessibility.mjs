@@ -140,12 +140,10 @@ async function verifyNotebookExpansion(browser) {
   if (!Number.isInteger(capturedRows) || !Number.isInteger(totalRows) || capturedRows >= totalRows) {
     throw new Error(`${harness} did not exercise a truncated saved output.`);
   }
-  const notice = await page.getByTestId("capture-limit").textContent();
-  if (
-    !notice?.includes(`first ${capturedRows} of ${totalRows} rows`) ||
-    !notice.includes("expanded Open Wrangler view can query only these captured rows")
-  ) {
-    throw new Error(`${harness} did not label the captured-row limit honestly.`);
+  const status = await page.getByTestId("inline-preview-page").textContent();
+  const visibleRows = Math.min(20, capturedRows);
+  if (!status?.includes(`1-${visibleRows} of ${capturedRows}`) || !status.includes(`captured · ${totalRows} total`)) {
+    throw new Error(`${harness} did not label the captured-row limit in its compact pager.`);
   }
   await page.close();
   console.log("Notebook MIME v2 full-view expansion and truncation disclosure verified.");

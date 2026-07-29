@@ -9,7 +9,7 @@ import pytest
 import openwrangler_runtime.engines.base as engine_base
 import openwrangler_runtime.engines.polars_engine as polars_engine
 from openwrangler_runtime.engines.base import typed_selection_value
-from openwrangler_runtime.engines.polars_engine import SUMMARY_VISUALIZATION_SAMPLE_LIMIT, PolarsEngine
+from openwrangler_runtime.engines.polars_engine import PolarsEngine
 from openwrangler_runtime.session import SessionManager
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -332,9 +332,29 @@ def test_lazy_polars_schema_discovery_does_not_collect_column_profiles(monkeypat
 
 
 def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monkeypatch):
-    row_count = (SUMMARY_VISUALIZATION_SAMPLE_LIMIT * 3) + 17
-    values = pl.int_range(0, row_count, eager=True) % 101
-    frame = pl.DataFrame({"value": values}).lazy()
+    row_count = 12_305
+    values = pl.concat(
+        [
+            pl.int_range(0, row_count - 1, eager=True) % 101,
+            pl.Series([1_000_000]),
+        ]
+    )
+    source = pl.DataFrame({"value": pl.concat([pl.Series([-1] * 500), values])}).lazy()
+    frame = PolarsEngine().apply_filter_model(
+        source,
+        {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "integer",
+                    "logic": "and",
+                    "predicates": [{"operator": "gte", "value": 0}],
+                }
+            ],
+            "sort": [],
+        },
+    )
     eager = values.cast(pl.Float64)
     collected_heights: list[int] = []
     original_collect = pl.LazyFrame.collect
@@ -344,13 +364,13 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
         result = cast(pl.DataFrame, original_collect(lazy_frame, *args, **kwargs))
         assert isinstance(result, pl.DataFrame)
         collected_heights.append(result.height)
-        assert result.height <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+        assert result.height <= 20
         return result
 
     monkeypatch.setattr(pl.LazyFrame, "collect", bounded_collect)
 
     def bounded_to_list(series):
-        assert len(series) <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+        assert len(series) <= 20
         return original_to_list(series)
 
     monkeypatch.setattr(pl.Series, "to_list", bounded_to_list)
@@ -358,22 +378,25 @@ def test_lazy_polars_numeric_summary_is_exact_with_only_bounded_collections(monk
     summary = PolarsEngine().summaries(frame, [(0, "c:value")])[0]
 
     assert collected_heights
-    assert max(collected_heights) <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+    assert max(collected_heights) <= 20
     assert summary["totalCount"] == row_count
     assert summary["nullCount"] == 0
     assert summary["nanCount"] == 0
-    assert summary["distinctCount"] == 101
-    assert summary["topValues"][0]["count"] == (row_count + 100) // 101
+    assert summary["distinctCount"] == 102
     assert summary["numeric"] == {
         "min": 0.0,
-        "max": 100.0,
+        "max": 1_000_000.0,
         "mean": pytest.approx(eager.mean()),
         "median": pytest.approx(eager.median()),
         "std": pytest.approx(eager.std()),
     }
-    assert "sampled" not in summary
-    assert summary["visualization"]["sampled"] is True
-    assert sum(bin_["count"] for bin_ in summary["visualization"]["bins"]) <= SUMMARY_VISUALIZATION_SAMPLE_LIMIT
+    visualization = summary["visualization"]
+    assert "sampled" not in visualization
+    assert len(visualization["bins"]) == 20
+    assert visualization["bins"][0]["min"] == summary["numeric"]["min"]
+    assert visualization["bins"][-1]["max"] == summary["numeric"]["max"]
+    assert visualization["bins"][-1]["count"] == 1
+    assert sum(bin_["count"] for bin_ in visualization["bins"]) == row_count
 
 
 @pytest.mark.parametrize("lazy", [False, True])
@@ -386,8 +409,8 @@ def test_polars_summary_omits_non_finite_statistics_but_keeps_finite_histogram_v
 
 
 @pytest.mark.parametrize("lazy", [False, True])
-def test_polars_numeric_histogram_samples_valid_values_after_nulls(lazy: bool):
-    row_count = SUMMARY_VISUALIZATION_SAMPLE_LIMIT * 4
+def test_polars_numeric_histogram_counts_all_valid_values_after_nulls(lazy: bool):
+    row_count = 16_384
     values = [None if index % 2 == 0 else float(index) for index in range(row_count)]
     frame = pl.DataFrame({"value": values})
     source = frame.lazy() if lazy else frame
@@ -401,10 +424,8 @@ def test_polars_numeric_histogram_samples_valid_values_after_nulls(lazy: bool):
     assert first["visualization"] == second["visualization"]
     assert first["visualization"]["bins"]
     histogram_count = sum(bin_["count"] for bin_ in first["visualization"]["bins"])
-    assert histogram_count == (SUMMARY_VISUALIZATION_SAMPLE_LIMIT if lazy else row_count // 2)
-    if lazy:
-        assert "sampled" not in first
-        assert first["visualization"]["sampled"] is True
+    assert histogram_count == row_count // 2
+    assert "sampled" not in first["visualization"]
 
 
 def test_lazy_polars_header_stats_collect_only_scalar_results(monkeypatch):
