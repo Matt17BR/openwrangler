@@ -121,6 +121,16 @@ export interface SessionRequestExecutionCheckpoint {
   viewRequestId: string;
 }
 
+export interface SessionSchedulerState {
+  sessionId: string;
+  quiescent: boolean;
+  activeForegroundOperation: boolean;
+  activeBackgroundOperation: boolean;
+  interactiveQueueLength: number;
+  backgroundQueueLength: number;
+  terminalOperation: boolean;
+}
+
 export class SessionCoordinator implements vscode.Disposable {
   private readonly sessions = new Map<string, CoordinatedSession>();
   private readonly pendingOpens = new Map<OpenWranglerBridge, number>();
@@ -293,6 +303,20 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
     return checkpoints[0];
+  }
+
+  testingSessionSchedulerState(sessionId: string): SessionSchedulerState | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    return {
+      sessionId,
+      quiescent: isSessionIdle(session),
+      activeForegroundOperation: session.activeForegroundOperation !== undefined,
+      activeBackgroundOperation: session.activeBackgroundOperation !== undefined,
+      interactiveQueueLength: session.interactiveQueue.length,
+      backgroundQueueLength: session.backgroundQueue.length,
+      terminalOperation: session.terminalOperation !== undefined
+    };
   }
 
   async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
