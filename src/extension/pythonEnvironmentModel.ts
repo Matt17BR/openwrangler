@@ -61,8 +61,8 @@ export function requiredDependencies(backend: DataBackend, source: SessionSource
     add({
       importModule: "duckdb",
       distribution: "duckdb",
-      installSpec: "duckdb>=1.4.5,<1.6",
-      minimumVersion: "1.4.5",
+      installSpec: "duckdb>=1.5.4,<1.6",
+      minimumVersion: "1.5.4",
       maximumVersionExclusive: "1.6"
     });
     add({

@@ -3332,7 +3332,7 @@ describe("PythonBridge environment resource selection", () => {
     const { internals } = createEnvironmentHarness();
     vi.mocked(pythonEnvironment.resolvePythonEnvironment).mockResolvedValue(environment);
     vi.mocked(pythonEnvironment.probeDependencies)
-      .mockResolvedValueOnce({ missing: ["pytz"], available: ["duckdb>=1.4.5,<1.6"] })
+      .mockResolvedValueOnce({ missing: ["pytz"], available: ["duckdb>=1.5.4,<1.6"] })
       .mockResolvedValueOnce({ missing: [], available: ["pandas"] });
 
     await expect(internals.prepareRequest(automaticOpenSessionRequest(source))).resolves.toMatchObject({
