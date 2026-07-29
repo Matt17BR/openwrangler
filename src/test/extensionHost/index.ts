@@ -139,6 +139,16 @@ interface ReleasedJupyterDocumentRootElement {
   readonly dataset: { readonly openWranglerAcceptanceActivation?: string };
 }
 
+interface ReleasedJupyterActivationEvent {
+  readonly detail?: number;
+  readonly isTrusted?: boolean;
+  readonly composedPath?: () => readonly unknown[];
+}
+
+interface ReleasedJupyterActivationPathElement {
+  readonly tagName?: string;
+}
+
 interface FakeJupyterApi {
   testing: {
     execute(uri: vscode.Uri, code: string): Promise<string>;
@@ -2577,24 +2587,16 @@ async function waitForReleasedJupyterVariableAction(
           root.dataset.openWranglerAcceptanceActivation = "pending";
           root.addEventListener(
             "click",
-            (event) => {
-              const composedPath =
-                typeof event === "object" &&
-                event !== null &&
-                "composedPath" in event &&
-                typeof event.composedPath === "function"
-                  ? event.composedPath()
-                  : [];
+            (event: unknown) => {
+              const candidateEvent = event as unknown as ReleasedJupyterActivationEvent;
+              const composedPath = candidateEvent.composedPath?.() ?? [];
               const keyboardButtonActivation =
-                event.isTrusted === true &&
-                event.detail === 0 &&
-                composedPath.some(
-                  (candidate) =>
-                    typeof candidate === "object" &&
-                    candidate !== null &&
-                    "tagName" in candidate &&
-                    candidate.tagName === "BUTTON"
-                );
+                candidateEvent.isTrusted === true &&
+                candidateEvent.detail === 0 &&
+                composedPath.some((candidate: unknown) => {
+                  if (typeof candidate !== "object" || candidate === null) return false;
+                  return (candidate as ReleasedJupyterActivationPathElement).tagName === "BUTTON";
+                });
               if (keyboardButtonActivation) {
                 root.dataset.openWranglerAcceptanceActivation = "seen";
               }
