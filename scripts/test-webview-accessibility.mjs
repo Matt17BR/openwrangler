@@ -577,7 +577,9 @@ async function verifyFilterKeyboardWorkflow(browser) {
       () => {
         const active = document.activeElement;
         if (!(active instanceof HTMLButtonElement)) return false;
-        return ["Filter…", "Insights & filters"].includes(active.textContent?.trim() ?? "");
+        return (
+          active.textContent?.trim() === "Filter…" || active.getAttribute("aria-label") === "Insights & filters"
+        );
       },
       undefined,
       { timeout: 2_000 }
