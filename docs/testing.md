@@ -31,6 +31,8 @@
 
 Every required context has one primary evidence owner:
 
+The non-authoritative `Fast feedback` lane starts beside canonical packaging and reports formatting, ESLint, strict TypeScript, generated protocol/reference drift, documentation, license-inventory, and workflow-contract failures through separately named steps. These checks intentionally remain duplicated in `validate`; until a later reviewed aggregate-check and branch-rules update lands, `validate` remains the required owner and a green preflight cannot compensate for a failed or missing required gate.
+
 | Required context                               | Unique evidence                                                                                                                                                                                                            |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `validate`                                     | Formatting, linting, generated-doc drift, license policy, dependency audits, TypeScript/script/Python integration, production visual/axe acceptance, and Linux inspection/installed-editor smoke of the canonical PR VSIX. |

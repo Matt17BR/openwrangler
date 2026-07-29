@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Added a bounded, source-only pull-request `Fast feedback` lane that runs deterministic static checks alongside canonical packaging and labels each failure class separately. The existing full `validate` gate remains unchanged and authoritative, so this scheduling improvement does not lower, remove, or bypass any merge or release requirement.
+
 ## [1.0.3] - 2026-07-28
 
 ### Changed

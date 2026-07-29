@@ -367,6 +367,50 @@ test("native VS Code and Cursor smoke consume the same downloaded canonical VSIX
   assert.equal(steps.find((step) => step?.id === "cursor_smoke")?.run, expectedCommand);
 });
 
+test("PR CI starts one bounded static fast-feedback lane without weakening validate", () => {
+  const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const workflow = parseYaml(source);
+  const fastFeedback = workflow?.jobs?.["fast-feedback"];
+  assert.equal(fastFeedback?.name, "Fast feedback");
+  assert.equal(fastFeedback?.["runs-on"], "ubuntu-latest");
+  assert.equal(fastFeedback?.["timeout-minutes"], 15);
+  assert.equal(fastFeedback?.needs, undefined, "Fast feedback must not wait for the canonical VSIX.");
+  assert.equal(fastFeedback?.if, undefined, "Fast feedback must run on every CI event.");
+
+  assert.deepEqual(
+    fastFeedback?.steps,
+    [
+      { uses: "actions/checkout@v6" },
+      {
+        uses: "actions/setup-node@v6",
+        with: { "node-version": 22, cache: "npm" }
+      },
+      { run: "npm ci" },
+      { name: "Formatting", run: "npm run format:check" },
+      { name: "ESLint", run: "npm run lint" },
+      { name: "Strict TypeScript", run: "npm run typecheck" },
+      { name: "Protocol freshness", run: "npm run protocol:check" },
+      { name: "Reference freshness", run: "npm run reference:check" },
+      { name: "Documentation freshness", run: "npm run docs:check" },
+      { name: "Production license inventory", run: "npm run license:check" },
+      { name: "Workflow contracts", run: "node --test scripts/ci-workflow.test.mjs" }
+    ],
+    "The early lane must remain source-only, named, and independently attributable."
+  );
+
+  const validate = workflow?.jobs?.validate;
+  assert.equal(
+    validate?.steps?.some((step) => step?.run === "npm run check"),
+    true,
+    "The existing authoritative quality gate must remain intact."
+  );
+  assert.equal(
+    workflow?.jobs?.["canonical-vsix"]?.needs,
+    undefined,
+    "Canonical packaging must remain parallel with fast feedback."
+  );
+});
+
 test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () => {
   const source = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const workflow = parseYaml(source);
