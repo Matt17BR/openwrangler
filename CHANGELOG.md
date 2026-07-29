@@ -31,6 +31,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
 - Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for 100,000-row by 15-column Pandas and Polars dataframes. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
 - Composed the packaged workbench and notebook evidence into fixed-size sRGB images for GitHub, the Visual Studio Marketplace, and Open VSX. The workbench requires exact revenue minimum, maximum, mean, and median values, while README copy distinguishes bounded saved snapshots from live paged sources and benchmark evidence from dataframe limits.
+- Added a real packaged VS Code and released-Jupyter PySpark Classic gallery capture over a deterministic 100,000-row by 15-column DataFrame. The media and README label PySpark experimental and viewing-only, without implying file, cleaning, export, code-insertion, or saved-output support.
 - Added a separate native DuckDB file gallery generated from a real rich Parquet source with decimal, time-zone, list, and struct columns, while keeping notebook relations explicitly unsupported.
 
 ### Fixed

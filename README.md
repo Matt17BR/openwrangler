@@ -83,7 +83,8 @@ paging, and profiling stay in Spark, while only bounded results return to the no
 cleaning steps, exports, and saved inline snapshots are not supported for PySpark yet. Opening a session currently
 indexes and counts the complete frame. Each requested grid page is checked in Spark before collection and then
 bounded again by serialized size, complex-value nodes, and nesting depth. These are page-transfer safeguards, not
-dataframe row limits. Insights stay off until requested because each profile runs Spark queries.
+dataframe row limits. Insights stay off until requested because each profile runs Spark queries. See the
+[real packaged PySpark notebook capture](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#pyspark-classic-live-notebook).
 
 ## Engines and formats
 

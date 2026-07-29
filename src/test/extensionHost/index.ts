@@ -1258,8 +1258,9 @@ async function exerciseReleasedPySparkJupyterExtension(
   assert.equal(jupyterExtension.packageJSON.version, RELEASED_JUPYTER_EXTENSION_VERSION);
 
   const kernelTarget = releasedJupyterKernelTarget(phase);
+  const screenshotOutput = process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS;
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-released-jupyter-pyspark-"));
-  const notebookPath = path.join(directory, "jupyter-pyspark.ipynb");
+  const notebookPath = path.join(directory, screenshotOutput ? "regional-orders-spark.ipynb" : "jupyter-pyspark.ipynb");
   const notebookUri = vscode.Uri.file(notebookPath);
   writeReleasedPySparkNotebook(notebookPath, extension.extensionPath);
 
@@ -1433,6 +1434,34 @@ async function exerciseReleasedPySparkJupyterExtension(
     );
     assert.equal(classicClose.sessionId, restartedClassicSetup.sessionId);
     assert.equal(classicClose.count, 3, "Closing Open Wrangler must leave the user's Classic SparkSession usable.");
+
+    if (screenshotOutput) {
+      recordAcceptanceProgress(`${phase}:orders-variables`);
+      await showExactReleasedNotebook(notebook);
+      await vscode.commands.executeCommand("jupyter.openVariableView");
+      await showExactReleasedNotebook(notebook);
+      await dispatchReleasedJupyterVariableAction(workbench, "spark_orders_frame", `${phase}:orders-action`);
+      const orders = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "spark_orders_frame",
+          type: "pyspark.sql.classic.dataframe.DataFrame",
+          backend: "pyspark",
+          firstValue: "",
+          notebookInsert: false
+        },
+        "the realistic PySpark Classic orders DataFrame opened from the real Jupyter Variables view"
+      );
+      assert.deepEqual(orders.metadata.shape, { rows: 100_000, columns: 15 });
+      assert.equal(orders.metadata.mode, "viewing");
+      assert.equal(orders.metadata.capabilities.editable, false);
+      assert.equal(orders.metadata.capabilities.exportCsv, false);
+      assert.equal(orders.metadata.capabilities.exportParquet, false);
+      await captureReleasedJupyterPySparkLive(workbench, testing, orders, screenshotOutput);
+      await disposePackagedSessionPanel(testing, orders.sessionId, "the released-Jupyter PySpark orders session");
+    }
 
     recordAcceptanceProgress(`${phase}:connect-variables`);
     await showExactReleasedNotebook(notebook);
@@ -1867,6 +1896,7 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "import json",
           "import os",
           "from pyspark.sql import SparkSession",
+          "from pyspark.sql import functions as F",
           "spark = (SparkSession.builder",
           "    .master('local[2]')",
           "    .appName('open-wrangler-packaged-classic')",
@@ -1882,6 +1912,34 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    (3, 'alpha', 20.0),",
           "    (4, 'gamma', None),",
           "], 'record_id long, category string, amount double').repartition(2)",
+          "def _open_wrangler_label(values, index):",
+          "    return F.element_at(",
+          "        F.array(*[F.lit(value) for value in values]),",
+          "        (F.pmod(index, F.lit(len(values))) + F.lit(1)).cast('int'),",
+          "    )",
+          "_open_wrangler_index = F.col('id')",
+          "spark_orders_frame = spark.range(100000).select(",
+          "    F.format_string('ORD-%07d', _open_wrangler_index + F.lit(2400001)).alias('order_id'),",
+          "    _open_wrangler_label(['Benelux', 'DACH', 'France', 'Iberia', 'Italy', 'Nordics', 'UK & Ireland'], _open_wrangler_index).alias('market'),",
+          "    F.when(",
+          "        F.pmod(_open_wrangler_index + F.lit(29), F.lit(113)) == F.lit(0),",
+          "        F.lit(None).cast('double'),",
+          "    ).otherwise(",
+          "        F.round(F.lit(620.50) + F.pmod(_open_wrangler_index * F.lit(7919), F.lit(1850000)) / F.lit(100.0), 2)",
+          "    ).alias('revenue'),",
+          "    (F.pmod(_open_wrangler_index, F.lit(7)) != F.lit(2)).alias('fulfilled'),",
+          "    F.date_add(F.lit('2026-01-01').cast('date'), F.pmod(_open_wrangler_index, F.lit(365)).cast('int')).alias('order_date'),",
+          "    _open_wrangler_label(['Enterprise', 'Mid-market', 'Public sector', 'Small business'], _open_wrangler_index).alias('segment'),",
+          "    _open_wrangler_label(['Direct', 'Partner', 'Online'], _open_wrangler_index).alias('channel'),",
+          "    _open_wrangler_label(['Analytics', 'Automation', 'Data platform', 'Operations', 'Planning'], _open_wrangler_index).alias('product_family'),",
+          "    (F.pmod(_open_wrangler_index * F.lit(7) + F.lit(2), F.lit(12)) + F.lit(1)).cast('long').alias('units'),",
+          "    F.round(F.lit(79.0) + F.pmod(_open_wrangler_index * F.lit(3571), F.lit(92000)) / F.lit(100.0), 2).alias('unit_price'),",
+          "    F.round(F.pmod(_open_wrangler_index * F.lit(37), F.lit(1800)) / F.lit(100.0), 2).alias('discount_pct'),",
+          "    F.round(F.lit(180.0) + F.pmod(_open_wrangler_index * F.lit(1451), F.lit(610000)) / F.lit(100.0), 2).alias('gross_margin'),",
+          "    _open_wrangler_label(['High', 'Standard', 'Strategic'], _open_wrangler_index).alias('priority'),",
+          "    F.date_add(F.lit('2027-01-01').cast('date'), F.pmod(_open_wrangler_index, F.lit(365)).cast('int')).alias('renewal_date'),",
+          "    _open_wrangler_label(['Active', 'Expansion', 'Renewal review'], _open_wrangler_index).alias('account_status'),",
+          ")",
           `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
           "    'sparkVersion': spark.version,",
           "    'javaVersion': spark.sparkContext._jvm.java.lang.System.getProperty('java.specification.version'),",
@@ -5453,6 +5511,175 @@ async function captureReleasedJupyterPolarsDraft(
   );
   await workbench.setViewportSize({ width: 1_920, height: 1_080 });
   await workbench.waitForTimeout(500);
+}
+
+async function captureReleasedJupyterPySparkLive(
+  workbench: Page,
+  testing: TestApi,
+  active: NonNullable<ReturnType<TestApi["activeSession"]>>,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "PySpark screenshot output must be one absolute directory.");
+  assert.equal(active.metadata.backend, "pyspark");
+  assert.equal(active.metadata.source.kind, "notebookVariable");
+  assert.equal(active.metadata.source.variableName, "spark_orders_frame");
+  assert.deepEqual(active.metadata.shape, { rows: 100_000, columns: 15 });
+
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  const previousThemeKind = vscode.window.activeColorTheme.kind;
+  const workbenchConfiguration = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const settings = [
+    { configuration: windowConfiguration, key: "autoDetectColorScheme" },
+    { configuration: windowConfiguration, key: "autoDetectHighContrast" },
+    { configuration: windowConfiguration, key: "commandCenter" },
+    { configuration: windowConfiguration, key: "title" },
+    { configuration: workbenchConfiguration, key: "colorTheme" },
+    { configuration: workbenchConfiguration, key: "statusBar.visible" },
+    { configuration: breadcrumbs, key: "enabled" }
+  ] as const;
+  const previousSettings = settings.map(({ configuration, key }) => ({
+    configuration,
+    key,
+    value: configuration.inspect(key)?.globalValue
+  }));
+
+  try {
+    await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update(
+      "colorTheme",
+      releasedJupyterScreenshotTheme(),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the dark PySpark notebook screenshot theme"
+    );
+    await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
+    await clearReleasedJupyterScreenshotTransientUi(workbench);
+
+    const selectedColumn = columnReference(active.metadata, "revenue");
+    const columnWidths = Object.fromEntries(
+      active.metadata.schema.map((column) => [
+        column.id,
+        ["order_id", "market", "revenue", "fulfilled", "order_date"].includes(column.name) ? 190 : 170
+      ])
+    );
+    await testing.updateViewState(active.sessionId, {
+      ...active.viewState,
+      columnWidths,
+      selectedColumnId: selectedColumn.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(await testing.synchronizePanel(active.sessionId), true);
+
+    const target = await waitForOpenWranglerGridTarget(workbench, testing, active.sessionId);
+    const app = await exactSessionApp(target.frame, active.sessionId);
+    assert.ok(app, "The PySpark screenshot requires the exact live Open Wrangler renderer.");
+    const backendBadge = app.locator(".backendBadge").first();
+    await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "PYSPARK");
+    assert.equal((await app.locator(".modeBadge").first().innerText()).trim().toLowerCase(), "viewing");
+    assert.equal(await app.getByRole("button", { name: "Add step" }).count(), 0);
+    assert.equal(await app.getByRole("button", { name: "Apply step" }).count(), 0);
+
+    const insightsToggle = app.getByRole("button", { name: "Insights & filters" });
+    if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
+    const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("heading", { name: "revenue" }).waitFor({ state: "visible", timeout: 10_000 });
+    const insightsDeadline = Date.now() + 60_000;
+    do {
+      const summary = await drawer.innerText();
+      if (
+        summary.includes("Rows\n100,000") &&
+        !summary.includes("Profiling selected column") &&
+        ["Min", "Max", "Mean", "Median"].every((label) => new RegExp(`\\b${label}\\b`, "u").test(summary))
+      ) {
+        break;
+      }
+      if (Date.now() >= insightsDeadline) {
+        throw new Error(`PySpark selected-column Insights did not finish: ${JSON.stringify(summary.slice(0, 2_000))}`);
+      }
+      await workbench.waitForTimeout(50);
+    } while (true);
+
+    if ((await app.getByRole("button", { name: "Hide insights" }).count()) > 0) {
+      throw new Error("The PySpark media scene must not enable multi-column grid profiling.");
+    }
+    const loadedRows = await app
+      .locator(".gridFooter")
+      .getByText(/Loaded rows 1 to \d+ of 100,000/u)
+      .count();
+    assert.equal(loadedRows, 1, "The PySpark media scene must show the live 100,000-row source.");
+
+    const commands = new Set(await vscode.commands.getCommands(true));
+    if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+    if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+    await workbench.mouse.move(Math.floor(PACKAGED_SCREENSHOT_VIEWPORT.width * 0.75), 40);
+    await workbench.waitForTimeout(500);
+    const transient = await workbench
+      .locator(
+        ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+          ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible, " +
+          ".monaco-hover:visible"
+      )
+      .allInnerTexts();
+    assert.deepEqual(
+      transient.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500)),
+      [],
+      "PySpark screenshot capture must not retain transient workbench UI."
+    );
+
+    mkdirSync(outputDirectory, { recursive: true });
+    recordAcceptanceProgress("jupyter-pyspark:screenshot:classic");
+    await captureWorkbenchScreenshot(
+      workbench,
+      path.resolve(
+        outputDirectory,
+        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-pyspark", "dark")
+      ),
+      640
+    );
+  } finally {
+    for (const { configuration, key, value } of previousSettings.reverse()) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+    await workbench.setViewportSize(previousViewport);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === previousThemeKind,
+      10_000,
+      "the PySpark notebook workbench to restore its prior color theme"
+    );
+    await workbench.waitForTimeout(500);
+  }
 }
 
 async function waitForReleasedJupyterCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {

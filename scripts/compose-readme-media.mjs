@@ -38,6 +38,16 @@ const compositions = [
       polars: sourceImage("vscode-notebook-polars-dark.png", 1_920, 760)
     },
     render: renderNotebooks
+  },
+  {
+    name: "pyspark-live-notebook",
+    width: 1_440,
+    height: 640,
+    destination: resolve(readmeImages, "gallery", "pyspark-live-notebook.png"),
+    sources: {
+      pyspark: sourceImage("vscode-notebook-pyspark-dark.png", 1_920, 640)
+    },
+    render: renderPySparkNotebook
   }
 ];
 
@@ -338,6 +348,102 @@ function renderNotebooks(sources) {
         left: -45px;
         top: -378px;
         transform: scale(0.75);
+      }
+    `
+  );
+}
+
+function renderPySparkNotebook(sources) {
+  return documentTemplate(
+    "Open Wrangler experimental live PySpark notebook session",
+    `
+      <main class="pysparkCard">
+        <header class="pysparkHeader">
+          <div>
+            <h1>PySpark Classic live notebook</h1>
+            <p>Real 100,000 x 15 regional-orders DataFrame through the packaged VS Code and Jupyter path</p>
+          </div>
+          <div class="badges" aria-label="PySpark support status">
+            <span class="engineBadge">PySpark 4.2</span>
+            <span class="statusBadge">Experimental</span>
+            <span class="statusBadge">Viewing only</span>
+          </div>
+        </header>
+        <div class="pysparkStage">
+          <img src="${sources.pyspark.dataUrl}" alt="">
+        </div>
+        <footer class="pysparkFooter">
+          Live notebook variable · Spark-side filtering, sorting, paging, and profiling · no cleaning or export
+        </footer>
+      </main>
+    `,
+    `
+      body {
+        background:
+          radial-gradient(circle at 80% -60%, rgba(20, 184, 166, 0.26), transparent 55%),
+          #070b12;
+      }
+      .pysparkCard {
+        color: #f8fafc;
+        height: 100%;
+        padding: 16px;
+        width: 100%;
+      }
+      .pysparkHeader {
+        align-items: center;
+        display: flex;
+        height: 70px;
+        justify-content: space-between;
+        padding: 0 14px;
+      }
+      .pysparkHeader h1 {
+        font-size: 19px;
+        line-height: 24px;
+        margin: 0;
+      }
+      .pysparkHeader p {
+        color: #94a3b8;
+        font-size: 11px;
+        line-height: 15px;
+        margin: 3px 0 0;
+      }
+      .badges {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+      }
+      .badges span {
+        border: 1px solid currentColor;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        padding: 5px 9px;
+        text-transform: uppercase;
+      }
+      .engineBadge { color: #fbbf24; }
+      .statusBadge { color: #5eead4; }
+      .pysparkStage {
+        background: #181818;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        height: 470px;
+        overflow: hidden;
+        width: 100%;
+      }
+      .pysparkStage img {
+        display: block;
+        height: auto;
+        width: 100%;
+      }
+      .pysparkFooter {
+        align-items: center;
+        color: #94a3b8;
+        display: flex;
+        font-size: 11px;
+        height: 68px;
+        justify-content: center;
+        letter-spacing: 0.02em;
       }
     `
   );

@@ -21,11 +21,12 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(compositor, /vscode-hero-light\.png/u);
   assert.match(compositor, /vscode-notebook-pandas-dark\.png/u);
   assert.match(compositor, /vscode-notebook-polars-dark\.png/u);
+  assert.match(compositor, /vscode-notebook-pyspark-dark\.png/u);
   assert.match(compositor, /pixelmatch/u);
   assert.match(compositor, /sRGB/u);
-  assert.doesNotMatch(compositor, /\bpyspark\b/iu);
   assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
+  assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
   assert.match(captureScript, /DECIMAL\(14, 2\)/u);
@@ -62,6 +63,7 @@ test("README media is compact, portable, and composition-verified", () => {
   );
   assert.match(readme, /rich Parquet file gallery/u);
   assert.match(readme, /Notebook relations are not yet supported\./u);
+  assert.match(readme, /real packaged PySpark notebook capture/u);
 
   const galleryImage = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.1", "gallery", "duckdb-rich-parquet.png")
@@ -72,6 +74,18 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(gallery, /file-backed DuckDB Parquet source/u);
   assert.match(gallery, /DuckDB notebook\s+relations are not currently supported\./u);
   assert.match(gallery, /images\/readme\/v1\.1\/gallery\/duckdb-rich-parquet\.png/u);
+
+  const pysparkImage = readFileSync(
+    resolve(root, "docs", "images", "readme", "v1.1", "gallery", "pyspark-live-notebook.png")
+  );
+  assert.equal(pysparkImage.readUInt32BE(16), 1_440);
+  assert.equal(pysparkImage.readUInt32BE(20), 640);
+  assert.ok(pysparkImage.byteLength < 300 * 1_024);
+  assert.ok(pngChunkTypes(pysparkImage).includes("sRGB"));
+  assert.match(gallery, /real packaged VS Code and Jupyter path/u);
+  assert.match(gallery, /experimental, viewing-only live notebook session/u);
+  assert.match(gallery, /No PySpark file opening, cleaning, data export, code insertion, or saved inline snapshot/u);
+  assert.match(gallery, /images\/readme\/v1\.1\/gallery\/pyspark-live-notebook\.png/u);
 });
 
 function pngChunkTypes(png) {

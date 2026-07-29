@@ -39,7 +39,10 @@ The README may link to a separate gallery rather than stacking more full-width i
 
 - DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a file-backed rich Parquet session with
   decimal, time-zone, list, and struct columns; do not imply notebook support
-- PySpark: include only after packaged acceptance; label it `Experimental` and `Viewing only`
+- PySpark: `docs/images/readme/v1.1/gallery/pyspark-live-notebook.png`, a real packaged VS Code and released
+  Jupyter capture of a deterministic 100,000-row by 15-column Classic DataFrame
+- The PySpark panel must say `Experimental` and `Viewing only`; it must not imply file opening, cleaning, export,
+  code insertion, saved-output, or DuckDB notebook support
 - Cursor: one optional compatibility capture using the same orders fixture and composition
 
 ## Capture checklist

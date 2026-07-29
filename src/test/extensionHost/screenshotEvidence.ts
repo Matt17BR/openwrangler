@@ -26,7 +26,7 @@ export const PACKAGED_SCREENSHOT_MARKETS = [
   "Nordics",
   "UK & Ireland"
 ] as const;
-export const PACKAGED_SCREENSHOT_SCENES = ["hero", "notebook-pandas", "notebook-polars"] as const;
+export const PACKAGED_SCREENSHOT_SCENES = ["hero", "notebook-pandas", "notebook-polars", "notebook-pyspark"] as const;
 export const PACKAGED_SCREENSHOT_FEATURED_COLUMNS = [
   "order_id",
   "market",
