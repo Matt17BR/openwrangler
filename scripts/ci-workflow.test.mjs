@@ -596,6 +596,12 @@ test("required Linux Python 3.10 owns real discovery while cross-platform keeps 
   assert.equal(environmentSmoke?.if, python310Only);
   assert.equal(environmentSmoke?.env, undefined);
 
+  const duckdbMinimum = steps.find(
+    (step) => step?.run === 'python -m pip install --force-reinstall --no-deps "duckdb==1.5.4"'
+  );
+  assert.equal(duckdbMinimum?.name, "Pin the declared DuckDB minimum");
+  assert.equal(duckdbMinimum?.if, "matrix.python == '3.14'");
+
   const runtimeSuite = steps.filter((step) => step?.run === "python -m pytest python/tests -q");
   assert.equal(runtimeSuite.length, 1);
   assert.equal(runtimeSuite[0]?.if, undefined, "The runtime suite must execute on both matrix cells.");

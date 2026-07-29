@@ -81,11 +81,11 @@ DuckDB remains native for supported file sessions. Notebook relations are not ye
 
 ## Engines and formats
 
-| Engine | Files                           | Notebook data                | How it runs                                                                 |
-| ------ | ------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| Polars | CSV, TSV, Parquet, JSONL, Excel | DataFrame, LazyFrame, Series | Native; supported file formats use lazy scans. Notebook LazyFrames collect. |
-| Pandas | CSV, TSV, Parquet, JSONL, Excel | DataFrame, Series            | Native, including duplicate column labels                                   |
-| DuckDB | CSV, TSV, Parquet, JSONL        | Not currently supported      | Native file-backed relations                                                |
+| Engine           | Files                           | Notebook data                | How it runs                                                                 |
+| ---------------- | ------------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
+| Polars           | CSV, TSV, Parquet, JSONL, Excel | DataFrame, LazyFrame, Series | Native; supported file formats use lazy scans. Notebook LazyFrames collect. |
+| Pandas           | CSV, TSV, Parquet, JSONL, Excel | DataFrame, Series            | Native, including duplicate column labels                                   |
+| DuckDB (preview) | CSV, TSV, Parquet, JSONL        | Not currently supported      | Native file-backed relations                                                |
 
 Automatic backend selection prefers Polars, then DuckDB, then Pandas. A backend can also be pinned in settings.
 
@@ -117,7 +117,6 @@ universally faster.
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Workbench and insights    | A calmer hierarchy and richer type-aware summaries in [#88](https://github.com/Matt17BR/openwrangler/issues/88)                                    |
 | Performance comparison    | Reproducible Open Wrangler and Data Wrangler measurements in [#91](https://github.com/Matt17BR/openwrangler/issues/91)                             |
-| DuckDB depth              | Richer typed Parquet and ingestion coverage in [#127](https://github.com/Matt17BR/openwrangler/issues/127)                                         |
 | PySpark                   | Distributed PySpark dataframe workflows in [#36](https://github.com/Matt17BR/openwrangler/issues/36)                                               |
 | More VS Code-based IDEs   | Broader compatibility checks for VS Code-based desktop IDEs in [#86](https://github.com/Matt17BR/openwrangler/issues/86)                           |
 | R, Quarto, and R Markdown | Explore native data-frame, tibble, and `data.table` support for Quarto and R Markdown in [#87](https://github.com/Matt17BR/openwrangler/issues/87) |

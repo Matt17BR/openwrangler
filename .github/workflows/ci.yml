@@ -199,6 +199,9 @@ jobs:
         if: matrix.python == '3.10'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"
+      - name: Pin the declared DuckDB minimum
+        if: matrix.python == '3.14'
+        run: python -m pip install --force-reinstall --no-deps "duckdb==1.5.4"
       - run: npm run test:python-environment-smoke
         if: matrix.python == '3.10'
       - run: python -m pytest python/tests -q
