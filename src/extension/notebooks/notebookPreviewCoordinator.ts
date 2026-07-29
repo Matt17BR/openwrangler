@@ -13,6 +13,7 @@ interface NotebookPreviewEntry {
   invalidationSubscription: vscode.Disposable;
   prepared: boolean;
   retryIndex: number;
+  immediateRetryRequested: boolean;
   timer?: NodeJS.Timeout;
   running?: Promise<void>;
 }
@@ -28,19 +29,20 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     this.subscriptions.push(
       vscode.workspace.onDidOpenNotebookDocument((notebook) => this.schedule(notebook)),
       vscode.workspace.onDidCloseNotebookDocument((notebook) => this.remove(notebook)),
+      vscode.window.onDidChangeVisibleNotebookEditors((editors) => this.syncVisibleNotebooks(editors, true)),
       vscode.window.onDidChangeActiveNotebookEditor((editor) => {
-        if (editor) this.schedule(editor.notebook);
+        if (editor) this.schedule(editor.notebook, 0, true);
       }),
-      vscode.workspace.onDidChangeNotebookDocument((event) => this.schedule(event.notebook)),
+      vscode.workspace.onDidChangeNotebookDocument((event) => this.schedule(event.notebook, 0, true)),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration("openWrangler.notebookPreviewProvider")) return;
         this.conflictPromptDismissed = false;
         this.resetEntries();
-        for (const notebook of vscode.workspace.notebookDocuments) this.schedule(notebook);
+        this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
       }),
       vscode.commands.registerCommand(CHOOSE_PREVIEW_PROVIDER_COMMAND, () => this.chooseProvider())
     );
-    for (const notebook of vscode.workspace.notebookDocuments) this.schedule(notebook);
+    this.syncVisibleNotebooks(vscode.window.visibleNotebookEditors);
   }
 
   dispose(): void {
@@ -50,10 +52,19 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     this.resetEntries();
   }
 
-  private schedule(notebook: vscode.NotebookDocument, delayMs = 0): void {
+  private schedule(notebook: vscode.NotebookDocument, delayMs = 0, expedite = false): void {
     if (this.disposed || !this.canPrepare(notebook)) return;
     const entry = this.entry(notebook);
-    if (entry.prepared || entry.running || entry.timer) return;
+    if (entry.prepared) return;
+    if (entry.running) {
+      if (expedite) entry.immediateRetryRequested = true;
+      return;
+    }
+    if (entry.timer) {
+      if (!expedite) return;
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
       this.startPreparation(notebook, entry);
@@ -67,7 +78,13 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     }
     if (entry.prepared || entry.running) return;
     const running = this.prepare(notebook, entry).finally(() => {
-      if (entry.running === running) entry.running = undefined;
+      if (entry.running !== running) return;
+      entry.running = undefined;
+      const immediateRetryRequested = entry.immediateRetryRequested;
+      entry.immediateRetryRequested = false;
+      if (immediateRetryRequested && !entry.prepared && this.entries.get(notebook) === entry && !this.disposed) {
+        this.schedule(notebook, 0, true);
+      }
     });
     entry.running = running;
   }
@@ -109,6 +126,7 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
       bridge,
       prepared: false,
       retryIndex: 0,
+      immediateRetryRequested: false,
       invalidationSubscription: bridge.onDidInvalidateKernel(() => {
         entry.prepared = false;
         entry.retryIndex = 0;
@@ -132,11 +150,20 @@ export class NotebookPreviewCoordinator implements vscode.Disposable {
     for (const notebook of [...this.entries.keys()]) this.remove(notebook);
   }
 
+  private syncVisibleNotebooks(editors: readonly vscode.NotebookEditor[], expedite = false): void {
+    const visible = new Set(editors.map((editor) => editor.notebook));
+    for (const notebook of this.entries.keys()) {
+      if (!visible.has(notebook)) this.remove(notebook);
+    }
+    for (const notebook of visible) this.schedule(notebook, 0, expedite);
+  }
+
   private canPrepare(notebook: vscode.NotebookDocument): boolean {
     return (
       vscode.workspace.isTrusted &&
       notebook.notebookType === "jupyter-notebook" &&
       isSoleOpenNotebookDocument(notebook) &&
+      vscode.window.visibleNotebookEditors.some((editor) => editor.notebook === notebook) &&
       vscode.extensions.getExtension(JUPYTER_EXTENSION_ID) !== undefined
     );
   }

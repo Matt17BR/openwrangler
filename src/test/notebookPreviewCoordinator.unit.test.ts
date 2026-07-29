@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
     open: new Set<Listener<NotebookDocument>>(),
     close: new Set<Listener<NotebookDocument>>(),
     active: new Set<Listener<{ notebook: NotebookDocument } | undefined>>(),
+    visible: new Set<Listener<readonly { notebook: NotebookDocument }[]>>(),
     change: new Set<Listener<{ notebook: NotebookDocument }>>(),
     configuration: new Set<Listener<{ affectsConfiguration(section: string): boolean }>>()
   };
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => {
     channels,
     commands: new Map<string, (...args: unknown[]) => unknown>(),
     documents: [] as NotebookDocument[],
+    visibleEditors: [] as Array<{ notebook: NotebookDocument }>,
     extensions: new Set(["ms-toolsai.jupyter"]),
     preference: "ask",
     prepare: vi.fn(async () => undefined),
@@ -52,7 +54,11 @@ vi.mock("vscode", () => ({
     onDidChangeConfiguration: event(mocks.channels.configuration)
   },
   window: {
+    get visibleNotebookEditors() {
+      return mocks.visibleEditors;
+    },
     onDidChangeActiveNotebookEditor: event(mocks.channels.active),
+    onDidChangeVisibleNotebookEditors: event(mocks.channels.visible),
     showInformationMessage: mocks.information,
     showQuickPick: mocks.quickPick
   },
@@ -96,6 +102,7 @@ describe("NotebookPreviewCoordinator", () => {
     vi.useFakeTimers();
     mocks.commands.clear();
     mocks.documents.splice(0);
+    mocks.visibleEditors.splice(0);
     mocks.extensions.clear();
     mocks.extensions.add("ms-toolsai.jupyter");
     mocks.preference = "ask";
@@ -111,6 +118,7 @@ describe("NotebookPreviewCoordinator", () => {
   it("prepares the first supported notebook without a prompt when there is no competing provider", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
     await vi.runOnlyPendingTimersAsync();
@@ -123,6 +131,7 @@ describe("NotebookPreviewCoordinator", () => {
   it("prompts once and leaves the kernel untouched when the user keeps Data Wrangler", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
     mocks.extensions.add("ms-toolsai.datawrangler");
     mocks.information.mockResolvedValue("Keep Data Wrangler");
     const coordinator = new NotebookPreviewCoordinator({} as never);
@@ -138,6 +147,7 @@ describe("NotebookPreviewCoordinator", () => {
   it("prepares Open Wrangler immediately when it wins the one-time renderer conflict", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
     mocks.extensions.add("ms-toolsai.datawrangler");
     mocks.information.mockResolvedValue("Use Open Wrangler");
     const coordinator = new NotebookPreviewCoordinator({} as never);
@@ -153,6 +163,7 @@ describe("NotebookPreviewCoordinator", () => {
   it("reinstalls the Open Wrangler formatter after a kernel invalidation", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
     const coordinator = new NotebookPreviewCoordinator({} as never);
     await vi.runOnlyPendingTimersAsync();
     expect(mocks.prepare).toHaveBeenCalledOnce();
@@ -167,6 +178,7 @@ describe("NotebookPreviewCoordinator", () => {
   it("retries a formatter that is not ready yet without requiring another notebook event", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
     mocks.prepare.mockRejectedValueOnce(new Error("Kernel is still starting")).mockResolvedValueOnce(undefined);
     const coordinator = new NotebookPreviewCoordinator({} as never);
 
@@ -178,6 +190,40 @@ describe("NotebookPreviewCoordinator", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(mocks.prepare).toHaveBeenCalledTimes(2);
+    coordinator.dispose();
+  });
+
+  it("lets a visible notebook change bypass a pending kernel-not-ready backoff", async () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.prepare.mockRejectedValueOnce(new Error("Kernel is not started")).mockResolvedValueOnce(undefined);
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+
+    for (const listener of mocks.channels.change) listener({ notebook });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.prepare).toHaveBeenCalledTimes(2);
+    coordinator.dispose();
+  });
+
+  it("leaves an API-opened background notebook untouched until it becomes visible", async () => {
+    const notebook = fakeNotebook();
+    mocks.documents.push(notebook);
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    for (const listener of mocks.channels.open) listener(notebook);
+    await vi.runOnlyPendingTimersAsync();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+
+    mocks.visibleEditors.push({ notebook });
+    for (const listener of mocks.channels.visible) listener(mocks.visibleEditors);
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(mocks.prepare).toHaveBeenCalledOnce();
     coordinator.dispose();
   });
 

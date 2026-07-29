@@ -156,6 +156,7 @@ interface FakeJupyterApi {
     setDenied(value: boolean): void;
     denialCalls(): number;
     stats(uri: vscode.Uri): { generation: number; executions: number } | undefined;
+    lookupCalls(uri: vscode.Uri): number;
   };
 }
 
@@ -8360,9 +8361,14 @@ async function exercisePackagedRendererProvenance(
     secondNotebook = openedSecondNotebook;
     recordAcceptanceProgress("verify:notebook-renderer:opened-b");
     assert.equal(
+      jupyter.testing.lookupCalls(openedSecondNotebook.uri),
+      0,
+      "Opening notebook B through the API without a visible editor must not start proactive formatter work."
+    );
+    assert.equal(
       jupyter.testing.stats(openedSecondNotebook.uri),
       undefined,
-      "Notebook B must not acquire a kernel before notebook A's renderer action."
+      "An API-opened background notebook must not start or execute a kernel."
     );
     recordAcceptanceProgress("verify:notebook-renderer:show-a");
     const originEditor = await vscode.window.showNotebookDocument(originNotebook, {
@@ -8378,6 +8384,12 @@ async function exercisePackagedRendererProvenance(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer:shown-b");
+    await waitFor(
+      () => jupyter.testing.lookupCalls(openedSecondNotebook.uri) > 0,
+      10_000,
+      "the proactive preview coordinator to inspect visible notebook B for an already-started kernel"
+    );
+    const secondKernelBaseline = jupyter.testing.stats(openedSecondNotebook.uri);
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
       openedSecondNotebook,
@@ -8452,10 +8464,10 @@ async function exercisePackagedRendererProvenance(
       "101",
       "The renderer event must read notebook A's kernel variable."
     );
-    assert.equal(
+    assert.deepEqual(
       jupyter.testing.stats(openedSecondNotebook.uri),
-      undefined,
-      "Notebook A's renderer event must not acquire notebook B's active kernel."
+      secondKernelBaseline,
+      "Notebook A's renderer event must not advance notebook B beyond its own proactive-preview baseline."
     );
 
     recordAcceptanceProgress("verify:notebook-renderer:insertion");

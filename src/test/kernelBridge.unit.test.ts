@@ -654,6 +654,23 @@ describe("kernel retry classification", () => {
 });
 
 describe("renderer notebook provenance", () => {
+  it("treats stable Jupyter kernel discovery as lookup-only when no user-started kernel exists", async () => {
+    const document = notebookDocument();
+    setOpenNotebookDocuments(document);
+    const getKernel = vi.fn(async () => undefined);
+    const activate = vi.fn(async () => ({ kernels: { getKernel } }));
+    vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({ activate } as never);
+    const bridge = createKernelBridge(document);
+
+    await expect(bridge.prepareNotebookFormatter()).rejects.toThrow(
+      "could not access the selected Jupyter kernel for this notebook"
+    );
+
+    expect(activate).toHaveBeenCalledOnce();
+    expect(getKernel).toHaveBeenCalledOnce();
+    expect(getKernel).toHaveBeenCalledWith(document.uri);
+  });
+
   it("rejects simultaneous open documents with the captured URI before activating Jupyter", async () => {
     const original = notebookDocument("/workspace/notebook.ipynb");
     const overlappingReplacement = notebookDocument("/workspace/notebook.ipynb");
