@@ -69,6 +69,46 @@ export async function run(): Promise<void> {
     undefined,
     "The blocked or unavailable file entry point must not create a coordinator, session, or Python runtime."
   );
+  recordAcceptanceProgress("restricted:pyspark-entry-point");
+  const variableCommandIsAvailable = (await vscode.commands.getCommands(true)).includes(
+    "openWrangler.launchDataViewer"
+  );
+  let variableCommandSettled = false;
+  if (variableCommandIsAvailable) {
+    await Promise.race([
+      vscode.commands
+        .executeCommand("openWrangler.launchDataViewer", {
+          name: "spark_frame",
+          type: "pyspark.sql.classic.dataframe.DataFrame",
+          fileName: vscode.Uri.joinPath(workspace.uri, "fixtures", "example.ipynb")
+        })
+        .then(
+          () => {
+            variableCommandSettled = true;
+          },
+          () => {
+            variableCommandSettled = true;
+          }
+        ),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000))
+    ]);
+    assert.equal(
+      variableCommandSettled,
+      true,
+      "The blocked PySpark variable entry point must settle without waiting for a hidden trust prompt."
+    );
+  }
+  const extensionAfterVariableEntryPoint = vscode.extensions.getExtension("matt17br.openwrangler");
+  assert.equal(
+    extensionAfterVariableEntryPoint?.isActive ?? false,
+    false,
+    "Invoking the PySpark Variables action must not activate Open Wrangler in Restricted Mode."
+  );
+  assert.equal(
+    extensionAfterVariableEntryPoint?.exports,
+    undefined,
+    "The blocked PySpark Variables action must not create a coordinator, session, or runtime."
+  );
   recordAcceptanceProgress("restricted:activation-blocked");
   assert.equal(
     vscode.window.tabGroups.all

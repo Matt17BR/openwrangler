@@ -8,7 +8,7 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
 const MAX_CONTRACT_DEPTH = 128;
 const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "b19439b19111c19d897baf3cd2cd23dc83876b13db2b7b0bc37f8de73a4215a6";
+const AUDITED_WORKFLOW_SHA256 = "316243c14e2fa6a18d0fb9d22f1005e15d9b3adef5de37b01ce5559ad0b2ddc4";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
@@ -16,6 +16,7 @@ const PUBLISH_TAG_COMMAND = "node scripts/push-stable-release-tag.mjs";
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
+const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
 const PACKAGED_EDITOR_COMMAND =
   "/usr/bin/dbus-run-session -- node scripts/run-packaged-editor-tests.mjs canonical-release/openwrangler.vsix";
 const PREPARED_CURSOR_XVFB = "${{ steps.prepare_cursor_xvfb.outputs.executable }}";
@@ -657,6 +658,18 @@ export function inspectStableReleaseWorkflow(source) {
     steps(jupyter).indexOf(jupyterPreparation) >= steps(jupyter).indexOf(jupyterStep)
   ) {
     problems.push("released-jupyter must prepare and verify one pinned private Xvfb before its editor gate.");
+  }
+  const javaSteps = steps(jupyter).filter((step) => step?.uses === SETUP_JAVA_ACTION);
+  const javaStep = javaSteps[0];
+  if (
+    javaSteps.length !== 1 ||
+    !exactKeys(javaStep, ["uses", "with"]) ||
+    !exactKeys(javaStep.with, ["distribution", "java-version"]) ||
+    javaStep.with.distribution !== "temurin" ||
+    javaStep.with["java-version"] !== "17" ||
+    steps(jupyter).indexOf(javaStep) >= steps(jupyter).indexOf(jupyterStep)
+  ) {
+    problems.push("released-jupyter must provision one pinned Temurin Java 17 before its PySpark editor gate.");
   }
   inspectAdjacentCanonicalVerification(
     steps(jupyter),

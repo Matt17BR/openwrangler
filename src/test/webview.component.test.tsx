@@ -1151,6 +1151,31 @@ describe("DataGrid", () => {
     expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps expensive PySpark insights explicit even when insights-on-open is configured", async () => {
+    const onVisibleSummaryColumnsChange = vi.fn();
+    render(
+      <DataGrid
+        metadata={{ ...metadata, backend: "pyspark" }}
+        page={page}
+        summaries={[]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={onVisibleSummaryColumnsChange}
+      />
+    );
+
+    const showInsights = screen.getByRole("button", { name: "Show insights" });
+    expect(showInsights).toHaveAttribute("title", "Runs Spark profiling queries for the visible columns.");
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
+
+    fireEvent.click(showInsights);
+    await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+  });
+
   it("maps a projected page by stable column ID while preserving full-schema grid coordinates", async () => {
     const projectedPage: GridPage = {
       offset: 0,

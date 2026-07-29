@@ -46,6 +46,7 @@ const PRIVATE_ROOT_IDENTITY_ORIGIN_PHASES = new Set([
   "python-environment",
   "jupyter-deny",
   "jupyter-allow",
+  "jupyter-pyspark",
   "jupyter-remote-setup",
   "jupyter-remote",
   "jupyter-remote-cleanup",

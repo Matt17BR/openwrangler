@@ -677,4 +677,13 @@ test("released-Jupyter PR paths include every consumed dependency manifest", () 
     workflow?.jobs?.vscode?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
     true
   );
+  assert.deepEqual(
+    workflow?.jobs?.vscode?.steps?.find(
+      (step) => typeof step?.uses === "string" && step.uses.startsWith("actions/setup-java@")
+    )?.with,
+    {
+      distribution: "temurin",
+      "java-version": "17"
+    }
+  );
 });

@@ -422,6 +422,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e # v5.1.0
+        with:
+          distribution: temurin
+          java-version: "17"
       - run: npm ci
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[dev]"

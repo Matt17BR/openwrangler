@@ -219,10 +219,20 @@ class PySparkEngine(DataFrameEngine):
         column_ids = [identifier for _position, identifier in projection]
         row_id = self._row_id_column(frame)
 
-        ordered = frame
-        if frame not in self._ordered_frames and row_id is not None:
-            ordered = frame.orderBy(_spark_column(functions, row_id).asc())
-        windowed = ordered.offset(int(offset)).limit(int(limit))
+        if frame is self._owned_frame and row_id is not None:
+            row_identity = _spark_column(functions, row_id)
+            windowed = (
+                frame.where(
+                    (row_identity >= functions.lit(int(offset))) & (row_identity < functions.lit(int(offset + limit)))
+                )
+                .orderBy(row_identity.asc())
+                .limit(int(limit))
+            )
+        else:
+            ordered = frame
+            if frame not in self._ordered_frames and row_id is not None:
+                ordered = frame.orderBy(_spark_column(functions, row_id).asc())
+            windowed = ordered.offset(int(offset)).limit(int(limit))
         terminal_names = [*([row_id] if row_id is not None else []), *selected_columns]
         terminal = windowed.select(*[_spark_column(functions, name) for name in terminal_names])
         records = terminal.collect()
@@ -568,7 +578,7 @@ class PySparkEngine(DataFrameEngine):
         unsupported: list[tuple[str, str]] = []
         for field in frame.schema.fields:
             raw_type = str(field.dataType.simpleString())
-            if _is_unsupported_profile_type(raw_type):
+            if _contains_unsupported_profile_type(field.dataType):
                 unsupported.append((str(field.name), raw_type))
         if unsupported:
             details = ", ".join(f"{name!r} ({raw_type})" for name, raw_type in unsupported)
@@ -593,6 +603,35 @@ def _is_unsupported_profile_type(raw_type: str) -> bool:
     # after the grouping actions required by header statistics. Day-time
     # intervals are natively collectable and remain supported.
     return lowered == "interval" or lowered.startswith(("interval year", "interval month"))
+
+
+def _contains_unsupported_profile_type(data_type: Any) -> bool:
+    """Reject unsupported Spark SQL leaves even when nested in a container."""
+
+    pending = [data_type]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in visited:
+            continue
+        visited.add(identity)
+
+        simple_string = getattr(current, "simpleString", None)
+        raw_type = str(simple_string()) if callable(simple_string) else str(current)
+        if _is_unsupported_profile_type(raw_type):
+            return True
+
+        fields = getattr(current, "fields", None)
+        if isinstance(fields, list | tuple):
+            pending.extend(
+                field_type for field in fields if (field_type := getattr(field, "dataType", None)) is not None
+            )
+        for attribute in ("elementType", "keyType", "valueType"):
+            nested = getattr(current, attribute, None)
+            if nested is not None:
+                pending.append(nested)
+    return False
 
 
 def _spark_python_value(value: Any) -> Any:

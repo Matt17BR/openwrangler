@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from datetime import datetime
 from importlib import import_module
@@ -176,6 +177,66 @@ def test_rejects_variant_before_open_without_blanket_rejecting_unknown_types(
     ]
 
 
+@pytest.mark.parametrize(
+    ("expression", "raw_type"),
+    [
+        (
+            """named_struct('x', parse_json('{"region":"eu"}'))""",
+            "struct<x:variant>",
+        ),
+        (
+            """array(parse_json('{"region":"eu"}'))""",
+            "array<variant>",
+        ),
+        (
+            """map('x', parse_json('{"region":"eu"}'))""",
+            "map<string,variant>",
+        ),
+        (
+            """named_struct('x', INTERVAL '1-2' YEAR TO MONTH)""",
+            "struct<x:interval year to month>",
+        ),
+        (
+            """array(INTERVAL '1-2' YEAR TO MONTH)""",
+            "array<interval year to month>",
+        ),
+    ],
+)
+def test_rejects_nested_non_profileable_types_before_indexing(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    expression: str,
+    raw_type: str,
+) -> None:
+    frame = spark_session.sql(f"SELECT {expression} AS payload")
+    assert frame.schema.fields[0].dataType.simpleString() == raw_type
+    monkeypatch.setattr(__main__, "open_wrangler_nested_unsupported", frame, raising=False)
+    indexing_calls = 0
+
+    def fail_if_indexed(self: PySparkEngine, value: Any, token: str) -> Any:
+        del self, value, token
+        nonlocal indexing_calls
+        indexing_calls += 1
+        raise AssertionError("Unsupported nested types must fail before Spark indexing.")
+
+    monkeypatch.setattr(PySparkEngine, "ensure_row_ids", fail_if_indexed)
+    manager = SessionManager()
+    with pytest.raises(
+        EngineError,
+        match=rf"required viewing profiles.*'payload' \({re.escape(raw_type)}\).*Convert these columns in Spark",
+    ):
+        manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "variableName": "open_wrangler_nested_unsupported",
+                "label": "open_wrangler_nested_unsupported",
+            },
+            backend="pyspark",
+        )
+    assert indexing_calls == 0
+    assert manager.sessions == {}
+
+
 def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.MonkeyPatch) -> None:
     class IndexedFrame:
         columns = [f"{INTERNAL_ROW_ID_PREFIX}unit"]
@@ -268,6 +329,32 @@ def test_sorted_state_uses_live_frame_identity_not_reusable_numeric_ids(
         )
         identities = [int(row["id"].rsplit(":", 1)[1]) for row in page["rows"]]
         assert identities == [0, 1, 2, 3, 4]
+    finally:
+        engine.close()
+
+
+def test_owned_source_pages_use_the_dense_row_identity_range_instead_of_global_offset(
+    sample_frame: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, indexed = _open_engine(sample_frame, "bounded-source-page")
+    dataframe_type = type(indexed)
+
+    def forbidden_global_offset(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("The owned source page must not globally sort and offset the complete dataframe.")
+
+    try:
+        with monkeypatch.context() as page_patch:
+            page_patch.setattr(dataframe_type, "offset", forbidden_global_offset)
+            page = engine.page(
+                indexed,
+                2,
+                2,
+                total_rows=5,
+                column_projection=[(0, "name-id")],
+            )
+        assert [row["rowNumber"] for row in page["rows"]] == [2, 3]
+        assert [int(row["id"].rsplit(":", 1)[1]) for row in page["rows"]] == [2, 3]
     finally:
         engine.close()
 
