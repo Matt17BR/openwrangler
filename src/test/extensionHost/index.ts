@@ -5932,7 +5932,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             querySelectorAll(selector: string): ArrayLike<ScreenshotElement>;
           };
           const appRoot = root as unknown as ScreenshotElement;
-          const workspace = appRoot.querySelector('[data-testid="app-workspace"]');
+          const workspace = appRoot.querySelector(".layout");
           const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
           if (!workspace || !scroller) throw new Error("The packaged screenshot layout is incomplete.");
           const scrollerBounds = scroller.getBoundingClientRect();

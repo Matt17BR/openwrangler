@@ -8,6 +8,7 @@ const root = resolve(import.meta.dirname, "..");
 test("README media is compact, portable, and composition-verified", () => {
   const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   const compositor = readFileSync(resolve(root, "scripts", "compose-readme-media.mjs"), "utf8");
+  const packagedEditorRunner = readFileSync(resolve(root, "scripts", "run-packaged-editor-tests.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
 
   assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
@@ -21,6 +22,8 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(compositor, /pixelmatch/u);
   assert.match(compositor, /sRGB/u);
   assert.doesNotMatch(compositor, /\bpyspark\b/iu);
+  assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
+  assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
 
   for (const [name, width, height] of [
     ["workbench.png", 1_440, 720],

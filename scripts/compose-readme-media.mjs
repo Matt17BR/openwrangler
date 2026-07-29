@@ -23,8 +23,8 @@ const compositions = [
     height: 720,
     destination: resolve(readmeImages, "workbench.png"),
     sources: {
-      dark: sourceImage("vscode-hero-dark.png", 1_920, 834),
-      light: sourceImage("vscode-hero-light.png", 1_920, 1_054)
+      dark: sourceImage("vscode-hero-dark.png", 1_920, 830),
+      light: sourceImage("vscode-hero-light.png", 1_920, 830)
     },
     render: renderWorkbench
   },
@@ -115,17 +115,49 @@ function renderWorkbench(sources) {
     "Open Wrangler workbench in VS Code, shown in light and dark themes",
     `
       <main class="workbench">
-        <img class="workbenchImage darkImage" src="${sources.dark.dataUrl}" alt="">
-        <img class="workbenchImage lightImage" src="${sources.light.dataUrl}" alt="">
-        <div class="splitLine" aria-hidden="true"></div>
-        <span class="themeLabel lightLabel">Light</span>
-        <span class="themeLabel darkLabel">Dark</span>
+        <header class="frameHeader">
+          <span class="themeLabel">Light</span>
+          <strong>Regional orders file session</strong>
+          <span class="themeLabel">Dark</span>
+        </header>
+        <div class="imageStage">
+          <img class="workbenchImage darkImage" src="${sources.dark.dataUrl}" alt="">
+          <img class="workbenchImage lightImage" src="${sources.light.dataUrl}" alt="">
+          <div class="splitLine" aria-hidden="true"></div>
+        </div>
+        <footer class="frameFooter">File-backed Polars · bounded paging · exact selected-column statistics</footer>
       </main>
     `,
     `
       .workbench {
-        background: #111827;
+        background: #0b1220;
+        color: #f8fafc;
         height: 100%;
+        overflow: hidden;
+        width: 100%;
+      }
+      .frameHeader,
+      .frameFooter {
+        align-items: center;
+        display: flex;
+        letter-spacing: 0.02em;
+      }
+      .frameHeader {
+        height: 49px;
+        justify-content: space-between;
+        padding: 0 14px;
+      }
+      .frameHeader strong {
+        font-size: 14px;
+      }
+      .frameFooter {
+        color: #94a3b8;
+        font-size: 11px;
+        height: 48px;
+        justify-content: center;
+      }
+      .imageStage {
+        height: 623px;
         overflow: hidden;
         position: relative;
         width: 100%;
@@ -133,8 +165,6 @@ function renderWorkbench(sources) {
       .workbenchImage {
         height: 100%;
         inset: 0;
-        object-fit: cover;
-        object-position: center;
         position: absolute;
         width: 100%;
       }
@@ -144,16 +174,15 @@ function renderWorkbench(sources) {
       .splitLine {
         background: rgba(255, 255, 255, 0.9);
         box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.3);
-        height: 850px;
+        height: 735px;
         left: calc(50% - 1px);
         position: absolute;
-        top: -65px;
+        top: -56px;
         transform: rotate(17.7deg);
         width: 2px;
       }
       .themeLabel {
-        backdrop-filter: blur(8px);
-        background: rgba(15, 23, 42, 0.78);
+        background: #172033;
         border: 1px solid rgba(255, 255, 255, 0.28);
         border-radius: 999px;
         color: #f8fafc;
@@ -161,12 +190,8 @@ function renderWorkbench(sources) {
         font-weight: 700;
         letter-spacing: 0.05em;
         padding: 5px 10px;
-        position: absolute;
         text-transform: uppercase;
-        top: 14px;
       }
-      .lightLabel { left: 14px; }
-      .darkLabel { right: 14px; }
     `
   );
 }
@@ -290,7 +315,7 @@ function renderNotebooks(sources) {
       .pandasOverview img {
         left: 0;
         top: -4px;
-        transform: scale(0.354);
+        transform: scale(0.42);
       }
       .pandasDetail {
         flex: 1;

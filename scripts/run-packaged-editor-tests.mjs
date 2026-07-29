@@ -779,7 +779,7 @@ try {
                     progressPath: progressPaths["python-environment"]
                   });
                 }
-                if (acceptanceMode === "full" && jupyterExtensionInstallTarget) {
+                if (jupyterExtensionInstallTarget) {
                   for (const phase of ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]) {
                     const phaseWorkspace =
                       phase === "jupyter-deny"

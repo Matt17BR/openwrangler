@@ -28,7 +28,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Rebuilt the README media around three compact, portable product views: a realistic file-backed dataframe, an automatic Pandas notebook snapshot, and a live Polars notebook draft with summaries, diff, and generated code. The copy now distinguishes saved snapshots from live variables, describes DuckDB's current file-only scope, and treats benchmark fixture sizes as evidence points rather than row limits.
 - Raised the gallery and README logo raster to 512 × 512 from its committed vector source while retaining the 128px fallback and monochrome Activity Bar icon. Static PNG delivery now stays sharp and predictable across GitHub, the Visual Studio Marketplace, and Open VSX.
-- Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for a 2,500-row Pandas dataframe and a 2,500-row Polars dataframe. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
+- Shortened the isolated packaged-editor capture viewport and added deterministic real-Jupyter media checks for 100,000-row by 15-column Pandas and Polars dataframes. Captures reject transient hovers and notifications while keeping the required notebook context, type-aware statistics, and native code visible.
+- Composed the packaged workbench and notebook evidence into fixed-size sRGB images for GitHub, the Visual Studio Marketplace, and Open VSX. The workbench requires exact revenue minimum, maximum, mean, and median values, while README copy distinguishes bounded saved snapshots from live paged sources and benchmark evidence from dataframe limits.
 
 ### Fixed
 
