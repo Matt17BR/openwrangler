@@ -1582,6 +1582,172 @@ describe("SessionCoordinator", () => {
     await expect(queued).resolves.toMatchObject({ kind: "summary", viewRequestId: "checkpoint-queued" });
   });
 
+  it("reports exact test-only scheduler quiescence across active, queued, and terminal work", async () => {
+    const activeProfile = deferred<OpenWranglerResponse>();
+    const firstPage = deferred<OpenWranglerResponse>();
+    const secondPage = deferred<OpenWranglerResponse>();
+    const closeSession = deferred<OpenWranglerResponse>();
+    const executionOrder: string[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "getSummary") {
+        executionOrder.push(request.viewRequestId);
+        return activeProfile.promise;
+      }
+      if (request.kind === "getPage") {
+        executionOrder.push(request.viewRequestId);
+        return request.viewRequestId === "scheduler-page-active" ? firstPage.promise : secondPage.promise;
+      }
+      if (request.kind === "closeSession") {
+        executionOrder.push("close");
+        return closeSession.promise;
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    const sessionId = opened.metadata.sessionId;
+    await vi.waitFor(() =>
+      expect(coordinator.testingSessionSchedulerState(sessionId)).toEqual({
+        sessionId,
+        quiescent: true,
+        activeForegroundOperation: false,
+        activeBackgroundOperation: false,
+        interactiveQueueLength: 0,
+        backgroundQueueLength: 0,
+        terminalOperation: false
+      })
+    );
+    expect(coordinator.testingSessionSchedulerState("missing-session")).toBeUndefined();
+
+    const profile = bridge.request({
+      kind: "getSummary",
+      sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "scheduler-profile-active",
+      filterModel: opened.metadata.filterModel
+    });
+    await vi.waitFor(() => expect(executionOrder).toEqual(["scheduler-profile-active"]));
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+      quiescent: false,
+      activeForegroundOperation: false,
+      activeBackgroundOperation: true,
+      interactiveQueueLength: 0,
+      backgroundQueueLength: 0,
+      terminalOperation: false
+    });
+
+    const queuedProfile = bridge.request({
+      kind: "getSummary",
+      sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "scheduler-profile-queued",
+      filterModel: opened.metadata.filterModel
+    });
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+      quiescent: false,
+      activeBackgroundOperation: true,
+      backgroundQueueLength: 1
+    });
+
+    const activePage = bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "scheduler-page-active",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    await vi.waitFor(() => expect(executionOrder).toEqual(["scheduler-profile-active", "scheduler-page-active"]));
+    const queuedPage = bridge.request({
+      kind: "getPage",
+      sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "scheduler-page-queued",
+      offset: 100,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toEqual({
+      sessionId,
+      quiescent: false,
+      activeForegroundOperation: true,
+      activeBackgroundOperation: true,
+      interactiveQueueLength: 1,
+      backgroundQueueLength: 1,
+      terminalOperation: false
+    });
+
+    const close = bridge.request({
+      kind: "closeSession",
+      sessionId,
+      revision: opened.metadata.revision
+    });
+    await expect(queuedProfile).resolves.toEqual({
+      kind: "cancelled",
+      targetRequestId: "session-queue:getSummary",
+      viewRequestId: "scheduler-profile-queued"
+    });
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toEqual({
+      sessionId,
+      quiescent: false,
+      activeForegroundOperation: true,
+      activeBackgroundOperation: true,
+      interactiveQueueLength: 1,
+      backgroundQueueLength: 0,
+      terminalOperation: true
+    });
+
+    firstPage.resolve(
+      pageResponse({
+        kind: "getPage",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "scheduler-page-active",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    );
+    await activePage;
+    await vi.waitFor(() =>
+      expect(executionOrder).toEqual(["scheduler-profile-active", "scheduler-page-active", "scheduler-page-queued"])
+    );
+    secondPage.resolve(
+      pageResponse({
+        kind: "getPage",
+        sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "scheduler-page-queued",
+        offset: 100,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    );
+    await queuedPage;
+    activeProfile.resolve(summaryResponse("scheduler-profile-active"));
+    await profile;
+    await vi.waitFor(() => expect(executionOrder.at(-1)).toBe("close"));
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toMatchObject({
+      quiescent: false,
+      activeForegroundOperation: true,
+      activeBackgroundOperation: false,
+      interactiveQueueLength: 0,
+      backgroundQueueLength: 0,
+      terminalOperation: false
+    });
+    closeSession.resolve({ kind: "sessionClosed", sessionId: "runtime-session" });
+    await close;
+    expect(coordinator.testingSessionSchedulerState(sessionId)).toBeUndefined();
+  });
+
   it("honors an explicit priority override", async () => {
     const activeProfile = deferred<OpenWranglerResponse>();
     const executionOrder: string[] = [];

@@ -22,6 +22,7 @@ export interface OpenWranglerTestApi {
   panelHydrated(sessionId: string): boolean;
   cancelViewRequests(sessionId: string, viewRequestIds: readonly string[]): void;
   requestExecutionCheckpoint: SessionCoordinator["testingRequestExecutionCheckpoint"];
+  sessionSchedulerState: SessionCoordinator["testingSessionSchedulerState"];
   panelOpenResponse(): OpenWranglerResponse | undefined;
   diagnostics: SessionCoordinator["diagnostics"];
   restartRuntime(reason?: string): void;
@@ -81,6 +82,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
           coordinatedBridge.cancelViewRequests?.(sessionId, viewRequestIds),
         requestExecutionCheckpoint: (sessionId, requestKind, viewRequestId) =>
           coordinator.testingRequestExecutionCheckpoint(sessionId, requestKind, viewRequestId),
+        sessionSchedulerState: (sessionId) => coordinator.testingSessionSchedulerState(sessionId),
         panelOpenResponse: () => OpenWranglerPanel.openResponseForTesting(),
         diagnostics: () => coordinator.diagnostics(),
         restartRuntime: (reason) => bridge.restart(reason),
