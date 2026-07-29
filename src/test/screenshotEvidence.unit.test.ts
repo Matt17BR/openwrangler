@@ -147,6 +147,9 @@ describe("packaged editor screenshot evidence", () => {
 
   it("keeps the README to three concise static product views", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
+    const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
     const icon = readFileSync(resolve("assets/icon.png"));
     const standardIcon = readFileSync(resolve("assets/icon-256.png"));
     const compactIcon = readFileSync(resolve("assets/icon-128.png"));
@@ -170,6 +173,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(activityIconSvg).toContain('viewBox="0 0 24 24"');
     expect(activityIconSvg).toContain("currentColor");
     expect(activityIconSvg).not.toMatch(/#[\da-f]{3,8}\b/iu);
+    expect(packageJson.scripts?.check).toContain("npm run brand:check");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
     expect(readme).toContain('<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png"');
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
