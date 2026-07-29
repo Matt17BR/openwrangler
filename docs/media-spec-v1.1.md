@@ -9,8 +9,10 @@ This specification replaces evidence-heavy README captures with two concise prod
 - `npm run brand:check` verifies the SVG and PNG hashes against the generated manifest without requiring a browser
 - `npm run brand:render-check` uses the lockfile-pinned Playwright Chromium to prove every PNG still matches the SVG master pixel for pixel
 - `npm run test:webview-acceptance` runs the pixel-exact brand check in the browser-enabled visual CI lane
-- `assets/icon.png` is the 512 pixel extension and registry icon and renders at 128 CSS pixels in the README for a
-  sharp, registry-portable presentation; arbitrary SVGs are not accepted by registry README validation
+- `assets/icon.png` is the 512 pixel README and registry master and renders at 128 CSS pixels for a sharp,
+  registry-portable presentation; arbitrary SVGs are not accepted by registry README validation
+- `media/icon.png` is the packaged extension copy; generation writes it from the same 512 pixel render, and both
+  brand checks fail if it diverges from the master
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
 
 ## README workbench image
@@ -20,13 +22,14 @@ This specification replaces evidence-heavy README captures with two concise prod
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders CSV with dates, categories, currency, quantities, nulls, and realistic customer and product labels
 - State: automatic CSV import, `revenue` selected, selected-column Insights visible with min, max, mean, and median
-- Composition: matched dark and light captures with identical geometry, combined into one diagonal split
+- Composition: a light-theme grid overview and a focused dark-theme Insights crop from the same source state,
+  selected column, and packaged session, combined into one diagonal split
 - Framing: extension UI dominates the image; editor chrome remains visible enough to establish VS Code context
 
 ## README notebook image
 
 - Output: `docs/images/readme/v1.1/notebooks.png`
-- Canvas: 1440 x 520 pixels
+- Canvas: 1440 x 600 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders frames
 - Top card: `orders-analysis.ipynb`, Pandas `notebook_showcase`, saved Open Wrangler snapshot

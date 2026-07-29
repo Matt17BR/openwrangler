@@ -6,7 +6,7 @@
 
 <p align="center">Visual dataframe exploration and reproducible cleaning for VS Code and Cursor, with engine-native Polars, DuckDB, and Pandas execution.</p>
 
-<p align="center">Inspired by <a href="https://github.com/microsoft/vscode-data-wrangler">Microsoft Data Wrangler</a>'s explore, transform, and export workflow, Open Wrangler is an independent clean-room implementation, not a fork. It uses no Microsoft code or assets.</p>
+<p align="center">Inspired by <a href="https://github.com/microsoft/vscode-data-wrangler">Microsoft Data Wrangler</a>'s explore, transform, and export workflow, Open Wrangler is an independent clean-room implementation, not a fork. It uses no Microsoft Data Wrangler code or assets.</p>
 
 <!-- open-wrangler-release-status:start -->
 
@@ -48,10 +48,10 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"><img alt="Open Wrangler exploring regional orders with exact revenue statistics in matched light and dark VS Code themes" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"></a>
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"><img alt="Open Wrangler regional-orders grid in light VS Code beside a focused Revenue Insights panel in dark VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"></a>
 
-_A live regional-orders file session with a virtualized grid and exact Revenue statistics. The light and dark
-halves use the same data and layout._
+_One live regional-orders session: a virtualized grid overview in light VS Code and a focused view of its exact
+Revenue statistics in dark VS Code._
 
 ## Quick start
 
@@ -70,10 +70,10 @@ rows, 2,048 columns, 100,000 cells, and 16 MiB. Live variables continue to page 
 Choose **Open Variable** from the notebook toolbar or Jupyter Variables to open the current dataframe as a live
 session, clean it, and insert generated code back into that same notebook.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="Pandas saved output beside a live Polars notebook session with a draft data diff and native code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="Pandas saved output above a live Polars notebook session with a draft data diff and native code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
 
-_Pandas saved output on the left; a live Polars formula draft, added-column diff, and executable Polars code on
-the right._
+_A portable Pandas output snapshot above a live Polars formula draft with computed values, an added-column diff,
+and executable Polars code._
 
 DuckDB remains native for supported file sessions. Notebook relations are not yet supported. See the
 [rich Parquet file gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md).
@@ -108,10 +108,10 @@ for the complete surface.
 
 ## Performance, with evidence
 
-Current installed-editor benchmarks cover a 100,000 by 50 CSV and a 1,000,000 by 20 Parquet file through native
-Polars, including first-grid, cached scrolling, uncached paging, filtering, and sorting. These fixture sizes are
-evidence points, not row limits. Practical scale depends on the backend, format, operation, storage, memory, and
-machine. The detailed evidence lives in the
+Current installed-editor benchmarks cover first-grid opening for a 100,000 by 50 CSV and a 1,000,000 by 20
+Parquet file through native Polars. The Parquet scenario also measures cached scrolling, uncached paging,
+filtering, and sorting. These fixture sizes are evidence points, not row limits. Practical scale depends on the
+backend, format, operation, storage, memory, and machine. The detailed evidence lives in the
 [feature parity record](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
 
 A fair, reproducible black-box comparison with Microsoft Data Wrangler is still in progress in the
@@ -139,5 +139,5 @@ Contributions are welcome. See
 ## License
 
 Open Wrangler is licensed under the [MIT License](https://github.com/Matt17BR/openwrangler/blob/main/LICENSE).
-It is independently developed from public documentation and black-box behavior, uses no Microsoft code or
-assets, and is not affiliated with Microsoft.
+It is independently developed from public documentation and black-box behavior, uses no Microsoft Data Wrangler
+code or assets, and is not affiliated with Microsoft.

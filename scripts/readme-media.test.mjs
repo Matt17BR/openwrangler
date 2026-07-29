@@ -36,7 +36,7 @@ test("README media is compact, portable, and composition-verified", () => {
 
   for (const [name, width, height] of [
     ["workbench.png", 1_440, 720],
-    ["notebooks.png", 1_440, 520]
+    ["notebooks.png", 1_440, 600]
   ]) {
     const path = resolve(root, "docs", "images", "readme", "v1.1", name);
     const png = readFileSync(path);

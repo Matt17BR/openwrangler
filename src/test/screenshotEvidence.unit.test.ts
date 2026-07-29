@@ -150,17 +150,19 @@ describe("packaged editor screenshot evidence", () => {
       scripts?: Record<string, string>;
     };
     const icon = readFileSync(resolve("assets/icon.png"));
+    const packagedIcon = readFileSync(resolve("media/icon.png"));
     const standardIcon = readFileSync(resolve("assets/icon-256.png"));
     const compactIcon = readFileSync(resolve("assets/icon-128.png"));
     const iconSvg = readFileSync(resolve("assets/icon.svg"), "utf8");
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const images = [
       ["workbench.png", 1_440, 720],
-      ["notebooks.png", 1_440, 520]
+      ["notebooks.png", 1_440, 600]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
     expect(icon.readUInt32BE(20)).toBe(512);
+    expect(packagedIcon).toEqual(icon);
     expect(standardIcon.readUInt32BE(16)).toBe(256);
     expect(standardIcon.readUInt32BE(20)).toBe(256);
     expect(compactIcon.readUInt32BE(16)).toBe(128);

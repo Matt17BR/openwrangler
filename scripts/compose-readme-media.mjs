@@ -31,7 +31,7 @@ const compositions = [
   {
     name: "notebooks",
     width: 1_440,
-    height: 520,
+    height: 600,
     destination: resolve(readmeImages, "notebooks.png"),
     sources: {
       pandas: sourceImage("vscode-notebook-pandas-dark.png", 1_920, 450),
@@ -132,7 +132,9 @@ function renderWorkbench(sources) {
         </header>
         <div class="imageStage">
           <img class="workbenchImage darkImage" src="${sources.dark.dataUrl}" alt="">
-          <img class="workbenchImage lightImage" src="${sources.light.dataUrl}" alt="">
+          <div class="lightLayer">
+            <img class="workbenchImage lightImage" src="${sources.light.dataUrl}" alt="">
+          </div>
           <div class="splitLine" aria-hidden="true"></div>
         </div>
         <footer class="frameFooter">File-backed Polars · bounded paging · exact selected-column statistics</footer>
@@ -158,11 +160,11 @@ function renderWorkbench(sources) {
         padding: 0 14px;
       }
       .frameHeader strong {
-        font-size: 14px;
+        font-size: 18px;
       }
       .frameFooter {
         color: #94a3b8;
-        font-size: 11px;
+        font-size: 14px;
         height: 48px;
         justify-content: center;
       }
@@ -173,13 +175,28 @@ function renderWorkbench(sources) {
         width: 100%;
       }
       .workbenchImage {
-        height: 100%;
-        inset: 0;
+        display: block;
+        height: auto;
+        max-width: none;
         position: absolute;
-        width: 100%;
+        transform-origin: left top;
+        width: auto;
+      }
+      .lightLayer {
+        clip-path: polygon(0 0, 58% 0, 42% 100%, 0 100%);
+        inset: 0;
+        overflow: hidden;
+        position: absolute;
       }
       .lightImage {
-        clip-path: polygon(0 0, 58% 0, 42% 100%, 0 100%);
+        left: 0;
+        top: -35px;
+        transform: scale(0.86);
+      }
+      .darkImage {
+        left: -1880px;
+        top: -214px;
+        transform: scale(1.75);
       }
       .splitLine {
         background: rgba(255, 255, 255, 0.9);
@@ -196,7 +213,7 @@ function renderWorkbench(sources) {
         border: 1px solid rgba(255, 255, 255, 0.28);
         border-radius: 999px;
         color: #f8fafc;
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 700;
         letter-spacing: 0.05em;
         padding: 5px 10px;
@@ -240,8 +257,13 @@ function renderNotebooks(sources) {
             <div class="crop polarsPreview">
               <img src="${sources.polars.dataUrl}" alt="">
             </div>
-            <div class="crop polarsCode">
-              <img src="${sources.polars.dataUrl}" alt="">
+            <div class="polarsCode">
+              <div class="codeCrop polarsImports">
+                <img src="${sources.polars.dataUrl}" alt="">
+              </div>
+              <div class="codeCrop polarsFunction">
+                <img src="${sources.polars.dataUrl}" alt="">
+              </div>
             </div>
           </div>
         </section>
@@ -258,7 +280,7 @@ function renderNotebooks(sources) {
         display: grid;
         gap: 8px;
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: 184px 308px;
+        grid-template-rows: 184px 388px;
         height: 100%;
         padding: 10px;
         width: 100%;
@@ -281,20 +303,20 @@ function renderNotebooks(sources) {
       }
       .cardHeader h1 {
         color: #f8fafc;
-        font-size: 14px;
-        line-height: 16px;
+        font-size: 16px;
+        line-height: 18px;
         margin: 0;
       }
       .cardHeader p {
         color: #94a3b8;
-        font-size: 9px;
-        line-height: 11px;
+        font-size: 11px;
+        line-height: 13px;
         margin: 1px 0 0;
       }
       .engineBadge {
         border: 1px solid currentColor;
         border-radius: 999px;
-        font-size: 10px;
+        font-size: 12px;
         font-weight: 700;
         letter-spacing: 0.05em;
         padding: 4px 8px;
@@ -321,6 +343,16 @@ function renderNotebooks(sources) {
         position: absolute;
         transform-origin: left top;
       }
+      .codeCrop {
+        overflow: hidden;
+        position: relative;
+      }
+      .codeCrop img {
+        display: block;
+        max-width: none;
+        position: absolute;
+        transform-origin: left top;
+      }
       .pandasBody {
         grid-template-rows: 30px minmax(0, 1fr);
       }
@@ -335,16 +367,28 @@ function renderNotebooks(sources) {
         transform: scale(1.14);
       }
       .polarsBody {
-        grid-template-rows: 98px minmax(0, 1fr);
+        grid-template-rows: 156px minmax(0, 1fr);
       }
       .polarsPreview img {
-        left: -582px;
+        left: -525px;
         top: -213px;
         transform: scale(1.04);
       }
-      .polarsCode img {
+      .polarsCode {
+        background: #181818;
+        border: 1px solid #475569;
+        display: grid;
+        grid-template-rows: 76px minmax(0, 1fr);
+        overflow: hidden;
+      }
+      .polarsImports img {
         left: -71px;
-        top: -608px;
+        top: -556px;
+        transform: scale(1.04);
+      }
+      .polarsFunction img {
+        left: -71px;
+        top: -681px;
         transform: scale(1.04);
       }
     `

@@ -5466,7 +5466,7 @@ async function captureReleasedJupyterPolarsDraft(
   assert.equal(active.metadata.draftStep?.id, "released-jupyter-double");
 
   const doubleUnits = columnReference(active.metadata, "double_units");
-  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 190]));
+  const widths = Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230]));
   const doubleUnitsPosition = active.metadata.schema.findIndex((column) => column.id === doubleUnits.id);
   assert.ok(doubleUnitsPosition >= 0, "The Polars notebook screenshot requires the draft output column.");
   await testing.updateViewState(sessionId, {
@@ -5534,13 +5534,26 @@ async function captureReleasedJupyterPolarsDraft(
   assert.deepEqual(
     (await addedCells.allInnerTexts()).slice(0, 6).map((value) => value.trim()),
     ["6", "20", "10", "24", "14", "4"],
-    "The Polars notebook screenshot must show six computed draft values."
+    "The Polars notebook screenshot page must contain six computed draft values."
   );
   assert.deepEqual(
     await Promise.all(Array.from({ length: 6 }, (_, index) => addedCells.nth(index).getAttribute("data-diff-state"))),
     Array(6).fill("added"),
     "The computed Polars draft values must retain their added-column diff state."
   );
+  const gridViewport = await app.getByTestId("data-grid-scroller").boundingBox();
+  assert.ok(gridViewport, "The Polars notebook screenshot requires a measurable grid viewport.");
+  for (let index = 0; index < 3; index += 1) {
+    const cell = await addedCells.nth(index).boundingBox();
+    assert.ok(cell, `Computed Polars draft row ${index + 1} must have measurable geometry.`);
+    assert.ok(
+      cell.x >= gridViewport.x &&
+        cell.y >= gridViewport.y &&
+        cell.x + cell.width <= gridViewport.x + gridViewport.width &&
+        cell.y + cell.height <= gridViewport.y + gridViewport.height,
+      `Computed Polars draft row ${index + 1} must be fully inside the captured grid viewport.`
+    );
+  }
   await vscode.commands.executeCommand("openWrangler.codePreview.focus");
   await codePreview.focus();
   await clearReleasedJupyterScreenshotTransientUi(workbench);
