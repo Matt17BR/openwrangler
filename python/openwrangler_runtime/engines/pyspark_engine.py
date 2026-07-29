@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 from datetime import timedelta
@@ -35,6 +36,12 @@ _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
 _SUPPORTED_PYSPARK_VERSION = re.compile(r"^4\.2(?:\.|$)")
 _SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 _UNSUPPORTED_PROFILE_TYPE_ROOTS = frozenset({"variant", "time", "geometry", "geography"})
+PYSPARK_PAGE_CELL_LIMIT = 100_000
+PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT = 8 * 1024 * 1024
+PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT = 16 * 1024 * 1024
+PYSPARK_PAGE_COMPLEX_NODE_LIMIT = 100_000
+PYSPARK_PAGE_COMPLEX_DEPTH_LIMIT = 64
+_JSON_UTF8_VALIDATION_CHUNK_CHARACTERS = 16 * 1024
 
 
 class PySparkEngine(DataFrameEngine):
@@ -217,6 +224,12 @@ class PySparkEngine(DataFrameEngine):
         projection = normalize_page_projection(len(visible), column_projection)
         selected_columns = [visible[position] for position, _identifier in projection]
         column_ids = [identifier for _position, identifier in projection]
+        maximum_cells = int(limit) * len(selected_columns)
+        if maximum_cells > PYSPARK_PAGE_CELL_LIMIT:
+            raise EngineError(
+                f"PySpark pages may contain at most {PYSPARK_PAGE_CELL_LIMIT:,} cells; "
+                f"this window could contain {maximum_cells:,}. Request fewer rows or columns."
+            )
         row_id = self._row_id_column(frame)
 
         if frame is self._owned_frame and row_id is not None:
@@ -233,31 +246,52 @@ class PySparkEngine(DataFrameEngine):
             if frame not in self._ordered_frames and row_id is not None:
                 ordered = frame.orderBy(_spark_column(functions, row_id).asc())
             windowed = ordered.offset(int(offset)).limit(int(limit))
-        terminal_names = [*([row_id] if row_id is not None else []), *selected_columns]
-        terminal = windowed.select(*[_spark_column(functions, name) for name in terminal_names])
+        field_by_column = self._field_by_column(frame)
+        transports = [
+            _page_transport_expression(functions, _spark_column(functions, name), field_by_column[name].dataType)
+            for name in selected_columns
+        ]
+        self._validate_page_transport_size(functions, windowed, [expression for expression, _kind in transports])
+
+        terminal_expressions = []
+        if row_id is not None:
+            terminal_expressions.append(_spark_column(functions, row_id).alias("__ow_page_row_id"))
+        terminal_expressions.extend(
+            expression.alias(f"__ow_page_value_{index}") for index, (expression, _kind) in enumerate(transports)
+        )
+        terminal = windowed.select(*terminal_expressions)
         records = terminal.collect()
 
         rows = []
+        remaining_complex_nodes = PYSPARK_PAGE_COMPLEX_NODE_LIMIT
         value_offset = 1 if row_id is not None else 0
         for row_number, record in enumerate(records, start=offset):
             identity = record[0] if row_id is not None else row_number
+            values = []
+            for index, (_expression, transport_kind) in enumerate(transports):
+                cell, consumed_nodes = _normalize_page_transport(
+                    record[value_offset + index],
+                    transport_kind,
+                    remaining_complex_nodes,
+                )
+                remaining_complex_nodes -= consumed_nodes
+                values.append(cell)
             rows.append(
                 {
                     "id": f"r:{row_id}:{identity}" if row_id is not None else f"r:{row_number}",
                     "rowNumber": row_number,
-                    "values": [
-                        normalize_cell(_spark_python_value(record[value_offset + index]))
-                        for index in range(len(selected_columns))
-                    ],
+                    "values": values,
                 }
             )
-        return {
+        page = {
             "offset": offset,
             "limit": limit,
             "totalRows": self.shape(frame)["rows"] if total_rows is None else int(total_rows),
             "columnIds": column_ids,
             "rows": rows,
         }
+        _validate_page_protocol_size(page)
+        return page
 
     def summaries(
         self,
@@ -272,10 +306,12 @@ class PySparkEngine(DataFrameEngine):
         for position, column_id in projection:
             column_name = visible[position]
             raw_type, column_type = type_by_column[column_name]
+            data_type = self._field_by_column(frame)[column_name].dataType
             column = _spark_column(functions, column_name)
             nan = functions.isnan(column) if column_type == "float" else functions.lit(False)
             valid = column.isNotNull() & ~nan
-            grouped_value = self._groupable_value(functions, column, column_type)
+            grouped_value = self._groupable_value(functions, column, data_type)
+            display_value = self._profile_display_value(functions, column, data_type)
 
             metric_expressions: list[Any] = [
                 functions.count(functions.lit(1)).alias("__ow_total"),
@@ -315,9 +351,15 @@ class PySparkEngine(DataFrameEngine):
             nan_count = int(metrics["__ow_nan"] or 0)
             top_rows = (
                 frame.where(valid)
-                .select(grouped_value.alias("__ow_value"))
-                .groupBy("__ow_value")
-                .count()
+                .select(
+                    grouped_value.alias("__ow_group_key"),
+                    display_value.alias("__ow_display_value"),
+                )
+                .groupBy("__ow_group_key")
+                .agg(
+                    functions.count(functions.lit(1)).alias("count"),
+                    functions.first("__ow_display_value", ignorenulls=False).alias("__ow_value"),
+                )
                 .orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
                 .limit(10)
                 .collect()
@@ -406,7 +448,15 @@ class PySparkEngine(DataFrameEngine):
         metrics.append(functions.sum(functions.when(missing_row, 1).otherwise(0)).alias("__ow_missing_rows"))
         counts = frame.agg(*metrics).collect()[0]
 
-        visible_columns = [_spark_column(functions, name) for name in visible]
+        field_by_column = self._field_by_column(frame)
+        visible_columns = [
+            self._groupable_value(
+                functions,
+                _spark_column(functions, name),
+                field_by_column[name].dataType,
+            ).alias(f"__ow_duplicate_{index}")
+            for index, name in enumerate(visible)
+        ]
         duplicate_result = (
             frame.groupBy(*visible_columns)
             .count()
@@ -438,6 +488,7 @@ class PySparkEngine(DataFrameEngine):
         if column not in type_by_column:
             raise EngineError(f"Unknown PySpark column: {column}")
         _raw_type, column_type = type_by_column[column]
+        data_type = self._field_by_column(frame)[column].dataType
         expression = _spark_column(functions, column)
         valid = expression.isNotNull()
         if column_type == "float":
@@ -447,11 +498,18 @@ class PySparkEngine(DataFrameEngine):
             folded = functions.translate(expression.cast("string"), _ASCII_UPPER, _ASCII_LOWER)
             filtered = filtered.where(folded.contains(str(search).translate(_ASCII_TO_LOWER)))
 
-        grouped_value = self._groupable_value(functions, expression, column_type)
+        grouped_value = self._groupable_value(functions, expression, data_type)
+        display_value = self._profile_display_value(functions, expression, data_type)
         rows = (
-            filtered.select(grouped_value.alias("__ow_value"))
-            .groupBy("__ow_value")
-            .count()
+            filtered.select(
+                grouped_value.alias("__ow_group_key"),
+                display_value.alias("__ow_display_value"),
+            )
+            .groupBy("__ow_group_key")
+            .agg(
+                functions.count(functions.lit(1)).alias("count"),
+                functions.first("__ow_display_value", ignorenulls=False).alias("__ow_value"),
+            )
             .orderBy(functions.desc("count"), functions.asc(functions.col("__ow_value").cast("string")))
             .limit(int(limit) + 1)
             .collect()
@@ -543,12 +601,44 @@ class PySparkEngine(DataFrameEngine):
         return result & present
 
     @staticmethod
-    def _groupable_value(functions: Any, column: Any, column_type: str) -> Any:
-        if column_type in {"list", "struct"}:
-            return functions.to_json(column)
-        if column_type == "binary":
+    def _groupable_value(functions: Any, column: Any, data_type: Any) -> Any:
+        type_name = type(data_type).__name__
+        if type_name in {"ArrayType", "MapType", "StructType"}:
+            return _canonical_spark_value(functions, column, data_type)
+        if type_name == "BinaryType":
             return functions.base64(column)
         return column
+
+    @staticmethod
+    def _profile_display_value(functions: Any, column: Any, data_type: Any) -> Any:
+        type_name = type(data_type).__name__
+        if type_name in {"ArrayType", "MapType", "StructType"}:
+            return functions.to_json(column, {"ignoreNullFields": "false"})
+        if type_name == "BinaryType":
+            return functions.base64(column)
+        return column
+
+    @staticmethod
+    def _validate_page_transport_size(functions: Any, frame: Any, expressions: list[Any]) -> None:
+        if not expressions:
+            return
+        byte_terms = [
+            functions.coalesce(
+                functions.length(functions.encode(expression.cast("string"), "UTF-8")).cast("long"),
+                functions.lit(0).cast("long"),
+            )
+            for expression in expressions
+        ]
+        row_bytes = byte_terms[0]
+        for term in byte_terms[1:]:
+            row_bytes = row_bytes + term
+        result = frame.agg(functions.sum(row_bytes).alias("__ow_page_value_bytes")).collect()[0]
+        byte_count = int(result["__ow_page_value_bytes"] or 0)
+        if byte_count > PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:
+            raise EngineError(
+                f"PySpark page values may contain at most {PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT:,} UTF-8 bytes; "
+                f"this window contains {byte_count:,}. Request fewer rows or columns, or shorten large values."
+            )
 
     def _type_by_column(self, frame: Any) -> dict[str, tuple[str, str]]:
         visible = set(self._visible_columns(frame))
@@ -558,6 +648,10 @@ class PySparkEngine(DataFrameEngine):
                 raw_type = str(field.dataType.simpleString())
                 result[field.name] = (raw_type, infer_semantic_type(raw_type))
         return result
+
+    def _field_by_column(self, frame: Any) -> dict[str, Any]:
+        visible = set(self._visible_columns(frame))
+        return {field.name: field for field in frame.schema.fields if field.name in visible}
 
     def _row_id_column(self, frame: Any) -> str | None:
         value = self.internal_row_id_column(frame)
@@ -632,6 +726,157 @@ def _contains_unsupported_profile_type(data_type: Any) -> bool:
             if nested is not None:
                 pending.append(nested)
     return False
+
+
+def _canonical_spark_value(functions: Any, column: Any, data_type: Any) -> Any:
+    """Return one orderable native key while preserving nested Spark semantics."""
+
+    type_name = type(data_type).__name__
+    json_options = {"ignoreNullFields": "false"}
+    if type_name == "ArrayType":
+        canonical = functions.transform(
+            column,
+            lambda item: _canonical_spark_value(functions, item, data_type.elementType),
+        )
+        return functions.when(column.isNull(), functions.lit(None).cast("string")).otherwise(
+            functions.to_json(canonical, json_options)
+        )
+    if type_name == "MapType":
+        canonical_entries = functions.transform(
+            functions.map_entries(column),
+            lambda entry: functions.struct(
+                _canonical_spark_value(functions, entry.getField("key"), data_type.keyType).alias("key"),
+                _canonical_spark_value(functions, entry.getField("value"), data_type.valueType).alias("value"),
+            ),
+        )
+        return functions.when(column.isNull(), functions.lit(None).cast("string")).otherwise(
+            functions.to_json(functions.array_sort(canonical_entries), json_options)
+        )
+    if type_name == "StructType":
+        canonical_fields = [
+            _canonical_spark_value(functions, column.getField(field.name), field.dataType).alias(f"field_{index}")
+            for index, field in enumerate(data_type.fields)
+        ]
+        return functions.when(column.isNull(), functions.lit(None).cast("string")).otherwise(
+            functions.to_json(functions.struct(*canonical_fields), json_options)
+        )
+    if type_name == "BinaryType":
+        return functions.to_json(functions.array(functions.base64(column)), json_options)
+    return functions.to_json(functions.array(column.cast("string")), json_options)
+
+
+def _page_transport_expression(functions: Any, column: Any, data_type: Any) -> tuple[Any, str]:
+    type_name = type(data_type).__name__
+    if type_name in {"ArrayType", "MapType", "StructType"}:
+        return functions.to_json(column, {"ignoreNullFields": "false"}), "json"
+    if type_name == "BinaryType":
+        return functions.base64(column), "binary"
+    return column, "raw"
+
+
+def _normalize_page_transport(value: Any, kind: str, remaining_nodes: int) -> tuple[dict[str, Any], int]:
+    if kind == "raw":
+        return normalize_cell(_spark_python_value(value)), 0
+    if value is None:
+        return normalize_cell(None), 0
+    if not isinstance(value, str):
+        raise EngineError("PySpark paging returned a malformed bounded value.")
+    if kind == "binary":
+        return {
+            "kind": "binary",
+            "raw": value,
+            "display": value,
+            "isNull": False,
+            "isNaN": False,
+        }, 0
+    if kind != "json":
+        raise EngineError("PySpark paging returned an unknown bounded-value encoding.")
+
+    nodes, depth = _json_graph_metrics(value, remaining_nodes)
+    if depth > PYSPARK_PAGE_COMPLEX_DEPTH_LIMIT:
+        raise EngineError(
+            "PySpark page complex values may contain at most "
+            f"{PYSPARK_PAGE_COMPLEX_DEPTH_LIMIT} nested levels; encountered depth {depth}. "
+            "Request a simpler projection before opening this value."
+        )
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError, RecursionError) as error:
+        raise EngineError(f"PySpark paging returned malformed strict JSON: {error}") from error
+    return normalize_cell(decoded), nodes
+
+
+def _json_graph_metrics(value: str, remaining_nodes: int) -> tuple[int, int]:
+    """Count a conservative JSON graph before allocating its Python containers."""
+
+    nodes = 0
+    depth = 0
+    maximum_depth = 0
+    index = 0
+    length = len(value)
+
+    def add_node() -> None:
+        nonlocal nodes
+        nodes += 1
+        if nodes > remaining_nodes:
+            consumed = PYSPARK_PAGE_COMPLEX_NODE_LIMIT - remaining_nodes + nodes
+            raise EngineError(
+                "PySpark page complex values may contain at most "
+                f"{PYSPARK_PAGE_COMPLEX_NODE_LIMIT:,} JSON nodes; encountered at least {consumed:,}. "
+                "Request fewer rows or columns, or simplify nested values."
+            )
+
+    while index < length:
+        character = value[index]
+        if character.isspace() or character in ",:":
+            index += 1
+            continue
+        if character == '"':
+            add_node()
+            index += 1
+            while index < length:
+                current = value[index]
+                if current == "\\":
+                    index += 2
+                    continue
+                index += 1
+                if current == '"':
+                    break
+            continue
+        if character in "[{":
+            add_node()
+            depth += 1
+            maximum_depth = max(maximum_depth, depth)
+            index += 1
+            continue
+        if character in "]}":
+            depth = max(0, depth - 1)
+            index += 1
+            continue
+
+        add_node()
+        index += 1
+        while index < length and not value[index].isspace() and value[index] not in ",:]}":
+            index += 1
+    return nodes, maximum_depth
+
+
+def _validate_page_protocol_size(page: dict[str, Any]) -> None:
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    serialized_bytes = 0
+    try:
+        for serialized_chunk in encoder.iterencode(page):
+            for offset in range(0, len(serialized_chunk), _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS):
+                serialized_bytes += len(
+                    serialized_chunk[offset : offset + _JSON_UTF8_VALIDATION_CHUNK_CHARACTERS].encode("utf-8")
+                )
+                if serialized_bytes > PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT:
+                    raise EngineError(
+                        f"PySpark pages may contain at most {PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT:,} serialized bytes. "
+                        "Request fewer rows or columns, or shorten large values."
+                    )
+    except (TypeError, ValueError, RecursionError) as error:
+        raise EngineError(f"PySpark paging could not produce strict JSON: {error}") from error
 
 
 def _spark_python_value(value: Any) -> Any:

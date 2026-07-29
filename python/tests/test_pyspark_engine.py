@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from datetime import datetime
@@ -513,6 +514,202 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
 
     # The adapter owns only its indexed cached child, never the user's session.
     assert spark_session.range(1).count() == 1
+
+
+def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: Any) -> None:
+    frame = spark_session.sql(
+        """
+        SELECT
+          map_from_arrays(array('a', 'b'), array(1, 2)) AS payload,
+          named_struct(
+            'nested',
+            map_from_arrays(
+              array('x'),
+              array(map_from_arrays(array('a', 'b'), array(1, 2)))
+            )
+          ) AS detail
+        UNION ALL
+        SELECT
+          map_from_arrays(array('b', 'a'), array(2, 1)) AS payload,
+          named_struct(
+            'nested',
+            map_from_arrays(
+              array('x'),
+              array(map_from_arrays(array('b', 'a'), array(2, 1)))
+            )
+          ) AS detail
+        UNION ALL
+        SELECT
+          map('a', 9) AS payload,
+          named_struct('nested', map('x', map('a', 9))) AS detail
+        """
+    )
+    engine, indexed = _open_engine(frame, "map-profiles")
+    try:
+        assert engine.header_stats(indexed) == {
+            "missingCells": 0,
+            "missingRows": 0,
+            "duplicateRows": 1,
+            "missingValuesByColumn": [
+                {"column": "payload", "count": 0},
+                {"column": "detail", "count": 0},
+            ],
+        }
+
+        payload_summary = engine.summaries(indexed, [(0, "payload-id")])[0]
+        assert payload_summary["distinctCount"] == 2
+        assert payload_summary["topValues"] == [
+            {"value": '{"a":1,"b":2}', "count": 2},
+            {"value": '{"a":9}', "count": 1},
+        ]
+        values, has_more = engine.column_values(indexed, "payload", limit=10)
+        assert not has_more
+        assert values == [
+            {"value": '{"a":1,"b":2}', "count": 2},
+            {"value": '{"a":9}', "count": 1},
+        ]
+
+        page = engine.page(
+            indexed,
+            0,
+            3,
+            total_rows=3,
+            column_projection=[(0, "payload-id"), (1, "detail-id")],
+        )
+        assert page["columnIds"] == ["payload-id", "detail-id"]
+        assert page["rows"][0]["values"][0]["raw"] == {"a": 1, "b": 2}
+        assert page["rows"][1]["values"][0]["raw"] == {"b": 2, "a": 1}
+        assert page["rows"][0]["values"][1]["raw"] == {"nested": {"x": {"a": 1, "b": 2}}}
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "repeat('x', 128)",
+        "encode(repeat('x', 128), 'UTF-8')",
+        "array_repeat(repeat('x', 8), 32)",
+        "map('payload', repeat('x', 128))",
+        "named_struct('payload', repeat('x', 128))",
+    ],
+)
+def test_large_variable_width_page_values_fail_before_terminal_collection(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    expression: str,
+) -> None:
+    frame = spark_session.sql(f"SELECT {expression} AS payload")
+    engine, indexed = _open_engine(frame, "large-page-value")
+    dataframe_type = type(indexed)
+    original_collect = dataframe_type.collect
+    collected_projections: list[tuple[str, ...]] = []
+
+    def guarded_collect(value: Any) -> Any:
+        projection = tuple(value.columns)
+        collected_projections.append(projection)
+        if any(name.startswith("__ow_page_value_") and name != "__ow_page_value_bytes" for name in projection):
+            raise AssertionError("Oversized page values must not cross into the notebook process.")
+        return original_collect(value)
+
+    try:
+        with monkeypatch.context() as page_patch:
+            page_patch.setattr(pyspark_engine_module, "PYSPARK_PAGE_TRANSPORT_BYTE_LIMIT", 32)
+            page_patch.setattr(dataframe_type, "collect", guarded_collect)
+            with pytest.raises(EngineError, match=r"at most 32 UTF-8 bytes"):
+                engine.page(
+                    indexed,
+                    0,
+                    1,
+                    total_rows=1,
+                    column_projection=[(0, "payload-id")],
+                )
+        assert collected_projections == [("__ow_page_value_bytes",)]
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_complex_page_depth_and_node_budgets_are_authoritative(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = spark_session.sql("SELECT array(array(array(1))) AS nested, array(1, 2, 3, 4) AS many")
+    engine, indexed = _open_engine(frame, "complex-page-budgets")
+    try:
+        with monkeypatch.context() as page_patch:
+            page_patch.setattr(pyspark_engine_module, "PYSPARK_PAGE_COMPLEX_DEPTH_LIMIT", 2)
+            with pytest.raises(EngineError, match=r"at most 2 nested levels; encountered depth 3"):
+                engine.page(
+                    indexed,
+                    0,
+                    1,
+                    total_rows=1,
+                    column_projection=[(0, "nested-id")],
+                )
+
+        with monkeypatch.context() as page_patch:
+            page_patch.setattr(pyspark_engine_module, "PYSPARK_PAGE_COMPLEX_NODE_LIMIT", 4)
+            with pytest.raises(EngineError, match=r"at most 4 JSON nodes; encountered at least 5"):
+                engine.page(
+                    indexed,
+                    0,
+                    1,
+                    total_rows=1,
+                    column_projection=[(1, "many-id")],
+                )
+
+        page = engine.page(
+            indexed,
+            0,
+            1,
+            total_rows=1,
+            column_projection=[(0, "nested-id"), (1, "many-id")],
+        )
+        assert page["rows"][0]["values"][0]["raw"] == [[[1]]]
+        assert page["rows"][0]["values"][1]["raw"] == [1, 2, 3, 4]
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
+def test_page_protocol_byte_budget_accepts_only_the_exact_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = {
+        "offset": 0,
+        "limit": 1,
+        "totalRows": 1,
+        "columnIds": ["payload-id"],
+        "rows": [
+            {
+                "id": "r:0",
+                "rowNumber": 0,
+                "values": [
+                    {
+                        "kind": "string",
+                        "raw": 'quoted "value"',
+                        "display": 'quoted "value"',
+                        "isNull": False,
+                        "isNaN": False,
+                    }
+                ],
+            }
+        ],
+    }
+    exact_size = len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+    with monkeypatch.context() as page_patch:
+        page_patch.setattr(pyspark_engine_module, "PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT", exact_size)
+        pyspark_engine_module._validate_page_protocol_size(page)
+
+    with monkeypatch.context() as page_patch:
+        page_patch.setattr(pyspark_engine_module, "PYSPARK_PAGE_PROTOCOL_BYTE_LIMIT", exact_size - 1)
+        with pytest.raises(EngineError, match=rf"at most {exact_size - 1:,} serialized bytes"):
+            pyspark_engine_module._validate_page_protocol_size(page)
 
 
 def test_session_manager_detects_live_variable_and_disables_mutation_capabilities(

@@ -74,9 +74,9 @@ PySpark stays distributed and read-only in this preview. The user's Jupyter kern
 | ---------------------------------------------- | ------------------------ | ------- | ------------------------------------------------------- | ----------------------------------------------------------- |
 | Classic PySpark DataFrame detection            | Live notebook only       | Partial | Exact 4.2 adapter plus real packaged Variables launch   | Cursor release candidate and external-cluster evidence      |
 | Local Spark Connect DataFrame viewing          | Live notebook only       | Partial | Local Connect plus real packaged Variables launch       | External or authenticated Connect server execution          |
-| Indexed, projected grid pages                  | Read-only                | Partial | Bounded native pages in runtime and packaged VS Code    | Large partitioned fixture and repeated performance evidence |
+| Indexed, projected grid pages                  | Read-only                | Partial | Native projection plus byte/node/depth page bounds      | Large partitioned fixture and repeated performance evidence |
 | Basic/advanced filters and multi-column sorts  | Read-only                | Partial | Native expressions plus packaged filtered/sorted pages  | Full literal edge matrix and Cursor release evidence        |
-| Summaries, statistics, and distinct values     | Read-only                | Partial | Native aggregates plus packaged progressive summary     | Repeated resource and performance evidence                  |
+| Summaries, statistics, and distinct values     | Read-only                | Partial | Native aggregates and canonical nested-map profile keys | Repeated resource and performance evidence                  |
 | Session cleanup                                | Owned indexed child only | Partial | Unpersist, kernel replay, and owner-session reuse green | Cancellation and external-cluster recovery                  |
 | Cleaning operations and history                | No                       | Planned | Capabilities reject editing                             | Distributed transformation IR and native code generation    |
 | Script/notebook/data export                    | No                       | Planned | Capabilities reject export                              | Source-safe Spark-native export design                      |

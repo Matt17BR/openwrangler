@@ -82,7 +82,9 @@ DuckDB remains native for supported file sessions. Notebook relations are not ye
 PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting,
 paging, and profiling stay in Spark, while only bounded results return to the notebook runtime. File sessions,
 cleaning steps, exports, and saved inline snapshots are not supported for PySpark yet. Opening a session currently
-indexes and counts the complete frame. Insights stay off until requested because each profile runs Spark queries.
+indexes and counts the complete frame. Each requested grid page is checked in Spark before collection and then
+bounded again by serialized size, complex-value nodes, and nesting depth. These are page-transfer safeguards, not
+dataframe row limits. Insights stay off until requested because each profile runs Spark queries.
 
 ## Engines and formats
 
