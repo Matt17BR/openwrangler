@@ -436,6 +436,26 @@ test("opt-in Remote SSH acceptance consumes the same canonical VSIX once", () =>
   assert.match(host?.run ?? "", /libtomcrypt1/u);
   assert.match(host?.run ?? "", /libtommath1/u);
   assert.match(host?.run ?? "", /procps/u);
+  assert.equal((host?.run ?? "").includes('runner_uid="$(id -u)"'), true);
+  assert.equal((host?.run ?? "").includes('test "$owner" = "0" || test "$owner" = "$runner_uid"'), true);
+  assert.equal(
+    (host?.run ?? "").includes('sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"'),
+    true
+  );
+  assert.equal((host?.run ?? "").includes('sudo chmod go-w -- "${system_runtime_ancestors[@]}"'), true);
+  assert.equal((host?.run ?? "").includes('for directory in / "${system_runtime_ancestors[@]}"; do'), true);
+  assert.equal((host?.run ?? "").includes(`test "$(stat --format='%u:%g' "$directory")" = "0:0"`), true);
+  assert.equal((host?.run ?? "").includes(`find "$directory" -maxdepth 0 -perm /022 -print -quit`), true);
+  assert.equal((host?.run ?? "").includes('test ! -w "$directory"'), true);
+  const ancestors = /system_runtime_ancestors=\(\n(?<ancestors>(?: {2}\/[^\n]+\n)+)\)\n/u.exec(host?.run ?? "");
+  assert.ok(ancestors?.groups?.ancestors, "Remote SSH CI must retain one explicit system-ancestor array.");
+  assert.deepEqual(
+    ancestors.groups.ancestors
+      .trim()
+      .split("\n")
+      .map((line) => line.trim()),
+    ["/usr", "/etc"]
+  );
   assert.equal((host?.run ?? "").includes("sudo chmod go-w -- /usr/share"), true);
   assert.equal((host?.run ?? "").includes("test ! -w /usr/share"), true);
   assert.equal((host?.run ?? "").includes('sudo chmod --recursive go-w -- "${system_runtime_roots[@]}"'), true);

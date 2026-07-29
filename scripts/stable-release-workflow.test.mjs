@@ -87,6 +87,10 @@ test("stable release inspector rejects unsafe publication and artifact drift", (
       "      - id: remote_workspace\n        name: Test packaged VS Code over Remote SSH\n        if: ${{ false }}"
     ),
     source.replace(
+      'sudo chown --no-dereference root:root -- "${system_runtime_ancestors[@]}"',
+      "sudo chown --no-dereference root:root -- /usr"
+    ),
+    source.replace(
       "      - id: canonical_artifact\n        name: Upload the canonical stable artifact set",
       "      - run: node scripts/rewrite-canonical.mjs canonical-release/openwrangler.vsix\n      - id: canonical_artifact\n        name: Upload the canonical stable artifact set"
     ),

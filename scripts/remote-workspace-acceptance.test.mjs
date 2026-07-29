@@ -927,6 +927,24 @@ linuxTest("System runtime closure roots and ancestors must be canonical, root-ow
   }
 });
 
+linuxTest("A runner-owned usr ancestor cannot enter the Remote SSH system-runtime closure", () => {
+  const root = "/usr/lib/x86_64-linux-gnu";
+  const directory = (uid = 0) => ({
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+    uid,
+    mode: 0o040755
+  });
+  assert.throws(
+    () =>
+      validateRootOwnedSystemRuntimeDirectory(root, {
+        lstat: (path) => directory(path === "/usr" ? 1001 : 0),
+        realpath: (path) => path
+      }),
+    /every ancestor must be canonical, root-owned, and non-writable/u
+  );
+});
+
 test("Dropbear system-library mountpoints stay on root-controlled multiarch files", () => {
   const root = "/usr/lib/x86_64-linux-gnu";
   const file = (overrides = {}) => ({
