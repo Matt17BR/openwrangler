@@ -591,6 +591,14 @@ Stable-ID column summaries and Insights polish, 2026-07-27:
 
 This strengthens the existing **Done** dataset-summary row and the still-**Partial** release-platform visual/accessibility row for [issue #90](https://github.com/Matt17BR/openwrangler/issues/90). Broader workbench hierarchy, information-density, and interaction redesign remains explicitly post-1.0 work in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88); it does not expand this bounded release slice. This does not close unrelated 1.0 gates or make a parity-complete claim.
 
+Selected-column Insights hierarchy, 2026-07-29:
+
+- Insights now opens on one stable selected column instead of rendering an accordion for every schema column. The focused view exposes exact numeric min, max, mean, median, and standard deviation; explicit datetime bounds and boolean counts; categorical and string top values; and visible null, NaN, distinct, empty-string, exact, and sampled labels.
+- Dataset and Filters are separate tab panels. Exact dataset statistics start only in Dataset, distinct-value work starts only in Filters, and leaving either view cancels its pending request. Duplicate display names remain positionally disambiguated while name-addressed viewing controls fail closed.
+- Component coverage proves selected-column ownership transfer, stale-response rejection, rollback, duplicate-label safety, view-specific cancellation, and roving Arrow, Home, and End tab navigation. Production-bundle axe scans cover all three views at 800px and 200% zoom. A local wide-grid run recorded cached and uncached p95 interaction times of 32.0ms and 92.3ms.
+
+This advances the chosen selected-column direction in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). Text-length profiling, the broader command-row and draft-strip redesign, refreshed packaged-editor screenshots, and complete VS Code and Cursor evidence remain follow-up work, so the issue stays open.
+
 Released-Jupyter argument provenance slice, 2026-07-26:
 
 - The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.
