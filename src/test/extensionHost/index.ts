@@ -10151,7 +10151,7 @@ async function exerciseRuntimeSelectionCommands(testing: TestApi, fixture: vscod
     assert.equal(rejectedDuckDB.kind, "error");
     if (rejectedDuckDB.kind === "error") {
       assert.equal(rejectedDuckDB.code, "missing_dependencies");
-      assert.match(rejectedDuckDB.message, /Missing: duckdb>=1\.4\.5,<1\.6, pytz\.$/u);
+      assert.match(rejectedDuckDB.message, /Missing: duckdb>=1\.5\.4,<1\.6, pytz\.$/u);
       assert.match(rejectedDuckDB.detail ?? "", /Install Runtime Dependencies/);
     }
     const rejectedLossyUtf8 = await testing.request({
