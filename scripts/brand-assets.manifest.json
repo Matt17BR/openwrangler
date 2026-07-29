@@ -1,21 +1,21 @@
 {
   "version": 1,
   "sources": {
-    "activity-icon.svg": "8dafff5dbd9e9fc6762978762a751b15c4a0b79c595aeb49e21076f40311c12e",
-    "icon.svg": "1aed782c5e08486019fe57089127b87d368e203a0babbfdad6b5655eac43fbed"
+    "activity-icon.svg": "b64778e508ecefd99cc98d12abfdb46eb2e00ccdce7752b79ea611508b504b9d",
+    "icon.svg": "2e505f8d59128ca17102fe2b6e126004f409b4a05e83f06e74fc7fff703b892c"
   },
   "outputs": {
     "icon-128.png": {
       "size": 128,
-      "sha256": "5d16bf3247aba717509fadf1732f04d16ea39320be6594ecb8a2f2baa38ead06"
+      "sha256": "8fed2c504e14ac0729a22e1929ef49c3c6b2fdb926c13fcf001619fe4b28e4be"
     },
     "icon-256.png": {
       "size": 256,
-      "sha256": "6bbe61fcdc563e48b174a9c34986c2766339cdd7a9cbf938f28085c5b958f8f2"
+      "sha256": "1f5286487bb1a43516f12f3564c300d0cdd5712d11a191c47c4d288cc6adc1b5"
     },
     "icon.png": {
       "size": 512,
-      "sha256": "ea51dc03b643903d3864b9e67a17ab18487814700ec1f184cdb81f4e27ffb27e"
+      "sha256": "d678d72e5a63ac01c6b92d2de1afbfc0ccacd3f06449129e1663348d8aab45cb"
     }
   }
 }

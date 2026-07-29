@@ -37,31 +37,31 @@ interface KeyboardKeyPair {
 }
 
 interface OneShotAcceptanceAction<T> {
-  readonly click: () => Promise<void>;
+  readonly activate: () => Promise<void>;
   readonly receipt: () => Promise<T>;
   readonly naturalDismissal?: () => Promise<void>;
   readonly description: string;
 }
 
 interface AuthoritativelyReceiptedOneShotAcceptanceAction<T> extends OneShotAcceptanceAction<T> {
-  readonly authoritativeReceiptAfterClickFailure: () => Promise<T>;
+  readonly authoritativeReceiptAfterActivationFailure: () => Promise<T>;
 }
 
 export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
-    super(`${description} may have been dispatched, but its browser click did not settle.`, { cause });
+    super(`${description} may have been dispatched, but its one-shot user activation did not settle.`, { cause });
     this.name = "IndeterminateAcceptanceActionError";
   }
 }
 
 export async function invokeAcceptanceActionOnce<T>({
-  click,
+  activate,
   receipt,
   naturalDismissal,
   description
 }: OneShotAcceptanceAction<T>): Promise<T> {
   try {
-    await click();
+    await activate();
   } catch (error) {
     throw new IndeterminateAcceptanceActionError(description, error);
   }
@@ -70,18 +70,18 @@ export async function invokeAcceptanceActionOnce<T>({
 }
 
 export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
-  click,
+  activate,
   receipt,
-  authoritativeReceiptAfterClickFailure,
+  authoritativeReceiptAfterActivationFailure,
   naturalDismissal,
   description
 }: AuthoritativelyReceiptedOneShotAcceptanceAction<T>): Promise<T> {
   try {
-    await click();
+    await activate();
   } catch (error) {
     const indeterminate = new IndeterminateAcceptanceActionError(description, error);
     try {
-      return await authoritativeReceiptAfterClickFailure();
+      return await authoritativeReceiptAfterActivationFailure();
     } catch (receiptError) {
       throw new AggregateError(
         [indeterminate, receiptError],

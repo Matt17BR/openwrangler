@@ -133,11 +133,10 @@ interface ExtensionApi {
 interface ReleasedJupyterVariableAction {
   readonly action: Locator;
   readonly documentRoot: Locator;
-  readonly row: Locator;
 }
 
 interface ReleasedJupyterDocumentRootElement {
-  readonly dataset: { readonly openWranglerAcceptanceClick?: string };
+  readonly dataset: { readonly openWranglerAcceptanceActivation?: string };
 }
 
 interface FakeJupyterApi {
@@ -1492,7 +1491,6 @@ async function dispatchReleasedJupyterVariableAction(
     0,
     `The real released-Jupyter Variables action for ${variableName} requires a zero-tab receipt baseline.`
   );
-  await viewerAction.row.hover({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
   assertExactOpenNotebookDocument(
     notebook,
     `immediately before dispatching the released-Jupyter Variables action for ${variableName}`
@@ -1500,18 +1498,19 @@ async function dispatchReleasedJupyterVariableAction(
   recordAcceptanceProgress(`${checkpoint}:dispatch`);
   await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
     description: `the real released-Jupyter Variables action for ${variableName}`,
-    click: () => viewerAction.action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+    activate: () => viewerAction.action.press("Enter", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
     receipt: async () => {
       assert.equal(
         await viewerAction.documentRoot.evaluate(
-          (element) => (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceClick
+          (element) =>
+            (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceActivation
         ),
         "seen",
-        `The real released-Jupyter Variables action for ${variableName} must receive its browser click event.`
+        `The real released-Jupyter Variables action for ${variableName} must receive one trusted keyboard activation.`
       );
       await waitForReleasedJupyterVariableActionReceipt(variableName);
     },
-    authoritativeReceiptAfterClickFailure: () => waitForReleasedJupyterVariableActionReceipt(variableName)
+    authoritativeReceiptAfterActivationFailure: () => waitForReleasedJupyterVariableActionReceipt(variableName)
   });
   recordAcceptanceProgress(`${checkpoint}:receipt`);
 }
@@ -2508,7 +2507,6 @@ async function waitForReleasedJupyterVariableAction(
           const cell = table.locator(`[role="cell"][title=${JSON.stringify(variableName)}]`).first();
           if ((await cell.count()) === 0 || !(await cell.isVisible())) continue;
           const row = cell.locator("xpath=ancestor::*[@role='row'][1]");
-          await row.hover({ timeout: 1_000 });
           const actions = row.getByRole("button", {
             name: RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION,
             exact: true
@@ -2519,7 +2517,7 @@ async function waitForReleasedJupyterVariableAction(
             state: "visible",
             timeout: RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS
           });
-          return { action, documentRoot: frame.locator("html"), row };
+          return { action, documentRoot: frame.locator("html") };
         } catch (error) {
           if (!isReleasedJupyterVariableActionReplacement(error)) {
             throw error;
@@ -2576,13 +2574,32 @@ async function waitForReleasedJupyterVariableAction(
             return false;
           }
           const root = element.ownerDocument.documentElement;
-          root.dataset.openWranglerAcceptanceClick = "pending";
+          root.dataset.openWranglerAcceptanceActivation = "pending";
           root.addEventListener(
             "click",
-            () => {
-              root.dataset.openWranglerAcceptanceClick = "seen";
+            (event) => {
+              const composedPath =
+                typeof event === "object" &&
+                event !== null &&
+                "composedPath" in event &&
+                typeof event.composedPath === "function"
+                  ? event.composedPath()
+                  : [];
+              const keyboardButtonActivation =
+                event.isTrusted === true &&
+                event.detail === 0 &&
+                composedPath.some(
+                  (candidate) =>
+                    typeof candidate === "object" &&
+                    candidate !== null &&
+                    "tagName" in candidate &&
+                    candidate.tagName === "BUTTON"
+                );
+              if (keyboardButtonActivation) {
+                root.dataset.openWranglerAcceptanceActivation = "seen";
+              }
             },
-            { capture: true, once: true }
+            { capture: true }
           );
           return true;
         }),
@@ -2591,10 +2608,11 @@ async function waitForReleasedJupyterVariableAction(
       if (!listenerAttached) throw new ReleasedJupyterVariableActionReplacementError();
       assert.equal(
         await documentRoot.evaluate(
-          (element) => (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceClick
+          (element) =>
+            (element as unknown as ReleasedJupyterDocumentRootElement).dataset.openWranglerAcceptanceActivation
         ),
         "pending",
-        `The released Jupyter Variables action for ${variableName} must arm its document-level click receipt.`
+        `The released Jupyter Variables action for ${variableName} must arm its trusted keyboard receipt.`
       );
     },
     dispose: async () => undefined,
@@ -3139,7 +3157,7 @@ async function clickReleasedNotebookVariableAction(
     dispatchStarted = true;
     return await invokeAcceptanceActionOnce({
       description: pinned.description,
-      click: () => pinned.action.click({ timeout: 2_000 }),
+      activate: () => pinned.action.click({ timeout: 2_000 }),
       receipt: () => waitForReleasedNotebookVariableInput(workbench),
       naturalDismissal: pinned.overflowMenu
         ? () => pinned.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })
