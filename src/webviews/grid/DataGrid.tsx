@@ -25,6 +25,7 @@ import {
   scrollTopForLogicalRow
 } from "./rowScrollModel";
 import { columnTypePresentation } from "../columnTypes";
+import { NumericHistogram } from "../visualizations/NumericHistogram";
 
 interface DataGridProps {
   metadata: SessionMetadata;
@@ -1122,41 +1123,7 @@ function ColumnHeader({
 function MiniChart({ visualization }: { visualization: ColumnVisualization | undefined }) {
   if (!visualization) return <span className="miniChart emptyInsight">No chart</span>;
   if (visualization.kind === "numeric") {
-    const max = Math.max(1, ...visualization.bins.map((bin) => bin.count));
-    const width = 96;
-    const height = 28;
-    const barWidth = visualization.bins.length ? width / visualization.bins.length : width;
-    const rangeStart = visualization.bins.at(0)?.min;
-    const rangeEnd = visualization.bins.at(-1)?.max;
-    const rangeLabel =
-      rangeStart === undefined || rangeEnd === undefined
-        ? "No finite values"
-        : `${formatInsightValue(rangeStart)} to ${formatInsightValue(rangeEnd)}`;
-    return (
-      <span
-        className="numericMiniChart"
-        role="img"
-        aria-label={`${visualization.sampled ? "Sampled " : ""}numeric distribution with ${visualization.bins.length} bins; range ${rangeLabel}.`}
-      >
-        <svg className="miniChart" viewBox={`0 0 ${width} ${height}`} aria-hidden="true" focusable="false">
-          {visualization.bins.map((bin, index) => {
-            const barHeight = Math.max(2, (bin.count / max) * height);
-            return (
-              <rect
-                key={`${bin.min}-${bin.max}-${index}`}
-                x={index * barWidth}
-                y={height - barHeight}
-                width={Math.max(1, barWidth - 1)}
-                height={barHeight}
-              />
-            );
-          })}
-        </svg>
-        <span className="miniChartCaption">
-          {rangeLabel} · {visualization.bins.length} bins
-        </span>
-      </span>
-    );
+    return <NumericHistogram visualization={visualization} compact />;
   }
   if (visualization.kind === "boolean") {
     const total = Math.max(1, visualization.trueCount + visualization.falseCount);
@@ -1192,16 +1159,20 @@ function MiniChart({ visualization }: { visualization: ColumnVisualization | und
       >
         {visibleCategories.map((category, index) => (
           <span className="categoryMiniRow" key={`${category.value}-${index}`}>
-            <span className="categoryMiniLabel">{category.value}</span>
+            <span className="categoryMiniLabel" title={category.value}>
+              {category.value}
+            </span>
             <i aria-hidden="true" style={{ width: `${(category.count / max) * 100}%` }} />
-            <small>{category.count.toLocaleString()}</small>
+            <small title={`${category.count.toLocaleString()} rows`}>{category.count.toLocaleString()}</small>
           </span>
         ))}
         {visualization.otherCount > 0 && (
           <span className="categoryMiniRow">
             <span className="categoryMiniLabel">Other</span>
             <i aria-hidden="true" style={{ width: `${(visualization.otherCount / max) * 100}%` }} />
-            <small>{visualization.otherCount.toLocaleString()}</small>
+            <small title={`${visualization.otherCount.toLocaleString()} rows`}>
+              {visualization.otherCount.toLocaleString()}
+            </small>
           </span>
         )}
       </span>
@@ -1215,10 +1186,10 @@ function MiniChart({ visualization }: { visualization: ColumnVisualization | und
       role="img"
       aria-label={`${visualization.sampled ? "Sampled " : ""}datetime distribution: minimum ${min}, maximum ${max}.`}
     >
-      <span>
+      <span title={`Minimum ${min}`}>
         <b>Min</b> {min}
       </span>
-      <span>
+      <span title={`Maximum ${max}`}>
         <b>Max</b> {max}
       </span>
     </span>

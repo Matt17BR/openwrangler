@@ -203,7 +203,7 @@ function decodeFileConfiguration(
     const decoded = decodeFormatImportOptions(uri, importOptions);
     return decoded ? { backend, backendPreference, importOptions: decoded } : undefined;
   }
-  if ((extension === ".parquet" || extension === ".jsonl") && importOptions === undefined) {
+  if ((extension === ".parquet" || extension === ".jsonl" || extension === ".ndjson") && importOptions === undefined) {
     return { backend, backendPreference };
   }
   return undefined;

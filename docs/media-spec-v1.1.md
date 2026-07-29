@@ -1,6 +1,7 @@
 # Open Wrangler v1.1 media specification
 
-This specification replaces evidence-heavy README captures with two concise product views. Existing release screenshots remain unchanged until both replacements pass the checklist below.
+This specification replaces evidence-heavy README captures with two concise product views and a linked notebook
+gallery. Every published image comes from the packaged extension running in an isolated editor profile.
 
 ## Brand asset contract
 
@@ -22,25 +23,23 @@ This specification replaces evidence-heavy README captures with two concise prod
 ## README workbench image
 
 - Output: `docs/images/readme/v1.1/workbench.png`
-- Canvas: 1440 x 720 pixels
+- Canvas: 1920 x 830 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders CSV with dates, categories, currency, quantities, nulls, and realistic customer and product labels
 - State: automatic CSV import, `revenue` selected, selected-column Insights visible with min, max, mean, and median
-- Composition: a light-theme grid overview and a focused dark-theme Insights crop from the same source state,
-  selected column, and packaged session, combined into one diagonal split
+- Composition: the same full-size packaged session in VS Code's default light and dark themes, joined at a
+  straight vertical midpoint with no scaling, diagonal mask, or decorative overlay
 - Framing: extension UI dominates the image; editor chrome remains visible enough to establish VS Code context
 
 ## README notebook image
 
 - Output: `docs/images/readme/v1.1/notebooks.png`
-- Canvas: 1440 x 600 pixels
+- Canvas: 1920 x 450 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders frames
-- Top card: `orders-analysis.ipynb`, Pandas `notebook_showcase`, saved Open Wrangler snapshot
-- Bottom card: `orders-analysis.ipynb`, Polars `polars_frame`, live formula draft with computed values,
-  added-column diff, and complete native Polars code visible
-- Labels: small `Pandas snapshot` and `Polars live session` captions outside the product UI
-- Composition: two full-width focus bands so notebook output, draft values, and code remain legible at registry width
+- State: `orders-analysis.ipynb`, Pandas `notebook_showcase`, and an Open Wrangler inline dataframe preview
+- Composition: one unaltered high-resolution editor capture, retaining the real notebook chrome, output, and
+  extension controls; no custom card, crop, mock frame, or decorative background
 
 ## Linked gallery
 
@@ -48,6 +47,8 @@ The README may link to a separate gallery rather than stacking more full-width i
 
 - DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a file-backed rich Parquet session with
   decimal, time-zone, list, and struct columns; do not imply notebook support
+- Polars: `docs/images/readme/v1.1/gallery/notebook-polars.png`, an unaltered 1920 x 760 packaged-editor capture
+  of a live native Polars notebook session, including its generated Polars code
 - PySpark: `docs/images/readme/v1.1/gallery/pyspark-live-notebook.png`, a real packaged VS Code and released
   Jupyter capture of a deterministic 100,000-row by 15-column Classic DataFrame
 - The PySpark panel must say `Experimental` and `Viewing only`; it must not imply file opening, cleaning, export,
@@ -60,6 +61,8 @@ The README may link to a separate gallery rather than stacking more full-width i
 - Use isolated editor profiles and deterministic local fixtures
 - Hide test names, temporary paths, notifications, hovers, and cursor focus rings
 - Show complete headings, labels, operations, summaries, and generated code without clipping or overlap
+- Use VS Code's named default light and dark themes; never choose the first installed theme by contribution order
+- Preserve the editor's native geometry. Do not scale, rotate, diagonally mask, or place captures in invented cards
 - Keep the main subject legible at the README display width
 - Use static PNGs with an sRGB profile and target 300 KiB or less for each primary README image
 - Verify the final files and corrected logo on GitHub, Visual Studio Marketplace, and Open VSX

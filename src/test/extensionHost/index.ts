@@ -185,7 +185,7 @@ const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN =
   /^(?:Open Variable|Open Wrangler: Open Notebook Variable)$/u;
 const RELEASED_JUPYTER_EXPORT_COMMAND = "jupyter.notebookeditor.export";
 const NOTEBOOK_TOOLBAR_MORE_COMMAND = "toolbar.toggle.more";
-const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE = "Open Notebook Variable in Open Wrangler";
+const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Notebook Variable";
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
@@ -337,6 +337,7 @@ export async function run(): Promise<void> {
     "openWrangler.changeImportOptions",
     "openWrangler.launchDataViewer",
     "openWrangler.openNotebookVariable",
+    "openWrangler.chooseNotebookPreviewProvider",
     "openWrangler.checkJupyterIntegration",
     "openWrangler.changeRuntime",
     "openWrangler.clearRuntime",
@@ -405,7 +406,7 @@ export async function run(): Promise<void> {
     {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
-      icon: "$(open-preview)"
+      icon: "media/activity-icon.svg"
     }
   );
   assert.deepEqual(
@@ -423,11 +424,11 @@ export async function run(): Promise<void> {
       command: RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND,
       title: "Open Wrangler: Open Notebook Variable",
       shortTitle: "Open Variable",
-      icon: "$(table)"
+      icon: "media/activity-icon.svg"
     }
   );
   const fileResourcePredicate =
-    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i";
+    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
   const explorerContextItems = contributions.menus?.["explorer/context"] ?? [];
   assert.ok(
     explorerContextItems.some(
@@ -452,7 +453,7 @@ export async function run(): Promise<void> {
     );
     assert.match(
       loadedRemoteAction.when ?? "",
-      /resourceExtname =~ \/\\\.\(csv\|tsv\|parquet\|jsonl\|xlsx\|xls\)\$\/i/u,
+      /resourceExtname =~ \/\\\.\(csv\|tsv\|parquet\|jsonl\|ndjson\|xlsx\|xls\)\$\/i/u,
       "Remote SSH must preserve the supported data-file extension predicate."
     );
   }
@@ -810,11 +811,15 @@ async function exerciseReleasedJupyterExtension(
   writeReleasedJupyterNotebook(notebookPath, setupMarker, kernelTarget, extension.extensionPath);
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalNotebookStartMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
+  const originalNotebookPreviewProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  )?.workspaceValue;
 
   let notebook: vscode.NotebookDocument | undefined;
   let rendererLoadObserver: NotebookRendererLoadObserver | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
   try {
+    await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
     recordAcceptanceProgress(`${phase}:notebook-open`);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
     assertExactOpenNotebookDocument(notebook, "after opening the released-Jupyter fixture");
@@ -857,43 +862,15 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(warmKernel.hostExtensionVisible, false);
     }
 
-    assertExactVisibleReleasedNotebookEditor(
-      notebook,
-      variableNotebookEditor,
-      "immediately before opening the real Jupyter Variables view"
-    );
-    await vscode.commands.executeCommand("jupyter.openVariableView");
-    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
-    assertExactVisibleReleasedNotebookEditor(
-      notebook,
-      variableNotebookEditor,
-      "after opening the real Jupyter Variables view"
-    );
-
-    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
     assert.equal(
-      jupyterExtension.isActive,
-      true,
-      "Executing the fixture must activate the released Jupyter extension."
+      releasedJupyterSessionTabs().length,
+      0,
+      "Automatic notebook-preview preparation must begin without creating an Open Wrangler session panel."
     );
-    const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
-    assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
-    assert.equal(initialKernel.pid, warmKernel.pid, "The Variables refresh must remain on the exact warmed kernel.");
-    assert.equal(initialKernel.setup, setupMarker);
-    assert.equal(
-      initialKernel.runtime,
-      false,
-      "The private released-Jupyter kernel must not inherit an installed Open Wrangler runtime before bootstrap."
-    );
-
-    assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
-
-    recordAcceptanceProgress(`${phase}:variables-action`);
-    await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
-    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
-    recordAcceptanceProgress(`${phase}:variables-panel-created`);
+    recordAcceptanceProgress(`${phase}:proactive-formatter`);
+    await configuration.update("notebookPreviewProvider", "openWrangler", vscode.ConfigurationTarget.Workspace);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
-    assertExactOpenNotebookDocument(notebook, "while the released Jupyter consent belongs to the fixture notebook");
+    assertExactOpenNotebookDocument(notebook, "while proactive formatter consent belongs to the fixture notebook");
 
     if (phase === "jupyter-deny") {
       recordAcceptanceProgress("jupyter-deny:consent");
@@ -901,8 +878,11 @@ async function exerciseReleasedJupyterExtension(
       await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
       await waitForStableReleasedJupyterSessionCount(testing, 0, 2_000, 10_000);
       assert.equal(testing.diagnostics().sessionCount, 0);
-      await closeReleasedJupyterSessionTabs();
-      assert.equal(testing.diagnostics().sessionCount, 0);
+      assert.equal(
+        releasedJupyterSessionTabs().length,
+        0,
+        "Denying proactive formatter access must not leave a session panel."
+      );
 
       recordAcceptanceProgress("jupyter-deny:persisted-denial");
       assertExactOpenNotebookDocument(notebook, "before retrying the denied released Jupyter permission");
@@ -932,23 +912,24 @@ async function exerciseReleasedJupyterExtension(
     recordAcceptanceProgress(`${phase}:consent`);
     await consent.allow.click();
     await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
-    const pandasFrame = await waitForReleasedVariableSession(
-      workbench,
-      testing,
-      notebook,
-      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
-      "the Pandas DataFrame opened from the real Jupyter Variables view"
+    assert.equal(
+      releasedJupyterSessionTabs().length,
+      0,
+      "Allowing proactive formatter access must not create an Open Wrangler session panel."
     );
 
-    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
-    await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
-    if (kernelTarget.remote) {
-      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
-    }
-    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
-    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
+    await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:setup-cell`, variableNotebookEditor);
+    assert.equal(
+      jupyterExtension.isActive,
+      true,
+      "Executing the fixture must activate the released Jupyter extension."
+    );
+    const initialKernel = releasedNotebookSetupResult(notebook.cellAt(0));
+    assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
+    assert.equal(initialKernel.pid, warmKernel.pid, "The formatter must remain on the exact warmed kernel.");
+    assert.equal(initialKernel.setup, setupMarker);
 
-    recordAcceptanceProgress(`${phase}:mime-v2`);
+    recordAcceptanceProgress(`${phase}:proactive-mime-v2`);
     const renderedCell = new vscode.NotebookRange(1, 2);
     const executionEditor = await showExactReleasedNotebook(notebook);
     executionEditor.selection = renderedCell;
@@ -959,11 +940,17 @@ async function exerciseReleasedJupyterExtension(
       WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
       "the released-Jupyter MIME cell to become visible before execution"
     );
-    await executeReleasedNotebookCell(notebook, 1, undefined, `${phase}:mime-cell`, executionEditor);
+    await executeReleasedNotebookCellUntilMime(
+      notebook,
+      1,
+      OPEN_WRANGLER_MIME_V2,
+      `${phase}:proactive-mime-cell`,
+      executionEditor
+    );
     const pandasOutputMimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
     assert.ok(
       pandasOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
-      "A formatter registered through the released kernel API must emit the Open Wrangler MIME v2 payload. " +
+      "Proactive formatter installation must emit Open Wrangler MIME v2 before any Open Wrangler command. " +
         `Actual MIME types: ${JSON.stringify(pandasOutputMimes)}. ` +
         `Output: ${JSON.stringify(notebookCellOutputText(notebook.cellAt(1)).slice(0, 2_000))}.`
     );
@@ -983,7 +970,8 @@ async function exerciseReleasedJupyterExtension(
       JSON.parse(new TextDecoder().decode(pandasMimeItem.data)) as unknown
     );
     assert.ok(pandasMimePayload, "The released-Jupyter MIME v2 item must satisfy the saved-output contract.");
-    assert.equal(pandasMimePayload.metadata.source.label, "DataFrame");
+    assert.equal(pandasMimePayload.metadata.source.label, "notebook_showcase");
+    assert.equal(pandasMimePayload.metadata.source.variableName, "notebook_showcase");
     assert.deepEqual(pandasMimePayload.metadata.shape, { rows: 100_000, columns: 15 });
     assert.deepEqual(
       pandasMimePayload.metadata.schema.map((column) => column.name),
@@ -1005,6 +993,46 @@ async function exerciseReleasedJupyterExtension(
         "account_status"
       ]
     );
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "Producing an automatic notebook preview must not implicitly open a dataframe session."
+    );
+
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      variableNotebookEditor,
+      "immediately before opening the real Jupyter Variables view"
+    );
+    await vscode.commands.executeCommand("jupyter.openVariableView");
+    assertExactOpenNotebookDocument(notebook, "after opening the real Jupyter Variables view");
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      variableNotebookEditor,
+      "after opening the real Jupyter Variables view"
+    );
+
+    assertExactOpenNotebookDocument(notebook, "before resolving the pandas_frame action from Jupyter Variables");
+
+    recordAcceptanceProgress(`${phase}:variables-action`);
+    await dispatchReleasedJupyterVariableAction(workbench, notebook, "pandas_frame", `${phase}:variables`);
+    recordAcceptanceProgress(`${phase}:variables-delegation-dispatched`);
+    recordAcceptanceProgress(`${phase}:variables-panel-created`);
+    const pandasFrame = await waitForReleasedVariableSession(
+      workbench,
+      testing,
+      notebook,
+      { name: "pandas_frame", type: "DataFrame", backend: "pandas", firstValue: "1" },
+      "the Pandas DataFrame opened from the real Jupyter Variables view"
+    );
+
+    recordAcceptanceProgress(`${phase}:pandas-dataframe`);
+    await assertReleasedSessionPage(testing, pandasFrame, "1", "released-jupyter-pandas-dataframe");
+    if (kernelTarget.remote) {
+      await assertReleasedRemoteRuntimeTransfer(notebook, kernelTarget, extension.extensionPath, phase);
+    }
+    await assertReleasedNotebookCodeInsertion(testing, notebook, pandasFrame, "pandas_frame", phase);
+    await disposePackagedSessionPanel(testing, pandasFrame.sessionId, "the released-Jupyter Pandas DataFrame session");
 
     recordAcceptanceProgress(`${phase}:polars-series-toolbar`);
     await showExactReleasedNotebook(notebook);
@@ -1035,36 +1063,74 @@ async function exerciseReleasedJupyterExtension(
       phase === "jupyter-allow" && screenshotOutput
         ? await prepareReleasedJupyterScreenshotWorkbench(workbench, notebook, rendererEditor)
         : undefined;
-    let rendererButton: NotebookRendererButton;
     try {
-      rendererButton = await waitForNotebookRendererButton(workbench, "DataFrame");
-    } catch (error) {
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
-          releasedNotebookRendererHostDiagnostics(notebook, 1)
-        )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
-      );
-    }
-    try {
+      let rendererButton: NotebookRendererButton;
+      try {
+        rendererButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open in Open Wrangler");
+      } catch (error) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
+            releasedNotebookRendererHostDiagnostics(notebook, 1)
+          )} Browser: ${JSON.stringify(rendererLoadObserver.snapshot())}`
+        );
+      }
       if (phase === "jupyter-allow" && screenshotOutput) {
         await captureReleasedJupyterPandasPreview(workbench, rendererButton, screenshotOutput);
       }
-      await rendererButton.click();
+      try {
+        await rendererButton.click();
+      } finally {
+        await rendererButton.dispose();
+      }
+      const liveShowcase = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "notebook_showcase",
+          type: "DataFrame",
+          backend: "pandas",
+          firstValue: "2400001"
+        },
+        "the live notebook_showcase variable opened from the primary MIME-v2 renderer action"
+      );
+      assert.deepEqual(liveShowcase.metadata.shape, { rows: 100_000, columns: 15 });
+      await assertReleasedSessionPage(
+        testing,
+        liveShowcase,
+        "2400001",
+        "released-jupyter-renderer-live-notebook-showcase"
+      );
+      await disposePackagedSessionPanel(
+        testing,
+        liveShowcase.sessionId,
+        "the released-Jupyter live MIME variable session"
+      );
+
+      const snapshotEditor = await showExactReleasedNotebook(notebook);
+      snapshotEditor.selection = renderedCell;
+      snapshotEditor.selections = [renderedCell];
+      snapshotEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
+      const snapshotButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open saved snapshot");
+      try {
+        await snapshotButton.click();
+      } finally {
+        await snapshotButton.dispose();
+      }
+      await waitFor(
+        () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "the released-Jupyter MIME v2 saved snapshot fallback"
+      );
+      const snapshot = testing.activeSession();
+      assert.ok(snapshot, "The renderer's saved-snapshot action must publish a snapshot session.");
+      assert.equal(snapshot.metadata.source.kind, "notebookOutput");
+      assert.equal(snapshot.metadata.source.label, "notebook_showcase");
+      assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
+      await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
     } finally {
-      await rendererButton.dispose();
+      await restoreScreenshotWorkbench?.();
     }
-    await waitFor(
-      () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the released-Jupyter MIME v2 renderer snapshot"
-    );
-    const snapshot = testing.activeSession();
-    assert.ok(snapshot, "The released-Jupyter renderer action must publish a snapshot session.");
-    assert.equal(snapshot.metadata.source.kind, "notebookOutput");
-    assert.equal(snapshot.metadata.source.label, "DataFrame");
-    assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
-    await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
-    await restoreScreenshotWorkbench?.();
 
     recordAcceptanceProgress(`${phase}:pandas-series`);
     const pandasSeries = await openReleasedVariableSession(
@@ -1199,6 +1265,11 @@ async function exerciseReleasedJupyterExtension(
     await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
     remoteServerCollection?.dispose();
     await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+    await configuration.update(
+      "notebookPreviewProvider",
+      originalNotebookPreviewProvider,
+      vscode.ConfigurationTarget.Workspace
+    );
     cleanupAcceptanceTemporaryDirectory(directory);
   }
 }
@@ -2466,6 +2537,29 @@ async function executeReleasedNotebookCell(
   }
 }
 
+async function executeReleasedNotebookCellUntilMime(
+  notebook: vscode.NotebookDocument,
+  index: number,
+  mime: string,
+  checkpoint: string,
+  expectedEditor: vscode.NotebookEditor
+): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  let attempt = 0;
+  let observedMimes: string[] = [];
+  do {
+    attempt += 1;
+    await executeReleasedNotebookCell(notebook, index, undefined, `${checkpoint}:attempt-${attempt}`, expectedEditor);
+    observedMimes = notebook.cellAt(index).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    if (observedMimes.includes(mime)) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+  throw new Error(
+    `Timed out waiting for proactive notebook formatter MIME ${JSON.stringify(mime)}. ` +
+      `Observed: ${JSON.stringify(observedMimes)}.`
+  );
+}
+
 function notebookCellOutputText(cell: vscode.NotebookCell): string {
   return cell.outputs
     .flatMap((output) => output.items)
@@ -2718,7 +2812,7 @@ async function waitForReleasedJupyterConsent(
   } while (Date.now() < deadline);
   if (!dialog) {
     throw new Error(
-      "Timed out waiting for released Jupyter kernel consent after the Open Wrangler panel opened. " +
+      "Timed out waiting for released Jupyter kernel consent during proactive formatter preparation. " +
         `State: ${JSON.stringify({
           tabCount: releasedJupyterSessionTabs().length,
           coordinator: testing.diagnostics(),
@@ -3096,13 +3190,20 @@ async function invokeReleasedNotebookToolbarVariable(
     notebook,
     "The exact released-Jupyter notebook must be active before its Open Wrangler toolbar action."
   );
-  const input = await clickReleasedNotebookVariableAction(workbench, notebook);
+  const picker = await clickReleasedNotebookVariableAction(workbench, notebook);
   assertActiveNotebookTab(
     notebook,
-    "The exact released-Jupyter notebook tab must remain active after its toolbar action opens the variable input."
+    "The exact released-Jupyter notebook tab must remain active after its toolbar action opens the variable picker."
   );
-  await input.fill(variableName);
-  await input.press("Enter");
+  const deadline = Date.now() + 10_000;
+  let row: Locator | undefined;
+  do {
+    row = await releasedJupyterQuickPickRow(picker, variableName);
+    if (row) break;
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  assert.ok(row, `The Open Wrangler notebook-variable picker did not expose ${JSON.stringify(variableName)}.`);
+  await row.click();
   assertExactOpenNotebookDocument(notebook, "after submitting the Open Wrangler notebook toolbar variable");
 }
 
@@ -3160,7 +3261,7 @@ async function clickReleasedNotebookVariableAction(
     return await invokeAcceptanceActionOnce({
       description: pinned.description,
       activate: () => pinned.action.click({ timeout: 2_000 }),
-      receipt: () => waitForReleasedNotebookVariableInput(workbench),
+      receipt: () => waitForReleasedNotebookVariablePicker(workbench),
       naturalDismissal: pinned.overflowMenu
         ? () => pinned.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })
         : undefined
@@ -3808,7 +3909,7 @@ async function releasedNotebookToolbarDiagnostics(
   };
 }
 
-async function waitForReleasedNotebookVariableInput(workbench: Page): Promise<Locator> {
+async function waitForReleasedNotebookVariablePicker(workbench: Page): Promise<Locator> {
   const deadline = Date.now() + 10_000;
   do {
     const matches: Locator[] = [];
@@ -3824,21 +3925,21 @@ async function waitForReleasedNotebookVariableInput(workbench: Page): Promise<Lo
             .textContent()
             .catch(() => "")
         )?.trim();
-        if (title !== RELEASED_JUPYTER_NOTEBOOK_VARIABLE_INPUT_TITLE) continue;
+        if (title !== RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE) continue;
         const input = widget.locator(".quick-input-box input").first();
-        if ((await input.count()) > 0 && (await input.isVisible())) matches.push(input);
+        if ((await input.count()) > 0 && (await input.isVisible())) matches.push(widget);
       }
     }
     if (matches.length === 1) return matches[0]!;
     assert.ok(
       matches.length < 2,
-      "The notebook-toolbar action exposed multiple visible Open Wrangler variable inputs."
+      "The notebook-toolbar action exposed multiple visible Open Wrangler variable pickers."
     );
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
   const diagnostics = await boundedImportPromptDiagnostics(workbench);
   throw new Error(
-    "Timed out waiting for the Open Wrangler notebook-toolbar variable input. " +
+    "Timed out waiting for the Open Wrangler notebook-toolbar variable picker. " +
       `Quick inputs: ${JSON.stringify(diagnostics.quickInputs)}. ` +
       `Notifications: ${JSON.stringify(diagnostics.notifications)}. ` +
       `Dialogs: ${JSON.stringify(diagnostics.dialogs)}. ` +
@@ -5466,7 +5567,7 @@ async function captureReleasedJupyterPandasPreview(
   });
   assert.ok(preview, "The Pandas notebook action must remain inside its exact rendered preview.");
   assert.deepEqual(preview, {
-    title: "Open Wrangler preview: DataFrame (pandas) - 100000 x 15",
+    title: "Open Wrangler preview: notebook_showcase (pandas) - 100000 x 15",
     headers: [
       "order_id",
       "market",
@@ -5881,13 +5982,6 @@ async function clearReleasedJupyterScreenshotTransientUi(workbench: Page): Promi
 }
 
 function releasedJupyterScreenshotTheme(): string {
-  for (const extension of vscode.extensions.all) {
-    const themes = extension.packageJSON.contributes?.themes as
-      Array<{ id?: unknown; label?: unknown; uiTheme?: unknown }> | undefined;
-    const dark = themes?.find((theme) => theme.uiTheme === "vs-dark");
-    if (typeof dark?.id === "string" && dark.id.length > 0) return dark.id;
-    if (typeof dark?.label === "string" && dark.label.length > 0) return dark.label;
-  }
   return "Default Dark Modern";
 }
 
@@ -7884,7 +7978,8 @@ async function exercisePackagedSavedSnapshot(
     );
 
     const workbench = await connectToEditorWorkbench();
-    const button = await waitForNotebookRendererButton(workbench, label);
+    await (await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler")).dispose();
+    const button = await waitForNotebookRendererButton(workbench, label, "Open saved snapshot");
     recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
     try {
       await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
@@ -8145,7 +8240,7 @@ async function exercisePackagedSameGroupRendererSwitch(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer-same-group:restored-button");
-    await (await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable")).dispose();
+    await (await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open in Open Wrangler")).dispose();
     recordAcceptanceProgress("verify:notebook-renderer-same-group:complete");
   } finally {
     const switchedTab = switchedNotebook ? notebookTab(switchedNotebook.uri) : undefined;
@@ -8291,7 +8386,11 @@ async function exercisePackagedRendererProvenance(
 
     recordAcceptanceProgress("verify:notebook-renderer:button");
     const workbench = await connectToEditorWorkbench();
-    const originButton = await waitForNotebookRendererButton(workbench, "renderer provenance A", "Open live variable");
+    const originButton = await waitForNotebookRendererButton(
+      workbench,
+      "renderer provenance A",
+      "Open in Open Wrangler"
+    );
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
       openedSecondNotebook,

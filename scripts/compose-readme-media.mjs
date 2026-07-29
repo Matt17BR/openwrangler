@@ -19,8 +19,8 @@ if (unexpectedArguments.length > 0) {
 const compositions = [
   {
     name: "workbench",
-    width: 1_440,
-    height: 720,
+    width: 1_920,
+    height: 830,
     destination: resolve(readmeImages, "workbench.png"),
     sources: {
       dark: sourceImage("vscode-hero-dark.png", 1_920, 830),
@@ -30,14 +30,23 @@ const compositions = [
   },
   {
     name: "notebooks",
-    width: 1_440,
-    height: 600,
+    width: 1_920,
+    height: 450,
     destination: resolve(readmeImages, "notebooks.png"),
     sources: {
-      pandas: sourceImage("vscode-notebook-pandas-dark.png", 1_920, 450),
-      polars: sourceImage("vscode-notebook-polars-dark.png", 1_920, 760)
+      pandas: sourceImage("vscode-notebook-pandas-dark.png", 1_920, 450)
     },
     render: renderNotebooks
+  },
+  {
+    name: "notebook-polars",
+    width: 1_920,
+    height: 760,
+    destination: resolve(readmeImages, "gallery", "notebook-polars.png"),
+    sources: {
+      polars: sourceImage("vscode-notebook-polars-dark.png", 1_920, 760)
+    },
+    render: renderPolarsNotebook
   },
   {
     name: "pyspark-live-notebook",
@@ -122,102 +131,35 @@ async function renderComposition(activeBrowser, composition, destination) {
 
 function renderWorkbench(sources) {
   return documentTemplate(
-    "Open Wrangler workbench in VS Code, shown in light and dark themes",
+    "The same Open Wrangler workbench in the default VS Code light and dark themes",
     `
       <main class="workbench">
-        <header class="frameHeader">
-          <span class="themeLabel">Light</span>
-          <strong>Regional orders file session</strong>
-          <span class="themeLabel">Dark</span>
-        </header>
-        <div class="imageStage">
-          <img class="workbenchImage darkImage" src="${sources.dark.dataUrl}" alt="">
-          <div class="lightLayer">
-            <img class="workbenchImage lightImage" src="${sources.light.dataUrl}" alt="">
-          </div>
-          <div class="splitLine" aria-hidden="true"></div>
+        <img class="workbenchImage" src="${sources.dark.dataUrl}" alt="">
+        <div class="lightHalf">
+          <img class="workbenchImage" src="${sources.light.dataUrl}" alt="">
         </div>
-        <footer class="frameFooter">File-backed Polars · bounded paging · exact selected-column statistics</footer>
       </main>
     `,
     `
       .workbench {
-        background: #0b1220;
-        color: #f8fafc;
         height: 100%;
-        overflow: hidden;
-        width: 100%;
-      }
-      .frameHeader,
-      .frameFooter {
-        align-items: center;
-        display: flex;
-        letter-spacing: 0.02em;
-      }
-      .frameHeader {
-        height: 49px;
-        justify-content: space-between;
-        padding: 0 14px;
-      }
-      .frameHeader strong {
-        font-size: 18px;
-      }
-      .frameFooter {
-        color: #94a3b8;
-        font-size: 14px;
-        height: 48px;
-        justify-content: center;
-      }
-      .imageStage {
-        height: 623px;
         overflow: hidden;
         position: relative;
         width: 100%;
       }
       .workbenchImage {
         display: block;
-        height: auto;
-        max-width: none;
+        height: 830px;
         position: absolute;
-        transform-origin: left top;
-        width: auto;
+        width: 1920px;
       }
-      .lightLayer {
-        clip-path: polygon(0 0, 58% 0, 42% 100%, 0 100%);
-        inset: 0;
+      .lightHalf {
+        bottom: 0;
+        left: 0;
         overflow: hidden;
         position: absolute;
-      }
-      .lightImage {
-        left: 0;
-        top: -35px;
-        transform: scale(0.86);
-      }
-      .darkImage {
-        left: -1880px;
-        top: -214px;
-        transform: scale(1.75);
-      }
-      .splitLine {
-        background: rgba(255, 255, 255, 0.9);
-        box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.3);
-        height: 735px;
-        left: calc(50% - 1px);
-        position: absolute;
-        top: -56px;
-        transform: rotate(17.7deg);
-        width: 2px;
-      }
-      .themeLabel {
-        background: #172033;
-        border: 1px solid rgba(255, 255, 255, 0.28);
-        border-radius: 999px;
-        color: #f8fafc;
-        font-size: 14px;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        padding: 5px 10px;
-        text-transform: uppercase;
+        top: 0;
+        width: 50%;
       }
     `
   );
@@ -225,171 +167,29 @@ function renderWorkbench(sources) {
 
 function renderNotebooks(sources) {
   return documentTemplate(
-    "Open Wrangler Pandas saved output and Polars live notebook workflows",
+    "Open Wrangler Pandas dataframe preview inside a real VS Code notebook",
     `
-      <main class="notebookGrid">
-        <section class="notebookCard">
-          <header class="cardHeader">
-            <div>
-              <h1>Pandas saved snapshot</h1>
-              <p>orders-analysis.ipynb · 100,000 x 15 source</p>
-            </div>
-            <span class="engineBadge pandasBadge">Pandas</span>
-          </header>
-          <div class="cardBody pandasBody">
-            <div class="crop pandasContext">
-              <img src="${sources.pandas.dataUrl}" alt="">
-            </div>
-            <div class="crop pandasDetail">
-              <img src="${sources.pandas.dataUrl}" alt="">
-            </div>
-          </div>
-        </section>
-        <section class="notebookCard">
-          <header class="cardHeader">
-            <div>
-              <h1>Polars live session</h1>
-              <p>orders-analysis.ipynb · 100,000 x 15 live variable</p>
-            </div>
-            <span class="engineBadge polarsBadge">Polars</span>
-          </header>
-          <div class="cardBody polarsBody">
-            <div class="crop polarsPreview">
-              <img src="${sources.polars.dataUrl}" alt="">
-            </div>
-            <div class="polarsCode">
-              <div class="codeCrop polarsImports">
-                <img src="${sources.polars.dataUrl}" alt="">
-              </div>
-              <div class="codeCrop polarsFunction">
-                <img src="${sources.polars.dataUrl}" alt="">
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
+      <img class="nativeCapture" src="${sources.pandas.dataUrl}" alt="">
     `,
     `
-      body {
-        background:
-          radial-gradient(circle at 14% -40%, rgba(37, 99, 235, 0.3), transparent 45%),
-          #070b12;
-      }
-      .notebookGrid {
-        box-sizing: border-box;
-        display: grid;
-        gap: 8px;
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: 184px 388px;
-        height: 100%;
-        padding: 10px;
-        width: 100%;
-      }
-      .notebookCard {
-        background: #11161f;
-        border: 1px solid #334155;
-        border-radius: 10px;
-        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
-        min-width: 0;
-        overflow: hidden;
-      }
-      .cardHeader {
-        align-items: center;
-        box-sizing: border-box;
-        display: flex;
-        height: 40px;
-        justify-content: space-between;
-        padding: 5px 10px 5px 12px;
-      }
-      .cardHeader h1 {
-        color: #f8fafc;
-        font-size: 16px;
-        line-height: 18px;
-        margin: 0;
-      }
-      .cardHeader p {
-        color: #94a3b8;
-        font-size: 11px;
-        line-height: 13px;
-        margin: 1px 0 0;
-      }
-      .engineBadge {
-        border: 1px solid currentColor;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.05em;
-        padding: 4px 8px;
-        text-transform: uppercase;
-      }
-      .pandasBadge { color: #60a5fa; }
-      .polarsBadge { color: #fbbf24; }
-      .cardBody {
-        box-sizing: border-box;
-        display: grid;
-        gap: 6px;
-        height: calc(100% - 40px);
-        padding: 6px;
-      }
-      .crop {
-        background: #181818;
-        border: 1px solid #334155;
-        overflow: hidden;
-        position: relative;
-      }
-      .crop img {
+      .nativeCapture {
         display: block;
-        max-width: none;
-        position: absolute;
-        transform-origin: left top;
+        height: 450px;
+        width: 1920px;
       }
-      .codeCrop {
-        overflow: hidden;
-        position: relative;
-      }
-      .codeCrop img {
+    `
+  );
+}
+
+function renderPolarsNotebook(sources) {
+  return documentTemplate(
+    "Open Wrangler live Polars dataframe workflow in VS Code",
+    `<img class="nativeCapture" src="${sources.polars.dataUrl}" alt="">`,
+    `
+      .nativeCapture {
         display: block;
-        max-width: none;
-        position: absolute;
-        transform-origin: left top;
-      }
-      .pandasBody {
-        grid-template-rows: 30px minmax(0, 1fr);
-      }
-      .pandasContext img {
-        left: -73px;
-        top: -157px;
-        transform: scale(1.08);
-      }
-      .pandasDetail img {
-        left: -109px;
-        top: -261px;
-        transform: scale(1.14);
-      }
-      .polarsBody {
-        grid-template-rows: 156px minmax(0, 1fr);
-      }
-      .polarsPreview img {
-        left: -525px;
-        top: -213px;
-        transform: scale(1.04);
-      }
-      .polarsCode {
-        background: #181818;
-        border: 1px solid #475569;
-        display: grid;
-        grid-template-rows: 76px minmax(0, 1fr);
-        overflow: hidden;
-      }
-      .polarsImports img {
-        left: -71px;
-        top: -556px;
-        transform: scale(1.04);
-      }
-      .polarsFunction img {
-        left: -71px;
-        top: -681px;
-        transform: scale(1.04);
+        height: 760px;
+        width: 1920px;
       }
     `
   );

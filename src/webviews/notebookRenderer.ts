@@ -18,8 +18,8 @@ interface RendererApi {
   renderOutputItem(outputItem: RendererOutputItem, element: HTMLElement): void;
 }
 
-const INLINE_PREVIEW_ROWS = 20;
-const INLINE_PREVIEW_COLUMNS = 20;
+const DEFAULT_INLINE_PAGE_SIZE = 20;
+const INLINE_PAGE_SIZES = [10, 20, 50, 100] as const;
 const INLINE_LABEL_CHARACTERS = 256;
 const INLINE_COLUMN_CHARACTERS = 128;
 const INLINE_CELL_CHARACTERS = 512;
@@ -61,17 +61,23 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   actions.style.display = "flex";
   actions.style.gap = "8px";
   if (context.postMessage) {
-    actions.appendChild(
-      actionButton("Open in Open Wrangler", "Open the captured notebook output in Open Wrangler", () => {
-        context.postMessage?.({ kind: "openInOpenWrangler", payload });
-      })
-    );
     const variableName = payload.metadata.source.variableName;
-    if (variableName && isPythonIdentifier(variableName)) {
-      const variablePreview = boundedText(variableName, INLINE_COLUMN_CHARACTERS);
+    const hasLiveVariable = variableName !== undefined && isPythonIdentifier(variableName);
+    actions.appendChild(
+      actionButton(
+        "Open in Open Wrangler",
+        hasLiveVariable
+          ? `Open the complete current value of ${boundedText(variableName, INLINE_COLUMN_CHARACTERS).text}`
+          : "Open the captured notebook output in Open Wrangler",
+        () => {
+          context.postMessage?.({ kind: hasLiveVariable ? "openLiveInOpenWrangler" : "openInOpenWrangler", payload });
+        }
+      )
+    );
+    if (hasLiveVariable) {
       actions.appendChild(
-        actionButton("Open live variable", `Open the current value of ${variablePreview.text} through Jupyter`, () => {
-          context.postMessage?.({ kind: "openLiveInOpenWrangler", payload });
+        actionButton("Open saved snapshot", "Open the captured notebook output instead of the current variable", () => {
+          context.postMessage?.({ kind: "openInOpenWrangler", payload });
         })
       );
     }
@@ -80,32 +86,56 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
 
   root.appendChild(header);
 
-  if (payload.page.rows.length < payload.page.totalRows) {
-    const captureNotice = document.createElement("p");
-    captureNotice.setAttribute("role", "status");
-    captureNotice.dataset.testid = "capture-limit";
-    captureNotice.textContent = `Saved output contains the first ${payload.page.rows.length.toLocaleString()} of ${payload.page.totalRows.toLocaleString()} rows. The expanded Open Wrangler view can query only these captured rows.`;
-    captureNotice.style.color = "var(--vscode-descriptionForeground)";
-    captureNotice.style.margin = "6px 0";
-    root.appendChild(captureNotice);
-  }
+  const preview = document.createElement("div");
+  preview.style.display = "grid";
+  preview.style.gap = "6px";
+  root.appendChild(preview);
 
-  const previewRows = payload.page.rows.slice(0, INLINE_PREVIEW_ROWS);
-  const previewSchema = payload.metadata.schema.slice(0, INLINE_PREVIEW_COLUMNS);
-  if (previewRows.length < payload.page.rows.length || previewSchema.length < payload.metadata.schema.length) {
-    const previewNotice = document.createElement("p");
-    previewNotice.setAttribute("role", "status");
-    previewNotice.dataset.testid = "inline-preview-limit";
-    previewNotice.textContent = `Inline preview shows ${previewRows.length.toLocaleString()} of ${payload.page.rows.length.toLocaleString()} captured rows and ${previewSchema.length.toLocaleString()} of ${payload.metadata.schema.length.toLocaleString()} columns. Open the snapshot to explore the complete capture.`;
-    previewNotice.style.color = "var(--vscode-descriptionForeground)";
-    previewNotice.style.margin = "6px 0";
-    root.appendChild(previewNotice);
+  const controls = document.createElement("div");
+  controls.style.alignItems = "center";
+  controls.style.display = "flex";
+  controls.style.flexWrap = "wrap";
+  controls.style.gap = "6px";
+  preview.appendChild(controls);
+
+  const pageSizeLabel = document.createElement("label");
+  pageSizeLabel.style.alignItems = "center";
+  pageSizeLabel.style.display = "flex";
+  pageSizeLabel.style.gap = "4px";
+  pageSizeLabel.textContent = "Rows";
+  controls.appendChild(pageSizeLabel);
+
+  const pageSizeSelect = document.createElement("select");
+  pageSizeSelect.setAttribute("aria-label", "Rows per notebook preview page");
+  pageSizeSelect.style.background = "var(--vscode-dropdown-background)";
+  pageSizeSelect.style.border = "1px solid var(--vscode-dropdown-border, var(--vscode-panel-border))";
+  pageSizeSelect.style.color = "var(--vscode-dropdown-foreground)";
+  pageSizeSelect.style.padding = "2px 4px";
+  for (const pageSize of INLINE_PAGE_SIZES) {
+    const option = document.createElement("option");
+    option.value = String(pageSize);
+    option.textContent = String(pageSize);
+    option.selected = pageSize === DEFAULT_INLINE_PAGE_SIZE;
+    pageSizeSelect.appendChild(option);
   }
+  pageSizeLabel.appendChild(pageSizeSelect);
+
+  const previousButton = secondaryActionButton("Previous", "Show the previous rows");
+  const nextButton = secondaryActionButton("Next", "Show the next rows");
+  controls.appendChild(previousButton);
+  controls.appendChild(nextButton);
+
+  const pageStatus = document.createElement("span");
+  pageStatus.dataset.testid = "inline-preview-page";
+  pageStatus.setAttribute("role", "status");
+  pageStatus.setAttribute("aria-live", "polite");
+  pageStatus.style.color = "var(--vscode-descriptionForeground)";
+  controls.appendChild(pageStatus);
 
   const scroller = document.createElement("div");
   scroller.style.overflow = "auto";
   scroller.style.maxHeight = "320px";
-  root.appendChild(scroller);
+  preview.appendChild(scroller);
 
   const table = document.createElement("table");
   table.setAttribute("aria-label", `Open Wrangler snapshot of ${sourceLabel.text}`);
@@ -116,7 +146,7 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
 
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  previewSchema.forEach((column) => {
+  payload.metadata.schema.forEach((column) => {
     const cell = document.createElement("th");
     const columnName = boundedText(column.name, INLINE_COLUMN_CHARACTERS);
     const rawType = boundedText(column.rawType, INLINE_COLUMN_CHARACTERS);
@@ -134,23 +164,61 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   table.appendChild(head);
 
   const body = document.createElement("tbody");
-  previewRows.forEach((row) => {
-    const tableRow = document.createElement("tr");
-    row.values.slice(0, previewSchema.length).forEach((value) => {
-      const cell = document.createElement("td");
-      const display = boundedText(value.display, INLINE_CELL_CHARACTERS);
-      cell.textContent = display.text;
-      cell.title = display.truncated
-        ? `Value preview (${display.length.toLocaleString()} characters): ${display.text}`
-        : display.text;
-      applyTruncationDescription(cell, display, "Cell value");
-      cell.style.borderBottom = "1px solid var(--vscode-panel-border)";
-      cell.style.padding = "4px 8px";
-      tableRow.appendChild(cell);
-    });
-    body.appendChild(tableRow);
-  });
   table.appendChild(body);
+
+  let pageSize = DEFAULT_INLINE_PAGE_SIZE;
+  let pageStart = 0;
+  const renderPage = () => {
+    const capturedRows = payload.page.rows;
+    const lastPageStart = Math.max(0, Math.floor(Math.max(0, capturedRows.length - 1) / pageSize) * pageSize);
+    pageStart = Math.min(pageStart, lastPageStart);
+    const previewRows = capturedRows.slice(pageStart, pageStart + pageSize);
+    body.replaceChildren();
+    previewRows.forEach((row) => {
+      const tableRow = document.createElement("tr");
+      row.values.forEach((value) => {
+        const cell = document.createElement("td");
+        const display = boundedText(value.display, INLINE_CELL_CHARACTERS);
+        cell.textContent = display.text;
+        cell.title = display.truncated
+          ? `Value preview (${display.length.toLocaleString()} characters): ${display.text}`
+          : display.text;
+        applyTruncationDescription(cell, display, "Cell value");
+        cell.style.borderBottom = "1px solid var(--vscode-panel-border)";
+        cell.style.padding = "4px 8px";
+        tableRow.appendChild(cell);
+      });
+      body.appendChild(tableRow);
+    });
+    const pageEnd = pageStart + previewRows.length;
+    const captureSuffix =
+      payload.page.rows.length < payload.page.totalRows
+        ? ` captured · ${payload.page.totalRows.toLocaleString()} total`
+        : "";
+    pageStatus.textContent =
+      previewRows.length === 0
+        ? `0 rows${captureSuffix}`
+        : `${(pageStart + 1).toLocaleString()}-${pageEnd.toLocaleString()} of ${payload.page.rows.length.toLocaleString()}${captureSuffix}`;
+    previousButton.disabled = pageStart === 0;
+    nextButton.disabled = pageEnd >= capturedRows.length;
+  };
+
+  pageSizeSelect.addEventListener("change", () => {
+    const selected = Number(pageSizeSelect.value);
+    if (!INLINE_PAGE_SIZES.includes(selected as (typeof INLINE_PAGE_SIZES)[number])) return;
+    pageSize = selected;
+    pageStart = Math.floor(pageStart / pageSize) * pageSize;
+    renderPage();
+  });
+  previousButton.addEventListener("click", () => {
+    pageStart = Math.max(0, pageStart - pageSize);
+    renderPage();
+  });
+  nextButton.addEventListener("click", () => {
+    pageStart += pageSize;
+    renderPage();
+  });
+  renderPage();
 
   return root;
 }
@@ -167,6 +235,20 @@ function actionButton(label: string, title: string, action: () => void): HTMLBut
   button.style.cursor = "pointer";
   button.style.padding = "4px 8px";
   button.addEventListener("click", action);
+  return button;
+}
+
+function secondaryActionButton(label: string, title: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.title = title;
+  button.style.background = "var(--vscode-button-secondaryBackground, transparent)";
+  button.style.border = "1px solid var(--vscode-button-border, var(--vscode-panel-border))";
+  button.style.borderRadius = "3px";
+  button.style.color = "var(--vscode-button-secondaryForeground, var(--vscode-foreground))";
+  button.style.cursor = "pointer";
+  button.style.padding = "2px 6px";
   return button;
 }
 

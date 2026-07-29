@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { isPythonIdentifier, normalizeNotebookOutputPayload } from "../../shared/notebookOutput";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel } from "../webviewPanel";
-import { KernelBridge } from "./kernelBridge";
+import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import { SnapshotBridge } from "./snapshotBridge";
 
@@ -48,12 +48,16 @@ export function registerNotebookRendererMessaging(
           return;
         }
         try {
-          OpenWranglerPanel.create(context, coordinator.createBridge(new KernelBridge(context, notebook), notebook), {
-            kind: "notebookVariable",
-            label: variableName,
-            variableName,
-            uri: notebook.uri.toString()
-          });
+          OpenWranglerPanel.create(
+            context,
+            coordinator.createBridge(new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()), notebook),
+            {
+              kind: "notebookVariable",
+              label: variableName,
+              variableName,
+              uri: notebook.uri.toString()
+            }
+          );
         } catch (error) {
           const detail = error instanceof Error ? ` ${error.message}` : "";
           void vscode.window.showErrorMessage(`Open Wrangler could not open the originating notebook.${detail}`);

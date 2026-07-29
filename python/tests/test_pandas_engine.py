@@ -279,6 +279,40 @@ def test_pandas_summary_omits_non_finite_statistics_but_keeps_finite_histogram_v
     assert summary["visualization"] == {"kind": "numeric", "bins": [{"min": 1.0, "max": 1.0, "count": 1}]}
 
 
+def test_pandas_numeric_histogram_is_exact_for_a_large_filtered_view():
+    engine = PandasEngine()
+    source = pd.DataFrame({"value": [-1.0] * 500 + [float(value) for value in range(5_000)] + [1_000_000.0]})
+    frame = engine.apply_filter_model(
+        source,
+        {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "value",
+                    "type": "float",
+                    "logic": "and",
+                    "predicates": [{"operator": "gte", "value": 500}],
+                }
+            ],
+            "sort": [],
+        },
+    )
+
+    summary = engine.summaries(frame)[0]
+    bins = summary["visualization"]["bins"]
+
+    assert summary["numeric"]["min"] == 500.0
+    assert summary["numeric"]["max"] == 1_000_000.0
+    assert "sampled" not in summary["visualization"]
+    assert len(bins) == 20
+    assert bins[0]["min"] == summary["numeric"]["min"]
+    assert bins[-1]["max"] == summary["numeric"]["max"]
+    assert bins[-1]["count"] == 1
+    assert sum(bin_["count"] for bin_ in bins) == 4_501
+    assert all(left["max"] == right["min"] for left, right in zip(bins, bins[1:], strict=False))
+    assert [bin_["max"] - bin_["min"] for bin_ in bins] == pytest.approx([bins[0]["max"] - bins[0]["min"]] * len(bins))
+
+
 def test_pandas_custom_code_cannot_mutate_nested_source_objects():
     source = pd.DataFrame({"nested": [[1], [2]], "value": [1, 2]})
     engine = PandasEngine()

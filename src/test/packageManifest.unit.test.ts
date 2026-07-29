@@ -23,7 +23,17 @@ interface PackageManifest {
   activationEvents?: string[];
   contributes?: {
     configuration?: {
-      properties?: Record<string, { type?: string; default?: unknown; minimum?: number; maximum?: number }>;
+      properties?: Record<
+        string,
+        {
+          type?: string;
+          default?: unknown;
+          minimum?: number;
+          maximum?: number;
+          description?: string;
+          items?: { enum?: string[] };
+        }
+      >;
     };
     configurationDefaults?: Record<string, unknown>;
     commands?: CommandContribution[];
@@ -32,6 +42,10 @@ interface PackageManifest {
       dataTypes?: string[];
     }>;
     menus?: Record<string, MenuContribution[]>;
+    customEditors?: Array<{
+      viewType?: string;
+      selector?: Array<{ filenamePattern?: string }>;
+    }>;
     notebookRenderer?: Array<{
       id?: string;
       requiresMessaging?: string;
@@ -68,7 +82,7 @@ describe("operation command contributions", () => {
 
 describe("file launch contributions", () => {
   const resourcePredicate =
-    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i";
+    "resourceScheme =~ /^(file|vscode-remote)$/ && resourceExtname =~ /\\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i";
 
   it("uses one canonical, compact command for every file launch surface", () => {
     expect(manifest.contributes?.configurationDefaults?.["cursor.general.pinnedTitleActions"]).toEqual([
@@ -79,7 +93,7 @@ describe("file launch contributions", () => {
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
-      icon: "$(open-preview)"
+      icon: "media/activity-icon.svg"
     });
 
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual({
@@ -120,12 +134,38 @@ describe("file launch contributions", () => {
   });
 
   it("keeps the supported extension predicate case-insensitive and closed to unrelated files", () => {
-    const match = /\.(csv|tsv|parquet|jsonl|xlsx|xls)$/i;
-    for (const file of ["data.csv", "DATA.TSV", "frame.PARQUET", "rows.jsonl", "book.XLSX", "legacy.xls"]) {
+    const match = /\.(csv|tsv|parquet|jsonl|ndjson|xlsx|xls)$/i;
+    for (const file of [
+      "data.csv",
+      "DATA.TSV",
+      "frame.PARQUET",
+      "rows.jsonl",
+      "events.NDJSON",
+      "book.XLSX",
+      "legacy.xls"
+    ]) {
       expect(match.test(file)).toBe(true);
     }
     expect(match.test("notes.txt")).toBe(false);
     expect(match.test("data.csv.backup")).toBe(false);
+    expect(match.test("untrusted.pkl")).toBe(false);
+    expect(match.test("untrusted.pickle")).toBe(false);
+  });
+
+  it("offers .ndjson wherever JSONL files can launch without exposing pickle", () => {
+    const editor = manifest.contributes?.customEditors?.find(
+      (candidate) => candidate.viewType === "openWrangler.viewer"
+    );
+    const patterns = editor?.selector?.map((selector) => selector.filenamePattern);
+    expect(patterns).toContain("*.jsonl");
+    expect(patterns).toContain("*.ndjson");
+    expect(patterns).not.toContain("*.pkl");
+    expect(patterns).not.toContain("*.pickle");
+
+    const fileTypes = manifest.contributes?.configuration?.properties?.["openWrangler.enabledFileTypes"];
+    expect(fileTypes?.items?.enum).toContain("jsonl");
+    expect(fileTypes?.items?.enum).not.toContain("ndjson");
+    expect(fileTypes?.description).toMatch(/JSONL option includes both \.jsonl and \.ndjson/u);
   });
 });
 
@@ -138,7 +178,7 @@ describe("notebook launch contributions", () => {
       command: "openWrangler.openNotebookVariable",
       title: "Open Wrangler: Open Notebook Variable",
       shortTitle: "Open Variable",
-      icon: "$(table)"
+      icon: "media/activity-icon.svg"
     });
     expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({
       command: "openWrangler.openNotebookVariable",

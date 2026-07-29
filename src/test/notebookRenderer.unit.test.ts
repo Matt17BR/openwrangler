@@ -2,40 +2,40 @@ import { describe, expect, it, vi } from "vitest";
 import { activate } from "../webviews/notebookRenderer";
 
 describe("notebook renderer", () => {
-  it("labels truncated saved outputs and forwards only the validated canonical payload", () => {
+  it("shows compact capture paging and forwards only the validated canonical payload", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(10);
 
     activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
 
-    expect(element.querySelector('[role="status"]')?.textContent).toContain("first 1 of 10 rows");
+    expect(element.querySelector('[role="status"]')?.textContent).toBe("1-1 of 1 captured · 10 total");
     const button = element.querySelector("button");
     expect(button?.textContent).toBe("Open in Open Wrangler");
     button?.click();
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 
-  it("keeps captured truth primary and makes a live-variable launch explicit", () => {
+  it("opens the complete live variable from the primary action and retains a saved-snapshot fallback", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(1, "frame");
 
     activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
 
-    const captured = Array.from(element.querySelectorAll("button")).find(
+    const live = Array.from(element.querySelectorAll("button")).find(
       (button) => button.textContent === "Open in Open Wrangler"
     );
-    const live = Array.from(element.querySelectorAll("button")).find(
-      (button) => button.textContent === "Open live variable"
+    const captured = Array.from(element.querySelectorAll("button")).find(
+      (button) => button.textContent === "Open saved snapshot"
     );
+    expect(live?.title).toContain("complete current value of frame");
     expect(captured?.title).toContain("captured notebook output");
-    expect(live?.title).toContain("current value of frame through Jupyter");
 
-    captured?.click();
     live?.click();
-    expect(postMessage).toHaveBeenNthCalledWith(1, { kind: "openInOpenWrangler", payload });
-    expect(postMessage).toHaveBeenNthCalledWith(2, { kind: "openLiveInOpenWrangler", payload });
+    captured?.click();
+    expect(postMessage).toHaveBeenNthCalledWith(1, { kind: "openLiveInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenNthCalledWith(2, { kind: "openInOpenWrangler", payload });
   });
 
   it("rejects capability-elevated notebook metadata before rendering an action", () => {
@@ -70,22 +70,34 @@ describe("notebook renderer", () => {
       "Open Wrangler preview: saved frame"
     );
     expect(element.querySelector("table")?.textContent).toContain("value");
-    expect(element.querySelector("button")).toBeNull();
+    expect(
+      Array.from(element.querySelectorAll("button")).some((button) => button.textContent?.startsWith("Open"))
+    ).toBe(false);
   });
 
-  it("renders a bounded inline window while retaining the complete capture in its action", () => {
+  it("renders every captured column and pages rows at 10, 20, 50, or 100 per page", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = widePayload(25, 24);
 
     activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
 
-    expect(element.querySelectorAll("thead th")).toHaveLength(20);
+    expect(element.querySelectorAll("thead th")).toHaveLength(24);
     expect(element.querySelectorAll("tbody tr")).toHaveLength(20);
-    expect(element.querySelectorAll("tbody td")).toHaveLength(400);
-    expect(element.querySelector('[data-testid="inline-preview-limit"]')?.textContent).toContain(
-      "20 of 25 captured rows and 20 of 24 columns"
-    );
+    expect(element.querySelectorAll("tbody td")).toHaveLength(480);
+    expect(element.querySelector('[data-testid="inline-preview-page"]')?.textContent).toBe("1-20 of 25");
+    const pageSize = element.querySelector<HTMLSelectElement>('select[aria-label="Rows per notebook preview page"]');
+    expect(Array.from(pageSize?.options ?? []).map((option) => option.value)).toEqual(["10", "20", "50", "100"]);
+    const next = Array.from(element.querySelectorAll("button")).find((button) => button.textContent === "Next");
+    next?.click();
+    expect(element.querySelectorAll("tbody tr")).toHaveLength(5);
+    expect(element.querySelector('[data-testid="inline-preview-page"]')?.textContent).toBe("21-25 of 25");
+    if (pageSize) {
+      pageSize.value = "10";
+      pageSize.dispatchEvent(new Event("change"));
+    }
+    expect(element.querySelectorAll("tbody tr")).toHaveLength(5);
+    expect(element.querySelector('[data-testid="inline-preview-page"]')?.textContent).toBe("21-25 of 25");
     element.querySelector("button")?.click();
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });

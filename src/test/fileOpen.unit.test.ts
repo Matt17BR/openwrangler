@@ -16,7 +16,9 @@ const fileMocks = vi.hoisted(() => ({
   showWarningMessage: vi.fn(async () => undefined),
   showInformationMessage: vi.fn(async () => undefined),
   showErrorMessage: vi.fn(async () => undefined),
-  showOpenDialog: vi.fn<() => Promise<unknown>>(async () => undefined),
+  showOpenDialog: vi.fn<
+    (options?: { filters?: Record<string, string[]>; canSelectMany?: boolean }) => Promise<unknown>
+  >(async () => undefined),
   customEditorProvider: undefined as
     | {
         resolveCustomEditor(document: { uri: unknown }, panel: { dispose(): void }): Promise<void>;
@@ -297,6 +299,42 @@ describe("file launch command", () => {
     expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
   });
 
+  it("treats .ndjson as the exact JSONL launch and picker alias", async () => {
+    const selected = vscode.Uri.file("/workspace/events.NDJSON");
+    fileMocks.showOpenDialog.mockResolvedValueOnce([selected]);
+    register();
+
+    await command("openWrangler.openPath")();
+
+    expect(fileMocks.showOpenDialog).toHaveBeenCalledWith({
+      canSelectMany: false,
+      filters: {
+        "Data files": ["csv", "tsv", "parquet", "jsonl", "ndjson", "xlsx", "xls"]
+      }
+    });
+    expect(fileMocks.stat).toHaveBeenCalledWith(selected);
+    expect(fileMocks.detectImportOptions).toHaveBeenCalledWith(selected);
+    expect(fileMocks.createPanel).toHaveBeenCalledOnce();
+    expect(fileMocks.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["pkl", "pickle"])("never offers or accepts Python pickle files (%s)", async (extension) => {
+    const selected = vscode.Uri.file(`/workspace/untrusted.${extension}`);
+    fileMocks.showOpenDialog.mockResolvedValueOnce([selected]);
+    register();
+
+    await command("openWrangler.openFile")(selected);
+
+    expect(fileMocks.showWarningMessage).toHaveBeenCalledWith(expect.stringMatching(/supports CSV/i));
+    expect(fileMocks.stat).not.toHaveBeenCalled();
+    expect(fileMocks.detectImportOptions).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
+
+    await command("openWrangler.openPath")();
+    const pickerExtensions = fileMocks.showOpenDialog.mock.calls[0]?.[0]?.filters?.["Data files"];
+    expect(pickerExtensions).not.toContain(extension);
+  });
+
   it.each([
     ["untitled", vscode.Uri.from({ scheme: "untitled", path: "Untitled-1.csv" }), /save this data file/i],
     ["virtual", vscode.Uri.from({ scheme: "git", path: "/workspace/data.csv" }), /local files/i],
@@ -319,6 +357,17 @@ describe("file launch command", () => {
 
     expect(fileMocks.showWarningMessage).toHaveBeenCalledWith(".parquet is disabled in Open Wrangler settings.");
     expect(fileMocks.stat).not.toHaveBeenCalled();
+  });
+
+  it("disables .ndjson whenever the single JSONL setting is disabled", async () => {
+    fileMocks.enabledFileTypes = ["csv"];
+    register();
+
+    await command("openWrangler.openFile")(vscode.Uri.file("/workspace/data.ndjson"));
+
+    expect(fileMocks.showWarningMessage).toHaveBeenCalledWith(".ndjson is disabled in Open Wrangler settings.");
+    expect(fileMocks.stat).not.toHaveBeenCalled();
+    expect(fileMocks.createPanel).not.toHaveBeenCalled();
   });
 
   it("rejects directories and inaccessible resources without starting a runtime", async () => {

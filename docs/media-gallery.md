@@ -11,6 +11,14 @@ This scene uses the production webview bundle and a native DuckDB session over a
 time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries. DuckDB notebook
 relations are not currently supported.
 
+## Polars live notebook
+
+![Open Wrangler displaying a live native Polars notebook session with a formula draft, data diff, and generated Polars code](images/readme/v1.1/gallery/notebook-polars.png)
+
+This unaltered packaged VS Code capture shows the notebook and Open Wrangler workbench together. The session
+keeps the dataframe in Polars while paging, profiling, previewing the draft, and generating executable Polars
+code.
+
 ## PySpark Classic live notebook
 
 ![Open Wrangler displaying a 100,000-row PySpark Classic notebook DataFrame with selected revenue insights](images/readme/v1.1/gallery/pyspark-live-notebook.png)

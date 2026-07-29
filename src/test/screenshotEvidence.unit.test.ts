@@ -158,8 +158,8 @@ describe("packaged editor screenshot evidence", () => {
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
-      ["workbench.png", 1_440, 720],
-      ["notebooks.png", 1_440, 600]
+      ["workbench.png", 1_920, 830],
+      ["notebooks.png", 1_920, 450]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);

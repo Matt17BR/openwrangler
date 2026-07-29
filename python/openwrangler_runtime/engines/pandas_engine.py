@@ -97,7 +97,7 @@ class PandasEngine(DataFrameEngine):
             )
         if extension == ".parquet":
             return pd.read_parquet(path)
-        if extension == ".jsonl":
+        if extension in {".jsonl", ".ndjson"}:
             return pd.read_json(path, lines=True)
         if extension in {".xlsx", ".xls"}:
             _, sheet = resolve_excel_sheet_selector(options)

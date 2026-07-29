@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { registerFileCommands } from "./files/fileOpen";
 import { registerNotebookCommands } from "./notebooks/jupyterBridge";
 import { registerNotebookRendererMessaging } from "./notebooks/rendererMessaging";
+import { NotebookPreviewCoordinator } from "./notebooks/notebookPreviewCoordinator";
 import { PythonBridge } from "./pythonBridge";
 import { SessionCoordinator } from "./sessionCoordinator";
 import { registerRuntimeCommands } from "./runtimeCommands";
@@ -67,6 +68,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<OpenWr
   registerRuntimeCommands(context, bridge);
   registerNotebookCommands(context, coordinator);
   registerNotebookRendererMessaging(context, coordinator);
+  context.subscriptions.push(new NotebookPreviewCoordinator(context));
 
   if (process.env.OPEN_WRANGLER_EXTENSION_TESTS === "1") {
     return {

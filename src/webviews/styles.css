@@ -382,7 +382,7 @@ textarea {
 }
 
 .layout.sidePanelOpen {
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 440px);
 }
 
 .sidebar {
@@ -925,11 +925,14 @@ th small {
 }
 
 .columnInsight {
+  container-type: inline-size;
   color: var(--vscode-descriptionForeground);
   display: grid;
   font-size: 11px;
   gap: 5px;
   line-height: 1.25;
+  min-width: 0;
+  width: 100%;
 }
 
 .exactSummaryStats {
@@ -971,19 +974,30 @@ th small {
 
 .miniChart {
   display: block;
-  height: 28px;
+  height: 36px;
   margin-top: 4px;
-  width: 96px;
+  min-width: 0;
+  width: 100%;
 }
 
 .miniChart rect {
   fill: var(--vscode-charts-blue, #3794ff);
 }
 
-.numericMiniChart,
+.miniChart rect:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.numericHistogram,
 .booleanMiniChart {
   display: grid;
-  width: 110px;
+  min-width: 0;
+  width: 100%;
+}
+
+.numericHistogram:not(.compact) .miniChart {
+  height: 92px;
 }
 
 .miniChartCaption,
@@ -1011,7 +1025,8 @@ th small {
   height: 7px;
   margin-top: 6px;
   overflow: hidden;
-  width: 96px;
+  min-width: 0;
+  width: 100%;
 }
 
 .stackedMiniChart i {
@@ -1026,14 +1041,16 @@ th small {
   display: grid;
   gap: 2px;
   margin-top: 4px;
-  width: 120px;
+  min-width: 0;
+  width: 100%;
 }
 
 .categoryMiniRow {
   align-items: center;
   display: grid;
   gap: 4px;
-  grid-template-columns: minmax(0, 42px) 1fr auto;
+  grid-template-columns: minmax(48px, 0.9fr) minmax(24px, 1.1fr) auto;
+  min-width: 0;
 }
 
 .categoryMiniLabel {
@@ -1056,7 +1073,8 @@ th small {
   font-size: 10px;
   gap: 2px;
   margin-top: 4px;
-  max-width: 120px;
+  min-width: 0;
+  width: 100%;
 }
 
 .datetimeMiniChart span {
@@ -1068,6 +1086,21 @@ th small {
 .datetimeMiniChart b {
   color: var(--vscode-foreground);
   font-weight: 600;
+}
+
+@container (max-width: 150px) {
+  .exactSummaryStats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .categoryMiniRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .categoryMiniRow i {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
 }
 
 .emptyInsight {
@@ -1254,6 +1287,12 @@ th.rowHeader {
   letter-spacing: 0.05em;
   margin: 14px 0 7px;
   text-transform: uppercase;
+}
+
+.summaryDistributionChart .numericHistogram {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 8px 10px;
 }
 
 .summaryTopValues .barRow,

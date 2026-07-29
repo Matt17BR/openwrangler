@@ -30,12 +30,13 @@ from .base import (
     normalize_cell,
     normalize_page_projection,
     normalize_summary_projection,
-    numeric_visualization,
+    numeric_histogram_bin_count,
+    numeric_histogram_edges,
+    numeric_visualization_from_bin_counts,
     typed_selection_value,
     validate_view_predicate_operator,
 )
 
-SUMMARY_VISUALIZATION_SAMPLE_LIMIT = 4096
 _ASCII_LOWER = "abcdefghijklmnopqrstuvwxyz"
 _ASCII_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _ASCII_TO_LOWER = str.maketrans(_ASCII_UPPER, _ASCII_LOWER)
@@ -81,7 +82,7 @@ class DuckDBEngine(DataFrameEngine):
         # semantics are implemented and accepted independently.
         source_kinds=frozenset({"file"}),
         supports_editing=True,
-        lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl"}),
+        lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl", ".ndjson"}),
         export_formats=frozenset({"csv", "parquet"}),
         supports_shutdown_interrupt=True,
         supports_request_cancellation=False,
@@ -164,7 +165,7 @@ class DuckDBEngine(DataFrameEngine):
                     )
                 if extension == ".parquet":
                     return _snapshot_relation_factory(lambda: connection.read_parquet(path))
-                if extension == ".jsonl":
+                if extension in {".jsonl", ".ndjson"}:
                     try:
                         return _snapshot_relation_factory(
                             lambda: connection.read_json(path, format="newline_delimited")
@@ -375,16 +376,12 @@ class DuckDBEngine(DataFrameEngine):
                         "std": _finite_float(numeric[4]),
                     }
                     summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
-                    sample_rows = _execute_rows(
+                    summary["visualization"] = _numeric_visualization(
                         connection,
                         source_sql,
-                        f"SELECT {identifier} FROM ow WHERE {valid} LIMIT {SUMMARY_VISUALIZATION_SAMPLE_LIMIT}",
+                        identifier,
+                        raw_type,
                     )
-                    visualization = numeric_visualization(row[0] for row in sample_rows)
-                    valid_count = total_count - null_count - nan_count
-                    if valid_count > SUMMARY_VISUALIZATION_SAMPLE_LIMIT:
-                        visualization["sampled"] = True
-                    summary["visualization"] = visualization
                 elif semantic_type == "boolean":
                     counts = _execute_rows(
                         connection,
@@ -1242,6 +1239,60 @@ def _valid_predicate(identifier: str, raw_type: str) -> str:
     if _is_float_type(raw_type):
         return f"({identifier} IS NOT NULL AND NOT isnan({identifier}))"
     return f"{identifier} IS NOT NULL"
+
+
+def _finite_predicate(identifier: str, raw_type: str) -> str:
+    if _is_float_type(raw_type):
+        return f"({identifier} IS NOT NULL AND isfinite({identifier}))"
+    return f"{identifier} IS NOT NULL"
+
+
+def _numeric_visualization(
+    connection: Any,
+    source_sql: str,
+    identifier: str,
+    raw_type: str,
+) -> dict[str, Any]:
+    finite = _finite_predicate(identifier, raw_type)
+    minimum, maximum, finite_count, distinct_count = _execute_rows(
+        connection,
+        source_sql,
+        f"SELECT min({identifier}), max({identifier}), count(*), "
+        f"count(DISTINCT CAST({identifier} AS DOUBLE)) FROM ow WHERE {finite}",
+    )[0]
+    finite_count = int(finite_count or 0)
+    bin_count = numeric_histogram_bin_count(finite_count, int(distinct_count or 0))
+    minimum_float = _finite_float(minimum)
+    maximum_float = _finite_float(maximum)
+    edges = numeric_histogram_edges(minimum_float, maximum_float, bin_count)
+    if not edges:
+        return {"kind": "numeric", "bins": []}
+    if minimum_float == maximum_float:
+        return numeric_visualization_from_bin_counts(
+            minimum_float,
+            maximum_float,
+            [finite_count],
+        )
+
+    numeric_value = f"CAST({identifier} AS DOUBLE)"
+    count_expressions = []
+    for bin_index in range(bin_count):
+        if bin_index == 0:
+            interval = f"{numeric_value} < {_sql_literal(edges[1])}"
+        elif bin_index == bin_count - 1:
+            interval = f"{numeric_value} >= {_sql_literal(edges[bin_index])}"
+        else:
+            interval = (
+                f"{numeric_value} >= {_sql_literal(edges[bin_index])} "
+                f"AND {numeric_value} < {_sql_literal(edges[bin_index + 1])}"
+            )
+        count_expressions.append(f"count(*) FILTER (WHERE {finite} AND ({interval}))")
+    counts = _execute_rows(
+        connection,
+        source_sql,
+        f"SELECT {', '.join(count_expressions)} FROM ow",
+    )[0]
+    return numeric_visualization_from_bin_counts(minimum_float, maximum_float, counts)
 
 
 def _finite_float(value: Any) -> float | None:

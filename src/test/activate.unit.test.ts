@@ -33,6 +33,11 @@ vi.mock("../extension/sessionCoordinator", () => ({
 vi.mock("../extension/files/fileOpen", () => ({ registerFileCommands: vi.fn() }));
 vi.mock("../extension/notebooks/jupyterBridge", () => ({ registerNotebookCommands: vi.fn() }));
 vi.mock("../extension/notebooks/rendererMessaging", () => ({ registerNotebookRendererMessaging: vi.fn() }));
+vi.mock("../extension/notebooks/notebookPreviewCoordinator", () => ({
+  NotebookPreviewCoordinator: vi.fn(function MockNotebookPreviewCoordinator() {
+    return { dispose: vi.fn() };
+  })
+}));
 vi.mock("../extension/runtimeCommands", () => ({ registerRuntimeCommands: vi.fn() }));
 vi.mock("../extension/nativeViews", () => ({ registerNativeViews: vi.fn(() => ({})) }));
 vi.mock("../extension/webviewPanel", () => ({

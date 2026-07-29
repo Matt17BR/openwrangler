@@ -1,9 +1,16 @@
 import * as vscode from "vscode";
 import type { DataBackend, SessionSource } from "../../shared/protocol";
 import { OpenWranglerPanel } from "../webviewPanel";
-import { KernelBridge } from "./kernelBridge";
+import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { SessionCoordinator } from "../sessionCoordinator";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import {
+  discoverNotebookVariables,
+  isLiveNotebookVariableBackend,
+  NotebookVariableDiscoveryError,
+  notebookVariablePresentation,
+  type NotebookVariableDescriptor
+} from "./notebookVariableDiscovery";
 
 interface NotebookVariableArgument {
   name?: unknown;
@@ -25,6 +32,10 @@ interface JupyterLikeApi {
   kernels: { getKernel(uri: vscode.Uri): Promise<unknown> | unknown };
 }
 
+interface NotebookVariableQuickPickItem extends vscode.QuickPickItem {
+  readonly variable: NotebookVariableDescriptor;
+}
+
 export const registerNotebookCommands = (context: vscode.ExtensionContext, coordinator: SessionCoordinator): void => {
   context.subscriptions.push(
     vscode.commands.registerCommand("openWrangler.launchDataViewer", async (...args: unknown[]) => {
@@ -40,7 +51,7 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         return;
       }
 
-      await openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook, backend);
+      openLiveNotebookVariable(context, coordinator, variableName, notebookResolution.notebook, backend);
     })
   );
 
@@ -53,17 +64,49 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
         return;
       }
 
-      const variableName = await vscode.window.showInputBox({
-        title: "Open Notebook Variable in Open Wrangler",
-        prompt: "Enter a Pandas, Polars, or PySpark dataframe variable name from the active notebook kernel.",
-        validateInput: (value) =>
-          /^[A-Za-z_][A-Za-z0-9_]*$/.test(value) ? undefined : "Enter a valid Python variable name."
-      });
-      if (!variableName) {
+      let discovered;
+      try {
+        discovered = await discoverNotebookVariables(notebook);
+      } catch (error) {
+        vscode.window.showWarningMessage(
+          error instanceof NotebookVariableDiscoveryError
+            ? error.message
+            : "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
+        );
+        return;
+      }
+      if (discovered.variables.length === 0) {
+        vscode.window.showInformationMessage(
+          "Open Wrangler did not find a Pandas, Polars, PySpark, or DuckDB dataframe variable in the active kernel."
+        );
         return;
       }
 
-      await openLiveNotebookVariable(context, coordinator, variableName, notebook);
+      const items = discovered.variables.map(notebookVariableQuickPickItem);
+      const selected = await vscode.window.showQuickPick(items, {
+        title: "Open Wrangler: Open Notebook Variable",
+        placeHolder: discovered.truncated
+          ? "Open Wrangler: Select a dataframe variable (discovery results truncated)"
+          : "Open Wrangler: Select a dataframe variable from the active Jupyter kernel",
+        matchOnDescription: true,
+        matchOnDetail: true,
+        ignoreFocusOut: true
+      });
+      if (!isExactOpenNotebook(notebook)) {
+        vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
+        return;
+      }
+      if (!selected || !items.includes(selected)) {
+        return;
+      }
+      if (!isLiveNotebookVariableBackend(selected.variable.backend)) {
+        vscode.window.showWarningMessage(
+          `${selected.variable.name} is a DuckDB relation. Open Wrangler does not currently support live DuckDB notebook variables.`
+        );
+        return;
+      }
+
+      openLiveNotebookVariable(context, coordinator, selected.variable.name, notebook, selected.variable.backend);
     })
   );
 
@@ -101,13 +144,29 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
   );
 };
 
-async function openLiveNotebookVariable(
+function notebookVariableQuickPickItem(variable: NotebookVariableDescriptor): NotebookVariableQuickPickItem {
+  const presentation = notebookVariablePresentation(variable.type);
+  const detail =
+    variable.backend === "duckdb"
+      ? `${variable.type} · Live notebook opening is not supported`
+      : variable.backend === "pyspark"
+        ? `${variable.type} · Live viewing-only session`
+        : `${variable.type} · Live notebook session`;
+  return {
+    label: variable.name,
+    description: `${presentation.family} · ${presentation.kind}`,
+    detail,
+    variable
+  };
+}
+
+function openLiveNotebookVariable(
   context: vscode.ExtensionContext,
   coordinator: SessionCoordinator,
   variableName: string,
   notebook: vscode.NotebookDocument,
   backend?: DataBackend
-): Promise<void> {
+): void {
   if (!isExactOpenNotebook(notebook)) {
     vscode.window.showWarningMessage("The originating notebook is no longer open. Reopen it and try again.");
     return;
@@ -119,7 +178,10 @@ async function openLiveNotebookVariable(
     variableName,
     uri: notebook.uri.toString()
   };
-  const bridge = coordinator.createBridge(new KernelBridge(context, notebook), notebook);
+  const bridge = coordinator.createBridge(
+    new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()),
+    notebook
+  );
   if (backend) {
     OpenWranglerPanel.create(context, bridge, source, backend);
   } else {

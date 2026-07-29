@@ -79,7 +79,7 @@ def test_built_in_capabilities_are_immutable_and_match_current_behavior() -> Non
     assert not pandas.supports_request_cancellation
     assert polars.source_kinds == pandas.source_kinds
     assert polars.supports_editing
-    assert polars.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl"})
+    assert polars.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl", ".ndjson"})
     assert polars.export_formats == pandas.export_formats
     assert not polars.supports_shutdown_interrupt
     assert not polars.supports_request_cancellation
@@ -95,7 +95,7 @@ def test_built_in_capabilities_are_immutable_and_match_current_behavior() -> Non
     duckdb = DuckDBEngine.capabilities
     assert duckdb.source_kinds == frozenset({"file"})
     assert duckdb.supports_editing
-    assert duckdb.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl"})
+    assert duckdb.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl", ".ndjson"})
     assert duckdb.export_formats == frozenset({"csv", "parquet"})
     assert duckdb.supports_shutdown_interrupt
     assert not duckdb.supports_request_cancellation

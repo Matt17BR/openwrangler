@@ -767,6 +767,53 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
     engine.close()
 
 
+def test_duckdb_numeric_histogram_is_exact_for_a_large_filtered_view() -> None:
+    engine = DuckDBEngine()
+    source = duckdb.sql(
+        """
+        SELECT CAST(-1 AS DOUBLE) AS value FROM range(500)
+        UNION ALL
+        SELECT CAST(value AS DOUBLE) FROM range(5000) AS source(value)
+        UNION ALL
+        SELECT CAST(1000000 AS DOUBLE)
+        """
+    )
+    try:
+        frame = engine.apply_filter_model(
+            source,
+            {
+                "logic": "and",
+                "filters": [
+                    {
+                        "column": "value",
+                        "type": "float",
+                        "logic": "and",
+                        "predicates": [{"operator": "gte", "value": 500}],
+                    }
+                ],
+                "sort": [],
+            },
+        )
+
+        summary = engine.summaries(frame)[0]
+        bins = summary["visualization"]["bins"]
+
+        assert summary["numeric"]["min"] == 500.0
+        assert summary["numeric"]["max"] == 1_000_000.0
+        assert "sampled" not in summary["visualization"]
+        assert len(bins) == 20
+        assert bins[0]["min"] == summary["numeric"]["min"]
+        assert bins[-1]["max"] == summary["numeric"]["max"]
+        assert bins[-1]["count"] == 1
+        assert sum(bin_["count"] for bin_ in bins) == 4_501
+        assert all(left["max"] == right["min"] for left, right in zip(bins, bins[1:], strict=False))
+        assert [bin_["max"] - bin_["min"] for bin_ in bins] == pytest.approx(
+            [bins[0]["max"] - bins[0]["min"]] * len(bins)
+        )
+    finally:
+        engine.close()
+
+
 def test_duckdb_non_float_include_nan_value_filter_is_an_explicit_false_condition() -> None:
     engine = DuckDBEngine()
     frame = duckdb.sql("SELECT * FROM (VALUES (1), (2)) AS source(value)")

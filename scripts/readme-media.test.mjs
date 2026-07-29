@@ -29,6 +29,7 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(compositor, /vscode-notebook-pyspark-dark\.png/u);
   assert.match(compositor, /pixelmatch/u);
   assert.match(compositor, /sRGB/u);
+  assert.doesNotMatch(compositor, /rotate\(|clip-path:\s*polygon|transform:\s*scale\(/u);
   assert.doesNotMatch(packagedEditorRunner, /acceptanceMode === "full" && jupyterExtensionInstallTarget/u);
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
   assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
@@ -44,8 +45,8 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(captureScript, /duckdbRich[\s\S]{0,500}notebookVariable/u);
 
   for (const [name, width, height] of [
-    ["workbench.png", 1_440, 720],
-    ["notebooks.png", 1_440, 600]
+    ["workbench.png", 1_920, 830],
+    ["notebooks.png", 1_920, 450]
   ]) {
     const path = resolve(root, "docs", "images", "readme", "v1.1", name);
     const png = readFileSync(path);
@@ -70,10 +71,17 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
   assert.match(
     readme,
-    /live notebook variables are not capped at 10,000 rows[\s\S]{0,280}Only that saved snapshot is bounded for notebook portability, with headline ceilings of 10,000\s+rows, 2,048 columns, 100,000 cells, and 16 MiB\.[\s\S]{0,100}Live variables continue to page from the current source\./u
+    /Files and live variables are not capped at 10,000 rows[\s\S]{0,220}Only a saved\s+inline snapshot is bounded for notebook portability, with headline ceilings of 10,000 rows, 2,048 columns,\s+100,000 cells, and 16 MiB\./u
   );
-  assert.match(readme, /rich Parquet file gallery/u);
-  assert.match(readme, /Notebook relations are not yet supported\./u);
+  assert.match(
+    readme,
+    /If Microsoft Data Wrangler is installed too, Open Wrangler\s+asks once which extension should own automatic previews/u
+  );
+  assert.match(readme, /10\/20\/50\/100-row pages/u);
+  assert.match(readme, /\*\*Open saved\s+snapshot\*\* keeps the portable captured result available as a fallback/u);
+  assert.match(readme, /engine gallery/u);
+  assert.match(readme, /DuckDB notebook relations are not yet supported/u);
+  assert.match(readme, /loading a pickle can execute arbitrary code/u);
   assert.match(readme, /real packaged PySpark notebook capture/u);
   assert.match(
     readme,
@@ -84,6 +92,8 @@ test("README media is compact, portable, and composition-verified", () => {
     /File sessions,\s+cleaning, exports, code insertion, and saved inline snapshots are not supported\./u
   );
   assert.match(readme, /indexes and\s+counts the complete frame[\s\S]{0,100}not dataframe row limits/u);
+  assert.match(readme, /\| v1\.1\.2\s+\| Late August 2026/u);
+  assert.match(readme, /roughly biweekly patch\s+trains and six-to-eight-week minor releases/u);
   assert.doesNotMatch(readme, /complex-value nodes, and nesting depth/u);
 
   const galleryImage = readFileSync(
@@ -95,6 +105,14 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(gallery, /file-backed DuckDB Parquet source/u);
   assert.match(gallery, /DuckDB notebook\s+relations are not currently supported\./u);
   assert.match(gallery, /images\/readme\/v1\.1\/gallery\/duckdb-rich-parquet\.png/u);
+
+  const polarsImage = readFileSync(resolve(root, "docs", "images", "readme", "v1.1", "gallery", "notebook-polars.png"));
+  assert.equal(polarsImage.readUInt32BE(16), 1_920);
+  assert.equal(polarsImage.readUInt32BE(20), 760);
+  assert.ok(polarsImage.byteLength < 300 * 1_024);
+  assert.ok(pngChunkTypes(polarsImage).includes("sRGB"));
+  assert.match(gallery, /(?:Polars live|live native Polars) notebook/u);
+  assert.match(gallery, /images\/readme\/v1\.1\/gallery\/notebook-polars\.png/u);
 
   const pysparkImage = readFileSync(
     resolve(root, "docs", "images", "readme", "v1.1", "gallery", "pyspark-live-notebook.png")
