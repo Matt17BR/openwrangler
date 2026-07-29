@@ -1015,6 +1015,12 @@ def _connect() -> Any:
         config={
             "autoinstall_known_extensions": False,
             "autoload_known_extensions": False,
+            # DuckDB's external-file cache can retain a Windows file handle
+            # after a Parquet page completes. Live sessions fingerprint and
+            # reopen their immutable source for each terminal query, so holding
+            # that cache is both unnecessary and incompatible with atomic
+            # source replacement detection.
+            "enable_external_file_cache": False,
             "preserve_insertion_order": True,
         }
     )

@@ -15,6 +15,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Kept PySpark insights explicit even when insights-on-open is enabled, rejected unsupported nested Spark profile types before indexing, and changed base-frame paging to a bounded dense-row-identity range. Opening still indexes and counts the complete frame, while filtered or sorted pages retain their correct Spark ordering path.
 - Made PySpark map, nested-map, array, and struct statistics use native canonical orderable keys, so logical map equality no longer depends on insertion order or an unsupported raw-map sort. Variable-width pages now receive a Spark-side UTF-8 preflight before value collection plus independent cell-count, serialized-byte, complex-node, and nesting-depth limits. Oversized values fail without crossing into the notebook process or stopping the user's Spark session.
 
+### Fixed
+
+- Disabled DuckDB's external-file cache in every owned connection so completed Parquet reads release their Windows file handles and source replacement can produce the intended recoverable reopen diagnostic.
+
 ## [1.0.3] - 2026-07-28
 
 ### Changed
