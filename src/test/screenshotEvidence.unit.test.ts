@@ -147,14 +147,16 @@ describe("packaged editor screenshot evidence", () => {
   it("keeps the README to two concise portable product views", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
     const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
+      icon?: string;
       scripts?: Record<string, string>;
     };
+    const buildWebviews = readFileSync(resolve("scripts/build-webviews.mjs"), "utf8");
     const icon = readFileSync(resolve("assets/icon.png"));
-    const packagedIcon = readFileSync(resolve("media/icon.png"));
     const standardIcon = readFileSync(resolve("assets/icon-256.png"));
     const compactIcon = readFileSync(resolve("assets/icon-128.png"));
     const iconSvg = readFileSync(resolve("assets/icon.svg"), "utf8");
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
+    const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
       ["workbench.png", 1_440, 720],
       ["notebooks.png", 1_440, 600]
@@ -162,7 +164,6 @@ describe("packaged editor screenshot evidence", () => {
 
     expect(icon.readUInt32BE(16)).toBe(512);
     expect(icon.readUInt32BE(20)).toBe(512);
-    expect(packagedIcon).toEqual(icon);
     expect(standardIcon.readUInt32BE(16)).toBe(256);
     expect(standardIcon.readUInt32BE(20)).toBe(256);
     expect(compactIcon.readUInt32BE(16)).toBe(128);
@@ -176,6 +177,12 @@ describe("packaged editor screenshot evidence", () => {
     expect(packageJson.scripts?.check).toContain("npm run brand:check");
     expect(packageJson.scripts?.["brand:render-check"]).toContain("--render-check");
     expect(packageJson.scripts?.["test:webview-acceptance"]).toContain("npm run brand:render-check");
+    expect(packageJson.icon).toBe("media/icon.png");
+    expect(viteConfig).toContain('publicDir: notebookRendererBuild ? false : "assets"');
+    expect(viteConfig).toContain('outDir: "media"');
+    expect(buildWebviews).toContain('readFileSync(resolve("assets", "icon.png"))');
+    expect(buildWebviews).toContain('readFileSync(resolve("media", "icon.png"))');
+    expect(buildWebviews).toContain("packagedIcon.equals(sourceIcon)");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
     expect(readme).toContain(
       '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128"'

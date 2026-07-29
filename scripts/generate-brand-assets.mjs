@@ -12,7 +12,6 @@ const assetsDirectory = resolve(root, "assets");
 const reviewDirectory = resolve(root, "tmp", "brand-review");
 const iconSourcePath = resolve(assetsDirectory, "icon.svg");
 const activitySourcePath = resolve(assetsDirectory, "activity-icon.svg");
-const packagedIconPath = resolve(root, "media", "icon.png");
 const manifestPath = resolve(root, "scripts", "brand-assets.manifest.json");
 const outputs = new Map([
   [128, resolve(assetsDirectory, "icon-128.png")],
@@ -70,12 +69,10 @@ async function renderBrandAssets() {
       for (const [size, destination] of outputs) {
         assertEquivalentPng(rendered.get(size), destination, size);
       }
-      assertEquivalentPng(rendered.get(512), packagedIconPath, 512);
     } else {
       for (const [size, destination] of outputs) {
         writeFileSync(destination, readFileSync(rendered.get(size)));
       }
-      writeFileSync(packagedIconPath, readFileSync(rendered.get(512)));
       writeAssetManifest(iconSource, activitySource);
     }
 
@@ -193,10 +190,6 @@ function assertAssetManifest(icon, activity) {
     if (entry?.size !== size || entry?.sha256 !== sha256(readFileSync(path))) {
       throw new Error(`${basename(path)} differs from the generated brand asset manifest.`);
     }
-  }
-  assertPng(packagedIconPath, 512, 512);
-  if (!readFileSync(packagedIconPath).equals(readFileSync(outputs.get(512)))) {
-    throw new Error("The packaged gallery icon differs from the generated 512 pixel brand asset.");
   }
 }
 

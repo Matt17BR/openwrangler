@@ -11,8 +11,8 @@ This specification replaces evidence-heavy README captures with two concise prod
 - `npm run test:webview-acceptance` runs the pixel-exact brand check in the browser-enabled visual CI lane
 - `assets/icon.png` is the 512 pixel README and registry master and renders at 128 CSS pixels for a sharp,
   registry-portable presentation; arbitrary SVGs are not accepted by registry README validation
-- `media/icon.png` is the packaged extension copy; generation writes it from the same 512 pixel render, and both
-  brand checks fail if it diverges from the master
+- the production Vite build copies that tracked 512 pixel master to disposable `media/icon.png` and fails if the
+  packaged copy is not byte-identical
 - `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
 
 ## README workbench image
