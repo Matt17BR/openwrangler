@@ -4663,6 +4663,102 @@ async function exactSessionApp(frame: Frame, expectedSessionId: string): Promise
   return undefined;
 }
 
+async function waitForExactSessionWebviewButton(
+  workbench: Page,
+  testing: TestApi,
+  expectedSessionId: string,
+  name: string,
+  requireEnabled = false
+): Promise<Locator> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    const browser = workbench.context().browser();
+    assertOpenWranglerWebviewLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, OPEN_WRANGLER_WEBVIEW_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const app = await exactSessionApp(target.frame, expectedSessionId);
+        if (!app) continue;
+        const grid = app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first();
+        if ((await grid.count()) === 0 || !(await grid.isVisible())) continue;
+        const button = app.getByRole("button", { name, exact: true }).first();
+        if ((await button.count()) === 0 || !(await button.isVisible())) continue;
+        if (requireEnabled && !(await button.isEnabled())) continue;
+        return button;
+      } catch (error) {
+        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+      }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+
+  const browser = workbench.context().browser();
+  assertOpenWranglerWebviewLifecycle(workbench, browser);
+  const diagnostics = await openWranglerGridDiagnostics(workbench, browser, expectedSessionId);
+  throw new Error(
+    `The editor journey did not expose the exact Open Wrangler session ${JSON.stringify(name)} button. ` +
+      `State: ${JSON.stringify({
+        expectedSessionId,
+        requireEnabled,
+        activeSession: testing.activeSession()?.sessionId,
+        coordinator: testing.diagnostics(),
+        panelHydrated: testing.panelHydrated(expectedSessionId),
+        activeTab: activeEditorTabDiagnostic(),
+        webviews: diagnostics
+      })}`
+  );
+}
+
+async function focusAndSynchronizeExactSessionPanel(
+  workbench: Page,
+  testing: TestApi,
+  expectedSessionId: string,
+  expectedSourceLabel: string
+): Promise<Locator> {
+  const expectedTabLabel = `Open Wrangler: ${expectedSourceLabel}`;
+  await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+  await waitFor(
+    () => {
+      const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+      return Boolean(tab && tab.label === expectedTabLabel && isOpenWranglerSessionTab(tab));
+    },
+    WORKBENCH_OPERATION_TIMEOUT_MS,
+    "the exact Open Wrangler custom editor to remain active after its import Quick Input closed",
+    () =>
+      JSON.stringify({
+        expectedSessionId,
+        expectedTabLabel,
+        activeTab: activeEditorTabDiagnostic(),
+        panelHydrated: testing.panelHydrated(expectedSessionId),
+        coordinator: testing.diagnostics()
+      })
+  );
+
+  // Cursor may temporarily retire a custom-editor renderer while its final
+  // Quick Input closes. Focusing is one non-mutating user action; require the
+  // exact session's physical grid before asking the host for a fresh,
+  // authoritative renderer acknowledgement.
+  await waitForExactSessionWebviewButton(workbench, testing, expectedSessionId, "Import options");
+  await waitFor(
+    () => testing.panelHydrated(expectedSessionId),
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the exact import-reconfigured renderer to acknowledge its current host snapshot",
+    () =>
+      JSON.stringify({
+        expectedSessionId,
+        activeTab: activeEditorTabDiagnostic(),
+        panelHydrated: testing.panelHydrated(expectedSessionId),
+        coordinator: testing.diagnostics()
+      })
+  );
+  assert.equal(
+    await testing.synchronizePanel(expectedSessionId),
+    true,
+    "The focused import-reconfigured renderer must acknowledge one authoritative synchronization."
+  );
+  return waitForExactSessionWebviewButton(workbench, testing, expectedSessionId, "Import options", true);
+}
+
 async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
   recordAcceptanceProgress(checkpoint);
   const cityHeader = frame.locator('th[data-column="city"]').first();
@@ -10591,10 +10687,6 @@ async function waitForOpenWranglerWebviewButton(
   );
 }
 
-async function waitForOpenWranglerWebviewButtonEnabled(page: Page, name: string): Promise<Locator> {
-  return waitForOpenWranglerWebviewButton(page, name, true);
-}
-
 interface GridViewportMeasurement {
   scrollTop: number;
   scrollLeft: number;
@@ -10986,9 +11078,10 @@ async function exerciseLiveImportReconfiguration(
     "the live CSV session to atomically adopt its semicolon import options"
   );
   // The test API can observe replacement metadata while the coordinator is
-  // still persisting it. The renderer leaves busy mode only after the
-  // reconfiguration barrier has released, which is the user-visible commit.
-  await waitForOpenWranglerWebviewButtonEnabled(page, "Import options");
+  // still persisting it. Restore focus after the final Quick Input and require
+  // the exact session's physical, authoritative renderer before continuing.
+  await focusAndSynchronizeExactSessionPanel(page, testing, stableSessionId, path.basename(configured.fsPath));
+  recordAcceptanceProgress("verify:file-inputs:reconfigure:title-options:renderer-synchronized");
 
   const changed = testing.activeSession();
   assert.ok(changed, "The reconfigured CSV must remain active.");
@@ -11039,7 +11132,13 @@ async function exerciseLiveImportReconfiguration(
     "The acceptance view-state injection must commit through the real renderer before native import actions."
   );
   recordAcceptanceProgress("verify:file-inputs:reconfigure:view-state:retained-synchronized");
-  const synchronizedGridAction = await waitForOpenWranglerWebviewButton(page, "Import options", true);
+  const synchronizedGridAction = await waitForExactSessionWebviewButton(
+    page,
+    testing,
+    stableSessionId,
+    "Import options",
+    true
+  );
   const physicalViewport = await waitForOpenWranglerGridViewport(synchronizedGridAction, {
     scrollTop: 29,
     scrollLeft: 23
@@ -11130,7 +11229,7 @@ async function exerciseLiveImportReconfiguration(
     "Cancelling import reconfiguration must not create, replace, or retain a runtime session."
   );
 
-  const gridImportAction = await waitForOpenWranglerWebviewButton(page, "Import options");
+  const gridImportAction = await waitForExactSessionWebviewButton(page, testing, stableSessionId, "Import options");
   await gridImportAction.click();
   const gridDelimiterPrompt = await waitForImportQuickInput(page, testing, configured, "Delimiter", stableSessionId);
   await waitForImportNaturalKeyboardFocus(gridDelimiterPrompt, "Delimiter", "contains");
