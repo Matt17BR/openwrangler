@@ -920,22 +920,18 @@ export class OpenWranglerPanel {
     if (this.rendererSynchronization) return this.rendererSynchronization;
 
     const synchronization = (async () => {
-      do {
-        this.rendererSynchronizationRequested = false;
-        const shouldClearInspection = this.rendererSynchronizationNeedsInspectionClear;
-        this.rendererSynchronizationNeedsInspectionClear = false;
-        await this.synchronizeRenderer(shouldClearInspection);
-      } while (!this.disposed && this.rendererSynchronizationRequested);
+      try {
+        do {
+          this.rendererSynchronizationRequested = false;
+          const shouldClearInspection = this.rendererSynchronizationNeedsInspectionClear;
+          this.rendererSynchronizationNeedsInspectionClear = false;
+          await this.synchronizeRenderer(shouldClearInspection);
+        } while (!this.disposed && this.rendererSynchronizationRequested);
+      } finally {
+        this.rendererSynchronization = undefined;
+      }
     })();
     this.rendererSynchronization = synchronization;
-    void synchronization.then(
-      () => {
-        if (this.rendererSynchronization === synchronization) this.rendererSynchronization = undefined;
-      },
-      () => {
-        if (this.rendererSynchronization === synchronization) this.rendererSynchronization = undefined;
-      }
-    );
     return synchronization;
   }
 

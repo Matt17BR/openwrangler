@@ -424,6 +424,46 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
   });
 
+  it("drains a synchronization requested after the current runner's final loop check", async () => {
+    const heldMarker = deferred<boolean>();
+    let markerCount = 0;
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => openedResponse) },
+      {
+        postMessage: async (message) => {
+          if (isRendererSynchronizationMessage(message)) {
+            markerCount += 1;
+            if (markerCount === 1) return heldMarker.promise;
+          }
+          return true;
+        }
+      }
+    );
+    await harness.open();
+
+    const initialSynchronization = harness.receive({ kind: "ready" });
+    await vi.waitFor(() => expect(markerCount).toBe(1));
+
+    let pull: Promise<void> | undefined;
+    heldMarker.resolve(true);
+    // Cross the async postMessage wrappers and the runner's final await so
+    // this pull lands after its loop condition but before the old .then cleanup.
+    queueMicrotask(() =>
+      queueMicrotask(() =>
+        queueMicrotask(() =>
+          queueMicrotask(() => {
+            pull = harness.receive({ kind: "requestSessionSnapshot" });
+          })
+        )
+      )
+    );
+
+    await initialSynchronization;
+    await vi.waitFor(() => expect(pull).toBeDefined());
+    await pull;
+    expect(markerCount).toBe(2);
+  });
+
   it("never reports a renderer as hydrated while its initial host publication is still opening", async () => {
     const initialPublication = deferred<void>();
     let heldInitialPublication = false;
