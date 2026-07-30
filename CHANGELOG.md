@@ -8,10 +8,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
-- Made native DuckDB notebook restart/recovery part of the real packaged-Jupyter release gate. A filtered,
-  ordered multi-sort relation now survives an actual kernel replacement with the same public session, schema,
-  and viewing state over a new private runtime; conversion traps remain armed, terminal cleanup leaves no
-  runtime session behind, and the user's replacement relation and connection remain usable.
+- Made native DuckDB notebook restart/recovery part of the real packaged-Jupyter release gate. After the
+  notebook recreates a filtered, ordered multi-sort relation in the replacement kernel, Open Wrangler rebinds
+  it to the same public session, schema, and viewing state over a new private runtime; conversion traps remain
+  armed, terminal cleanup leaves no runtime session behind, and the user's replacement relation and connection
+  remain usable.
 
 ## [1.1.4] - 2026-07-30
 
