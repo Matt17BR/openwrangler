@@ -139,6 +139,46 @@ export class OpenWranglerPanel {
     return target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
   }
 
+  static async ensurePanelSynchronizedForSession(
+    sessionId: string,
+    deadlineMs = Number.POSITIVE_INFINITY
+  ): Promise<boolean> {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
+    if (!target?.isRendererSynchronizableForSession(sessionId)) return false;
+
+    const current = target.rendererSynchronizationIdentity;
+    if (current?.sessionId === sessionId && current.revision === target.snapshot?.metadata.revision) {
+      const acknowledged = await target.waitForRendererSynchronizationAcknowledgement(current.syncId, deadlineMs);
+      if (acknowledged && target.rendererSynchronizationIdentity === current && target.hasHydratedRenderer()) {
+        return true;
+      }
+      if (target.hasHydratedRenderer()) return true;
+      if (!target.isRendererSynchronizableForSession(sessionId)) return false;
+      // A normal renderer pull may have replaced the marker while this
+      // readiness-aware test path was waiting. Never retire that newer generation.
+      if (target.rendererSynchronizationIdentity !== current) return target.hasHydratedRenderer();
+    }
+
+    if (Date.now() >= deadlineMs) return false;
+    target.invalidateRendererSynchronization();
+    await target.enqueueRendererSynchronization(false);
+    const synchronization = target.rendererSynchronizationIdentity;
+    if (
+      !synchronization ||
+      synchronization.sessionId !== sessionId ||
+      synchronization.revision !== target.snapshot?.metadata.revision
+    ) {
+      return false;
+    }
+    const acknowledged = await target.waitForRendererSynchronizationAcknowledgement(synchronization.syncId, deadlineMs);
+    return acknowledged && target.rendererSynchronizationIdentity === synchronization && target.hasHydratedRenderer();
+  }
+
+  static panelSynchronizableForSession(sessionId: string): boolean {
+    const target = [...OpenWranglerPanel.panels].find((panel) => panel.sessionId === sessionId);
+    return target?.isRendererSynchronizableForSession(sessionId) ?? false;
+  }
+
   static async previewStepForSessionForTesting(
     request: Extract<OpenWranglerRequest, { kind: "previewStep" }>
   ): Promise<SessionOpenedResponse | undefined> {
@@ -834,6 +874,16 @@ export class OpenWranglerPanel {
     );
   }
 
+  private isRendererSynchronizableForSession(sessionId: string): boolean {
+    return Boolean(
+      !this.disposed &&
+      !this.opening &&
+      this.rendererReady &&
+      this.sessionId === sessionId &&
+      this.snapshot?.metadata.sessionId === sessionId
+    );
+  }
+
   private invalidateRendererSynchronization(): void {
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
     this.rendererSynchronizationIdentity = undefined;
@@ -842,10 +892,15 @@ export class OpenWranglerPanel {
     this.settleRendererImportAction(undefined, undefined);
   }
 
-  private waitForRendererSynchronizationAcknowledgement(syncId: string): Promise<boolean> {
+  private waitForRendererSynchronizationAcknowledgement(
+    syncId: string,
+    deadlineMs = Number.POSITIVE_INFINITY
+  ): Promise<boolean> {
     if (this.hasHydratedRenderer() && this.rendererHydratedSyncId === syncId) return Promise.resolve(true);
     const acknowledgement = this.rendererSynchronizationAcknowledgement;
     if (!acknowledgement || acknowledgement.syncId !== syncId) return Promise.resolve(false);
+    const timeoutMs = Math.min(RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS, Math.max(0, deadlineMs - Date.now()));
+    if (timeoutMs <= 0) return Promise.resolve(false);
     return new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (hydrated: boolean) => {
@@ -854,7 +909,7 @@ export class OpenWranglerPanel {
         clearTimeout(timer);
         resolve(hydrated);
       };
-      const timer = setTimeout(() => finish(false), RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS);
+      const timer = setTimeout(() => finish(false), timeoutMs);
       void acknowledgement.promise.then(finish);
     });
   }

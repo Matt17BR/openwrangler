@@ -22,6 +22,7 @@ describe("installed performance renderer synchronization", () => {
     await expect(
       waitForInstalledPerformancePanelHydration({
         isHydrated: () => true,
+        canSynchronize: () => true,
         synchronize,
         timeoutMs: 60_000,
         naturalHydrationGraceMs: 10_000,
@@ -39,6 +40,7 @@ describe("installed performance renderer synchronization", () => {
     await expect(
       waitForInstalledPerformancePanelHydration({
         isHydrated: () => hydrated,
+        canSynchronize: () => true,
         synchronize,
         timeoutMs: 60_000,
         naturalHydrationGraceMs: 10_000,
@@ -60,6 +62,7 @@ describe("installed performance renderer synchronization", () => {
     await expect(
       waitForInstalledPerformancePanelHydration({
         isHydrated: () => false,
+        canSynchronize: () => true,
         synchronize,
         timeoutMs: 60_000,
         naturalHydrationGraceMs: 100,
@@ -81,6 +84,7 @@ describe("installed performance renderer synchronization", () => {
     await expect(
       waitForInstalledPerformancePanelHydration({
         isHydrated: () => hydrated,
+        canSynchronize: () => true,
         synchronize,
         timeoutMs: 60_000,
         naturalHydrationGraceMs: 100,
@@ -101,6 +105,7 @@ describe("installed performance renderer synchronization", () => {
       const synchronize = vi.fn(() => new Promise<boolean>(() => undefined));
       const pending = waitForInstalledPerformancePanelHydration({
         isHydrated: () => false,
+        canSynchronize: () => true,
         synchronize,
         timeoutMs: 100,
         naturalHydrationGraceMs: 25,
@@ -113,6 +118,52 @@ describe("installed performance renderer synchronization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("waits for renderer readiness before using the sole synchronization fallback", async () => {
+    let now = 0;
+    let synchronizable = false;
+    const synchronize = vi.fn(async () => true);
+
+    await expect(
+      waitForInstalledPerformancePanelHydration({
+        isHydrated: () => false,
+        canSynchronize: () => synchronizable,
+        synchronize,
+        timeoutMs: 300,
+        naturalHydrationGraceMs: 100,
+        pollIntervalMs: 25,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+          if (now >= 175) synchronizable = true;
+        }
+      })
+    ).resolves.toBe(true);
+    expect(now).toBe(175);
+    expect(synchronize).toHaveBeenCalledOnce();
+  });
+
+  it("does not consume the synchronization fallback when the renderer never becomes ready", async () => {
+    let now = 0;
+    const synchronize = vi.fn(async () => true);
+
+    await expect(
+      waitForInstalledPerformancePanelHydration({
+        isHydrated: () => false,
+        canSynchronize: () => false,
+        synchronize,
+        timeoutMs: 100,
+        naturalHydrationGraceMs: 25,
+        pollIntervalMs: 25,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+        }
+      })
+    ).resolves.toBe(false);
+    expect(now).toBe(100);
+    expect(synchronize).not.toHaveBeenCalled();
   });
 });
 

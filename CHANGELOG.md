@@ -37,6 +37,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   workbench focus. Incidental layout scrolls on macOS can no longer overwrite the confirmed viewport.
 - Registered a new workbench panel's activation listener before dispatching its session open. Fast Windows
   activation can no longer leave a successfully opened dataframe disconnected from the active-session UI.
+- Made installed Cursor performance validation wait for the current webview to become synchronizable and adopt
+  its automatic authoritative snapshot before using the one allowed fallback. A slow renderer can no longer
+  consume that fallback before it is ready or have a newer generation invalidated by late test cleanup.
 
 ## [1.1.3] - 2026-07-30
 
