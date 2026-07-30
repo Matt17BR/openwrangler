@@ -21,7 +21,8 @@ import {
   installedPerformanceGridRowHeight,
   installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
-  rendererHasUsableGridGeometry
+  rendererHasUsableGridGeometry,
+  waitForInstalledPerformanceRendererAcknowledgement
 } from "./rendererGridScrollMeasurement";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v5";
@@ -286,6 +287,7 @@ async function measureGridInteraction({
     GRID_DISCOVERY_TIMEOUT_MS,
     "the grid-interaction host session"
   );
+  recordProgress("interaction:host-session");
   await waitForPanelSynchronization(testing, session.sessionId);
   const frame = await waitForUsableGrid(workbench, { rows: fixture.rows, columns: fixture.columns });
   recordProgress("interaction:usable-grid");
@@ -547,13 +549,13 @@ async function waitForWorkbenchReady(workbench: Page): Promise<void> {
 }
 
 async function waitForPanelSynchronization(testing: TestApi, sessionId: string): Promise<void> {
-  const deadline = Date.now() + GRID_DISCOVERY_TIMEOUT_MS;
-  do {
-    const synchronized = await Promise.race([testing.synchronizePanel(sessionId), delay(2_000).then(() => false)]);
-    if (synchronized) return;
-    await delay(25);
-  } while (Date.now() < deadline);
-  throw new Error("The installed warm-up renderer did not acknowledge its authoritative host snapshot.");
+  const synchronized = await waitForInstalledPerformanceRendererAcknowledgement({
+    attempt: () => testing.synchronizePanel(sessionId),
+    timeoutMs: GRID_DISCOVERY_TIMEOUT_MS,
+    retryDelayMs: 25
+  });
+  if (synchronized) return;
+  throw new Error("The installed renderer did not acknowledge its authoritative host snapshot.");
 }
 
 async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns: number }): Promise<Frame> {

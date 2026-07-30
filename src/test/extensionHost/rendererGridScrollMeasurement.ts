@@ -1,6 +1,54 @@
 export const installedPerformanceGridRowHeight = 29;
 export const installedPerformanceMaximumCanvasHeight = 16_000_000;
 
+export interface InstalledPerformanceRendererAcknowledgementOptions {
+  readonly attempt: () => Promise<boolean>;
+  readonly timeoutMs: number;
+  readonly retryDelayMs: number;
+  readonly now?: () => number;
+  readonly wait?: (durationMs: number) => Promise<void>;
+}
+
+export async function waitForInstalledPerformanceRendererAcknowledgement({
+  attempt,
+  timeoutMs,
+  retryDelayMs,
+  now = Date.now,
+  wait = (durationMs) => new Promise((resolve) => setTimeout(resolve, durationMs))
+}: InstalledPerformanceRendererAcknowledgementOptions): Promise<boolean> {
+  const deadline = now() + timeoutMs;
+  do {
+    const attemptBudget = deadline - now();
+    if (attemptBudget <= 0) return false;
+    const outcome = await settleInstalledPerformanceRendererAcknowledgement(attempt(), attemptBudget);
+    if (outcome.kind === "timeout") return false;
+    if (outcome.acknowledged) return true;
+    const remaining = deadline - now();
+    if (remaining <= 0) return false;
+    await wait(Math.min(retryDelayMs, remaining));
+  } while (now() < deadline);
+  return false;
+}
+
+function settleInstalledPerformanceRendererAcknowledgement(
+  attempt: Promise<boolean>,
+  timeoutMs: number
+): Promise<{ readonly kind: "settled"; readonly acknowledged: boolean } | { readonly kind: "timeout" }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+    void attempt.then(
+      (acknowledged) => {
+        clearTimeout(timer);
+        resolve({ kind: "settled", acknowledged });
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
 export interface RendererGridScrollMeasurementInput {
   row: number;
   column: number;

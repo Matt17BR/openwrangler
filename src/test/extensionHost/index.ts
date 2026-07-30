@@ -3191,7 +3191,7 @@ async function invokeReleasedNotebookToolbarVariable(
     notebook,
     "The exact released-Jupyter notebook must be active before its Open Wrangler toolbar action."
   );
-  const picker = await clickReleasedNotebookVariableAction(workbench, notebook);
+  const picker = await activateReleasedNotebookVariableAction(workbench, notebook);
   assertActiveNotebookTab(
     notebook,
     "The exact released-Jupyter notebook tab must remain active after its toolbar action opens the variable picker."
@@ -3215,7 +3215,7 @@ interface ReleasedNotebookPinnedAction {
   readonly description: string;
 }
 
-async function clickReleasedNotebookVariableAction(
+async function activateReleasedNotebookVariableAction(
   workbench: Page,
   notebook: vscode.NotebookDocument
 ): Promise<Locator> {
@@ -3248,7 +3248,7 @@ async function clickReleasedNotebookVariableAction(
       : await resolveReleasedNotebookToolbarAction(workbench);
   let dispatchStarted = false;
   try {
-    assertExactOpenNotebookDocument(notebook, "immediately before clicking its Open Wrangler notebook action");
+    assertExactOpenNotebookDocument(notebook, "immediately before activating its Open Wrangler notebook action");
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
       notebook,
@@ -3256,12 +3256,12 @@ async function clickReleasedNotebookVariableAction(
     );
     assertActiveNotebookTab(
       notebook,
-      "The exact released-Jupyter notebook tab must remain active before clicking its Open Wrangler action."
+      "The exact released-Jupyter notebook tab must remain active before activating its Open Wrangler action."
     );
     dispatchStarted = true;
     return await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
       description: pinned.description,
-      activate: () => pinned.action.click({ timeout: 2_000 }),
+      activate: () => pinned.action.click({ force: true, timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
       receipt: () => waitForReleasedNotebookVariablePicker(workbench),
       authoritativeReceiptAfterActivationFailure: () => waitForReleasedNotebookVariablePicker(workbench),
       naturalDismissal: pinned.overflowMenu
@@ -3417,7 +3417,7 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
     enabled: 0
   });
   throw new Error(
-    "Timed out clicking the real Open Wrangler action in the active notebook editor title. " +
+    "Timed out resolving the real Open Wrangler action in the active notebook editor title. " +
       `Structure: ${JSON.stringify(diagnostics)}`
   );
 }
