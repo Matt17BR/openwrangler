@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-07-31
+
 ### Changed
 
 - Made native DuckDB notebook restart/recovery part of the real packaged-Jupyter release gate. A filtered,

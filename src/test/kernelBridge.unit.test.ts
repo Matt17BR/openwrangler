@@ -273,12 +273,20 @@ describe("kernel retry classification", () => {
 
     expect(
       oldRequests.map((request) =>
-        request.kind === "openSession" ? `open:${request.requestedSessionId}` : `close:${request.sessionId}`
+        request.kind === "openSession"
+          ? `open:${request.requestedSessionId}`
+          : request.kind === "closeSession"
+            ? `close:${request.sessionId}`
+            : request.kind
       )
     ).toEqual(["open:old-duckdb-session", "close:old-duckdb-session"]);
     expect(
       replacementRequests.map((request) =>
-        request.kind === "openSession" ? `open:${request.requestedSessionId}` : `close:${request.sessionId}`
+        request.kind === "openSession"
+          ? `open:${request.requestedSessionId}`
+          : request.kind === "closeSession"
+            ? `close:${request.sessionId}`
+            : request.kind
       )
     ).toEqual(["open:replacement-duckdb-session", "close:replacement-duckdb-session"]);
     expect(getExtension).toHaveBeenCalledTimes(2);
