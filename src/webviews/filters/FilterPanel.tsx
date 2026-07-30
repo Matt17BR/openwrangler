@@ -563,6 +563,7 @@ export function FilterPanel({
                         className="iconButton codicon codicon-chevron-up"
                         disabled={disabled || index === 0}
                         aria-label={`Move sort ${index + 1}, ${rule.column}, up one priority`}
+                        title="Move up"
                         onClick={() => moveSort(index, -1)}
                       />
                       <button
@@ -570,6 +571,7 @@ export function FilterPanel({
                         className="iconButton codicon codicon-chevron-down"
                         disabled={disabled || index === draftSort.length - 1}
                         aria-label={`Move sort ${index + 1}, ${rule.column}, down one priority`}
+                        title="Move down"
                         onClick={() => moveSort(index, 1)}
                       />
                       <button
@@ -599,6 +601,7 @@ export function FilterPanel({
                         className="iconButton codicon codicon-close"
                         disabled={disabled}
                         aria-label={`Remove sort ${index + 1}, ${rule.column}, ${directionLabel}, ${nullsLabel}`}
+                        title="Remove sort"
                         onClick={() => removeSort(index)}
                       />
                     </div>
@@ -620,7 +623,10 @@ export function FilterPanel({
             type="button"
             className="secondaryButton"
             disabled={disabled || !sortDirty}
-            onClick={() => setSortEditor({ modelKey: modelSortKey, rules: model.sort })}
+            onClick={() => {
+              setSortEditor({ modelKey: modelSortKey, rules: model.sort });
+              setSortInput({ modelKey: modelSortKey, columnId: "", direction: "asc", nulls: "last" });
+            }}
           >
             Discard sort changes
           </button>

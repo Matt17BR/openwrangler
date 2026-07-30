@@ -216,6 +216,13 @@ describe("FilterPanel", () => {
     expect(within(ordered).getAllByRole("listitem")[1]).toHaveTextContent("cityascending");
     expect(onApply).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole("button", { name: "Discard sort changes" }));
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("cityascending");
+    expect(within(ordered).getAllByRole("listitem")[1]).toHaveTextContent("salesdescendingnulls last");
+    expect(screen.getByLabelText("Sort null placement")).toHaveValue("last");
+    fireEvent.change(screen.getByLabelText("Sort null placement"), { target: { value: "first" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prioritize sort" }));
+
     fireEvent.click(screen.getByRole("button", { name: "Move sort 2, city, up one priority" }));
     expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("cityascending");
     fireEvent.click(screen.getByRole("button", { name: "Move sort 2, sales, up one priority" }));
