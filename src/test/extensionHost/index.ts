@@ -5656,8 +5656,9 @@ async function exercisePackagedFirstUseInteractionJourney(
   app = await rediscoverApp("Draft-discard validation");
   const codePreviewPanel = workbench.locator(".part.panel:visible").first();
   await codePreviewPanel.waitFor({ state: "visible", timeout: 10_000 });
+  const visibleCodePreviewTitle = codePreviewPanel.getByText("Code Preview", { exact: true }).filter({ visible: true });
   assert.equal(
-    await codePreviewPanel.getByText("Code Preview", { exact: true }).count(),
+    await visibleCodePreviewTitle.count(),
     1,
     "The first acknowledged draft must reveal Code Preview without hiding the dataframe grid."
   );
