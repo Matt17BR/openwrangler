@@ -1745,12 +1745,37 @@ async function exerciseReleasedJupyterExtension(
         "the exact DuckDB relation opened from the real Jupyter Variables view"
       );
       assert.equal(duckdbVariablesRelation.metadata.mode, "viewing");
+      assert.deepEqual(
+        duckdbVariablesRelation.metadata.filterModel,
+        filteredDuckdbModel,
+        "Reopening the same live DuckDB variable must restore its confirmed viewing state."
+      );
+      assert.deepEqual(duckdbVariablesRelation.metadata.filteredShape, { rows: 25_000, columns: 4 });
       await assertReleasedSessionPage(
         testing,
         duckdbVariablesRelation,
-        "3400001",
-        "released-jupyter-duckdb-variables-page"
+        "3499997",
+        "released-jupyter-duckdb-variables-restored-page"
       );
+
+      const unfilteredDuckdbVariablesPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-variables-complete-page",
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: duckdbVariablesRelation.metadata.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: { logic: "and", filters: [], sort: [] }
+      });
+      assert.equal(unfilteredDuckdbVariablesPage.kind, "page");
+      if (unfilteredDuckdbVariablesPage.kind !== "page") {
+        throw new Error("The complete native DuckDB Variables page did not resolve.");
+      }
+      assert.equal(unfilteredDuckdbVariablesPage.page.totalRows, 100_000);
+      assert.equal(unfilteredDuckdbVariablesPage.page.rows[0]?.values[0]?.display, "3400001");
+
       await disposePackagedSessionPanel(
         testing,
         duckdbVariablesRelation.sessionId,
