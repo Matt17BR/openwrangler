@@ -9,7 +9,8 @@ license-clean fixtures without implying support that the extension does not prov
 
 This scene uses the production webview bundle and a native DuckDB session over a deterministic 100,000-row
 Parquet file. Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and
-summaries. DuckDB notebook relations are not currently supported.
+summaries. DuckDB notebook relations also open as native, viewing-only live sessions against the exact originating
+relation; they do not convert through Pandas, Polars, or Arrow.
 
 ## Polars live notebook
 

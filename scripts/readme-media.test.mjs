@@ -103,7 +103,10 @@ test("README media is compact, portable, and composition-verified", () => {
   );
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.match(readme, /engine gallery/u);
-  assert.match(readme, /DuckDB notebook relations are not yet supported/u);
+  assert.match(
+    readme,
+    /DuckDB relations open as native, viewing-only notebook sessions:[\s\S]{0,220}exact originating relation without converting it to\s+Pandas, Polars, or Arrow/u
+  );
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
   assert.match(readme, /real packaged PySpark notebook capture/u);
   assert.match(
@@ -128,7 +131,10 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.equal(galleryImage.readUInt32BE(20), 640);
   assert.ok(galleryImage.byteLength < 300 * 1_024);
   assert.match(gallery, /file-backed DuckDB Parquet source/u);
-  assert.match(gallery, /DuckDB notebook\s+relations are not currently supported\./u);
+  assert.match(
+    gallery,
+    /DuckDB notebook relations also open as native, viewing-only live sessions against the exact originating\s+relation; they do not convert through Pandas, Polars, or Arrow\./u
+  );
   assert.match(gallery, /images\/readme\/v1\.1\/gallery\/duckdb-rich-parquet\.png/u);
 
   const polarsImage = readFileSync(resolve(root, "docs", "images", "readme", "v1.1", "gallery", "notebook-polars.png"));

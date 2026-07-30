@@ -1384,14 +1384,14 @@ test("the container definition pins its base and direct wheels and never receive
       .trim()
       .split("\n")
       .map((line) => line.split("==")[0]),
-    ["ipykernel", "jupyter-server", "pandas", "polars"]
+    ["duckdb", "ipykernel", "jupyter-server", "pandas", "polars"]
   );
   const lockedEntries = [
     ...requirements.matchAll(/^([a-z][a-z0-9-]*)==[^\s\\]+ \\\n((?: {4}--hash=sha256:[0-9a-f]{64}(?: \\\n|$))+)/gmu)
   ];
   assert.ok(lockedEntries.length > 50);
   assert.equal(requirements.replaceAll(/--hash=sha256:[0-9a-f]{64}/gu, "").includes("--hash="), false);
-  for (const dependency of ["ipykernel", "jupyter-server", "pandas", "polars", "polars-runtime-32"]) {
+  for (const dependency of ["duckdb", "ipykernel", "jupyter-server", "pandas", "polars", "polars-runtime-32"]) {
     assert.ok(
       lockedEntries.some((entry) => entry[1] === dependency),
       `missing locked ${dependency}`
