@@ -767,6 +767,42 @@ def test_duckdb_view_queries_are_typed_exact_and_concurrency_safe(monkeypatch: p
     engine.close()
 
 
+def test_duckdb_text_summaries_are_exact_native_unicode_aggregates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_conversion_guards(monkeypatch)
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR)),
+            ('', NULL),
+            ('A', NULL),
+            ('é', NULL),
+            ('é', NULL),
+            ('😀', NULL)
+        ) AS source(text_value, all_null)
+        """
+    )
+
+    try:
+        summaries = engine.summaries(frame, [(0, "c:text"), (1, "c:all-null")])
+
+        assert summaries[0]["text"] == pytest.approx(
+            {
+                "emptyCount": 1,
+                "minLength": 0,
+                "maxLength": 2,
+                "meanLength": 1.0,
+            }
+        )
+        assert summaries[0]["nullCount"] == 1
+        assert summaries[1]["text"] == {"emptyCount": 0}
+        assert summaries[1]["nullCount"] == 6
+    finally:
+        engine.close()
+
+
 def test_duckdb_numeric_histogram_is_exact_for_a_large_filtered_view() -> None:
     engine = DuckDBEngine()
     source = duckdb.sql(

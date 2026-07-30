@@ -272,6 +272,49 @@ def test_pandas_summaries_separate_nan_from_other_missing_values():
     assert (summaries["datetime"]["nullCount"], summaries["datetime"]["nanCount"]) == (1, 0)
 
 
+def test_pandas_text_summaries_are_exact_for_unicode_empty_all_null_and_mixed_display_values():
+    frame = pd.DataFrame(
+        {
+            "text": pd.Series([None, "", "A", "é", "e\u0301", "😀"], dtype="string"),
+            "all_null": pd.Series([None, None, None, None, None, None], dtype="string"),
+            "mixed_display": pd.Series([b"\x00", "x", None, None, None, None], dtype="object"),
+            "numeric_category": pd.Series(pd.Categorical([1, 200, None, None, None, None])),
+            "bytes_category": pd.Series(pd.Categorical([b"\xff", b"\x00", None, None, None, None])),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PandasEngine().summaries(frame)}
+
+    assert summaries["text"]["text"] == {
+        "emptyCount": 1,
+        "minLength": 0,
+        "maxLength": 2,
+        "meanLength": 1.0,
+    }
+    assert summaries["all_null"]["text"] == {"emptyCount": 0}
+    assert summaries["mixed_display"]["type"] == "string"
+    assert summaries["mixed_display"]["text"] == {
+        "emptyCount": 0,
+        "minLength": 1,
+        "maxLength": 4,
+        "meanLength": 2.5,
+    }
+    assert summaries["numeric_category"]["type"] == "string"
+    assert summaries["numeric_category"]["text"] == {
+        "emptyCount": 0,
+        "minLength": 1,
+        "maxLength": 3,
+        "meanLength": 2.0,
+    }
+    assert summaries["bytes_category"]["type"] == "string"
+    assert summaries["bytes_category"]["text"] == {
+        "emptyCount": 0,
+        "minLength": 4,
+        "maxLength": 4,
+        "meanLength": 4.0,
+    }
+
+
 def test_pandas_summary_omits_non_finite_statistics_but_keeps_finite_histogram_values():
     summary = PandasEngine().summaries(pd.DataFrame({"value": [1.0, float("inf")]}))[0]
 

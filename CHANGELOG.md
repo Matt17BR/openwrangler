@@ -4,6 +4,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-30
+
+### Added
+
+- Added exact text-column Insights for empty strings and minimum, maximum, and mean character length across Pandas, Polars, DuckDB, PySpark, and saved notebook snapshots. Nulls stay separate, empty strings are measured without trimming, and Unicode length counts code points consistently across engines.
+
+### Changed
+
+- Kept text profiling engine-native. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical columns deliberately measure the same normalized display text shown in the grid.
+- Preserved nonzero Pandas NaN counts in semantic text Insights while omitting the irrelevant zero-valued row, and rejected internally contradictory empty/length summaries at the protocol boundary.
+
 ## [1.1.2] - 2026-07-30
 
 ### Added

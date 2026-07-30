@@ -317,6 +317,44 @@
         "std": { "type": "number" }
       }
     },
+    "TextSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["emptyCount"],
+      "dependencies": {
+        "minLength": ["maxLength", "meanLength"],
+        "maxLength": ["minLength", "meanLength"],
+        "meanLength": ["minLength", "maxLength"]
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": ["minLength"],
+            "properties": {
+              "emptyCount": { "const": 0 },
+              "minLength": { "const": 0 }
+            }
+          },
+          {
+            "required": ["minLength"],
+            "properties": {
+              "emptyCount": { "minimum": 1 },
+              "minLength": { "minimum": 1 }
+            }
+          },
+          {
+            "properties": { "emptyCount": { "minimum": 1 } },
+            "not": { "required": ["minLength"] }
+          }
+        ]
+      },
+      "properties": {
+        "emptyCount": { "type": "integer", "minimum": 0 },
+        "minLength": { "type": "integer", "minimum": 0 },
+        "maxLength": { "type": "integer", "minimum": 0 },
+        "meanLength": { "type": "number", "minimum": 0 }
+      }
+    },
     "NumericBin": {
       "type": "object",
       "additionalProperties": false,
@@ -378,6 +416,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["columnId", "column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
+      "dependencies": {
+        "text": {
+          "properties": {
+            "type": { "const": "string" }
+          }
+        }
+      },
       "properties": {
         "columnId": { "type": "string", "minLength": 1 },
         "column": { "type": "string" },
@@ -388,6 +433,7 @@
         "nanCount": { "type": "integer", "minimum": 0 },
         "distinctCount": { "type": "integer", "minimum": 0 },
         "numeric": { "$ref": "#/definitions/NumericSummary" },
+        "text": { "$ref": "#/definitions/TextSummary" },
         "visualization": { "$ref": "#/definitions/ColumnVisualization" },
         "topValues": { "type": "array", "items": { "$ref": "#/definitions/ValueCount" } }
       }

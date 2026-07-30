@@ -1046,6 +1046,7 @@ export interface ColumnSummary {
   nanCount: number;
   distinctCount?: number;
   numeric?: NumericSummary;
+  text?: TextSummary;
   visualization?: ColumnVisualization;
   topValues: ValueCount[];
 }
@@ -1055,6 +1056,12 @@ export interface NumericSummary {
   mean?: number;
   median?: number;
   std?: number;
+}
+export interface TextSummary {
+  emptyCount: number;
+  minLength?: number;
+  maxLength?: number;
+  meanLength?: number;
 }
 export interface NumericBin {
   min: number;

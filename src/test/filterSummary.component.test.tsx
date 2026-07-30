@@ -863,6 +863,7 @@ describe("SummaryPanel", () => {
     nullCount: 0,
     nanCount: 0,
     distinctCount: 3,
+    text: { emptyCount: 1, minLength: 0, maxLength: 6, meanLength: 3.25 },
     topValues: [
       { value: "Berlin", count: 2 },
       { value: "", count: 1 }
@@ -948,12 +949,55 @@ describe("SummaryPanel", () => {
     expect(screen.getByRole("heading", { name: "city" })).toBeInTheDocument();
     expect(screen.getByText("Exact distribution")).toBeInTheDocument();
     expect(screen.getByText("Distinct").nextElementSibling).toHaveTextContent("3");
+    expect(screen.queryByText("NaN")).not.toBeInTheDocument();
+    expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("Min length").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Max length").nextElementSibling).toHaveTextContent("6");
+    expect(screen.getByText("Mean length").nextElementSibling).toHaveTextContent("3.25");
     expect(screen.getByText("Other values").nextElementSibling).toHaveTextContent("1");
     expect(screen.getByRole("heading", { name: "Top values" })).toBeInTheDocument();
     expect(screen.getByText("Berlin")).toBeInTheDocument();
     expect(screen.getByText("Empty string")).toBeInTheDocument();
     expect(screen.getByText("Other")).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "Berlin: 2" })).toHaveValue(2);
+  });
+
+  it("renders all-null text metrics without inventing length bounds", () => {
+    renderSummary({
+      summaries: [
+        {
+          ...categoricalSummary,
+          totalCount: 4,
+          nullCount: 4,
+          distinctCount: 0,
+          text: { emptyCount: 0 },
+          topValues: [],
+          visualization: { kind: "categorical", categories: [], otherCount: 0 }
+        }
+      ]
+    });
+
+    expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Min length").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.getByText("Max length").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.getByText("Mean length").nextElementSibling).toHaveTextContent("n/a");
+    expect(screen.queryByText("NaN")).not.toBeInTheDocument();
+  });
+
+  it("keeps a nonzero Pandas NaN count visible for semantic text columns", () => {
+    renderSummary({
+      summaries: [
+        {
+          ...categoricalSummary,
+          totalCount: 6,
+          nanCount: 2
+        }
+      ]
+    });
+
+    expect(screen.getByText("Null").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("NaN").nextElementSibling).toHaveTextContent("2");
+    expect(screen.getByText("Empty").nextElementSibling).toHaveTextContent("1");
   });
 
   it("renders explicit datetime bounds and boolean counts from existing profile metadata", () => {

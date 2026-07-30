@@ -627,7 +627,16 @@ Selected-column Insights hierarchy, 2026-07-29:
 - Dataset and Filters are separate tab panels. Exact dataset statistics start only in Dataset, distinct-value work starts only in Filters, and leaving either view cancels its pending request. Duplicate display names remain positionally disambiguated while name-addressed viewing controls fail closed.
 - Component coverage proves selected-column ownership transfer, stale-response rejection, rollback, duplicate-label safety, view-specific cancellation, and roving Arrow, Home, and End tab navigation. Production-bundle axe scans cover all three views at 800px and 200% zoom. A local wide-grid run recorded cached and uncached p95 interaction times of 32.0ms and 92.3ms.
 
-This advances the chosen selected-column direction in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). Text-length profiling, the broader command-row and draft-strip redesign, refreshed packaged-editor screenshots, and complete VS Code and Cursor evidence remain follow-up work, so the issue stays open.
+This advances the chosen selected-column direction in [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The broader command-row and draft-strip redesign, refreshed packaged-editor screenshots, and complete VS Code and Cursor evidence remain follow-up work, so the issue stays open.
+
+Exact text-column Insights, 2026-07-30:
+
+- Protocol-v2 summaries may now carry an optional, backward-compatible `text` block for semantic string columns. Empty strings are counted exactly without trimming; nulls are excluded; and minimum, maximum, and mean lengths count Unicode code points rather than UTF-8 bytes or UTF-16 code units. An all-null text column reports zero empty strings without inventing length bounds.
+- Pandas and eager Polars compute the metrics within their native frames; lazy Polars, DuckDB, and experimental PySpark return only fixed-size native aggregate results. Pandas mixed-object and non-string categorical values measure the exact normalized text shown by grid cells, and conversion guards reject any detour through another dataframe engine. Saved notebook snapshots apply the same semantics to their bounded captured truth.
+- Selected-column Insights exposes **Empty**, **Min length**, **Max length**, and **Mean length** beside the existing null, distinct, and top-value evidence. It omits an irrelevant zero-valued NaN row for text but preserves a positive Pandas NaN count. The deterministic text fixture `[null, "", "A", "é", "e\u0301", "😀"]` produces null `1`, empty `1`, minimum `0`, maximum `2`, and mean `1`.
+- Contract, snapshot, React, and all-engine regressions live in `src/test/protocolValidation.unit.test.ts`, `src/test/snapshotModel.unit.test.ts`, `src/test/filterSummary.component.test.tsx`, and the four engine test modules. `scripts/capture-screenshots.mjs` and `scripts/test-webview-accessibility.mjs` exercise the real Pandas-produced metrics in an 800px selected-column drawer with keyboard focus restoration and axe coverage.
+
+This closes the text-statistics sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88), not the issue's remaining workbench redesign or performance-comparison scope.
 
 Released-Jupyter argument provenance slice, 2026-07-26:
 

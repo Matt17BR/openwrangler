@@ -467,6 +467,80 @@ describe("protocol-v2 response validation", () => {
     }
   });
 
+  it("accepts backward-compatible and exact text summaries while rejecting malformed metrics", () => {
+    const response = (summary: unknown): unknown => ({
+      kind: "summary",
+      revision: 3,
+      viewRequestId: "view-1",
+      summaries: [summary]
+    });
+    const textSummary = {
+      columnId: "column:text",
+      column: "text",
+      type: "string" as const,
+      rawType: "String",
+      totalCount: 6,
+      nullCount: 1,
+      nanCount: 0,
+      distinctCount: 5,
+      topValues: [],
+      text: { emptyCount: 1, minLength: 0, maxLength: 2, meanLength: 1 }
+    };
+
+    expect(isOpenWranglerResponse(response(textSummary))).toBe(true);
+    const { text: omittedText, ...legacySummary } = textSummary;
+    expect(omittedText.emptyCount).toBe(1);
+    expect(isOpenWranglerResponse(response(legacySummary))).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...textSummary,
+          totalCount: 2,
+          nullCount: 2,
+          distinctCount: 0,
+          text: { emptyCount: 0 }
+        })
+      )
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...textSummary,
+          text: { emptyCount: 5, minLength: 0, maxLength: 0, meanLength: 0 }
+        })
+      )
+    ).toBe(true);
+
+    for (const text of [
+      { emptyCount: -1, minLength: 0, maxLength: 2, meanLength: 1 },
+      { emptyCount: 1, minLength: -1, maxLength: 2, meanLength: 1 },
+      { emptyCount: 1, minLength: 0 },
+      { emptyCount: 1, minLength: 0, maxLength: 2 },
+      { emptyCount: 1, minLength: 0, maxLength: 2, meanLength: -1 },
+      { emptyCount: 1, minLength: 0, maxLength: 2, meanLength: 3 },
+      { emptyCount: 6, minLength: 0, maxLength: 2, meanLength: 1 },
+      { emptyCount: 0, minLength: 0, maxLength: 2, meanLength: 1 },
+      { emptyCount: 1, minLength: 1, maxLength: 2, meanLength: 1.5 },
+      { emptyCount: 5, minLength: 0, maxLength: 2, meanLength: 1 }
+    ]) {
+      expect(isOpenWranglerResponse(response({ ...textSummary, text }))).toBe(false);
+    }
+
+    expect(isOpenWranglerResponse(response({ ...textSummary, text: { emptyCount: 1 } }))).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...textSummary,
+          totalCount: 2,
+          nullCount: 2,
+          distinctCount: 0,
+          text: { emptyCount: 0, minLength: 0, maxLength: 0, meanLength: 0 }
+        })
+      )
+    ).toBe(false);
+    expect(isOpenWranglerResponse(response({ ...summaries[0], text: textSummary.text }))).toBe(false);
+  });
+
   it("binds changed-cell identities and labels to the output schema", () => {
     const preview = responses.find((response) => response.kind === "stepPreview");
     expect(preview?.kind).toBe("stepPreview");

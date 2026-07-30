@@ -230,10 +230,16 @@ unicode["harnessSummaries"] = manager.get_summary(
 
 summary_families_frame = pd.concat(
     [
-        pd.Series([1.0, 2.0, 3.0, 4.0], name="value"),
-        pd.Series(["alpha", "beta", "alpha", "gamma"], name="value"),
-        pd.Series([True, False, True, True], name="flag"),
-        pd.Series(pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"]), name="when"),
+        pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], name="value"),
+        pd.Series(["alpha", "beta", "alpha", "gamma", "beta", "alpha"], name="value"),
+        pd.Series([True, False, True, True, False, True], name="flag"),
+        pd.Series(
+            pd.to_datetime(
+                ["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01", "2024-05-01", "2024-06-01"]
+            ),
+            name="when",
+        ),
+        pd.Series([None, "", "A", "é", "e\u0301", "😀"], dtype="string", name="account_note"),
     ],
     axis=1,
 )
@@ -512,6 +518,32 @@ writeWebviewHarness(
   {},
   { zoom: 2, defaultColumnWidth: 140 }
 );
+const textSummaryColumnId = payloads.summaryFamilies.metadata.schema.find(
+  (column) => column.name === "account_note"
+)?.id;
+if (!textSummaryColumnId) {
+  throw new Error("The summary-family fixture did not expose its text column.");
+}
+writeWebviewHarness(
+  "summary-text-dark-800.html",
+  payloads.summaryFamilies,
+  {},
+  "acceptance/summary-text-dark-800.png",
+  {},
+  {
+    width: 800,
+    defaultColumnWidth: 140,
+    openInsights: true,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        selectedColumnId: textSummaryColumnId,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    }
+  }
+);
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
 writeWebviewHarness(
   "grid-light-1280.html",
@@ -565,6 +597,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const width = appearance.width ?? 1280;
   const height = appearance.height ?? 760;
   const editorAction = appearance.editorAction;
+  const openInsights = appearance.openInsights === true;
   const openColumnFilter = appearance.openColumnFilter;
   const stepInspections = appearance.stepInspections ?? {};
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
@@ -600,6 +633,16 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           ${appearance.sendInitial === false ? "" : 'setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: sessionPayload, origin: window.location.origin })), 20);'}
           ${editorAction ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${stringifyForInlineScript(editorAction)}, origin: window.location.origin })), 90);` : ""}
           ${appearance.followupMessage ? `setTimeout(() => window.dispatchEvent(new MessageEvent("message", { data: ${stringifyForInlineScript(appearance.followupMessage)}, origin: window.location.origin })), 120);` : ""}
+          ${
+            openInsights
+              ? `setTimeout(() => {
+            const insights = document.querySelector('button[aria-label="Insights & filters"]');
+            if (insights instanceof HTMLButtonElement && insights.getAttribute("aria-expanded") !== "true") {
+              insights.click();
+            }
+          }, 180);`
+              : ""
+          }
           ${
             openColumnFilter
               ? `setTimeout(() => {

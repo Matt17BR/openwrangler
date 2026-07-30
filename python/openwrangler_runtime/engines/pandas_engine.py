@@ -301,6 +301,8 @@ class PandasEngine(DataFrameEngine):
                     values.max() if not values.empty else None,
                 )
             else:
+                if semantic_type == "string":
+                    summary["text"] = _pandas_text_summary(series)
                 summary["visualization"] = categorical_visualization(top_values, int(series.notna().sum()))
             summaries.append(summary)
         return summaries
@@ -1577,6 +1579,43 @@ def _pandas_integer_values(series: Any) -> list[int] | None:
 
 def _pandas_present_values(series: Any) -> list[Any]:
     return [value for value in series.array if not _pandas_is_missing_scalar(value)]
+
+
+def _pandas_text_summary(series: Any) -> dict[str, int | float]:
+    """Return exact display-text metrics without materializing another dataframe."""
+
+    import pandas as pd
+
+    inferred = pd.api.types.infer_dtype(series, skipna=True) if pd.api.types.is_object_dtype(series.dtype) else None
+    categorical_strings = isinstance(series.dtype, pd.CategoricalDtype) and all(
+        isinstance(value, str) for value in series.cat.categories
+    )
+    if isinstance(series.dtype, pd.StringDtype) or categorical_strings or inferred in {"string", "unicode", "empty"}:
+        lengths = series.astype("string").str.len().dropna()
+        if lengths.empty:
+            return {"emptyCount": 0}
+        return {
+            "emptyCount": int((lengths == 0).sum()),
+            "minLength": int(lengths.min()),
+            "maxLength": int(lengths.max()),
+            "meanLength": float(lengths.mean()),
+        }
+
+    # Mixed object and non-string categorical columns are exposed as strings by
+    # the public schema. Use the same normalized display representation as grid
+    # cells so numbers, bytes, containers, booleans, and other Python scalars
+    # are measured exactly as users see them.
+    lengths = [
+        len(str(normalize_cell(value)["display"])) for value in series.array if not _pandas_is_missing_scalar(value)
+    ]
+    if not lengths:
+        return {"emptyCount": 0}
+    return {
+        "emptyCount": sum(length == 0 for length in lengths),
+        "minLength": min(lengths),
+        "maxLength": max(lengths),
+        "meanLength": float(sum(lengths) / len(lengths)),
+    }
 
 
 def _pandas_semantic_type(series: Any) -> str:

@@ -139,8 +139,12 @@ function SelectedColumnSummary({
             <dd>{summary.totalCount.toLocaleString()}</dd>
             <dt>Null</dt>
             <dd>{summary.nullCount.toLocaleString()}</dd>
-            <dt>NaN</dt>
-            <dd>{summary.nanCount.toLocaleString()}</dd>
+            {(summary.type !== "string" || summary.nanCount > 0) && (
+              <>
+                <dt>NaN</dt>
+                <dd>{summary.nanCount.toLocaleString()}</dd>
+              </>
+            )}
             <dt>Distinct</dt>
             <dd>{summary.distinctCount?.toLocaleString() ?? "n/a"}</dd>
             <TypeSpecificStats summary={summary} />
@@ -161,6 +165,27 @@ function SelectedColumnSummary({
 }
 
 function TypeSpecificStats({ summary }: { summary: ColumnSummary }) {
+  if (summary.text) {
+    return (
+      <>
+        <dt>Empty</dt>
+        <dd>{summary.text.emptyCount.toLocaleString()}</dd>
+        <dt>Min length</dt>
+        <dd>{formatNumber(summary.text.minLength)}</dd>
+        <dt>Max length</dt>
+        <dd>{formatNumber(summary.text.maxLength)}</dd>
+        <dt>Mean length</dt>
+        <dd>{formatNumber(summary.text.meanLength)}</dd>
+        {summary.visualization?.kind === "categorical" && summary.visualization.otherCount > 0 && (
+          <>
+            <dt>Other values</dt>
+            <dd>{summary.visualization.otherCount.toLocaleString()}</dd>
+          </>
+        )}
+      </>
+    );
+  }
+
   if (summary.numeric) {
     return (
       <>

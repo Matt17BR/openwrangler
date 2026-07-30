@@ -330,16 +330,27 @@ class DuckDBEngine(DataFrameEngine):
                 semantic_type = _semantic_type(raw_type)
                 nan = _nan_predicate(identifier, raw_type)
                 valid = _valid_predicate(identifier, raw_type)
+                metric_expressions = [
+                    f"count(*) FILTER (WHERE {identifier} IS NULL)",
+                    f"count(*) FILTER (WHERE {nan})",
+                    f"count(DISTINCT {identifier}) FILTER (WHERE {valid})",
+                ]
+                if semantic_type == "string":
+                    text_length = f"length(CAST({identifier} AS VARCHAR))"
+                    metric_expressions.extend(
+                        [
+                            f"count(*) FILTER (WHERE {valid} AND {text_length} = 0)",
+                            f"min({text_length}) FILTER (WHERE {valid})",
+                            f"max({text_length}) FILTER (WHERE {valid})",
+                            f"avg({text_length}) FILTER (WHERE {valid})",
+                        ]
+                    )
                 metrics = _execute_rows(
                     connection,
                     source_sql,
-                    "SELECT "
-                    f"count(*) FILTER (WHERE {identifier} IS NULL), "
-                    f"count(*) FILTER (WHERE {nan}), "
-                    f"count(DISTINCT {identifier}) FILTER (WHERE {valid}) "
-                    "FROM ow",
+                    f"SELECT {', '.join(metric_expressions)} FROM ow",
                 )[0]
-                null_count, nan_count, distinct_count = (int(value or 0) for value in metrics)
+                null_count, nan_count, distinct_count = (int(value or 0) for value in metrics[:3])
                 top_rows = _execute_rows(
                     connection,
                     source_sql,
@@ -361,7 +372,21 @@ class DuckDBEngine(DataFrameEngine):
                     "distinctCount": distinct_count,
                     "topValues": top_values,
                 }
-                if semantic_type in {"integer", "float", "decimal"}:
+                if semantic_type == "string":
+                    text_summary: dict[str, int | float] = {"emptyCount": int(metrics[3] or 0)}
+                    if metrics[4] is not None:
+                        text_summary.update(
+                            {
+                                "minLength": int(metrics[4]),
+                                "maxLength": int(metrics[5]),
+                                "meanLength": float(metrics[6]),
+                            }
+                        )
+                    summary["text"] = text_summary
+                    summary["visualization"] = categorical_visualization(
+                        top_values, total_count - null_count - nan_count
+                    )
+                elif semantic_type in {"integer", "float", "decimal"}:
                     numeric = _execute_rows(
                         connection,
                         source_sql,

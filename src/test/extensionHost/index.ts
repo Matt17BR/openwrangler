@@ -77,8 +77,10 @@ import {
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
-  packagedScreenshotFixtureCsv
+  packagedScreenshotFixtureCsv,
+  packagedScreenshotRow
 } from "./screenshotEvidence";
 import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 
@@ -5326,6 +5328,99 @@ async function exercisePackagedFirstUseInteractionJourney(
     await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
     true,
     "The Insights drawer must not clip content horizontally."
+  );
+
+  recordAcceptanceProgress("platform-smoke:text-insights");
+  const accountNote = columnReference(testing.activeSession()!.metadata, "account_note");
+  await columnSearch.fill("account_note");
+  const accountNoteOption = app.getByRole("option", { name: "account_note, Text column", exact: true });
+  await accountNoteOption.waitFor({ state: "visible", timeout: 10_000 });
+  await accountNoteOption.getByRole("img", { name: "Text column type" }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === accountNote.id,
+    10_000,
+    "column search to navigate to the realistic text column"
+  );
+  await drawer.getByRole("heading", { name: "account_note", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await waitForLocatorText(
+    drawer,
+    (text) =>
+      !text.includes("Profiling selected column") &&
+      ["Exact statistics", "Null", "Empty", "Min length", "Max length", "Mean length"].every((label) =>
+        text.includes(label)
+      ),
+    30_000,
+    "complete exact account-note insights"
+  );
+
+  // Inspect exact values only after the user-facing profile has completed, so
+  // the acceptance assertion cannot contend with or mask the renderer request.
+  const accountNoteProfile = await testing.request({
+    kind: "getSummary",
+    sessionId,
+    revision: testing.activeSession()!.metadata.revision,
+    viewRequestId: "platform-smoke-account-note-summary",
+    filterModel: testing.activeSession()!.viewState.filterModel,
+    columnIds: [accountNote.id]
+  });
+  assert.equal(accountNoteProfile.kind, "summary", "The realistic text profile must complete natively.");
+  if (accountNoteProfile.kind !== "summary") throw new Error("The realistic text profile did not resolve.");
+  const accountNoteSummary = accountNoteProfile.summaries[0];
+  assert.equal(accountNoteSummary?.columnId, accountNote.id);
+  const accountNotePosition = PACKAGED_SCREENSHOT_COLUMNS.length - 1;
+  assert.equal(PACKAGED_SCREENSHOT_COLUMNS[accountNotePosition], "account_note");
+  const sourceNotes = Array.from({ length: PACKAGED_FIRST_USE_ROW_COUNT }, (_, index) => ({
+    kind: packagedFirstUseAccountNoteKind(index),
+    value: packagedScreenshotRow(index)[accountNotePosition]!
+  }));
+  const presentNotes = sourceNotes.filter((item) => item.kind !== "null").map((item) => item.value);
+  const lengths = presentNotes.map((value) => [...value].length);
+  const expectedNullCount = sourceNotes.filter((item) => item.kind === "null").length;
+  const expectedEmptyCount = sourceNotes.filter((item) => item.kind === "empty").length;
+  assert.equal(accountNoteSummary?.nullCount, expectedNullCount);
+  assert.equal(accountNoteSummary?.text?.emptyCount, expectedEmptyCount);
+  assert.equal(accountNoteSummary?.text?.minLength, Math.min(...lengths));
+  assert.equal(accountNoteSummary?.text?.maxLength, Math.max(...lengths));
+  assert.ok(
+    Math.abs(
+      (accountNoteSummary?.text?.meanLength ?? Number.NaN) -
+        lengths.reduce((sum, length) => sum + length, 0) / lengths.length
+    ) < 1e-10,
+    "The realistic text profile must publish its exact mean Unicode code-point length."
+  );
+  const accountNoteText = accountNoteSummary?.text;
+  assert.ok(accountNoteText, "The realistic text column must publish exact text metrics.");
+
+  assert.equal(await drawer.locator("dt", { hasText: /^NaN$/u }).count(), 0);
+  const expectedVisibleMetrics = new Map<string, string>([
+    ["Null", expectedNullCount.toLocaleString()],
+    ["Empty", expectedEmptyCount.toLocaleString()],
+    ["Min length", accountNoteText.minLength!.toLocaleString(undefined, { maximumFractionDigits: 4 })],
+    ["Max length", accountNoteText.maxLength!.toLocaleString(undefined, { maximumFractionDigits: 4 })],
+    ["Mean length", accountNoteText.meanLength!.toLocaleString(undefined, { maximumFractionDigits: 4 })]
+  ]);
+  for (const [label, expectedValue] of expectedVisibleMetrics) {
+    const value = drawer
+      .locator("dt", { hasText: new RegExp(`^${label}$`, "u") })
+      .locator("xpath=following-sibling::dd[1]");
+    await value.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      (await value.innerText()).trim(),
+      expectedValue,
+      `${label} must match the exact native profile for the realistic text column.`
+    );
+  }
+  assert.equal(
+    await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    true,
+    "The text Insights drawer must not clip content horizontally."
   );
 
   recordAcceptanceProgress("platform-smoke:filter");

@@ -480,6 +480,33 @@ def test_polars_summary_excludes_null_and_nan_from_values_and_numeric_metrics(la
     }
 
 
+@pytest.mark.parametrize("lazy", [False, True])
+def test_polars_text_summaries_are_exact_for_unicode_empty_and_all_null_without_pandas(
+    lazy: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_to_pandas(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Polars text summaries must not convert to Pandas")
+
+    monkeypatch.setattr(pl.DataFrame, "to_pandas", fail_to_pandas, raising=False)
+    frame = pl.DataFrame(
+        {
+            "text": pl.Series([None, "", "A", "é", "e\u0301", "😀"], dtype=pl.String),
+            "all_null": pl.Series([None, None, None, None, None, None], dtype=pl.String),
+        }
+    )
+
+    summaries = {summary["column"]: summary for summary in PolarsEngine().summaries(frame.lazy() if lazy else frame)}
+
+    assert summaries["text"]["text"] == {
+        "emptyCount": 1,
+        "minLength": 0,
+        "maxLength": 2,
+        "meanLength": 1.0,
+    }
+    assert summaries["all_null"]["text"] == {"emptyCount": 0}
+
+
 def test_lazy_polars_nested_summaries_keep_exact_display_counts():
     frame = pl.DataFrame(
         {

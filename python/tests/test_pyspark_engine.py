@@ -613,6 +613,51 @@ def test_numeric_histogram_is_exact_for_a_large_filtered_view(spark_session: Any
         engine.close()
 
 
+def test_text_summaries_are_exact_native_unicode_aggregates(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = spark_session.createDataFrame(
+        [
+            (None, None),
+            ("", None),
+            ("A", None),
+            ("é", None),
+            ("e\u0301", None),
+            ("😀", None),
+        ],
+        "text_value string, all_null string",
+    )
+    engine, indexed = _open_engine(frame, "text-summary")
+    dataframe_type = type(indexed)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("PySpark summaries must never convert through Pandas or Arrow.")
+
+    for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
+        if hasattr(dataframe_type, method_name):
+            monkeypatch.setattr(dataframe_type, method_name, forbidden)
+
+    try:
+        summaries = engine.summaries(indexed, [(0, "text-id"), (1, "all-null-id")])
+
+        assert summaries[0]["text"] == pytest.approx(
+            {
+                "emptyCount": 1,
+                "minLength": 0,
+                "maxLength": 2,
+                "meanLength": 1.0,
+            }
+        )
+        assert summaries[0]["nullCount"] == 1
+        assert summaries[1]["text"] == {"emptyCount": 0}
+        assert summaries[1]["nullCount"] == 6
+    finally:
+        engine.close()
+
+    assert spark_session.range(1).count() == 1
+
+
 def test_maps_and_nested_maps_use_canonical_native_profile_keys(spark_session: Any) -> None:
     frame = spark_session.sql(
         """
