@@ -467,7 +467,9 @@ export function DataGrid({
       !goToColumnId ||
       goToColumnRequestId === undefined ||
       (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
+        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion) ||
+      (requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
     ) {
       return;
     }
@@ -548,7 +550,16 @@ export function DataGrid({
       retryFrame = window.requestAnimationFrame(retryAfterLayout);
     }
     return () => {
-      if (retryFrame !== undefined) window.cancelAnimationFrame(retryFrame);
+      if (retryFrame === undefined) return;
+      window.cancelAnimationFrame(retryFrame);
+      if (
+        requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion &&
+        (handledGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
+          handledGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion)
+      ) {
+        requestedGoToColumnRequest.current = undefined;
+      }
     };
   }, [
     defaultColumnWidth,

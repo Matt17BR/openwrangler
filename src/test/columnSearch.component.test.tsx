@@ -1,7 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ColumnSchema, GridPage, SessionMetadata } from "../shared/protocol";
+import type { GridViewState } from "../shared/viewState";
 import { ColumnSearch } from "../webviews/ColumnSearch";
 import { DataGrid } from "../webviews/grid/DataGrid";
 
@@ -400,5 +402,100 @@ describe("DataGrid column search target", () => {
     } finally {
       requestFrame.mockRestore();
     }
+  });
+
+  it("reveals one newly added far-right column without republishing the same request", async () => {
+    const schema = Array.from({ length: 24 }, (_, position): ColumnSchema => ({
+      id: `c:${position}`,
+      name: position === 23 ? "new_preview_column" : `column_${position}`,
+      position,
+      rawType: "String",
+      type: "string",
+      nullable: false
+    }));
+    const metadata: SessionMetadata = {
+      protocolVersion: 2,
+      sessionId: "preview-session",
+      revision: 1,
+      backend: "polars",
+      mode: "editing",
+      source: { kind: "file", label: "orders.csv", path: "orders.csv" },
+      capabilities: {
+        editable: true,
+        lazy: true,
+        cancel: true,
+        exportCsv: true,
+        exportParquet: true,
+        notebookInsert: false
+      },
+      shape: { rows: 1, columns: schema.length },
+      filteredShape: { rows: 1, columns: schema.length },
+      filterModel: { filters: [], sort: [] },
+      steps: [],
+      schema
+    };
+    const page: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: schema.map((column) => column.id),
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: schema.map((column) => ({
+            kind: "string",
+            raw: column.name,
+            display: column.name,
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    };
+    const onViewStateChange = vi.fn();
+    const onGoToColumnHandled = vi.fn();
+
+    function PreviewGrid({ requestId }: { requestId?: number }) {
+      const [viewState, setViewState] = useState<GridViewState>({
+        columnWidths: {},
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      });
+      return (
+        <DataGrid
+          metadata={{ ...metadata, schema: [...schema] }}
+          page={page}
+          summaries={[]}
+          pageSize={1}
+          defaultColumnWidth={190}
+          insightsOnOpen={false}
+          goToColumnId={requestId === undefined ? undefined : "c:23"}
+          goToColumnRequestId={requestId}
+          viewState={viewState}
+          onPage={() => undefined}
+          onSortColumn={() => undefined}
+          onOpenFilter={() => undefined}
+          onGoToColumnHandled={onGoToColumnHandled}
+          onVisibleSummaryColumnsChange={() => undefined}
+          onViewStateChange={(next) => {
+            onViewStateChange(next);
+            setViewState({ ...next, columnWidths: { ...next.columnWidths } });
+          }}
+        />
+      );
+    }
+
+    const { rerender } = render(<PreviewGrid />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 760 },
+      clientHeight: { configurable: true, value: 400 }
+    });
+
+    rerender(<PreviewGrid requestId={1} />);
+
+    await waitFor(() => expect(onGoToColumnHandled).toHaveBeenLastCalledWith(1, "revealed"));
+    expect(screen.getByRole("columnheader", { name: /new_preview_column/u })).toBeVisible();
+    expect(onViewStateChange).toHaveBeenCalledTimes(1);
   });
 });

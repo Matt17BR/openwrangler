@@ -63,15 +63,6 @@ export class OpenWranglerPanel {
   private rendererSynchronization: Promise<void> | undefined;
   private rendererSynchronizationRequested = false;
   private rendererSynchronizationNeedsInspectionClear = false;
-  private pendingRendererRecreationHydration:
-    | {
-        sessionId: string;
-        revision: number;
-        excludedSyncId: string | undefined;
-        timer: ReturnType<typeof setTimeout>;
-        resolve: (hydrated: boolean) => void;
-      }
-    | undefined;
   private codePreviewRevealedSessionId: string | undefined;
   private pendingRendererImportAction:
     | {
@@ -264,7 +255,6 @@ export class OpenWranglerPanel {
     this.importChangeCancellation = undefined;
     this.settleRendererImportAction(undefined, undefined);
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
-    this.settleRendererRecreationHydration(false);
     OpenWranglerPanel.panels.delete(this);
     this.deactivate();
     if (this.sessionId) {
@@ -315,7 +305,6 @@ export class OpenWranglerPanel {
         this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
-        this.settleRendererRecreationHydration(true, decoded);
         this.revealCodePreviewAfterRendererSynchronization();
       }
       return;
@@ -893,7 +882,9 @@ export class OpenWranglerPanel {
 
   private revealCodePreviewAfterRendererSynchronization(): void {
     const snapshot = this.snapshot;
-    if (!snapshot) return;
+    if (!snapshot || !this.hasHydratedRenderer() || !this.panel.active || OpenWranglerPanel.activePanel !== this) {
+      return;
+    }
     const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
     const draftStepId = snapshot.metadata.draftStep?.id;
     const changedSession = this.codePreviewRevealedSessionId !== snapshot.metadata.sessionId;
@@ -903,126 +894,13 @@ export class OpenWranglerPanel {
     if (!shouldReveal) return;
 
     this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
-    void this.revealCodePreviewAndRestoreEditorFocus({
-      sessionId: snapshot.metadata.sessionId,
-      revision: snapshot.metadata.revision,
-      draftStepId
-    });
-  }
-
-  private async revealCodePreviewAndRestoreEditorFocus(expected: {
-    sessionId: string;
-    revision: number;
-    draftStepId: string | undefined;
-  }): Promise<void> {
-    try {
-      await vscode.commands.executeCommand("openWrangler.codePreview.focus");
-      if (!this.isExactActiveDraft(expected)) return;
-      await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
-      if (!this.isExactActiveDraft(expected)) return;
-
-      // Revealing a bottom-panel webview can retire the editor's physical
-      // renderer even though VS Code keeps its custom-editor tab active. The
-      // workbench focus command remounts that editor overlay where a direct
-      // WebviewPanel.reveal() does not. Make the host prove the resulting
-      // renderer is still reachable before it remains hydrated. Code Preview
-      // stays open, while keyboard input and subsequent draft actions continue
-      // in the dataframe grid.
-      this.invalidateRendererSynchronization();
-      let synchronization:
-        | {
-            syncId: string;
-            sessionId: string | null;
-            revision: number | null;
-          }
-        | undefined;
-      let hydrated = false;
-      if (this.rendererReady) {
-        await this.enqueueRendererSynchronization(false);
-        synchronization = this.rendererSynchronizationIdentity;
-        if (synchronization?.sessionId === expected.sessionId && synchronization.revision === expected.revision) {
-          hydrated = await this.waitForRendererSynchronizationAcknowledgement(synchronization.syncId);
-        }
-      }
-      if (hydrated || !this.isExactActiveDraft(expected)) return;
-
-      // Some editor builds accept a post to the retiring outer iframe but
-      // never recreate its document after focus returns. Rebuild exactly one
-      // generation after the first bounded acknowledgement attempt fails.
-      // The normal ready -> snapshot -> marker -> acknowledgement path remains
-      // authoritative; this method never loops or treats assigning HTML as
-      // hydration.
-      this.rendererReady = false;
-      this.invalidateRendererSynchronization();
-      const recreatedHydration = this.waitForRendererRecreationHydration(expected, synchronization?.syncId);
-      this.panel.webview.html = this.renderHtml();
-      const recreated = await recreatedHydration;
-      if (!recreated && this.isExactActiveDraft(expected)) {
-        this.bridge.reportDiagnostic?.("Open Wrangler could not recreate the dataframe renderer after Code Preview.");
-      }
-    } catch (error) {
-      this.settleRendererRecreationHydration(false);
-      this.bridge.reportDiagnostic?.(
-        `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  private isExactActiveDraft(expected: {
-    sessionId: string;
-    revision: number;
-    draftStepId: string | undefined;
-  }): boolean {
-    const current = this.snapshot;
-    return Boolean(
-      !this.disposed &&
-      this.panel.active &&
-      OpenWranglerPanel.activePanel === this &&
-      current?.metadata.sessionId === expected.sessionId &&
-      current.metadata.revision === expected.revision &&
-      current.metadata.draftStep?.id === expected.draftStepId
-    );
-  }
-
-  private waitForRendererRecreationHydration(
-    expected: { sessionId: string; revision: number },
-    excludedSyncId: string | undefined
-  ): Promise<boolean> {
-    this.settleRendererRecreationHydration(false);
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(
-        () => this.settleRendererRecreationHydration(false),
-        RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS
-      );
-      this.pendingRendererRecreationHydration = {
-        sessionId: expected.sessionId,
-        revision: expected.revision,
-        excludedSyncId,
-        timer,
-        resolve
-      };
-    });
-  }
-
-  private settleRendererRecreationHydration(
-    hydrated: boolean,
-    synchronization?: { syncId: string; sessionId: string | null; revision: number | null }
-  ): boolean {
-    const pending = this.pendingRendererRecreationHydration;
-    if (!pending) return false;
-    if (
-      hydrated &&
-      (!synchronization ||
-        synchronization.syncId === pending.excludedSyncId ||
-        synchronization.sessionId !== pending.sessionId ||
-        synchronization.revision !== pending.revision)
-    ) {
-      return false;
-    }
-    this.pendingRendererRecreationHydration = undefined;
-    clearTimeout(pending.timer);
-    pending.resolve(hydrated);
-    return true;
+    void vscode.commands
+      .executeCommand("openWrangler.codePreview.focus", { preserveFocus: true })
+      .then(undefined, (error: unknown) => {
+        this.bridge.reportDiagnostic?.(
+          `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
   }
 
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
@@ -1158,7 +1036,6 @@ export class OpenWranglerPanel {
   private deactivate(): void {
     if (OpenWranglerPanel.activePanel !== this) return;
     OpenWranglerPanel.activePanel = undefined;
-    this.settleRendererRecreationHydration(false);
     this.bridge.setActiveSession?.(undefined);
     void vscode.commands.executeCommand("setContext", "openWrangler.canChangeImportOptions", false);
   }
