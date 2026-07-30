@@ -196,15 +196,29 @@ try {
             .map((value) => value.trim())
             .filter(Boolean);
           const acceptanceMode = process.env.OPEN_WRANGLER_PACKAGED_MODE ?? "full";
-          if (acceptanceMode !== "full" && acceptanceMode !== "platform-smoke") {
-            throw new Error('OPEN_WRANGLER_PACKAGED_MODE must be "full" or "platform-smoke".');
+          if (
+            acceptanceMode !== "full" &&
+            acceptanceMode !== "platform-smoke" &&
+            acceptanceMode !== "data-wrangler-coexistence"
+          ) {
+            throw new Error(
+              'OPEN_WRANGLER_PACKAGED_MODE must be "full", "platform-smoke", or "data-wrangler-coexistence".'
+            );
           }
           if (
-            acceptanceMode === "platform-smoke" &&
+            (acceptanceMode === "platform-smoke" || acceptanceMode === "data-wrangler-coexistence") &&
             (requested?.length !== 1 || !["vscode", "cursor"].includes(requested[0]))
           ) {
             throw new Error(
-              'OPEN_WRANGLER_PACKAGED_MODE="platform-smoke" requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.'
+              `OPEN_WRANGLER_PACKAGED_MODE=${JSON.stringify(acceptanceMode)} requires exactly one supported editor in OPEN_WRANGLER_PACKAGED_EDITORS.`
+            );
+          }
+          if (
+            acceptanceMode === "data-wrangler-coexistence" &&
+            (requested?.[0] !== "vscode" || !dataWranglerExtensionInstallTarget || !jupyterExtensionInstallTarget)
+          ) {
+            throw new Error(
+              'OPEN_WRANGLER_PACKAGED_MODE="data-wrangler-coexistence" requires VS Code plus both real Jupyter and real Data Wrangler opt-ins.'
             );
           }
           const supportedEditorKeys = new Set(["vscode", "cursor"]);
@@ -400,7 +414,9 @@ try {
                     seed: resolve(profile, "seed-result.json"),
                     verify: resolve(profile, "verify-result.json")
                   }
-                : { "platform-smoke": resolve(profile, "platform-smoke-result.json") }),
+                : acceptanceMode === "platform-smoke"
+                  ? { "platform-smoke": resolve(profile, "platform-smoke-result.json") }
+                  : {}),
               ...(pythonExtensionInstallTarget
                 ? { "python-environment": resolve(profile, "python-environment-result.json") }
                 : {}),
@@ -431,7 +447,9 @@ try {
               setup: randomUUID(),
               ...(acceptanceMode === "full"
                 ? { restricted: randomUUID(), seed: randomUUID(), verify: randomUUID() }
-                : { "platform-smoke": randomUUID() }),
+                : acceptanceMode === "platform-smoke"
+                  ? { "platform-smoke": randomUUID() }
+                  : {}),
               ...(pythonExtensionInstallTarget ? { "python-environment": randomUUID() } : {}),
               ...(jupyterExtensionInstallTarget
                 ? {
@@ -901,7 +919,7 @@ try {
                     progressPath: progressPaths["platform-smoke"],
                     requiresWorkbenchCdp: true
                   });
-                } else {
+                } else if (acceptanceMode === "full") {
                   activePhase = "restricted";
                   await runEditorAcceptancePhase({
                     editor: identifiedEditor,
@@ -935,7 +953,7 @@ try {
                     progressPath: progressPaths["python-environment"]
                   });
                 }
-                if (jupyterExtensionInstallTarget) {
+                if (jupyterExtensionInstallTarget && acceptanceMode !== "data-wrangler-coexistence") {
                   for (const phase of ["jupyter-deny", "jupyter-allow", "jupyter-pyspark"]) {
                     const phaseWorkspace =
                       phase === "jupyter-deny"
