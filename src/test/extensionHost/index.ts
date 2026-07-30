@@ -15525,19 +15525,32 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
         await waitFor(
           () => {
             const active = testing.activeSession();
+            // Uri.fsPath intentionally lower-cases Windows drive letters, while
+            // the raw os.tmpdir() spelling used to create sourcePath need not.
             return (
-              active?.metadata.source.path === sourcePath &&
+              active?.metadata.source.uri === sourceUri.toString() &&
               active.metadata.backend === "polars" &&
               active.metadata.shape.rows === 2 &&
               active.metadata.shape.columns === columnCount
             );
           },
           SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-          "the public wide-schema file workflow to open every column"
+          "the public wide-schema file workflow to open every column",
+          () =>
+            packagedFileOpenDiagnostics(testing, {
+              sourceLabel: path.basename(sourceUri.fsPath),
+              backend: "polars",
+              shape: { rows: 2, columns: columnCount }
+            })
         );
 
         const active = testing.activeSession();
         assert.ok(active, "The wide-schema picker journey requires its exact active session.");
+        assert.equal(
+          active.metadata.source.path,
+          sourceUri.fsPath,
+          "The public file command must retain VS Code's canonical filesystem spelling."
+        );
         const sessionId = active.sessionId;
         const finalColumn = active.metadata.schema[columnCount - 1];
         assert.ok(finalColumn, "The wide-schema picker journey requires its final column.");
