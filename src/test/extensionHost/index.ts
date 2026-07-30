@@ -13124,10 +13124,32 @@ async function exerciseLiveImportReconfiguration(
     10_000,
     "the reconfigured CSV panel to close cleanly"
   );
+  // Runtime cleanup can finish before VS Code removes the closing session tab
+  // and editor input. Opening the same URI as a custom editor during that gap
+  // can race editor resolution, especially on macOS. Require the public tab
+  // model to finish closing before the reload.
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => vscode.window.tabGroups.all.every((group) => group.tabs.length === 0),
+    10_000,
+    "the reconfigured CSV session tab to close before same-source custom-editor reload"
+  );
   const conflictingDefaultBackend = changed.metadata.backend === "pandas" ? "polars" : "pandas";
   await config.update("defaultBackend", conflictingDefaultBackend, vscode.ConfigurationTarget.Global);
   try {
     await vscode.commands.executeCommand("vscode.openWith", configured, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => {
+        const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+        return (
+          input instanceof vscode.TabInputCustom &&
+          input.viewType === "openWrangler.viewer" &&
+          input.uri.toString() === configured.toString()
+        );
+      },
+      10_000,
+      "the fresh Open Wrangler custom-editor input for the confirmed source"
+    );
     await waitFor(
       () => {
         const active = testing.activeSession();
@@ -13144,7 +13166,26 @@ async function exerciseLiveImportReconfiguration(
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the custom editor to reload the last confirmed import options, backend, and view"
+      "the custom editor to reload the last confirmed import options, backend, and view",
+      () => {
+        const active = testing.activeSession();
+        return JSON.stringify({
+          active: Boolean(active),
+          sourceMatches: active?.metadata.source.path === configured.fsPath,
+          backendMatches: active?.metadata.backend === changed.metadata.backend,
+          importOptionsMatch:
+            active?.metadata.source.importOptions?.delimiter === ";" &&
+            active.metadata.source.importOptions.quoteChar === "'" &&
+            active.metadata.source.importOptions.hasHeader === true,
+          shapeMatches: active?.metadata.shape.rows === 80 && active.metadata.shape.columns === 8,
+          selectedColumnMatches: active?.viewState.selectedColumnId === retainedColumn.id,
+          widthsMatch:
+            active !== undefined &&
+            changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640),
+          firstVisibleRowMatches: active?.viewState.viewport.firstVisibleRow === 1,
+          scrollLeftMatches: active?.viewState.viewport.scrollLeft === 23
+        });
+      }
     );
     assert.deepEqual(
       readFileSync(configured.fsPath),
