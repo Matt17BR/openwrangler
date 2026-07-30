@@ -16,7 +16,14 @@ harness so its rich Parquet fixture can be reproduced without presenting a mocke
   registry-portable presentation; arbitrary SVGs are not accepted by registry README validation
 - the production Vite build copies both canonical SVGs and all three generated PNGs into disposable `media/`
   and fails if any packaged copy is not byte-identical
-- `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph for the Activity Bar
+- `assets/activity-icon.svg` is a separate monochrome `currentColor` glyph used only by surfaces that theme it
+  as a mask, including the Activity Bar and native view containers
+- `assets/action-icon-light.svg` and `assets/action-icon-dark.svg` preserve the same vehicle geometry on the
+  16 pixel command-icon canvas while using explicit VS Code foreground colors for light and dark surfaces;
+  command contributions must use the manifest's `{ light, dark }` icon form because an externally loaded SVG
+  cannot inherit `currentColor` from a toolbar
+- brand render acceptance loads both action icons as external images on their intended surfaces and requires
+  visible, contrasting pixels, so a black-on-dark command icon is release-blocking
 - generated gallery icons leave at most 8 transparent pixels at 512 pixels, and the 24 pixel Activity Bar
   rendering reaches the outer pixel columns with no more than one transparent row above or below
 - release postflight requires Open VSX and the Visual Studio Marketplace to serve the packaged 512 pixel icon
@@ -36,12 +43,15 @@ harness so its rich Parquet fixture can be reproduced without presenting a mocke
 ## README notebook image
 
 - Output: `docs/images/readme/v1.1/notebooks.png`
-- Canvas: 1920 x 450 pixels
+- Canvas: 1280 x 600 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders frames
-- State: `orders-analysis.ipynb`, Pandas `notebook_showcase`, and an Open Wrangler inline dataframe preview
-- Composition: one unaltered high-resolution editor capture, retaining the real notebook chrome, output, and
-  extension controls; no custom card, crop, mock frame, or decorative background
+- State: `orders-analysis.ipynb`, Pandas `orders_df`, and an Open Wrangler inline dataframe preview
+- Composition: one unaltered capture from a real 1280-pixel-wide editor viewport, retaining the notebook chrome,
+  output, extension controls, and native horizontal-scroll affordance; no post-capture crop, custom card, mock
+  frame, or decorative background
+- Framing: the standard-width viewport shows a useful subset of the realistic 15-column dataframe while keeping
+  native labels legible when the image is rendered at README width
 
 ## Linked gallery
 
@@ -68,6 +78,8 @@ The README may link to a separate gallery rather than stacking more full-width i
 - Use VS Code's named default light and dark themes; never choose the first installed theme by contribution order
 - Preserve the editor's native geometry. Do not scale, rotate, diagonally mask, or place captures in invented cards
 - Keep the main subject legible at the README display width
+- Verify toolbar action icons on both light and dark editor surfaces rather than inferring their color from the
+  Activity Bar rendering
 - Use static PNGs with an sRGB profile and target 300 KiB or less for each primary README image
 - Verify the final files and corrected logo on GitHub, Visual Studio Marketplace, and Open VSX
 - Treat scale and performance statements as benchmark claims, not screenshot captions

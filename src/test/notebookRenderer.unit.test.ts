@@ -16,7 +16,7 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 
-  it("keeps one clear action and opens the complete linked live variable", () => {
+  it("keeps one clear action and opens captured truth even when the output retains a live link", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(1, "frame");
@@ -28,11 +28,11 @@ describe("notebook renderer", () => {
     );
     expect(actions).toHaveLength(1);
     expect(actions[0]?.textContent).toBe("Open in Open Wrangler");
-    expect(actions[0]?.title).toContain("complete current value of frame");
+    expect(actions[0]?.title).toBe("Open the captured notebook output in Open Wrangler");
 
     actions[0]?.click();
     expect(postMessage).toHaveBeenCalledOnce();
-    expect(postMessage).toHaveBeenCalledWith({ kind: "openLiveInOpenWrangler", payload });
+    expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 
   it("rejects capability-elevated notebook metadata before rendering an action", () => {

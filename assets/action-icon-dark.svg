@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <g transform="translate(1 1) scale(0.5833333333333333)">
+    <g fill="#C5C5C5">
+      <rect x=".75" y="8.3" width="4.6" height="3.45" rx=".7" />
+      <rect x="5.8" y="8.3" width="3.9" height="3.45" rx=".7" />
+      <rect x="10.15" y="8.3" width="4.1" height="3.45" rx=".7" />
+      <rect x="14.7" y="8.3" width="4.4" height="3.45" rx=".7" />
+      <rect x="19.55" y="8.75" width="3.7" height="3" rx=".65" />
+      <rect x=".75" y="12.15" width="4.6" height="3.45" rx=".7" />
+      <rect x="5.8" y="12.15" width="3.9" height="3.45" rx=".7" />
+      <rect x="10.15" y="12.15" width="4.1" height="3.45" rx=".7" />
+      <rect x="14.7" y="12.15" width="4.4" height="3.45" rx=".7" />
+      <rect x="19.55" y="12.15" width="3.7" height="3.45" rx=".65" />
+      <rect x="6.4" y="3.7" width="3.2" height="4.15" rx=".7" />
+      <rect x="6.85" y="1.45" width="2.3" height="2.4" rx=".7" />
+      <rect x="10.85" y="3.7" width="3.2" height="4.15" rx=".7" />
+      <rect x="11.3" y="1.45" width="2.3" height="2.4" rx=".7" />
+      <path d="m14.45 1.9 1.4-.4 1.95 6.8h-1.75l-1.6-6.4Z" />
+      <rect x=".45" y="15.15" width="23.1" height="1.5" rx=".65" />
+    </g>
+    <g fill="none" stroke="#C5C5C5" stroke-width="1.7">
+      <circle cx="5.65" cy="17.75" r="3.55" />
+      <circle cx="18.15" cy="17.75" r="3.55" />
+    </g>
+  </g>
+</svg>

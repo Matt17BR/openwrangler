@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
+  PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
+  PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
@@ -167,6 +169,15 @@ describe("packaged editor screenshot evidence", () => {
     expect(() => packagedScreenshotFeaturedColumnWidths(3_249, rowHeaderWidth)).toThrow(RangeError);
   });
 
+  it("uses a readable notebook README viewport without changing the full workbench capture", () => {
+    expect(PACKAGED_SCREENSHOT_VIEWPORT).toEqual({ width: 1_920, height: 860 });
+    expect(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT).toEqual({ width: 1_280, height: 700 });
+    expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT).toEqual({ width: 1_280, height: 600 });
+    expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width).toBe(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.width);
+    expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height).toBeLessThan(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.height);
+    expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width / PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height).toBeLessThan(2.2);
+  });
+
   it("keeps README scene names explicit across file and notebook workflows", () => {
     expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "notebook-pandas", "notebook-polars", "notebook-pyspark"]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
@@ -175,6 +186,21 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark", "dark")).toBe("vscode-notebook-pyspark-dark.png");
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
+  });
+
+  it("keeps public notebook captures free of acceptance-only fixture labels", () => {
+    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+    const jupyterEnvironment = readFileSync(resolve("scripts/jupyter-acceptance-environment.mjs"), "utf8");
+    const deprecatedKernelLabel = ["Open Wrangler", "Acceptance"].join(" ");
+    const deprecatedVariableName = ["notebook", "showcase"].join("_");
+
+    expect(extensionHost).toContain('const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)"');
+    expect(extensionHost).toContain('"orders_df = pd.DataFrame({"');
+    expect(extensionHost).toContain('"# Explore recent orders in Open Wrangler\\n"');
+    expect(jupyterEnvironment).toContain('display_name: "Python 3.12 (Open Wrangler)"');
+    expect(extensionHost).not.toContain(deprecatedKernelLabel);
+    expect(extensionHost).not.toContain(deprecatedVariableName);
+    expect(jupyterEnvironment).not.toContain(deprecatedKernelLabel);
   });
 
   it("keeps the README to two concise portable product views", () => {
@@ -188,11 +214,13 @@ describe("packaged editor screenshot evidence", () => {
     const standardIcon = readFileSync(resolve("assets/icon-256.png"));
     const compactIcon = readFileSync(resolve("assets/icon-128.png"));
     const iconSvg = readFileSync(resolve("assets/icon.svg"), "utf8");
+    const actionIconDarkSvg = readFileSync(resolve("assets/action-icon-dark.svg"), "utf8");
+    const actionIconLightSvg = readFileSync(resolve("assets/action-icon-light.svg"), "utf8");
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
       ["workbench.png", 1_920, 830],
-      ["notebooks.png", 1_920, 450]
+      ["notebooks.png", 1_280, 600]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
@@ -207,13 +235,29 @@ describe("packaged editor screenshot evidence", () => {
     expect(activityIconSvg).toContain('viewBox="0 0 24 24"');
     expect(activityIconSvg).toContain("currentColor");
     expect(activityIconSvg).not.toMatch(/#[\da-f]{3,8}\b/iu);
+    expect(actionIconDarkSvg).toContain('width="16" height="16" viewBox="0 0 16 16"');
+    expect(actionIconLightSvg).toContain('width="16" height="16" viewBox="0 0 16 16"');
+    expect(actionIconDarkSvg).toContain("#C5C5C5");
+    expect(actionIconLightSvg).toContain("#424242");
+    expect(actionIconDarkSvg).not.toContain("currentColor");
+    expect(actionIconLightSvg).not.toContain("currentColor");
     expect(packageJson.scripts?.check).toContain("npm run brand:check");
     expect(packageJson.scripts?.["brand:render-check"]).toContain("--render-check");
     expect(packageJson.scripts?.["test:webview-acceptance"]).toContain("npm run brand:render-check");
     expect(packageJson.icon).toBe("media/icon.png");
     expect(viteConfig).toContain('publicDir: notebookRendererBuild ? false : "assets"');
     expect(viteConfig).toContain('outDir: "media"');
-    expect(buildWebviews).toContain('["activity-icon.svg", "icon.svg", "icon-128.png", "icon-256.png", "icon.png"]');
+    for (const asset of [
+      "action-icon-dark.svg",
+      "action-icon-light.svg",
+      "activity-icon.svg",
+      "icon.svg",
+      "icon-128.png",
+      "icon-256.png",
+      "icon.png"
+    ]) {
+      expect(buildWebviews).toContain(`"${asset}"`);
+    }
     expect(buildWebviews).toContain('readFileSync(resolve("assets", asset))');
     expect(buildWebviews).toContain('readFileSync(resolve("media", asset))');
     expect(buildWebviews).toContain("packaged.equals(source)");

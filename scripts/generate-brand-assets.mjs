@@ -12,6 +12,18 @@ const assetsDirectory = resolve(root, "assets");
 const reviewDirectory = resolve(root, "tmp", "brand-review");
 const iconSourcePath = resolve(assetsDirectory, "icon.svg");
 const activitySourcePath = resolve(assetsDirectory, "activity-icon.svg");
+const actionIconSpecifications = [
+  {
+    name: "action-icon-light.svg",
+    background: "#f3f3f3",
+    foreground: "#424242"
+  },
+  {
+    name: "action-icon-dark.svg",
+    background: "#181818",
+    foreground: "#C5C5C5"
+  }
+];
 const manifestPath = resolve(root, "scripts", "brand-assets.manifest.json");
 const outputs = new Map([
   [128, resolve(assetsDirectory, "icon-128.png")],
@@ -38,14 +50,29 @@ if (requestedCheck && requestedContactSheet) {
 
 const iconSource = readFileSync(iconSourcePath, "utf8");
 const activitySource = readFileSync(activitySourcePath, "utf8");
+const actionIconSources = new Map(
+  actionIconSpecifications.map((specification) => [
+    specification.name,
+    readFileSync(resolve(assetsDirectory, specification.name), "utf8")
+  ])
+);
 assertSafeSvg(iconSource, "gallery icon", "0 0 512 512");
 assertSafeSvg(activitySource, "Activity Bar icon", "0 0 24 24");
 if (!activitySource.includes("currentColor")) {
   throw new Error("The Activity Bar icon must derive every visible mark from currentColor.");
 }
+for (const specification of actionIconSpecifications) {
+  const source = actionIconSources.get(specification.name);
+  assertSafeSvg(source, specification.name, "0 0 16 16");
+  if (source !== deriveActionIconSource(activitySource, specification.foreground)) {
+    throw new Error(
+      `${specification.name} must retain the Activity Bar jeep geometry on the inset 16 pixel command-icon canvas.`
+    );
+  }
+}
 
 if (requestedCheck) {
-  assertAssetManifest(iconSource, activitySource);
+  assertAssetManifest(iconSource, activitySource, actionIconSources);
   console.log("Brand sources and PNG assets match the generated manifest.");
   process.exitCode = 0;
 } else {
@@ -67,6 +94,18 @@ async function renderBrandAssets() {
     const renderedActivityPath = resolve(temporaryDirectory, "activity-icon.png");
     await renderSvg(browser, activitySource, 24, renderedActivityPath);
     assertPng(renderedActivityPath, 24, 24);
+    for (const specification of actionIconSpecifications) {
+      const renderedActionPath = resolve(temporaryDirectory, `${specification.name}.png`);
+      await renderExternalSvg(
+        browser,
+        actionIconSources.get(specification.name),
+        16,
+        specification.background,
+        renderedActionPath
+      );
+      assertPng(renderedActionPath, 16, 16);
+      assertExternalImageContrast(renderedActionPath, specification.background, specification.name);
+    }
     assertMaximumTransparentInsets(rendered.get(512), {
       top: 8,
       right: 8,
@@ -88,7 +127,7 @@ async function renderBrandAssets() {
       for (const [size, destination] of outputs) {
         writeFileSync(destination, readFileSync(rendered.get(size)));
       }
-      writeAssetManifest(iconSource, activitySource);
+      writeAssetManifest(iconSource, activitySource, actionIconSources);
     }
 
     if (requestedContactSheet) {
@@ -115,6 +154,9 @@ async function renderBrandAssets() {
 }
 
 function assertSafeSvg(source, label, expectedViewBox) {
+  if (typeof source !== "string") {
+    throw new Error(`The ${label} source is missing.`);
+  }
   if (!source.includes(`viewBox="${expectedViewBox}"`)) {
     throw new Error(`The ${label} must use viewBox ${expectedViewBox}.`);
   }
@@ -125,6 +167,29 @@ function assertSafeSvg(source, label, expectedViewBox) {
   ) {
     throw new Error(`The ${label} must remain a self-contained, script-free vector.`);
   }
+}
+
+function deriveActionIconSource(activity, foreground) {
+  const contentStart = activity.indexOf(">") + 1;
+  const contentEnd = activity.lastIndexOf("</svg>");
+  if (contentStart <= 0 || contentEnd <= contentStart) {
+    throw new Error("The Activity Bar icon has an invalid root element.");
+  }
+  const body = activity
+    .slice(contentStart, contentEnd)
+    .replace(/^\n/u, "")
+    .replace(/\n\s*$/u, "")
+    .replaceAll("currentColor", foreground)
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">\n' +
+    '  <g transform="translate(1 1) scale(0.5833333333333333)">\n' +
+    `${body}\n` +
+    "  </g>\n" +
+    "</svg>\n"
+  );
 }
 
 async function renderSvg(activeBrowser, source, size, destination) {
@@ -144,11 +209,71 @@ async function renderSvg(activeBrowser, source, size, destination) {
   }
 }
 
+async function renderExternalSvg(activeBrowser, source, size, background, destination) {
+  const page = await activeBrowser.newPage({
+    viewport: { width: size, height: size }
+  });
+  try {
+    await page.setContent(
+      `<!doctype html><style>html,body{margin:0;width:100%;height:100%;background:${background}}img{display:block;width:${size}px;height:${size}px}</style>` +
+        `<img src="${svgDataUrl(source)}" width="${size}" height="${size}" alt="">`
+    );
+    await page.locator("img").evaluate((image) => {
+      if (!(image instanceof HTMLImageElement) || !image.complete || image.naturalWidth === 0) {
+        throw new Error("The command icon did not load as an external image.");
+      }
+    });
+    await page.screenshot({
+      path: destination
+    });
+  } finally {
+    await page.close();
+  }
+}
+
 function assertPng(path, expectedWidth, expectedHeight) {
   const png = PNG.sync.read(readFileSync(path));
   if (png.width !== expectedWidth || png.height !== expectedHeight) {
     throw new Error(`${basename(path)} is ${png.width}x${png.height}; expected ${expectedWidth}x${expectedHeight}.`);
   }
+}
+
+function assertExternalImageContrast(path, background, label) {
+  const png = PNG.sync.read(readFileSync(path));
+  const backgroundRgb = parseHexColor(background);
+  let paintedPixels = 0;
+  let contrastingPixels = 0;
+  for (let index = 0; index < png.data.length; index += 4) {
+    const pixel = [png.data[index], png.data[index + 1], png.data[index + 2]];
+    if (pixel.every((channel, channelIndex) => channel === backgroundRgb[channelIndex])) continue;
+    paintedPixels += 1;
+    if (contrastRatio(pixel, backgroundRgb) >= 4.5) contrastingPixels += 1;
+  }
+  if (paintedPixels < 24 || contrastingPixels < 16) {
+    throw new Error(
+      `${label} must remain visible when VS Code loads it as an external image: ` +
+        `${paintedPixels} painted pixels, ${contrastingPixels} at 4.5:1 contrast.`
+    );
+  }
+}
+
+function parseHexColor(value) {
+  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/iu.exec(value);
+  if (!match) throw new Error(`Invalid RGB color: ${value}`);
+  return match.slice(1).map((channel) => Number.parseInt(channel, 16));
+}
+
+function contrastRatio(left, right) {
+  const [lighter, darker] = [relativeLuminance(left), relativeLuminance(right)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(color) {
+  const [red, green, blue] = color.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
 }
 
 function assertMaximumTransparentInsets(path, maximumInsets) {
@@ -200,10 +325,11 @@ function assertEquivalentPng(actualPath, expectedPath, size) {
   }
 }
 
-function writeAssetManifest(icon, activity) {
+function writeAssetManifest(icon, activity, actions) {
   const manifest = {
     version: 1,
     sources: {
+      ...Object.fromEntries([...actions].map(([name, source]) => [name, sha256(source)])),
       "activity-icon.svg": sha256(activity),
       "icon.svg": sha256(icon)
     },
@@ -220,7 +346,7 @@ function writeAssetManifest(icon, activity) {
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
-function assertAssetManifest(icon, activity) {
+function assertAssetManifest(icon, activity, actions) {
   let manifest;
   try {
     manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -230,7 +356,8 @@ function assertAssetManifest(icon, activity) {
   if (
     manifest?.version !== 1 ||
     manifest.sources?.["icon.svg"] !== sha256(icon) ||
-    manifest.sources?.["activity-icon.svg"] !== sha256(activity)
+    manifest.sources?.["activity-icon.svg"] !== sha256(activity) ||
+    [...actions].some(([name, source]) => manifest.sources?.[name] !== sha256(source))
   ) {
     throw new Error("The brand SVG sources differ from the generated asset manifest.");
   }

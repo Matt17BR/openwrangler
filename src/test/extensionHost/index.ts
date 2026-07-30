@@ -70,6 +70,8 @@ import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from 
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
+  PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
+  PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
@@ -204,7 +206,7 @@ const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
 const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
-const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Open Wrangler Acceptance";
+const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
 const RELEASED_JUPYTER_REMOTE_COLLECTION_LABEL = "Open Wrangler Remote Servers";
 const RELEASED_JUPYTER_REMOTE_SERVER_LABEL = "Open Wrangler Container Server";
 const RELEASED_JUPYTER_REMOTE_KERNEL_LABEL = "Open Wrangler Remote Acceptance";
@@ -333,6 +335,8 @@ export async function run(): Promise<void> {
   assert.equal(extension.packageJSON.publisher, "Matt17BR");
   assert.equal(extension.packageJSON.icon, "media/icon.png");
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "icon.png"));
+  await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "action-icon-dark.svg"));
+  await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "action-icon-light.svg"));
   await vscode.workspace.fs.stat(vscode.Uri.joinPath(extension.extensionUri, "media", "activity-icon.svg"));
   const testPython = process.env.OPEN_WRANGLER_TEST_PYTHON;
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE ?? "verify";
@@ -383,8 +387,16 @@ export async function run(): Promise<void> {
   };
   const contributions = packagedManifest.contributes as {
     configurationDefaults?: Record<string, unknown>;
-    commands?: Array<{ command?: string; title?: string; shortTitle?: string; icon?: string }>;
-    viewsContainers?: { activitybar?: Array<{ id?: string; icon?: string }> };
+    commands?: Array<{
+      command?: string;
+      title?: string;
+      shortTitle?: string;
+      icon?: string | { light?: string; dark?: string };
+    }>;
+    viewsContainers?: {
+      activitybar?: Array<{ id?: string; icon?: string }>;
+      panel?: Array<{ id?: string; icon?: string }>;
+    };
     views?: Record<string, Array<{ id?: string }>>;
     configuration?: { properties?: Record<string, unknown> };
     notebookRenderer?: Array<{ mimeTypes?: string[]; requiresMessaging?: string }>;
@@ -395,6 +407,11 @@ export async function run(): Promise<void> {
   assert.ok(
     contributions.viewsContainers?.activitybar?.some(
       (container) => container.id === "openWrangler" && container.icon === "media/activity-icon.svg"
+    )
+  );
+  assert.ok(
+    contributions.viewsContainers?.panel?.some(
+      (container) => container.id === "openWranglerCode" && container.icon === "media/activity-icon.svg"
     )
   );
   assert.deepEqual(
@@ -419,7 +436,10 @@ export async function run(): Promise<void> {
     {
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
-      icon: "media/activity-icon.svg"
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
     }
   );
   assert.deepEqual(
@@ -438,7 +458,10 @@ export async function run(): Promise<void> {
       title: "Open in Open Wrangler",
       shortTitle: "Open in Open Wrangler",
       category: "Open Wrangler",
-      icon: "media/activity-icon.svg"
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
     }
   );
   const fileResourcePredicate =
@@ -1379,9 +1402,16 @@ async function exerciseReleasedJupyterExtension(
       JSON.parse(new TextDecoder().decode(pandasMimeItem.data)) as unknown
     );
     assert.ok(pandasMimePayload, "The released-Jupyter MIME v2 item must satisfy the saved-output contract.");
-    assert.equal(pandasMimePayload.metadata.source.label, "notebook_showcase");
-    assert.equal(pandasMimePayload.metadata.source.variableName, "notebook_showcase");
+    assert.equal(pandasMimePayload.metadata.source.label, "orders_df");
+    assert.equal(pandasMimePayload.metadata.source.variableName, "orders_df");
     assert.deepEqual(pandasMimePayload.metadata.shape, { rows: 100_000, columns: 15 });
+    assert.ok(
+      pandasMimePayload.page.rows.length > 0 && pandasMimePayload.page.rows.length < 100_000,
+      "The portable MIME output must retain a bounded captured preview instead of embedding the complete live frame."
+    );
+    const capturedShowcaseRowCount = pandasMimePayload.page.rows.length;
+    const capturedShowcaseFirstValue = pandasMimePayload.page.rows[0]?.values[0]?.display;
+    assert.equal(capturedShowcaseFirstValue, "2400001");
     assert.deepEqual(
       pandasMimePayload.metadata.schema.map((column) => column.name),
       [
@@ -1475,7 +1505,7 @@ async function exerciseReleasedJupyterExtension(
     try {
       let rendererButton: NotebookRendererButton;
       try {
-        rendererButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open in Open Wrangler");
+        rendererButton = await waitForNotebookRendererButton(workbench, "orders_df", "Open in Open Wrangler");
       } catch (error) {
         throw new Error(
           `${error instanceof Error ? error.message : String(error)} Host: ${JSON.stringify(
@@ -1491,29 +1521,51 @@ async function exerciseReleasedJupyterExtension(
       } finally {
         await rendererButton.dispose();
       }
-      const liveShowcase = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        {
-          name: "notebook_showcase",
-          type: "DataFrame",
-          backend: "pandas",
-          firstValue: "2400001"
+      await waitFor(
+        () => {
+          const source = testing.activeSession()?.metadata.source;
+          return source?.kind === "notebookOutput" && source.label === "orders_df";
         },
-        "the live notebook_showcase variable opened from the primary MIME-v2 renderer action"
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "the captured orders_df output opened from the primary MIME-v2 renderer action",
+        () => JSON.stringify(testing.diagnostics())
       );
-      assert.deepEqual(liveShowcase.metadata.shape, { rows: 100_000, columns: 15 });
+      const capturedShowcase = testing.activeSession();
+      assert.ok(capturedShowcase, "The primary MIME-v2 renderer action must publish a captured-output session.");
+      assert.notEqual(
+        capturedShowcase.sessionId,
+        pandasMimePayload.metadata.sessionId,
+        "A saved notebook output must receive a fresh coordinator-owned session identity."
+      );
+      assert.equal(capturedShowcase.metadata.backend, "pandas");
+      assert.deepEqual(capturedShowcase.metadata.source, {
+        kind: "notebookOutput",
+        label: "orders_df"
+      });
+      assert.equal(capturedShowcase.metadata.mode, "viewing");
+      assert.deepEqual(capturedShowcase.metadata.shape, {
+        rows: capturedShowcaseRowCount,
+        columns: 15
+      });
+      assert.deepEqual(capturedShowcase.metadata.filteredShape, capturedShowcase.metadata.shape);
+      assert.deepEqual(capturedShowcase.metadata.capabilities, {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      });
       await assertReleasedSessionPage(
         testing,
-        liveShowcase,
-        "2400001",
-        "released-jupyter-renderer-live-notebook-showcase"
+        capturedShowcase,
+        capturedShowcaseFirstValue,
+        "released-jupyter-renderer-captured-notebook-showcase"
       );
       await disposePackagedSessionPanel(
         testing,
-        liveShowcase.sessionId,
-        "the released-Jupyter live MIME variable session"
+        capturedShowcase.sessionId,
+        "the released-Jupyter captured MIME output session"
       );
     } finally {
       await restoreScreenshotWorkbench?.();
@@ -2480,7 +2532,7 @@ function writeReleasedJupyterNotebook(
     "showcase_products = ['Analytics', 'Automation', 'Data platform', 'Operations', 'Planning']",
     "showcase_priorities = ['High', 'Standard', 'Strategic']",
     "showcase_statuses = ['Active', 'Expansion', 'Renewal review']",
-    "notebook_showcase = pd.DataFrame({",
+    "orders_df = pd.DataFrame({",
     "    'order_id': list(range(2400001, 2400001 + showcase_rows)),",
     "    'market': [showcase_markets[index % len(showcase_markets)] for index in range(showcase_rows)],",
     "    'revenue': [round(620.50 + ((index * 7919) % 1850000) / 100, 2) for index in range(showcase_rows)],",
@@ -2541,7 +2593,7 @@ function writeReleasedJupyterNotebook(
           execution_count: null,
           metadata: {},
           outputs: [],
-          source: ["notebook_showcase\n"]
+          source: ["# Explore recent orders in Open Wrangler\n", "orders_df\n", "\n"]
         },
         {
           cell_type: "code",
@@ -3486,7 +3538,7 @@ async function assertReleasedNotebookCodeInsertion(
       ],
       metadata: {
         kernelspec: {
-          display_name: "Open Wrangler Acceptance",
+          display_name: "Python 3.12 (Open Wrangler)",
           language: "python",
           name: "openwrangler-acceptance"
         }
@@ -6790,14 +6842,14 @@ async function prepareReleasedJupyterScreenshotWorkbench(
     return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
   });
   const previousThemeKind = vscode.window.activeColorTheme.kind;
-  await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+  await workbench.setViewportSize(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT);
   const viewport = await workbench.evaluate(() => {
     const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
     return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
   });
   assert.deepEqual(
     viewport,
-    PACKAGED_SCREENSHOT_VIEWPORT,
+    PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
     "Notebook README evidence requires the deterministic packaged-editor viewport."
   );
 
@@ -6902,7 +6954,7 @@ async function captureReleasedJupyterPandasPreview(
   });
   assert.ok(preview, "The Pandas notebook action must remain inside its exact rendered preview.");
   assert.deepEqual(preview, {
-    title: "Open Wrangler preview: notebook_showcase (pandas) - 100000 x 15",
+    title: "Open Wrangler preview: orders_df (pandas) - 100000 x 15",
     headers: [
       "order_id",
       "market",
@@ -6934,13 +6986,21 @@ async function captureReleasedJupyterPandasPreview(
   await clearReleasedJupyterScreenshotTransientUi(workbench);
   mkdirSync(outputDirectory, { recursive: true });
   recordAcceptanceProgress("jupyter-allow:screenshot:pandas");
-  await captureWorkbenchScreenshot(
-    workbench,
-    path.resolve(
-      outputDirectory,
-      packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-pandas", "dark")
-    ),
-    450
+  const destination = path.resolve(
+    outputDirectory,
+    packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-pandas", "dark")
+  );
+  await captureWorkbenchScreenshot(workbench, destination, PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height);
+  const screenshot = readFileSync(destination);
+  assert.equal(
+    screenshot.readUInt32BE(16),
+    PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width,
+    "The Pandas README screenshot must retain its dedicated readable width."
+  );
+  assert.equal(
+    screenshot.readUInt32BE(20),
+    PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height,
+    "The Pandas README screenshot must retain its dedicated readable height."
   );
 }
 
@@ -8221,6 +8281,10 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   const notebookPath = path.join(directory, "notebook-acceptance.ipynb");
   const configuration = vscode.workspace.getConfiguration("openWrangler");
   const originalMode = configuration.get<"viewing" | "editing">("notebookStartMode", "viewing");
+  const originalWorkspacePreviewProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  )?.workspaceValue;
+  let previewProviderOverridden = false;
   const page: GridPage = {
     offset: 0,
     limit: 1,
@@ -9465,6 +9529,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the Polars notebook session to close");
 
     if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
+      previewProviderOverridden = true;
       recordAcceptanceProgress("verify:notebook-renderer-provenance");
       await exercisePackagedRendererProvenance(testing, jupyter, notebook, currentPayload, directory);
       recordAcceptanceProgress("verify:notebook-renderer-same-group-switch");
@@ -9505,8 +9571,21 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     }
     recordAcceptanceProgress("verify:notebook:complete");
   } finally {
-    await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
-    cleanupAcceptanceTemporaryDirectory(directory);
+    try {
+      if (previewProviderOverridden) {
+        await configuration.update(
+          "notebookPreviewProvider",
+          originalWorkspacePreviewProvider,
+          vscode.ConfigurationTarget.Workspace
+        );
+      }
+    } finally {
+      try {
+        await configuration.update("notebookStartMode", originalMode, vscode.ConfigurationTarget.Workspace);
+      } finally {
+        cleanupAcceptanceTemporaryDirectory(directory);
+      }
+    }
   }
 }
 
@@ -10007,11 +10086,7 @@ async function exercisePackagedRendererProvenance(
       preview: false
     });
     recordAcceptanceProgress("verify:notebook-renderer:shown-b");
-    await waitFor(
-      () => jupyter.testing.lookupCalls(openedSecondNotebook.uri) > 0,
-      10_000,
-      "the proactive preview coordinator to inspect visible notebook B for an already-started kernel"
-    );
+    const originKernelBaseline = jupyter.testing.stats(originNotebook.uri);
     const secondKernelBaseline = jupyter.testing.stats(openedSecondNotebook.uri);
     assert.equal(
       vscode.window.activeNotebookEditor?.notebook,
@@ -10042,57 +10117,61 @@ async function exercisePackagedRendererProvenance(
       0,
       "The renderer provenance action requires zero Open Wrangler tabs for its authoritative receipt."
     );
-    let originFocusObserved = false;
-    const focusListener = vscode.window.onDidChangeActiveNotebookEditor((editor) => {
-      if (editor?.notebook === originNotebook) originFocusObserved = true;
-    });
+    const originLookupBaseline = jupyter.testing.lookupCalls(originNotebook.uri);
+    const secondLookupBaseline = jupyter.testing.lookupCalls(openedSecondNotebook.uri);
+    const denialBaseline = jupyter.testing.denialCalls();
     const waitForOriginReceipt = async (): Promise<void> => {
-      if (vscode.window.activeNotebookEditor?.notebook === originNotebook) originFocusObserved = true;
-      await waitFor(
-        () => originFocusObserved,
-        10_000,
-        "the real renderer action to focus its exact originating notebook before opening the session panel",
-        () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
-      );
       recordAcceptanceProgress("verify:notebook-renderer:session");
       await waitFor(
         () => {
           const source = testing.activeSession()?.metadata.source;
-          return (
-            source?.kind === "notebookVariable" &&
-            source.variableName === "renderer_frame" &&
-            source.uri === originNotebook.uri.toString()
-          );
+          return source?.kind === "notebookOutput" && source.label === "renderer provenance A";
         },
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "notebook A's real renderer action to open notebook A after notebook B was active immediately before dispatch",
+        "notebook A's primary renderer action to open notebook A's captured output while notebook B is active",
         () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
       );
     };
+    recordAcceptanceProgress("verify:notebook-renderer:activate");
     try {
-      recordAcceptanceProgress("verify:notebook-renderer:activate");
-      try {
-        await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
-          description: "notebook A's renderer action while notebook B is active",
-          activate: () =>
-            withAcceptanceOperationDeadline(
-              originButton.click(),
-              WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
-              "the exact notebook renderer action to receive one Playwright click"
-            ),
-          receipt: waitForOriginReceipt,
-          authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
-        });
-      } finally {
-        await originButton.dispose();
-      }
+      await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+        description: "notebook A's renderer action while notebook B is active",
+        activate: () =>
+          withAcceptanceOperationDeadline(
+            originButton.click(),
+            WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+            "the exact notebook renderer action to receive one Playwright click"
+          ),
+        receipt: waitForOriginReceipt,
+        authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
+      });
     } finally {
-      focusListener.dispose();
+      await originButton.dispose();
     }
 
     const active = testing.activeSession();
-    assert.ok(active, "The renderer provenance scenario must open a live notebook session.");
+    assert.ok(active, "The renderer provenance scenario must open a captured notebook-output session.");
+    assert.notEqual(
+      active.sessionId,
+      payloadTemplate.metadata.sessionId,
+      "The captured output must receive a fresh coordinator-owned session identity."
+    );
     assert.equal(active.metadata.backend, "polars");
+    assert.deepEqual(active.metadata.source, {
+      kind: "notebookOutput",
+      label: "renderer provenance A"
+    });
+    assert.equal(active.metadata.mode, "viewing");
+    assert.deepEqual(active.metadata.shape, { rows: 1, columns: 1 });
+    assert.deepEqual(active.metadata.filteredShape, { rows: 1, columns: 1 });
+    assert.deepEqual(active.metadata.capabilities, {
+      editable: false,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false
+    });
     const provenancePage = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -10107,77 +10186,44 @@ async function exercisePackagedRendererProvenance(
     if (provenancePage.kind !== "page") throw new Error("Renderer provenance page did not resolve.");
     assert.equal(
       provenancePage.page.rows[0]?.values[0]?.display,
-      "101",
-      "The renderer event must read notebook A's kernel variable."
+      "1",
+      "The primary renderer action must use notebook A's captured value, not live renderer_frame value 101."
+    );
+    assert.deepEqual(
+      jupyter.testing.stats(originNotebook.uri),
+      originKernelBaseline,
+      "Opening a linked saved output must not dispatch work to notebook A's kernel."
     );
     assert.deepEqual(
       jupyter.testing.stats(openedSecondNotebook.uri),
       secondKernelBaseline,
-      "Notebook A's renderer event must not advance notebook B beyond its own proactive-preview baseline."
-    );
-
-    recordAcceptanceProgress("verify:notebook-renderer:insertion");
-    const generatedCode = "# renderer provenance A\ndef clean_data(df):\n    return df\n";
-    testing.setCodeForExport(generatedCode);
-    const originCellCount = originNotebook.cellCount;
-    const originCellsBeforeInsertion = Array.from({ length: originCellCount }, (_, index) =>
-      originNotebook.cellAt(index).document.getText()
-    );
-    const secondCellCount = openedSecondNotebook.cellCount;
-    assert.equal(await vscode.commands.executeCommand<boolean>("openWrangler.insertNotebookCode"), true);
-    await waitFor(
-      () => originNotebook.cellCount === originCellCount + 1,
-      10_000,
-      "generated code from notebook A's renderer session to return to notebook A"
+      "Opening notebook A's saved output must not dispatch work to notebook B's kernel."
     );
     assert.equal(
-      openedSecondNotebook.cellCount,
-      secondCellCount,
-      "Notebook B must remain unchanged by notebook A's export."
+      jupyter.testing.lookupCalls(originNotebook.uri),
+      originLookupBaseline,
+      "The primary saved-output action must not acquire notebook A's kernel."
     );
-    const rendererInsertionIndices = Array.from({ length: originNotebook.cellCount }, (_, index) => index).filter(
-      (index) => {
-        const cell = originNotebook.cellAt(index);
-        return cell.document.getText() === generatedCode && cell.metadata.openWrangler?.source === "renderer_frame";
-      }
-    );
-    assert.equal(rendererInsertionIndices.length, 1, "Exactly one renderer-provenance cell must be inserted.");
-    const rendererInsertionIndex = rendererInsertionIndices[0];
-    if (rendererInsertionIndex === undefined) throw new Error("The renderer-provenance insertion index was missing.");
-    assert.deepEqual(
-      Array.from({ length: originNotebook.cellCount }, (_, index) => index)
-        .filter((index) => index !== rendererInsertionIndex)
-        .map((index) => originNotebook.cellAt(index).document.getText()),
-      originCellsBeforeInsertion,
-      "Notebook A's existing cells must retain their exact order and contents."
-    );
-    const rendererInsertionMetadata = originNotebook.cellAt(rendererInsertionIndex).metadata.openWrangler;
-    assert.deepEqual(rendererInsertionMetadata, {
-      source: "renderer_frame",
-      backend: "polars",
-      generated: true,
-      insertionId: rendererInsertionMetadata.insertionId
-    });
-    assert.equal(typeof rendererInsertionMetadata.insertionId, "string");
     assert.equal(
-      await originNotebook.save(),
-      true,
-      "The renderer provenance fixture must close without a save prompt."
+      jupyter.testing.lookupCalls(openedSecondNotebook.uri),
+      secondLookupBaseline,
+      "The primary saved-output action must not acquire notebook B's kernel."
     );
-    // VS Code retains an API-opened NotebookDocument after its final tab closes
-    // while this live session pins the document. Closed/reopened same-URI
-    // rejection is therefore exercised deterministically in coordinator/native
-    // command unit tests instead of manufacturing a false packaged lifecycle.
+    assert.equal(
+      jupyter.testing.denialCalls(),
+      denialBaseline,
+      "The primary saved-output action must not request Jupyter permission."
+    );
 
     recordAcceptanceProgress("verify:notebook-renderer:session-close");
-    await disposePackagedSessionPanel(testing, active.sessionId, "the renderer provenance session");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the captured renderer provenance session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
     recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
     const tabsToClose = rendererProvenanceTabs(openedSecondNotebook);
     if (tabsToClose.length > 0) assert.equal(await vscode.window.tabGroups.close(tabsToClose, true), true);
     recordAcceptanceProgress("verify:notebook-renderer:complete");
   } catch (error) {
-    await bestEffortRendererProvenanceCleanup(testing, originNotebook, secondNotebook);
+    await bestEffortRendererProvenanceCleanup(testing, secondNotebook);
     throw error;
   }
 }
@@ -10204,7 +10250,7 @@ function rendererProvenanceDiagnostics(
                 : "other"
         }
       : source
-        ? { kind: source.kind }
+        ? { kind: source.kind, label: source.label }
         : null;
   return JSON.stringify({
     activeNotebook:
@@ -10221,22 +10267,25 @@ function rendererProvenanceDiagnostics(
       activeSessionPresent: coordinator.activeSessionId !== undefined
     },
     kernels: {
-      A: jupyter.testing.stats(originNotebook.uri) ?? null,
-      B: jupyter.testing.stats(secondNotebook.uri) ?? null
-    }
+      A: {
+        stats: jupyter.testing.stats(originNotebook.uri) ?? null,
+        lookupCalls: jupyter.testing.lookupCalls(originNotebook.uri)
+      },
+      B: {
+        stats: jupyter.testing.stats(secondNotebook.uri) ?? null,
+        lookupCalls: jupyter.testing.lookupCalls(secondNotebook.uri)
+      }
+    },
+    jupyterDenialCalls: jupyter.testing.denialCalls()
   });
 }
 
 async function bestEffortRendererProvenanceCleanup(
   testing: TestApi,
-  originNotebook: vscode.NotebookDocument,
   secondNotebook: vscode.NotebookDocument | undefined
 ): Promise<void> {
   const active = testing.activeSession();
-  if (
-    active?.metadata.source.kind === "notebookVariable" &&
-    active.metadata.source.uri === originNotebook.uri.toString()
-  ) {
+  if (active?.metadata.source.kind === "notebookOutput" && active.metadata.source.label === "renderer provenance A") {
     try {
       await testing.request({
         kind: "closeSession",

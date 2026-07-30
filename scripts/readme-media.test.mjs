@@ -19,7 +19,15 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
   assert.match(packageJson.scripts?.["test:webview-acceptance"] ?? "", /npm run verify:readme-media/u);
   assert.match(packageJson.scripts?.["test:scripts"] ?? "", /scripts\/readme-media\.test\.mjs/u);
-  for (const asset of ["activity-icon.svg", "icon.svg", "icon-128.png", "icon-256.png", "icon.png"]) {
+  for (const asset of [
+    "action-icon-dark.svg",
+    "action-icon-light.svg",
+    "activity-icon.svg",
+    "icon.svg",
+    "icon-128.png",
+    "icon-256.png",
+    "icon.png"
+  ]) {
     assert.ok(buildWebviews.includes(`"${asset}"`), `The production build must verify ${asset}.`);
   }
   assert.match(buildWebviews, /packaged\.equals\(source\)/u);
@@ -57,7 +65,7 @@ test("README media is compact, portable, and composition-verified", () => {
 
   for (const [name, width, height] of [
     ["workbench.png", 1_920, 830],
-    ["notebooks.png", 1_920, 450]
+    ["notebooks.png", 1_280, 600]
   ]) {
     const path = resolve(root, "docs", "images", "readme", "v1.1", name);
     const png = readFileSync(path);
@@ -82,17 +90,18 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
   assert.match(
     readme,
-    /Files and live variables are not capped at 10,000 rows[\s\S]{0,220}Only a saved\s+inline snapshot is bounded for notebook portability, with headline ceilings of 10,000 rows, 2,048 columns,\s+100,000 cells, and 16 MiB\./u
+    /button inside an inline table expands the preview saved in that `\.ipynb` file\.[\s\S]{0,180}saved preview may contain only part of a very large dataframe[\s\S]{0,180}says so clearly\s+whenever rows or columns were left out\./u
   );
+  assert.match(
+    readme,
+    /full, current dataframe[\s\S]{0,120}notebook toolbar's branded \*\*Open in Open Wrangler\*\* action[\s\S]{0,180}pages\s+through the live data as you navigate\.[\s\S]{0,180}portability limit applies only to previews stored inside notebooks,\s+not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files\./u
+  );
+  assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.match(
     readme,
     /If Microsoft Data Wrangler is installed too, Open Wrangler\s+asks once which extension should own automatic previews/u
   );
-  assert.match(readme, /10\/20\/50\/100-row pages/u);
-  assert.match(
-    readme,
-    /single\s+\*\*Open in Open Wrangler\*\* action opens the complete current value[\s\S]{0,180}otherwise it opens the portable captured result/u
-  );
+  assert.doesNotMatch(readme, /button opens the full, current dataframe|opens the linked live variable/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.match(readme, /engine gallery/u);
   assert.match(readme, /DuckDB notebook relations are not yet supported/u);

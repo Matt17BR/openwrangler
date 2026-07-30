@@ -104,6 +104,8 @@ const INSTALLED_PHASE_FRAGMENT_MAX_BYTES = 16 * 1024;
 const guardedCandidateReceipts = new WeakSet();
 const numericFailureEvidenceReportReceipts = new WeakSet();
 const GENERATED_MEDIA_PACKAGE_FILES = Object.freeze([
+  "media/action-icon-dark.svg",
+  "media/action-icon-light.svg",
   "media/activity-icon.svg",
   "media/codePreview.js",
   "media/codicon.ttf",

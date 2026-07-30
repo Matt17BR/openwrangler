@@ -1,8 +1,4 @@
-import {
-  isPythonIdentifier,
-  normalizeNotebookOutputPayload,
-  type NotebookOutputPayload
-} from "../shared/notebookOutput";
+import { normalizeNotebookOutputPayload, type NotebookOutputPayload } from "../shared/notebookOutput";
 
 interface RendererOutputItem {
   json(): unknown;
@@ -61,18 +57,10 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   actions.style.display = "flex";
   actions.style.gap = "8px";
   if (context.postMessage) {
-    const variableName = payload.metadata.source.variableName;
-    const hasLiveVariable = variableName !== undefined && isPythonIdentifier(variableName);
     actions.appendChild(
-      actionButton(
-        "Open in Open Wrangler",
-        hasLiveVariable
-          ? `Open the complete current value of ${boundedText(variableName, INLINE_COLUMN_CHARACTERS).text}`
-          : "Open the captured notebook output in Open Wrangler",
-        () => {
-          context.postMessage?.({ kind: hasLiveVariable ? "openLiveInOpenWrangler" : "openInOpenWrangler", payload });
-        }
-      )
+      actionButton("Open in Open Wrangler", "Open the captured notebook output in Open Wrangler", () => {
+        context.postMessage?.({ kind: "openInOpenWrangler", payload });
+      })
     );
   }
   header.appendChild(actions);

@@ -230,7 +230,7 @@ export function writeJupyterAcceptanceEnvironment(directory, python) {
     `${JSON.stringify(
       {
         argv: [python, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-        display_name: "Open Wrangler Acceptance",
+        display_name: "Python 3.12 (Open Wrangler)",
         language: "python",
         metadata: { debugger: false },
         env: { IPYTHONDIR: ipythonDir }
