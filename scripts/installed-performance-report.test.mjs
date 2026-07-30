@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import {
   INSTALLED_PERFORMANCE_BOUNDARY,
+  INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
   INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL,
   INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
   INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL,
@@ -108,6 +109,10 @@ test("phase validation rejects provenance drift and source data disclosure", () 
   const shortInteraction = interactionPhase("vscode");
   shortInteraction.measurement.cachedSamplesMs.pop();
   assert.throws(() => validateInstalledPerformancePhase(shortInteraction), /exactly 40 samples/u);
+
+  const staleWarmupContract = interactionPhase("vscode");
+  staleWarmupContract.measurement.cachedGridWarmupTransitionCount -= 1;
+  assert.throws(() => validateInstalledPerformancePhase(staleWarmupContract), /warmup transition count/u);
 
   const smokeInteraction = interactionPhase("vscode");
   smokeInteraction.fixture = { format: "parquet", rows: 5_000, columns: 8, sha256: sha("e") };
@@ -1018,6 +1023,7 @@ function interactionPhase(key) {
     fixture: { format: "parquet", rows: fixture.rows, columns: fixture.columns, sha256: fixture.sha256 },
     measurement: {
       kind: "grid-interaction",
+      cachedGridWarmupTransitionCount: INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
       cachedSamplesMs: sample(10, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
       uncachedSamplesMs: sample(50, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),
       heartbeatSamplesMs: sample(5, INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT),

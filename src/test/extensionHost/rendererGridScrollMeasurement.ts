@@ -1,5 +1,29 @@
 export const installedPerformanceGridRowHeight = 29;
 export const installedPerformanceMaximumCanvasHeight = 16_000_000;
+export const installedPerformanceCachedGridWarmupTransitionCount = 10;
+
+/**
+ * Builds transitions from an already-visible first row. The first target is
+ * therefore the second row, and every following target changes rows.
+ */
+export function createAlternatingGridScrollTargets(
+  rows: readonly [first: number, second: number],
+  transitionCount: number
+): number[] {
+  if (
+    !Number.isSafeInteger(rows[0]) ||
+    rows[0] < 0 ||
+    !Number.isSafeInteger(rows[1]) ||
+    rows[1] < 0 ||
+    rows[0] === rows[1]
+  ) {
+    throw new Error("Cached grid targets must be two distinct non-negative safe integers.");
+  }
+  if (!Number.isSafeInteger(transitionCount) || transitionCount < 1) {
+    throw new Error("Cached grid transition count must be a positive safe integer.");
+  }
+  return Array.from({ length: transitionCount }, (_, index) => rows[(index + 1) % rows.length]!);
+}
 
 export interface InstalledPerformanceRendererAcknowledgementOptions {
   readonly attempt: () => Promise<boolean>;

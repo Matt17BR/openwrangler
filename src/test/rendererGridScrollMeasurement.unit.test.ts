@@ -1,6 +1,8 @@
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createAlternatingGridScrollTargets,
+  installedPerformanceCachedGridWarmupTransitionCount,
   installedPerformanceGridRowHeight,
   installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
@@ -89,6 +91,31 @@ describe("installed performance renderer synchronization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("installed performance cached-grid target sequence", () => {
+  it("uses ten fixed untimed transitions before an independent alternating sample window", () => {
+    expect(installedPerformanceCachedGridWarmupTransitionCount).toBe(10);
+
+    const rows = [0, 400] as const;
+    const warmup = createAlternatingGridScrollTargets(rows, installedPerformanceCachedGridWarmupTransitionCount);
+    const measured = createAlternatingGridScrollTargets(rows, 40);
+
+    expect(warmup).toEqual([400, 0, 400, 0, 400, 0, 400, 0, 400, 0]);
+    expect(measured).toHaveLength(40);
+    expect(measured[0]).toBe(400);
+    expect(measured.at(-1)).toBe(0);
+    expect(
+      [rows[0], ...warmup, ...measured].every((row, index, sequence) => index === 0 || row !== sequence[index - 1])
+    ).toBe(true);
+  });
+
+  it("rejects duplicate, unsafe, or empty transition inputs", () => {
+    expect(() => createAlternatingGridScrollTargets([0, 0], 10)).toThrow(/distinct/u);
+    expect(() => createAlternatingGridScrollTargets([-1, 400], 10)).toThrow(/non-negative/u);
+    expect(() => createAlternatingGridScrollTargets([0, Number.MAX_SAFE_INTEGER + 1], 10)).toThrow(/safe integers/u);
+    expect(() => createAlternatingGridScrollTargets([0, 400], 0)).toThrow(/positive/u);
   });
 });
 

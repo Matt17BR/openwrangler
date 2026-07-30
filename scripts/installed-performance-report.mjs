@@ -17,13 +17,14 @@ import fixtureManifestContract from "../src/shared/installedPerformanceFixtureMa
 import { classifyNumericReleaseVersion } from "./release-metadata.mjs";
 
 export const INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL = fixtureManifestContract.INSTALLED_PERFORMANCE_FIXTURE_PROTOCOL;
-export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v5";
-export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v7";
-export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v2";
+export const INSTALLED_PERFORMANCE_PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v6";
+export const INSTALLED_PERFORMANCE_REPORT_PROTOCOL = "openwrangler-installed-performance-report-v8";
+export const INSTALLED_PERFORMANCE_EVIDENCE_REPORT_PROTOCOL = "openwrangler-installed-performance-evidence-report-v3";
 export const INSTALLED_PERFORMANCE_CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 export const INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT = 10;
 export const INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT = 40;
 export const INSTALLED_PERFORMANCE_SMOKE_GRID_INTERACTION_SAMPLE_COUNT = 10;
+export const INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT = 10;
 export const INSTALLED_PERFORMANCE_OUTLIER_POLICY =
   "retain every measured sample; no trimming, deletion, winsorization, or retry";
 export const INSTALLED_PERFORMANCE_BOUNDARY =
@@ -170,6 +171,7 @@ export function buildInstalledPerformanceReport({ generatedAtUtc, candidate, sou
       boundary: INSTALLED_PERFORMANCE_BOUNDARY,
       firstGridSampleCountPerCase: INSTALLED_PERFORMANCE_FIRST_GRID_SAMPLE_COUNT,
       gridInteractionSampleCountPerCase: INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
+      cachedGridWarmupTransitionCount: INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
       outlierPolicy: INSTALLED_PERFORMANCE_OUTLIER_POLICY
     },
     limits: { ...INSTALLED_PERFORMANCE_LIMITS },
@@ -242,7 +244,13 @@ function assertInstalledPerformanceGate(
   validateInstalledFixtureManifest(report.fixtureManifest);
   exactKeys(
     report.measurement,
-    ["boundary", "firstGridSampleCountPerCase", "gridInteractionSampleCountPerCase", "outlierPolicy"],
+    [
+      "boundary",
+      "firstGridSampleCountPerCase",
+      "gridInteractionSampleCountPerCase",
+      "cachedGridWarmupTransitionCount",
+      "outlierPolicy"
+    ],
     [],
     "measurement contract"
   );
@@ -256,6 +264,11 @@ function assertInstalledPerformanceGate(
     report.measurement.gridInteractionSampleCountPerCase,
     INSTALLED_PERFORMANCE_GRID_INTERACTION_SAMPLE_COUNT,
     "grid-interaction measurement sample count"
+  );
+  assertEqual(
+    report.measurement.cachedGridWarmupTransitionCount,
+    INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
+    "cached-grid warmup transition count"
   );
   assertEqual(report.measurement.outlierPolicy, INSTALLED_PERFORMANCE_OUTLIER_POLICY, "outlier policy");
   if (JSON.stringify(report.limits) !== JSON.stringify(INSTALLED_PERFORMANCE_LIMITS)) {
@@ -594,11 +607,25 @@ function validateCacheProof(proof, requestedState) {
 function validateGridInteractionMeasurement(measurement, expectedSampleCount) {
   exactKeys(
     measurement,
-    ["kind", "cachedSamplesMs", "uncachedSamplesMs", "heartbeatSamplesMs", "filter", "sort", "profiling"],
+    [
+      "kind",
+      "cachedGridWarmupTransitionCount",
+      "cachedSamplesMs",
+      "uncachedSamplesMs",
+      "heartbeatSamplesMs",
+      "filter",
+      "sort",
+      "profiling"
+    ],
     [],
     "grid-interaction measurement"
   );
   assertEqual(measurement.kind, "grid-interaction", "grid-interaction measurement kind");
+  assertEqual(
+    measurement.cachedGridWarmupTransitionCount,
+    INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
+    "cached-grid warmup transition count"
+  );
   for (const [key, label] of [
     ["cachedSamplesMs", "cached-grid samples"],
     ["uncachedSamplesMs", "uncached-grid samples"],
@@ -843,6 +870,7 @@ function validateGroupedResults(results) {
   validateGridInteractionMeasurement(
     {
       kind: "grid-interaction",
+      cachedGridWarmupTransitionCount: INSTALLED_PERFORMANCE_CACHED_GRID_WARMUP_TRANSITION_COUNT,
       cachedSamplesMs: results.gridInteraction.cached.samplesMs,
       uncachedSamplesMs: results.gridInteraction.uncached.samplesMs,
       heartbeatSamplesMs: results.gridInteraction.heartbeat.samplesMs,

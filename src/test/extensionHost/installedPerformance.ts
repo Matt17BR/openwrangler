@@ -18,6 +18,8 @@ import { parseStrictJson } from "../../shared/strictJson.cjs";
 import { publishInstalledPerformanceFragment, type InstalledPerformanceArtifactReceipt } from "./fragmentPublication";
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import {
+  createAlternatingGridScrollTargets,
+  installedPerformanceCachedGridWarmupTransitionCount,
   installedPerformanceGridRowHeight,
   installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
@@ -25,7 +27,7 @@ import {
   waitForInstalledPerformanceRendererAcknowledgement
 } from "./rendererGridScrollMeasurement";
 
-const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v5";
+const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v6";
 const CACHE_PROOF_PROTOCOL = "openwrangler-source-cache-proof-v1";
 const FIRST_GRID_BOUNDARY =
   "vscode.openWith dispatch to a visible production grid block with exact shape and aria-busy=false";
@@ -292,15 +294,24 @@ async function measureGridInteraction({
   const frame = await waitForUsableGrid(workbench, { rows: fixture.rows, columns: fixture.columns });
   recordProgress("interaction:usable-grid");
 
-  const cachedRows = [0, 400];
+  const cachedRows = [0, 400] as const;
   for (const row of cachedRows) {
     await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row);
   }
   await scrollGridToRow(frame, cachedRows[0]!, fixture.rows, fixture.columns, cachedRows[0]!);
+
+  // Prime the renderer/compositor's repeated cached-transition path before
+  // timing. Startup remains covered by the independent first-grid phases.
+  for (const row of createAlternatingGridScrollTargets(
+    cachedRows,
+    installedPerformanceCachedGridWarmupTransitionCount
+  )) {
+    await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row);
+  }
+  recordProgress("interaction:cached-warmup-complete");
+
   const cachedSamplesMs: number[] = [];
-  for (let sample = 0; sample < sampleCount; sample += 1) {
-    const row = cachedRows[(sample + 1) % cachedRows.length];
-    assert.notEqual(row, cachedRows[sample % cachedRows.length], "Every timed cached sample must change rows.");
+  for (const [sample, row] of createAlternatingGridScrollTargets(cachedRows, sampleCount).entries()) {
     cachedSamplesMs.push(await scrollGridToRow(frame, row, fixture.rows, fixture.columns, row));
     recordProgress(`interaction:cached-${sample + 1}`);
   }
@@ -395,6 +406,7 @@ async function measureGridInteraction({
   assert.equal(heartbeatSamplesMs.length, sampleCount);
   return {
     kind: "grid-interaction",
+    cachedGridWarmupTransitionCount: installedPerformanceCachedGridWarmupTransitionCount,
     cachedSamplesMs,
     uncachedSamplesMs,
     heartbeatSamplesMs,
