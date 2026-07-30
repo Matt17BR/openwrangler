@@ -4,6 +4,21 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Added
+
+- Added a visible **Export** action to the dataframe workbench. The webview sends only a narrow no-argument intent; the extension host continues to own the destination picker, source protections, and atomic CSV or Parquet write.
+
+### Changed
+
+- Replaced the toy packaged platform smoke with a realistic 10,000-row × 15-column UTF-8-BOM, semicolon-delimited first-use journey. It now covers automatic import, typed column search, exact Insights, sorting, filtering and clear, preview/discard/apply, workbench export, reopen/replay/undo, and source-byte immutability in isolated VS Code and Cursor profiles.
+- Reflowed toolbar and grid controls at narrower effective widths and added a packaged high-contrast, approximately 200%-zoom containment check so controls cannot silently clip.
+
+### Fixed
+
+- Replaced internal operation-kind labels such as `upperText` with the operation's human title in draft and preview UI.
+- Automatically reveals the first column added by a draft preview instead of leaving its result off-screen in a wide dataframe.
+- Made draft diffs distinguish changes to existing cells from values introduced by added columns, avoiding a misleading `0 changed cells` message for add-column operations.
+
 ## [1.1.1] - 2026-07-30
 
 ### Added
