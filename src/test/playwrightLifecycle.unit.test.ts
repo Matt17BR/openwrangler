@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   acquirePreparedAcceptanceAction,
+  activateAcceptancePointerTargetAtCurrentCenter,
+  activateReplaceableAcceptanceLocator,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
@@ -272,6 +274,64 @@ describe("extension-host Playwright lifecycle", () => {
     });
     expect(acquire).toHaveBeenCalledOnce();
     expect(activate).toHaveBeenCalledOnce();
+  });
+
+  it("clicks the locator's replacement target exactly once when the prepared DOM node is retired", async () => {
+    const originalClick = vi.fn();
+    const replacementClick = vi.fn();
+    let currentTarget = { click: originalClick };
+    let continueResolution!: () => void;
+    const resolutionGate = new Promise<void>((resolve) => {
+      continueResolution = resolve;
+    });
+    const locator = {
+      click: vi.fn(async () => {
+        await resolutionGate;
+        currentTarget.click();
+      })
+    };
+
+    const activation = activateReplaceableAcceptanceLocator(locator, 10_000);
+    currentTarget = { click: replacementClick };
+    continueResolution();
+    await activation;
+
+    expect(locator.click).toHaveBeenCalledOnce();
+    expect(locator.click).toHaveBeenCalledWith({ timeout: 10_000 });
+    expect(originalClick).not.toHaveBeenCalled();
+    expect(replacementClick).toHaveBeenCalledOnce();
+  });
+
+  it("sends one physical click to the exact target's verified current center", async () => {
+    const ownerPointer = { click: vi.fn().mockResolvedValue(undefined) };
+    const nonOwnerPointer = { click: vi.fn().mockResolvedValue(undefined) };
+    const target = {
+      pointer: ownerPointer,
+      boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 80, height: 30 }),
+      evaluate: vi.fn().mockResolvedValue(true)
+    };
+
+    await activateAcceptancePointerTargetAtCurrentCenter(target, 10_000);
+
+    expect(target.boundingBox).toHaveBeenCalledOnce();
+    expect(target.evaluate).toHaveBeenCalledOnce();
+    expect(ownerPointer.click).toHaveBeenCalledOnce();
+    expect(ownerPointer.click).toHaveBeenCalledWith(50, 35);
+    expect(nonOwnerPointer.click).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch a pointer click when the exact target no longer owns its center", async () => {
+    const pointer = { click: vi.fn().mockResolvedValue(undefined) };
+    const target = {
+      pointer,
+      boundingBox: vi.fn().mockResolvedValue({ x: 10, y: 20, width: 80, height: 30 }),
+      evaluate: vi.fn().mockResolvedValue(false)
+    };
+
+    await expect(activateAcceptancePointerTargetAtCurrentCenter(target, 10_000)).rejects.toThrow(
+      "The exact acceptance pointer target does not own its current center point."
+    );
+    expect(pointer.click).not.toHaveBeenCalled();
   });
 
   it("retains both a missing receipt and failed natural dismissal", async () => {

@@ -18,6 +18,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Kept **Change Import Options** keyboard-ready in Cursor when launched from the editor title, tab menu, or Command Palette by letting the native activation settle before opening the first picker.
 - Replaced internal operation-kind labels such as `upperText` with the operation's human title in draft and preview UI.
 - Automatically reveals the first column added by a draft preview, waits for its projected block to arrive, and reapplies the reveal after host view restoration instead of leaving the result off-screen in a wide dataframe.
 - Consumes column-search navigation after it is handled, so a later in-place preview or restored view cannot unexpectedly jump back to an old horizontal target.

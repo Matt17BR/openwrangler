@@ -123,6 +123,7 @@ export function App() {
   const operationReturnFocus = useRef<HTMLElement | null>(null);
   const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsFocusFrame = useRef<number | undefined>(undefined);
+  const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
   const operationWasOpen = useRef(false);
   const gridViewStateRef = useRef<GridViewState>(emptyGridViewState());
   const pendingGridViewState = useRef<GridViewState | undefined>(undefined);
@@ -156,6 +157,9 @@ export function App() {
     () => () => {
       if (importOptionsFocusFrame.current !== undefined) {
         window.cancelAnimationFrame(importOptionsFocusFrame.current);
+      }
+      if (importOptionsDispatchFrame.current !== undefined) {
+        window.cancelAnimationFrame(importOptionsDispatchFrame.current);
       }
       importOptionsReturnFocus.current = null;
     },
@@ -278,6 +282,10 @@ export function App() {
   const storeImportOptionsPending = useCallback(
     (pending: boolean) => {
       const wasPending = importOptionsPendingRef.current;
+      if (!pending && importOptionsDispatchFrame.current !== undefined) {
+        window.cancelAnimationFrame(importOptionsDispatchFrame.current);
+        importOptionsDispatchFrame.current = undefined;
+      }
       importOptionsPendingRef.current = pending;
       setImportOptionsPending(pending);
       if (pending) {
@@ -594,17 +602,31 @@ export function App() {
         window.cancelAnimationFrame(importOptionsFocusFrame.current);
         importOptionsFocusFrame.current = undefined;
       }
+      if (importOptionsDispatchFrame.current !== undefined) {
+        window.cancelAnimationFrame(importOptionsDispatchFrame.current);
+        importOptionsDispatchFrame.current = undefined;
+      }
       const returnTarget =
         trigger?.isConnected && document.hasFocus() && trigger === document.activeElement ? trigger : null;
       importOptionsReturnFocus.current = returnTarget;
       if (returnTarget) {
         returnTarget.blur();
+      } else if (actionId !== undefined && document.hasFocus() && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
       }
       flushSync(() => storeImportOptionsPending(true));
-      vscode.postMessage({
+      const message = {
         kind: "changeImportOptions",
         ...(actionId === undefined ? {} : { actionId })
-      });
+      } as const;
+      if (actionId !== undefined && trigger === undefined) {
+        importOptionsDispatchFrame.current = window.requestAnimationFrame(() => {
+          importOptionsDispatchFrame.current = undefined;
+          vscode.postMessage(message);
+        });
+      } else {
+        vscode.postMessage(message);
+      }
     },
     [cancelBackgroundRequests, clearDrawerSummaryScheduling, flushGridViewState, storeImportOptionsPending]
   );

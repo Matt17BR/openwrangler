@@ -57,6 +57,8 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
+  activateAcceptancePointerTargetAtCurrentCenter,
+  activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
@@ -1756,6 +1758,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(classicSetup.sparkVersion, "4.2.0");
     assert.equal(classicSetup.javaVersion, "17");
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
+    assert.equal(classicSetup.workerPythonPinned, true);
 
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
@@ -1825,6 +1828,7 @@ async function exerciseReleasedPySparkJupyterExtension(
       "restarted PySpark Classic setup"
     );
     assert.equal(Number(restartedClassicSetup.pid), Number(replacementKernel.pid));
+    assert.equal(restartedClassicSetup.workerPythonPinned, true);
     assert.notEqual(
       restartedClassicSetup.sessionId,
       classicSetup.sessionId,
@@ -1924,6 +1928,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     );
     assert.equal(connectSetup.sparkVersion, "4.2.0");
     assert.equal(connectSetup.module, "pyspark.sql.connect.dataframe");
+    assert.equal(connectSetup.workerPythonPinned, true);
 
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_connect_frame", `${phase}:connect-action`);
     const connect = await waitForReleasedVariableSession(
@@ -2352,6 +2357,9 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
         cell([
           "import json",
           "import os",
+          "import sys",
+          "os.environ['PYSPARK_PYTHON'] = sys.executable",
+          "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
           "from pyspark.sql import SparkSession",
           "from pyspark.sql import functions as F",
           "spark = (SparkSession.builder",
@@ -2403,6 +2411,10 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    'module': type(spark_classic_frame).__module__,",
           "    'pid': os.getpid(),",
           "    'sessionId': f'{os.getpid()}:{id(spark)}',",
+          "    'workerPythonPinned': (",
+          "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
+          "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
+          "    ),",
           "}, sort_keys=True))"
         ]),
         cell([
@@ -2415,6 +2427,10 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
         ]),
         cell([
           "import json",
+          "import os",
+          "import sys",
+          "os.environ['PYSPARK_PYTHON'] = sys.executable",
+          "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
           "spark.stop()",
           "connect_spark = (SparkSession.builder",
           "    .remote('local[2]')",
@@ -2430,6 +2446,10 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    'sparkVersion': connect_spark.version,",
           "    'module': type(spark_connect_frame).__module__,",
           "    'sessionId': str(id(connect_spark)),",
+          "    'workerPythonPinned': (",
+          "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
+          "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
+          "    ),",
           "}, sort_keys=True))"
         ]),
         cell([
@@ -3619,8 +3639,9 @@ async function invokeReleasedNotebookToolbarVariable(
   assertExactOpenNotebookDocument(notebook, "after submitting the Open Wrangler notebook toolbar variable");
 }
 
-interface ReleasedNotebookPinnedAction {
-  readonly action: ElementHandle<unknown>;
+interface ReleasedNotebookPreparedAction {
+  readonly activate: () => Promise<void>;
+  readonly dispose: () => Promise<void>;
   readonly overflowMenu?: ElementHandle<unknown>;
   readonly abandonBeforeDispatch?: () => Promise<void>;
   readonly description: string;
@@ -3653,7 +3674,7 @@ async function activateReleasedNotebookVariableAction(
       "Cursor notebook acceptance must not persist a workspace title-action setting."
     );
   }
-  const pinned =
+  const prepared =
     cursorHost || globalToolbar !== true
       ? await resolveReleasedNotebookEditorTitleAction(workbench)
       : await resolveReleasedNotebookToolbarAction(workbench);
@@ -3671,19 +3692,19 @@ async function activateReleasedNotebookVariableAction(
     );
     dispatchStarted = true;
     return await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
-      description: pinned.description,
-      activate: () => pinned.action.click({ force: true, timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      description: prepared.description,
+      activate: prepared.activate,
       receipt: () => waitForReleasedNotebookVariablePicker(workbench),
       authoritativeReceiptAfterActivationFailure: () => waitForReleasedNotebookVariablePicker(workbench),
-      naturalDismissal: pinned.overflowMenu
-        ? () => pinned.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })
+      naturalDismissal: prepared.overflowMenu
+        ? () => prepared.overflowMenu!.waitForElementState("hidden", { timeout: 2_000 })
         : undefined
     });
   } finally {
-    if (!dispatchStarted && pinned.abandonBeforeDispatch) {
-      await pinned.abandonBeforeDispatch();
+    if (!dispatchStarted && prepared.abandonBeforeDispatch) {
+      await prepared.abandonBeforeDispatch();
     } else {
-      await Promise.allSettled([pinned.action.dispose(), pinned.overflowMenu?.dispose()]);
+      await Promise.allSettled([prepared.dispose(), prepared.overflowMenu?.dispose()]);
     }
   }
 }
@@ -3744,7 +3765,7 @@ function assertActiveNotebookTab(notebook: vscode.NotebookDocument, message: str
   assert.equal(input.notebookType, notebook.notebookType, message);
 }
 
-async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promise<ReleasedNotebookPinnedAction> {
+async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promise<ReleasedNotebookPreparedAction> {
   const deadline = Date.now() + 20_000;
   do {
     for (const frame of releasedWorkbenchFrames(workbench)) {
@@ -3807,10 +3828,9 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
             continue;
           }
           await assertReleasedNotebookActionLabel(refreshedAction, "refreshed active notebook editor title");
-          const pinned = await pinVisibleEnabledReleasedNotebookAction(refreshedAction);
-          if (!pinned) continue;
           return {
-            action: pinned,
+            activate: () => activateReplaceableAcceptanceLocator(refreshedAction, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS),
+            dispose: async () => undefined,
             description: "the real Open Wrangler action in the active notebook editor title"
           };
         }
@@ -3833,7 +3853,7 @@ async function resolveReleasedNotebookEditorTitleAction(workbench: Page): Promis
   );
 }
 
-async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<ReleasedNotebookPinnedAction> {
+async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<ReleasedNotebookPreparedAction> {
   const deadline = Date.now() + 20_000;
   let lastStructuralFailure: "none" | "transient-toolbar-rerender" = "none";
   let observedOverflowAction = { total: 0, visible: 0, enabled: 0 };
@@ -3901,10 +3921,9 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
             continue;
           }
           await assertReleasedNotebookActionLabel(refreshedAction, "refreshed released Jupyter notebook toolbar");
-          const pinned = await pinVisibleEnabledReleasedNotebookAction(refreshedAction);
-          if (!pinned) continue;
           return {
-            action: pinned,
+            activate: () => activateReplaceableAcceptanceLocator(refreshedAction, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS),
+            dispose: async () => undefined,
             description: "the real Open Wrangler action in the released Jupyter notebook toolbar"
           };
         }
@@ -3941,7 +3960,11 @@ async function resolveReleasedNotebookToolbarAction(workbench: Page): Promise<Re
           }
           if (surfaceMatches) {
             return {
-              action: overflow.action,
+              activate: () =>
+                overflow.action!.click({
+                  timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS
+                }),
+              dispose: () => overflow.action!.dispose(),
               overflowMenu: overflow.menu,
               abandonBeforeDispatch: () => releaseReleasedNotebookOverflowAfterInspection(overflow),
               description: "the real Open Wrangler action in the released Jupyter notebook-toolbar overflow"
@@ -4007,19 +4030,6 @@ async function releasedNotebookActionLabelEvidence(
     title: bounded(await action.getAttribute("title").catch(() => null)),
     text: bounded(await action.textContent().catch(() => null))
   };
-}
-
-async function pinVisibleEnabledReleasedNotebookAction(action: Locator): Promise<ElementHandle<unknown> | undefined> {
-  const pinned = await action.elementHandle();
-  if (!pinned) return undefined;
-  let transferred = false;
-  try {
-    if (!(await pinned.isVisible()) || !(await pinned.isEnabled())) return undefined;
-    transferred = true;
-    return pinned;
-  } finally {
-    if (!transferred) await pinned.dispose();
-  }
 }
 
 async function releasedNotebookLaunchSurfaceMatches(
@@ -9743,17 +9753,22 @@ async function exercisePackagedRendererProvenance(
       openedSecondNotebook,
       "Notebook B must still be the exact active document immediately before notebook A's renderer action."
     );
+    assert.equal(testing.activeSession(), undefined);
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "The renderer provenance action requires zero coordinator sessions for its authoritative receipt."
+    );
+    assert.equal(
+      releasedJupyterSessionTabs().length,
+      0,
+      "The renderer provenance action requires zero Open Wrangler tabs for its authoritative receipt."
+    );
     let originFocusObserved = false;
     const focusListener = vscode.window.onDidChangeActiveNotebookEditor((editor) => {
       if (editor?.notebook === originNotebook) originFocusObserved = true;
     });
-    try {
-      recordAcceptanceProgress("verify:notebook-renderer:click");
-      try {
-        await originButton.click();
-      } finally {
-        await originButton.dispose();
-      }
+    const waitForOriginReceipt = async (): Promise<void> => {
       if (vscode.window.activeNotebookEditor?.notebook === originNotebook) originFocusObserved = true;
       await waitFor(
         () => originFocusObserved,
@@ -9761,23 +9776,36 @@ async function exercisePackagedRendererProvenance(
         "the real renderer action to focus its exact originating notebook before opening the session panel",
         () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
       );
+      recordAcceptanceProgress("verify:notebook-renderer:session");
+      await waitFor(
+        () => {
+          const source = testing.activeSession()?.metadata.source;
+          return (
+            source?.kind === "notebookVariable" &&
+            source.variableName === "renderer_frame" &&
+            source.uri === originNotebook.uri.toString()
+          );
+        },
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "notebook A's real renderer action to open notebook A after notebook B was active immediately before dispatch",
+        () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
+      );
+    };
+    try {
+      recordAcceptanceProgress("verify:notebook-renderer:activate");
+      try {
+        await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+          description: "notebook A's renderer action while notebook B is active",
+          activate: () => activateAcceptancePointerTargetAtCurrentCenter(originButton, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS),
+          receipt: waitForOriginReceipt,
+          authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
+        });
+      } finally {
+        await originButton.dispose();
+      }
     } finally {
       focusListener.dispose();
     }
-    recordAcceptanceProgress("verify:notebook-renderer:session");
-    await waitFor(
-      () => {
-        const source = testing.activeSession()?.metadata.source;
-        return (
-          source?.kind === "notebookVariable" &&
-          source.variableName === "renderer_frame" &&
-          source.uri === originNotebook.uri.toString()
-        );
-      },
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "notebook A's real renderer action to open notebook A after notebook B was active immediately before dispatch",
-      () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
-    );
 
     const active = testing.activeSession();
     assert.ok(active, "The renderer provenance scenario must open a live notebook session.");
@@ -9974,7 +10002,16 @@ interface NotebookRendererLoadObserver {
 }
 
 interface NotebookRendererButton {
+  readonly pointer: {
+    click(x: number, y: number): Promise<void>;
+  };
   click(): Promise<void>;
+  boundingBox(): Promise<{
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  } | null>;
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
   dispose(): Promise<void>;
 }
@@ -10052,7 +10089,7 @@ async function waitForNotebookRendererButton(
             probeTimeoutMs,
             "the notebook renderer action readiness probe"
           );
-          if (ready) return locatorNotebookRendererButton(button);
+          if (ready) return locatorNotebookRendererButton(button, target.page.mouse);
         } catch (error) {
           const discoveryExpired = Date.now() >= deadline;
           if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
@@ -10117,9 +10154,14 @@ function directNotebookRendererButtonCandidates(frame: Frame, label: string, but
   return [preview.getByRole("button", { name: buttonName, exact: true }).first()];
 }
 
-function locatorNotebookRendererButton(button: Locator): NotebookRendererButton {
+function locatorNotebookRendererButton(
+  button: Locator,
+  pointer: NotebookRendererButton["pointer"]
+): NotebookRendererButton {
   return {
+    pointer,
     click: () => button.click(),
+    boundingBox: () => button.boundingBox(),
     evaluate: <Result>(pageFunction: (element: unknown) => Result | Promise<Result>) => button.evaluate(pageFunction),
     dispose: () => Promise.resolve()
   };
@@ -10194,7 +10236,9 @@ async function resolveNestedNotebookRendererButton(
     throw error;
   }
   return {
+    pointer: frame.page().mouse,
     click: () => element.click(),
+    boundingBox: () => element.boundingBox(),
     evaluate: <Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>) =>
       element.evaluate(pageFunction),
     dispose: () => element.dispose()

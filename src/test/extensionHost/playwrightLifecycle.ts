@@ -47,6 +47,25 @@ interface AuthoritativelyReceiptedOneShotAcceptanceAction<T> extends OneShotAcce
   readonly authoritativeReceiptAfterActivationFailure: () => Promise<T>;
 }
 
+interface ReplaceableAcceptanceLocator {
+  click(options: { readonly timeout: number }): Promise<void>;
+}
+
+interface AcceptancePointerTarget {
+  readonly pointer: AcceptancePointer;
+  boundingBox(): Promise<{
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  } | null>;
+  evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
+}
+
+interface AcceptancePointer {
+  click(x: number, y: number): Promise<void>;
+}
+
 export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
     super(`${description} may have been dispatched, but its one-shot user activation did not settle.`, { cause });
@@ -91,6 +110,60 @@ export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
   }
 
   return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+export function activateReplaceableAcceptanceLocator(
+  locator: ReplaceableAcceptanceLocator,
+  timeoutMs: number
+): Promise<void> {
+  return locator.click({ timeout: timeoutMs });
+}
+
+export function activateAcceptancePointerTargetAtCurrentCenter(
+  target: AcceptancePointerTarget,
+  timeoutMs: number
+): Promise<void> {
+  return withAcceptanceOperationDeadline(
+    activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(target),
+    timeoutMs,
+    "the exact acceptance pointer target to receive one physical click"
+  );
+}
+
+async function activateAcceptancePointerTargetAtCurrentCenterWithoutDeadline(
+  target: AcceptancePointerTarget
+): Promise<void> {
+  const [box, ownsCenter] = await Promise.all([
+    target.boundingBox(),
+    target.evaluate((candidate) => {
+      type PointerElement = {
+        readonly disabled?: boolean;
+        readonly isConnected: boolean;
+        readonly ownerDocument: {
+          elementFromPoint(x: number, y: number): PointerElement | null;
+        };
+        contains(node: PointerElement | null): boolean;
+        getBoundingClientRect(): {
+          readonly left: number;
+          readonly top: number;
+          readonly width: number;
+          readonly height: number;
+        };
+      };
+      const element = candidate as PointerElement;
+      const rect = element.getBoundingClientRect();
+      if (!element.isConnected || element.disabled === true || rect.width <= 0 || rect.height <= 0) return false;
+      const hit = element.ownerDocument.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit === element || element.contains(hit);
+    })
+  ]);
+  if (!box || box.width <= 0 || box.height <= 0) {
+    throw new Error("The exact acceptance pointer target has no clickable geometry.");
+  }
+  if (!ownsCenter) {
+    throw new Error("The exact acceptance pointer target does not own its current center point.");
+  }
+  await target.pointer.click(box.x + box.width / 2, box.y + box.height / 2);
 }
 
 async function observeAcceptanceActionReceipt<T>(

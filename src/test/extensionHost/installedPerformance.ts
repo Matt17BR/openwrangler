@@ -24,7 +24,7 @@ import {
   installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
   rendererHasUsableGridGeometry,
-  waitForInstalledPerformanceRendererAcknowledgement
+  waitForInstalledPerformancePanelHydration
 } from "./rendererGridScrollMeasurement";
 
 const PHASE_PROTOCOL = "openwrangler-installed-performance-phase-v6";
@@ -52,6 +52,7 @@ interface TestApi {
   diagnostics(): { sessionCount: number };
   runtimeRunning(): boolean;
   synchronizePanel(sessionId: string): Promise<boolean>;
+  panelHydrated(sessionId: string): boolean;
 }
 
 interface ExtensionApi {
@@ -561,13 +562,18 @@ async function waitForWorkbenchReady(workbench: Page): Promise<void> {
 }
 
 async function waitForPanelSynchronization(testing: TestApi, sessionId: string): Promise<void> {
-  const synchronized = await waitForInstalledPerformanceRendererAcknowledgement({
-    attempt: () => testing.synchronizePanel(sessionId),
+  const synchronized = await waitForInstalledPerformancePanelHydration({
+    isHydrated: () => testing.panelHydrated(sessionId),
+    synchronize: () => testing.synchronizePanel(sessionId),
     timeoutMs: GRID_DISCOVERY_TIMEOUT_MS,
-    retryDelayMs: 25
+    naturalHydrationGraceMs: 10_000,
+    pollIntervalMs: 25
   });
   if (synchronized) return;
-  throw new Error("The installed renderer did not acknowledge its authoritative host snapshot.");
+  throw new Error(
+    "The installed renderer did not acknowledge its authoritative host snapshot " +
+      `(final panel hydration: ${testing.panelHydrated(sessionId)}).`
+  );
 }
 
 async function waitForUsableGrid(workbench: Page, shape: { rows: number; columns: number }): Promise<Frame> {
