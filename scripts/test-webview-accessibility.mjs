@@ -215,6 +215,65 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.getByText("Min 1", { exact: true }).waitFor();
     await page.getByText("Max 6", { exact: true }).waitFor();
 
+    const headerLayout = await page.locator("th[data-column]").evaluateAll((headers) =>
+      headers.flatMap((header) => {
+        const scroller = header.closest('[data-testid="data-grid-scroller"]');
+        const title = header.querySelector(".columnTitle");
+        const metadata = header.querySelector(".columnMetaRow");
+        if (!scroller || !title || !metadata) return [];
+        const scrollerBounds = scroller.getBoundingClientRect();
+        const headerBounds = header.getBoundingClientRect();
+        if (
+          headerBounds.left < scrollerBounds.left - 1 ||
+          headerBounds.right > scrollerBounds.right + 1 ||
+          headerBounds.width <= 0
+        ) {
+          return [];
+        }
+        const titleBounds = title.getBoundingClientRect();
+        const metadataBounds = metadata.getBoundingClientRect();
+        return [
+          {
+            column: header.getAttribute("data-column") ?? "",
+            headerWidth: header.clientWidth,
+            titleWidth: title.clientWidth,
+            titleScrollWidth: title.scrollWidth,
+            titleBottom: titleBounds.bottom,
+            metadataTop: metadataBounds.top
+          }
+        ];
+      })
+    );
+    if (headerLayout.length < 2) {
+      throw new Error(`${harness} did not expose enough complete column headers for layout verification.`);
+    }
+    const crampedHeaders = headerLayout.filter(
+      ({ headerWidth, titleWidth }) => titleWidth < Math.max(1, headerWidth * 0.72)
+    );
+    if (crampedHeaders.length > 0) {
+      throw new Error(
+        `${harness} let metadata controls consume column-name space: ${crampedHeaders
+          .map(({ column, headerWidth, titleWidth }) => `${column} (${titleWidth}/${headerWidth}px)`)
+          .join(", ")}.`
+      );
+    }
+    const clippedHeaders = headerLayout.filter(({ titleScrollWidth, titleWidth }) => titleScrollWidth > titleWidth + 1);
+    if (clippedHeaders.length > 0) {
+      throw new Error(
+        `${harness} clipped realistic column names despite the dedicated title row: ${clippedHeaders
+          .map(({ column }) => column)
+          .join(", ")}.`
+      );
+    }
+    const overlappingHeaders = headerLayout.filter(({ titleBottom, metadataTop }) => titleBottom > metadataTop + 1);
+    if (overlappingHeaders.length > 0) {
+      throw new Error(
+        `${harness} overlapped column names and metadata controls: ${overlappingHeaders
+          .map(({ column }) => column)
+          .join(", ")}.`
+      );
+    }
+
     const toggle = page.getByRole("button", { name: "Insights & filters" });
     if ((await toggle.getAttribute("aria-controls")) !== "openwrangler-insights-panel") {
       throw new Error(`${harness} did not connect the Insights toggle to its drawer.`);

@@ -130,6 +130,46 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("keeps the column name on its own row above compact metadata and actions", () => {
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        sortRules={[{ column: "city", direction: "asc", nulls: "last" }]}
+        pageSize={2}
+        defaultColumnWidth={140}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onClearSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const header = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!header) throw new Error("Expected the city header.");
+    const layout = header.querySelector<HTMLElement>(".columnHeader");
+    const title = header.querySelector<HTMLElement>(".columnTitle");
+    const metadataRow = header.querySelector<HTMLElement>(".columnMetaRow");
+    const actions = header.querySelector<HTMLElement>(".columnHeaderActions");
+    const resize = header.querySelector<HTMLElement>(".columnResizeHandle");
+    const menu = within(header).getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+
+    expect(layout?.firstElementChild).toBe(title);
+    expect(title).toHaveTextContent("city");
+    expect(title).toHaveAttribute("title", "city");
+    expect(metadataRow).toContainElement(header.querySelector<HTMLElement>(".columnType"));
+    expect(metadataRow).toContainElement(actions);
+    expect(actions).toContainElement(menu);
+    expect(actions).toContainElement(
+      within(header).getByRole("button", { name: /Clear sort for city; currently ascending/u })
+    );
+    expect(resize).toHaveAccessibleName("Resize city column");
+  });
+
   it("closes header sort menus and exposes the active primary sort as a clearable accessible state", () => {
     const onSortColumn = vi.fn();
     const onClearSortColumn = vi.fn();

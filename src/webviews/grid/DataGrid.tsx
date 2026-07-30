@@ -1188,84 +1188,93 @@ function ColumnHeader({
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
     >
       <div className="columnHeader">
-        <span className={`typeIcon codicon ${columnTypePresentation(column).icon}`} aria-hidden="true" />
-        <span className="columnTitle">{column.name}</span>
-        {activeSort && (
-          <button
-            type="button"
-            className={`columnSortIndicator codicon ${
-              activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
-            }`}
-            aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
-            title={`Sorted ${activeSortLabel}. Clear sort`}
-            disabled={viewControlsDisabled}
-            onClick={() => onClearSortColumn(column.name)}
-          >
-            {sortCount > 1 && activeSortIndex !== undefined && (
-              <span className="sortPriority" aria-hidden="true">
-                {activeSortIndex + 1}
-              </span>
-            )}
-          </button>
-        )}
-        <details ref={menuRef} className="columnMenu">
-          <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
-          <div className="columnMenuContent">
-            {viewQueryControlsDisabled && (
-              <span id={disabledDescriptionId} className="columnMenuNotice">
-                {viewQueryControlsDisabledReason}
-              </span>
-            )}
-            <button
-              type="button"
-              disabled={viewQueryControlsDisabled}
-              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-              title={viewQueryControlsDisabledReason}
-              onClick={() => runMenuAction(() => onOpenFilter(column.name))}
-            >
-              Filter…
-            </button>
-            <button
-              type="button"
-              disabled={viewQueryControlsDisabled || comparisonUnavailable}
-              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-              title={
-                viewQueryControlsDisabled
-                  ? viewQueryControlsDisabledReason
-                  : comparisonUnavailable
-                    ? `Sorting is unavailable for ${column.type} columns`
-                    : undefined
-              }
-              onClick={() => runMenuAction(() => onSortColumn(column.name, "asc"))}
-            >
-              Sort ascending
-            </button>
-            <button
-              type="button"
-              disabled={viewQueryControlsDisabled || comparisonUnavailable}
-              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-              title={
-                viewQueryControlsDisabled
-                  ? viewQueryControlsDisabledReason
-                  : comparisonUnavailable
-                    ? `Sorting is unavailable for ${column.type} columns`
-                    : undefined
-              }
-              onClick={() => runMenuAction(() => onSortColumn(column.name, "desc"))}
-            >
-              Sort descending
-            </button>
+        <span className="columnTitle" title={column.name}>
+          {column.name}
+        </span>
+        <div className="columnMetaRow">
+          <span className="columnType" title={column.rawType}>
+            <span className={`typeIcon codicon ${columnTypePresentation(column).icon}`} aria-hidden="true" />
+            <small>{column.rawType}</small>
+          </span>
+          <div className="columnHeaderActions">
             {activeSort && (
               <button
                 type="button"
+                className={`columnSortIndicator codicon ${
+                  activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
+                }`}
+                aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
+                title={`Sorted ${activeSortLabel}. Clear sort`}
                 disabled={viewControlsDisabled}
-                onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
+                onClick={() => onClearSortColumn(column.name)}
               >
-                Clear sort
+                {sortCount > 1 && activeSortIndex !== undefined && (
+                  <span className="sortPriority" aria-hidden="true">
+                    {activeSortIndex + 1}
+                  </span>
+                )}
               </button>
             )}
+            <details ref={menuRef} className="columnMenu">
+              <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
+              <div className="columnMenuContent">
+                {viewQueryControlsDisabled && (
+                  <span id={disabledDescriptionId} className="columnMenuNotice">
+                    {viewQueryControlsDisabledReason}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  disabled={viewQueryControlsDisabled}
+                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  title={viewQueryControlsDisabledReason}
+                  onClick={() => runMenuAction(() => onOpenFilter(column.name))}
+                >
+                  Filter…
+                </button>
+                <button
+                  type="button"
+                  disabled={viewQueryControlsDisabled || comparisonUnavailable}
+                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  title={
+                    viewQueryControlsDisabled
+                      ? viewQueryControlsDisabledReason
+                      : comparisonUnavailable
+                        ? `Sorting is unavailable for ${column.type} columns`
+                        : undefined
+                  }
+                  onClick={() => runMenuAction(() => onSortColumn(column.name, "asc"))}
+                >
+                  Sort ascending
+                </button>
+                <button
+                  type="button"
+                  disabled={viewQueryControlsDisabled || comparisonUnavailable}
+                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  title={
+                    viewQueryControlsDisabled
+                      ? viewQueryControlsDisabledReason
+                      : comparisonUnavailable
+                        ? `Sorting is unavailable for ${column.type} columns`
+                        : undefined
+                  }
+                  onClick={() => runMenuAction(() => onSortColumn(column.name, "desc"))}
+                >
+                  Sort descending
+                </button>
+                {activeSort && (
+                  <button
+                    type="button"
+                    disabled={viewControlsDisabled}
+                    onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
+                  >
+                    Clear sort
+                  </button>
+                )}
+              </div>
+            </details>
           </div>
-        </details>
+        </div>
         <button
           type="button"
           className="columnResizeHandle codicon codicon-gripper"
@@ -1277,7 +1286,6 @@ function ColumnHeader({
           onKeyDown={resizeWithKeyboard}
         />
       </div>
-      <small>{column.rawType}</small>
       {showInsights &&
         (summary ? (
           <div className="columnInsight">

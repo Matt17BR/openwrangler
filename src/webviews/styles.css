@@ -848,11 +848,44 @@ th small {
 }
 
 .columnHeader {
-  align-items: center;
   display: grid;
-  gap: 6px;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 2px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  padding-right: 5px;
   position: relative;
+}
+
+.columnMetaRow {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  justify-content: space-between;
+  min-height: 20px;
+  min-width: 0;
+}
+
+.columnType {
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  gap: 3px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.columnType small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.columnHeaderActions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
 }
 
 .columnSortIndicator {
@@ -862,10 +895,10 @@ th small {
   border-radius: 999px;
   color: var(--vscode-badge-foreground);
   display: inline-flex;
-  height: 22px;
+  height: 20px;
   justify-content: center;
-  min-width: 22px;
-  padding: 0 5px;
+  min-width: 20px;
+  padding: 0 4px;
 }
 
 .columnSortIndicator:hover,
@@ -882,19 +915,23 @@ th small {
 
 .typeIcon {
   color: var(--vscode-descriptionForeground);
-  font-size: 14px;
-  min-width: 16px;
+  font-size: 11px;
+  min-width: 12px;
 }
 
 .columnTitle {
+  display: block;
+  font-weight: 600;
+  line-height: 1.35;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .columnMenu {
-  min-height: 30px;
-  min-width: 30px;
+  min-height: 20px;
+  min-width: 20px;
   position: relative;
 }
 
@@ -905,8 +942,8 @@ th small {
   display: flex;
   justify-content: center;
   list-style: none;
-  min-height: 30px;
-  min-width: 30px;
+  min-height: 20px;
+  min-width: 20px;
 }
 
 .columnResizeHandle {
@@ -915,11 +952,22 @@ th small {
   color: var(--vscode-descriptionForeground);
   cursor: col-resize;
   display: flex;
+  inset-block: -4px;
   justify-content: center;
-  margin: -7px -8px -7px -4px;
-  min-height: 30px;
+  margin: 0;
+  min-height: 0;
+  opacity: 0;
   padding: 0;
-  width: 30px;
+  position: absolute;
+  right: -8px;
+  transition: opacity 80ms ease;
+  width: 12px;
+  z-index: 2;
+}
+
+th:hover .columnResizeHandle,
+.columnResizeHandle:focus-visible {
+  opacity: 1;
 }
 
 .columnResizeHandle:hover,
