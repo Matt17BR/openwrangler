@@ -742,6 +742,180 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
+  it("recreates one renderer generation when the restored grid cannot receive its synchronization marker", async () => {
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    let synchronizationMarkerCount = 0;
+    const draft = {
+      id: "recreated-uppercase",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async (candidate: OpenWranglerRequest) =>
+          candidate.kind === "previewStep" ? preview : openedResponse
+        )
+      },
+      {
+        openResponse: openedResponse,
+        postMessage: async (message) => {
+          if (!isRendererSynchronizationMessage(message)) return true;
+          synchronizationMarkerCount += 1;
+          return synchronizationMarkerCount !== 3;
+        }
+      }
+    );
+    await harness.open();
+    expect(harness.htmlAssignmentCount).toBe(1);
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    executeCommand.mockClear();
+    harness.posted.length = 0;
+
+    await OpenWranglerPanel.previewStepForSessionForTesting({
+      kind: "previewStep",
+      sessionId: metadata.sessionId,
+      revision: metadata.revision,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    const draftMarker = latestRendererSynchronization(harness.posted);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: draftMarker.syncId,
+      sessionId: draftMarker.sessionId,
+      revision: draftMarker.revision
+    });
+
+    await vi.waitFor(() => {
+      expect(harness.reveal).toHaveBeenCalledOnce();
+      expect(synchronizationMarkerCount).toBe(3);
+      expect(harness.htmlAssignmentCount).toBe(2);
+    });
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+    await harness.receive({ kind: "ready" });
+    await vi.waitFor(() => expect(synchronizationMarkerCount).toBe(4));
+    const recreatedMarker = latestRendererSynchronization(harness.posted);
+    expect(recreatedMarker.syncId).not.toBe(draftMarker.syncId);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: recreatedMarker.syncId,
+      sessionId: recreatedMarker.sessionId,
+      revision: recreatedMarker.revision
+    });
+
+    await vi.waitFor(() =>
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true)
+    );
+    expect(harness.htmlAssignmentCount).toBe(2);
+    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.codePreview.focus");
+  });
+
+  it("recreates one renderer generation when the restored grid never acknowledges its marker", async () => {
+    const draft = {
+      id: "timed-out-uppercase",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async (candidate: OpenWranglerRequest) =>
+          candidate.kind === "previewStep" ? preview : openedResponse
+        )
+      },
+      { openResponse: openedResponse }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    harness.posted.length = 0;
+
+    await OpenWranglerPanel.previewStepForSessionForTesting({
+      kind: "previewStep",
+      sessionId: metadata.sessionId,
+      revision: metadata.revision,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    const draftMarker = latestRendererSynchronization(harness.posted);
+
+    vi.useFakeTimers();
+    try {
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: draftMarker.syncId,
+        sessionId: draftMarker.sessionId,
+        revision: draftMarker.revision
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.reveal).toHaveBeenCalledOnce();
+      expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
+      expect(harness.htmlAssignmentCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(harness.htmlAssignmentCount).toBe(2);
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+      await harness.receive({ kind: "ready" });
+      const recreatedMarker = latestRendererSynchronization(harness.posted);
+      expect(recreatedMarker.syncId).not.toBe(draftMarker.syncId);
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: recreatedMarker.syncId,
+        sessionId: recreatedMarker.sessionId,
+        revision: recreatedMarker.revision
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+      expect(harness.htmlAssignmentCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not let a pre-draft page replace the retained preview snapshot", async () => {
     const oldPage = deferred<OpenWranglerResponse>();
     const draft = {
@@ -3619,6 +3793,7 @@ function createPanelHarness(
 ): {
   posted: unknown[];
   readonly html: string;
+  readonly htmlAssignmentCount: number;
   open(): Promise<void>;
   receive(message: unknown): Promise<void>;
   send(message: unknown): Promise<void>;
@@ -3631,9 +3806,17 @@ function createPanelHarness(
   let disposeListener: (() => void) | undefined;
   let viewStateListener: ((event: { webviewPanel: { active: boolean } }) => void) | undefined;
   const posted: unknown[] = [];
+  let html = "";
+  let htmlAssignmentCount = 0;
   const webview = {
     options: {},
-    html: "",
+    get html() {
+      return html;
+    },
+    set html(value: string) {
+      html = value;
+      htmlAssignmentCount += 1;
+    },
     cspSource: "mock-webview",
     asWebviewUri: (uri: vscode.Uri) => uri,
     onDidReceiveMessage: (next: (message: unknown) => Promise<void>) => {
@@ -3711,6 +3894,9 @@ function createPanelHarness(
     posted,
     get html() {
       return webview.html;
+    },
+    get htmlAssignmentCount() {
+      return htmlAssignmentCount;
     },
     open: () => instance.open(),
     async receive(message: unknown) {
