@@ -7817,12 +7817,15 @@ async function clearReleasedJupyterScreenshotTransientUi(workbench: Page): Promi
     true,
     "Notebook screenshot capture must dismiss every workbench hover."
   );
-  const transient = await workbench
-    .locator(
-      ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
-        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-    )
-    .allInnerTexts();
+  const transientUi = workbench.locator(
+    ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+      ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+  );
+  await pollAcceptanceCondition(async () => (await transientUi.count()) === 0, {
+    timeoutMs: 3_000,
+    intervalMs: 50
+  });
+  const transient = await transientUi.allInnerTexts();
   assert.deepEqual(
     transient.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500)),
     [],
