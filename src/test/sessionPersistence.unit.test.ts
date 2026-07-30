@@ -229,6 +229,23 @@ describe("session persistence", () => {
         }
       })
     ).toEqual(expected);
+    expect(
+      decodePersistedSession({
+        backend: "polars",
+        cleaning,
+        view: {
+          filterModel: {
+            filters: [],
+            sort: [
+              { column: "value", direction: "asc", nulls: "last" },
+              { column: "value", direction: "desc", nulls: "first" }
+            ]
+          },
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+        }
+      })
+    ).toEqual(expected);
   });
 
   it("rejects malformed and unknown saved operations", () => {

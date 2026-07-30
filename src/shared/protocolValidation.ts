@@ -680,7 +680,7 @@ export function isFilterModel(value: unknown): value is FilterModel {
     candidate !== undefined &&
     optional(candidate, "logic", (logic) => isOneOf(logic, ["and", "or"])) &&
     isArrayOf(candidate.filters, isColumnFilter) &&
-    isArrayOf(candidate.sort, isSortRule)
+    isUniqueViewSortRuleArray(candidate.sort)
   );
 }
 
@@ -725,7 +725,7 @@ function isPredicateFilter(value: unknown): boolean {
   return candidate.operator !== "between" || Object.prototype.hasOwnProperty.call(candidate, "secondValue");
 }
 
-function isSortRule(value: unknown): boolean {
+function isSortRule(value: unknown): value is FilterModel["sort"][number] {
   const candidate = exactRecord(value, ["column", "direction", "nulls"]);
   return (
     candidate !== undefined &&
@@ -733,6 +733,11 @@ function isSortRule(value: unknown): boolean {
     isOneOf(candidate.direction, ["asc", "desc"]) &&
     isOneOf(candidate.nulls, ["first", "last"])
   );
+}
+
+function isUniqueViewSortRuleArray(value: unknown): value is FilterModel["sort"] {
+  if (!Array.isArray(value) || !value.every(isSortRule)) return false;
+  return new Set(value.map((rule) => rule.column)).size === value.length;
 }
 
 function isTransformSortRule(value: unknown): value is TransformSortRule {

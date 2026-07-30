@@ -529,7 +529,12 @@
       "properties": {
         "logic": { "type": "string", "enum": ["and", "or"], "default": "and" },
         "filters": { "type": "array", "items": { "$ref": "#/definitions/ColumnFilter" } },
-        "sort": { "type": "array", "items": { "$ref": "#/definitions/SortRule" } }
+        "sort": {
+          "type": "array",
+          "description": "Ordered viewing sorts. TypeScript and Python decoders enforce that each column appears at most once; JSON Schema uniqueItems rejects identical rule objects.",
+          "items": { "$ref": "#/definitions/SortRule" },
+          "uniqueItems": true
+        }
       }
     },
     "TransformSortRule": {

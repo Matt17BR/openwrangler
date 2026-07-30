@@ -254,6 +254,101 @@ describe("FilterPanel", () => {
     );
   });
 
+  it("clears an uncommitted sort for the selected column without dropping sibling filters or sorts", () => {
+    const siblingFilter = {
+      column: "sales",
+      type: "float" as const,
+      predicates: [{ kind: "predicate" as const, operator: "gt" as const, value: 10 }]
+    };
+    const initialModel: FilterModel = {
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value: "i" }]
+        },
+        siblingFilter
+      ],
+      sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+    };
+    const onApply = vi.fn();
+    const Harness = () => {
+      const [model, setModel] = useState(initialModel);
+      return (
+        <FilterPanel
+          metadata={metadata}
+          model={model}
+          values={values}
+          onApply={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+          onRequestValues={() => undefined}
+        />
+      );
+    };
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    const ordered = screen.getByRole("list", { name: "Active sort order" });
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("cityascending");
+    expect(within(ordered).getAllByRole("listitem")[1]).toHaveTextContent("salesdescending");
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
+    expect(onApply).toHaveBeenLastCalledWith({
+      filters: [siblingFilter],
+      sort: [{ column: "sales", direction: "desc", nulls: "last" }]
+    });
+    expect(within(ordered).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(ordered).getByRole("listitem")).toHaveTextContent("salesdescending");
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+  });
+
+  it("clears every uncommitted sort before applying the global clear", () => {
+    const initialModel: FilterModel = {
+      logic: "or",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value: "i" }]
+        }
+      ],
+      sort: []
+    };
+    const onApply = vi.fn();
+    const Harness = () => {
+      const [model, setModel] = useState(initialModel);
+      return (
+        <FilterPanel
+          metadata={metadata}
+          model={model}
+          values={values}
+          onApply={(next) => {
+            onApply(next);
+            setModel(next);
+          }}
+          onRequestValues={() => undefined}
+        />
+      );
+    };
+    render(<Harness />);
+
+    fireEvent.click(screen.getByText("SORTS"));
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add to sort" }));
+    expect(within(screen.getByRole("list", { name: "Active sort order" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(onApply).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+    expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
+    expect(screen.getByText("No active sorts.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply sort order" })).toBeDisabled();
+  });
+
   it("keys ambiguous displays by typed selection identity while showing the display text", () => {
     const onApply = vi.fn();
     const numericSelection: TypedSelectionToken = {

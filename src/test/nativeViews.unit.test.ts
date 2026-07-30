@@ -274,7 +274,10 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
       action: "changeViewSort",
       column: "sales",
-      sortAction: "moveUp"
+      sortAction: "moveUp",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 1
     });
 
     nativeMocks.sendEditorAction.mockClear();
@@ -282,7 +285,10 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
       action: "changeViewSort",
       column: "city",
-      sortAction: "moveDown"
+      sortAction: "moveDown",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 0
     });
 
     nativeMocks.sendEditorAction.mockClear();
@@ -290,7 +296,10 @@ describe("native operation commands", () => {
     expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
       action: "changeViewSort",
       column: "sales",
-      sortAction: "remove"
+      sortAction: "remove",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 1
     });
 
     nativeMocks.sendEditorAction.mockClear();
@@ -307,9 +316,34 @@ describe("native operation commands", () => {
     await command("openWrangler.removeViewSort")(nodes[2]);
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
 
+    filtered.stepInspectionActive = true;
+    registered.setActiveSession(filtered);
+    const inspectionNodes = treeChildren("openWrangler.filters");
+    expect(nodePresentation(inspectionNodes[0]!)).toEqual(["Filters and sorts paused", "Inspecting an applied step"]);
+    expect(inspectionNodes[0]?.command).toEqual({
+      command: "openWrangler.selectStep",
+      title: "Return to current view",
+      arguments: []
+    });
+    for (const node of inspectionNodes.slice(1)) {
+      expect(node.command).toBeUndefined();
+      expect(node.contextValue).toBeUndefined();
+      expect(String(node.tooltip)).toContain("Return to the current view to edit filters and sorts");
+    }
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortDown")(nodes[1]);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
     nativeMocks.sendEditorAction.mockClear();
     await command("openWrangler.clearViewFilterColumn")("sales");
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    filtered.stepInspectionActive = undefined;
+    registered.setActiveSession(filtered);
+    const restoredNodes = treeChildren("openWrangler.filters");
+    expect(restoredNodes[0]?.command).toBeDefined();
+    expect(restoredNodes[1]?.contextValue).toBe("openWrangler.viewSortFirst");
+    expect(restoredNodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
   });
 
   it("does not forward editLatestStep while a draft is active", async () => {

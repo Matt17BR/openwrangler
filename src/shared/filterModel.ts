@@ -102,6 +102,8 @@ export const prioritizeSortRule = (rules: readonly SortRule[], rule: SortRule): 
   ...rules.filter((candidate) => candidate.column !== rule.column)
 ];
 
+export const viewSortModelSignature = (model: Pick<FilterModel, "sort">): string => JSON.stringify(model.sort);
+
 export const compactColumnFilter = (filter: ColumnFilter): ColumnFilter | undefined => {
   const valueFilter =
     filter.valueFilter &&

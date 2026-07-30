@@ -137,6 +137,17 @@ describe("App applied-step inspection", () => {
     expect(screen.getByRole("button", { name: "Filters paused during inspection" })).toBeDisabled();
     expect(screen.queryByRole("cell", { name: "10.5" })).toBeNull();
 
+    dispatch({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "city",
+      sortAction: "remove",
+      expectedSessionId: metadata.sessionId,
+      expectedSortModelSignature: JSON.stringify(metadata.filterModel.sort),
+      expectedSortIndex: 0
+    });
+    expect(runtimeRequests("getPage")).toHaveLength(0);
+
     dispatch(inspectionResult(step.id, 0, inspection()));
 
     expect(await screen.findByLabelText("Selected applied-step inspection")).toBeVisible();
@@ -209,6 +220,15 @@ describe("App applied-step inspection", () => {
 type HostMessage =
   | OpenWranglerResponse
   | { kind: "editorAction"; action: "selectStep"; stepId?: string }
+  | {
+      kind: "editorAction";
+      action: "changeViewSort";
+      column: string;
+      sortAction: "moveUp" | "moveDown" | "remove";
+      expectedSessionId: string;
+      expectedSortModelSignature: string;
+      expectedSortIndex: number;
+    }
   | {
       kind: "stepInspectionResult";
       stepId: string;

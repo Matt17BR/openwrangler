@@ -1,6 +1,6 @@
 import * as path from "path";
 import * as vscode from "vscode";
-import { isActiveColumnFilter } from "../shared/filterModel";
+import { isActiveColumnFilter, viewSortModelSignature } from "../shared/filterModel";
 import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind } from "../shared/operations";
 import { dataBackendLabel } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
@@ -199,7 +199,7 @@ export function registerNativeViews(
     if (
       !target ||
       !snapshot ||
-      snapshot.stepInspection ||
+      isStepInspectionActive(snapshot) ||
       target.sessionId !== snapshot.sessionId ||
       target.modelSignature !== viewSortModelSignature(snapshot.viewState.filterModel)
     ) {
@@ -219,7 +219,10 @@ export function registerNativeViews(
     return OpenWranglerPanel.sendEditorAction({
       action: "changeViewSort",
       column: target.column,
-      sortAction: action
+      sortAction: action,
+      expectedSessionId: target.sessionId,
+      expectedSortModelSignature: target.modelSignature,
+      expectedSortIndex: target.index
     });
   };
   context.subscriptions.push(
@@ -228,6 +231,7 @@ export function registerNativeViews(
       const snapshot = coordinator.activeSession();
       if (
         typeof column !== "string" ||
+        isStepInspectionActive(snapshot) ||
         !snapshot?.viewState.filterModel.filters.some(
           (filter) => filter.column === column && isActiveColumnFilter(filter)
         )
@@ -240,9 +244,9 @@ export function registerNativeViews(
     }),
     vscode.commands.registerCommand("openWrangler.openViewSort", async (column?: unknown) => {
       const snapshot = coordinator.activeSession();
-      if (!snapshot || snapshot.stepInspection) {
+      if (!snapshot || isStepInspectionActive(snapshot)) {
         void vscode.window.showInformationMessage(
-          snapshot?.stepInspection
+          snapshot && isStepInspectionActive(snapshot)
             ? "Return to the current view before editing viewing sorts."
             : "Open a dataframe in Open Wrangler before editing viewing sorts."
         );
@@ -618,18 +622,22 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
 function filterNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   const model = snapshot.viewState.filterModel;
   const modelSignature = viewSortModelSignature(model);
+  const inspectionMode = isStepInspectionActive(snapshot);
   const filters = model.filters.filter(isActiveColumnFilter).map(
     (filter) =>
       new ViewNode(
         filter.column,
         filterNodeDescription(filter),
         "filter",
-        {
-          command: "openWrangler.clearViewFilterColumn",
-          title: `Remove ${filter.column} filter`,
-          arguments: [filter.column]
-        },
-        "openWrangler.viewFilter"
+        inspectionMode
+          ? undefined
+          : {
+              command: "openWrangler.clearViewFilterColumn",
+              title: `Remove ${filter.column} filter`,
+              arguments: [filter.column]
+            },
+        inspectionMode ? undefined : "openWrangler.viewFilter",
+        inspectionMode ? "Return to the current view to edit filters and sorts" : undefined
       )
   );
   const sorts = model.sort.map(
@@ -638,28 +646,43 @@ function filterNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
         sort.column,
         `Priority ${index + 1} · ${sort.direction === "asc" ? "Ascending" : "Descending"} · nulls ${sort.nulls}`,
         "sort-precedence",
-        {
-          command: "openWrangler.openViewSort",
-          title: `Edit ${sort.column} sort`,
-          arguments: [sort.column]
-        },
-        viewSortContext(index, model.sort.length),
-        undefined,
-        {
-          sessionId: snapshot.sessionId,
-          column: sort.column,
-          index,
-          modelSignature
-        }
+        inspectionMode
+          ? undefined
+          : {
+              command: "openWrangler.openViewSort",
+              title: `Edit ${sort.column} sort`,
+              arguments: [sort.column]
+            },
+        inspectionMode ? undefined : viewSortContext(index, model.sort.length),
+        inspectionMode ? "Return to the current view to edit filters and sorts" : undefined,
+        inspectionMode
+          ? undefined
+          : {
+              sessionId: snapshot.sessionId,
+              column: sort.column,
+              index,
+              modelSignature
+            }
       )
   );
+  if (inspectionMode) {
+    return [
+      new ViewNode("Filters and sorts paused", "Inspecting an applied step", "lock", {
+        command: "openWrangler.selectStep",
+        title: "Return to current view",
+        arguments: []
+      }),
+      ...filters,
+      ...sorts
+    ];
+  }
   return filters.length || sorts.length
     ? [...filters, ...sorts]
     : [new ViewNode("No filters or sorts", "Current view", "filter")];
 }
 
-function viewSortModelSignature(model: FilterModel): string {
-  return JSON.stringify(model.sort);
+function isStepInspectionActive(snapshot: ActiveSessionSnapshot | undefined): boolean {
+  return Boolean(snapshot?.stepInspectionActive || snapshot?.stepInspection);
 }
 
 function viewSortContext(index: number, length: number): string {

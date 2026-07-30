@@ -21,7 +21,13 @@ import type {
   ValuesResponse
 } from "../shared/protocol";
 import { dataBackendLabel } from "../shared/protocol";
-import { compactFilterModel, emptyFilterModel, prioritizeSortRule, type FilterModel } from "../shared/filterModel";
+import {
+  compactFilterModel,
+  emptyFilterModel,
+  prioritizeSortRule,
+  viewSortModelSignature,
+  type FilterModel
+} from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
@@ -107,9 +113,7 @@ export function App() {
   const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
-  const changeViewSortActionRef = useRef<(column: string, action: "moveUp" | "moveDown" | "remove") => void>(
-    () => undefined
-  );
+  const changeViewSortActionRef = useRef<(target: ViewSortActionTarget) => void>(() => undefined);
   const sidePanelOpenRef = useRef(false);
   const summaryPanelViewRef = useRef<SummaryPanelView>("column");
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
@@ -1013,11 +1017,22 @@ export function App() {
         } else if (response.action === "changeViewSort") {
           if (
             typeof response.column !== "string" ||
-            (response.sortAction !== "moveUp" && response.sortAction !== "moveDown" && response.sortAction !== "remove")
+            (response.sortAction !== "moveUp" &&
+              response.sortAction !== "moveDown" &&
+              response.sortAction !== "remove") ||
+            typeof response.expectedSessionId !== "string" ||
+            typeof response.expectedSortModelSignature !== "string" ||
+            !Number.isInteger(response.expectedSortIndex)
           ) {
             return;
           }
-          changeViewSortActionRef.current(response.column, response.sortAction);
+          changeViewSortActionRef.current({
+            column: response.column,
+            action: response.sortAction,
+            expectedSessionId: response.expectedSessionId,
+            expectedSortModelSignature: response.expectedSortModelSignature,
+            expectedSortIndex: response.expectedSortIndex
+          });
         } else {
           if (!beginMutation()) return;
           const columnWindow = desiredColumnWindow.current;
@@ -1681,6 +1696,7 @@ export function App() {
 
   useEffect(() => {
     clearFilterColumnActionRef.current = (column) => {
+      if (stepInspectionTargetRef.current) return;
       const current = filterModelRef.current;
       applyFilters({
         ...current,
@@ -1688,12 +1704,25 @@ export function App() {
       });
     };
 
-    changeViewSortActionRef.current = (column, action) => {
+    changeViewSortActionRef.current = ({
+      column,
+      action,
+      expectedSessionId,
+      expectedSortModelSignature,
+      expectedSortIndex
+    }) => {
       const current = filterModelRef.current;
-      const matchingIndexes = current.sort.flatMap((rule, index) => (rule.column === column ? [index] : []));
-      if (matchingIndexes.length !== 1) return;
-      const index = matchingIndexes[0];
-      if (index === undefined) return;
+      if (
+        stepInspectionTargetRef.current ||
+        metadataRef.current?.sessionId !== expectedSessionId ||
+        viewSortModelSignature(current) !== expectedSortModelSignature ||
+        !Number.isInteger(expectedSortIndex) ||
+        current.sort.filter((rule) => rule.column === column).length !== 1 ||
+        current.sort[expectedSortIndex]?.column !== column
+      ) {
+        return;
+      }
+      const index = expectedSortIndex;
       if (action === "remove") {
         applyFilters({
           ...current,
@@ -2388,22 +2417,40 @@ export function App() {
   );
 }
 
-interface EditorActionMessage {
-  kind: "editorAction";
-  action:
-    | "openOperation"
-    | "editLatest"
-    | "selectStep"
-    | "clearFilterColumn"
-    | "openFilters"
-    | "changeViewSort"
-    | "applyDraft"
-    | "discardDraft"
-    | "undoStep";
-  operationKind?: OperationKind;
-  stepId?: string;
-  column?: string;
-  sortAction?: "moveUp" | "moveDown" | "remove";
+type NonSortEditorAction =
+  | "openOperation"
+  | "editLatest"
+  | "selectStep"
+  | "clearFilterColumn"
+  | "openFilters"
+  | "applyDraft"
+  | "discardDraft"
+  | "undoStep";
+
+type EditorActionMessage =
+  | {
+      kind: "editorAction";
+      action: "changeViewSort";
+      column: string;
+      sortAction: "moveUp" | "moveDown" | "remove";
+      expectedSessionId: string;
+      expectedSortModelSignature: string;
+      expectedSortIndex: number;
+    }
+  | {
+      kind: "editorAction";
+      action: NonSortEditorAction;
+      operationKind?: OperationKind;
+      stepId?: string;
+      column?: string;
+    };
+
+interface ViewSortActionTarget {
+  column: string;
+  action: "moveUp" | "moveDown" | "remove";
+  expectedSessionId: string;
+  expectedSortModelSignature: string;
+  expectedSortIndex: number;
 }
 
 interface RequestImportOptionsChangeMessage {

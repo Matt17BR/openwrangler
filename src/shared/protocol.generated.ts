@@ -411,6 +411,9 @@ export interface SessionRequestBase {
 export interface FilterModel {
   logic?: "and" | "or";
   filters: ColumnFilter[];
+  /**
+   * Ordered viewing sorts. TypeScript and Python decoders enforce that each column appears at most once; JSON Schema uniqueItems rejects identical rule objects.
+   */
   sort: SortRule[];
 }
 export interface ColumnFilter {

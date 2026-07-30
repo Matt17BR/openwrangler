@@ -453,12 +453,60 @@ describe("SessionCoordinator", () => {
     expect(response).toMatchObject({ kind: "stepInspection", stepId: inspectionStep.id, revision: 0 });
     expect(coordinator.activeSession()).toMatchObject({
       code: "# selected prefix",
+      stepInspectionActive: true,
       stepInspection: { stepId: inspectionStep.id, outputPage: { limit: 25 } }
     });
     expect(coordinator.activeSession()?.metadata).toEqual(opened.metadata);
 
     coordinator.clearActiveStepInspection();
+    expect(coordinator.activeSession()?.stepInspectionActive).toBeUndefined();
     expect(coordinator.activeSession()?.stepInspection).toBeUndefined();
+    expect(coordinator.activeSession()?.code).toBe("");
+  });
+
+  it("publishes the first pending applied-step inspection and restores the active snapshot when cleared", async () => {
+    const runtimeOpened = openedResponse();
+    runtimeOpened.metadata = { ...runtimeOpened.metadata, steps: [inspectionStep] };
+    const pendingInspection = deferred<OpenWranglerResponse>();
+    let dispatchedInspection: Extract<OpenWranglerRequest, { kind: "inspectStep" }> | undefined;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "inspectStep") {
+        dispatchedInspection = request;
+        return pendingInspection.promise;
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+    const activeChanges = vi.fn();
+    coordinator.onDidChangeActiveSession(activeChanges);
+
+    const response = bridge.request({
+      kind: "inspectStep",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      stepId: inspectionStep.id,
+      offset: 0,
+      limit: 25,
+      ...columnWindow
+    });
+
+    await vi.waitFor(() => expect(coordinator.activeSession()?.stepInspectionActive).toBe(true));
+    expect(coordinator.activeSession()?.stepInspection).toBeUndefined();
+    expect(activeChanges).toHaveBeenCalledOnce();
+
+    coordinator.clearActiveStepInspection();
+    expect(coordinator.activeSession()?.stepInspectionActive).toBeUndefined();
+    expect(coordinator.activeSession()?.stepInspection).toBeUndefined();
+    expect(activeChanges).toHaveBeenCalledTimes(2);
+
+    if (!dispatchedInspection) throw new Error("Expected the inspection to reach the runtime.");
+    pendingInspection.resolve(stepInspectionResponse(dispatchedInspection, 0, "# stale prefix"));
+    await expect(response).resolves.toMatchObject({ kind: "error", code: "stale_response" });
+    expect(coordinator.activeSession()?.stepInspectionActive).toBeUndefined();
     expect(coordinator.activeSession()?.code).toBe("");
   });
 

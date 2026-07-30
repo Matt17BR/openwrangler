@@ -219,6 +219,21 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
     expect(
       isOpenWranglerResponse({
+        ...responses[1],
+        metadata: {
+          ...metadata,
+          filterModel: {
+            filters: [],
+            sort: [
+              { column: "value", direction: "asc", nulls: "last" },
+              { column: "value", direction: "desc", nulls: "first" }
+            ]
+          }
+        }
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
         kind: "page",
         revision: 3,
         viewRequestId: "view-1",
@@ -902,6 +917,28 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerRequest({ ...request, columnIds: [""] })).toBe(false);
     expect(isOpenWranglerRequest({ ...request, columns: ["value"] })).toBe(false);
   });
+
+  it.each(["getPage", "getSummary", "getDatasetStats", "getColumnValues"] as const)(
+    "rejects duplicate viewing sort columns in %s requests",
+    (kind) => {
+      const request = requests.find((candidate) => candidate.kind === kind);
+      expect(request?.kind).toBe(kind);
+      if (!request || !("filterModel" in request)) return;
+
+      expect(
+        isOpenWranglerRequest({
+          ...request,
+          filterModel: {
+            filters: [],
+            sort: [
+              { column: "value", direction: "asc", nulls: "last" },
+              { column: "value", direction: "desc", nulls: "first" }
+            ]
+          }
+        })
+      ).toBe(false);
+    }
+  );
 
   it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {
     const requestWithOptions = (importOptions: unknown, fileName = "fixture.csv"): unknown => ({

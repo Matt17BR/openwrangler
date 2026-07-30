@@ -149,6 +149,15 @@ def decode_request(value: Any) -> dict[str, Any]:
         model = _mapping(request["filterModel"], "filterModel")
         if not isinstance(model.get("filters"), list) or not isinstance(model.get("sort"), list):
             raise ProtocolError("filterModel must contain filters and sort arrays.")
+        sort_columns: set[str] = set()
+        for index, value in enumerate(model["sort"]):
+            rule = _mapping(value, f"filterModel.sort[{index}]")
+            column = rule.get("column")
+            if not isinstance(column, str) or not column:
+                raise ProtocolError(f"filterModel.sort[{index}].column must be a non-empty string.")
+            if column in sort_columns:
+                raise ProtocolError("filterModel.sort contains duplicate columns.")
+            sort_columns.add(column)
     if kind == "getSummary" and "columnIds" in request:
         column_ids = request["columnIds"]
         if (

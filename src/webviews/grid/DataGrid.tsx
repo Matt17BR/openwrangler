@@ -1172,7 +1172,13 @@ function ColumnHeader({
       aria-colindex={ariaColumnIndex}
       aria-selected={selected}
       aria-sort={
-        activeSort?.direction === "asc" ? "ascending" : activeSort?.direction === "desc" ? "descending" : undefined
+        activeSortIndex === 0
+          ? activeSort?.direction === "asc"
+            ? "ascending"
+            : activeSort?.direction === "desc"
+              ? "descending"
+              : undefined
+          : undefined
       }
       aria-label={[column.name, added ? "added column" : "", activeSortLabel ? `sorted ${activeSortLabel}` : ""]
         .filter(Boolean)

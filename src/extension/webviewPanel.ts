@@ -1324,22 +1324,31 @@ function hasExactKeys(
   );
 }
 
-export interface EditorActionMessage {
-  action:
-    | "openOperation"
-    | "editLatest"
-    | "selectStep"
-    | "clearFilterColumn"
-    | "openFilters"
-    | "changeViewSort"
-    | "applyDraft"
-    | "discardDraft"
-    | "undoStep";
-  operationKind?: OperationKind;
-  stepId?: string;
-  column?: string;
-  sortAction?: "moveUp" | "moveDown" | "remove";
-}
+type NonSortEditorAction =
+  | "openOperation"
+  | "editLatest"
+  | "selectStep"
+  | "clearFilterColumn"
+  | "openFilters"
+  | "applyDraft"
+  | "discardDraft"
+  | "undoStep";
+
+export type EditorActionMessage =
+  | {
+      action: "changeViewSort";
+      column: string;
+      sortAction: "moveUp" | "moveDown" | "remove";
+      expectedSessionId: string;
+      expectedSortModelSignature: string;
+      expectedSortIndex: number;
+    }
+  | {
+      action: NonSortEditorAction;
+      operationKind?: OperationKind;
+      stepId?: string;
+      column?: string;
+    };
 
 const randomNonce = (): string => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

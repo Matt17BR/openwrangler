@@ -274,18 +274,36 @@ export function FilterPanel({
 
   const clearColumn = () => {
     if (disabled || !columnSchema || !activeColumn) return;
+    const nextSort = model.sort.filter((rule) => rule.column !== activeColumn);
+    const nextSortKey = sortRulesKey(nextSort);
+    setSortEditor({
+      modelKey: nextSortKey,
+      rules: draftSort.filter((rule) => rule.column !== activeColumn)
+    });
+    if (sortInput.columnId === columnId) {
+      setSortInput({ modelKey: nextSortKey, columnId: "", direction: "asc", nulls: "last" });
+    }
     onApply({
       ...model,
       filters: model.filters.filter((item) => item.column !== activeColumn),
-      sort: model.sort.filter((rule) => rule.column !== activeColumn)
+      sort: nextSort
     });
+  };
+
+  const clearAll = () => {
+    if (disabled) return;
+    const nextSort: FilterModel["sort"] = [];
+    const nextSortKey = sortRulesKey(nextSort);
+    setSortEditor({ modelKey: nextSortKey, rules: nextSort });
+    setSortInput({ modelKey: nextSortKey, columnId: "", direction: "asc", nulls: "last" });
+    onApply({ filters: [], sort: nextSort });
   };
 
   return (
     <section className="panel filterSortPanel" aria-busy={disabled}>
       <div className="panelHeader">
         <h2>Filters / Sorts</h2>
-        <button type="button" disabled={disabled} onClick={() => onApply({ filters: [], sort: [] })}>
+        <button type="button" disabled={disabled} onClick={clearAll}>
           Clear all
         </button>
       </div>
