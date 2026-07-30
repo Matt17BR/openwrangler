@@ -27,7 +27,8 @@ export function createAlternatingGridScrollTargets(
 
 export interface InstalledPerformancePanelHydrationOptions {
   readonly isHydrated: () => boolean;
-  readonly synchronize: () => Promise<boolean>;
+  readonly canSynchronize: () => boolean;
+  readonly synchronize: (deadlineMs: number) => Promise<boolean>;
   readonly timeoutMs: number;
   readonly naturalHydrationGraceMs: number;
   readonly pollIntervalMs: number;
@@ -37,6 +38,7 @@ export interface InstalledPerformancePanelHydrationOptions {
 
 export async function waitForInstalledPerformancePanelHydration({
   isHydrated,
+  canSynchronize,
   synchronize,
   timeoutMs,
   naturalHydrationGraceMs,
@@ -50,9 +52,17 @@ export async function waitForInstalledPerformancePanelHydration({
     return true;
   }
 
+  while (!canSynchronize()) {
+    if (isHydrated()) return true;
+    const remaining = deadline - now();
+    if (remaining <= 0) return false;
+    await wait(Math.min(pollIntervalMs, remaining));
+  }
+
+  if (isHydrated()) return true;
   const synchronizationBudget = deadline - now();
   if (synchronizationBudget <= 0) return false;
-  const outcome = await settleInstalledPerformancePanelSynchronization(synchronize(), synchronizationBudget);
+  const outcome = await settleInstalledPerformancePanelSynchronization(synchronize(deadline), synchronizationBudget);
   if (outcome.kind === "timeout") return false;
   if (outcome.acknowledged || isHydrated()) return true;
 

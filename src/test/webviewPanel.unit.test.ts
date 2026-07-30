@@ -353,8 +353,11 @@ describe("OpenWranglerPanel retained view state", () => {
     await harness.open();
     expect(OpenWranglerPanel.panelHydratedForSession("missing-session")).toBe(false);
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizableForSession(opened.metadata.sessionId)).toBe(false);
     await harness.receive({ kind: "ready" });
     const initialMarker = latestRendererSynchronization(harness.posted);
+    expect(OpenWranglerPanel.panelSynchronizableForSession("wrong-session")).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizableForSession(opened.metadata.sessionId)).toBe(true);
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
     await harness.receive({
       kind: "rendererSynchronized",
@@ -422,6 +425,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     harness.dispose();
     expect(OpenWranglerPanel.panelHydratedForSession(opened.metadata.sessionId)).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizableForSession(opened.metadata.sessionId)).toBe(false);
   });
 
   it("drains a synchronization requested after the current runner's final loop check", async () => {
@@ -462,6 +466,106 @@ describe("OpenWranglerPanel retained view state", () => {
     await vi.waitFor(() => expect(pull).toBeDefined());
     await pull;
     expect(markerCount).toBe(2);
+  });
+
+  it("adopts the matching automatic synchronization before considering a replacement", async () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    await harness.open();
+    expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
+    await harness.receive({ kind: "ready" });
+    const automaticMarker = latestRendererSynchronization(harness.posted);
+    expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(true);
+
+    const synchronization = OpenWranglerPanel.ensurePanelSynchronizedForSession(openedResponse.metadata.sessionId);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toEqual([automaticMarker]);
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: automaticMarker.syncId,
+      sessionId: automaticMarker.sessionId,
+      revision: automaticMarker.revision
+    });
+    await expect(synchronization).resolves.toBe(true);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toEqual([automaticMarker]);
+
+    harness.dispose();
+    expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
+  });
+
+  it("publishes one replacement only after the current synchronization acknowledgement expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      const automaticMarker = latestRendererSynchronization(harness.posted);
+
+      const synchronization = OpenWranglerPanel.ensurePanelSynchronizedForSession(openedResponse.metadata.sessionId);
+      expect(harness.posted.filter(isRendererSynchronizationMessage)).toEqual([automaticMarker]);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await Promise.resolve();
+      const markers = harness.posted.filter(isRendererSynchronizationMessage);
+      expect(markers).toHaveLength(2);
+      const replacementMarker = markers[1]!;
+      expect(replacementMarker.syncId).not.toBe(automaticMarker.syncId);
+
+      await harness.receive({
+        kind: "rendererSynchronized",
+        syncId: replacementMarker.syncId,
+        sessionId: replacementMarker.sessionId,
+        revision: replacementMarker.revision
+      });
+      await expect(synchronization).resolves.toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not publish a replacement after the caller's synchronization deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+      await harness.open();
+      await harness.receive({ kind: "ready" });
+      const automaticMarker = latestRendererSynchronization(harness.posted);
+
+      const synchronization = OpenWranglerPanel.ensurePanelSynchronizedForSession(
+        openedResponse.metadata.sessionId,
+        Date.now() + 100
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(synchronization).resolves.toBe(false);
+      expect(harness.posted.filter(isRendererSynchronizationMessage)).toEqual([automaticMarker]);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(harness.posted.filter(isRendererSynchronizationMessage)).toEqual([automaticMarker]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never invalidates a newer automatic synchronization that appears while it is waiting", async () => {
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    const firstMarker = latestRendererSynchronization(harness.posted);
+
+    const synchronization = OpenWranglerPanel.ensurePanelSynchronizedForSession(openedResponse.metadata.sessionId);
+    await harness.receive({ kind: "requestSessionSnapshot" });
+    const replacementMarker = latestRendererSynchronization(harness.posted);
+    expect(replacementMarker.syncId).not.toBe(firstMarker.syncId);
+    await expect(synchronization).resolves.toBe(false);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toEqual([firstMarker, replacementMarker]);
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: replacementMarker.syncId,
+      sessionId: replacementMarker.sessionId,
+      revision: replacementMarker.revision
+    });
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
   });
 
   it("requires a fresh renderer-ready handshake after the synchronization marker cannot be delivered", async () => {
@@ -521,6 +625,7 @@ describe("OpenWranglerPanel retained view state", () => {
     });
 
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+    expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(false);
 
     initialPublication.resolve();
     await opening;
@@ -528,6 +633,7 @@ describe("OpenWranglerPanel retained view state", () => {
       const current = latestRendererSynchronization(harness.posted);
       expect(current.syncId).not.toBe(acknowledgedWhileOpening.syncId);
     });
+    expect(OpenWranglerPanel.panelSynchronizableForSession(openedResponse.metadata.sessionId)).toBe(true);
     await acknowledgeLatestRendererSynchronization(harness);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });

@@ -51,8 +51,9 @@ interface TestApi {
   ): SessionRequestExecutionCheckpoint | undefined;
   diagnostics(): { sessionCount: number };
   runtimeRunning(): boolean;
-  synchronizePanel(sessionId: string): Promise<boolean>;
+  ensurePanelSynchronized(sessionId: string, deadlineMs: number): Promise<boolean>;
   panelHydrated(sessionId: string): boolean;
+  panelSynchronizable(sessionId: string): boolean;
 }
 
 interface ExtensionApi {
@@ -564,7 +565,11 @@ async function waitForWorkbenchReady(workbench: Page): Promise<void> {
 async function waitForPanelSynchronization(testing: TestApi, sessionId: string): Promise<void> {
   const synchronized = await waitForInstalledPerformancePanelHydration({
     isHydrated: () => testing.panelHydrated(sessionId),
-    synchronize: () => testing.synchronizePanel(sessionId),
+    canSynchronize: () => testing.panelSynchronizable(sessionId),
+    synchronize: (deadlineMs) => {
+      recordProgress("interaction:renderer-synchronizable");
+      return testing.ensurePanelSynchronized(sessionId, deadlineMs);
+    },
     timeoutMs: GRID_DISCOVERY_TIMEOUT_MS,
     naturalHydrationGraceMs: 10_000,
     pollIntervalMs: 25
@@ -572,7 +577,8 @@ async function waitForPanelSynchronization(testing: TestApi, sessionId: string):
   if (synchronized) return;
   throw new Error(
     "The installed renderer did not acknowledge its authoritative host snapshot " +
-      `(final panel hydration: ${testing.panelHydrated(sessionId)}).`
+      `(final panel hydration: ${testing.panelHydrated(sessionId)}; ` +
+      `final panel synchronizable: ${testing.panelSynchronizable(sessionId)}).`
   );
 }
 
