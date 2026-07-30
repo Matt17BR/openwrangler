@@ -701,7 +701,7 @@
             "never"
           ],
           "default": "onDraft",
-          "description": "When to reveal the bottom-panel Code Preview."
+          "description": "When to reveal the bottom-panel Code Preview: on the first draft in each session, once when each session opens, or never automatically."
         },
         "openWrangler.pythonPath": {
           "type": "string",

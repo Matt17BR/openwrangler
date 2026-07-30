@@ -73,7 +73,6 @@ export class OpenWranglerPanel {
       }
     | undefined;
   private codePreviewRevealedSessionId: string | undefined;
-  private codePreviewRevealedDraftStepId: string | undefined;
   private pendingRendererImportAction:
     | {
         actionId: string;
@@ -898,18 +897,12 @@ export class OpenWranglerPanel {
     const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
     const draftStepId = snapshot.metadata.draftStep?.id;
     const changedSession = this.codePreviewRevealedSessionId !== snapshot.metadata.sessionId;
-    if (changedSession) this.codePreviewRevealedDraftStepId = undefined;
-    if (!draftStepId) this.codePreviewRevealedDraftStepId = undefined;
     if (behavior === "never") return;
 
-    const shouldReveal =
-      behavior === "always"
-        ? changedSession
-        : draftStepId !== undefined && this.codePreviewRevealedDraftStepId !== draftStepId;
+    const shouldReveal = changedSession && (behavior === "always" || draftStepId !== undefined);
     if (!shouldReveal) return;
 
     this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
-    this.codePreviewRevealedDraftStepId = draftStepId;
     void this.revealCodePreviewAndRestoreEditorFocus({
       sessionId: snapshot.metadata.sessionId,
       revision: snapshot.metadata.revision,

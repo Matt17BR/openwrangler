@@ -588,10 +588,15 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toContainEqual(preview);
   });
 
-  it("reveals Code Preview only after the exact draft renderer synchronization is acknowledged", async () => {
+  it("reveals Code Preview only after the exact first draft synchronization and only once per session", async () => {
     const executeCommand = vi.spyOn(commands, "executeCommand");
     const draft = {
       id: "acknowledged-uppercase",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const secondDraft = {
+      id: "second-uppercase",
       kind: "upperText",
       params: { column: { id: "c:0", name: "city" } }
     } as const;
@@ -611,11 +616,39 @@ describe("OpenWranglerPanel retained view state", () => {
       },
       code: "def clean_data(df):\n    return df\n"
     };
+    const discarded: OpenWranglerResponse = {
+      kind: "planUpdated",
+      action: "discard",
+      revision: 2,
+      metadata: { ...metadata, revision: 2 },
+      page,
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const secondPreview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 3,
+      metadata: { ...metadata, revision: 3, draftStep: secondDraft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
     const harness = createPanelHarness(
       {
-        request: vi.fn(async (candidate: OpenWranglerRequest) =>
-          candidate.kind === "previewStep" ? preview : openedResponse
-        )
+        request: vi.fn(async (candidate: OpenWranglerRequest) => {
+          if (candidate.kind === "discardDraft") return discarded;
+          if (candidate.kind === "previewStep") {
+            return candidate.step.id === secondDraft.id ? secondPreview : preview;
+          }
+          return openedResponse;
+        })
       },
       { openResponse: openedResponse }
     );
@@ -674,6 +707,51 @@ describe("OpenWranglerPanel retained view state", () => {
     });
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
     expect(executeCommand).toHaveBeenCalledOnce();
+
+    harness.posted.length = 0;
+    await harness.receive({
+      kind: "runtimeRequest",
+      request: {
+        kind: "discardDraft",
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 16
+      }
+    });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    const discardedMarker = latestRendererSynchronization(harness.posted);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: discardedMarker.syncId,
+      sessionId: discardedMarker.sessionId,
+      revision: discardedMarker.revision
+    });
+    expect(executeCommand).toHaveBeenCalledOnce();
+
+    harness.posted.length = 0;
+    await OpenWranglerPanel.previewStepForSessionForTesting({
+      kind: "previewStep",
+      sessionId: metadata.sessionId,
+      revision: 2,
+      step: secondDraft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    const secondDraftMarker = latestRendererSynchronization(harness.posted);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: secondDraftMarker.syncId,
+      sessionId: secondDraftMarker.sessionId,
+      revision: secondDraftMarker.revision
+    });
+
+    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(harness.reveal).toHaveBeenCalledOnce();
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
   it("does not restore editor focus after the user leaves the draft panel during Code Preview reveal", async () => {
