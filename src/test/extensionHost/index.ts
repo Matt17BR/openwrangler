@@ -5197,11 +5197,15 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
       );
     },
     10_000,
-    "the market quick sort to become the only active viewing sort"
+    "the market quick sort to become the highest-priority viewing sort"
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="1"]')
     .filter({ hasText: "UK & Ireland" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2400005" })
     .waitFor({ state: "visible", timeout: 10_000 });
   await marketHeader.getByRole("button", { name: /Clear sort for market; currently descending/u }).waitFor({
     state: "visible",
@@ -5221,26 +5225,59 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
       return (
-        sort?.length === 1 && sort[0]?.column === "revenue" && sort[0].direction === "desc" && sort[0].nulls === "last"
+        sort?.length === 2 &&
+        sort[0]?.column === "revenue" &&
+        sort[0].direction === "desc" &&
+        sort[0].nulls === "last" &&
+        sort[1]?.column === "market" &&
+        sort[1].direction === "desc" &&
+        sort[1].nulls === "last"
       );
     },
     10_000,
-    "the revenue quick sort to replace the earlier market sort"
+    "the revenue quick sort to become priority 1 while retaining market as its tie-breaker"
   );
-  assert.equal(
-    await marketHeader.getByRole("button", { name: /Clear sort for market/u }).count(),
-    0,
-    "Replacing a quick sort must remove the prior column's active-sort indicator."
-  );
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2409089" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await marketHeader
+    .getByRole("button", { name: /Clear sort for market; currently descending, priority 2 of 2/u })
+    .waitFor({ state: "visible", timeout: 10_000 });
   const clearRevenueSort = revenueHeader.getByRole("button", {
-    name: /Clear sort for revenue; currently descending/u
+    name: /Clear sort for revenue; currently descending, priority 1 of 2/u
   });
   await clearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
   await clearRevenueSort.click();
   await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return sort?.length === 1 && sort[0]?.column === "market" && sort[0].direction === "desc";
+    },
+    10_000,
+    "clearing the primary revenue sort to retain the market tie-breaker as priority 1"
+  );
+  const revenueSortIndicator = revenueHeader.getByRole("button", { name: /Clear sort for revenue/u });
+  await revenueSortIndicator.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await revenueSortIndicator.count(),
+    0,
+    "Clearing one sort key must remove only that column's indicator."
+  );
+  const clearMarketSort = marketHeader.getByRole("button", {
+    name: "Clear sort for market; currently descending",
+    exact: true
+  });
+  await clearMarketSort.waitFor({ state: "visible", timeout: 10_000 });
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2400005" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await clearMarketSort.click();
+  await waitFor(
     () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
     10_000,
-    "the visible sort indicator to clear the viewing sort"
+    "clearing the final market sort"
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="0"]')
@@ -5256,8 +5293,14 @@ async function exercisePackagedFirstUseInteractionJourney(
   fixture: vscode.Uri,
   sourceBytes: Uint8Array
 ): Promise<void> {
-  const app = await exactSessionApp(frame, sessionId);
+  let app = await exactSessionApp(frame, sessionId);
   assert.ok(app, "The first-use journey requires the exact active Open Wrangler application.");
+  const rediscoverApp = async (phase: string): Promise<Locator> => {
+    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const current = await exactSessionApp(target.frame, sessionId);
+    assert.ok(current, `${phase} requires the exact visible Open Wrangler renderer for the active session.`);
+    return current;
+  };
   assert.equal(
     await app.getByRole("region", { name: "Cleaning plan" }).count(),
     0,
@@ -5487,6 +5530,7 @@ async function exercisePackagedFirstUseInteractionJourney(
 
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
+  app = await rediscoverApp("Draft-discard validation");
   const discardedDraft = testing.activeSession();
   assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
   assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
@@ -5589,6 +5633,7 @@ async function exercisePackagedFirstUseInteractionJourney(
 
   recordAcceptanceProgress("platform-smoke:draft-apply");
   await previewUppercaseMarket(app, testing, "market_upper");
+  app = await rediscoverApp("Draft-apply validation");
   await app.getByRole("button", { name: "Apply step", exact: true }).click();
   await waitFor(
     () => {
