@@ -7,7 +7,7 @@ import {
   installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
   rendererHasUsableGridGeometry,
-  waitForInstalledPerformanceRendererAcknowledgement,
+  waitForInstalledPerformancePanelHydration,
   type RendererGridMeasurementElement,
   type RendererGridMeasurementRuntime,
   type RendererGridScrollMeasurementInput,
@@ -16,78 +16,100 @@ import {
 import { gridRowHeight, maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
 
 describe("installed performance renderer synchronization", () => {
-  it("never replaces an acknowledgement attempt that is still in flight", async () => {
-    let acknowledge: ((value: boolean) => void) | undefined;
-    let active = 0;
-    let maximumActive = 0;
-    const attempt = vi.fn(
-      () =>
-        new Promise<boolean>((resolve) => {
-          active += 1;
-          maximumActive = Math.max(maximumActive, active);
-          acknowledge = (value) => {
-            active -= 1;
-            resolve(value);
-          };
-        })
-    );
-
-    const pending = waitForInstalledPerformanceRendererAcknowledgement({
-      attempt,
-      timeoutMs: 60_000,
-      retryDelayMs: 25
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(attempt).toHaveBeenCalledOnce();
-    expect(maximumActive).toBe(1);
-    acknowledge?.(true);
-    await expect(pending).resolves.toBe(true);
-    expect(attempt).toHaveBeenCalledOnce();
-  });
-
-  it("retries settled negative acknowledgements without overlapping them", async () => {
-    let now = 0;
-    let active = 0;
-    let maximumActive = 0;
-    const outcomes = [false, false, true];
-    const attempt = vi.fn(async () => {
-      active += 1;
-      maximumActive = Math.max(maximumActive, active);
-      const outcome = outcomes.shift() ?? false;
-      active -= 1;
-      return outcome;
-    });
+  it("accepts the naturally hydrated production panel without forcing a replacement snapshot", async () => {
+    const synchronize = vi.fn(async () => true);
 
     await expect(
-      waitForInstalledPerformanceRendererAcknowledgement({
-        attempt,
+      waitForInstalledPerformancePanelHydration({
+        isHydrated: () => true,
+        synchronize,
         timeoutMs: 60_000,
-        retryDelayMs: 25,
+        naturalHydrationGraceMs: 10_000,
+        pollIntervalMs: 25
+      })
+    ).resolves.toBe(true);
+    expect(synchronize).not.toHaveBeenCalled();
+  });
+
+  it("allows the production panel to hydrate naturally during its grace period", async () => {
+    let now = 0;
+    let hydrated = false;
+    const synchronize = vi.fn(async () => true);
+
+    await expect(
+      waitForInstalledPerformancePanelHydration({
+        isHydrated: () => hydrated,
+        synchronize,
+        timeoutMs: 60_000,
+        naturalHydrationGraceMs: 10_000,
+        pollIntervalMs: 25,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+          if (now >= 75) hydrated = true;
+        }
+      })
+    ).resolves.toBe(true);
+    expect(synchronize).not.toHaveBeenCalled();
+  });
+
+  it("performs one forced synchronization after natural hydration stalls", async () => {
+    let now = 0;
+    const synchronize = vi.fn(async () => true);
+
+    await expect(
+      waitForInstalledPerformancePanelHydration({
+        isHydrated: () => false,
+        synchronize,
+        timeoutMs: 60_000,
+        naturalHydrationGraceMs: 100,
+        pollIntervalMs: 25,
         now: () => now,
         wait: async (durationMs) => {
           now += durationMs;
         }
       })
     ).resolves.toBe(true);
-    expect(attempt).toHaveBeenCalledTimes(3);
-    expect(maximumActive).toBe(1);
+    expect(synchronize).toHaveBeenCalledOnce();
   });
 
-  it("ends a stalled attempt at the overall deadline without retrying", async () => {
+  it("observes a late acknowledgement after the sole forced synchronization times out internally", async () => {
+    let now = 0;
+    let hydrated = false;
+    const synchronize = vi.fn(async () => false);
+
+    await expect(
+      waitForInstalledPerformancePanelHydration({
+        isHydrated: () => hydrated,
+        synchronize,
+        timeoutMs: 60_000,
+        naturalHydrationGraceMs: 100,
+        pollIntervalMs: 25,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+          if (now >= 150) hydrated = true;
+        }
+      })
+    ).resolves.toBe(true);
+    expect(synchronize).toHaveBeenCalledOnce();
+  });
+
+  it("ends a stalled forced synchronization at the overall deadline without retrying", async () => {
     vi.useFakeTimers();
     try {
-      const attempt = vi.fn(() => new Promise<boolean>(() => undefined));
-      const pending = waitForInstalledPerformanceRendererAcknowledgement({
-        attempt,
+      const synchronize = vi.fn(() => new Promise<boolean>(() => undefined));
+      const pending = waitForInstalledPerformancePanelHydration({
+        isHydrated: () => false,
+        synchronize,
         timeoutMs: 100,
-        retryDelayMs: 25
+        naturalHydrationGraceMs: 25,
+        pollIntervalMs: 25
       });
 
       await vi.advanceTimersByTimeAsync(100);
       await expect(pending).resolves.toBe(false);
-      expect(attempt).toHaveBeenCalledOnce();
+      expect(synchronize).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }

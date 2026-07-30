@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   acquirePreparedAcceptanceAction,
+  activateReplaceableAcceptanceLocator,
   IndeterminateAcceptanceActionError,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnce,
@@ -272,6 +273,32 @@ describe("extension-host Playwright lifecycle", () => {
     });
     expect(acquire).toHaveBeenCalledOnce();
     expect(activate).toHaveBeenCalledOnce();
+  });
+
+  it("clicks the locator's replacement target exactly once when the prepared DOM node is retired", async () => {
+    const originalClick = vi.fn();
+    const replacementClick = vi.fn();
+    let currentTarget = { click: originalClick };
+    let continueResolution!: () => void;
+    const resolutionGate = new Promise<void>((resolve) => {
+      continueResolution = resolve;
+    });
+    const locator = {
+      click: vi.fn(async () => {
+        await resolutionGate;
+        currentTarget.click();
+      })
+    };
+
+    const activation = activateReplaceableAcceptanceLocator(locator, 10_000);
+    currentTarget = { click: replacementClick };
+    continueResolution();
+    await activation;
+
+    expect(locator.click).toHaveBeenCalledOnce();
+    expect(locator.click).toHaveBeenCalledWith({ timeout: 10_000 });
+    expect(originalClick).not.toHaveBeenCalled();
+    expect(replacementClick).toHaveBeenCalledOnce();
   });
 
   it("retains both a missing receipt and failed natural dismissal", async () => {

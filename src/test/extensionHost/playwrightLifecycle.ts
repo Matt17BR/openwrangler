@@ -47,6 +47,10 @@ interface AuthoritativelyReceiptedOneShotAcceptanceAction<T> extends OneShotAcce
   readonly authoritativeReceiptAfterActivationFailure: () => Promise<T>;
 }
 
+interface ReplaceableAcceptanceLocator {
+  click(options: { readonly timeout: number }): Promise<void>;
+}
+
 export class IndeterminateAcceptanceActionError extends Error {
   constructor(description: string, cause: unknown) {
     super(`${description} may have been dispatched, but its one-shot user activation did not settle.`, { cause });
@@ -91,6 +95,13 @@ export async function invokeAcceptanceActionOnceWithAuthoritativeReceipt<T>({
   }
 
   return observeAcceptanceActionReceipt(receipt, naturalDismissal, description);
+}
+
+export function activateReplaceableAcceptanceLocator(
+  locator: ReplaceableAcceptanceLocator,
+  timeoutMs: number
+): Promise<void> {
+  return locator.click({ timeout: timeoutMs });
 }
 
 async function observeAcceptanceActionReceipt<T>(

@@ -25,42 +25,62 @@ export function createAlternatingGridScrollTargets(
   return Array.from({ length: transitionCount }, (_, index) => rows[(index + 1) % rows.length]!);
 }
 
-export interface InstalledPerformanceRendererAcknowledgementOptions {
-  readonly attempt: () => Promise<boolean>;
+export interface InstalledPerformancePanelHydrationOptions {
+  readonly isHydrated: () => boolean;
+  readonly synchronize: () => Promise<boolean>;
   readonly timeoutMs: number;
-  readonly retryDelayMs: number;
+  readonly naturalHydrationGraceMs: number;
+  readonly pollIntervalMs: number;
   readonly now?: () => number;
   readonly wait?: (durationMs: number) => Promise<void>;
 }
 
-export async function waitForInstalledPerformanceRendererAcknowledgement({
-  attempt,
+export async function waitForInstalledPerformancePanelHydration({
+  isHydrated,
+  synchronize,
   timeoutMs,
-  retryDelayMs,
+  naturalHydrationGraceMs,
+  pollIntervalMs,
   now = Date.now,
   wait = (durationMs) => new Promise((resolve) => setTimeout(resolve, durationMs))
-}: InstalledPerformanceRendererAcknowledgementOptions): Promise<boolean> {
+}: InstalledPerformancePanelHydrationOptions): Promise<boolean> {
   const deadline = now() + timeoutMs;
-  do {
-    const attemptBudget = deadline - now();
-    if (attemptBudget <= 0) return false;
-    const outcome = await settleInstalledPerformanceRendererAcknowledgement(attempt(), attemptBudget);
-    if (outcome.kind === "timeout") return false;
-    if (outcome.acknowledged) return true;
-    const remaining = deadline - now();
-    if (remaining <= 0) return false;
-    await wait(Math.min(retryDelayMs, remaining));
-  } while (now() < deadline);
-  return false;
+  const naturalDeadline = Math.min(deadline, now() + naturalHydrationGraceMs);
+  if (await pollInstalledPerformancePanelHydration(isHydrated, naturalDeadline, pollIntervalMs, now, wait)) {
+    return true;
+  }
+
+  const synchronizationBudget = deadline - now();
+  if (synchronizationBudget <= 0) return false;
+  const outcome = await settleInstalledPerformancePanelSynchronization(synchronize(), synchronizationBudget);
+  if (outcome.kind === "timeout") return false;
+  if (outcome.acknowledged || isHydrated()) return true;
+
+  return pollInstalledPerformancePanelHydration(isHydrated, deadline, pollIntervalMs, now, wait);
 }
 
-function settleInstalledPerformanceRendererAcknowledgement(
-  attempt: Promise<boolean>,
+async function pollInstalledPerformancePanelHydration(
+  isHydrated: () => boolean,
+  deadline: number,
+  pollIntervalMs: number,
+  now: () => number,
+  wait: (durationMs: number) => Promise<void>
+): Promise<boolean> {
+  while (true) {
+    if (isHydrated()) return true;
+    const remaining = deadline - now();
+    if (remaining <= 0) return false;
+    await wait(Math.min(pollIntervalMs, remaining));
+  }
+}
+
+function settleInstalledPerformancePanelSynchronization(
+  synchronization: Promise<boolean>,
   timeoutMs: number
 ): Promise<{ readonly kind: "settled"; readonly acknowledged: boolean } | { readonly kind: "timeout" }> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
-    void attempt.then(
+    void synchronization.then(
       (acknowledged) => {
         clearTimeout(timer);
         resolve({ kind: "settled", acknowledged });
