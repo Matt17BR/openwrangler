@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Added
 
+- Added native DuckDB notebook previews and viewing-only live sessions. Open Wrangler retains the exact
+  originating `DuckDBPyRelation` for paging, filtering, sorting, and profiling, releases only its own reference
+  on close, and never converts through Pandas, Polars, or Arrow. Notebook relation cleaning, code insertion, and
+  data export remain disabled.
 - Added path-independent Microsoft Marketplace recovery on protected `main`. Exact single-parent changes to the
   reviewed Marketplace pipeline, verifier, archive, metadata, and locked-package closure retry the current
   package version only when its immutable numeric release tag already exists; ordinary changes, merge commits,

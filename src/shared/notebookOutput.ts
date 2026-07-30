@@ -120,7 +120,7 @@ function isCanonicalSavedOutput(metadata: SessionMetadata, page: GridPage): bool
   const capabilities = metadata.capabilities;
   return (
     metadata.revision === 0 &&
-    (metadata.backend === "pandas" || metadata.backend === "polars") &&
+    (metadata.backend === "pandas" || metadata.backend === "polars" || metadata.backend === "duckdb") &&
     metadata.mode === "viewing" &&
     source.kind === "notebookOutput" &&
     source.path === undefined &&

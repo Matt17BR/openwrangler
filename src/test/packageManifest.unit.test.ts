@@ -207,13 +207,16 @@ describe("notebook launch contributions", () => {
     }
   });
 
-  it("registers classic and Connect PySpark DataFrames with the Jupyter Variables view", () => {
+  it("registers DuckDB and PySpark native values with the Jupyter Variables view", () => {
     const viewer = manifest.contributes?.jupyterVariableViewers?.find(
       (candidate) => candidate.command === "openWrangler.launchDataViewer"
     );
 
     expect(viewer?.dataTypes).toEqual(
       expect.arrayContaining([
+        "DuckDBPyRelation",
+        "_duckdb.DuckDBPyRelation",
+        "duckdb.duckdb.DuckDBPyRelation",
         "pyspark.sql.dataframe.DataFrame",
         "pyspark.sql.classic.dataframe.DataFrame",
         "pyspark.sql.connect.dataframe.DataFrame"

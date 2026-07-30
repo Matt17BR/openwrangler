@@ -6,7 +6,6 @@ import { SessionCoordinator } from "../sessionCoordinator";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
 import {
   discoverNotebookVariables,
-  isLiveNotebookVariableBackend,
   NotebookVariableDiscoveryError,
   notebookVariablePresentation,
   type NotebookVariableDescriptor
@@ -99,13 +98,6 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
       if (!selected || !items.includes(selected)) {
         return;
       }
-      if (!isLiveNotebookVariableBackend(selected.variable.backend)) {
-        vscode.window.showWarningMessage(
-          `${selected.variable.name} is a DuckDB relation. Open Wrangler does not currently support live DuckDB notebook variables.`
-        );
-        return;
-      }
-
       openLiveNotebookVariable(context, coordinator, selected.variable.name, notebook, selected.variable.backend);
     })
   );
@@ -147,11 +139,9 @@ export const registerNotebookCommands = (context: vscode.ExtensionContext, coord
 function notebookVariableQuickPickItem(variable: NotebookVariableDescriptor): NotebookVariableQuickPickItem {
   const presentation = notebookVariablePresentation(variable.type);
   const detail =
-    variable.backend === "duckdb"
-      ? `${variable.type} · Live notebook opening is not supported`
-      : variable.backend === "pyspark"
-        ? `${variable.type} · Live viewing-only session`
-        : `${variable.type} · Live notebook session`;
+    variable.backend === "duckdb" || variable.backend === "pyspark"
+      ? `${variable.type} · Live viewing-only session`
+      : `${variable.type} · Live notebook session`;
   return {
     label: variable.name,
     description: `${presentation.family} · ${presentation.kind}`,
@@ -194,6 +184,11 @@ const PYSPARK_DATAFRAME_TYPES = new Set([
   "pyspark.sql.classic.dataframe.DataFrame",
   "pyspark.sql.connect.dataframe.DataFrame"
 ]);
+const DUCKDB_RELATION_TYPES = new Set([
+  "DuckDBPyRelation",
+  "_duckdb.DuckDBPyRelation",
+  "duckdb.duckdb.DuckDBPyRelation"
+]);
 
 function backendFromArgs(args: unknown[]): DataBackend | undefined {
   for (const arg of args) {
@@ -201,6 +196,7 @@ function backendFromArgs(args: unknown[]): DataBackend | undefined {
     const candidate = arg as NotebookVariableArgument;
     for (const typeName of [candidate.type, candidate.variable?.type]) {
       if (typeof typeName === "string" && PYSPARK_DATAFRAME_TYPES.has(typeName)) return "pyspark";
+      if (typeof typeName === "string" && DUCKDB_RELATION_TYPES.has(typeName)) return "duckdb";
     }
   }
   return undefined;

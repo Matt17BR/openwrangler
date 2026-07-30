@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import duckdb
 import pandas as pd
 import polars as pl
 import pytest
@@ -17,6 +18,7 @@ from openwrangler_runtime.engines.polars_engine import PolarsEngine
     [
         (pd.DataFrame({"value": [1, 2]}), "pandas"),
         (pl.DataFrame({"value": [1, 2]}), "polars"),
+        (duckdb.sql("SELECT * FROM (VALUES (1), (2)) AS source(value)"), "duckdb"),
     ],
 )
 def test_show_emits_complete_mime_v2_snapshot(value, backend, monkeypatch):
@@ -29,6 +31,8 @@ def test_show_emits_complete_mime_v2_snapshot(value, backend, monkeypatch):
             lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Notebook output must stay native")),
             raising=False,
         )
+    if backend == "duckdb":
+        _install_duckdb_conversion_guards(monkeypatch)
 
     notebook.show(value, label="frame", variable_name="df")
     payload, raw = captured[0]
@@ -44,6 +48,25 @@ def test_show_emits_complete_mime_v2_snapshot(value, backend, monkeypatch):
     assert "stats" not in snapshot["metadata"]
     assert snapshot["summaries"] == []
     assert snapshot["page"]["rows"][1]["values"][0]["display"] == "2"
+
+
+def test_duckdb_snapshot_uses_the_originating_connection_without_conversion(monkeypatch):
+    _install_duckdb_conversion_guards(monkeypatch)
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE private_orders AS SELECT 7 AS order_id UNION ALL SELECT 11")
+    relation = connection.table("private_orders")
+
+    try:
+        payload = notebook.build_payload(relation, label="orders", variable_name="orders")
+
+        assert payload["metadata"]["backend"] == "duckdb"
+        assert payload["metadata"]["shape"] == {"rows": 2, "columns": 1}
+        assert [row["values"][0]["display"] for row in payload["page"]["rows"]] == ["7", "11"]
+        # Snapshot cleanup releases only Open Wrangler's owner. The notebook's
+        # relation and originating connection remain fully usable.
+        assert relation.fetchall() == [(7,), (11,)]
+    finally:
+        connection.close()
 
 
 def test_pandas_mixed_object_snapshot_preserves_cell_kinds_under_string_semantics():
@@ -289,7 +312,7 @@ def test_notebook_snapshot_preserves_backend_detection_faults(monkeypatch):
 
 
 def test_notebook_snapshot_translates_only_an_unsupported_value():
-    with pytest.raises(EngineError, match="supports Pandas and Polars"):
+    with pytest.raises(EngineError, match="supports Pandas or Polars dataframes and series, and DuckDB relations"):
         notebook.build_payload(object())
 
 
@@ -307,7 +330,8 @@ class FakeHtmlFormatter(FakeFormatter):
         return self.registered
 
 
-def test_formatter_registration_emits_v2_for_both_engines():
+def test_formatter_registration_emits_v2_for_all_notebook_engines(monkeypatch):
+    _install_duckdb_conversion_guards(monkeypatch)
     formatter = FakeFormatter()
     shell = type(
         "FakeShell",
@@ -318,8 +342,10 @@ def test_formatter_registration_emits_v2_for_both_engines():
 
     pandas_bundle = formatter.registered[pd.DataFrame](pd.DataFrame({"value": [1]}))
     polars_bundle = formatter.registered[pl.DataFrame](pl.DataFrame({"value": [1]}))
+    duckdb_bundle = formatter.registered[duckdb.DuckDBPyRelation](duckdb.sql("SELECT 1 AS value"))
     assert pandas_bundle[notebook.MIME_TYPE_V2]["mimeVersion"] == 2
     assert polars_bundle[notebook.MIME_TYPE_V2]["mimeVersion"] == 2
+    assert duckdb_bundle[notebook.MIME_TYPE_V2]["metadata"]["backend"] == "duckdb"
 
 
 def test_formatter_links_one_canonical_user_variable_to_the_complete_live_value():
@@ -341,6 +367,33 @@ def test_formatter_links_one_canonical_user_variable_to_the_complete_live_value(
     assert payload["metadata"]["source"]["label"] == "frame"
     assert payload["metadata"]["shape"]["rows"] == 250
     assert len(payload["page"]["rows"]) == 200
+
+
+def test_duckdb_formatter_links_the_exact_live_relation_without_conversion(monkeypatch):
+    _install_duckdb_conversion_guards(monkeypatch)
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE private_orders AS SELECT 7 AS order_id UNION ALL SELECT 11")
+    relation = connection.table("private_orders")
+    formatter = FakeFormatter()
+    shell = type(
+        "FakeShell",
+        (),
+        {
+            "user_ns": {"orders": relation},
+            "display_formatter": type("DisplayFormatter", (), {"mimebundle_formatter": formatter})(),
+        },
+    )()
+
+    try:
+        assert notebook.register_formatters(shell) is True
+        payload = formatter.registered[duckdb.DuckDBPyRelation](relation)[notebook.MIME_TYPE_V2]
+
+        assert payload["metadata"]["backend"] == "duckdb"
+        assert payload["metadata"]["source"]["variableName"] == "orders"
+        assert [row["values"][0]["display"] for row in payload["page"]["rows"]] == ["7", "11"]
+        assert relation.fetchall() == [(7,), (11,)]
+    finally:
+        connection.close()
 
 
 def test_formatter_omits_an_ambiguous_live_variable_link():
@@ -417,6 +470,14 @@ def _frame(backend: str, rows: int, columns: int):
 def _text_frame(backend: str, column: str, value: str):
     values = {column: [value]}
     return pd.DataFrame(values) if backend == "pandas" else pl.DataFrame(values)
+
+
+def _install_duckdb_conversion_guards(monkeypatch):
+    def reject_conversion(*_args, **_kwargs):
+        raise AssertionError("DuckDB notebook output must never convert through Pandas, Polars, or Arrow")
+
+    for method in ("df", "to_df", "fetchdf", "pl", "arrow"):
+        monkeypatch.setattr(duckdb.DuckDBPyRelation, method, reject_conversion)
 
 
 def _nested_lists(depth: int):

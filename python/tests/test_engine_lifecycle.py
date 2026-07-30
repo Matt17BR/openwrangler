@@ -462,7 +462,7 @@ def test_notebook_payload_rejects_backend_outside_saved_output_allowlist(monkeyp
     registry = tracking_registry(created, factory=ReadOnlyPandasEngine, backend="readonly")
     monkeypatch.setattr(notebook, "default_engine_registry", lambda: registry)
 
-    with pytest.raises(EngineError, match="supports Pandas and Polars"):
+    with pytest.raises(EngineError, match="supports Pandas or Polars dataframes and series, and DuckDB relations"):
         notebook.build_payload(pd.DataFrame({"value": [1]}))
 
     assert created[0].close_calls == 1

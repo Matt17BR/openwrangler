@@ -58,11 +58,13 @@ def build_payload(
         engine = registry.create(backend) if backend else registry.detect(value)
     except UnsupportedDataFrameError as error:
         raise EngineError(
-            "Open Wrangler notebook output supports Pandas and Polars dataframe or series values."
+            "Open Wrangler notebook output supports Pandas or Polars dataframes and series, and DuckDB relations."
         ) from error
     try:
-        if engine.name not in {"pandas", "polars"}:
-            raise EngineError("Open Wrangler notebook output supports Pandas and Polars dataframe or series values.")
+        if engine.name not in {"pandas", "polars", "duckdb"}:
+            raise EngineError(
+                "Open Wrangler notebook output supports Pandas or Polars dataframes and series, and DuckDB relations."
+            )
         if "notebookOutput" not in engine.capabilities.source_kinds:
             raise EngineError(f"The {engine.name} backend does not support notebook output sources.")
         frame = _normalize_snapshot_value(engine, value)
@@ -140,6 +142,10 @@ def _normalize_snapshot_value(engine: Any, value: Any) -> Any:
             # LazyFrame would collect the complete source before any limit can
             # protect the kernel.
             return value
+    if engine.name == "duckdb":
+        normalizer = getattr(engine, "normalize_notebook_relation", None)
+        if callable(normalizer):
+            return normalizer(value)
     return engine.normalize(value)
 
 
@@ -377,6 +383,12 @@ def _available_dataframe_types() -> list[type[Any]]:
         import polars as pl
 
         types.extend((pl.DataFrame, pl.LazyFrame, pl.Series))
+    except ImportError:
+        pass
+    try:
+        import duckdb
+
+        types.append(duckdb.DuckDBPyRelation)
     except ImportError:
         pass
     return types
