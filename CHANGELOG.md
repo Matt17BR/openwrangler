@@ -14,6 +14,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   armed, terminal cleanup leaves no runtime session behind, and the user's replacement relation and connection
   remain usable.
 
+### Fixed
+
+- Replayed notebook sessions with the runtime-confirmed effective mode. A DuckDB relation opened while the
+  notebook default requests Editing is correctly normalized to Viewing once, then recovers in Viewing after a
+  kernel restart instead of rejecting its valid replacement session.
+
 ## [1.1.4] - 2026-07-30
 
 ### Added

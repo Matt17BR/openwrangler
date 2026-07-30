@@ -82,7 +82,8 @@ workflow:
 - Recreate the notebook variable in the exact observed replacement process and arm hard Pandas, Polars, and
   Arrow conversion traps before Open Wrangler may recover. Require the same public session and viewing state
   over a changed private runtime identity, then repeat a native numeric summary. Open Wrangler does not
-  serialize relation SQL or imply that a connection-private object survives process death.
+  serialize relation SQL or imply that a connection-private object survives process death. The editor profile
+  deliberately requests Editing; the runtime-confirmed DuckDB Viewing mode must be pinned for strict replay.
 - Leave both the coordinator and replacement kernel manager with zero sessions after terminal cleanup while
   the replacement user relation and connection remain queryable. Focused exact-kernel tests also bind DuckDB
   opens to timeout and cancellation cleanup and prove old and replacement session IDs close only on their

@@ -2320,6 +2320,109 @@ describe("SessionCoordinator", () => {
     expect(openedBackends).toEqual([undefined, "duckdb"]);
   });
 
+  it("pins the runtime-confirmed view-only mode for missing-runtime replay", async () => {
+    const source = {
+      kind: "notebookVariable" as const,
+      label: "duckdb_relation",
+      variableName: "duckdb_relation",
+      uri: "file:///workspace/duckdb.ipynb"
+    };
+    const requestedSessionId = "known-duckdb-runtime";
+    const openedModes: Array<string | undefined> = [];
+    const requestedSessionIds: Array<string | undefined> = [];
+    let openCount = 0;
+    let pageAttempts = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        openCount += 1;
+        openedModes.push(request.mode);
+        requestedSessionIds.push(request.requestedSessionId);
+        const response = openedResponse(
+          request.requestedSessionId ?? `recovered-duckdb-runtime-${openCount}`,
+          "duckdb"
+        );
+        response.metadata = {
+          ...response.metadata,
+          source,
+          mode: "viewing",
+          capabilities: {
+            ...response.metadata.capabilities,
+            editable: false
+          }
+        };
+        return response;
+      }
+      if (request.kind === "getPage") {
+        if (request.limit !== 1) {
+          pageAttempts += 1;
+          if (pageAttempts === 1) {
+            return {
+              kind: "error",
+              code: "unknown_session",
+              message: `Open Wrangler runtime session ${request.sessionId} is not available.`,
+              recoverable: true,
+              sessionId: request.sessionId,
+              viewRequestId: request.viewRequestId
+            };
+          }
+        }
+        const response = pageResponse(request, request.sessionId, "duckdb");
+        response.metadata = {
+          ...response.metadata,
+          source,
+          mode: "viewing",
+          capabilities: {
+            ...response.metadata.capabilities,
+            editable: false
+          }
+        };
+        return response;
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected confirmed-mode recovery request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request({
+      ...openRequest,
+      source,
+      backend: "duckdb",
+      mode: "editing",
+      requestedSessionId
+    });
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the DuckDB notebook variable to open.");
+
+    expect(opened.metadata).toMatchObject({
+      sessionId: expect.any(String),
+      backend: "duckdb",
+      mode: "viewing"
+    });
+
+    const recovered = await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: opened.metadata.revision,
+      viewRequestId: "duckdb-confirmed-mode-recovery",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+
+    expect(recovered).toMatchObject({
+      kind: "page",
+      metadata: {
+        sessionId: opened.metadata.sessionId,
+        backend: "duckdb",
+        mode: "viewing"
+      }
+    });
+    expect(openedModes).toEqual(["editing", "viewing"]);
+    expect(requestedSessionIds).toEqual([requestedSessionId, undefined]);
+    expect(openCount).toBe(2);
+    expect(pageAttempts).toBe(2);
+  });
+
   it.each([
     {
       label: "local unknown-session response",
