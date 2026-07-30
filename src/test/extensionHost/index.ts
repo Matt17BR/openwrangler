@@ -5654,6 +5654,17 @@ async function exercisePackagedFirstUseInteractionJourney(
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
   app = await rediscoverApp("Draft-discard validation");
+  const codePreviewPanel = workbench.locator(".part.panel:visible").first();
+  await codePreviewPanel.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await codePreviewPanel.getByText("Code Preview", { exact: true }).count(),
+    1,
+    "The first acknowledged draft must reveal Code Preview without hiding the dataframe grid."
+  );
+  const draftCodePreview = await waitForCodePreview(workbench, "market_upper");
+  const draftCodePreviewText = await draftCodePreview.innerText();
+  assert.match(draftCodePreviewText, /import polars as pl/u);
+  assert.match(draftCodePreviewText, /market_upper/u);
   const discardedDraft = testing.activeSession();
   assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
   assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
@@ -6973,7 +6984,7 @@ async function captureReleasedJupyterPolarsDraft(
     1,
     "The Polars notebook screenshot must open the Code Preview panel."
   );
-  const codePreview = await waitForReleasedJupyterCodePreview(workbench, "double_units");
+  const codePreview = await waitForCodePreview(workbench, "double_units");
   const codeText = await codePreview.innerText();
   assert.ok(codeText.includes("import polars as pl"), "The Polars notebook screenshot must show its native import.");
   assert.ok(
@@ -7453,7 +7464,7 @@ async function captureReleasedJupyterPySparkLive(
   }
 }
 
-async function waitForReleasedJupyterCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {
+async function waitForCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {
   const deadline = Date.now() + 10_000;
   do {
     for (const frame of workbench.frames()) {
@@ -7463,7 +7474,7 @@ async function waitForReleasedJupyterCodePreview(workbench: Page, expectedCode: 
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new Error(`The generated Polars notebook code did not expose ${JSON.stringify(expectedCode)}.`);
+  throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
 }
 
 async function closeVisibleWorkbenchPart(
