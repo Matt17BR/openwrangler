@@ -3261,7 +3261,7 @@ async function activateReleasedNotebookVariableAction(
     dispatchStarted = true;
     return await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
       description: pinned.description,
-      activate: () => pinned.action.press("Enter", { timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
+      activate: () => pinned.action.click({ force: true, timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS }),
       receipt: () => waitForReleasedNotebookVariablePicker(workbench),
       authoritativeReceiptAfterActivationFailure: () => waitForReleasedNotebookVariablePicker(workbench),
       naturalDismissal: pinned.overflowMenu
