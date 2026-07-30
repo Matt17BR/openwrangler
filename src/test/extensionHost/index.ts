@@ -5653,19 +5653,21 @@ async function exercisePackagedFirstUseInteractionJourney(
 
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
-  app = await rediscoverApp("Draft-discard validation");
-  const codePreviewPanel = workbench.locator(".part.panel:visible").first();
-  await codePreviewPanel.waitFor({ state: "visible", timeout: 10_000 });
-  const visibleCodePreviewTitle = codePreviewPanel.getByText("Code Preview", { exact: true }).filter({ visible: true });
-  assert.equal(
-    await visibleCodePreviewTitle.count(),
-    1,
-    "The first acknowledged draft must reveal Code Preview without hiding the dataframe grid."
-  );
   const draftCodePreview = await waitForCodePreview(workbench, "market_upper");
   const draftCodePreviewText = await draftCodePreview.innerText();
   assert.match(draftCodePreviewText, /import polars as pl/u);
   assert.match(draftCodePreviewText, /market_upper/u);
+  // `view.focus` resolves independently from the workbench's asynchronous
+  // panel-title layout. VS Code can briefly report no title while Cursor
+  // mirrors the same visible title in both the panel and view headers. The
+  // rendered Code Preview webview above is the cross-editor source of truth;
+  // rediscover the exact dataframe renderer afterwards to prove that opening
+  // the panel did not replace or hide the custom editor.
+  app = await rediscoverApp("Code Preview reveal validation");
+  await app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first().waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
   const discardedDraft = testing.activeSession();
   assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
   assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
