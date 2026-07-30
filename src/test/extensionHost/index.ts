@@ -9990,6 +9990,12 @@ async function exercisePackagedLinkedRendererLiveOpen(
     assert.equal(active.metadata.latestStepInputSchema, undefined);
     assert.equal(active.metadata.draftStep, undefined);
     assert.equal(active.metadata.stats, undefined);
+    const liveScore = columnReference(active.metadata, "score");
+    assert.notEqual(
+      liveScore.id,
+      payload.metadata.schema.find((column) => column.name === "score")?.id,
+      "The live session must generate its own column identities instead of trusting the saved preview."
+    );
     const diagnostic = testing.diagnostics().sessions.find((session) => session.publicId === active.sessionId);
     assert.ok(diagnostic, "The linked live session must be coordinator-owned.");
     assert.notEqual(diagnostic.runtimeId, payload.metadata.sessionId);
@@ -10025,7 +10031,7 @@ async function exercisePackagedLinkedRendererLiveOpen(
     });
     assert.equal(projected.kind, "page");
     if (projected.kind !== "page") throw new Error("The linked live projected page did not resolve.");
-    assert.deepEqual(projected.page.columnIds, ["c:score"]);
+    assert.deepEqual(projected.page.columnIds, [liveScore.id]);
     assert.deepEqual(
       projected.page.rows.map((row) => row.values[0]?.display),
       ["7", "5"]
@@ -10040,13 +10046,13 @@ async function exercisePackagedLinkedRendererLiveOpen(
       revision: projected.revision,
       viewRequestId: "linked-renderer-live-summary",
       filterModel: filteredModel,
-      columnIds: ["c:score"]
+      columnIds: [liveScore.id]
     });
     assert.equal(summary.kind, "summary");
     if (summary.kind !== "summary") throw new Error("The linked live summary did not resolve.");
     assert.deepEqual(summary.summaries, [
       {
-        columnId: "c:score",
+        columnId: liveScore.id,
         column: "score",
         type: "integer",
         rawType: "Int64",
