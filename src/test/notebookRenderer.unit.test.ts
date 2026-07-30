@@ -5,7 +5,7 @@ describe("notebook renderer", () => {
   it("shows compact capture paging and forwards only the validated canonical payload", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
-    const payload = canonicalPayload(10);
+    const payload = canonicalPayload(10, "frame");
 
     activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
 
@@ -16,7 +16,7 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 
-  it("keeps one clear action and opens captured truth even when the output retains a live link", () => {
+  it("keeps one clear action and opens the complete linked live variable", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(1, "frame");
@@ -28,11 +28,27 @@ describe("notebook renderer", () => {
     );
     expect(actions).toHaveLength(1);
     expect(actions[0]?.textContent).toBe("Open in Open Wrangler");
-    expect(actions[0]?.title).toBe("Open the captured notebook output in Open Wrangler");
+    expect(actions[0]?.title).toContain("complete current value of frame");
 
     actions[0]?.click();
     expect(postMessage).toHaveBeenCalledOnce();
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
+  });
+
+  it("keeps an unlinked saved preview inline with an actionable refresh hint and no misleading open action", () => {
+    const postMessage = vi.fn();
+    const element = document.createElement("div");
+    const payload = canonicalPayload(1);
+
+    activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
+
+    expect(
+      Array.from(element.querySelectorAll("button")).some((button) => button.textContent === "Open in Open Wrangler")
+    ).toBe(false);
+    expect(element.querySelector('[role="note"]')?.textContent).toContain(
+      "Run this cell again to open the current dataframe"
+    );
+    expect(postMessage).not.toHaveBeenCalled();
   });
 
   it("rejects capability-elevated notebook metadata before rendering an action", () => {
@@ -118,7 +134,7 @@ describe("notebook renderer", () => {
     const element = document.createElement("div");
     const longColumn = "🧪".repeat(200);
     const longCell = "🧪".repeat(600);
-    const base = canonicalPayload(1);
+    const base = canonicalPayload(1, "frame");
     const payload = {
       ...base,
       metadata: {
@@ -204,6 +220,7 @@ function widePayload(rowCount: number, columnCount: number) {
     mimeVersion: 2,
     metadata: {
       ...canonicalPayload(1).metadata,
+      source: { ...canonicalPayload(1).metadata.source, variableName: "frame" },
       shape: { rows: rowCount, columns: columnCount },
       filteredShape: { rows: rowCount, columns: columnCount },
       schema

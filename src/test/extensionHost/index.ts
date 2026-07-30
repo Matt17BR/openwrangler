@@ -1409,7 +1409,6 @@ async function exerciseReleasedJupyterExtension(
       pandasMimePayload.page.rows.length > 0 && pandasMimePayload.page.rows.length < 100_000,
       "The portable MIME output must retain a bounded captured preview instead of embedding the complete live frame."
     );
-    const capturedShowcaseRowCount = pandasMimePayload.page.rows.length;
     const capturedShowcaseFirstValue = pandasMimePayload.page.rows[0]?.values[0]?.display;
     assert.equal(capturedShowcaseFirstValue, "2400001");
     assert.deepEqual(
@@ -1521,51 +1520,27 @@ async function exerciseReleasedJupyterExtension(
       } finally {
         await rendererButton.dispose();
       }
-      await waitFor(
-        () => {
-          const source = testing.activeSession()?.metadata.source;
-          return source?.kind === "notebookOutput" && source.label === "orders_df";
-        },
-        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "the captured orders_df output opened from the primary MIME-v2 renderer action",
-        () => JSON.stringify(testing.diagnostics())
+      const liveShowcase = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        { name: "orders_df", type: "DataFrame", backend: "pandas", firstValue: "2400001" },
+        "the complete current orders_df opened from the primary MIME-v2 renderer action"
       );
-      const capturedShowcase = testing.activeSession();
-      assert.ok(capturedShowcase, "The primary MIME-v2 renderer action must publish a captured-output session.");
-      assert.notEqual(
-        capturedShowcase.sessionId,
-        pandasMimePayload.metadata.sessionId,
-        "A saved notebook output must receive a fresh coordinator-owned session identity."
-      );
-      assert.equal(capturedShowcase.metadata.backend, "pandas");
-      assert.deepEqual(capturedShowcase.metadata.source, {
-        kind: "notebookOutput",
-        label: "orders_df"
-      });
-      assert.equal(capturedShowcase.metadata.mode, "viewing");
-      assert.deepEqual(capturedShowcase.metadata.shape, {
-        rows: capturedShowcaseRowCount,
-        columns: 15
-      });
-      assert.deepEqual(capturedShowcase.metadata.filteredShape, capturedShowcase.metadata.shape);
-      assert.deepEqual(capturedShowcase.metadata.capabilities, {
-        editable: false,
-        lazy: false,
-        cancel: false,
-        exportCsv: false,
-        exportParquet: false,
-        notebookInsert: false
-      });
+      assert.equal(liveShowcase.metadata.mode, "viewing");
+      assert.deepEqual(liveShowcase.metadata.shape, { rows: 100_000, columns: 15 });
+      assert.deepEqual(liveShowcase.metadata.filteredShape, liveShowcase.metadata.shape);
+      assert.equal(liveShowcase.metadata.capabilities.notebookInsert, true);
       await assertReleasedSessionPage(
         testing,
-        capturedShowcase,
+        liveShowcase,
         capturedShowcaseFirstValue,
-        "released-jupyter-renderer-captured-notebook-showcase"
+        "released-jupyter-renderer-live-notebook-showcase"
       );
       await disposePackagedSessionPanel(
         testing,
-        capturedShowcase.sessionId,
-        "the released-Jupyter captured MIME output session"
+        liveShowcase.sessionId,
+        "the released-Jupyter live MIME-linked dataframe session"
       );
     } finally {
       await restoreScreenshotWorkbench?.();
@@ -9566,8 +9541,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
 
     if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
-      recordAcceptanceProgress("verify:notebook-renderer-snapshot");
-      await exercisePackagedSavedSnapshot(testing, jupyter, directory);
+      recordAcceptanceProgress("verify:notebook-renderer-linked-live");
+      await exercisePackagedLinkedRendererLiveOpen(testing, jupyter, directory);
     }
     recordAcceptanceProgress("verify:notebook:complete");
   } finally {
@@ -9589,13 +9564,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   }
 }
 
-async function exercisePackagedSavedSnapshot(
+async function exercisePackagedLinkedRendererLiveOpen(
   testing: TestApi,
   jupyter: FakeJupyterApi,
   directory: string
 ): Promise<void> {
-  const label = "saved snapshot acceptance";
-  const snapshotPath = path.join(directory, "renderer-saved-snapshot.ipynb");
+  const label = "linked renderer live acceptance";
+  const variableName = "saved_preview_frame";
+  const snapshotPath = path.join(directory, "renderer-linked-live.ipynb");
   const schema: SessionMetadata["schema"] = [
     { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
     { id: "c:score", name: "score", position: 1, rawType: "Int64", type: "integer", nullable: true },
@@ -9609,7 +9585,7 @@ async function exercisePackagedSavedSnapshot(
       revision: 0,
       backend: "polars",
       mode: "viewing",
-      source: { kind: "notebookOutput", label },
+      source: { kind: "notebookOutput", label, variableName },
       capabilities: {
         editable: false,
         lazy: false,
@@ -9651,12 +9627,12 @@ async function exercisePackagedSavedSnapshot(
               output_type: "display_data",
               metadata: {},
               data: {
-                "text/plain": ["Open Wrangler saved snapshot"],
+                "text/plain": ["Open Wrangler linked live preview"],
                 [OPEN_WRANGLER_MIME_V2]: payload
               }
             }
           ],
-          source: ["# saved output only"]
+          source: [variableName]
         }
       ],
       metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
@@ -9667,7 +9643,7 @@ async function exercisePackagedSavedSnapshot(
 
   let snapshotNotebook: vscode.NotebookDocument | undefined;
   try {
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:open");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:open");
     snapshotNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(snapshotPath));
     const snapshotEditor = await vscode.window.showNotebookDocument(snapshotNotebook, {
       viewColumn: vscode.ViewColumn.One,
@@ -9675,15 +9651,23 @@ async function exercisePackagedSavedSnapshot(
       preview: false
     });
     snapshotEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
-    assert.equal(
-      jupyter.testing.stats(snapshotNotebook.uri),
-      undefined,
-      "A saved snapshot notebook must not acquire a Jupyter kernel before its renderer action."
+    await jupyter.testing.execute(
+      snapshotNotebook.uri,
+      [
+        "import polars as pl",
+        `${variableName} = pl.DataFrame({`,
+        "    'city': ['Berlin', 'Amsterdam', 'Berlin', 'Cairo'],",
+        "    'score': [2, 5, 7, None],",
+        "    'group': ['b', 'a', 'a', 'c'],",
+        "})"
+      ].join("\n")
     );
+    const liveKernelBaseline = jupyter.testing.stats(snapshotNotebook.uri);
+    assert.ok(liveKernelBaseline, "The linked renderer fixture must own one user-started kernel.");
 
     const workbench = await connectToEditorWorkbench();
     const button = await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler");
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:click");
     try {
       await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
     } finally {
@@ -9692,28 +9676,37 @@ async function exercisePackagedSavedSnapshot(
     await waitFor(
       () => {
         const source = testing.activeSession()?.metadata.source;
-        return source?.kind === "notebookOutput" && source.label === label;
+        return (
+          source?.kind === "notebookVariable" &&
+          source.variableName === variableName &&
+          source.uri === snapshotNotebook?.uri.toString()
+        );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the saved MIME-v2 renderer output to become a coordinator-owned session"
+      "the linked MIME-v2 renderer output to open its complete current live dataframe"
     );
 
     const active = testing.activeSession();
-    assert.ok(active, "The saved renderer output must become an active coordinator session.");
-    assert.notEqual(active.sessionId, payload.metadata.sessionId, "The host must replace a saved runtime identity.");
+    assert.ok(active, "The linked renderer output must become an active live-variable session.");
+    assert.notEqual(active.sessionId, payload.metadata.sessionId, "The live session must not trust a saved identity.");
     assert.equal(active.metadata.sessionId, active.sessionId);
-    assert.deepEqual(active.metadata.source, { kind: "notebookOutput", label });
-    assert.equal(active.metadata.mode, "viewing");
+    assert.deepEqual(active.metadata.source, {
+      kind: "notebookVariable",
+      label: variableName,
+      variableName,
+      uri: snapshotNotebook.uri.toString()
+    });
+    assert.equal(active.metadata.mode, "editing");
     assert.equal(active.metadata.revision, 0);
     assert.deepEqual(active.metadata.shape, { rows: 4, columns: 3 });
     assert.deepEqual(active.metadata.filteredShape, { rows: 4, columns: 3 });
     assert.deepEqual(active.metadata.capabilities, {
-      editable: false,
+      editable: true,
       lazy: false,
       cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: false
+      exportCsv: true,
+      exportParquet: true,
+      notebookInsert: true
     });
     assert.deepEqual(active.metadata.filterModel, { logic: "and", filters: [], sort: [] });
     assert.deepEqual(active.metadata.steps, []);
@@ -9721,13 +9714,12 @@ async function exercisePackagedSavedSnapshot(
     assert.equal(active.metadata.draftStep, undefined);
     assert.equal(active.metadata.stats, undefined);
     const diagnostic = testing.diagnostics().sessions.find((session) => session.publicId === active.sessionId);
-    assert.ok(diagnostic, "The saved snapshot must be coordinator-owned.");
+    assert.ok(diagnostic, "The linked live session must be coordinator-owned.");
     assert.notEqual(diagnostic.runtimeId, payload.metadata.sessionId);
     assert.notEqual(diagnostic.runtimeId, diagnostic.publicId);
-    assert.equal(
-      jupyter.testing.stats(snapshotNotebook.uri),
-      undefined,
-      "Opening a saved snapshot must not acquire its notebook's Jupyter kernel."
+    assert.ok(
+      (jupyter.testing.stats(snapshotNotebook.uri)?.executions ?? 0) > liveKernelBaseline.executions,
+      "Opening the linked renderer action must execute against its exact live kernel."
     );
 
     const filteredModel: FilterModel = {
@@ -9742,12 +9734,12 @@ async function exercisePackagedSavedSnapshot(
       ],
       sort: [{ column: "score", direction: "desc", nulls: "last" }]
     };
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:page");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:page");
     const projected = await testing.request({
       kind: "getPage",
       sessionId: active.sessionId,
       revision: active.metadata.revision,
-      viewRequestId: "saved-snapshot-page",
+      viewRequestId: "linked-renderer-live-page",
       offset: 0,
       limit: 2,
       columnOffset: 1,
@@ -9755,12 +9747,8 @@ async function exercisePackagedSavedSnapshot(
       filterModel: filteredModel
     });
     assert.equal(projected.kind, "page");
-    if (projected.kind !== "page") throw new Error("The saved snapshot projected page did not resolve.");
+    if (projected.kind !== "page") throw new Error("The linked live projected page did not resolve.");
     assert.deepEqual(projected.page.columnIds, ["c:score"]);
-    assert.deepEqual(
-      projected.page.rows.map((row) => row.id),
-      ["r:capture:2", "r:capture:1"]
-    );
     assert.deepEqual(
       projected.page.rows.map((row) => row.values[0]?.display),
       ["7", "5"]
@@ -9768,17 +9756,17 @@ async function exercisePackagedSavedSnapshot(
     assert.equal(projected.page.totalRows, 2);
     assert.deepEqual(projected.metadata.filteredShape, { rows: 2, columns: 3 });
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:summary");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:summary");
     const summary = await testing.request({
       kind: "getSummary",
       sessionId: active.sessionId,
       revision: projected.revision,
-      viewRequestId: "saved-snapshot-summary",
+      viewRequestId: "linked-renderer-live-summary",
       filterModel: filteredModel,
       columnIds: ["c:score"]
     });
     assert.equal(summary.kind, "summary");
-    if (summary.kind !== "summary") throw new Error("The saved snapshot summary did not resolve.");
+    if (summary.kind !== "summary") throw new Error("The linked live summary did not resolve.");
     assert.deepEqual(summary.summaries, [
       {
         columnId: "c:score",
@@ -9804,16 +9792,16 @@ async function exercisePackagedSavedSnapshot(
       }
     ]);
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:statistics");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:statistics");
     const statistics = await testing.request({
       kind: "getDatasetStats",
       sessionId: active.sessionId,
       revision: projected.revision,
-      viewRequestId: "saved-snapshot-statistics",
+      viewRequestId: "linked-renderer-live-statistics",
       filterModel: { logic: "and", filters: [], sort: [] }
     });
     assert.equal(statistics.kind, "datasetStats");
-    if (statistics.kind !== "datasetStats") throw new Error("The saved snapshot statistics did not resolve.");
+    if (statistics.kind !== "datasetStats") throw new Error("The linked live statistics did not resolve.");
     assert.deepEqual(statistics.stats, {
       missingCells: 1,
       missingRows: 1,
@@ -9825,35 +9813,38 @@ async function exercisePackagedSavedSnapshot(
       ]
     });
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:values");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:values");
     const values = await testing.request({
       kind: "getColumnValues",
       sessionId: active.sessionId,
       revision: projected.revision,
-      viewRequestId: "saved-snapshot-values",
+      viewRequestId: "linked-renderer-live-values",
       column: "city",
       search: "ber",
       limit: 100,
       filterModel: filteredModel
     });
     assert.equal(values.kind, "columnValues");
-    if (values.kind !== "columnValues") throw new Error("The saved snapshot values query did not resolve.");
+    if (values.kind !== "columnValues") throw new Error("The linked live values query did not resolve.");
     assert.deepEqual(values.values, [{ value: "Berlin", count: 1 }]);
     assert.equal(values.hasMore, false);
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:close");
-    await disposePackagedSessionPanel(testing, active.sessionId, "the exact saved snapshot session");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:close");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the exact linked live session");
     assert.deepEqual(
       testing.diagnostics().sessions,
       [],
-      `An earlier packaged notebook session leaked into saved-snapshot cleanup: ${JSON.stringify(testing.diagnostics().sessions)}`
+      `An earlier packaged notebook session leaked into linked-live cleanup: ${JSON.stringify(testing.diagnostics().sessions)}`
+    );
+    assert.ok(
+      jupyter.testing.stats(snapshotNotebook.uri),
+      "Closing the Open Wrangler panel must not stop the user's kernel."
     );
     const snapshotTab = notebookTab(snapshotNotebook.uri);
     if (snapshotTab) assert.equal(await vscode.window.tabGroups.close(snapshotTab, true), true);
-    assert.equal(jupyter.testing.stats(snapshotNotebook.uri), undefined);
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:complete");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:complete");
   } catch (error) {
-    await bestEffortSavedSnapshotCleanup(testing, snapshotNotebook, label);
+    await bestEffortLinkedRendererCleanup(testing, snapshotNotebook, label, variableName);
     throw error;
   }
 }
@@ -9971,13 +9962,14 @@ function snapshotRow(
   };
 }
 
-async function bestEffortSavedSnapshotCleanup(
+async function bestEffortLinkedRendererCleanup(
   testing: TestApi,
   notebook: vscode.NotebookDocument | undefined,
-  label: string
+  label: string,
+  variableName: string
 ): Promise<void> {
   const active = testing.activeSession();
-  if (active?.metadata.source.kind === "notebookOutput" && active.metadata.source.label === label) {
+  if (active?.metadata.source.kind === "notebookVariable" && active.metadata.source.variableName === variableName) {
     try {
       await testing.request({
         kind: "closeSession",
@@ -9988,7 +9980,7 @@ async function bestEffortSavedSnapshotCleanup(
       // Editor-process-group teardown remains the final bounded fallback.
     }
   }
-  const tabs = savedSnapshotTabs(notebook, label);
+  const tabs = linkedRendererTabs(notebook, label);
   if (tabs.length > 0) {
     try {
       await vscode.window.tabGroups.close(tabs, true);
@@ -9998,7 +9990,7 @@ async function bestEffortSavedSnapshotCleanup(
   }
 }
 
-function savedSnapshotTabs(notebook: vscode.NotebookDocument | undefined, label: string): vscode.Tab[] {
+function linkedRendererTabs(notebook: vscode.NotebookDocument | undefined, label: string): vscode.Tab[] {
   return [
     ...(notebook ? [notebookTab(notebook.uri)] : []),
     ...vscode.window.tabGroups.all
@@ -10125,10 +10117,14 @@ async function exercisePackagedRendererProvenance(
       await waitFor(
         () => {
           const source = testing.activeSession()?.metadata.source;
-          return source?.kind === "notebookOutput" && source.label === "renderer provenance A";
+          return (
+            source?.kind === "notebookVariable" &&
+            source.variableName === "renderer_frame" &&
+            source.uri === originNotebook.uri.toString()
+          );
         },
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "notebook A's primary renderer action to open notebook A's captured output while notebook B is active",
+        "notebook A's primary renderer action to open notebook A's live renderer_frame while notebook B is active",
         () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
       );
     };
@@ -10150,28 +10146,19 @@ async function exercisePackagedRendererProvenance(
     }
 
     const active = testing.activeSession();
-    assert.ok(active, "The renderer provenance scenario must open a captured notebook-output session.");
-    assert.notEqual(
-      active.sessionId,
-      payloadTemplate.metadata.sessionId,
-      "The captured output must receive a fresh coordinator-owned session identity."
-    );
+    assert.ok(active, "The renderer provenance scenario must open the exact live notebook-variable session.");
     assert.equal(active.metadata.backend, "polars");
     assert.deepEqual(active.metadata.source, {
-      kind: "notebookOutput",
-      label: "renderer provenance A"
+      kind: "notebookVariable",
+      label: "renderer_frame",
+      variableName: "renderer_frame",
+      uri: originNotebook.uri.toString()
     });
-    assert.equal(active.metadata.mode, "viewing");
+    assert.equal(active.metadata.mode, "editing");
     assert.deepEqual(active.metadata.shape, { rows: 1, columns: 1 });
     assert.deepEqual(active.metadata.filteredShape, { rows: 1, columns: 1 });
-    assert.deepEqual(active.metadata.capabilities, {
-      editable: false,
-      lazy: false,
-      cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: false
-    });
+    assert.equal(active.metadata.capabilities.editable, true);
+    assert.equal(active.metadata.capabilities.notebookInsert, true);
     const provenancePage = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -10186,37 +10173,35 @@ async function exercisePackagedRendererProvenance(
     if (provenancePage.kind !== "page") throw new Error("Renderer provenance page did not resolve.");
     assert.equal(
       provenancePage.page.rows[0]?.values[0]?.display,
-      "1",
-      "The primary renderer action must use notebook A's captured value, not live renderer_frame value 101."
+      "101",
+      "The primary renderer action must use notebook A's current live renderer_frame, not its captured value or notebook B."
     );
-    assert.deepEqual(
-      jupyter.testing.stats(originNotebook.uri),
-      originKernelBaseline,
-      "Opening a linked saved output must not dispatch work to notebook A's kernel."
+    assert.ok(
+      (jupyter.testing.stats(originNotebook.uri)?.executions ?? 0) > (originKernelBaseline?.executions ?? 0),
+      "Opening a linked renderer output must dispatch the live request to notebook A's exact kernel."
     );
     assert.deepEqual(
       jupyter.testing.stats(openedSecondNotebook.uri),
       secondKernelBaseline,
-      "Opening notebook A's saved output must not dispatch work to notebook B's kernel."
+      "Opening notebook A's live variable must not dispatch work to notebook B's kernel."
     );
-    assert.equal(
-      jupyter.testing.lookupCalls(originNotebook.uri),
-      originLookupBaseline,
-      "The primary saved-output action must not acquire notebook A's kernel."
+    assert.ok(
+      jupyter.testing.lookupCalls(originNotebook.uri) > originLookupBaseline,
+      "The primary renderer action must acquire notebook A's exact kernel."
     );
     assert.equal(
       jupyter.testing.lookupCalls(openedSecondNotebook.uri),
       secondLookupBaseline,
-      "The primary saved-output action must not acquire notebook B's kernel."
+      "The primary renderer action must not acquire notebook B's kernel."
     );
     assert.equal(
       jupyter.testing.denialCalls(),
       denialBaseline,
-      "The primary saved-output action must not request Jupyter permission."
+      "The already-authorized primary renderer action must not request a second Jupyter permission."
     );
 
     recordAcceptanceProgress("verify:notebook-renderer:session-close");
-    await disposePackagedSessionPanel(testing, active.sessionId, "the captured renderer provenance session");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the live renderer provenance session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
     recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
     const tabsToClose = rendererProvenanceTabs(openedSecondNotebook);
@@ -10285,7 +10270,7 @@ async function bestEffortRendererProvenanceCleanup(
   secondNotebook: vscode.NotebookDocument | undefined
 ): Promise<void> {
   const active = testing.activeSession();
-  if (active?.metadata.source.kind === "notebookOutput" && active.metadata.source.label === "renderer provenance A") {
+  if (active?.metadata.source.kind === "notebookVariable" && active.metadata.source.variableName === "renderer_frame") {
     try {
       await testing.request({
         kind: "closeSession",

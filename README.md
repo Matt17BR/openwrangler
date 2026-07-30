@@ -71,14 +71,14 @@ without requiring an earlier Open Wrangler command. If Microsoft Data Wrangler i
 asks once which extension should own automatic previews; change that choice later with **Open Wrangler: Choose
 Notebook Preview Provider**.
 
-The button inside an inline table expands the preview saved in that `.ipynb` file. To keep notebooks quick to
-reopen and share, a saved preview may contain only part of a very large dataframe; Open Wrangler says so clearly
-whenever rows or columns were left out.
+The inline table is a lightweight preview stored with the notebook, so it may show only part of a very large
+dataframe. Its **Open in Open Wrangler** action loads the complete, current variable from that notebook's live
+kernel and pages it as you navigate; it never substitutes the saved preview. If an older saved output has no
+live-variable link, Open Wrangler asks you to run the cell again instead of opening a partial workbench.
 
-To work with the full, current dataframe, use the notebook toolbar's branded **Open in Open Wrangler** action.
-It discovers supported variables from the selected kernel, shows their engine and dataframe type, and pages
-through the live data as you navigate. This portability limit applies only to previews stored inside notebooks,
-not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files.
+The notebook toolbar's branded **Open in Open Wrangler** action can also discover supported variables from the
+selected kernel and shows each engine and dataframe type. Preview portability limits apply only to the table
+stored inside the notebook, not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files.
 
 <a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
 

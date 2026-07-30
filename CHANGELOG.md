@@ -12,8 +12,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   and an absent tag finish as intake-only no-ops before authentication. Existing `v*` tag promotion and explicit
   manual backfill remain unchanged.
 
+### Changed
+
+- Restored the inline notebook **Open in Open Wrangler** action to the complete current live dataframe. The action
+  stays bound to the exact visible originating notebook and kernel, reruns backend detection, and never opens or
+  falls back to the bounded saved preview. Outputs without a canonical live-variable link remain readable inline
+  and ask the user to run the cell again instead of showing a misleading open button.
+
 ### Fixed
 
+- Made missing live variables and unavailable kernels explain the direct recovery: select or start the Python
+  kernel, run the cell that defines the dataframe, and try **Open in Open Wrangler** again.
 - Kept Microsoft Marketplace promotion resumable when GitHub's anonymous release-metadata API returns HTTP 403 on a shared Azure runner by treating that response as pending within the existing bounded poll. There is no alternate asset path: a successful metadata response must still pass every release-channel, inventory, URL, and size check before any asset download, and repeated 403 responses fail when the poll is exhausted.
 - Made the column picker search and navigate the complete schema instead of stopping after the first 100
   matches. The list virtualizes wide schemas, keeps every result keyboard-reachable, and exposes its exact

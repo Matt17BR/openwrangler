@@ -1,4 +1,8 @@
-import { normalizeNotebookOutputPayload, type NotebookOutputPayload } from "../shared/notebookOutput";
+import {
+  isPythonIdentifier,
+  normalizeNotebookOutputPayload,
+  type NotebookOutputPayload
+} from "../shared/notebookOutput";
 
 interface RendererOutputItem {
   json(): unknown;
@@ -56,12 +60,23 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   const actions = document.createElement("div");
   actions.style.display = "flex";
   actions.style.gap = "8px";
-  if (context.postMessage) {
+  const variableName = payload.metadata.source.variableName;
+  const liveVariableName =
+    variableName !== undefined && isPythonIdentifier(variableName)
+      ? boundedText(variableName, INLINE_COLUMN_CHARACTERS).text
+      : undefined;
+  if (liveVariableName && context.postMessage) {
     actions.appendChild(
-      actionButton("Open in Open Wrangler", "Open the captured notebook output in Open Wrangler", () => {
+      actionButton("Open in Open Wrangler", `Open the complete current value of ${liveVariableName}`, () => {
         context.postMessage?.({ kind: "openInOpenWrangler", payload });
       })
     );
+  } else if (!liveVariableName) {
+    const liveHint = document.createElement("span");
+    liveHint.setAttribute("role", "note");
+    liveHint.style.color = "var(--vscode-descriptionForeground)";
+    liveHint.textContent = "Run this cell again to open the current dataframe in Open Wrangler.";
+    actions.appendChild(liveHint);
   }
   header.appendChild(actions);
 

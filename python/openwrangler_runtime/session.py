@@ -1484,6 +1484,6 @@ class SessionManager:
         if hasattr(main, variable_name):
             return getattr(main, variable_name)
         raise EngineError(
-            "Notebook variable launch requires running the Open Wrangler runtime inside the active kernel. "
-            f"Variable not found: {variable_name}"
+            f"Live dataframe '{variable_name}' is not available in the selected notebook kernel. "
+            "Run the cell that defines it, then choose Open in Open Wrangler again."
         )

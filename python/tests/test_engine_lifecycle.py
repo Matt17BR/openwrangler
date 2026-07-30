@@ -490,6 +490,26 @@ def test_failed_notebook_payload_preserves_failure_when_cleanup_also_fails(monke
     assert created[0].close_calls == 1
 
 
+def test_missing_live_notebook_variable_explains_the_user_recovery() -> None:
+    manager = SessionManager()
+
+    with pytest.raises(
+        EngineError,
+        match=(
+            "Live dataframe 'open_wrangler_missing_frame' is not available in the selected notebook kernel. "
+            "Run the cell that defines it"
+        ),
+    ):
+        manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "label": "open_wrangler_missing_frame",
+                "variableName": "open_wrangler_missing_frame",
+            },
+            backend="pandas",
+        )
+
+
 def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) -> None:
     csv_path = write_csv(tmp_path)
     manager = SessionManager()
