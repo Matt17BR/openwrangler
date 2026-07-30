@@ -93,7 +93,7 @@ def test_built_in_capabilities_are_immutable_and_match_current_behavior() -> Non
     assert not pyspark.supports_request_cancellation
 
     duckdb = DuckDBEngine.capabilities
-    assert duckdb.source_kinds == frozenset({"file"})
+    assert duckdb.source_kinds == frozenset({"file", "notebookVariable", "notebookOutput"})
     assert duckdb.supports_editing
     assert duckdb.lazy_file_extensions == frozenset({".csv", ".tsv", ".parquet", ".jsonl", ".ndjson"})
     assert duckdb.export_formats == frozenset({"csv", "parquet"})
