@@ -46,6 +46,14 @@ test("released-Jupyter phases alone receive the dedicated kernel interpreter", (
   assert.equal(acceptancePythonForPhase("jupyter-deny", normalPython, kernelPython), kernelPython);
   assert.equal(acceptancePythonForPhase("jupyter-allow", normalPython, kernelPython), kernelPython);
   assert.equal(acceptancePythonForPhase("jupyter-pyspark", normalPython, kernelPython), kernelPython);
+  for (const phase of [
+    "jupyter-coexist-open-select",
+    "jupyter-coexist-open-restart",
+    "jupyter-coexist-data-select",
+    "jupyter-coexist-data-restart"
+  ]) {
+    assert.equal(acceptancePythonForPhase(phase, normalPython, kernelPython), kernelPython);
+  }
   assert.equal(acceptancePythonForPhase("jupyter-remote", normalPython, kernelPython), normalPython);
   assert.throws(
     () => acceptancePythonForPhase("jupyter-allow", normalPython, undefined),

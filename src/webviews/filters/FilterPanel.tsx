@@ -275,6 +275,7 @@ export function FilterPanel({
         <label>
           Column
           <select
+            aria-label="Filter column"
             value={columnId}
             disabled={disabled || !hasActiveColumn}
             onChange={(event) => setColumnId(event.target.value)}
@@ -420,6 +421,7 @@ export function FilterPanel({
         <label>
           Column
           <select
+            aria-label="Sort column"
             value={columnId}
             disabled={disabled || !hasActiveColumn}
             onChange={(event) => setColumnId(event.target.value)}

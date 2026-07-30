@@ -19,6 +19,7 @@ import { ImportCancelledError, promptImportOptions } from "./files/importOptions
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
+export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
@@ -353,6 +354,14 @@ export class OpenWranglerPanel {
 
     if (decoded.kind === "installRuntimeDependencies") {
       await this.installRuntimeDependencies();
+      return;
+    }
+
+    if (decoded.kind === "exportData") {
+      const sessionId = this.sessionId;
+      const revision = this.sessionRevision;
+      if (!sessionId) return;
+      await vscode.commands.executeCommand(SESSION_BOUND_EXPORT_DATA_COMMAND, sessionId, revision);
       return;
     }
 
@@ -1119,6 +1128,9 @@ export class OpenWranglerPanel {
     if (message.kind === "installRuntimeDependencies") {
       return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;
     }
+    if (message.kind === "exportData") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
+    }
     if (
       message.kind !== "runtimeRequest" ||
       !hasExactKeys(message, ["kind", "request"], ["viewContextId"]) ||
@@ -1219,6 +1231,7 @@ type WebviewRequest =
   | { kind: "clearStepInspection" }
   | { kind: "changeImportOptions"; actionId?: string }
   | { kind: "installRuntimeDependencies" }
+  | { kind: "exportData" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;

@@ -28,6 +28,8 @@ const nativeMocks = vi.hoisted(() => ({
   showWarningMessage: vi.fn(async () => undefined),
   showErrorMessage: vi.fn(async () => undefined),
   showSaveDialog: vi.fn(async () => undefined as unknown),
+  showQuickPick: vi.fn<(items: readonly unknown[], options?: unknown) => Promise<unknown>>(async () => undefined),
+  withProgress: vi.fn(async (_options: unknown, task: () => Promise<unknown>) => task()),
   workspaceFolders: [] as Array<{ uri: unknown }>,
   workspaceTrusted: true,
   notebookDocuments: [] as Array<{ uri: unknown; isClosed: boolean; cellCount: number }>,
@@ -123,7 +125,8 @@ vi.mock("vscode", () => {
       showWarningMessage: nativeMocks.showWarningMessage,
       showErrorMessage: nativeMocks.showErrorMessage,
       showSaveDialog: nativeMocks.showSaveDialog,
-      showQuickPick: vi.fn(async () => undefined)
+      showQuickPick: nativeMocks.showQuickPick,
+      withProgress: nativeMocks.withProgress
     },
     workspace: {
       get isTrusted(): boolean {
@@ -146,6 +149,7 @@ vi.mock("vscode", () => {
 });
 
 vi.mock("../extension/webviewPanel", () => ({
+  SESSION_BOUND_EXPORT_DATA_COMMAND: "openWrangler.internal.exportSessionData",
   OpenWranglerPanel: { sendEditorAction: nativeMocks.sendEditorAction }
 }));
 vi.mock("../extension/notebooks/notebookInsertion", () => ({
@@ -176,6 +180,9 @@ describe("native operation commands", () => {
     nativeMocks.showErrorMessage.mockClear();
     nativeMocks.showSaveDialog.mockReset();
     nativeMocks.showSaveDialog.mockResolvedValue(undefined);
+    nativeMocks.showQuickPick.mockReset();
+    nativeMocks.showQuickPick.mockResolvedValue(undefined);
+    nativeMocks.withProgress.mockClear();
     nativeMocks.workspaceFolders.length = 0;
     nativeMocks.workspaceTrusted = true;
     nativeMocks.notebookDocuments.length = 0;
@@ -414,6 +421,95 @@ describe("native operation commands", () => {
     expect(nativeMocks.showErrorMessage).not.toHaveBeenCalled();
   });
 
+  it("exports the exact webview session even when another dataframe becomes active during the dialogs", async () => {
+    const origin = exportableSnapshot("origin-session", "orders.csv", 3);
+    const other = exportableSnapshot("other-session", "customers.csv", 8);
+    const registered = register(origin);
+    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => {
+      registered.setActiveSession(other);
+      return (items as Array<{ format: "csv" | "parquet" }>)[0];
+    });
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.csv"));
+
+    await expect(command("openWrangler.internal.exportSessionData")("origin-session", 3)).resolves.toBe(true);
+
+    expect(registered.exportData).toHaveBeenCalledWith("origin-session", 3, "/workspace/orders.cleaned.csv", "csv");
+    expect(nativeMocks.showSaveDialog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultUri: expect.objectContaining({ fsPath: "/workspace/orders.cleaned.csv" })
+      })
+    );
+  });
+
+  it("pins a global cleaned-data export before a dialog can change the active session", async () => {
+    const origin = exportableSnapshot("origin-session", "orders.csv", 3);
+    const other = exportableSnapshot("other-session", "customers.csv", 8);
+    const registered = register(origin);
+    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => {
+      registered.setActiveSession(other);
+      return (items as Array<{ format: "csv" | "parquet" }>)[1];
+    });
+    nativeMocks.showSaveDialog.mockResolvedValueOnce(vscodeUri("/workspace/orders.cleaned.parquet"));
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(true);
+
+    expect(registered.exportData).toHaveBeenCalledWith(
+      "origin-session",
+      3,
+      "/workspace/orders.cleaned.parquet",
+      "parquet"
+    );
+  });
+
+  it("rejects a session-bound export when its originating revision advances during the Save dialog", async () => {
+    const origin = exportableSnapshot("origin-session", "orders.csv", 3);
+    const registered = register(origin);
+    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
+      registered.setSession(exportableSnapshot("origin-session", "orders.csv", 4));
+      return vscodeUri("/workspace/orders.cleaned.csv");
+    });
+
+    await expect(command("openWrangler.internal.exportSessionData")("origin-session", 3)).resolves.toBe(false);
+
+    expect(registered.exportData).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "The dataframe changed while export was open. Review the current data and try again."
+    );
+  });
+
+  it("rechecks Workspace Trust after the cleaned-data Save dialog", async () => {
+    const registered = register(exportableSnapshot("origin-session", "orders.csv", 3));
+    nativeMocks.showQuickPick.mockImplementationOnce(async (items) => (items as unknown[])[0]);
+    nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
+      nativeMocks.workspaceTrusted = false;
+      return vscodeUri("/workspace/orders.cleaned.csv");
+    });
+
+    await expect(command("openWrangler.exportData")()).resolves.toBe(false);
+
+    expect(registered.exportData).not.toHaveBeenCalled();
+    expect(nativeMocks.showWarningMessage).toHaveBeenCalledWith(
+      "Trust this workspace before Open Wrangler can export cleaned data."
+    );
+  });
+
+  it.each([
+    { args: [] },
+    { args: ["origin-session"] },
+    { args: ["", 3] },
+    { args: ["origin-session", -1] },
+    { args: ["origin-session", 1.5] },
+    { args: [{ sessionId: "origin-session" }, 3] }
+  ])("rejects malformed session-bound export arguments without opening a dialog", async ({ args }) => {
+    register(exportableSnapshot("origin-session", "orders.csv", 3));
+
+    await expect(command("openWrangler.internal.exportSessionData")(...args)).resolves.toBe(false);
+
+    expect(nativeMocks.showQuickPick).not.toHaveBeenCalled();
+    expect(nativeMocks.showSaveDialog).not.toHaveBeenCalled();
+  });
+
   it("rechecks Workspace Trust after the Save dialog before writing", async () => {
     register(noDraftSnapshot());
     nativeMocks.showSaveDialog.mockImplementationOnce(async () => {
@@ -612,6 +708,8 @@ function register(
   notebookDocument?: { uri: unknown; isClosed: boolean; cellCount: number }
 ): {
   setActiveSession(snapshot: ActiveSessionSnapshot | undefined): void;
+  setSession(snapshot: ActiveSessionSnapshot): void;
+  exportData: ReturnType<typeof vi.fn>;
   notebookInsertionStatus():
     | "applied"
     | "stale"
@@ -625,9 +723,21 @@ function register(
     | undefined;
 } {
   let activeSnapshot: ActiveSessionSnapshot | undefined = snapshot;
+  const sessions = new Map<string, ActiveSessionSnapshot>([[snapshot.sessionId, snapshot]]);
+  const exportData = vi.fn(
+    async (sessionId: string, revision: number, destination: string, format: "csv" | "parquet") => ({
+      kind: "dataExported" as const,
+      revision,
+      path: destination,
+      format,
+      shape: { rows: 2, columns: 1 }
+    })
+  );
   const activeSessionListeners = new Set<(snapshot: ActiveSessionSnapshot | undefined) => unknown>();
   const coordinator = {
     activeSession: () => activeSnapshot,
+    sessionSnapshot: (sessionId: string) => sessions.get(sessionId),
+    exportData,
     activeNotebookDocument: () => notebookDocument,
     onDidChangeActiveSession: (listener: (snapshot: ActiveSessionSnapshot | undefined) => unknown) => {
       activeSessionListeners.add(listener);
@@ -642,8 +752,13 @@ function register(
   return {
     setActiveSession(nextSnapshot) {
       activeSnapshot = nextSnapshot;
+      if (nextSnapshot) sessions.set(nextSnapshot.sessionId, nextSnapshot);
       for (const listener of activeSessionListeners) listener(nextSnapshot);
     },
+    setSession(nextSnapshot) {
+      sessions.set(nextSnapshot.sessionId, nextSnapshot);
+    },
+    exportData,
     notebookInsertionStatus: () => nativeViews.notebookInsertionStatus()
   };
 }
@@ -694,6 +809,40 @@ function snapshotWithDraft(): ActiveSessionSnapshot {
       params: {}
     }
   });
+}
+
+function exportableSnapshot(sessionId: string, label: string, revision: number): ActiveSessionSnapshot {
+  const source = { kind: "file" as const, label, path: `/workspace/${label}`, uri: `file:///workspace/${label}` };
+  return {
+    sessionId,
+    code: "def clean_data(df):\n    return df\n",
+    metadata: {
+      protocolVersion: 2,
+      sessionId,
+      revision,
+      backend: "polars",
+      mode: "editing",
+      source,
+      capabilities: {
+        editable: true,
+        lazy: true,
+        cancel: true,
+        exportCsv: true,
+        exportParquet: true,
+        notebookInsert: false
+      },
+      shape: { rows: 2, columns: 1 },
+      filteredShape: { rows: 2, columns: 1 },
+      schema: [{ id: "c:value", name: "value", position: 0, rawType: "Int64", type: "integer", nullable: false }],
+      filterModel: { filters: [], sort: [] },
+      steps: [appliedStep]
+    },
+    viewState: {
+      filterModel: { filters: [], sort: [] },
+      columnWidths: {},
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    }
+  };
 }
 
 function notebookVariableSnapshot(): ActiveSessionSnapshot {

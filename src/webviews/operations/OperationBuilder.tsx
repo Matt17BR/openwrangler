@@ -1436,6 +1436,7 @@ function ColumnReferenceSelect({
     <label className="formField">
       <span>{label}</span>
       <select
+        aria-label={label}
         name={name}
         {...(controlled ? { value } : { defaultValue: fallbackValue })}
         required
@@ -1544,7 +1545,7 @@ function SelectField({
   return (
     <label className="formField">
       <span>{label}</span>
-      <select name={name} defaultValue={defaultValue}>
+      <select aria-label={label} name={name} defaultValue={defaultValue}>
         {options.map(([value, title]) => (
           <option key={value} value={value}>
             {title}

@@ -217,10 +217,102 @@ describe("App column projection", () => {
       "Wait for the visible columns to finish loading before adding a cleaning step."
     );
   });
+
+  it("reissues an added-column reveal after host view restoration wins the first render", async () => {
+    const addedColumn = {
+      id: "c:40",
+      name: "column-40",
+      position: 40,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    };
+    const draft: TransformStep = {
+      id: "upper-column",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "column-0" }, newColumn: addedColumn.name }
+    };
+    const previewMetadata: SessionMetadata = {
+      ...metadata,
+      revision: 1,
+      shape: { rows: 400, columns: 41 },
+      filteredShape: { rows: 400, columns: 41 },
+      schema: [...schema, addedColumn],
+      draftStep: draft
+    };
+
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page: projectedPage(0, 0), summaries: [] });
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 760 },
+      clientHeight: { configurable: true, value: 400 }
+    });
+    postMessage.mockClear();
+
+    dispatch({
+      kind: "stepPreview",
+      revision: 1,
+      metadata: previewMetadata,
+      page: completePreviewPage(0, addedColumn),
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [addedColumn.name],
+        removedColumns: [],
+        changedCells: 0,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df"
+    });
+    await waitFor(() => expect(scroller.scrollLeft).toBeGreaterThan(0));
+    expect(await screen.findByRole("columnheader", { name: /column-40/u })).toBeVisible();
+
+    dispatchMany([
+      {
+        kind: "viewState",
+        state: { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } }
+      },
+      {
+        kind: "rendererSynchronization",
+        syncId: "S".repeat(32),
+        sessionId: previewMetadata.sessionId,
+        revision: previewMetadata.revision
+      }
+    ]);
+
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(scroller.scrollLeft).toBeGreaterThan(0);
+    expect(screen.getByRole("columnheader", { name: /column-40/u })).toBeVisible();
+  });
 });
 
 function projectedPage(offset: number, columnOffset: number): GridPage {
   const columns = schema.slice(columnOffset, columnOffset + 16);
+  return {
+    offset,
+    limit: 200,
+    totalRows: 400,
+    columnIds: columns.map((column) => column.id),
+    rows: [
+      {
+        id: `r:${offset}`,
+        rowNumber: offset,
+        values: columns.map((column) => ({
+          kind: "string" as const,
+          raw: `value-${column.position}-row-${offset}`,
+          display: `value-${column.position}-row-${offset}`,
+          isNull: false,
+          isNaN: false
+        }))
+      }
+    ]
+  };
+}
+
+function completePreviewPage(offset: number, addedColumn: SessionMetadata["schema"][number]): GridPage {
+  const columns = [...schema, addedColumn];
   return {
     offset,
     limit: 200,
@@ -258,12 +350,25 @@ function pageResponse(
 
 type HostMessage =
   | OpenWranglerResponse
+  | {
+      kind: "viewState";
+      state: { columnWidths: Record<string, number>; viewport: { firstVisibleRow: number; scrollLeft: number } };
+    }
+  | { kind: "rendererSynchronization"; syncId: string; sessionId: string; revision: number }
   | { kind: "editorAction"; action: "applyDraft" }
   | { kind: "editorAction"; action: "selectStep"; stepId: string }
   | { kind: "editorAction"; action: "openOperation"; operationKind?: "castColumn" };
 
 function dispatch(data: HostMessage): void {
   act(() => window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin })));
+}
+
+function dispatchMany(messages: HostMessage[]): void {
+  act(() => {
+    for (const data of messages) {
+      window.dispatchEvent(new MessageEvent("message", { data, origin: window.location.origin }));
+    }
+  });
 }
 
 async function onlyRuntimeRequest(kind: string): Promise<Record<string, unknown>> {

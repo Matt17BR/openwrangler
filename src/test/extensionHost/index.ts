@@ -68,12 +68,14 @@ import {
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
 import {
+  PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedFirstUseFixtureCsv,
   packagedScreenshotFixtureCsv
 } from "./screenshotEvidence";
 import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
@@ -176,9 +178,18 @@ const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS = 120_000;
 const RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS = 1_000;
 const RELEASED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
+const RELEASED_DATA_WRANGLER_EXTENSION_VERSION = "1.24.2";
 const RELEASED_JUPYTER_CONSENT_MESSAGE =
   "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?";
 const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
+const NOTEBOOK_PREVIEW_CONFLICT_MESSAGE =
+  "Open Wrangler and Data Wrangler can both render dataframe outputs. Which notebook preview should take priority?";
+const NOTEBOOK_PREVIEW_CONFLICT_DETAIL =
+  "You can change this later with “Open Wrangler: Choose Notebook Preview Provider”.";
+const NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER = "Use Open Wrangler";
+const NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER = "Keep Data Wrangler";
+const DATA_WRANGLER_COEXISTENCE_SETUP_RESULT = "__OW_DATA_WRANGLER_COEXISTENCE_SETUP__";
+const DATA_WRANGLER_COEXISTENCE_VARIABLE = "coexist_frame";
 const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wrangler$/u;
@@ -585,6 +596,14 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
+  if (isDataWranglerCoexistencePhase(phase)) {
+    assert.ok(testPython, "Real Data Wrangler coexistence acceptance requires the private Jupyter environment.");
+    recordAcceptanceProgress(`${phase}:start`);
+    await exerciseReleasedDataWranglerCoexistence(testing, extension, phase, testPython);
+    recordAcceptanceProgress(`${phase}:complete`);
+    console.log(`Open Wrangler real Data Wrangler coexistence ${phase} acceptance passed.`);
+    return;
+  }
   if (
     phase === "jupyter-deny" ||
     phase === "jupyter-allow" ||
@@ -622,11 +641,8 @@ export async function run(): Promise<void> {
   }
   if (phase === "platform-smoke") {
     recordAcceptanceProgress("platform-smoke:start");
-    await exercisePackagedPlatformSmoke(
-      testing,
-      extension,
-      vscode.Uri.joinPath(workspace, "fixtures", "[Live] sample.csv")
-    );
+    const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
+    await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture);
     if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
       recordAcceptanceProgress("platform-smoke:screenshots");
       await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
@@ -704,9 +720,10 @@ export async function run(): Promise<void> {
   await exercisePackagedNotebookFlows(testing);
   if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
     recordAcceptanceProgress("verify:file-launch-surfaces");
+    const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
     await exercisePackagedFileLaunchSurfaces(
       testing,
-      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "[Live] sample.csv")),
+      firstUseFixture,
       process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
     );
   }
@@ -730,6 +747,39 @@ export async function run(): Promise<void> {
   console.log("Open Wrangler extension-host acceptance passed.");
 }
 
+function ensurePackagedFirstUseFixture(workspace: vscode.Uri): vscode.Uri {
+  const fixture = vscode.Uri.joinPath(workspace, "fixtures", "[Live] regional orders 2024-2025.csv");
+  const expected = packagedFirstUseFixtureCsv();
+  try {
+    writeFileSync(fixture.fsPath, expected, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+    const descriptor = openSync(fixture.fsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = fstatSync(descriptor, { bigint: true });
+      assert.equal(opened.isFile(), true, "An existing first-use fixture must remain a regular file.");
+      assert.equal(opened.nlink, 1n, "An existing first-use fixture must not be hard linked.");
+      assert.equal(
+        readFileSync(descriptor, "utf8"),
+        expected,
+        "An existing first-use fixture must retain the exact deterministic source bytes."
+      );
+      const completed = fstatSync(descriptor, { bigint: true });
+      assert.equal(completed.dev, opened.dev, "The first-use fixture device changed while it was read.");
+      assert.equal(completed.ino, opened.ino, "The first-use fixture identity changed while it was read.");
+      assert.equal(completed.size, opened.size, "The first-use fixture size changed while it was read.");
+      assert.equal(
+        completed.mtimeNs,
+        opened.mtimeNs,
+        "The first-use fixture modification time changed while it was read."
+      );
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  return fixture;
+}
+
 function recordAcceptanceProgress(checkpoint: string): void {
   const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
   if (!progressPath) return;
@@ -746,7 +796,14 @@ function recordAcceptanceProgress(checkpoint: string): void {
   });
 }
 
-type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote";
+type DataWranglerCoexistencePhase =
+  | "jupyter-coexist-open-select"
+  | "jupyter-coexist-open-restart"
+  | "jupyter-coexist-data-select"
+  | "jupyter-coexist-data-restart";
+
+type ReleasedJupyterPhase =
+  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | DataWranglerCoexistencePhase;
 
 interface ReleasedJupyterKernelTarget {
   readonly label: string;
@@ -766,6 +823,354 @@ interface ReleasedVariableExpectation {
   readonly backend: "pandas" | "polars" | "pyspark";
   readonly firstValue: string;
   readonly notebookInsert?: boolean;
+}
+
+function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
+  return (
+    phase === "jupyter-coexist-open-select" ||
+    phase === "jupyter-coexist-open-restart" ||
+    phase === "jupyter-coexist-data-select" ||
+    phase === "jupyter-coexist-data-restart"
+  );
+}
+
+function dataWranglerCoexistenceExpectation(phase: DataWranglerCoexistencePhase): {
+  provider: "openWrangler" | "dataWrangler";
+  selection: boolean;
+} {
+  return {
+    provider: phase.includes("-open-") ? "openWrangler" : "dataWrangler",
+    selection: phase.endsWith("-select")
+  };
+}
+
+async function exerciseReleasedDataWranglerCoexistence(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  phase: DataWranglerCoexistencePhase,
+  testPython: string
+): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Data Wrangler coexistence acceptance must start without an Open Wrangler session."
+  );
+  assert.ok(
+    !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
+    "Coexistence must not add a hard Jupyter dependency to Open Wrangler."
+  );
+
+  const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
+  assert.equal(jupyterExtension.packageJSON.publisher, "ms-toolsai");
+  assert.equal(jupyterExtension.packageJSON.name, "jupyter");
+  assert.equal(jupyterExtension.packageJSON.version, RELEASED_JUPYTER_EXTENSION_VERSION);
+
+  const dataWranglerExtension = vscode.extensions.getExtension("ms-toolsai.datawrangler");
+  assert.ok(dataWranglerExtension, "The exact Microsoft Data Wrangler parity baseline must be installed.");
+  assert.equal(dataWranglerExtension.packageJSON.publisher, "ms-toolsai");
+  assert.equal(dataWranglerExtension.packageJSON.name, "datawrangler");
+  assert.equal(
+    dataWranglerExtension.packageJSON.version,
+    RELEASED_DATA_WRANGLER_EXTENSION_VERSION,
+    "Coexistence acceptance must not float to an unreviewed Data Wrangler version."
+  );
+
+  const expectation = dataWranglerCoexistenceExpectation(phase);
+  if (expectation.provider === "dataWrangler") {
+    await dataWranglerExtension.activate();
+    assert.equal(dataWranglerExtension.isActive, true, "The selected real Data Wrangler extension must be active.");
+  }
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
+  const initialProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  );
+  if (expectation.selection) {
+    assert.equal(initialProvider?.globalValue, undefined, "A fresh coexistence profile must not preselect a provider.");
+    assert.equal(initialProvider?.workspaceValue, undefined);
+    assert.equal(configuration.get("notebookPreviewProvider", "ask"), "ask");
+  } else {
+    assert.equal(
+      initialProvider?.globalValue,
+      expectation.provider,
+      "The provider selected before editor restart must persist globally."
+    );
+    assert.equal(configuration.get("notebookPreviewProvider", "ask"), expectation.provider);
+  }
+
+  const kernelTarget = releasedJupyterKernelTarget(phase);
+  const directory = mkdtempSync(path.join(tmpdir(), `openwrangler-data-wrangler-${phase}-`));
+  const notebookPath = path.join(directory, `${phase}.ipynb`);
+  writeDataWranglerCoexistenceNotebook(notebookPath, kernelTarget);
+  const notebookUri = vscode.Uri.file(notebookPath);
+  let notebook: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress(`${phase}:notebook-open`);
+    notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    assertExactOpenNotebookDocument(notebook, "after opening the Data Wrangler coexistence fixture");
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    assert.equal(notebookEditor.notebook, notebook);
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      notebookEditor,
+      "after showing the Data Wrangler coexistence fixture"
+    );
+
+    const workbench = await connectToEditorWorkbench();
+    if (expectation.selection) {
+      recordAcceptanceProgress(`${phase}:provider-prompt`);
+      const conflict = await waitForNotebookPreviewConflict(workbench);
+      assert.equal(
+        configuration.get("notebookPreviewProvider", "ask"),
+        "ask",
+        "The conflict prompt must not mutate the preference before one explicit choice."
+      );
+      const action = expectation.provider === "openWrangler" ? conflict.useOpenWrangler : conflict.keepDataWrangler;
+      await action.click();
+      await conflict.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      await waitFor(
+        () =>
+          vscode.workspace
+            .getConfiguration("openWrangler")
+            .inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">("notebookPreviewProvider")?.globalValue ===
+          expectation.provider,
+        10_000,
+        "the selected notebook preview provider to persist globally"
+      );
+    } else {
+      recordAcceptanceProgress(`${phase}:provider-persisted`);
+      await assertNotebookPreviewConflictAbsent(
+        workbench,
+        1_500,
+        "A persisted notebook preview provider must suppress the conflict prompt after editor restart."
+      );
+    }
+
+    recordAcceptanceProgress(`${phase}:kernel-discovery`);
+    await jupyterExtension.activate();
+    assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for coexistence");
+    recordAcceptanceProgress(`${phase}:kernel-select`);
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
+    recordAcceptanceProgress(`${phase}:kernel-selected`);
+
+    const setupExecution = executeReleasedNotebookCell(
+      notebook,
+      0,
+      DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
+      `${phase}:setup-cell`,
+      notebookEditor
+    );
+    if (expectation.provider === "openWrangler") {
+      recordAcceptanceProgress(`${phase}:open-wrangler-consent`);
+      const consent = await waitForReleasedJupyterConsent(workbench, testing);
+      await consent.allow.click();
+      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+    await setupExecution;
+    const initialKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(0));
+    assert.equal(
+      canonicalAcceptancePath(String(initialKernel.executable)),
+      canonicalAcceptancePath(testPython),
+      "Data Wrangler coexistence must use the private released-Jupyter interpreter."
+    );
+    assert.ok(Number.isSafeInteger(Number(initialKernel.pid)) && Number(initialKernel.pid) > 0);
+    if (expectation.provider === "dataWrangler") {
+      assert.equal(
+        await visibleReleasedJupyterConsentCount(workbench),
+        0,
+        "Choosing Data Wrangler must not show Open Wrangler kernel consent."
+      );
+    }
+
+    await assertDataWranglerCoexistenceOwnership(
+      workbench,
+      notebook,
+      notebookEditor,
+      expectation.provider,
+      `${phase}:initial-provider`
+    );
+    await assertNotebookPreviewConflictAbsent(
+      workbench,
+      1_500,
+      "The notebook preview conflict prompt must stay dismissed after the selected provider renders output."
+    );
+
+    if (!expectation.selection) {
+      recordAcceptanceProgress(`${phase}:kernel-restart`);
+      await restartReleasedJupyterKernelAndWait(notebook);
+      await executeReleasedNotebookCell(
+        notebook,
+        0,
+        DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
+        `${phase}:restart-setup-cell`,
+        notebookEditor
+      );
+      const replacementKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(0));
+      assert.notEqual(
+        Number(replacementKernel.pid),
+        Number(initialKernel.pid),
+        "The coexistence restart phase must exercise a replacement kernel process."
+      );
+      assert.equal(canonicalAcceptancePath(String(replacementKernel.executable)), canonicalAcceptancePath(testPython));
+      await assertDataWranglerCoexistenceOwnership(
+        workbench,
+        notebook,
+        notebookEditor,
+        expectation.provider,
+        `${phase}:restarted-provider`
+      );
+      await assertNotebookPreviewConflictAbsent(
+        workbench,
+        1_500,
+        "Kernel restart must not repeat the resolved notebook preview conflict."
+      );
+    }
+
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "Automatic notebook preview coexistence must not create an Open Wrangler session panel."
+    );
+  } finally {
+    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+async function assertDataWranglerCoexistenceOwnership(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  provider: "openWrangler" | "dataWrangler",
+  checkpoint: string
+): Promise<void> {
+  if (provider === "openWrangler") {
+    await executeReleasedNotebookCellUntilMime(notebook, 1, OPEN_WRANGLER_MIME_V2, checkpoint, notebookEditor);
+    const mimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    assert.ok(mimes.includes(OPEN_WRANGLER_MIME_V2));
+    return;
+  }
+
+  await executeReleasedNotebookCell(notebook, 1, undefined, `${checkpoint}:dataframe-cell`, notebookEditor);
+  const mimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+  assert.equal(
+    mimes.includes(OPEN_WRANGLER_MIME_V2),
+    false,
+    "Choosing Data Wrangler must leave Open Wrangler's automatic notebook formatter unregistered."
+  );
+  assert.ok(
+    mimes.includes("text/plain"),
+    "The selected Data Wrangler path must retain the successful native Jupyter dataframe output."
+  );
+}
+
+async function waitForNotebookPreviewConflict(workbench: Page): Promise<{
+  dialog: Locator;
+  useOpenWrangler: Locator;
+  keepDataWrangler: Locator;
+}> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      const dialog = frame
+        .locator(".monaco-dialog-box:visible")
+        .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
+        .last();
+      if ((await dialog.count().catch(() => 0)) === 0 || !(await dialog.isVisible().catch(() => false))) continue;
+      const message = await dialog.locator(".dialog-message-text").innerText();
+      const detail = await dialog.locator(".dialog-message-detail").innerText();
+      assert.equal(message, NOTEBOOK_PREVIEW_CONFLICT_MESSAGE);
+      assert.equal(detail, NOTEBOOK_PREVIEW_CONFLICT_DETAIL);
+      const useOpenWrangler = dialog.getByRole("button", {
+        name: NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
+        exact: true
+      });
+      const keepDataWrangler = dialog.getByRole("button", {
+        name: NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
+        exact: true
+      });
+      assert.equal(await useOpenWrangler.count(), 1);
+      assert.equal(await keepDataWrangler.count(), 1);
+      return { dialog, useOpenWrangler, keepDataWrangler };
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  const diagnostics = await boundedImportPromptDiagnostics(workbench);
+  throw new Error(
+    "Timed out waiting for the real Open Wrangler/Data Wrangler provider conflict prompt. " +
+      `Dialogs: ${JSON.stringify(diagnostics.dialogs)}.`
+  );
+}
+
+async function assertNotebookPreviewConflictAbsent(
+  workbench: Page,
+  observationMs: number,
+  message: string
+): Promise<void> {
+  const deadline = Date.now() + observationMs;
+  do {
+    let count = 0;
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      count += await frame
+        .locator(".monaco-dialog-box:visible")
+        .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
+        .count()
+        .catch(() => 0);
+    }
+    assert.equal(count, 0, message);
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+}
+
+function dataWranglerCoexistenceSetupResult(cell: vscode.NotebookCell): Record<string, unknown> {
+  return releasedNotebookJsonResult(cell, DATA_WRANGLER_COEXISTENCE_SETUP_RESULT, "Data Wrangler coexistence setup");
+}
+
+function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: ReleasedJupyterKernelTarget): void {
+  const cell = (source: readonly string[]) => ({
+    cell_type: "code",
+    execution_count: null,
+    metadata: {},
+    outputs: [],
+    source: source.map((line) => `${line}\n`)
+  });
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        cell([
+          "import json",
+          "import os",
+          "import sys",
+          "import pandas as pd",
+          `${DATA_WRANGLER_COEXISTENCE_VARIABLE} = pd.DataFrame({`,
+          "    'order_id': [2400001, 2400002, 2400003, 2400004],",
+          "    'market': ['DACH', 'Nordics', 'Iberia', 'France'],",
+          "    'revenue': [620.50, 1840.75, 991.00, 2420.25],",
+          "})",
+          `print(${JSON.stringify(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT)} + json.dumps({`,
+          "    'executable': sys.executable,",
+          "    'pid': os.getpid(),",
+          "}, sort_keys=True))"
+        ]),
+        cell([DATA_WRANGLER_COEXISTENCE_VARIABLE])
+      ],
+      metadata: {
+        kernelspec: {
+          display_name: target.label,
+          language: "python",
+          name: target.name
+        },
+        language_info: { name: "python" }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
 }
 
 async function exerciseReleasedJupyterExtension(
@@ -4421,17 +4826,26 @@ async function exercisePackagedPlatformSmoke(
   const active = testing.activeSession();
   assert.ok(active, `The ${editorName} journey must publish an active dataframe session.`);
   assert.equal(active.metadata.source.path, fixture.fsPath);
-  assert.equal(active.metadata.shape.rows > 0, true);
-  assert.equal(active.metadata.shape.columns, 4);
+  assert.deepEqual(active.metadata.shape, {
+    rows: PACKAGED_FIRST_USE_ROW_COUNT,
+    columns: PACKAGED_SCREENSHOT_COLUMNS.length
+  });
+  assert.equal(active.metadata.backend, "polars");
+  assert.deepEqual(active.metadata.source.importOptions, {
+    delimiter: ";",
+    encoding: "utf-8",
+    quoteChar: '"',
+    hasHeader: true
+  });
 
   recordAcceptanceProgress("platform-smoke:grid");
   const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
   const grid = gridTarget.frame.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
   await grid.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await grid.getAttribute("aria-colcount"), "5");
+  assert.equal(await grid.getAttribute("aria-colcount"), String(PACKAGED_SCREENSHOT_COLUMNS.length + 1));
   const firstCell = gridTarget.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
   await firstCell.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal((await firstCell.innerText()).trim(), "Milan");
+  assert.equal((await firstCell.innerText()).trim(), "2400001");
   await firstCell.focus();
   await firstCell.press("ArrowRight");
   await gridTarget.frame
@@ -4439,6 +4853,14 @@ async function exercisePackagedPlatformSmoke(
     .waitFor({ state: "visible", timeout: 5_000 });
 
   await exercisePrimarySortJourney(testing, gridTarget.frame, "platform-smoke:sort-journey");
+  await exercisePackagedFirstUseInteractionJourney(
+    testing,
+    page,
+    gridTarget.frame,
+    active.metadata.sessionId,
+    fixture,
+    sourceBytes
+  );
 
   recordAcceptanceProgress("platform-smoke:theme");
   const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
@@ -4480,6 +4902,8 @@ async function exercisePackagedPlatformSmoke(
     await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   assert.equal(extension.isActive, true);
+
+  await exercisePackagedReopenAndUndoJourney(testing, page, fixture, sourceBytes, editorName);
 
   recordAcceptanceProgress("platform-smoke:cleanup");
   assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
@@ -4767,12 +5191,12 @@ async function focusAndSynchronizeExactSessionPanel(
 
 async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
   recordAcceptanceProgress(checkpoint);
-  const cityHeader = frame.locator('th[data-column="city"]').first();
-  const cityMenu = cityHeader.locator("details.columnMenu").first();
-  await cityMenu.getByLabel("Column actions for city").click();
-  await cityMenu.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  const marketHeader = frame.locator('th[data-column="market"]').first();
+  const marketMenu = marketHeader.locator("details.columnMenu").first();
+  await marketMenu.getByLabel("Column actions for market").click();
+  await marketMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
   assert.equal(
-    await cityMenu.evaluate((element) => element.hasAttribute("open")),
+    await marketMenu.evaluate((element) => element.hasAttribute("open")),
     false,
     "A quick-sort choice must close its column menu."
   );
@@ -4780,27 +5204,27 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
       return (
-        sort?.length === 1 && sort[0]?.column === "city" && sort[0].direction === "asc" && sort[0].nulls === "last"
+        sort?.length === 1 && sort[0]?.column === "market" && sort[0].direction === "desc" && sort[0].nulls === "last"
       );
     },
     10_000,
-    "the city quick sort to become the only active viewing sort"
+    "the market quick sort to become the only active viewing sort"
   );
   await frame
-    .locator('td[data-grid-row="0"][data-grid-column="0"]')
-    .filter({ hasText: "Berlin" })
+    .locator('td[data-grid-row="0"][data-grid-column="1"]')
+    .filter({ hasText: "UK & Ireland" })
     .waitFor({ state: "visible", timeout: 10_000 });
-  await cityHeader.getByRole("button", { name: /Clear sort for city; currently ascending/u }).waitFor({
+  await marketHeader.getByRole("button", { name: /Clear sort for market; currently descending/u }).waitFor({
     state: "visible",
     timeout: 10_000
   });
 
-  const salesHeader = frame.locator('th[data-column="sales"]').first();
-  const salesMenu = salesHeader.locator("details.columnMenu").first();
-  await salesMenu.getByLabel("Column actions for sales").click();
-  await salesMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
+  const revenueHeader = frame.locator('th[data-column="revenue"]').first();
+  const revenueMenu = revenueHeader.locator("details.columnMenu").first();
+  await revenueMenu.getByLabel("Column actions for revenue").click();
+  await revenueMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
   assert.equal(
-    await salesMenu.evaluate((element) => element.hasAttribute("open")),
+    await revenueMenu.evaluate((element) => element.hasAttribute("open")),
     false,
     "A later quick sort must also close its column menu."
   );
@@ -4808,22 +5232,22 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
       return (
-        sort?.length === 1 && sort[0]?.column === "sales" && sort[0].direction === "desc" && sort[0].nulls === "last"
+        sort?.length === 1 && sort[0]?.column === "revenue" && sort[0].direction === "desc" && sort[0].nulls === "last"
       );
     },
     10_000,
-    "the sales quick sort to replace the earlier city sort"
+    "the revenue quick sort to replace the earlier market sort"
   );
   assert.equal(
-    await cityHeader.getByRole("button", { name: /Clear sort for city/u }).count(),
+    await marketHeader.getByRole("button", { name: /Clear sort for market/u }).count(),
     0,
     "Replacing a quick sort must remove the prior column's active-sort indicator."
   );
-  const clearSalesSort = salesHeader.getByRole("button", {
-    name: /Clear sort for sales; currently descending/u
+  const clearRevenueSort = revenueHeader.getByRole("button", {
+    name: /Clear sort for revenue; currently descending/u
   });
-  await clearSalesSort.waitFor({ state: "visible", timeout: 10_000 });
-  await clearSalesSort.click();
+  await clearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
+  await clearRevenueSort.click();
   await waitFor(
     () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
     10_000,
@@ -4831,8 +5255,434 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="0"]')
-    .filter({ hasText: "Milan" })
+    .filter({ hasText: "2400001" })
     .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function exercisePackagedFirstUseInteractionJourney(
+  testing: TestApi,
+  workbench: Page,
+  frame: Frame,
+  sessionId: string,
+  fixture: vscode.Uri,
+  sourceBytes: Uint8Array
+): Promise<void> {
+  const app = await exactSessionApp(frame, sessionId);
+  assert.ok(app, "The first-use journey requires the exact active Open Wrangler application.");
+  assert.equal(
+    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    0,
+    "A new dataframe must not waste vertical space on an empty cleaning-plan bar."
+  );
+  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress("platform-smoke:column-search");
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("revenue");
+  const revenueOption = app.getByRole("option", { name: "revenue, Number column", exact: true });
+  await revenueOption.waitFor({ state: "visible", timeout: 10_000 });
+  await revenueOption.getByRole("img", { name: "Number column type" }).waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  const revenue = columnReference(testing.activeSession()!.metadata, "revenue");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === revenue.id,
+    10_000,
+    "column search to navigate to the selected numeric column"
+  );
+
+  recordAcceptanceProgress("platform-smoke:insights");
+  const insightsToggle = app.getByRole("button", { name: "Insights & filters" });
+  await insightsToggle.click();
+  const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await waitForLocatorText(
+    drawer,
+    (text) =>
+      !text.includes("Profiling selected column") &&
+      ["Exact statistics", "Min", "Max", "Mean", "Median"].every((label) => text.includes(label)) &&
+      (text.includes("Exact distribution") || text.includes("Sampled distribution")),
+    30_000,
+    "complete exact revenue insights"
+  );
+  const histogramBars = drawer.locator('[role="graphics-symbol"]');
+  assert.ok(await histogramBars.count(), "Numeric insights must expose keyboard-focusable histogram bins.");
+  assert.match(
+    (await histogramBars.first().getAttribute("aria-label")) ?? "",
+    /: [\d,.]+ rows?$/u,
+    "Every histogram bin must expose its exact row count."
+  );
+  assert.equal(
+    await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    true,
+    "The Insights drawer must not clip content horizontally."
+  );
+
+  recordAcceptanceProgress("platform-smoke:filter");
+  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  const filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "revenue" });
+  await filterPanel.getByLabel("Predicate operator").selectOption("gte");
+  await filterPanel.getByLabel("gte predicate value").fill("20000");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.filterModel.filters.length === 1 &&
+        active.metadata.filteredShape.rows > 0 &&
+        active.metadata.filteredShape.rows < PACKAGED_FIRST_USE_ROW_COUNT
+      );
+    },
+    30_000,
+    "the realistic numeric filter to update the visible dataframe"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The filtered host state must be acknowledged by its exact renderer before visible values are inspected."
+  );
+  const visibleRevenueCell = frame.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
+  await waitForLocatorText(
+    visibleRevenueCell,
+    (text) => {
+      const value = Number(text.replaceAll(",", ""));
+      return Number.isFinite(value) && value >= 20_000;
+    },
+    10_000,
+    "the first visible revenue to satisfy the chosen predicate"
+  );
+  const visibleRevenue = Number((await visibleRevenueCell.innerText()).replaceAll(",", ""));
+  assert.ok(
+    Number.isFinite(visibleRevenue) && visibleRevenue >= 20_000,
+    `The first visible filtered revenue must satisfy the chosen predicate, received ${visibleRevenue}.`
+  );
+  await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.filterModel.filters.length === 0 &&
+        active.viewState.filterModel.sort.length === 0 &&
+        active.metadata.filteredShape.rows === PACKAGED_FIRST_USE_ROW_COUNT
+      );
+    },
+    30_000,
+    "Clear all to restore the complete dataframe view"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The restored host view must be acknowledged by its exact renderer before the next operation."
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  await drawer.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await insightsToggle.evaluate((element) => element.ownerDocument.activeElement === element),
+    true,
+    "Closing Insights must restore focus to its toolbar toggle."
+  );
+
+  recordAcceptanceProgress("platform-smoke:draft-discard");
+  await previewUppercaseMarket(app, testing, "market_upper");
+  const discardedDraft = testing.activeSession();
+  assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
+  assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
+  assert.ok(
+    discardedDraft.metadata.schema.some((column) => column.name === "market_upper"),
+    "The draft grid must preview its added output column."
+  );
+  await app.getByRole("region", { name: "Cleaning plan" }).getByText("Draft: Uppercase").waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await app.getByText("Previewing Uppercase", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await app.getByText(`+1 column`, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await app.getByText(/values added in this block$/u).waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await app.getByText(/0 changed cells/u).count(),
+    0,
+    "An added-column preview must not misleadingly report zero changed cells."
+  );
+  const addedHeader = app.locator('th[data-column="market_upper"]').first();
+  try {
+    await addedHeader.waitFor({ state: "visible", timeout: 10_000 });
+  } catch (error) {
+    const revealDiagnostics = await app.evaluate((root: unknown) => {
+      const queryRoot = root as {
+        querySelector(selector: string): unknown;
+        querySelectorAll(selector: string): Iterable<{ getAttribute(name: string): string | null }> & {
+          length: number;
+        };
+      };
+      const scroller = queryRoot.querySelector('[data-testid="data-grid-scroller"]') as {
+        scrollLeft: number;
+        scrollWidth: number;
+        clientWidth: number;
+      } | null;
+      const search = queryRoot.querySelector('input[aria-label="Column"]') as { value: string } | null;
+      const renderedHeaders = Array.from(queryRoot.querySelectorAll("th[data-column]"));
+      return {
+        selectedSearchValue: search?.value ?? null,
+        renderedColumnCount: renderedHeaders.length,
+        renderedLastColumn: renderedHeaders.at(-1)?.getAttribute("data-column") ?? null,
+        scrollLeft: scroller?.scrollLeft ?? null,
+        scrollWidth: scroller?.scrollWidth ?? null,
+        clientWidth: scroller?.clientWidth ?? null
+      };
+    });
+    throw new Error(`The generated column was not revealed: ${JSON.stringify(revealDiagnostics)}`, {
+      cause: error
+    });
+  }
+  const addedHeaderVisibility = await addedHeader.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const scroller = element.closest('[data-testid="data-grid-scroller"]');
+    if (!scroller) return { visible: false };
+    const viewport = scroller.getBoundingClientRect();
+    return {
+      visible: bounds.left >= viewport.left - 1 && bounds.right <= viewport.right + 1,
+      headerLeft: bounds.left,
+      headerRight: bounds.right,
+      viewportLeft: viewport.left,
+      viewportRight: viewport.right,
+      scrollLeft: scroller.scrollLeft,
+      scrollWidth: scroller.scrollWidth,
+      clientWidth: scroller.clientWidth
+    };
+  });
+  assert.equal(
+    addedHeaderVisibility.visible,
+    true,
+    `Previewing a new column must automatically reveal its complete grid header: ${JSON.stringify(
+      addedHeaderVisibility
+    )}`
+  );
+  await app
+    .locator('td[data-grid-row="0"][data-grid-column="15"]')
+    .filter({ hasText: "BENELUX" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const generatedCodeDetails = app.locator("details.draftCode").first();
+  await generatedCodeDetails.locator("summary").click();
+  const generatedCode = await app.getByLabel("Generated Python code preview").innerText();
+  assert.match(generatedCode, /import polars as pl/u);
+  assert.match(generatedCode, /market_upper/u);
+  await app.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () =>
+      testing.activeSession()?.metadata.draftStep === undefined &&
+      testing.activeSession()?.metadata.steps.length === 0 &&
+      testing.activeSession()?.metadata.schema.some((column) => column.name === "market") === true &&
+      testing.activeSession()?.metadata.schema.some((column) => column.name === "market_upper") === false,
+    30_000,
+    "discarding the preview to restore the confirmed dataframe"
+  );
+  const emptyCleaningPlan = app.getByRole("region", { name: "Cleaning plan" });
+  await emptyCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await emptyCleaningPlan.count(),
+    0,
+    "Discarding the only draft must remove the now-empty cleaning-plan bar."
+  );
+
+  recordAcceptanceProgress("platform-smoke:draft-apply");
+  await previewUppercaseMarket(app, testing, "market_upper");
+  await app.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      if (!active) return false;
+      return (
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.schema.some((column) => column.name === "market") &&
+        active.metadata.schema.some((column) => column.name === "market_upper")
+      );
+    },
+    30_000,
+    "applying the previewed uppercase step"
+  );
+  const appliedPlan = app.getByRole("region", { name: "Cleaning plan" });
+  await appliedPlan.getByText("1 applied step").waitFor({ state: "visible", timeout: 10_000 });
+  assert.match(testing.activeSession()?.code ?? "", /import polars as pl/u);
+  assert.match(testing.activeSession()?.code ?? "", /market_upper/u);
+
+  recordAcceptanceProgress("platform-smoke:export");
+  const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-first-use-export-"));
+  const exportPath = path.join(exportDirectory, "regional-orders-cleaned.csv");
+  try {
+    await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
+    await waitFor(() => existsSync(exportPath), 30_000, "the cleaned CSV export to appear");
+    const exportedHeader = readFileSync(exportPath, "utf8").split(/\r?\n/u, 1)[0] ?? "";
+    assert.match(exportedHeader, /(?:^|,)market(?:,|$)/u);
+    assert.match(exportedHeader, /(?:^|,)market_upper(?:,|$)/u);
+    assert.equal(
+      readFileSync(exportPath, "utf8").split(/\r?\n/u).filter(Boolean).length,
+      PACKAGED_FIRST_USE_ROW_COUNT + 1,
+      "The exported CSV must contain every cleaned row plus its header."
+    );
+  } finally {
+    cleanupAcceptanceTemporaryDirectory(exportDirectory);
+  }
+  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  await clearReleasedJupyterScreenshotTransientUi(workbench);
+}
+
+async function previewUppercaseMarket(app: Locator, testing: TestApi, newColumn: string): Promise<void> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("uppercase");
+  await dialog.getByRole("button", { name: /^Uppercase/u }).click();
+  const textColumn = dialog.getByLabel("Text column", { exact: true });
+  await textColumn.waitFor({ state: "visible", timeout: 10_000 });
+  assert.match(
+    (await textColumn.locator("option:checked").innerText()).trim(),
+    /^market, column \d+$/u,
+    "The Uppercase form should default to the first compatible text column."
+  );
+  await dialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill(newColumn);
+  const commands = new Set(await vscode.commands.getCommands(true));
+  if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+  if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () =>
+      testing.activeSession()?.metadata.draftStep?.kind === "upperText" &&
+      testing.activeSession()?.metadata.schema.some((column) => column.name === newColumn) === true,
+    30_000,
+    `the uppercase preview for ${newColumn}`
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+}
+
+async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, destination: string): Promise<void> {
+  await app.getByRole("button", { name: "Export", exact: true }).click();
+  const formatPicker = workbench
+    .locator(".quick-input-widget:visible")
+    .filter({ hasText: "Export Cleaned Data" })
+    .last();
+  await formatPicker.waitFor({ state: "visible", timeout: 10_000 });
+  await formatPicker.getByRole("option").filter({ hasText: /^CSV/u }).first().click();
+  assert.equal(
+    await pollAcceptanceCondition(
+      async () =>
+        workbench
+          .locator(".quick-input-widget:visible")
+          .filter({ hasText: "Export Cleaned Data" })
+          .last()
+          .locator(".quick-input-box input")
+          .first()
+          .inputValue()
+          .then((value) => /\.cleaned\.csv$/u.test(value))
+          .catch(() => false),
+      { timeoutMs: 10_000, intervalMs: 50 }
+    ),
+    true,
+    "The cleaned-data Save dialog must retain the suggested .cleaned.csv destination."
+  );
+  const saveDialog = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Export Cleaned Data" }).last();
+  const saveInput = saveDialog.locator(".quick-input-box input").first();
+  await saveInput.fill(path.resolve(destination));
+  await saveInput.press("Enter");
+  await saveDialog.waitFor({ state: "hidden", timeout: 30_000 });
+  await workbench
+    .locator(".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible")
+    .filter({ hasText: "Exporting cleaned data…" })
+    .waitFor({ state: "hidden", timeout: 30_000 });
+}
+
+async function exercisePackagedReopenAndUndoJourney(
+  testing: TestApi,
+  workbench: Page,
+  fixture: vscode.Uri,
+  sourceBytes: Uint8Array,
+  editorName: string
+): Promise<void> {
+  recordAcceptanceProgress("platform-smoke:reopen");
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    15_000,
+    `the ${editorName} first-use session to close before recovery`
+  );
+  await vscode.commands.executeCommand("vscode.open", fixture, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.One
+  });
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    10_000,
+    `the CSV source editor before the ${editorName} recovery action`
+  );
+  const activeEditorGroup = workbench.locator(".part.editor .editor-group-container.active");
+  const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
+  await titleAction.waitFor({ state: "visible", timeout: 10_000 });
+  await titleAction.click();
+  await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:reopen-import");
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.uri === fixture.toString() &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.schema.some((column) => column.name === "market_upper")
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the applied cleaning plan to replay after closing and reopening the source"
+  );
+  const reopened = testing.activeSession();
+  assert.ok(reopened, "Reopening the source must publish its recovered dataframe session.");
+  const reopenedTarget = await waitForOpenWranglerGridTarget(workbench, testing, reopened.sessionId);
+  const reopenedApp = await exactSessionApp(reopenedTarget.frame, reopened.sessionId);
+  assert.ok(reopenedApp, "The recovered session must expose its exact Open Wrangler application.");
+  await reopenedApp
+    .getByRole("region", { name: "Cleaning plan" })
+    .getByText("1 applied step")
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress("platform-smoke:undo");
+  await reopenedApp.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.name === "market") &&
+        !active.metadata.schema.some((column) => column.name === "market_upper")
+      );
+    },
+    30_000,
+    "Undo to restore the original schema"
+  );
+  const reopenedCleaningPlan = reopenedApp.getByRole("region", { name: "Cleaning plan" });
+  await reopenedCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await reopenedCleaningPlan.count(),
+    0,
+    "Undoing the only applied step must remove the empty cleaning-plan bar."
+  );
+  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+}
+
+async function waitForLocatorText(
+  locator: Locator,
+  predicate: (text: string) => boolean,
+  timeoutMs: number,
+  expectation: string
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (predicate(await locator.innerText())) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for ${expectation}.`);
 }
 
 async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {
@@ -4965,6 +5815,16 @@ async function exercisePackagedFileLaunchSurfaces(
   );
   const active = testing.activeSession();
   assert.ok(active, "The editor-title action must publish its dataframe session.");
+  assert.deepEqual(
+    active.metadata.shape,
+    { rows: PACKAGED_FIRST_USE_ROW_COUNT, columns: PACKAGED_SCREENSHOT_COLUMNS.length },
+    "The file-launch journey must exercise the complete realistic first-use dataframe."
+  );
+  assert.deepEqual(
+    active.metadata.schema.map((column) => column.name),
+    [...PACKAGED_SCREENSHOT_COLUMNS],
+    "The file-launch journey must retain every realistic first-use column before interaction."
+  );
   await waitFor(
     () => testing.panelHydrated(active.metadata.sessionId),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -5597,6 +6457,8 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
     const bounds = await locator.boundingBox({ timeout: 2_000 }).catch(() => null);
     if (bounds && bounds.y > 0) workbenchOffsets.push(bounds.y);
   }
+  const screenshotWidth = Math.ceil(viewport.width * viewport.scale);
+  const screenshotHeight = Math.ceil(viewport.height * viewport.scale);
   const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY) * viewport.scale);
   const screenshotOptions = {
     path: destination,
@@ -5607,8 +6469,8 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
           clip: {
             x: 0,
             y: titleBarHeight,
-            width: viewport.width,
-            height: Math.min(viewport.height - titleBarHeight, maximumHeight ?? Number.POSITIVE_INFINITY)
+            width: screenshotWidth,
+            height: Math.min(screenshotHeight - titleBarHeight, maximumHeight ?? Number.POSITIVE_INFINITY)
           }
         }
       : {})
@@ -6529,7 +7391,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       highContrastTheme,
       vscode.ColorThemeKind.HighContrast,
       4,
-      `${editor}-high-contrast-zoom-200.png`
+      `${editor}-high-contrast-zoom-200.png`,
+      "responsive"
     );
     recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
@@ -6567,7 +7430,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     expectedKind: vscode.ColorThemeKind,
     zoomLevel: number,
     fileName: string,
-    scene?: "hero"
+    scene?: "hero" | "responsive"
   ): Promise<void> {
     await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", zoomLevel, vscode.ConfigurationTarget.Global);
@@ -6610,7 +7473,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       0,
       `A packaged screenshot must not contain transient workbench UI: ${JSON.stringify(transientUi)}`
     );
-    if (scene) await assertPackagedScreenshotScene(scene);
+    if (scene === "hero") await assertPackagedScreenshotScene(scene);
+    if (scene === "responsive") await assertResponsivePackagedControls();
     await captureWorkbenchScreenshot(capturePage, destination);
   }
 
@@ -6754,6 +7618,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           partialColumns: string[];
           clippedColumnTitles: string[];
           clippedColumnStats: string[];
+          clippedColumnVisualizations: string[];
           clippedCells: number;
           clippedControls: string[];
           revenueSummary: string;
@@ -6820,6 +7685,23 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             );
             return clipped ? [expected.featured[index] ?? ""] : [];
           });
+          const clippedColumnVisualizations = featuredHeaders.flatMap((header, index) => {
+            if (!header) return [];
+            const headerBounds = header.getBoundingClientRect();
+            const clipped = Array.from(
+              header.querySelectorAll(
+                ".categoryMiniRow small, .datetimeMiniChart span, .numericMiniChart text, .booleanMiniChart span"
+              )
+            ).some((item) => {
+              const bounds = item.getBoundingClientRect();
+              return (
+                item.scrollWidth > item.clientWidth + 1 ||
+                bounds.left < headerBounds.left - 1 ||
+                bounds.right > headerBounds.right + 1
+              );
+            });
+            return clipped ? [expected.featured[index] ?? ""] : [];
+          });
           const visibleCells = Array.from(appRoot.querySelectorAll("td[data-grid-column]")).filter((cell) => {
             const bounds = cell.getBoundingClientRect();
             return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
@@ -6845,6 +7727,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             partialColumns: [...new Set(partialColumns)],
             clippedColumnTitles,
             clippedColumnStats,
+            clippedColumnVisualizations,
             clippedCells: visibleCells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length,
             clippedControls,
             revenueSummary: revenueHeader?.querySelector(".exactSummaryStats")?.innerText ?? "",
@@ -6875,6 +7758,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         measurement.partialColumns.length === 0 &&
         measurement.clippedColumnTitles.length === 0 &&
         measurement.clippedColumnStats.length === 0 &&
+        measurement.clippedColumnVisualizations.length === 0 &&
         measurement.clippedCells === 0 &&
         measurement.clippedControls.length === 0 &&
         /\bMin\b/u.test(measurement.revenueSummary) &&
@@ -6892,6 +7776,69 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       await capturePage.waitForTimeout(50);
     } while (Date.now() < deadline);
     throw new Error(`The ${scene} screenshot scene is clipped or incomplete: ${JSON.stringify(measurement)}`);
+  }
+
+  async function assertResponsivePackagedControls(): Promise<void> {
+    const active = testing.activeSession();
+    assert.ok(active, "Responsive screenshot geometry requires the active packaged dataframe session.");
+    const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
+    const app = await exactSessionApp(target.frame, active.sessionId);
+    assert.ok(app, "Responsive screenshot geometry requires the exact live Open Wrangler renderer.");
+    const measurement = await app.evaluate((root) => {
+      const appBounds = root.getBoundingClientRect();
+      const toolbar = root.querySelector(".toolbar");
+      const toolbarActions = root.querySelector(".toolbarActions");
+      const gridControls = root.querySelector(".gridControls");
+      if (!toolbar || !toolbarActions || !gridControls) {
+        throw new Error("Responsive screenshot controls are incomplete.");
+      }
+      const clippedChildren = (containerSelector: string, selector: string): string[] => {
+        const container = root.querySelector(containerSelector);
+        if (!container) return [`Missing ${containerSelector}`];
+        const containerBounds = container.getBoundingClientRect();
+        return [...container.querySelectorAll(selector)]
+          .filter((element) => {
+            const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+            if (!style || style.display === "none" || style.visibility === "hidden") return false;
+            const bounds = element.getBoundingClientRect();
+            return (
+              bounds.left < Math.max(appBounds.left, containerBounds.left) - 1 ||
+              bounds.right > Math.min(appBounds.right, containerBounds.right) + 1 ||
+              bounds.top < containerBounds.top - 1 ||
+              bounds.bottom > containerBounds.bottom + 1
+            );
+          })
+          .map(
+            (element) =>
+              element.getAttribute("aria-label") ?? element.textContent?.replace(/\s+/gu, " ").trim() ?? element.tagName
+          );
+      };
+      return {
+        appOverflow: root.scrollWidth - root.clientWidth,
+        toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
+        toolbarActionsOverflow: toolbarActions.scrollWidth - toolbarActions.clientWidth,
+        gridControlsOverflow: gridControls.scrollWidth - gridControls.clientWidth,
+        clippedToolbarControls: clippedChildren(".toolbarActions", ":scope > *"),
+        clippedGridControls: clippedChildren(".gridControls", ":scope > *")
+      };
+    });
+    assert.ok(
+      measurement.appOverflow <= 1 &&
+        measurement.toolbarOverflow <= 1 &&
+        measurement.toolbarActionsOverflow <= 1 &&
+        measurement.gridControlsOverflow <= 1,
+      `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
+    );
+    assert.deepEqual(
+      measurement.clippedToolbarControls,
+      [],
+      "Every toolbar action must remain completely visible at 200% zoom."
+    );
+    assert.deepEqual(
+      measurement.clippedGridControls,
+      [],
+      "Every grid control must remain completely visible at 200% zoom."
+    );
   }
 
   async function prepareWorkbenchForEvidence(): Promise<void> {

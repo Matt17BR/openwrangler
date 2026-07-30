@@ -207,6 +207,11 @@ export class SessionCoordinator implements vscode.Disposable {
     return session ? activeSnapshot(session) : undefined;
   }
 
+  sessionSnapshot(sessionId: string): ActiveSessionSnapshot | undefined {
+    const session = this.sessions.get(sessionId);
+    return session && !session.closing ? activeSnapshot(session) : undefined;
+  }
+
   activeNotebookDocument(): vscode.NotebookDocument | undefined {
     return this.activeSessionId ? this.sessions.get(this.activeSessionId)?.notebookDocument : undefined;
   }
@@ -320,12 +325,23 @@ export class SessionCoordinator implements vscode.Disposable {
   }
 
   async exportActiveData(path: string, format: "csv" | "parquet"): Promise<DataExportedResponse> {
-    const session = this.activeSessionId ? this.sessions.get(this.activeSessionId) : undefined;
-    if (!session) throw new Error("Open a dataframe in Open Wrangler before exporting cleaned data.");
+    const snapshot = this.activeSession();
+    if (!snapshot) throw new Error("Open a dataframe in Open Wrangler before exporting cleaned data.");
+    return this.exportData(snapshot.sessionId, snapshot.metadata.revision, path, format);
+  }
+
+  async exportData(
+    sessionId: string,
+    revision: number,
+    path: string,
+    format: "csv" | "parquet"
+  ): Promise<DataExportedResponse> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error("The dataframe that started this export is no longer open.");
     const response = await this.request(session.delegate, {
       kind: "exportData",
       sessionId: session.publicId,
-      revision: session.publicRevision,
+      revision,
       path,
       format
     });

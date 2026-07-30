@@ -4,7 +4,7 @@
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">Visual dataframe exploration and reproducible cleaning for VS Code and Cursor, with engine-native Polars, DuckDB, and Pandas execution.</p>
+<p align="center">Visual dataframe exploration and reproducible cleaning for VS Code-family desktop editors, with engine-native Polars, DuckDB, and Pandas execution.</p>
 
 <p align="center">Inspired by <a href="https://github.com/microsoft/vscode-data-wrangler">Microsoft Data Wrangler</a>'s explore, transform, and export workflow, Open Wrangler is an independent clean-room implementation, not a fork. It uses no Microsoft Data Wrangler code or assets.</p>
 
@@ -58,6 +58,10 @@ _The same packaged session in VS Code's default light and dark themes._
    editor-toolbar action or context menu.
 2. Explore column summaries, search, filter, and sort without changing the source.
 3. Choose **Add step**, review the data diff and generated code, then apply the step or discard it.
+4. Choose **Export** to save cleaned CSV or Parquet data without overwriting the source.
+
+Ordinary CSV and TSV opens infer the delimiter, encoding, quote style, and header automatically. Use **Import
+options** only when a file needs an explicit override.
 
 ## Notebook workflows
 
@@ -112,6 +116,8 @@ pickle data to Parquet, CSV, or JSONL in a controlled Python environment before 
 Open Wrangler combines progressive summaries, column search, 27 built-in cleaning operations, editable
 engine-native code, and replayable history. Copy generated Python, save it as a script, insert it into the
 originating notebook, or export cleaned CSV and Parquet data without overwriting the source.
+Each open dataframe owns its view, cleaning plan, runtime session, and export target, so simultaneous tabs do
+not share state.
 
 See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
 for the complete surface.
@@ -131,15 +137,13 @@ universally faster.
 
 ## Roadmap
 
-| Target              | Window           | Focus                                                                                                                                                                                                                                       |
-| ------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v1.1.1              | 30 July 2026     | Released: automatic and typed notebook previews, clearer file entry points, exact distributions, responsive insights, and release-quality media                                                                                             |
-| v1.1.2              | Late August 2026 | Reproducible Open Wrangler/Data Wrangler performance comparison in [#91](https://github.com/Matt17BR/openwrangler/issues/91) and follow-up UX hardening                                                                                     |
-| v1.2                | Q4 2026          | Workbench hierarchy [#88](https://github.com/Matt17BR/openwrangler/issues/88), broader VS Code-fork checks [#86](https://github.com/Matt17BR/openwrangler/issues/86), and PySpark [#36](https://github.com/Matt17BR/openwrangler/issues/36) |
-| Research after v1.2 | Unscheduled      | Native DuckDB notebook relations [#157](https://github.com/Matt17BR/openwrangler/issues/157), plus native R data frames, tibbles, `data.table`, Quarto, and R Markdown [#87](https://github.com/Matt17BR/openwrangler/issues/87)            |
+| Target | Focus                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v1.1.x | Real-user interaction and visual polish [#88](https://github.com/Matt17BR/openwrangler/issues/88), reproducible performance comparison [#91](https://github.com/Matt17BR/openwrangler/issues/91), native DuckDB notebook-relation viewing [#157](https://github.com/Matt17BR/openwrangler/issues/157), and bounded validation in other VS Code-based desktop IDEs [#86](https://github.com/Matt17BR/openwrangler/issues/86) |
+| v1.2   | Graduate PySpark from its experimental, viewing-only preview to a supported scope after the distributed correctness, recovery, performance, and editor gates in [#36](https://github.com/Matt17BR/openwrangler/issues/36) are green                                                                                                                                                                                         |
+| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                                                                                                                                                                                                                        |
 
-Critical regressions ship as soon as their release gates pass. The working cadence is roughly biweekly patch
-trains and six-to-eight-week minor releases; target windows are planning guidance, not guarantees.
+Patch releases ship as soon as a coherent user-facing improvement passes the exact-artifact release gates.
 
 ## Contributing and support
 

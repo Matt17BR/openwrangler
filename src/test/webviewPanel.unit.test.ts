@@ -1687,6 +1687,26 @@ describe("OpenWranglerPanel retained view state", () => {
     ]);
   });
 
+  it("accepts only an exact cleaned-data export intent from the webview", async () => {
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockResolvedValue(undefined);
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
+    await harness.open();
+    executeCommand.mockClear();
+
+    for (const malformed of [
+      { kind: "exportData", unexpected: true },
+      { kind: "exportData", format: "csv" },
+      { kind: "exportData", path: "/tmp/out.csv" }
+    ]) {
+      await harness.receive(malformed);
+    }
+    expect(executeCommand).not.toHaveBeenCalled();
+
+    await harness.receive({ kind: "exportData" });
+    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.internal.exportSessionData", "session", 0);
+  });
+
   it("keeps an initial dependency error retryable when installation is declined", async () => {
     const missing: OpenWranglerResponse = {
       kind: "error",

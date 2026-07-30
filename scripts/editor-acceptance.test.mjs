@@ -50,6 +50,8 @@ import {
   editorProcessGroupRunning,
   JUPYTER_EXTENSION_VSIX_ENV,
   MACOS_EDITOR_IPC_PATH_LIMIT_BYTES,
+  PINNED_DATA_WRANGLER_EXTENSION_ID,
+  PINNED_DATA_WRANGLER_EXTENSION_VERSION,
   PINNED_JUPYTER_EXTENSION_ID,
   PINNED_JUPYTER_EXTENSION_VERSION,
   PINNED_PYTHON_EXTENSION_ID,
@@ -57,10 +59,12 @@ import {
   prepareWindowsEditorProcessSupervisor,
   readBoundedAcceptanceText,
   readXvfbDisplayNumber,
+  REAL_DATA_WRANGLER_EXTENSION_ENV,
   REAL_JUPYTER_EXTENSION_ENV,
   reserveEditorDebugPort,
   resolveDownloadedEditorCliPath,
   resolveEditorCliLaunch,
+  resolveDataWranglerExtensionAcceptanceInstallTarget,
   resolveJupyterExtensionAcceptanceInstallTarget,
   resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCommand,
@@ -304,6 +308,29 @@ test("real Jupyter-extension acceptance is opt-in and pins one stable release", 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("real Data Wrangler coexistence acceptance is opt-in and pins the parity baseline", () => {
+  assert.equal(REAL_DATA_WRANGLER_EXTENSION_ENV, "OPEN_WRANGLER_REAL_DATA_WRANGLER");
+  assert.equal(PINNED_DATA_WRANGLER_EXTENSION_VERSION, "1.24.2");
+  assert.equal(PINNED_DATA_WRANGLER_EXTENSION_ID, "ms-toolsai.datawrangler@1.24.2");
+  assert.equal(resolveDataWranglerExtensionAcceptanceInstallTarget({}), undefined);
+  assert.equal(
+    resolveDataWranglerExtensionAcceptanceInstallTarget({ [REAL_DATA_WRANGLER_EXTENSION_ENV]: "" }),
+    undefined
+  );
+  assert.equal(
+    resolveDataWranglerExtensionAcceptanceInstallTarget({ [REAL_DATA_WRANGLER_EXTENSION_ENV]: "0" }),
+    undefined
+  );
+  assert.equal(
+    resolveDataWranglerExtensionAcceptanceInstallTarget({ [REAL_DATA_WRANGLER_EXTENSION_ENV]: "1" }),
+    PINNED_DATA_WRANGLER_EXTENSION_ID
+  );
+  assert.throws(
+    () => resolveDataWranglerExtensionAcceptanceInstallTarget({ [REAL_DATA_WRANGLER_EXTENSION_ENV]: "true" }),
+    /literal value 1/u
+  );
 });
 
 test("Jupyter VSIX preflight accepts only the host target and native ZeroMQ payload", async () => {

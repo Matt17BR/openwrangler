@@ -45,12 +45,15 @@ const TEMP_ROOT_ENV = "OPEN_WRANGLER_EDITOR_TEMP_ROOT";
 const PYTHON_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_PYTHON_EXTENSION_VSIX";
 export const REAL_JUPYTER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_JUPYTER_EXTENSION";
 export const JUPYTER_EXTENSION_VSIX_ENV = "OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX";
+export const REAL_DATA_WRANGLER_EXTENSION_ENV = "OPEN_WRANGLER_REAL_DATA_WRANGLER";
 const XVFB_START_TIMEOUT_MS = 10_000;
 const XVFB_STOP_TIMEOUT_MS = 5_000;
 export const PINNED_PYTHON_EXTENSION_VERSION = "2026.4.0";
 export const PINNED_PYTHON_EXTENSION_ID = `ms-python.python@${PINNED_PYTHON_EXTENSION_VERSION}`;
 export const PINNED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
 export const PINNED_JUPYTER_EXTENSION_ID = `ms-toolsai.jupyter@${PINNED_JUPYTER_EXTENSION_VERSION}`;
+export const PINNED_DATA_WRANGLER_EXTENSION_VERSION = "1.24.2";
+export const PINNED_DATA_WRANGLER_EXTENSION_ID = `ms-toolsai.datawrangler@${PINNED_DATA_WRANGLER_EXTENSION_VERSION}`;
 const JUPYTER_VSIX_MANIFEST_ENTRY = "extension.vsixmanifest";
 const JUPYTER_VSIX_MANIFEST_MAX_BYTES = 256 * 1024;
 const JUPYTER_VSIX_MAX_ENTRIES = 100_000;
@@ -226,6 +229,15 @@ export function resolveJupyterExtensionAcceptanceInstallTarget(environment = pro
     throw new Error("The real Jupyter-extension acceptance VSIX must be a regular file and not a symbolic link.");
   }
   return vsix;
+}
+
+export function resolveDataWranglerExtensionAcceptanceInstallTarget(environment = process.env) {
+  const enabled = environment[REAL_DATA_WRANGLER_EXTENSION_ENV];
+  if (enabled === undefined || enabled === "" || enabled === "0") return undefined;
+  if (enabled !== "1") {
+    throw new Error("Real Data Wrangler coexistence acceptance must be explicitly enabled with the literal value 1.");
+  }
+  return PINNED_DATA_WRANGLER_EXTENSION_ID;
 }
 
 export function stageJupyterExtensionAcceptanceVsix(source, destination) {

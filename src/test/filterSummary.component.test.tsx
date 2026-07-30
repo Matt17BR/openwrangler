@@ -137,7 +137,7 @@ describe("FilterPanel", () => {
       expect.objectContaining({ filters: [expect.objectContaining({ logic: "or" })] })
     );
 
-    fireEvent.change(screen.getAllByLabelText("Column")[0], { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
     fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
     fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "10" } });
     fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "20" } });
@@ -490,7 +490,7 @@ describe("FilterPanel", () => {
       />
     );
 
-    const columnSelect = screen.getAllByLabelText("Column")[0];
+    const columnSelect = screen.getByLabelText("Filter column");
     const operatorSelect = screen.getByLabelText("Predicate operator");
 
     fireEvent.change(operatorSelect, { target: { value: "equals" } });
@@ -570,7 +570,7 @@ describe("FilterPanel", () => {
       );
     }
 
-    fireEvent.change(screen.getAllByLabelText("Column")[0]!, { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
     for (const operator of ["isNaN", "isNotNaN"] as const) {
       fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: operator } });
       fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
@@ -599,7 +599,7 @@ describe("FilterPanel", () => {
     expect(options()).toContain("contains");
     expect(options()).not.toContain("isNaN");
 
-    fireEvent.change(screen.getAllByLabelText("Column")[0]!, { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
     expect(options()).toContain("isNaN");
     expect(options()).not.toContain("contains");
   });
@@ -668,7 +668,7 @@ describe("FilterPanel", () => {
         'View filters, sorts, and values are unavailable because 2 columns share the displayed name "7". Rename one column in a cleaning step first.'
       )
     ).toHaveAttribute("role", "status");
-    for (const select of screen.getAllByLabelText("Column")) {
+    for (const select of screen.getAllByLabelText(/^(?:Filter|Sort) column$/u)) {
       expect(within(select).getByRole("option", { name: "7 (column 1)" })).toBeInTheDocument();
       expect(within(select).getByRole("option", { name: "7 (column 2)" })).toBeInTheDocument();
       expect(select).toBeEnabled();
@@ -718,7 +718,7 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("button", { name: "Clear column" })).toBeDisabled();
 
     fireEvent.click(screen.getByText("SORTS"));
-    for (const select of screen.getAllByLabelText("Column")) {
+    for (const select of screen.getAllByLabelText(/^(?:Filter|Sort) column$/u)) {
       expect(select).toBeDisabled();
       expect(select).toHaveValue("");
     }
@@ -787,8 +787,8 @@ describe("FilterPanel", () => {
     if (!sortDisclosure) throw new Error("Expected the sort disclosure.");
     fireEvent.click(screen.getByText("SORTS"));
     expect(sortDisclosure).toHaveAttribute("open");
-    fireEvent.change(screen.getAllByLabelText("Column")[0], { target: { value: "c:1" } });
-    for (const select of screen.getAllByLabelText("Column")) {
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+    for (const select of screen.getAllByLabelText(/^(?:Filter|Sort) column$/u)) {
       expect(select).toHaveValue("c:1");
       expect(select).toHaveDisplayValue("sales");
     }
@@ -810,7 +810,7 @@ describe("FilterPanel", () => {
       />
     );
     await waitFor(() => {
-      for (const select of screen.getAllByLabelText("Column")) {
+      for (const select of screen.getAllByLabelText(/^(?:Filter|Sort) column$/u)) {
         expect(select).toHaveValue("c:1");
         expect(select).toHaveDisplayValue("revenue");
       }

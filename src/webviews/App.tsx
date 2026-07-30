@@ -63,7 +63,10 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
-  const [goToColumnRequest, setGoToColumnRequest] = useState<{ columnId: string; requestId: number } | undefined>();
+  const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
+  const goToColumnRequestSequence = useRef(0);
+  const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
+  const handledGoToColumnRequestId = useRef<number | undefined>(undefined);
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
@@ -238,6 +241,39 @@ export function App() {
     gridViewStateRef.current = next;
     setGridViewState(next);
   }, []);
+
+  const storeGoToColumnRequest = useCallback((next: ColumnRevealRequest | undefined) => {
+    if (goToColumnRequestRef.current?.requestId !== next?.requestId) {
+      handledGoToColumnRequestId.current = undefined;
+    }
+    goToColumnRequestRef.current = next;
+    setGoToColumnRequest(next);
+  }, []);
+
+  const requestColumnReveal = useCallback(
+    (columnId: string, retainUntilSynchronization?: ColumnRevealSynchronization) => {
+      goToColumnRequestSequence.current += 1;
+      storeGoToColumnRequest({
+        columnId,
+        requestId: goToColumnRequestSequence.current,
+        ...(retainUntilSynchronization ? { retainUntilSynchronization } : {})
+      });
+    },
+    [storeGoToColumnRequest]
+  );
+
+  const handleColumnReveal = useCallback(
+    (requestId: number) => {
+      const request = goToColumnRequestRef.current;
+      if (!request || request.requestId !== requestId) return;
+      if (request.retainUntilSynchronization) {
+        handledGoToColumnRequestId.current = requestId;
+        return;
+      }
+      storeGoToColumnRequest(undefined);
+    },
+    [storeGoToColumnRequest]
+  );
 
   const storeImportOptionsPending = useCallback(
     (pending: boolean) => {
@@ -781,6 +817,17 @@ export function App() {
             ? current === undefined
             : current?.sessionId === response.sessionId && current.revision === response.revision;
         if (matchesSession) {
+          const reveal = goToColumnRequestRef.current;
+          if (
+            reveal?.retainUntilSynchronization?.sessionId === response.sessionId &&
+            reveal.retainUntilSynchronization.revision === response.revision
+          ) {
+            if (handledGoToColumnRequestId.current === reveal.requestId) {
+              requestColumnReveal(reveal.columnId);
+            } else {
+              storeGoToColumnRequest({ ...reveal, retainUntilSynchronization: undefined });
+            }
+          }
           setPendingRendererSynchronization(response);
         }
         return;
@@ -1149,6 +1196,20 @@ export function App() {
         confirmedColumnWindow.current = mutationWindow;
         desiredColumnWindow.current = mutationWindow;
         inspectionColumnWindow.current = mutationWindow;
+        if (response.kind === "stepPreview") {
+          const addedColumnName = response.diff.addedColumns[0];
+          const addedColumn = nextMetadata.schema.find((column) => column.name === addedColumnName);
+          if (addedColumn) {
+            requestColumnReveal(addedColumn.id, {
+              sessionId: nextMetadata.sessionId,
+              revision: response.revision
+            });
+          } else {
+            storeGoToColumnRequest(undefined);
+          }
+        } else {
+          storeGoToColumnRequest(undefined);
+        }
         setGeneratedCode(response.code);
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
         setDraftBefore(
@@ -1252,6 +1313,7 @@ export function App() {
     releaseBackgroundRequest,
     rememberOperationReturnFocus,
     requestImportOptionsChange,
+    requestColumnReveal,
     requestStatsForConfirmedView,
     requestStepInspection,
     restartProfilingForConfirmedView,
@@ -1264,6 +1326,7 @@ export function App() {
     storeFailedPageRequest,
     storeFilterModel,
     storeGridViewState,
+    storeGoToColumnRequest,
     storeImportOptionsPending,
     storeMetadata,
     storePage,
@@ -1282,7 +1345,6 @@ export function App() {
         ? metadata === undefined
         : metadata?.sessionId === synchronization.sessionId && metadata.revision === synchronization.revision;
     if (!matchesCommittedSession) return;
-    flushGridViewState();
     vscode.postMessage({
       kind: "rendererSynchronized",
       syncId: synchronization.syncId,
@@ -1290,6 +1352,7 @@ export function App() {
       revision: synchronization.revision
     });
     acknowledgedRendererSynchronizationId.current = synchronization.syncId;
+    flushGridViewState();
   }, [flushGridViewState, metadata, pendingRendererSynchronization]);
 
   const rendererNeedsSnapshot = pendingRendererSynchronization === undefined;
@@ -1847,6 +1910,27 @@ export function App() {
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
               )}
+              {(metadata.capabilities.exportCsv || metadata.capabilities.exportParquet) && (
+                <button
+                  type="button"
+                  className="toolbarButton"
+                  disabled={
+                    loading ||
+                    mutationPending ||
+                    projectionLoading ||
+                    importOptionsPending ||
+                    metadata.draftStep !== undefined
+                  }
+                  title={
+                    metadata.draftStep
+                      ? "Apply or discard the current draft before exporting cleaned data."
+                      : "Export cleaned data"
+                  }
+                  onClick={() => vscode.postMessage({ kind: "exportData" })}
+                >
+                  <span className="codicon codicon-export" aria-hidden="true" /> Export
+                </button>
+              )}
               <button
                 ref={sidePanelToggleRef}
                 type="button"
@@ -1872,13 +1956,8 @@ export function App() {
               </button>
               <ColumnSearch
                 columns={(displayMetadata ?? metadata).schema}
-                selectedColumnId={goToColumnRequest?.columnId}
-                onSelect={(columnId) =>
-                  setGoToColumnRequest((current) => ({
-                    columnId,
-                    requestId: (current?.requestId ?? 0) + 1
-                  }))
-                }
+                selectedColumnId={gridViewState.selectedColumnId}
+                onSelect={requestColumnReveal}
               />
               {metadata.backend === "pyspark" && (
                 <span className="experimentalBadge" title="PySpark support is experimental.">
@@ -1895,14 +1974,16 @@ export function App() {
           )}
         </header>
 
-        {metadata && metadata.mode === "editing" && (
+        {metadata && metadata.mode === "editing" && (metadata.steps.length > 0 || metadata.draftStep !== undefined) && (
           <section className="cleaningBar" aria-label="Cleaning plan">
             <div className="cleaningSummary">
               <span className="codicon codicon-layers" aria-hidden="true" />
               <strong>
                 {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
               </strong>
-              {metadata.draftStep && <span className="draftBadge">Draft: {metadata.draftStep.kind}</span>}
+              {metadata.draftStep && (
+                <span className="draftBadge">Draft: {operationByKind(metadata.draftStep.kind).title}</span>
+              )}
             </div>
             <div className="cleaningActions">
               {metadata.draftStep ? (
@@ -2066,6 +2147,7 @@ export function App() {
                 }
                 goToColumnId={goToColumnRequest?.columnId}
                 goToColumnRequestId={goToColumnRequest?.requestId}
+                onGoToColumnHandled={handleColumnReveal}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={
                   inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
@@ -2162,18 +2244,14 @@ export function App() {
           <section className="draftPanel" aria-label="Draft preview">
             <header>
               <div>
-                <strong>Previewing {metadata.draftStep.kind}</strong>
+                <strong>Previewing {operationByKind(metadata.draftStep.kind).title}</strong>
                 <span>The grid shows the draft result. Apply or discard it explicitly.</span>
               </div>
               {diff && (
                 <div className="diffStats" aria-label="Data diff summary">
-                  <span>+{diff.addedRows} rows</span>
-                  <span>-{diff.removedRows} rows</span>
-                  <span>+{diff.addedColumns.length} columns</span>
-                  <span>-{diff.removedColumns.length} columns</span>
-                  <span>
-                    {diff.changedCells} changed cells{diff.truncated ? " in this block" : ""}
-                  </span>
+                  {draftDiffLabels(diff, displayPage?.rows.length ?? 0).map((label) => (
+                    <span key={label}>{label}</span>
+                  ))}
                 </div>
               )}
               {draftWarnings.length > 0 && (
@@ -2322,6 +2400,17 @@ export interface ColumnWindow {
   limit: number;
 }
 
+interface ColumnRevealSynchronization {
+  sessionId: string;
+  revision: number;
+}
+
+interface ColumnRevealRequest {
+  columnId: string;
+  requestId: number;
+  retainUntilSynchronization?: ColumnRevealSynchronization;
+}
+
 type PageRequestReason = "view" | "row" | "projection";
 
 type SummaryRequestOwner = "grid" | "drawer";
@@ -2430,6 +2519,35 @@ function columnWindowFromPage(
     };
   }
   return { offset: firstPosition, limit: Math.max(1, Math.min(256, page.columnIds.length)) };
+}
+
+function draftDiffLabels(diff: DataDiff, displayedRowCount: number): string[] {
+  const labels: string[] = [];
+  if (diff.addedRows > 0) labels.push(`+${diff.addedRows.toLocaleString()} ${pluralize(diff.addedRows, "row")}`);
+  if (diff.removedRows > 0) labels.push(`-${diff.removedRows.toLocaleString()} ${pluralize(diff.removedRows, "row")}`);
+  if (diff.addedColumns.length > 0) {
+    labels.push(`+${diff.addedColumns.length.toLocaleString()} ${pluralize(diff.addedColumns.length, "column")}`);
+  }
+  if (diff.removedColumns.length > 0) {
+    labels.push(`-${diff.removedColumns.length.toLocaleString()} ${pluralize(diff.removedColumns.length, "column")}`);
+  }
+  if (diff.changedCells > 0) {
+    labels.push(
+      `${diff.changedCells.toLocaleString()} existing ${pluralize(diff.changedCells, "cell")} changed${
+        diff.truncated ? " in this block" : ""
+      }`
+    );
+  }
+  const addedValues = displayedRowCount * diff.addedColumns.length;
+  if (addedValues > 0) {
+    labels.push(`${addedValues.toLocaleString()} ${pluralize(addedValues, "value")} added in this block`);
+  }
+  if (labels.length === 0) labels.push("No value changes in this block");
+  return labels;
+}
+
+function pluralize(value: number, singular: string): string {
+  return value === 1 ? singular : `${singular}s`;
 }
 
 function pageCoversColumnWindow(metadata: SessionMetadata, page: GridPage, window: ColumnWindow): boolean {

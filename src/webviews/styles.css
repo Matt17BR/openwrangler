@@ -1812,7 +1812,7 @@ dd {
   margin-bottom: 0;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .layout.sidePanelOpen {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1835,6 +1835,10 @@ dd {
   .toolbarActions {
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .gridControls {
+    flex-wrap: wrap;
   }
 
   .operationDialogBody {
