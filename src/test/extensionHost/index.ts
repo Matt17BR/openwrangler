@@ -178,9 +178,18 @@ const NOTEBOOK_RENDERER_DIAGNOSTIC_TARGET_LIMIT = 24;
 const RELEASED_JUPYTER_VARIABLE_DISCOVERY_TIMEOUT_MS = 120_000;
 const RELEASED_JUPYTER_VARIABLE_ACTION_PREPARE_TIMEOUT_MS = 1_000;
 const RELEASED_JUPYTER_EXTENSION_VERSION = "2025.9.1";
+const RELEASED_DATA_WRANGLER_EXTENSION_VERSION = "1.24.2";
 const RELEASED_JUPYTER_CONSENT_MESSAGE =
   "Do you want to grant Kernel access to the extension Open Wrangler (Matt17BR.openwrangler)?";
 const RELEASED_JUPYTER_CONSENT_DETAIL = "This allows the extension to execute code against Jupyter Kernels.";
+const NOTEBOOK_PREVIEW_CONFLICT_MESSAGE =
+  "Open Wrangler and Data Wrangler can both render dataframe outputs. Which notebook preview should take priority?";
+const NOTEBOOK_PREVIEW_CONFLICT_DETAIL =
+  "You can change this later with “Open Wrangler: Choose Notebook Preview Provider”.";
+const NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER = "Use Open Wrangler";
+const NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER = "Keep Data Wrangler";
+const DATA_WRANGLER_COEXISTENCE_SETUP_RESULT = "__OW_DATA_WRANGLER_COEXISTENCE_SETUP__";
+const DATA_WRANGLER_COEXISTENCE_VARIABLE = "coexist_frame";
 const RELEASED_JUPYTER_VARIABLE_VIEWER_ACTION = "Show variable snapshot in data viewer";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_COMMAND = "openWrangler.openNotebookVariable";
 const RELEASED_JUPYTER_NOTEBOOK_TOOLBAR_ACTION_NAME_PATTERN = /^Open in Open Wrangler$/u;
@@ -587,6 +596,14 @@ export async function run(): Promise<void> {
   assert.ok(workspace, "The extension-host fixture workspace must be open.");
   const fixture = vscode.Uri.joinPath(workspace, "fixtures", "sample.csv");
   recordAcceptanceProgress("preflight:complete");
+  if (isDataWranglerCoexistencePhase(phase)) {
+    assert.ok(testPython, "Real Data Wrangler coexistence acceptance requires the private Jupyter environment.");
+    recordAcceptanceProgress(`${phase}:start`);
+    await exerciseReleasedDataWranglerCoexistence(testing, extension, phase, testPython);
+    recordAcceptanceProgress(`${phase}:complete`);
+    console.log(`Open Wrangler real Data Wrangler coexistence ${phase} acceptance passed.`);
+    return;
+  }
   if (
     phase === "jupyter-deny" ||
     phase === "jupyter-allow" ||
@@ -746,7 +763,14 @@ function recordAcceptanceProgress(checkpoint: string): void {
   });
 }
 
-type ReleasedJupyterPhase = "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote";
+type DataWranglerCoexistencePhase =
+  | "jupyter-coexist-open-select"
+  | "jupyter-coexist-open-restart"
+  | "jupyter-coexist-data-select"
+  | "jupyter-coexist-data-restart";
+
+type ReleasedJupyterPhase =
+  "jupyter-deny" | "jupyter-allow" | "jupyter-pyspark" | "jupyter-remote" | DataWranglerCoexistencePhase;
 
 interface ReleasedJupyterKernelTarget {
   readonly label: string;
@@ -766,6 +790,354 @@ interface ReleasedVariableExpectation {
   readonly backend: "pandas" | "polars" | "pyspark";
   readonly firstValue: string;
   readonly notebookInsert?: boolean;
+}
+
+function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
+  return (
+    phase === "jupyter-coexist-open-select" ||
+    phase === "jupyter-coexist-open-restart" ||
+    phase === "jupyter-coexist-data-select" ||
+    phase === "jupyter-coexist-data-restart"
+  );
+}
+
+function dataWranglerCoexistenceExpectation(phase: DataWranglerCoexistencePhase): {
+  provider: "openWrangler" | "dataWrangler";
+  selection: boolean;
+} {
+  return {
+    provider: phase.includes("-open-") ? "openWrangler" : "dataWrangler",
+    selection: phase.endsWith("-select")
+  };
+}
+
+async function exerciseReleasedDataWranglerCoexistence(
+  testing: TestApi,
+  extension: vscode.Extension<ExtensionApi>,
+  phase: DataWranglerCoexistencePhase,
+  testPython: string
+): Promise<void> {
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "Data Wrangler coexistence acceptance must start without an Open Wrangler session."
+  );
+  assert.ok(
+    !((extension.packageJSON.extensionDependencies as string[] | undefined) ?? []).includes("ms-toolsai.jupyter"),
+    "Coexistence must not add a hard Jupyter dependency to Open Wrangler."
+  );
+
+  const jupyterExtension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  assert.ok(jupyterExtension, "The pinned released Microsoft Jupyter extension must be installed.");
+  assert.equal(jupyterExtension.packageJSON.publisher, "ms-toolsai");
+  assert.equal(jupyterExtension.packageJSON.name, "jupyter");
+  assert.equal(jupyterExtension.packageJSON.version, RELEASED_JUPYTER_EXTENSION_VERSION);
+
+  const dataWranglerExtension = vscode.extensions.getExtension("ms-toolsai.datawrangler");
+  assert.ok(dataWranglerExtension, "The exact Microsoft Data Wrangler parity baseline must be installed.");
+  assert.equal(dataWranglerExtension.packageJSON.publisher, "ms-toolsai");
+  assert.equal(dataWranglerExtension.packageJSON.name, "datawrangler");
+  assert.equal(
+    dataWranglerExtension.packageJSON.version,
+    RELEASED_DATA_WRANGLER_EXTENSION_VERSION,
+    "Coexistence acceptance must not float to an unreviewed Data Wrangler version."
+  );
+
+  const expectation = dataWranglerCoexistenceExpectation(phase);
+  if (expectation.provider === "dataWrangler") {
+    await dataWranglerExtension.activate();
+    assert.equal(dataWranglerExtension.isActive, true, "The selected real Data Wrangler extension must be active.");
+  }
+  const configuration = vscode.workspace.getConfiguration("openWrangler");
+  const initialProvider = configuration.inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">(
+    "notebookPreviewProvider"
+  );
+  if (expectation.selection) {
+    assert.equal(initialProvider?.globalValue, undefined, "A fresh coexistence profile must not preselect a provider.");
+    assert.equal(initialProvider?.workspaceValue, undefined);
+    assert.equal(configuration.get("notebookPreviewProvider", "ask"), "ask");
+  } else {
+    assert.equal(
+      initialProvider?.globalValue,
+      expectation.provider,
+      "The provider selected before editor restart must persist globally."
+    );
+    assert.equal(configuration.get("notebookPreviewProvider", "ask"), expectation.provider);
+  }
+
+  const kernelTarget = releasedJupyterKernelTarget(phase);
+  const directory = mkdtempSync(path.join(tmpdir(), `openwrangler-data-wrangler-${phase}-`));
+  const notebookPath = path.join(directory, `${phase}.ipynb`);
+  writeDataWranglerCoexistenceNotebook(notebookPath, kernelTarget);
+  const notebookUri = vscode.Uri.file(notebookPath);
+  let notebook: vscode.NotebookDocument | undefined;
+  try {
+    recordAcceptanceProgress(`${phase}:notebook-open`);
+    notebook = await vscode.workspace.openNotebookDocument(notebookUri);
+    assertExactOpenNotebookDocument(notebook, "after opening the Data Wrangler coexistence fixture");
+    const notebookEditor = await vscode.window.showNotebookDocument(notebook, {
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: false,
+      preview: false
+    });
+    assert.equal(notebookEditor.notebook, notebook);
+    assertExactVisibleReleasedNotebookEditor(
+      notebook,
+      notebookEditor,
+      "after showing the Data Wrangler coexistence fixture"
+    );
+
+    const workbench = await connectToEditorWorkbench();
+    if (expectation.selection) {
+      recordAcceptanceProgress(`${phase}:provider-prompt`);
+      const conflict = await waitForNotebookPreviewConflict(workbench);
+      assert.equal(
+        configuration.get("notebookPreviewProvider", "ask"),
+        "ask",
+        "The conflict prompt must not mutate the preference before one explicit choice."
+      );
+      const action = expectation.provider === "openWrangler" ? conflict.useOpenWrangler : conflict.keepDataWrangler;
+      await action.click();
+      await conflict.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+      await waitFor(
+        () =>
+          vscode.workspace
+            .getConfiguration("openWrangler")
+            .inspect<"ask" | "openWrangler" | "dataWrangler" | "disabled">("notebookPreviewProvider")?.globalValue ===
+          expectation.provider,
+        10_000,
+        "the selected notebook preview provider to persist globally"
+      );
+    } else {
+      recordAcceptanceProgress(`${phase}:provider-persisted`);
+      await assertNotebookPreviewConflictAbsent(
+        workbench,
+        1_500,
+        "A persisted notebook preview provider must suppress the conflict prompt after editor restart."
+      );
+    }
+
+    recordAcceptanceProgress(`${phase}:kernel-discovery`);
+    await jupyterExtension.activate();
+    assertExactOpenNotebookDocument(notebook, "after activating released Jupyter for coexistence");
+    recordAcceptanceProgress(`${phase}:kernel-select`);
+    await selectReleasedJupyterKernel(workbench, notebook, notebookEditor, phase, kernelTarget);
+    recordAcceptanceProgress(`${phase}:kernel-selected`);
+
+    const setupExecution = executeReleasedNotebookCell(
+      notebook,
+      0,
+      DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
+      `${phase}:setup-cell`,
+      notebookEditor
+    );
+    if (expectation.provider === "openWrangler") {
+      recordAcceptanceProgress(`${phase}:open-wrangler-consent`);
+      const consent = await waitForReleasedJupyterConsent(workbench, testing);
+      await consent.allow.click();
+      await consent.dialog.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+    await setupExecution;
+    const initialKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(0));
+    assert.equal(
+      canonicalAcceptancePath(String(initialKernel.executable)),
+      canonicalAcceptancePath(testPython),
+      "Data Wrangler coexistence must use the private released-Jupyter interpreter."
+    );
+    assert.ok(Number.isSafeInteger(Number(initialKernel.pid)) && Number(initialKernel.pid) > 0);
+    if (expectation.provider === "dataWrangler") {
+      assert.equal(
+        await visibleReleasedJupyterConsentCount(workbench),
+        0,
+        "Choosing Data Wrangler must not show Open Wrangler kernel consent."
+      );
+    }
+
+    await assertDataWranglerCoexistenceOwnership(
+      workbench,
+      notebook,
+      notebookEditor,
+      expectation.provider,
+      `${phase}:initial-provider`
+    );
+    await assertNotebookPreviewConflictAbsent(
+      workbench,
+      1_500,
+      "The notebook preview conflict prompt must stay dismissed after the selected provider renders output."
+    );
+
+    if (!expectation.selection) {
+      recordAcceptanceProgress(`${phase}:kernel-restart`);
+      await restartReleasedJupyterKernelAndWait(notebook);
+      await executeReleasedNotebookCell(
+        notebook,
+        0,
+        DATA_WRANGLER_COEXISTENCE_SETUP_RESULT,
+        `${phase}:restart-setup-cell`,
+        notebookEditor
+      );
+      const replacementKernel = dataWranglerCoexistenceSetupResult(notebook.cellAt(0));
+      assert.notEqual(
+        Number(replacementKernel.pid),
+        Number(initialKernel.pid),
+        "The coexistence restart phase must exercise a replacement kernel process."
+      );
+      assert.equal(canonicalAcceptancePath(String(replacementKernel.executable)), canonicalAcceptancePath(testPython));
+      await assertDataWranglerCoexistenceOwnership(
+        workbench,
+        notebook,
+        notebookEditor,
+        expectation.provider,
+        `${phase}:restarted-provider`
+      );
+      await assertNotebookPreviewConflictAbsent(
+        workbench,
+        1_500,
+        "Kernel restart must not repeat the resolved notebook preview conflict."
+      );
+    }
+
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "Automatic notebook preview coexistence must not create an Open Wrangler session panel."
+    );
+  } finally {
+    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+    cleanupAcceptanceTemporaryDirectory(directory);
+  }
+}
+
+async function assertDataWranglerCoexistenceOwnership(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  notebookEditor: vscode.NotebookEditor,
+  provider: "openWrangler" | "dataWrangler",
+  checkpoint: string
+): Promise<void> {
+  if (provider === "openWrangler") {
+    await executeReleasedNotebookCellUntilMime(notebook, 1, OPEN_WRANGLER_MIME_V2, checkpoint, notebookEditor);
+    const mimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    assert.ok(mimes.includes(OPEN_WRANGLER_MIME_V2));
+    return;
+  }
+
+  await executeReleasedNotebookCell(notebook, 1, undefined, `${checkpoint}:dataframe-cell`, notebookEditor);
+  const mimes = notebook.cellAt(1).outputs.flatMap((output) => output.items.map((item) => item.mime));
+  assert.equal(
+    mimes.includes(OPEN_WRANGLER_MIME_V2),
+    false,
+    "Choosing Data Wrangler must leave Open Wrangler's automatic notebook formatter unregistered."
+  );
+  assert.ok(
+    mimes.includes("text/plain"),
+    "The selected Data Wrangler path must retain the successful native Jupyter dataframe output."
+  );
+}
+
+async function waitForNotebookPreviewConflict(workbench: Page): Promise<{
+  dialog: Locator;
+  useOpenWrangler: Locator;
+  keepDataWrangler: Locator;
+}> {
+  const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
+  do {
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      const dialog = frame
+        .locator(".monaco-dialog-box:visible")
+        .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
+        .last();
+      if ((await dialog.count().catch(() => 0)) === 0 || !(await dialog.isVisible().catch(() => false))) continue;
+      const message = await dialog.locator(".dialog-message-text").innerText();
+      const detail = await dialog.locator(".dialog-message-detail").innerText();
+      assert.equal(message, NOTEBOOK_PREVIEW_CONFLICT_MESSAGE);
+      assert.equal(detail, NOTEBOOK_PREVIEW_CONFLICT_DETAIL);
+      const useOpenWrangler = dialog.getByRole("button", {
+        name: NOTEBOOK_PREVIEW_USE_OPEN_WRANGLER,
+        exact: true
+      });
+      const keepDataWrangler = dialog.getByRole("button", {
+        name: NOTEBOOK_PREVIEW_KEEP_DATA_WRANGLER,
+        exact: true
+      });
+      assert.equal(await useOpenWrangler.count(), 1);
+      assert.equal(await keepDataWrangler.count(), 1);
+      return { dialog, useOpenWrangler, keepDataWrangler };
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+  const diagnostics = await boundedImportPromptDiagnostics(workbench);
+  throw new Error(
+    "Timed out waiting for the real Open Wrangler/Data Wrangler provider conflict prompt. " +
+      `Dialogs: ${JSON.stringify(diagnostics.dialogs)}.`
+  );
+}
+
+async function assertNotebookPreviewConflictAbsent(
+  workbench: Page,
+  observationMs: number,
+  message: string
+): Promise<void> {
+  const deadline = Date.now() + observationMs;
+  do {
+    let count = 0;
+    for (const frame of releasedWorkbenchFrames(workbench)) {
+      count += await frame
+        .locator(".monaco-dialog-box:visible")
+        .filter({ hasText: NOTEBOOK_PREVIEW_CONFLICT_MESSAGE })
+        .count()
+        .catch(() => 0);
+    }
+    assert.equal(count, 0, message);
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+}
+
+function dataWranglerCoexistenceSetupResult(cell: vscode.NotebookCell): Record<string, unknown> {
+  return releasedNotebookJsonResult(cell, DATA_WRANGLER_COEXISTENCE_SETUP_RESULT, "Data Wrangler coexistence setup");
+}
+
+function writeDataWranglerCoexistenceNotebook(notebookPath: string, target: ReleasedJupyterKernelTarget): void {
+  const cell = (source: readonly string[]) => ({
+    cell_type: "code",
+    execution_count: null,
+    metadata: {},
+    outputs: [],
+    source: source.map((line) => `${line}\n`)
+  });
+  writeFileSync(
+    notebookPath,
+    JSON.stringify({
+      cells: [
+        cell([
+          "import json",
+          "import os",
+          "import sys",
+          "import pandas as pd",
+          `${DATA_WRANGLER_COEXISTENCE_VARIABLE} = pd.DataFrame({`,
+          "    'order_id': [2400001, 2400002, 2400003, 2400004],",
+          "    'market': ['DACH', 'Nordics', 'Iberia', 'France'],",
+          "    'revenue': [620.50, 1840.75, 991.00, 2420.25],",
+          "})",
+          `print(${JSON.stringify(DATA_WRANGLER_COEXISTENCE_SETUP_RESULT)} + json.dumps({`,
+          "    'executable': sys.executable,",
+          "    'pid': os.getpid(),",
+          "}, sort_keys=True))"
+        ]),
+        cell([DATA_WRANGLER_COEXISTENCE_VARIABLE])
+      ],
+      metadata: {
+        kernelspec: {
+          display_name: target.label,
+          language: "python",
+          name: target.name
+        },
+        language_info: { name: "python" }
+      },
+      nbformat: 4,
+      nbformat_minor: 5
+    })
+  );
 }
 
 async function exerciseReleasedJupyterExtension(
