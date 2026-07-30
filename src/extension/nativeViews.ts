@@ -7,10 +7,10 @@ import type { FilterModel, OperationKind, SessionMetadata } from "../shared/prot
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
 import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
-import { getSetting } from "./configuration";
 import { exportFileSafely } from "./files/safeFileExport";
 
 type ViewKind = "operations" | "summary" | "filters" | "steps";
+type ViewSortAction = "moveUp" | "moveDown" | "remove";
 export type NotebookInsertionDiagnosticStatus =
   | NotebookInsertionResult["status"]
   | "untrusted"
@@ -45,7 +45,7 @@ class OpenWranglerTreeProvider implements vscode.TreeDataProvider<ViewNode>, vsc
     if (this.kind === "operations") return operationNodes(this.snapshot?.metadata);
     if (!this.snapshot) return [new ViewNode("No active dataframe", "Open a data file or notebook variable", "info")];
     if (this.kind === "summary") return summaryNodes(this.snapshot);
-    if (this.kind === "filters") return filterNodes(this.snapshot.viewState.filterModel);
+    if (this.kind === "filters") return filterNodes(this.snapshot);
     return cleaningStepNodes(this.snapshot);
   }
 
@@ -62,7 +62,8 @@ class ViewNode extends vscode.TreeItem {
     icon: string,
     command?: vscode.Command,
     contextValue?: string,
-    disabledReason?: string
+    disabledReason?: string,
+    readonly viewSortTarget?: ViewSortTarget
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.description = description;
@@ -75,12 +76,17 @@ class ViewNode extends vscode.TreeItem {
   }
 }
 
+interface ViewSortTarget {
+  readonly sessionId: string;
+  readonly column: string;
+  readonly index: number;
+  readonly modelSignature: string;
+}
+
 class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
   private snapshot: ActiveSessionSnapshot | undefined;
   private readonly subscription: vscode.Disposable;
-  private hadDraft = false;
-  private sessionId: string | undefined;
   private generatedCode = "";
   private inspectionStepId: string | undefined;
   private displayedCode = "# Open a dataframe to preview generated code.";
@@ -107,17 +113,6 @@ class CodePreviewViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.inspectionStepId = nextInspectionStepId;
       this.snapshot = snapshot;
       this.render();
-      const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
-      const hasDraft = Boolean(snapshot?.metadata.draftStep);
-      const changedSession = snapshot?.sessionId !== this.sessionId;
-      if (
-        snapshot &&
-        ((behavior === "always" && changedSession) || (behavior === "onDraft" && hasDraft && !this.hadDraft))
-      ) {
-        void vscode.commands.executeCommand("openWrangler.codePreview.focus");
-      }
-      this.hadDraft = hasDraft;
-      this.sessionId = snapshot?.sessionId;
     });
   }
 
@@ -198,6 +193,35 @@ export function registerNativeViews(
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
   const exportPinnedData = (sessionId: string, revision: number) =>
     exportSessionData(coordinator, { sessionId, revision });
+  const sendViewSortAction = (node: unknown, action: ViewSortAction): boolean => {
+    const snapshot = coordinator.activeSession();
+    const target = node instanceof ViewNode ? node.viewSortTarget : undefined;
+    if (
+      !target ||
+      !snapshot ||
+      snapshot.stepInspection ||
+      target.sessionId !== snapshot.sessionId ||
+      target.modelSignature !== viewSortModelSignature(snapshot.viewState.filterModel)
+    ) {
+      return false;
+    }
+    const matchingIndexes = snapshot.viewState.filterModel.sort.flatMap((rule, index) =>
+      rule.column === target.column ? [index] : []
+    );
+    if (matchingIndexes.length !== 1 || matchingIndexes[0] !== target.index) return false;
+    const index = target.index;
+    if (
+      (action === "moveUp" && index === 0) ||
+      (action === "moveDown" && index === snapshot.viewState.filterModel.sort.length - 1)
+    ) {
+      return false;
+    }
+    return OpenWranglerPanel.sendEditorAction({
+      action: "changeViewSort",
+      column: target.column,
+      sortAction: action
+    });
+  };
   context.subscriptions.push(
     contextSubscription,
     vscode.commands.registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
@@ -214,6 +238,36 @@ export function registerNativeViews(
         void vscode.window.showInformationMessage("Open the active dataframe editor before removing a viewing filter.");
       }
     }),
+    vscode.commands.registerCommand("openWrangler.openViewSort", async (column?: unknown) => {
+      const snapshot = coordinator.activeSession();
+      if (!snapshot || snapshot.stepInspection) {
+        void vscode.window.showInformationMessage(
+          snapshot?.stepInspection
+            ? "Return to the current view before editing viewing sorts."
+            : "Open a dataframe in Open Wrangler before editing viewing sorts."
+        );
+        return;
+      }
+      if (
+        column !== undefined &&
+        (typeof column !== "string" ||
+          snapshot.viewState.filterModel.sort.filter((rule) => rule.column === column).length !== 1)
+      ) {
+        return;
+      }
+      if (!OpenWranglerPanel.sendEditorAction({ action: "openFilters", ...(column ? { column } : {}) })) {
+        void vscode.window.showInformationMessage("Open the active dataframe editor before editing viewing sorts.");
+      }
+    }),
+    vscode.commands.registerCommand("openWrangler.moveViewSortUp", (node?: unknown) =>
+      sendViewSortAction(node, "moveUp")
+    ),
+    vscode.commands.registerCommand("openWrangler.moveViewSortDown", (node?: unknown) =>
+      sendViewSortAction(node, "moveDown")
+    ),
+    vscode.commands.registerCommand("openWrangler.removeViewSort", (node?: unknown) =>
+      sendViewSortAction(node, "remove")
+    ),
     vscode.commands.registerCommand("openWrangler.startOperation", async (kind?: OperationKind) => {
       if (kind !== undefined && !operationCatalog.some((operation) => operation.kind === kind)) return;
       const snapshot = coordinator.activeSession();
@@ -561,7 +615,9 @@ function summaryNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
   ];
 }
 
-function filterNodes(model: FilterModel): ViewNode[] {
+function filterNodes(snapshot: ActiveSessionSnapshot): ViewNode[] {
+  const model = snapshot.viewState.filterModel;
+  const modelSignature = viewSortModelSignature(model);
   const filters = model.filters.filter(isActiveColumnFilter).map(
     (filter) =>
       new ViewNode(
@@ -577,16 +633,40 @@ function filterNodes(model: FilterModel): ViewNode[] {
       )
   );
   const sorts = model.sort.map(
-    (sort) =>
+    (sort, index) =>
       new ViewNode(
         sort.column,
-        `${sort.direction === "asc" ? "Ascending" : "Descending"} · nulls ${sort.nulls}`,
-        "sort-precedence"
+        `Priority ${index + 1} · ${sort.direction === "asc" ? "Ascending" : "Descending"} · nulls ${sort.nulls}`,
+        "sort-precedence",
+        {
+          command: "openWrangler.openViewSort",
+          title: `Edit ${sort.column} sort`,
+          arguments: [sort.column]
+        },
+        viewSortContext(index, model.sort.length),
+        undefined,
+        {
+          sessionId: snapshot.sessionId,
+          column: sort.column,
+          index,
+          modelSignature
+        }
       )
   );
   return filters.length || sorts.length
     ? [...filters, ...sorts]
     : [new ViewNode("No filters or sorts", "Current view", "filter")];
+}
+
+function viewSortModelSignature(model: FilterModel): string {
+  return JSON.stringify(model.sort);
+}
+
+function viewSortContext(index: number, length: number): string {
+  if (length === 1) return "openWrangler.viewSortOnly";
+  if (index === 0) return "openWrangler.viewSortFirst";
+  if (index === length - 1) return "openWrangler.viewSortLast";
+  return "openWrangler.viewSortMiddle";
 }
 
 function filterNodeDescription(filter: FilterModel["filters"][number]): string {

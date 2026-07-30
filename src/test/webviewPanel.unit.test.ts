@@ -464,6 +464,35 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(markerCount).toBe(2);
   });
 
+  it("requires a fresh renderer-ready handshake after the synchronization marker cannot be delivered", async () => {
+    let rejectSynchronizationMarker = true;
+    const harness = createPanelHarness(
+      { request: vi.fn(async () => openedResponse) },
+      {
+        postMessage: async (message) => !(rejectSynchronizationMarker && isRendererSynchronizationMessage(message))
+      }
+    );
+    await harness.open();
+
+    await harness.receive({ kind: "ready" });
+
+    await expect(OpenWranglerPanel.synchronizePanelForSession(openedResponse.metadata.sessionId)).resolves.toBe(false);
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
+
+    rejectSynchronizationMarker = false;
+    harness.posted.length = 0;
+    await harness.receive({ kind: "ready" });
+    const freshMarker = latestRendererSynchronization(harness.posted);
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: freshMarker.syncId,
+      sessionId: freshMarker.sessionId,
+      revision: freshMarker.revision
+    });
+
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+  });
+
   it("never reports a renderer as hydrated while its initial host publication is still opening", async () => {
     const initialPublication = deferred<void>();
     let heldInitialPublication = false;
@@ -557,6 +586,76 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(snapshot?.page.rows[0]?.values[0]?.display).toBe("Berlin");
     expect(request).toHaveBeenLastCalledWith(previewRequest, undefined);
     expect(harness.posted).toContainEqual(preview);
+  });
+
+  it("reveals Code Preview only after the exact draft renderer synchronization is acknowledged", async () => {
+    const executeCommand = vi.spyOn(commands, "executeCommand");
+    const draft = {
+      id: "acknowledged-uppercase",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async (candidate: OpenWranglerRequest) =>
+          candidate.kind === "previewStep" ? preview : openedResponse
+        )
+      },
+      { openResponse: openedResponse }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    executeCommand.mockClear();
+    harness.posted.length = 0;
+
+    await OpenWranglerPanel.previewStepForSessionForTesting({
+      kind: "previewStep",
+      sessionId: metadata.sessionId,
+      revision: metadata.revision,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    const draftMarker = latestRendererSynchronization(harness.posted);
+
+    expect(executeCommand).not.toHaveBeenCalledWith("openWrangler.codePreview.focus");
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: draftMarker.syncId,
+      sessionId: draftMarker.sessionId,
+      revision: draftMarker.revision
+    });
+    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.codePreview.focus");
+
+    await harness.receive({
+      kind: "rendererSynchronized",
+      syncId: draftMarker.syncId,
+      sessionId: draftMarker.sessionId,
+      revision: draftMarker.revision
+    });
+    expect(executeCommand).toHaveBeenCalledOnce();
   });
 
   it("does not let a pre-draft page replace the retained preview snapshot", async () => {

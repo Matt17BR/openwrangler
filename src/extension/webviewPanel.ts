@@ -63,6 +63,8 @@ export class OpenWranglerPanel {
   private rendererSynchronization: Promise<void> | undefined;
   private rendererSynchronizationRequested = false;
   private rendererSynchronizationNeedsInspectionClear = false;
+  private codePreviewRevealedSessionId: string | undefined;
+  private codePreviewRevealedDraftStepId: string | undefined;
   private pendingRendererImportAction:
     | {
         actionId: string;
@@ -304,6 +306,7 @@ export class OpenWranglerPanel {
         this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
+        this.revealCodePreviewAfterRendererSynchronization();
       }
       return;
     }
@@ -878,6 +881,27 @@ export class OpenWranglerPanel {
     return true;
   }
 
+  private revealCodePreviewAfterRendererSynchronization(): void {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
+    const draftStepId = snapshot.metadata.draftStep?.id;
+    const changedSession = this.codePreviewRevealedSessionId !== snapshot.metadata.sessionId;
+    if (changedSession) this.codePreviewRevealedDraftStepId = undefined;
+    if (!draftStepId) this.codePreviewRevealedDraftStepId = undefined;
+    if (behavior === "never") return;
+
+    const shouldReveal =
+      behavior === "always"
+        ? changedSession
+        : draftStepId !== undefined && this.codePreviewRevealedDraftStepId !== draftStepId;
+    if (!shouldReveal) return;
+
+    this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
+    this.codePreviewRevealedDraftStepId = draftStepId;
+    void vscode.commands.executeCommand("openWrangler.codePreview.focus");
+  }
+
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
     if (!this.hasHydratedRenderer()) return Promise.resolve(undefined);
     this.settleRendererImportAction(undefined, undefined);
@@ -983,7 +1007,13 @@ export class OpenWranglerPanel {
       this.rendererSynchronizationRequested = true;
       return;
     }
-    await this.panel.webview.postMessage({ kind: "rendererSynchronization", ...synchronization });
+    const posted = await this.panel.webview.postMessage({ kind: "rendererSynchronization", ...synchronization });
+    if (!posted && this.rendererSynchronizationIdentity === synchronization) {
+      // VS Code returns false when the renderer generation is no longer
+      // reachable. Do not keep treating that retired generation as ready.
+      this.rendererReady = false;
+      this.invalidateRendererSynchronization();
+    }
   }
 
   private activate(): void {
@@ -1295,10 +1325,19 @@ function hasExactKeys(
 
 export interface EditorActionMessage {
   action:
-    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
+    | "openOperation"
+    | "editLatest"
+    | "selectStep"
+    | "clearFilterColumn"
+    | "openFilters"
+    | "changeViewSort"
+    | "applyDraft"
+    | "discardDraft"
+    | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
   column?: string;
+  sortAction?: "moveUp" | "moveDown" | "remove";
 }
 
 const randomNonce = (): string => {

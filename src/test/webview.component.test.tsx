@@ -1419,7 +1419,84 @@ describe("App file import options", () => {
     });
   });
 
-  it("acknowledges the exact rendered snapshot only after React commits it", () => {
+  it("opens the Filters drawer from a native sort node and applies validated priority changes", async () => {
+    const sortedMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        filters: [],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "sales" });
+
+    expect(await screen.findByRole("complementary", { name: "Insights and filters" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("combobox", { name: "Sort column" })).toHaveValue("c:1");
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "city",
+      sortAction: "moveDown"
+    });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")
+      .at(-1);
+    expect(pageRequest?.request.filterModel.sort).toEqual([
+      { column: "sales", direction: "desc", nulls: "first" },
+      { column: "city", direction: "asc", nulls: "last" }
+    ]);
+  });
+
+  it("removes exactly one validated native-tree view sort from the live query", async () => {
+    const sortedMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        filters: [],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "sales",
+      sortAction: "remove"
+    });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
+    expect(pageRequest?.request.filterModel.sort).toEqual([{ column: "city", direction: "asc", nulls: "last" }]);
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "missing",
+      sortAction: "remove"
+    });
+    expect(webviewPostMessage).not.toHaveBeenCalled();
+  });
+
+  it("atomically commits the exact rendered snapshot before acknowledging it", () => {
     const previousImplementation = webviewPostMessage.getMockImplementation();
     try {
       render(<App />);
@@ -1448,7 +1525,7 @@ describe("App file import options", () => {
             origin: window.location.origin
           })
         );
-        expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(false);
+        expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(true);
       });
 
       expect(document.querySelector("main.app")).toHaveAttribute("data-session-id", metadata.sessionId);
@@ -1987,7 +2064,7 @@ describe("App file import options", () => {
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
   });
 
-  it("treats a header sort as one primary view-only sort and replaces earlier quick sorts", async () => {
+  it("promotes a header sort without dropping the remaining view-only sort priorities", async () => {
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
@@ -2023,12 +2100,17 @@ describe("App file import options", () => {
           kind: "getPage",
           filterModel: {
             filters: [],
-            sort: [{ column: "city", direction: "desc", nulls: "last" }]
+            sort: [
+              { column: "city", direction: "desc", nulls: "last" },
+              { column: "sales", direction: "asc", nulls: "last" }
+            ]
           }
         })
       })
     );
-    expect(city.getByRole("button", { name: /Clear sort for city; currently descending/u })).toBeVisible();
+    expect(
+      city.getByRole("button", { name: /Clear sort for city; currently descending, priority 1 of 2/u })
+    ).toBeVisible();
   });
 
   it("keeps the grid loading when a drained cleaning completion lands during import reconfiguration", async () => {

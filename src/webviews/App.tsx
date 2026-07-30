@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
 import { flushSync } from "react-dom";
 import type {
   ColumnSummary,
@@ -13,7 +21,7 @@ import type {
   ValuesResponse
 } from "../shared/protocol";
 import { dataBackendLabel } from "../shared/protocol";
-import { compactFilterModel, emptyFilterModel, type FilterModel } from "../shared/filterModel";
+import { compactFilterModel, emptyFilterModel, prioritizeSortRule, type FilterModel } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
@@ -87,6 +95,7 @@ export function App() {
   const [pendingRendererSynchronization, setPendingRendererSynchronization] = useState<
     RendererSynchronizationMessage | undefined
   >();
+  const pendingRendererSynchronizationRef = useRef<RendererSynchronizationMessage | undefined>(undefined);
   const acknowledgedRendererSynchronizationId = useRef<string | undefined>(undefined);
   const metadataRef = useRef<SessionMetadata | undefined>(undefined);
   const pageRef = useRef<GridPage | undefined>(undefined);
@@ -98,6 +107,9 @@ export function App() {
   const backgroundDiagnosticsRef = useRef<ReadonlyMap<string, BackgroundDiagnostic>>(new Map());
   const filterModelRef = useRef<FilterModel>(emptyFilterModel());
   const clearFilterColumnActionRef = useRef<(column: string) => void>(() => undefined);
+  const changeViewSortActionRef = useRef<(column: string, action: "moveUp" | "moveDown" | "remove") => void>(
+    () => undefined
+  );
   const sidePanelOpenRef = useRef(false);
   const summaryPanelViewRef = useRef<SummaryPanelView>("column");
   const confirmedView = useRef<ConfirmedView | undefined>(undefined);
@@ -850,7 +862,11 @@ export function App() {
               storeGoToColumnRequest({ ...reveal, retainUntilSynchronization: undefined });
             }
           }
-          setPendingRendererSynchronization(response);
+          // This marker is the host's publication barrier. Commit every
+          // authoritative message that preceded it before allowing recovery
+          // pulls or a native view reveal to invalidate the marker.
+          pendingRendererSynchronizationRef.current = response;
+          flushSync(() => setPendingRendererSynchronization(response));
         }
         return;
       }
@@ -981,6 +997,27 @@ export function App() {
         } else if (response.action === "clearFilterColumn") {
           if (typeof response.column !== "string") return;
           clearFilterColumnActionRef.current(response.column);
+        } else if (response.action === "openFilters") {
+          if (stepInspectionTargetRef.current) return;
+          const currentMetadata = metadataRef.current;
+          if (
+            typeof response.column === "string" &&
+            currentMetadata?.schema.filter((column) => column.name === response.column).length === 1
+          ) {
+            setFilterColumn(response.column);
+          }
+          summaryPanelViewRef.current = "filters";
+          setSummaryPanelView("filters");
+          sidePanelOpenRef.current = true;
+          setSidePanelOpen(true);
+        } else if (response.action === "changeViewSort") {
+          if (
+            typeof response.column !== "string" ||
+            (response.sortAction !== "moveUp" && response.sortAction !== "moveDown" && response.sortAction !== "remove")
+          ) {
+            return;
+          }
+          changeViewSortActionRef.current(response.column, response.sortAction);
         } else {
           if (!beginMutation()) return;
           const columnWindow = desiredColumnWindow.current;
@@ -1045,6 +1082,7 @@ export function App() {
           setForegroundError(response.message);
           return;
         } else if (!metadataRef.current) {
+          pendingRendererSynchronizationRef.current = undefined;
           setPendingRendererSynchronization(undefined);
           acknowledgedRendererSynchronizationId.current = undefined;
           setLoading(false);
@@ -1077,6 +1115,7 @@ export function App() {
           } else if (importOptionsPendingRef.current) {
             return;
           } else if (!metadataRef.current) {
+            pendingRendererSynchronizationRef.current = undefined;
             setPendingRendererSynchronization(undefined);
             acknowledgedRendererSynchronizationId.current = undefined;
             setLoading(false);
@@ -1117,6 +1156,7 @@ export function App() {
         if (current?.sessionId === response.metadata.sessionId && response.metadata.revision < current.revision) {
           return;
         }
+        pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
         storeImportOptionsPending(false);
@@ -1200,6 +1240,7 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
         const previous = mutationSnapshot.current;
@@ -1363,7 +1404,7 @@ export function App() {
     updateImportOptionsPending
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const synchronization = pendingRendererSynchronization;
     if (!synchronization || acknowledgedRendererSynchronizationId.current === synchronization.syncId) return;
     const matchesCommittedSession =
@@ -1395,7 +1436,9 @@ export function App() {
       if (document.visibilityState !== "visible" || retryIndex >= sessionSnapshotRetryDelaysMs.length) return;
       retry = window.setTimeout(() => {
         retry = undefined;
-        if (document.visibilityState !== "visible") return;
+        if (document.visibilityState !== "visible" || pendingRendererSynchronizationRef.current !== undefined) {
+          return;
+        }
         vscode.postMessage({ kind: "requestSessionSnapshot" });
         retryIndex += 1;
         scheduleRetry();
@@ -1404,7 +1447,7 @@ export function App() {
     const restoreVisibleSnapshot = () => {
       clearRetry();
       retryIndex = 0;
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible" && pendingRendererSynchronizationRef.current === undefined) {
         vscode.postMessage({ kind: "requestSessionSnapshot" });
         retryIndex = 1;
         scheduleRetry();
@@ -1643,6 +1686,30 @@ export function App() {
         ...current,
         filters: current.filters.filter((filter) => filter.column !== column)
       });
+    };
+
+    changeViewSortActionRef.current = (column, action) => {
+      const current = filterModelRef.current;
+      const matchingIndexes = current.sort.flatMap((rule, index) => (rule.column === column ? [index] : []));
+      if (matchingIndexes.length !== 1) return;
+      const index = matchingIndexes[0];
+      if (index === undefined) return;
+      if (action === "remove") {
+        applyFilters({
+          ...current,
+          sort: current.sort.filter((_, ruleIndex) => ruleIndex !== index)
+        });
+        return;
+      }
+      const nextIndex = index + (action === "moveUp" ? -1 : 1);
+      if (nextIndex < 0 || nextIndex >= current.sort.length) return;
+      const sort = [...current.sort];
+      const currentRule = sort[index];
+      const adjacentRule = sort[nextIndex];
+      if (!currentRule || !adjacentRule) return;
+      sort[index] = adjacentRule;
+      sort[nextIndex] = currentRule;
+      applyFilters({ ...current, sort });
     };
   });
 
@@ -2190,16 +2257,20 @@ export function App() {
                   inspectionMode
                     ? undefined
                     : applyFilters({
-                        ...filterModel,
-                        sort: [{ column, direction, nulls: "last" }]
+                        ...filterModelRef.current,
+                        sort: prioritizeSortRule(filterModelRef.current.sort, {
+                          column,
+                          direction,
+                          nulls: filterModelRef.current.sort.find((rule) => rule.column === column)?.nulls ?? "last"
+                        })
                       })
                 }
                 onClearSortColumn={(column) =>
                   inspectionMode
                     ? undefined
                     : applyFilters({
-                        ...filterModel,
-                        sort: filterModel.sort.filter((rule) => rule.column !== column)
+                        ...filterModelRef.current,
+                        sort: filterModelRef.current.sort.filter((rule) => rule.column !== column)
                       })
                 }
                 onOpenFilter={(column) => {
@@ -2320,10 +2391,19 @@ export function App() {
 interface EditorActionMessage {
   kind: "editorAction";
   action:
-    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
+    | "openOperation"
+    | "editLatest"
+    | "selectStep"
+    | "clearFilterColumn"
+    | "openFilters"
+    | "changeViewSort"
+    | "applyDraft"
+    | "discardDraft"
+    | "undoStep";
   operationKind?: OperationKind;
   stepId?: string;
   column?: string;
+  sortAction?: "moveUp" | "moveDown" | "remove";
 }
 
 interface RequestImportOptionsChangeMessage {

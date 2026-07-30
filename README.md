@@ -43,8 +43,9 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
   Pandas. Polars and DuckDB operations never detour through Pandas.
 - **Preview every change.** Review the draft result, data diff, and executable engine-specific code before
   applying or discarding a step.
-- **Keep exploration separate from cleaning.** Filters and sorts change the view, not the source or cleaning
-  plan. Exports always target a separate file.
+- **Keep exploration separate from cleaning.** Filters and ordered multi-column sorts change the view, not the
+  source or cleaning plan. The newest sort becomes priority 1, and priorities remain editable from Filters /
+  Sorts in the workbench or Activity Bar. Exports always target a separate file.
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 

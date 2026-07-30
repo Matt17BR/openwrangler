@@ -23,6 +23,10 @@
 | `openWrangler.editLatestStep`                | Open Wrangler: Edit Latest Step                          |
 | `openWrangler.selectStep`                    | Open Wrangler: Inspect Applied Step                      |
 | `openWrangler.undoStep`                      | Open Wrangler: Undo Latest Step                          |
+| `openWrangler.openViewSort`                  | Open Wrangler: Edit View Sorts                           |
+| `openWrangler.moveViewSortUp`                | Open Wrangler: Move View Sort Up                         |
+| `openWrangler.moveViewSortDown`              | Open Wrangler: Move View Sort Down                       |
+| `openWrangler.removeViewSort`                | Open Wrangler: Remove View Sort                          |
 | `openWrangler.copyCode`                      | Open Wrangler: Copy Generated Code                       |
 | `openWrangler.exportCode`                    | Open Wrangler: Export Python Script                      |
 | `openWrangler.insertNotebookCode`            | Open Wrangler: Insert Function into Originating Notebook |

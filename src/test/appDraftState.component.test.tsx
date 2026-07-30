@@ -382,6 +382,70 @@ describe("App draft state boundaries", () => {
     expect(screen.getByText("Draft: Uppercase")).toBeVisible();
   });
 
+  it("commits a draft before its synchronization acknowledgement and suppresses the pending recovery pull", () => {
+    const draft: TransformStep = {
+      id: "upper-c-publication",
+      kind: "upperText",
+      params: { column: { id: "c:c", name: "c" } }
+    };
+    const previousImplementation = postMessage.getMockImplementation();
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+      postMessage.mockClear();
+      postMessage.mockImplementation((message) => {
+        if (message?.kind !== "rendererSynchronized") return;
+        expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+        expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+      });
+
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { kind: "sessionOpened", metadata, page, summaries: [] },
+            origin: window.location.origin
+          })
+        );
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              kind: "stepPreview",
+              revision: 3,
+              metadata: { ...metadata, revision: 3, draftStep: draft },
+              page,
+              diff: { ...emptyDiff(), changedCells: 1 },
+              code: "def clean_data(df):\n    return df"
+            },
+            origin: window.location.origin
+          })
+        );
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              kind: "rendererSynchronization",
+              syncId: "V".repeat(32),
+              sessionId: metadata.sessionId,
+              revision: 3
+            },
+            origin: window.location.origin
+          })
+        );
+        vi.advanceTimersByTime(250);
+      });
+
+      expect(postMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "V".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: 3
+      });
+      expect(postMessage.mock.calls.some(([message]) => message?.kind === "requestSessionSnapshot")).toBe(false);
+    } finally {
+      postMessage.mockImplementation(previousImplementation ?? (() => undefined));
+      vi.useRealTimers();
+    }
+  });
+
   it("consumes a search reveal and preserves a later manual viewport through an in-place preview", async () => {
     const inPlaceDraft: TransformStep = {
       id: "upper-c-in-place",
