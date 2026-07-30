@@ -66,19 +66,19 @@ options** only when a file needs an explicit override.
 
 ## Notebook workflows
 
-When a trusted Python kernel becomes available, Open Wrangler prepares its Pandas and Polars inline preview
+When a trusted Python kernel becomes available, Open Wrangler prepares its Pandas, Polars, and DuckDB inline preview
 without requiring an earlier Open Wrangler command. If Microsoft Data Wrangler is installed too, Open Wrangler
 asks once which extension should own automatic previews; change that choice later with **Open Wrangler: Choose
 Notebook Preview Provider**.
 
-The button inside an inline table expands the preview saved in that `.ipynb` file. To keep notebooks quick to
-reopen and share, a saved preview may contain only part of a very large dataframe; Open Wrangler says so clearly
-whenever rows or columns were left out.
+The inline table is a lightweight preview stored with the notebook, so it may show only part of a very large
+dataframe. Its **Open in Open Wrangler** action loads the complete, current variable from that notebook's live
+kernel and pages it as you navigate; it never substitutes the saved preview. If an older saved output has no
+live-variable link, Open Wrangler asks you to run the cell again instead of opening a partial workbench.
 
-To work with the full, current dataframe, use the notebook toolbar's branded **Open in Open Wrangler** action.
-It discovers supported variables from the selected kernel, shows their engine and dataframe type, and pages
-through the live data as you navigate. This portability limit applies only to previews stored inside notebooks,
-not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files.
+The notebook toolbar's branded **Open in Open Wrangler** action can also discover supported variables from the
+selected kernel and shows each engine and dataframe type. Preview portability limits apply only to the table
+stored inside the notebook, not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files.
 
 <a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
 
@@ -86,8 +86,10 @@ _A real packaged VS Code notebook with a lightweight Pandas inline preview._
 
 The [engine gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) also shows a live
 native Polars notebook draft with generated Polars code, a native DuckDB rich-Parquet file session, and the
-experimental PySpark notebook viewer. [DuckDB notebook relations are not yet supported](https://github.com/Matt17BR/openwrangler/issues/157);
-Open Wrangler does not silently convert them to Pandas.
+experimental PySpark notebook viewer. DuckDB relations open as native, viewing-only notebook sessions: paging,
+filtering, sorting, and requested profiles run against the exact originating relation without converting it to
+Pandas, Polars, or Arrow. Cleaning, code insertion, and data export remain unavailable for DuckDB notebook
+relations.
 
 PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting, paging,
 and requested profiles stay in Spark; only bounded results return to the notebook runtime. File sessions,
@@ -101,23 +103,23 @@ counts the complete frame, while per-page transfer safeguards are not dataframe 
 | ------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
 | Polars                    | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; text and Parquet formats use lazy scans. Excel loads eagerly. |
 | Pandas                    | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                             |
-| DuckDB, preview           | CSV, TSV, Parquet, JSONL/NDJSON        | Not currently supported      | Native file-backed relations                                          |
+| DuckDB, preview           | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only                           |
 | PySpark 4.2, experimental | Not currently supported                | DataFrame                    | Viewing-only Spark queries with bounded returned results              |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
-Notebook variables are matched to their native supported dataframe type, including PySpark 4.2 DataFrames.
-Polars LazyFrames collect when opened from a notebook.
+Notebook variables are matched to their native supported dataframe type, including DuckDB relations and PySpark
+4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
 
 Python pickle files are deliberately unsupported: loading a pickle can execute arbitrary code. Convert trusted
 pickle data to Parquet, CSV, or JSONL in a controlled Python environment before opening it in Open Wrangler.
 
 ## From source to reusable code
 
-Open Wrangler combines progressive, type-aware summaries, column search, 27 built-in cleaning operations,
-editable engine-native code, and replayable history. Numeric columns expose exact distribution and scalar
-statistics; text columns expose exact empty-string and character-length statistics. Copy generated Python, save
-it as a script, insert it into the originating notebook, or export cleaned CSV and Parquet data without
-overwriting the source.
+Open Wrangler combines progressive, type-aware summaries, searchable navigation across the complete schema,
+27 built-in cleaning operations, editable engine-native code, and replayable history. Numeric columns expose
+exact distribution and scalar statistics; text columns expose exact empty-string and character-length
+statistics. Copy generated Python, save it as a script, insert it into the originating notebook, or export
+cleaned CSV and Parquet data without overwriting the source.
 Each open dataframe owns its view, cleaning plan, runtime session, and export target, so simultaneous tabs do
 not share state.
 

@@ -17,9 +17,7 @@ const rendererMocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(async () => undefined),
   createPanel: vi.fn(),
   kernelNotebookUris: [] as string[],
-  kernelNotebookDocuments: [] as NotebookDocument[],
-  snapshotPayloads: [] as unknown[],
-  snapshotBridges: [] as object[]
+  kernelNotebookDocuments: [] as NotebookDocument[]
 }));
 
 vi.mock("vscode", () => ({
@@ -68,19 +66,6 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
   }
 }));
 
-vi.mock("../extension/notebooks/snapshotBridge", () => ({
-  SnapshotBridge: class {
-    static fromNormalized(payload: unknown) {
-      return new this(payload);
-    }
-
-    constructor(payload: unknown) {
-      rendererMocks.snapshotPayloads.push(payload);
-      rendererMocks.snapshotBridges.push(this);
-    }
-  }
-}));
-
 import { registerNotebookRendererMessaging } from "../extension/notebooks/rendererMessaging";
 
 describe("notebook renderer messaging", () => {
@@ -94,11 +79,9 @@ describe("notebook renderer messaging", () => {
     rendererMocks.createPanel.mockReset();
     rendererMocks.kernelNotebookUris.length = 0;
     rendererMocks.kernelNotebookDocuments.length = 0;
-    rendererMocks.snapshotPayloads.length = 0;
-    rendererMocks.snapshotBridges.length = 0;
   });
 
-  it("leaves a saved Polars link unpinned so the current Pandas value is auto-detected", () => {
+  it("opens the primary renderer action as the exact current live variable without pinning the saved backend", () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
     const notebookB = notebook("file:///workspace/b.ipynb");
     const editorA = editor(notebookA);
@@ -108,7 +91,7 @@ describe("notebook renderer messaging", () => {
     rendererMocks.activeNotebookEditor = editorB;
     const { context, coordinator, coordinatedBridge } = register();
 
-    dispatchLive(editorA, validPayload());
+    dispatch(editorA, validPayload());
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb"]);
     expect(rendererMocks.kernelNotebookDocuments).toEqual([notebookA]);
@@ -120,39 +103,46 @@ describe("notebook renderer messaging", () => {
       uri: "file:///workspace/a.ipynb"
     });
     expect(rendererMocks.createPanel.mock.calls[0]).toHaveLength(3);
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
 
-  it.each([null, "frame"])(
-    "opens captured truth from the primary action regardless of a live variable link (%s)",
-    (variableName) => {
-      const notebookA = notebook("file:///workspace/a.ipynb");
-      const notebookB = notebook("file:///workspace/b.ipynb");
-      const editorA = editor(notebookA);
-      const editorB = editor(notebookB);
-      rendererMocks.notebookDocuments.push(notebookA, notebookB);
-      rendererMocks.visibleNotebookEditors.push(editorA, editorB);
-      rendererMocks.activeNotebookEditor = editorB;
-      const { context, coordinator, coordinatedBridge } = register();
+  it("never falls back to a snapshot when the primary action has no live variable link", () => {
+    const notebookA = notebook("file:///workspace/a.ipynb");
+    const notebookB = notebook("file:///workspace/b.ipynb");
+    const editorA = editor(notebookA);
+    const editorB = editor(notebookB);
+    rendererMocks.notebookDocuments.push(notebookA, notebookB);
+    rendererMocks.visibleNotebookEditors.push(editorA, editorB);
+    rendererMocks.activeNotebookEditor = editorB;
+    const { coordinator } = register();
 
-      const payload = validPayload(variableName);
-      dispatch(editorA, payload);
+    dispatch(editorA, validPayload(null));
 
-      expect(rendererMocks.snapshotPayloads).toEqual([payload]);
-      expect(coordinator.createBridge).toHaveBeenCalledOnce();
-      expect(coordinator.createBridge).toHaveBeenCalledWith(rendererMocks.snapshotBridges[0]);
-      expect(coordinator.createBridge.mock.calls[0]).toHaveLength(1);
-      expect(rendererMocks.createPanel).toHaveBeenCalledWith(
-        context,
-        coordinatedBridge,
-        { kind: "notebookOutput", label: "frame" },
-        "polars"
-      );
-      expect(rendererMocks.kernelNotebookUris).toEqual([]);
-      expect(rendererMocks.activeEditorReads).toBe(0);
-    }
-  );
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+    expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
+      "This saved preview is not linked to a live dataframe. Run the cell again to create a fresh Open Wrangler preview, then try again."
+    );
+    expect(rendererMocks.kernelNotebookUris).toEqual([]);
+    expect(rendererMocks.activeEditorReads).toBe(0);
+  });
+
+  it("ignores obsolete alternate notebook actions", () => {
+    const notebookA = notebook("file:///workspace/a.ipynb");
+    const editorA = editor(notebookA);
+    rendererMocks.notebookDocuments.push(notebookA);
+    rendererMocks.visibleNotebookEditors.push(editorA);
+    const { coordinator } = register();
+
+    rendererMocks.listener?.({
+      editor: editorA,
+      message: { kind: "openLiveInOpenWrangler", payload: validPayload() }
+    });
+
+    expect(coordinator.createBridge).not.toHaveBeenCalled();
+    expect(rendererMocks.createPanel).not.toHaveBeenCalled();
+    expect(rendererMocks.showErrorMessage).not.toHaveBeenCalled();
+  });
 
   it("keeps the originating notebook when focus changes during dispatch", () => {
     const notebookA = notebook("file:///workspace/a.ipynb");
@@ -170,7 +160,7 @@ describe("notebook renderer messaging", () => {
       return bridge;
     });
 
-    dispatchLive(editorA, validPayload());
+    dispatch(editorA, validPayload());
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb"]);
     expect(rendererMocks.createPanel).toHaveBeenCalledWith(
@@ -200,9 +190,8 @@ describe("notebook renderer messaging", () => {
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.kernelNotebookUris).toEqual([]);
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
-      "The notebook that sent this Open Wrangler action is no longer open. Reopen it and try again."
+      "The notebook behind this preview is no longer open. Reopen it, run the cell that defines the dataframe, and try again."
     );
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
@@ -220,7 +209,6 @@ describe("notebook renderer messaging", () => {
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
   });
 
   it("rejects a reopened editor and document that merely reuse the originating URI", () => {
@@ -237,7 +225,6 @@ describe("notebook renderer messaging", () => {
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
   });
 
   it("rejects a live action while another open document shares the captured URI", () => {
@@ -248,13 +235,13 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(originatingEditor);
     const { coordinator } = register();
 
-    dispatchLive(originatingEditor, validPayload());
+    dispatch(originatingEditor, validPayload());
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.kernelNotebookUris).toEqual([]);
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
-      "The notebook that sent this Open Wrangler action is no longer uniquely open. Close duplicate or replacement views and try again."
+      "The notebook behind this preview is no longer uniquely open. Close duplicate or replacement notebook views, run the cell if needed, and try again."
     );
   });
 
@@ -269,7 +256,6 @@ describe("notebook renderer messaging", () => {
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
       "This Open Wrangler notebook output is malformed or unsupported."
     );
@@ -282,12 +268,12 @@ describe("notebook renderer messaging", () => {
     rendererMocks.visibleNotebookEditors.push(originatingEditor);
     const { coordinator } = register();
 
-    dispatchLive(originatingEditor, validPayload(null));
+    dispatch(originatingEditor, validPayload(null));
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
-      "This Open Wrangler output does not contain a valid live variable link."
+      "This saved preview is not linked to a live dataframe. Run the cell again to create a fresh Open Wrangler preview, then try again."
     );
   });
 
@@ -303,15 +289,14 @@ describe("notebook renderer messaging", () => {
       throw new Error("Kernel access denied.");
     });
 
-    dispatchLive(editorA, validPayload());
+    dispatch(editorA, validPayload());
 
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
-      "Open Wrangler could not open the originating notebook. Kernel access denied."
+      "Open Wrangler could not access the live dataframe. Select or start the notebook's Python kernel, run the cell that defines frame, and try again. Kernel access denied."
     );
 
-    dispatchLive(editorB, validPayload());
+    dispatch(editorB, validPayload());
 
     expect(rendererMocks.kernelNotebookUris).toEqual(["file:///workspace/a.ipynb", "file:///workspace/b.ipynb"]);
     expect(rendererMocks.createPanel).toHaveBeenCalledOnce();
@@ -320,7 +305,6 @@ describe("notebook renderer messaging", () => {
       expect.anything(),
       expect.objectContaining({ uri: "file:///workspace/b.ipynb" })
     );
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
 });
@@ -340,19 +324,11 @@ function register(): {
   return { context, coordinator, coordinatedBridge };
 }
 
-function dispatch(
-  origin: NotebookEditor,
-  payload: unknown,
-  kind: "openInOpenWrangler" | "openLiveInOpenWrangler" = "openInOpenWrangler"
-): void {
+function dispatch(origin: NotebookEditor, payload: unknown): void {
   rendererMocks.listener?.({
     editor: origin,
-    message: { kind, payload }
+    message: { kind: "openInOpenWrangler", payload }
   });
-}
-
-function dispatchLive(origin: NotebookEditor, payload: unknown): void {
-  dispatch(origin, payload, "openLiveInOpenWrangler");
 }
 
 function notebook(uri: string, isClosed = false): NotebookDocument {

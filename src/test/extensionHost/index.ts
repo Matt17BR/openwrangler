@@ -57,17 +57,26 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
+  activateAcceptancePointerTargetAtCurrentCenter,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
-  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
-import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
+import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
+import {
+  ACCEPTANCE_PROGRESS_PROTOCOL,
+  failedAcceptanceProgressCheckpoint,
+  writeAcceptanceProgressCheckpoint
+} from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
+import {
+  releasedNotebookExecutionFailureMessage,
+  releasedNotebookOutputClassification
+} from "./releasedNotebookFailure";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
@@ -204,6 +213,7 @@ const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Not
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
+const RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT = "__OW_RELEASED_DUCKDB_ALIVE__";
 const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
@@ -806,9 +816,14 @@ function ensurePackagedFirstUseFixture(workspace: vscode.Uri): vscode.Uri {
   return fixture;
 }
 
+let lastAcceptanceProgressCheckpoint: string | undefined;
+
 function recordAcceptanceProgress(checkpoint: string): void {
   const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
-  if (!progressPath) return;
+  if (!progressPath) {
+    lastAcceptanceProgressCheckpoint = checkpoint;
+    return;
+  }
   const runId = process.env.OPEN_WRANGLER_TEST_RUN_ID;
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE;
   if (!runId || !phase) {
@@ -820,6 +835,7 @@ function recordAcceptanceProgress(checkpoint: string): void {
     phase,
     checkpoint
   });
+  lastAcceptanceProgressCheckpoint = checkpoint;
 }
 
 type DataWranglerCoexistencePhase =
@@ -846,7 +862,7 @@ interface ReleasedJupyterKernelTarget {
 interface ReleasedVariableExpectation {
   readonly name: string;
   readonly type: string;
-  readonly backend: "pandas" | "polars" | "pyspark";
+  readonly backend: "pandas" | "polars" | "duckdb" | "pyspark";
   readonly firstValue: string;
   readonly notebookInsert?: boolean;
 }
@@ -1250,6 +1266,7 @@ async function exerciseReleasedJupyterExtension(
   let notebook: vscode.NotebookDocument | undefined;
   let rendererLoadObserver: NotebookRendererLoadObserver | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
+  let failureCheckpoint: string | undefined;
   try {
     await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
     recordAcceptanceProgress(`${phase}:notebook-open`);
@@ -1409,7 +1426,6 @@ async function exerciseReleasedJupyterExtension(
       pandasMimePayload.page.rows.length > 0 && pandasMimePayload.page.rows.length < 100_000,
       "The portable MIME output must retain a bounded captured preview instead of embedding the complete live frame."
     );
-    const capturedShowcaseRowCount = pandasMimePayload.page.rows.length;
     const capturedShowcaseFirstValue = pandasMimePayload.page.rows[0]?.values[0]?.display;
     assert.equal(capturedShowcaseFirstValue, "2400001");
     assert.deepEqual(
@@ -1516,39 +1532,122 @@ async function exerciseReleasedJupyterExtension(
       if (phase === "jupyter-allow" && screenshotOutput) {
         await captureReleasedJupyterPandasPreview(workbench, rendererButton, screenshotOutput);
       }
+      let liveShowcase: NonNullable<ReturnType<TestApi["activeSession"]>>;
       try {
-        await rendererButton.click();
+        liveShowcase = await openReleasedRendererVariableSession(
+          rendererButton,
+          workbench,
+          testing,
+          notebook,
+          { name: "orders_df", type: "DataFrame", backend: "pandas", firstValue: "2400001" },
+          "the complete current orders_df opened from the primary MIME-v2 renderer action",
+          `${phase}:orders-inline`
+        );
       } finally {
         await rendererButton.dispose();
       }
-      await waitFor(
-        () => {
-          const source = testing.activeSession()?.metadata.source;
-          return source?.kind === "notebookOutput" && source.label === "orders_df";
-        },
-        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "the captured orders_df output opened from the primary MIME-v2 renderer action",
-        () => JSON.stringify(testing.diagnostics())
+      assert.equal(liveShowcase.metadata.mode, "viewing");
+      assert.deepEqual(liveShowcase.metadata.shape, { rows: 100_000, columns: 15 });
+      assert.deepEqual(liveShowcase.metadata.filteredShape, liveShowcase.metadata.shape);
+      assert.equal(liveShowcase.metadata.capabilities.notebookInsert, true);
+      await assertReleasedSessionPage(
+        testing,
+        liveShowcase,
+        capturedShowcaseFirstValue,
+        "released-jupyter-renderer-live-notebook-showcase"
       );
-      const capturedShowcase = testing.activeSession();
-      assert.ok(capturedShowcase, "The primary MIME-v2 renderer action must publish a captured-output session.");
-      assert.notEqual(
-        capturedShowcase.sessionId,
-        pandasMimePayload.metadata.sessionId,
-        "A saved notebook output must receive a fresh coordinator-owned session identity."
+      await disposePackagedSessionPanel(
+        testing,
+        liveShowcase.sessionId,
+        "the released-Jupyter live MIME-linked dataframe session"
       );
-      assert.equal(capturedShowcase.metadata.backend, "pandas");
-      assert.deepEqual(capturedShowcase.metadata.source, {
-        kind: "notebookOutput",
-        label: "orders_df"
-      });
-      assert.equal(capturedShowcase.metadata.mode, "viewing");
-      assert.deepEqual(capturedShowcase.metadata.shape, {
-        rows: capturedShowcaseRowCount,
-        columns: 15
-      });
-      assert.deepEqual(capturedShowcase.metadata.filteredShape, capturedShowcase.metadata.shape);
-      assert.deepEqual(capturedShowcase.metadata.capabilities, {
+    } finally {
+      await restoreScreenshotWorkbench?.();
+    }
+
+    recordAcceptanceProgress(`${phase}:duckdb-inline`);
+    const duckdbCellRange = new vscode.NotebookRange(5, 6);
+    const duckdbRendererEditor = await showExactReleasedNotebook(notebook);
+    duckdbRendererEditor.selection = duckdbCellRange;
+    duckdbRendererEditor.selections = [duckdbCellRange];
+    duckdbRendererEditor.revealRange(duckdbCellRange, vscode.NotebookEditorRevealType.InCenter);
+    await waitFor(
+      () => duckdbRendererEditor.visibleRanges.some((range) => range.start <= 5 && range.end > 5),
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the native DuckDB MIME cell to become visible before execution"
+    );
+    await executeReleasedNotebookCellUntilMime(
+      notebook,
+      5,
+      OPEN_WRANGLER_MIME_V2,
+      `${phase}:duckdb-mime-cell`,
+      duckdbRendererEditor
+    );
+    const duckdbOutputMimes = notebook.cellAt(5).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    assert.ok(
+      duckdbOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
+      `The exact DuckDB relation must emit Open Wrangler MIME v2. Actual MIME types: ${JSON.stringify(
+        duckdbOutputMimes
+      )}.`
+    );
+    assert.equal(
+      duckdbOutputMimes.includes("text/html"),
+      false,
+      "The native DuckDB formatter must suppress the competing default HTML representation."
+    );
+    const duckdbMimeItem = notebook
+      .cellAt(5)
+      .outputs.flatMap((output) => output.items)
+      .find((item) => item.mime === OPEN_WRANGLER_MIME_V2);
+    assert.ok(duckdbMimeItem, "The exact DuckDB relation output must retain its MIME-v2 item.");
+    const duckdbMimePayload = normalizeNotebookOutputPayload(
+      JSON.parse(new TextDecoder().decode(duckdbMimeItem.data)) as unknown
+    );
+    assert.ok(duckdbMimePayload, "The DuckDB MIME-v2 item must satisfy the saved-output contract.");
+    assert.equal(duckdbMimePayload.metadata.backend, "duckdb");
+    assert.equal(duckdbMimePayload.metadata.source.label, "duckdb_relation");
+    assert.equal(duckdbMimePayload.metadata.source.variableName, "duckdb_relation");
+    assert.deepEqual(duckdbMimePayload.metadata.shape, { rows: 100_000, columns: 4 });
+    assert.ok(
+      duckdbMimePayload.page.rows.length > 0 && duckdbMimePayload.page.rows.length < 100_000,
+      "The portable DuckDB table must remain a bounded inline preview before its live action is used."
+    );
+
+    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
+    try {
+      const duckdbRendererButton = await waitForNotebookRendererButton(
+        workbench,
+        "duckdb_relation",
+        "Open in Open Wrangler"
+      );
+      let duckdbRelation: NonNullable<ReturnType<TestApi["activeSession"]>>;
+      try {
+        duckdbRelation = await openReleasedRendererVariableSession(
+          duckdbRendererButton,
+          workbench,
+          testing,
+          notebook,
+          {
+            name: "duckdb_relation",
+            type: "_duckdb.DuckDBPyRelation",
+            backend: "duckdb",
+            firstValue: "3400001",
+            notebookInsert: false
+          },
+          "the complete connection-private DuckDB relation opened from its primary inline action",
+          `${phase}:duckdb-inline`
+        );
+      } finally {
+        await duckdbRendererButton.dispose();
+      }
+      assert.equal(
+        duckdbRelation.metadata.mode,
+        "viewing",
+        "A live DuckDB relation must stay viewing-only even when notebook sessions default to editing."
+      );
+      assert.deepEqual(duckdbRelation.metadata.shape, { rows: 100_000, columns: 4 });
+      assert.deepEqual(duckdbRelation.metadata.filteredShape, duckdbRelation.metadata.shape);
+      assert.deepEqual(duckdbRelation.metadata.capabilities, {
         editable: false,
         lazy: false,
         cancel: false,
@@ -1556,19 +1655,153 @@ async function exerciseReleasedJupyterExtension(
         exportParquet: false,
         notebookInsert: false
       });
-      await assertReleasedSessionPage(
-        testing,
-        capturedShowcase,
-        capturedShowcaseFirstValue,
-        "released-jupyter-renderer-captured-notebook-showcase"
-      );
+      await assertReleasedSessionPage(testing, duckdbRelation, "3400001", "released-jupyter-duckdb-native-page");
+
+      const farDuckdbPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-native-far-page",
+        sessionId: duckdbRelation.sessionId,
+        revision: duckdbRelation.metadata.revision,
+        offset: 99_990,
+        limit: 10,
+        filterModel: duckdbRelation.metadata.filterModel
+      });
+      assert.equal(farDuckdbPage.kind, "page");
+      if (farDuckdbPage.kind !== "page") throw new Error("The far native DuckDB page did not resolve.");
+      assert.equal(farDuckdbPage.page.totalRows, 100_000);
+      assert.equal(farDuckdbPage.page.rows[0]?.values[0]?.display, "3499991");
+      assert.equal(farDuckdbPage.page.rows[9]?.values[0]?.display, "3500000");
+
+      const filteredDuckdbModel: FilterModel = {
+        logic: "and",
+        filters: [
+          {
+            column: "market",
+            type: "string",
+            logic: "and",
+            predicates: [{ kind: "predicate", operator: "equals", value: "DACH" }]
+          }
+        ],
+        sort: [{ column: "order_id", direction: "desc", nulls: "last" }]
+      };
+      const filteredDuckdbPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-native-filter-sort",
+        sessionId: duckdbRelation.sessionId,
+        revision: farDuckdbPage.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: filteredDuckdbModel
+      });
+      assert.equal(filteredDuckdbPage.kind, "page");
+      if (filteredDuckdbPage.kind !== "page") {
+        throw new Error("The filtered and sorted native DuckDB page did not resolve.");
+      }
+      assert.equal(filteredDuckdbPage.page.totalRows, 25_000);
+      assert.equal(filteredDuckdbPage.page.rows[0]?.values[0]?.display, "3499997");
+      assert.equal(filteredDuckdbPage.page.rows[0]?.values[1]?.display, "DACH");
+
+      const duckdbRevenue = columnReference(duckdbRelation.metadata, "revenue");
+      const duckdbSummary = await testing.request({
+        kind: "getSummary",
+        sessionId: duckdbRelation.sessionId,
+        revision: filteredDuckdbPage.revision,
+        viewRequestId: "released-jupyter-duckdb-native-summary",
+        filterModel: filteredDuckdbModel,
+        columnIds: [duckdbRevenue.id]
+      });
+      assert.equal(duckdbSummary.kind, "summary");
+      if (duckdbSummary.kind !== "summary") throw new Error("The native DuckDB summary did not resolve.");
+      assert.equal(duckdbSummary.summaries[0]?.totalCount, 25_000);
+      assert.equal(duckdbSummary.summaries[0]?.numeric?.min, 100.5);
+      assert.equal(duckdbSummary.summaries[0]?.numeric?.max, 5_099.94);
+
       await disposePackagedSessionPanel(
         testing,
-        capturedShowcase.sessionId,
-        "the released-Jupyter captured MIME output session"
+        duckdbRelation.sessionId,
+        "the released-Jupyter native DuckDB relation session"
+      );
+      const duckdbAliveEditor = await showExactReleasedNotebook(notebook);
+      await executeReleasedNotebookCell(
+        notebook,
+        6,
+        RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT,
+        `${phase}:duckdb-user-relation-after-close`,
+        duckdbAliveEditor
+      );
+      const duckdbAlive = releasedNotebookJsonResult(
+        notebook.cellAt(6),
+        RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT,
+        "DuckDB user relation after Open Wrangler close"
+      );
+      assert.equal(duckdbAlive.count, 100_000);
+      assert.equal(duckdbAlive.first, 3_400_001);
+
+      recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
+      const duckdbVariablesEditor = await showExactReleasedNotebook(notebook);
+      assertExactVisibleReleasedNotebookEditor(
+        notebook,
+        duckdbVariablesEditor,
+        "before opening the real Jupyter Variables action for DuckDB"
+      );
+      await vscode.commands.executeCommand("jupyter.openVariableView");
+      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
+      const duckdbVariablesRelation = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "duckdb_relation",
+          type: "_duckdb.DuckDBPyRelation",
+          backend: "duckdb",
+          firstValue: "3400001",
+          notebookInsert: false
+        },
+        "the exact DuckDB relation opened from the real Jupyter Variables view"
+      );
+      assert.equal(duckdbVariablesRelation.metadata.mode, "viewing");
+      assert.deepEqual(
+        duckdbVariablesRelation.metadata.filterModel,
+        filteredDuckdbModel,
+        "Reopening the same live DuckDB variable must restore its confirmed viewing state."
+      );
+      assert.deepEqual(duckdbVariablesRelation.metadata.filteredShape, { rows: 25_000, columns: 4 });
+      await assertReleasedSessionPage(
+        testing,
+        duckdbVariablesRelation,
+        "3499997",
+        "released-jupyter-duckdb-variables-restored-page"
+      );
+
+      const unfilteredDuckdbVariablesPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-variables-complete-page",
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: duckdbVariablesRelation.metadata.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: { logic: "and", filters: [], sort: [] }
+      });
+      assert.equal(unfilteredDuckdbVariablesPage.kind, "page");
+      if (unfilteredDuckdbVariablesPage.kind !== "page") {
+        throw new Error("The complete native DuckDB Variables page did not resolve.");
+      }
+      assert.equal(unfilteredDuckdbVariablesPage.page.totalRows, 100_000);
+      assert.equal(unfilteredDuckdbVariablesPage.page.rows[0]?.values[0]?.display, "3400001");
+
+      await disposePackagedSessionPanel(
+        testing,
+        duckdbVariablesRelation.sessionId,
+        "the released-Jupyter Variables DuckDB relation session"
       );
     } finally {
-      await restoreScreenshotWorkbench?.();
+      await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
     }
 
     recordAcceptanceProgress(`${phase}:pandas-series`);
@@ -1699,17 +1932,24 @@ async function exerciseReleasedJupyterExtension(
       "the recovered released-Jupyter Pandas session"
     );
     assert.equal(testing.diagnostics().sessionCount, 0);
+  } catch (error) {
+    failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
+    throw error;
   } finally {
-    rendererLoadObserver?.dispose();
-    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
-    remoteServerCollection?.dispose();
-    await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
-    await configuration.update(
-      "notebookPreviewProvider",
-      originalNotebookPreviewProvider,
-      vscode.ConfigurationTarget.Workspace
-    );
-    cleanupAcceptanceTemporaryDirectory(directory);
+    try {
+      rendererLoadObserver?.dispose();
+      await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+      remoteServerCollection?.dispose();
+      await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+      await configuration.update(
+        "notebookPreviewProvider",
+        originalNotebookPreviewProvider,
+        vscode.ConfigurationTarget.Workspace
+      );
+      cleanupAcceptanceTemporaryDirectory(directory);
+    } finally {
+      if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
+    }
   }
 }
 
@@ -1741,6 +1981,7 @@ async function exerciseReleasedPySparkJupyterExtension(
   writeReleasedPySparkNotebook(notebookPath, extension.extensionPath);
 
   let notebook: vscode.NotebookDocument | undefined;
+  let failureCheckpoint: string | undefined;
   try {
     recordAcceptanceProgress(`${phase}:notebook-open`);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
@@ -1787,7 +2028,11 @@ async function exerciseReleasedPySparkJupyterExtension(
       "PySpark Classic setup"
     );
     assert.equal(classicSetup.sparkVersion, "4.2.0");
-    assert.equal(classicSetup.javaVersion, "17");
+    const classicJavaMajor = Number(classicSetup.javaVersion);
+    assert.ok(
+      Number.isSafeInteger(classicJavaMajor) && classicJavaMajor >= 17,
+      `PySpark 4.2 requires Java 17 or newer; the notebook reported ${JSON.stringify(classicSetup.javaVersion)}.`
+    );
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
     assert.equal(classicSetup.workerPythonPinned, true);
 
@@ -1996,9 +2241,16 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(testing.diagnostics().sessionCount, 0);
     assert.equal(releasedJupyterSessionTabs().length, 0);
     assert.ok(jupyterApi, "The released Jupyter API must remain active through PySpark cleanup.");
+  } catch (error) {
+    failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
+    throw error;
   } finally {
-    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
-    cleanupAcceptanceTemporaryDirectory(directory);
+    try {
+      await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+      cleanupAcceptanceTemporaryDirectory(directory);
+    } finally {
+      if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
+    }
   }
 }
 
@@ -2521,6 +2773,7 @@ function writeReleasedJupyterNotebook(
     "import socket",
     "import sys",
     "from datetime import date, timedelta",
+    "import duckdb",
     "import pandas as pd",
     "import polars as pl",
     "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
@@ -2567,6 +2820,16 @@ function writeReleasedJupyterNotebook(
     "    'account_status': [showcase_statuses[index % len(showcase_statuses)] for index in range(showcase_rows)],",
     "})",
     "polars_series = pl.Series('series_value', [7, 8])",
+    "duckdb_connection = duckdb.connect()",
+    'duckdb_connection.execute(f"CREATE TABLE private_duck_orders AS SELECT ' +
+      "3400001 + row_index AS order_id, " +
+      "CASE row_index % 4 WHEN 0 THEN 'DACH' WHEN 1 THEN 'Nordics' WHEN 2 THEN 'Iberia' ELSE 'Benelux' END AS market, " +
+      "CAST(100.50 + ((row_index * 17) % 500000) / 100.0 AS DECIMAL(18,2)) AS revenue, " +
+      "DATE '2026-01-01' + CAST(row_index % 365 AS INTEGER) AS order_date " +
+      'FROM range({showcase_rows}) AS source(row_index)")',
+    "duckdb_relation = duckdb_connection.table('private_duck_orders')",
+    "def _open_wrangler_forbid_duckdb_conversion(*_args, **_kwargs):",
+    "    raise AssertionError('DuckDB notebook acceptance forbids conversion through Pandas, Polars, or Arrow')",
     `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
     `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
       "'executable': sys.executable, 'pid': os.getpid(), " +
@@ -2633,6 +2896,30 @@ function writeReleasedJupyterNotebook(
               "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
               "'hostname': socket.gethostname(), " +
               `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)})` +
+              "}, sort_keys=True))\n"
+          ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "for _duckdb_conversion_name in ('df', 'to_df', 'fetchdf', 'pl', 'arrow'):\n",
+            "    setattr(duckdb.DuckDBPyRelation, _duckdb_conversion_name, _open_wrangler_forbid_duckdb_conversion)\n",
+            "duckdb_relation\n"
+          ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "import json\n",
+            `print(${JSON.stringify(RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT)} + json.dumps({` +
+              "'count': duckdb_relation.aggregate('count(*) AS count').fetchone()[0], " +
+              "'first': duckdb_relation.order('order_id').limit(1).fetchone()[0]" +
               "}, sort_keys=True))\n"
           ]
         }
@@ -2980,14 +3267,15 @@ async function executeReleasedNotebookCell(
         }
       }
       if (observedFreshExecutionSummary && cell.executionSummary?.success === false) {
-        throw new Error(`Released-Jupyter cell ${index} failed: ${notebookCellOutputText(cell)}`);
+        recordAcceptanceProgress(`${checkpoint}:execution-failed`);
+        throw new Error(releasedNotebookExecutionFailureMessage(index, cell.outputs));
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);
     recordAcceptanceProgress(`${checkpoint}:timeout`);
     throw new Error(
       `Timed out waiting for a fresh released-Jupyter execution of cell ${index}. ` +
-        `Command: ${readCommandState().kind}. Output: ${JSON.stringify(notebookCellOutputText(cell))}`
+        `Command: ${readCommandState().kind}. Output: ${releasedNotebookOutputClassification(cell.outputs)}.`
     );
   } finally {
     executionListener.dispose();
@@ -3464,6 +3752,32 @@ async function waitForReleasedVariableSession(
   assert.equal(active.metadata.source.uri, notebook.uri.toString());
   assert.equal(active.metadata.capabilities.notebookInsert, expected.notebookInsert ?? true);
   return active;
+}
+
+async function openReleasedRendererVariableSession(
+  action: NotebookRendererButton,
+  workbench: Page,
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  expected: ReleasedVariableExpectation,
+  description: string,
+  checkpoint: string
+): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
+  recordAcceptanceProgress(`${checkpoint}:button-ready`);
+  const receipt = async (): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> => {
+    const active = await waitForReleasedVariableSession(workbench, testing, notebook, expected, description);
+    recordAcceptanceProgress(`${checkpoint}:receipt`);
+    return active;
+  };
+  return invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+    description,
+    activate: async () => {
+      recordAcceptanceProgress(`${checkpoint}:activate`);
+      await activateAcceptancePointerTargetAtCurrentCenter(action, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS);
+    },
+    receipt,
+    authoritativeReceiptAfterActivationFailure: receipt
+  });
 }
 
 async function openReleasedVariableSession(
@@ -7568,12 +7882,15 @@ async function clearReleasedJupyterScreenshotTransientUi(workbench: Page): Promi
     true,
     "Notebook screenshot capture must dismiss every workbench hover."
   );
-  const transient = await workbench
-    .locator(
-      ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
-        ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
-    )
-    .allInnerTexts();
+  const transientUi = workbench.locator(
+    ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+      ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible"
+  );
+  await pollAcceptanceCondition(async () => (await transientUi.count()) === 0, {
+    timeoutMs: 3_000,
+    intervalMs: 50
+  });
+  const transient = await transientUi.allInnerTexts();
   assert.deepEqual(
     transient.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500)),
     [],
@@ -9566,8 +9883,8 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
     );
 
     if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
-      recordAcceptanceProgress("verify:notebook-renderer-snapshot");
-      await exercisePackagedSavedSnapshot(testing, jupyter, directory);
+      recordAcceptanceProgress("verify:notebook-renderer-linked-live");
+      await exercisePackagedLinkedRendererLiveOpen(testing, jupyter, directory);
     }
     recordAcceptanceProgress("verify:notebook:complete");
   } finally {
@@ -9589,13 +9906,14 @@ async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
   }
 }
 
-async function exercisePackagedSavedSnapshot(
+async function exercisePackagedLinkedRendererLiveOpen(
   testing: TestApi,
   jupyter: FakeJupyterApi,
   directory: string
 ): Promise<void> {
-  const label = "saved snapshot acceptance";
-  const snapshotPath = path.join(directory, "renderer-saved-snapshot.ipynb");
+  const label = "linked renderer live acceptance";
+  const variableName = "saved_preview_frame";
+  const snapshotPath = path.join(directory, "renderer-linked-live.ipynb");
   const schema: SessionMetadata["schema"] = [
     { id: "c:city", name: "city", position: 0, rawType: "String", type: "string", nullable: false },
     { id: "c:score", name: "score", position: 1, rawType: "Int64", type: "integer", nullable: true },
@@ -9609,7 +9927,7 @@ async function exercisePackagedSavedSnapshot(
       revision: 0,
       backend: "polars",
       mode: "viewing",
-      source: { kind: "notebookOutput", label },
+      source: { kind: "notebookOutput", label, variableName },
       capabilities: {
         editable: false,
         lazy: false,
@@ -9651,12 +9969,12 @@ async function exercisePackagedSavedSnapshot(
               output_type: "display_data",
               metadata: {},
               data: {
-                "text/plain": ["Open Wrangler saved snapshot"],
+                "text/plain": ["Open Wrangler linked live preview"],
                 [OPEN_WRANGLER_MIME_V2]: payload
               }
             }
           ],
-          source: ["# saved output only"]
+          source: [variableName]
         }
       ],
       metadata: { kernelspec: { display_name: "Python 3", language: "python", name: "python3" } },
@@ -9667,7 +9985,7 @@ async function exercisePackagedSavedSnapshot(
 
   let snapshotNotebook: vscode.NotebookDocument | undefined;
   try {
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:open");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:open");
     snapshotNotebook = await vscode.workspace.openNotebookDocument(vscode.Uri.file(snapshotPath));
     const snapshotEditor = await vscode.window.showNotebookDocument(snapshotNotebook, {
       viewColumn: vscode.ViewColumn.One,
@@ -9675,15 +9993,23 @@ async function exercisePackagedSavedSnapshot(
       preview: false
     });
     snapshotEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
-    assert.equal(
-      jupyter.testing.stats(snapshotNotebook.uri),
-      undefined,
-      "A saved snapshot notebook must not acquire a Jupyter kernel before its renderer action."
+    await jupyter.testing.execute(
+      snapshotNotebook.uri,
+      [
+        "import polars as pl",
+        `${variableName} = pl.DataFrame({`,
+        "    'city': ['Berlin', 'Amsterdam', 'Berlin', 'Cairo'],",
+        "    'score': [2, 5, 7, None],",
+        "    'group': ['b', 'a', 'a', 'c'],",
+        "})"
+      ].join("\n")
     );
+    const liveKernelBaseline = jupyter.testing.stats(snapshotNotebook.uri);
+    assert.ok(liveKernelBaseline, "The linked renderer fixture must own one user-started kernel.");
 
     const workbench = await connectToEditorWorkbench();
     const button = await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler");
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:click");
     try {
       await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
     } finally {
@@ -9692,42 +10018,56 @@ async function exercisePackagedSavedSnapshot(
     await waitFor(
       () => {
         const source = testing.activeSession()?.metadata.source;
-        return source?.kind === "notebookOutput" && source.label === label;
+        return (
+          source?.kind === "notebookVariable" &&
+          source.variableName === variableName &&
+          source.uri === snapshotNotebook?.uri.toString()
+        );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the saved MIME-v2 renderer output to become a coordinator-owned session"
+      "the linked MIME-v2 renderer output to open its complete current live dataframe"
     );
 
     const active = testing.activeSession();
-    assert.ok(active, "The saved renderer output must become an active coordinator session.");
-    assert.notEqual(active.sessionId, payload.metadata.sessionId, "The host must replace a saved runtime identity.");
+    assert.ok(active, "The linked renderer output must become an active live-variable session.");
+    assert.notEqual(active.sessionId, payload.metadata.sessionId, "The live session must not trust a saved identity.");
     assert.equal(active.metadata.sessionId, active.sessionId);
-    assert.deepEqual(active.metadata.source, { kind: "notebookOutput", label });
-    assert.equal(active.metadata.mode, "viewing");
+    assert.deepEqual(active.metadata.source, {
+      kind: "notebookVariable",
+      label: variableName,
+      variableName,
+      uri: snapshotNotebook.uri.toString()
+    });
+    assert.equal(active.metadata.mode, "editing");
     assert.equal(active.metadata.revision, 0);
     assert.deepEqual(active.metadata.shape, { rows: 4, columns: 3 });
     assert.deepEqual(active.metadata.filteredShape, { rows: 4, columns: 3 });
     assert.deepEqual(active.metadata.capabilities, {
-      editable: false,
+      editable: true,
       lazy: false,
       cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: false
+      exportCsv: true,
+      exportParquet: true,
+      notebookInsert: true
     });
     assert.deepEqual(active.metadata.filterModel, { logic: "and", filters: [], sort: [] });
     assert.deepEqual(active.metadata.steps, []);
     assert.equal(active.metadata.latestStepInputSchema, undefined);
     assert.equal(active.metadata.draftStep, undefined);
     assert.equal(active.metadata.stats, undefined);
+    const liveScore = columnReference(active.metadata, "score");
+    assert.notEqual(
+      liveScore.id,
+      payload.metadata.schema.find((column) => column.name === "score")?.id,
+      "The live session must generate its own column identities instead of trusting the saved preview."
+    );
     const diagnostic = testing.diagnostics().sessions.find((session) => session.publicId === active.sessionId);
-    assert.ok(diagnostic, "The saved snapshot must be coordinator-owned.");
+    assert.ok(diagnostic, "The linked live session must be coordinator-owned.");
     assert.notEqual(diagnostic.runtimeId, payload.metadata.sessionId);
     assert.notEqual(diagnostic.runtimeId, diagnostic.publicId);
-    assert.equal(
-      jupyter.testing.stats(snapshotNotebook.uri),
-      undefined,
-      "Opening a saved snapshot must not acquire its notebook's Jupyter kernel."
+    assert.ok(
+      (jupyter.testing.stats(snapshotNotebook.uri)?.executions ?? 0) > liveKernelBaseline.executions,
+      "Opening the linked renderer action must execute against its exact live kernel."
     );
 
     const filteredModel: FilterModel = {
@@ -9742,12 +10082,12 @@ async function exercisePackagedSavedSnapshot(
       ],
       sort: [{ column: "score", direction: "desc", nulls: "last" }]
     };
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:page");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:page");
     const projected = await testing.request({
       kind: "getPage",
       sessionId: active.sessionId,
       revision: active.metadata.revision,
-      viewRequestId: "saved-snapshot-page",
+      viewRequestId: "linked-renderer-live-page",
       offset: 0,
       limit: 2,
       columnOffset: 1,
@@ -9755,12 +10095,8 @@ async function exercisePackagedSavedSnapshot(
       filterModel: filteredModel
     });
     assert.equal(projected.kind, "page");
-    if (projected.kind !== "page") throw new Error("The saved snapshot projected page did not resolve.");
-    assert.deepEqual(projected.page.columnIds, ["c:score"]);
-    assert.deepEqual(
-      projected.page.rows.map((row) => row.id),
-      ["r:capture:2", "r:capture:1"]
-    );
+    if (projected.kind !== "page") throw new Error("The linked live projected page did not resolve.");
+    assert.deepEqual(projected.page.columnIds, [liveScore.id]);
     assert.deepEqual(
       projected.page.rows.map((row) => row.values[0]?.display),
       ["7", "5"]
@@ -9768,20 +10104,20 @@ async function exercisePackagedSavedSnapshot(
     assert.equal(projected.page.totalRows, 2);
     assert.deepEqual(projected.metadata.filteredShape, { rows: 2, columns: 3 });
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:summary");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:summary");
     const summary = await testing.request({
       kind: "getSummary",
       sessionId: active.sessionId,
       revision: projected.revision,
-      viewRequestId: "saved-snapshot-summary",
+      viewRequestId: "linked-renderer-live-summary",
       filterModel: filteredModel,
-      columnIds: ["c:score"]
+      columnIds: [liveScore.id]
     });
     assert.equal(summary.kind, "summary");
-    if (summary.kind !== "summary") throw new Error("The saved snapshot summary did not resolve.");
+    if (summary.kind !== "summary") throw new Error("The linked live summary did not resolve.");
     assert.deepEqual(summary.summaries, [
       {
-        columnId: "c:score",
+        columnId: liveScore.id,
         column: "score",
         type: "integer",
         rawType: "Int64",
@@ -9790,8 +10126,8 @@ async function exercisePackagedSavedSnapshot(
         nanCount: 0,
         distinctCount: 2,
         topValues: [
-          { value: "5", count: 1 },
-          { value: "7", count: 1 }
+          { value: "7", count: 1 },
+          { value: "5", count: 1 }
         ],
         numeric: { min: 5, max: 7, mean: 6, median: 6, std: Math.SQRT2 },
         visualization: {
@@ -9804,16 +10140,16 @@ async function exercisePackagedSavedSnapshot(
       }
     ]);
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:statistics");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:statistics");
     const statistics = await testing.request({
       kind: "getDatasetStats",
       sessionId: active.sessionId,
       revision: projected.revision,
-      viewRequestId: "saved-snapshot-statistics",
+      viewRequestId: "linked-renderer-live-statistics",
       filterModel: { logic: "and", filters: [], sort: [] }
     });
     assert.equal(statistics.kind, "datasetStats");
-    if (statistics.kind !== "datasetStats") throw new Error("The saved snapshot statistics did not resolve.");
+    if (statistics.kind !== "datasetStats") throw new Error("The linked live statistics did not resolve.");
     assert.deepEqual(statistics.stats, {
       missingCells: 1,
       missingRows: 1,
@@ -9825,35 +10161,49 @@ async function exercisePackagedSavedSnapshot(
       ]
     });
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:values");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:values");
     const values = await testing.request({
       kind: "getColumnValues",
       sessionId: active.sessionId,
       revision: projected.revision,
-      viewRequestId: "saved-snapshot-values",
+      viewRequestId: "linked-renderer-live-values",
       column: "city",
       search: "ber",
       limit: 100,
       filterModel: filteredModel
     });
     assert.equal(values.kind, "columnValues");
-    if (values.kind !== "columnValues") throw new Error("The saved snapshot values query did not resolve.");
-    assert.deepEqual(values.values, [{ value: "Berlin", count: 1 }]);
+    if (values.kind !== "columnValues") throw new Error("The linked live values query did not resolve.");
+    assert.deepEqual(values.values, [
+      {
+        value: "Berlin",
+        count: 1,
+        selectionValue: {
+          kind: "typedSelection",
+          version: 1,
+          columnType: "string",
+          cell: { kind: "string", raw: "Berlin", display: "Berlin", isNull: false, isNaN: false }
+        }
+      }
+    ]);
     assert.equal(values.hasMore, false);
 
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:close");
-    await disposePackagedSessionPanel(testing, active.sessionId, "the exact saved snapshot session");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:close");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the exact linked live session");
     assert.deepEqual(
       testing.diagnostics().sessions,
       [],
-      `An earlier packaged notebook session leaked into saved-snapshot cleanup: ${JSON.stringify(testing.diagnostics().sessions)}`
+      `An earlier packaged notebook session leaked into linked-live cleanup: ${JSON.stringify(testing.diagnostics().sessions)}`
+    );
+    assert.ok(
+      jupyter.testing.stats(snapshotNotebook.uri),
+      "Closing the Open Wrangler panel must not stop the user's kernel."
     );
     const snapshotTab = notebookTab(snapshotNotebook.uri);
     if (snapshotTab) assert.equal(await vscode.window.tabGroups.close(snapshotTab, true), true);
-    assert.equal(jupyter.testing.stats(snapshotNotebook.uri), undefined);
-    recordAcceptanceProgress("verify:notebook-renderer-snapshot:complete");
+    recordAcceptanceProgress("verify:notebook-renderer-linked-live:complete");
   } catch (error) {
-    await bestEffortSavedSnapshotCleanup(testing, snapshotNotebook, label);
+    await bestEffortLinkedRendererCleanup(testing, snapshotNotebook, label, variableName);
     throw error;
   }
 }
@@ -9924,8 +10274,8 @@ async function exercisePackagedSameGroupRendererSwitch(
       preview: false
     });
     switchedEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
-    recordAcceptanceProgress("verify:notebook-renderer-same-group:button");
-    await (await waitForNotebookRendererButton(workbench, label)).dispose();
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:preview-only");
+    await waitForNotebookRendererPreviewOnly(workbench, label);
     assert.equal(
       jupyter.testing.stats(switchedNotebook.uri),
       undefined,
@@ -9971,13 +10321,14 @@ function snapshotRow(
   };
 }
 
-async function bestEffortSavedSnapshotCleanup(
+async function bestEffortLinkedRendererCleanup(
   testing: TestApi,
   notebook: vscode.NotebookDocument | undefined,
-  label: string
+  label: string,
+  variableName: string
 ): Promise<void> {
   const active = testing.activeSession();
-  if (active?.metadata.source.kind === "notebookOutput" && active.metadata.source.label === label) {
+  if (active?.metadata.source.kind === "notebookVariable" && active.metadata.source.variableName === variableName) {
     try {
       await testing.request({
         kind: "closeSession",
@@ -9988,7 +10339,7 @@ async function bestEffortSavedSnapshotCleanup(
       // Editor-process-group teardown remains the final bounded fallback.
     }
   }
-  const tabs = savedSnapshotTabs(notebook, label);
+  const tabs = linkedRendererTabs(notebook, label);
   if (tabs.length > 0) {
     try {
       await vscode.window.tabGroups.close(tabs, true);
@@ -9998,7 +10349,7 @@ async function bestEffortSavedSnapshotCleanup(
   }
 }
 
-function savedSnapshotTabs(notebook: vscode.NotebookDocument | undefined, label: string): vscode.Tab[] {
+function linkedRendererTabs(notebook: vscode.NotebookDocument | undefined, label: string): vscode.Tab[] {
   return [
     ...(notebook ? [notebookTab(notebook.uri)] : []),
     ...vscode.window.tabGroups.all
@@ -10125,10 +10476,14 @@ async function exercisePackagedRendererProvenance(
       await waitFor(
         () => {
           const source = testing.activeSession()?.metadata.source;
-          return source?.kind === "notebookOutput" && source.label === "renderer provenance A";
+          return (
+            source?.kind === "notebookVariable" &&
+            source.variableName === "renderer_frame" &&
+            source.uri === originNotebook.uri.toString()
+          );
         },
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "notebook A's primary renderer action to open notebook A's captured output while notebook B is active",
+        "notebook A's primary renderer action to open notebook A's live renderer_frame while notebook B is active",
         () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
       );
     };
@@ -10150,28 +10505,19 @@ async function exercisePackagedRendererProvenance(
     }
 
     const active = testing.activeSession();
-    assert.ok(active, "The renderer provenance scenario must open a captured notebook-output session.");
-    assert.notEqual(
-      active.sessionId,
-      payloadTemplate.metadata.sessionId,
-      "The captured output must receive a fresh coordinator-owned session identity."
-    );
+    assert.ok(active, "The renderer provenance scenario must open the exact live notebook-variable session.");
     assert.equal(active.metadata.backend, "polars");
     assert.deepEqual(active.metadata.source, {
-      kind: "notebookOutput",
-      label: "renderer provenance A"
+      kind: "notebookVariable",
+      label: "renderer_frame",
+      variableName: "renderer_frame",
+      uri: originNotebook.uri.toString()
     });
-    assert.equal(active.metadata.mode, "viewing");
+    assert.equal(active.metadata.mode, "editing");
     assert.deepEqual(active.metadata.shape, { rows: 1, columns: 1 });
     assert.deepEqual(active.metadata.filteredShape, { rows: 1, columns: 1 });
-    assert.deepEqual(active.metadata.capabilities, {
-      editable: false,
-      lazy: false,
-      cancel: false,
-      exportCsv: false,
-      exportParquet: false,
-      notebookInsert: false
-    });
+    assert.equal(active.metadata.capabilities.editable, true);
+    assert.equal(active.metadata.capabilities.notebookInsert, true);
     const provenancePage = await testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -10186,37 +10532,35 @@ async function exercisePackagedRendererProvenance(
     if (provenancePage.kind !== "page") throw new Error("Renderer provenance page did not resolve.");
     assert.equal(
       provenancePage.page.rows[0]?.values[0]?.display,
-      "1",
-      "The primary renderer action must use notebook A's captured value, not live renderer_frame value 101."
+      "101",
+      "The primary renderer action must use notebook A's current live renderer_frame, not its captured value or notebook B."
     );
-    assert.deepEqual(
-      jupyter.testing.stats(originNotebook.uri),
-      originKernelBaseline,
-      "Opening a linked saved output must not dispatch work to notebook A's kernel."
+    assert.ok(
+      (jupyter.testing.stats(originNotebook.uri)?.executions ?? 0) > (originKernelBaseline?.executions ?? 0),
+      "Opening a linked renderer output must dispatch the live request to notebook A's exact kernel."
     );
     assert.deepEqual(
       jupyter.testing.stats(openedSecondNotebook.uri),
       secondKernelBaseline,
-      "Opening notebook A's saved output must not dispatch work to notebook B's kernel."
+      "Opening notebook A's live variable must not dispatch work to notebook B's kernel."
     );
-    assert.equal(
-      jupyter.testing.lookupCalls(originNotebook.uri),
-      originLookupBaseline,
-      "The primary saved-output action must not acquire notebook A's kernel."
+    assert.ok(
+      jupyter.testing.lookupCalls(originNotebook.uri) > originLookupBaseline,
+      "The primary renderer action must acquire notebook A's exact kernel."
     );
     assert.equal(
       jupyter.testing.lookupCalls(openedSecondNotebook.uri),
       secondLookupBaseline,
-      "The primary saved-output action must not acquire notebook B's kernel."
+      "The primary renderer action must not acquire notebook B's kernel."
     );
     assert.equal(
       jupyter.testing.denialCalls(),
       denialBaseline,
-      "The primary saved-output action must not request Jupyter permission."
+      "The already-authorized primary renderer action must not request a second Jupyter permission."
     );
 
     recordAcceptanceProgress("verify:notebook-renderer:session-close");
-    await disposePackagedSessionPanel(testing, active.sessionId, "the captured renderer provenance session");
+    await disposePackagedSessionPanel(testing, active.sessionId, "the live renderer provenance session");
     await waitFor(() => testing.diagnostics().sessionCount === 0, 10_000, "the renderer provenance session to close");
     recordAcceptanceProgress("verify:notebook-renderer:tabs-close");
     const tabsToClose = rendererProvenanceTabs(openedSecondNotebook);
@@ -10285,7 +10629,7 @@ async function bestEffortRendererProvenanceCleanup(
   secondNotebook: vscode.NotebookDocument | undefined
 ): Promise<void> {
   const active = testing.activeSession();
-  if (active?.metadata.source.kind === "notebookOutput" && active.metadata.source.label === "renderer provenance A") {
+  if (active?.metadata.source.kind === "notebookVariable" && active.metadata.source.variableName === "renderer_frame") {
     try {
       await testing.request({
         kind: "closeSession",
@@ -10409,29 +10753,6 @@ async function waitForNotebookRendererButton(
     const browser = workbench.context().browser();
     assertNotebookRendererLifecycle(workbench, browser);
     const targets = openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT);
-    for (const target of targets) {
-      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
-      for (const button of directNotebookRendererButtonCandidates(target.frame, label, buttonName)) {
-        try {
-          const remainingMs = deadline - Date.now();
-          if (remainingMs <= 0) break discovery;
-          const probeTimeoutMs = Math.min(NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS, remainingMs);
-          const ready = await withAcceptanceOperationDeadline(
-            probeRendererButtonReadiness(button, probeTimeoutMs),
-            probeTimeoutMs,
-            "the notebook renderer action readiness probe"
-          );
-          if (ready) return locatorNotebookRendererButton(button, target.page.mouse);
-        } catch (error) {
-          const discoveryExpired = Date.now() >= deadline;
-          if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
-            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
-          }
-          if (discoveryExpired) break discovery;
-        }
-      }
-    }
-
     const nestedButtons: NotebookRendererButton[] = [];
     let returnedNestedButton: NotebookRendererButton | undefined;
     try {
@@ -10460,9 +10781,6 @@ async function waitForNotebookRendererButton(
         returnedNestedButton = nestedButtons[0]!;
         return returnedNestedButton;
       }
-      if (nestedButtons.length > 1) {
-        throw new Error("Multiple visible notebook renderer actions matched the exact requested output.");
-      }
     } finally {
       await Promise.allSettled(
         nestedButtons.filter((button) => button !== returnedNestedButton).map((button) => button.dispose())
@@ -10479,24 +10797,65 @@ async function waitForNotebookRendererButton(
   throw new Error(`Timed out waiting for the exact notebook renderer action: ${JSON.stringify(diagnostics)}`);
 }
 
-function directNotebookRendererButtonCandidates(frame: Frame, label: string, buttonName: string): Locator[] {
-  const preview = frame.locator("section.openwrangler-notebook").filter({
-    hasText: `Open Wrangler preview: ${label}`
-  });
-  return [preview.getByRole("button", { name: buttonName, exact: true }).first()];
-}
+async function waitForNotebookRendererPreviewOnly(workbench: Page, label: string): Promise<void> {
+  const expectedHint = "Run this cell again to open the current dataframe in Open Wrangler.";
+  const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
+  do {
+    const browser = workbench.context().browser();
+    assertNotebookRendererLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const preview = target.frame.locator("section.openwrangler-notebook").filter({
+          hasText: `Open Wrangler preview: ${label}`
+        });
+        if ((await preview.count()) === 1) {
+          const note = preview.locator('[role="note"]').filter({ hasText: expectedHint });
+          const action = preview.getByRole("button", { name: "Open in Open Wrangler", exact: true });
+          if ((await note.count()) === 1 && (await note.isVisible()) && (await action.count()) === 0) return;
+        }
 
-function locatorNotebookRendererButton(
-  button: Locator,
-  pointer: NotebookRendererButton["pointer"]
-): NotebookRendererButton {
-  return {
-    pointer,
-    click: () => button.click(),
-    boundingBox: () => button.boundingBox(),
-    evaluate: <Result>(pageFunction: (element: unknown) => Result | Promise<Result>) => button.evaluate(pageFunction),
-    dispose: () => Promise.resolve()
-  };
+        const nestedMatches = await target.frame.evaluate(
+          ({ expectedLabel, expectedNote }) => {
+            type NestedDocument = NestedElement & { readonly readyState: string };
+            type NestedElement = {
+              readonly contentDocument?: NestedDocument | null;
+              readonly isConnected: boolean;
+              readonly textContent: string | null;
+              querySelector(selector: string): NestedElement | null;
+              querySelectorAll(selector: string): ArrayLike<NestedElement>;
+            };
+            const outerDocument = (globalThis as unknown as { readonly document: NestedDocument }).document;
+            const innerDocument = outerDocument.querySelector("iframe#active-frame")?.contentDocument;
+            if (!innerDocument || innerDocument.readyState === "loading") return false;
+            const titlePrefix = `Open Wrangler preview: ${expectedLabel} (`;
+            const previews = Array.from(innerDocument.querySelectorAll("section.openwrangler-notebook")).filter(
+              (section) => (section.querySelector("header > span")?.textContent ?? "").startsWith(titlePrefix)
+            );
+            if (previews.length !== 1) return false;
+            const preview = previews[0]!;
+            const openActions = Array.from(preview.querySelectorAll("button")).filter(
+              (button) => button.isConnected && (button.textContent ?? "").trim() === "Open in Open Wrangler"
+            );
+            const notes = Array.from(preview.querySelectorAll('[role="note"]')).filter(
+              (note) => note.isConnected && (note.textContent ?? "").trim() === expectedNote
+            );
+            return openActions.length === 0 && notes.length === 1;
+          },
+          { expectedLabel: label, expectedNote: expectedHint }
+        );
+        if (nestedMatches) return;
+      } catch (error) {
+        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+      }
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  const browser = workbench.context().browser();
+  assertNotebookRendererLifecycle(workbench, browser);
+  const diagnostics = await notebookRendererDiagnostics(workbench, browser, label, "Open in Open Wrangler");
+  throw new Error(`Timed out waiting for the exact preview-only notebook output: ${JSON.stringify(diagnostics)}`);
 }
 
 async function resolveNestedNotebookRendererButtonWithDeadline(
@@ -10523,31 +10882,10 @@ async function resolveNestedNotebookRendererButton(
   label: string,
   buttonName: string
 ): Promise<NotebookRendererButton | undefined> {
-  const raw = await frame.evaluateHandle(
-    ({ expectedLabel, expectedButtonName }) => {
-      type NestedDocument = NestedElement & { readonly readyState: string };
-      type NestedElement = {
-        readonly contentDocument?: NestedDocument | null;
-        readonly isConnected: boolean;
-        readonly textContent: string | null;
-        querySelector(selector: string): NestedElement | null;
-        querySelectorAll(selector: string): ArrayLike<NestedElement>;
-      };
-      const outerDocument = (globalThis as unknown as { readonly document: NestedDocument }).document;
-      const innerDocument = outerDocument.querySelector("iframe#active-frame")?.contentDocument;
-      if (!innerDocument || innerDocument.readyState === "loading") return null;
-      const titlePrefix = `Open Wrangler preview: ${expectedLabel} (`;
-      const matches = Array.from(innerDocument.querySelectorAll("section.openwrangler-notebook")).flatMap((section) => {
-        const title = section.querySelector("header > span")?.textContent ?? "";
-        if (!title.startsWith(titlePrefix)) return [];
-        return Array.from(section.querySelectorAll("button")).filter(
-          (button) => button.isConnected && (button.textContent ?? "").trim() === expectedButtonName
-        );
-      });
-      return matches.length === 1 ? matches[0] : null;
-    },
-    { expectedLabel: label, expectedButtonName: buttonName }
-  );
+  const raw = await frame.evaluateHandle(findExactActiveNotebookRendererButton, {
+    expectedLabel: label,
+    expectedButtonName: buttonName
+  });
   const element = raw.asElement() as ElementHandle<unknown> | null;
   if (!element) {
     await raw.dispose();
@@ -10575,13 +10913,6 @@ async function resolveNestedNotebookRendererButton(
       element.evaluate(pageFunction),
     dispose: () => element.dispose()
   };
-}
-
-function isNotebookRendererProbeDeadline(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.startsWith("Timed out waiting for the notebook renderer action readiness probe after ")
-  );
 }
 
 function isNestedNotebookRendererProbeDeadline(error: unknown): boolean {
@@ -15112,7 +15443,8 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-wide-projection-"));
   const sourcePath = path.join(directory, "wide.csv");
-  const columnCount = 300;
+  const columnCount = 417;
+  const farColumnOffset = columnCount - 12;
   const names = Array.from({ length: columnCount }, (_, column) => `column_${column.toString().padStart(3, "0")}`);
   const values = (row: number) => names.map((_name, column) => String(row * 1_000 + column));
   const source = [names, values(0), values(1)].map((row) => row.join(",")).join("\n") + "\n";
@@ -15146,7 +15478,7 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
         viewRequestId: `${backend}-wide-far-columns`,
         offset: 0,
         limit: 2,
-        columnOffset: 288,
+        columnOffset: farColumnOffset,
         columnLimit: 12,
         filterModel: {
           logic: "and",
@@ -15165,10 +15497,10 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
       assert.equal(projected.page.totalRows, 1, `${backend} must filter on an untransported column.`);
       assert.deepEqual(
         projected.page.columnIds,
-        projected.metadata.schema.slice(288, 300).map((column) => column.id)
+        projected.metadata.schema.slice(farColumnOffset, columnCount).map((column) => column.id)
       );
-      assert.equal(projected.page.rows[0]?.values[0]?.display, "1288");
-      assert.equal(projected.page.rows[0]?.values[11]?.display, "1299");
+      assert.equal(projected.page.rows[0]?.values[0]?.display, String(1_000 + farColumnOffset));
+      assert.equal(projected.page.rows[0]?.values[11]?.display, String(1_000 + columnCount - 1));
       assert.ok(projected.page.rows.every((row) => row.values.length === 12));
 
       const closed = await testing.request({
@@ -15178,6 +15510,112 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
       });
       assert.equal(closed.kind, "sessionClosed");
     }
+
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      const sourceUri = vscode.Uri.file(sourcePath);
+      const originalBackend = vscode.workspace
+        .getConfiguration("openWrangler")
+        .get<"auto" | "polars" | "pandas" | "duckdb">("defaultBackend", "auto");
+      await vscode.workspace
+        .getConfiguration("openWrangler")
+        .update("defaultBackend", "polars", vscode.ConfigurationTarget.Global);
+      try {
+        recordAcceptanceProgress("verify:wide-projection:picker:open");
+        await vscode.commands.executeCommand("openWrangler.openFile", sourceUri);
+        await waitFor(
+          () => {
+            const active = testing.activeSession();
+            // Uri.fsPath intentionally lower-cases Windows drive letters, while
+            // the raw os.tmpdir() spelling used to create sourcePath need not.
+            return (
+              active?.metadata.source.uri === sourceUri.toString() &&
+              active.metadata.backend === "polars" &&
+              active.metadata.shape.rows === 2 &&
+              active.metadata.shape.columns === columnCount
+            );
+          },
+          SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+          "the public wide-schema file workflow to open every column",
+          () =>
+            packagedFileOpenDiagnostics(testing, {
+              sourceLabel: path.basename(sourceUri.fsPath),
+              backend: "polars",
+              shape: { rows: 2, columns: columnCount }
+            })
+        );
+
+        const active = testing.activeSession();
+        assert.ok(active, "The wide-schema picker journey requires its exact active session.");
+        assert.equal(
+          active.metadata.source.path,
+          sourceUri.fsPath,
+          "The public file command must retain VS Code's canonical filesystem spelling."
+        );
+        const sessionId = active.sessionId;
+        const finalColumn = active.metadata.schema[columnCount - 1];
+        assert.ok(finalColumn, "The wide-schema picker journey requires its final column.");
+        const workbench = await connectToEditorWorkbench();
+        const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+        const app = await exactSessionApp(target.frame, sessionId);
+        assert.ok(app, "The wide-schema picker journey requires its exact visible application.");
+        const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+
+        recordAcceptanceProgress("verify:wide-projection:picker:all-columns");
+        await columnSearch.focus();
+        const listbox = app.getByRole("listbox", { name: "Matching columns", exact: true });
+        await listbox.waitFor({ state: "visible", timeout: 10_000 });
+        const firstOption = listbox.getByRole("option").first();
+        assert.equal(
+          await firstOption.getAttribute("aria-setsize"),
+          String(columnCount),
+          "The real column picker must expose the complete schema instead of a 100-result subset."
+        );
+        assert.equal(
+          await app.getByText(/Showing 100 of/u).count(),
+          0,
+          "The real column picker must not retain the old 100-result cap."
+        );
+
+        await columnSearch.press("End");
+        const finalOption = listbox.locator(`[role="option"][aria-posinset="${columnCount}"]`);
+        await finalOption.waitFor({ state: "visible", timeout: 10_000 });
+        assert.match(
+          (await finalOption.getAttribute("aria-label")) ?? "",
+          /^column_416, /u,
+          "End must reach the final column in a 417-column schema."
+        );
+        assert.equal(
+          await finalOption.getAttribute("aria-setsize"),
+          String(columnCount),
+          "The final virtualized option must retain the complete result count."
+        );
+        assert.ok(
+          (await listbox.getByRole("option").count()) < 30,
+          "The complete column picker must remain DOM-bounded while exposing all results."
+        );
+
+        await columnSearch.press("Enter");
+        await waitFor(
+          () => testing.activeSession()?.viewState.selectedColumnId === finalColumn.id,
+          10_000,
+          "the real column picker to select its final schema column"
+        );
+        await app.locator('th[data-column="column_416"]').first().waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(
+          await app.locator('th[data-column="column_416"]').first().getAttribute("aria-colindex"),
+          String(columnCount + 1),
+          "The selected far-right grid header must keep its full-schema ARIA coordinate."
+        );
+
+        await disposePackagedSessionPanel(testing, sessionId, "the real wide-schema picker session");
+        recordAcceptanceProgress("verify:wide-projection:picker:complete");
+      } finally {
+        await vscode.workspace
+          .getConfiguration("openWrangler")
+          .update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
+      }
+    }
+
     await waitFor(
       () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
       10_000,

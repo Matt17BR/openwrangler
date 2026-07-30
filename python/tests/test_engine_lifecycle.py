@@ -462,7 +462,7 @@ def test_notebook_payload_rejects_backend_outside_saved_output_allowlist(monkeyp
     registry = tracking_registry(created, factory=ReadOnlyPandasEngine, backend="readonly")
     monkeypatch.setattr(notebook, "default_engine_registry", lambda: registry)
 
-    with pytest.raises(EngineError, match="supports Pandas and Polars"):
+    with pytest.raises(EngineError, match="supports Pandas or Polars dataframes and series, and DuckDB relations"):
         notebook.build_payload(pd.DataFrame({"value": [1]}))
 
     assert created[0].close_calls == 1
@@ -488,6 +488,26 @@ def test_failed_notebook_payload_preserves_failure_when_cleanup_also_fails(monke
         notebook.build_payload(pd.DataFrame({"value": [1]}))
 
     assert created[0].close_calls == 1
+
+
+def test_missing_live_notebook_variable_explains_the_user_recovery() -> None:
+    manager = SessionManager()
+
+    with pytest.raises(
+        EngineError,
+        match=(
+            "Live dataframe 'open_wrangler_missing_frame' is not available in the selected notebook kernel. "
+            "Run the cell that defines it"
+        ),
+    ):
+        manager.open_session(
+            {
+                "kind": "notebookVariable",
+                "label": "open_wrangler_missing_frame",
+                "variableName": "open_wrangler_missing_frame",
+            },
+            backend="pandas",
+        )
 
 
 def test_capabilities_remain_exact_for_current_engines(tmp_path, monkeypatch) -> None:

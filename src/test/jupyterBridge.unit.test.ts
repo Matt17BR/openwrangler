@@ -270,6 +270,33 @@ describe("notebook command provenance", () => {
     );
   });
 
+  it.each(["DuckDBPyRelation", "_duckdb.DuckDBPyRelation", "duckdb.duckdb.DuckDBPyRelation"])(
+    "pins the %s Variables-view type to the DuckDB backend",
+    async (type) => {
+      const origin = notebook("file:///workspace/duckdb.ipynb");
+      notebookMocks.notebookDocuments.push(origin);
+      const { context, coordinatedBridge } = register();
+
+      await command("openWrangler.launchDataViewer")({
+        name: "duck_relation",
+        type,
+        fileName: origin.uri
+      });
+
+      expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+        context,
+        coordinatedBridge,
+        {
+          kind: "notebookVariable",
+          label: "duck_relation",
+          variableName: "duck_relation",
+          uri: origin.uri.toString()
+        },
+        "duckdb"
+      );
+    }
+  );
+
   it("does not infer PySpark from an unrecognized or lookalike Variables-view type", async () => {
     const origin = notebook("file:///workspace/frame.ipynb");
     notebookMocks.notebookDocuments.push(origin);
@@ -939,7 +966,7 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "duck_relation",
         description: "DuckDB · DuckDBPyRelation",
-        detail: "_duckdb.DuckDBPyRelation · Live notebook opening is not supported"
+        detail: "_duckdb.DuckDBPyRelation · Live viewing-only session"
       }),
       expect.objectContaining({
         label: "pandas_frame",
@@ -969,6 +996,36 @@ describe("notebook command provenance", () => {
       },
       "pyspark"
     );
+  });
+
+  it("opens a discovered DuckDB relation as a pinned live viewing session", async () => {
+    const original = notebook("file:///workspace/duckdb.ipynb");
+    notebookMocks.notebookDocuments.push(original);
+    notebookMocks.activeNotebookEditor = editor(original);
+    notebookMocks.executeCode.mockImplementationOnce((code) =>
+      discoveryOutputs(code, {
+        protocolVersion: 1,
+        truncated: false,
+        variables: [{ name: "duck_relation", type: "_duckdb.DuckDBPyRelation", backend: "duckdb" }]
+      })
+    );
+    const { context, coordinator, coordinatedBridge } = register();
+
+    await command("openWrangler.openNotebookVariable")();
+
+    expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
+    expect(notebookMocks.createPanel).toHaveBeenCalledWith(
+      context,
+      coordinatedBridge,
+      {
+        kind: "notebookVariable",
+        label: "duck_relation",
+        variableName: "duck_relation",
+        uri: original.uri.toString()
+      },
+      "duckdb"
+    );
+    expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
   });
 
   it("treats picker cancellation as actionless", async () => {

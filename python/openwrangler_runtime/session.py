@@ -277,7 +277,12 @@ class SessionManager:
                 load_source["path"] = source_fingerprint.resolved_path
             frame = self._load_source(load_source, engine)
             if source.get("kind") != "file":
-                frame = getattr(engine, "normalize", lambda value: value)(frame)
+                notebook_normalizer = getattr(engine, "normalize_notebook_relation", None)
+                frame = (
+                    notebook_normalizer(frame)
+                    if engine.name == "duckdb" and callable(notebook_normalizer)
+                    else getattr(engine, "normalize", lambda value: value)(frame)
+                )
             engine.validate_internal_row_id_namespace(frame)
             engine.validate_column_addressability(frame)
             frame = engine.ensure_row_ids(frame, f"{session_id}:source")
@@ -320,7 +325,10 @@ class SessionManager:
                 revision=0,
                 mode=(
                     "viewing"
-                    if not engine.capabilities.supports_editing
+                    if (
+                        not engine.capabilities.supports_editing
+                        or (engine.name == "duckdb" and source_kind == "notebookVariable")
+                    )
                     else mode or ("editing" if source.get("kind") == "file" else "viewing")
                 ),
                 lock=session_lock,
@@ -1259,14 +1267,17 @@ class SessionManager:
         source_kind = session.source.get("kind")
         extension = str(session.source.get("path", "")).lower()
         engine_capabilities = session.engine.capabilities
-        editable = session.mode == "editing" and engine_capabilities.supports_editing
+        source_supports_editing = not (session.backend == "duckdb" and source_kind == "notebookVariable")
+        editable = session.mode == "editing" and engine_capabilities.supports_editing and source_supports_editing
         return {
             "editable": editable,
             "lazy": source_kind == "file" and extension.endswith(tuple(engine_capabilities.lazy_file_extensions)),
             "cancel": engine_capabilities.supports_request_cancellation,
             "exportCsv": editable and "csv" in engine_capabilities.export_formats,
             "exportParquet": editable and "parquet" in engine_capabilities.export_formats,
-            "notebookInsert": source_kind == "notebookVariable" and engine_capabilities.supports_editing,
+            "notebookInsert": (
+                source_kind == "notebookVariable" and engine_capabilities.supports_editing and source_supports_editing
+            ),
         }
 
     def _assert_revision(self, session: Session, revision: int) -> None:
@@ -1484,6 +1495,6 @@ class SessionManager:
         if hasattr(main, variable_name):
             return getattr(main, variable_name)
         raise EngineError(
-            "Notebook variable launch requires running the Open Wrangler runtime inside the active kernel. "
-            f"Variable not found: {variable_name}"
+            f"Live dataframe '{variable_name}' is not available in the selected notebook kernel. "
+            "Run the cell that defines it, then choose Open in Open Wrangler again."
         )

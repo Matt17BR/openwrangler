@@ -59,8 +59,8 @@ describe("notebook output", () => {
         metadata: { ...metadata, backend: "duckdb" },
         page,
         summaries: []
-      })
-    ).toBeUndefined();
+      })?.metadata.backend
+    ).toBe("duckdb");
     expect(
       normalizeNotebookOutputPayload({
         mimeVersion: 2,

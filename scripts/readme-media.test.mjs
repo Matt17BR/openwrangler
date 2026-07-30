@@ -90,21 +90,23 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
   assert.match(
     readme,
-    /button inside an inline table expands the preview saved in that `\.ipynb` file\.[\s\S]{0,180}saved preview may contain only part of a very large dataframe[\s\S]{0,180}says so clearly\s+whenever rows or columns were left out\./u
+    /inline table is a lightweight preview stored with the notebook[\s\S]{0,180}may show only part of a very large\s+dataframe[\s\S]{0,180}\*\*Open in Open Wrangler\*\* action loads the complete, current variable/u
   );
   assert.match(
     readme,
-    /full, current dataframe[\s\S]{0,120}notebook toolbar's branded \*\*Open in Open Wrangler\*\* action[\s\S]{0,180}pages\s+through the live data as you navigate\.[\s\S]{0,180}portability limit applies only to previews stored inside notebooks,\s+not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files\./u
+    /never substitutes the saved preview[\s\S]{0,180}run the cell again instead of opening a partial workbench[\s\S]{0,220}notebook toolbar's branded \*\*Open in Open Wrangler\*\* action[\s\S]{0,220}Preview portability limits apply only to the table\s+stored inside the notebook/u
   );
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.match(
     readme,
     /If Microsoft Data Wrangler is installed too, Open Wrangler\s+asks once which extension should own automatic previews/u
   );
-  assert.doesNotMatch(readme, /button opens the full, current dataframe|opens the linked live variable/u);
   assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.match(readme, /engine gallery/u);
-  assert.match(readme, /DuckDB notebook relations are not yet supported/u);
+  assert.match(
+    readme,
+    /DuckDB relations open as native, viewing-only notebook sessions:[\s\S]{0,220}exact originating relation without converting it to\s+Pandas, Polars, or Arrow/u
+  );
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
   assert.match(readme, /real packaged PySpark notebook capture/u);
   assert.match(
@@ -129,7 +131,10 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.equal(galleryImage.readUInt32BE(20), 640);
   assert.ok(galleryImage.byteLength < 300 * 1_024);
   assert.match(gallery, /file-backed DuckDB Parquet source/u);
-  assert.match(gallery, /DuckDB notebook\s+relations are not currently supported\./u);
+  assert.match(
+    gallery,
+    /DuckDB notebook relations also open as native, viewing-only live sessions against the exact originating\s+relation; they do not convert through Pandas, Polars, or Arrow\./u
+  );
   assert.match(gallery, /images\/readme\/v1\.1\/gallery\/duckdb-rich-parquet\.png/u);
 
   const polarsImage = readFileSync(resolve(root, "docs", "images", "readme", "v1.1", "gallery", "notebook-polars.png"));

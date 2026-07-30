@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type FocusEvent,
   type KeyboardEvent,
   type MouseEvent
@@ -17,7 +18,9 @@ interface ColumnSearchProps {
   onSelect(columnId: string): void;
 }
 
-const maximumVisibleResults = 100;
+const resultHeight = 32;
+const maximumResultViewportHeight = 360;
+const resultOverscan = 4;
 
 export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSearchProps) {
   const generatedId = useId().replaceAll(":", "");
@@ -26,7 +29,8 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const activeOptionRef = useRef<HTMLLIElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const resultsRef = useRef<HTMLUListElement | null>(null);
   const duplicateNameCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const column of columns) counts.set(column.name, (counts.get(column.name) ?? 0) + 1);
@@ -42,15 +46,41 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
       );
     });
   }, [columns, query]);
-  const results = matchingColumns.slice(0, maximumVisibleResults);
+  const results = matchingColumns;
   const boundedActiveIndex = Math.min(activeIndex, Math.max(0, results.length - 1));
   const activeColumn = results[boundedActiveIndex];
   const activeOptionId = activeColumn ? `${listboxId}-option-${boundedActiveIndex}` : undefined;
+  const renderedIndices = useMemo(() => {
+    const firstVisibleIndex = Math.floor(scrollTop / resultHeight);
+    const start = Math.max(0, firstVisibleIndex - resultOverscan);
+    const end = Math.min(
+      results.length,
+      Math.ceil((scrollTop + maximumResultViewportHeight) / resultHeight) + resultOverscan
+    );
+    const indices = Array.from({ length: Math.max(0, end - start) }, (_, offset) => start + offset);
+    if (activeColumn && (boundedActiveIndex < start || boundedActiveIndex >= end)) {
+      indices.push(boundedActiveIndex);
+      indices.sort((left, right) => left - right);
+    }
+    return indices;
+  }, [activeColumn, boundedActiveIndex, results.length, scrollTop]);
 
   useEffect(() => {
-    if (!open) return;
-    activeOptionRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [boundedActiveIndex, open, query]);
+    const listbox = resultsRef.current;
+    if (!open || !activeColumn || !listbox) return;
+    const viewportHeight = listbox.clientHeight || maximumResultViewportHeight;
+    const optionTop = boundedActiveIndex * resultHeight;
+    const optionBottom = optionTop + resultHeight;
+    let nextScrollTop = listbox.scrollTop;
+    if (optionTop < listbox.scrollTop) {
+      nextScrollTop = optionTop;
+    } else if (optionBottom > listbox.scrollTop + viewportHeight) {
+      nextScrollTop = optionBottom - viewportHeight;
+    }
+    if (nextScrollTop === listbox.scrollTop) return;
+    listbox.scrollTop = nextScrollTop;
+    setScrollTop(nextScrollTop);
+  }, [activeColumn, boundedActiveIndex, open, query]);
 
   const openResults = () => {
     const selectedIndex = results.findIndex((column) => column.id === selectedColumnId);
@@ -84,6 +114,13 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
     if (event.key === "End" && open && results.length > 0) {
       event.preventDefault();
       setActiveIndex(results.length - 1);
+      return;
+    }
+    if ((event.key === "PageDown" || event.key === "PageUp") && open && results.length > 0) {
+      event.preventDefault();
+      const pageSize = Math.max(1, Math.floor(maximumResultViewportHeight / resultHeight) - 1);
+      const delta = event.key === "PageDown" ? pageSize : -pageSize;
+      setActiveIndex((current) => Math.max(0, Math.min(results.length - 1, current + delta)));
       return;
     }
     if (event.key === "Enter" && open && activeColumn) {
@@ -129,8 +166,24 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
         />
         {open && (
           <div className="columnSearchPopup">
-            <ul id={listboxId} className="columnSearchResults" role="listbox" aria-label="Matching columns">
-              {results.map((column, index) => {
+            <ul
+              ref={resultsRef}
+              id={listboxId}
+              className="columnSearchResults"
+              role="listbox"
+              aria-label="Matching columns"
+              style={
+                {
+                  "--column-search-content-height": `${results.length * resultHeight}px`,
+                  "--column-search-result-height": `${resultHeight}px`,
+                  "--column-search-viewport-height": `${maximumResultViewportHeight}px`
+                } as CSSProperties
+              }
+              onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+            >
+              {renderedIndices.map((index) => {
+                const column = results[index];
+                if (!column) return null;
                 const type = columnTypePresentation(column);
                 const duplicate = (duplicateNameCounts.get(column.name) ?? 0) > 1;
                 const selected = column.id === selectedColumnId;
@@ -143,15 +196,17 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
                   .join(", ");
                 return (
                   <li
-                    ref={index === boundedActiveIndex ? activeOptionRef : undefined}
                     id={`${listboxId}-option-${index}`}
                     key={column.id}
                     role="option"
                     aria-label={optionLabel}
                     aria-selected={index === boundedActiveIndex}
+                    aria-posinset={index + 1}
+                    aria-setsize={results.length}
                     className={[index === boundedActiveIndex ? "active" : "", selected ? "selected" : ""]
                       .filter(Boolean)
                       .join(" ")}
+                    style={{ top: index * resultHeight }}
                     title={`${column.name}: ${type.label} (${column.rawType}), column ${column.position + 1}`}
                     onMouseDown={(event: MouseEvent<HTMLLIElement>) => event.preventDefault()}
                     onMouseMove={() => setActiveIndex(index)}
@@ -173,11 +228,6 @@ export function ColumnSearch({ columns, selectedColumnId, onSelect }: ColumnSear
             {results.length === 0 && (
               <p className="columnSearchEmpty" role="status">
                 No matching columns
-              </p>
-            )}
-            {matchingColumns.length > results.length && (
-              <p className="columnSearchCount" role="status">
-                Showing {results.length} of {matchingColumns.length} matches. Keep typing to narrow the list.
               </p>
             )}
           </div>

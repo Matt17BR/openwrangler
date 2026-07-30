@@ -4,10 +4,9 @@ import { SessionCoordinator } from "../sessionCoordinator";
 import { OpenWranglerPanel } from "../webviewPanel";
 import { KernelBridge, shouldRegisterNotebookFormatters } from "./kernelBridge";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
-import { SnapshotBridge } from "./snapshotBridge";
 
 interface OpenInOpenWranglerMessage {
-  kind: "openInOpenWrangler" | "openLiveInOpenWrangler";
+  kind: "openInOpenWrangler";
   payload: unknown;
 }
 
@@ -30,51 +29,41 @@ export function registerNotebookRendererMessaging(
       const notebook = originatingNotebook(editor);
       if (!notebook) {
         void vscode.window.showErrorMessage(
-          "The notebook that sent this Open Wrangler action is no longer open. Reopen it and try again."
+          "The notebook behind this preview is no longer open. Reopen it, run the cell that defines the dataframe, and try again."
         );
         return;
       }
 
-      if (message.kind === "openLiveInOpenWrangler") {
-        if (!isSoleOpenNotebookDocument(notebook)) {
-          void vscode.window.showErrorMessage(
-            "The notebook that sent this Open Wrangler action is no longer uniquely open. Close duplicate or replacement views and try again."
-          );
-          return;
-        }
-        const variableName = payload.metadata.source.variableName;
-        if (!variableName || !isPythonIdentifier(variableName)) {
-          void vscode.window.showErrorMessage("This Open Wrangler output does not contain a valid live variable link.");
-          return;
-        }
-        try {
-          OpenWranglerPanel.create(
-            context,
-            coordinator.createBridge(new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()), notebook),
-            {
-              kind: "notebookVariable",
-              label: variableName,
-              variableName,
-              uri: notebook.uri.toString()
-            }
-          );
-        } catch (error) {
-          const detail = error instanceof Error ? ` ${error.message}` : "";
-          void vscode.window.showErrorMessage(`Open Wrangler could not open the originating notebook.${detail}`);
-        }
+      const variableName = payload.metadata.source.variableName;
+      if (!variableName || !isPythonIdentifier(variableName)) {
+        void vscode.window.showErrorMessage(
+          "This saved preview is not linked to a live dataframe. Run the cell again to create a fresh Open Wrangler preview, then try again."
+        );
+        return;
+      }
+      if (!isSoleOpenNotebookDocument(notebook)) {
+        void vscode.window.showErrorMessage(
+          "The notebook behind this preview is no longer uniquely open. Close duplicate or replacement notebook views, run the cell if needed, and try again."
+        );
         return;
       }
 
       try {
         OpenWranglerPanel.create(
           context,
-          coordinator.createBridge(SnapshotBridge.fromNormalized(payload)),
-          { kind: "notebookOutput", label: payload.metadata.source.label },
-          payload.metadata.backend
+          coordinator.createBridge(new KernelBridge(context, notebook, shouldRegisterNotebookFormatters()), notebook),
+          {
+            kind: "notebookVariable",
+            label: variableName,
+            variableName,
+            uri: notebook.uri.toString()
+          }
         );
       } catch (error) {
         const detail = error instanceof Error ? ` ${error.message}` : "";
-        void vscode.window.showErrorMessage(`Open Wrangler could not open this saved notebook output.${detail}`);
+        void vscode.window.showErrorMessage(
+          `Open Wrangler could not access the live dataframe. Select or start the notebook's Python kernel, run the cell that defines ${variableName}, and try again.${detail}`
+        );
       }
     })
   );
@@ -98,9 +87,5 @@ function isOpenInOpenWranglerMessage(message: unknown): message is OpenInOpenWra
     return false;
   }
   const candidate = message as { kind?: unknown; payload?: unknown };
-  return (
-    (candidate.kind === "openInOpenWrangler" || candidate.kind === "openLiveInOpenWrangler") &&
-    typeof candidate.payload === "object" &&
-    candidate.payload !== null
-  );
+  return candidate.kind === "openInOpenWrangler" && typeof candidate.payload === "object" && candidate.payload !== null;
 }

@@ -107,31 +107,64 @@ describe("ColumnSearch", () => {
     expect(input).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("keeps the keyboard-active option visible in a long result list", async () => {
-    const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+  it("makes every column in a wide schema reachable without a 100-result cap", async () => {
+    const wideColumns = Array.from({ length: 417 }, (_, position): ColumnSchema => ({
+      id: `c:${position}`,
+      name: `column_${position.toString().padStart(3, "0")}`,
+      position,
+      rawType: "String",
+      type: "string",
+      nullable: false
+    }));
+    const onSelect = vi.fn();
+    render(<ColumnSearch columns={wideColumns} onSelect={onSelect} />);
+    const input = screen.getByRole("combobox", { name: "Column" });
+
+    fireEvent.focus(input);
+    const listbox = screen.getByRole("listbox", { name: "Matching columns" });
+    Object.defineProperty(listbox, "clientHeight", { configurable: true, value: 360 });
+    expect(screen.queryByText(/Showing 100 of/u)).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "column_000, Text column" })).toHaveAttribute("aria-setsize", "417");
+
+    fireEvent.keyDown(input, { key: "End" });
+    const finalOption = await screen.findByRole("option", { name: "column_416, Text column" });
+    expect(input).toHaveAttribute("aria-activedescendant", finalOption.id);
+    expect(finalOption).toHaveAttribute("aria-posinset", "417");
+    await waitFor(() => expect(listbox.scrollTop).toBeGreaterThan(0));
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("c:416");
+
+    fireEvent.change(input, { target: { value: "column_237" } });
+    expect(screen.getByRole("option", { name: "column_237, Text column" })).toHaveAttribute("aria-setsize", "1");
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+  });
+
+  it("keeps a wide column list bounded in the DOM while scrolling through every result", () => {
+    const wideColumns = Array.from({ length: 1_000 }, (_, position): ColumnSchema => ({
+      id: `c:${position}`,
+      name: `field_${position}`,
+      position,
+      rawType: "Int64",
+      type: "integer",
+      nullable: false
+    }));
+    render(<ColumnSearch columns={wideColumns} onSelect={() => undefined} />);
+    const input = screen.getByRole("combobox", { name: "Column" });
+
+    fireEvent.focus(input);
+    const listbox = screen.getByRole("listbox", { name: "Matching columns" });
+    expect(screen.getAllByRole("option").length).toBeLessThan(25);
+
+    Object.defineProperty(listbox, "scrollTop", {
       configurable: true,
-      value: scrollIntoView
+      writable: true,
+      value: 31_640
     });
+    fireEvent.scroll(listbox);
 
-    try {
-      render(<ColumnSearch columns={columns} onSelect={() => undefined} />);
-      const input = screen.getByRole("combobox", { name: "Column" });
-      fireEvent.focus(input);
-      scrollIntoView.mockClear();
-      fireEvent.keyDown(input, { key: "End" });
-
-      const options = screen.getAllByRole("option");
-      await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
-      expect(input).toHaveAttribute("aria-activedescendant", options.at(-1)?.id);
-    } finally {
-      if (originalScrollIntoView) {
-        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
-      } else {
-        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
-      }
-    }
+    expect(screen.getByRole("option", { name: "field_999, Integer column" })).toHaveAttribute("aria-posinset", "1000");
+    expect(screen.getAllByRole("option").length).toBeLessThan(25);
   });
 });
 

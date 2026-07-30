@@ -4,17 +4,39 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-07-30
+
 ### Added
 
+- Added native DuckDB notebook previews and viewing-only live sessions. Open Wrangler retains the exact
+  originating `DuckDBPyRelation` for paging, filtering, sorting, and profiling, releases only its own reference
+  on close, and never converts through Pandas, Polars, or Arrow. Notebook relation cleaning, code insertion, and
+  data export remain disabled.
 - Added path-independent Microsoft Marketplace recovery on protected `main`. Exact single-parent changes to the
   reviewed Marketplace pipeline, verifier, archive, metadata, and locked-package closure retry the current
   package version only when its immutable numeric release tag already exists; ordinary changes, merge commits,
   and an absent tag finish as intake-only no-ops before authentication. Existing `v*` tag promotion and explicit
   manual backfill remain unchanged.
 
+### Changed
+
+- Restored the inline notebook **Open in Open Wrangler** action to the complete current live dataframe. The action
+  stays bound to the exact visible originating notebook and kernel, reruns backend detection, and never opens or
+  falls back to the bounded saved preview. Outputs without a canonical live-variable link remain readable inline
+  and ask the user to run the cell again instead of showing a misleading open button.
+
 ### Fixed
 
+- Made missing live variables and unavailable kernels explain the direct recovery: select or start the Python
+  kernel, run the cell that defines the dataframe, and try **Open in Open Wrangler** again.
 - Kept Microsoft Marketplace promotion resumable when GitHub's anonymous release-metadata API returns HTTP 403 on a shared Azure runner by treating that response as pending within the existing bounded poll. There is no alternate asset path: a successful metadata response must still pass every release-channel, inventory, URL, and size check before any asset download, and repeated 403 responses fail when the poll is exhausted.
+- Made the column picker search and navigate the complete schema instead of stopping after the first 100
+  matches. The list virtualizes wide schemas, keeps every result keyboard-reachable, and exposes its exact
+  position and result count to assistive technology without rendering thousands of options at once.
+- Preserved the exact grid row and horizontal position while native menus or Quick Input temporarily own
+  workbench focus. Incidental layout scrolls on macOS can no longer overwrite the confirmed viewport.
+- Registered a new workbench panel's activation listener before dispatching its session open. Fast Windows
+  activation can no longer leave a successfully opened dataframe disconnected from the active-session UI.
 
 ## [1.1.3] - 2026-07-30
 

@@ -97,7 +97,7 @@ try {
     }
     await page.close();
   }
-  await verifyNotebookExpansion(browser);
+  await verifyNotebookPreviewDisclosure(browser);
   await verifyCodePreviewOrigin(browser);
   await verifyCleaningKeyboardShortcuts(browser);
   await verifyStepInspectionWorkflow(browser);
@@ -119,34 +119,38 @@ try {
   }
 }
 
-async function verifyNotebookExpansion(browser) {
+async function verifyNotebookPreviewDisclosure(browser) {
   const harness = "notebook-preview.html";
   const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
   await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
-  const open = page.getByRole("button", { name: "Open in Open Wrangler" });
-  await open.waitFor();
-  await open.click();
-  await page.waitForFunction(() =>
-    globalThis.openWranglerNotebookMessages.some((message) => message.kind === "openInOpenWrangler")
-  );
-  const payload = await page.evaluate(
-    () => globalThis.openWranglerNotebookMessages.find((message) => message.kind === "openInOpenWrangler")?.payload
-  );
-  if (!payload || payload.metadata?.protocolVersion !== 2) {
-    throw new Error(`${harness} did not send a protocol v2 full-view payload.`);
-  }
-  const capturedRows = payload.page?.rows?.length;
-  const totalRows = payload.page?.totalRows;
-  if (!Number.isInteger(capturedRows) || !Number.isInteger(totalRows) || capturedRows >= totalRows) {
-    throw new Error(`${harness} did not exercise a truncated saved output.`);
-  }
   const status = await page.getByTestId("inline-preview-page").textContent();
-  const visibleRows = Math.min(20, capturedRows);
-  if (!status?.includes(`1-${visibleRows} of ${capturedRows}`) || !status.includes(`captured · ${totalRows} total`)) {
+  const match = /^1-([0-9,]+) of ([0-9,]+) captured · ([0-9,]+) total$/u.exec(status ?? "");
+  const visibleRows = Number(match?.[1]?.replaceAll(",", ""));
+  const capturedRows = Number(match?.[2]?.replaceAll(",", ""));
+  const totalRows = Number(match?.[3]?.replaceAll(",", ""));
+  if (
+    !match ||
+    !Number.isInteger(visibleRows) ||
+    !Number.isInteger(capturedRows) ||
+    !Number.isInteger(totalRows) ||
+    visibleRows !== Math.min(20, capturedRows) ||
+    capturedRows >= totalRows
+  ) {
     throw new Error(`${harness} did not label the captured-row limit in its compact pager.`);
   }
+  if ((await page.getByRole("button", { name: "Open in Open Wrangler" }).count()) !== 0) {
+    throw new Error(`${harness} exposed a workbench action for an unlinked saved preview.`);
+  }
+  const guidance = await page.locator(".openwrangler-notebook").textContent();
+  if (!guidance?.includes("Run this cell again to open the current dataframe in Open Wrangler.")) {
+    throw new Error(`${harness} did not explain how to open the complete live dataframe.`);
+  }
+  const messages = await page.evaluate(() => globalThis.openWranglerNotebookMessages);
+  if (messages.length !== 0) {
+    throw new Error(`${harness} sent a renderer action for an unlinked saved preview.`);
+  }
   await page.close();
-  console.log("Notebook MIME v2 full-view expansion and truncation disclosure verified.");
+  console.log("Notebook MIME v2 truncation disclosure and live-only opening guidance verified.");
 }
 
 async function verifyCodePreviewOrigin(browser) {

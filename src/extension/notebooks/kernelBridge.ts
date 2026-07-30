@@ -321,7 +321,9 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
     const kernel = await api.kernels.getKernel(this.notebookUri);
     this.assertNotebookProvenance();
     if (!kernel) {
-      throw new Error("Open Wrangler could not access the selected Jupyter kernel for this notebook.");
+      throw new Error(
+        "Select or start a Python kernel, run the cell that defines the dataframe, and choose Open in Open Wrangler again."
+      );
     }
     if (kernel.language.toLowerCase() !== "python") {
       throw new Error(`Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`);

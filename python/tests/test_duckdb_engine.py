@@ -12,10 +12,11 @@ from typing import Any
 import duckdb
 import pytest
 
+import __main__
 import openwrangler_runtime.engines.duckdb_engine as duckdb_runtime
 from openwrangler_runtime._column_binding import bind_step
 from openwrangler_runtime.engines.base import EngineError, typed_selection_value
-from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBSqlPlan
+from openwrangler_runtime.engines.duckdb_engine import DuckDBEngine, DuckDBNotebookPlan, DuckDBSqlPlan
 from openwrangler_runtime.engines.registry import EngineRegistry
 from openwrangler_runtime.lineage import source_lineage
 from openwrangler_runtime.operations import operation_catalog, validate_step
@@ -1372,3 +1373,95 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
     assert manager.close_session(session_id, 2) == {"kind": "sessionClosed", "sessionId": session_id}
     assert manager.sessions == {}
     manager.close_all()
+
+
+def test_duckdb_live_notebook_session_owns_the_exact_relation_without_conversion_or_sql_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    install_conversion_guards(monkeypatch)
+    connection = duckdb.connect()
+    connection.execute(
+        "CREATE TABLE private_orders AS "
+        "SELECT * FROM (VALUES (7, 'Milan'), (11, 'Berlin'), (9, 'Paris')) AS rows(order_id, city)"
+    )
+    relation = connection.table("private_orders")
+    monkeypatch.setattr(__main__, "duck_orders", relation, raising=False)
+
+    def reject_unrelated_connection() -> Any:
+        raise AssertionError("A live notebook relation must never replay SQL on an unrelated DuckDB connection")
+
+    monkeypatch.setattr(duckdb_runtime, "_connect", reject_unrelated_connection)
+    manager = SessionManager(EngineRegistry((("duckdb", DuckDBEngine),)))
+    owner = None
+    try:
+        opened = manager.open_session(
+            {"kind": "notebookVariable", "label": "duck_orders", "variableName": "duck_orders"},
+            backend="duckdb",
+            mode="editing",
+            page_size=2,
+        )
+        session_id = opened["metadata"]["sessionId"]
+        assert opened["metadata"]["backend"] == "duckdb"
+        assert opened["metadata"]["mode"] == "viewing"
+        assert opened["metadata"]["capabilities"] == {
+            "editable": False,
+            "lazy": False,
+            "cancel": False,
+            "exportCsv": False,
+            "exportParquet": False,
+            "notebookInsert": False,
+        }
+        assert opened["metadata"]["shape"] == {"rows": 3, "columns": 2}
+        assert [row["values"][0]["display"] for row in opened["page"]["rows"]] == ["7", "11"]
+        original = manager.sessions[session_id].original
+        assert isinstance(original, DuckDBNotebookPlan)
+        owner = original.owner
+
+        sorted_page = manager.get_page(
+            session_id,
+            0,
+            0,
+            10,
+            {
+                "logic": "and",
+                "filters": [],
+                "sort": [{"column": "order_id", "direction": "desc", "nulls": "last"}],
+            },
+        )
+        assert [row["values"][0]["display"] for row in sorted_page["page"]["rows"]] == ["11", "9", "7"]
+        summary = manager.get_summary(
+            session_id,
+            0,
+            {"logic": "and", "filters": [], "sort": []},
+            ["c:source:0"],
+        )["summaries"][0]
+        assert summary["numeric"]["min"] == 7.0
+        assert summary["numeric"]["max"] == 11.0
+
+        with pytest.raises(EngineError, match="viewing mode"):
+            manager.preview_step(
+                session_id,
+                0,
+                step(
+                    "sortRows",
+                    rules=[
+                        {
+                            "column": {"id": "c:source:0", "name": "order_id"},
+                            "direction": "asc",
+                            "nulls": "last",
+                        }
+                    ],
+                ),
+                0,
+                10,
+            )
+        with pytest.raises(EngineError, match="viewing mode"):
+            manager.export_data(session_id, 0, str(tmp_path / "must-not-export.csv"), "csv")
+
+        assert manager.close_session(session_id, 0) == {"kind": "sessionClosed", "sessionId": session_id}
+        assert owner.closed is True
+        assert relation.fetchall() == [(7, "Milan"), (11, "Berlin"), (9, "Paris")]
+    finally:
+        manager.close_all()
+        connection.close()

@@ -9,6 +9,7 @@ from math import isfinite, isinf, isnan
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
+from uuid import uuid4
 
 from .base import (
     DEFAULT_STRIP_CHARACTERS,
@@ -64,6 +65,95 @@ class DuckDBSqlPlan:
         return self.sql
 
 
+class _DuckDBNotebookRelationOwner:
+    """Retain one user-owned live relation without borrowing its connection.
+
+    ``DuckDBPyRelation.sql_query()`` is not a portable serialization: a query
+    can refer to tables, views, or registered objects that exist only in the
+    relation's originating connection. Notebook reads therefore bind every
+    derived query back to the exact live relation through ``relation.query``.
+    Closing an Open Wrangler session only releases our strong reference; it
+    never closes or otherwise mutates the user's relation.
+    """
+
+    def __init__(self, relation: Any) -> None:
+        self.alias = f"__open_wrangler_notebook_source_{uuid4().hex}"
+        self._relation: Any | None = relation
+        self._closed = False
+
+    @contextmanager
+    def terminal(self) -> Iterator[_DuckDBNotebookTerminal]:
+        # Jupyter serializes code execution, but runtime profile/read paths can
+        # still overlap in direct tests. DuckDB relations retain their owning
+        # connection, so serialize only live-notebook relation access. File
+        # sessions continue to use independent short-lived connections.
+        with _DUCKDB_NOTEBOOK_RELATION_LOCK:
+            if self._closed or self._relation is None:
+                raise EngineError("The live DuckDB notebook relation is closed.")
+            yield _DuckDBNotebookTerminal(self._relation, self.alias)
+
+    def describe(self, sql: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        with self.terminal() as terminal:
+            relation = terminal.sql(sql)
+            try:
+                return (
+                    tuple(str(column) for column in relation.columns),
+                    tuple(str(column_type) for column_type in relation.types),
+                )
+            finally:
+                relation = None
+
+    def close(self) -> None:
+        with _DUCKDB_NOTEBOOK_RELATION_LOCK:
+            if self._closed:
+                return
+            self._closed = True
+            # The relation belongs to the notebook. Dropping our reference is
+            # deterministic cleanup; calling DuckDBPyRelation.close() here
+            # would close a user-owned object and can execute a lazy relation.
+            self._relation = None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+
+class _DuckDBNotebookTerminal:
+    def __init__(self, relation: Any, alias: str) -> None:
+        self._relation = relation
+        self._alias = alias
+
+    def execute(self, sql: str) -> Any:
+        return self._relation.query(self._alias, sql)
+
+    def sql(self, sql: str) -> Any:
+        return self._relation.query(self._alias, sql)
+
+
+@dataclass(frozen=True, slots=True)
+class DuckDBNotebookPlan:
+    """A query plan rooted in the exact live DuckDB notebook relation."""
+
+    owner: _DuckDBNotebookRelationOwner
+    sql: str
+    column_names: tuple[str, ...]
+    type_names: tuple[str, ...]
+
+    @property
+    def columns(self) -> list[str]:
+        return list(self.column_names)
+
+    @property
+    def types(self) -> list[str]:
+        return list(self.type_names)
+
+    def sql_query(self) -> str:
+        return self.sql
+
+
+_DUCKDB_NOTEBOOK_RELATION_LOCK = RLock()
+
+
 class DuckDBEngine(DataFrameEngine):
     """Native, lazy DuckDB SQL-plan adapter.
 
@@ -77,10 +167,7 @@ class DuckDBEngine(DataFrameEngine):
     name = "duckdb"
     runtime_modules = ("duckdb",)
     capabilities = EngineCapabilities(
-        # A relation may be detected for custom-code validation, but notebook
-        # ownership is deliberately not advertised until host/kernel lifecycle
-        # semantics are implemented and accepted independently.
-        source_kinds=frozenset({"file"}),
+        source_kinds=frozenset({"file", "notebookVariable", "notebookOutput"}),
         supports_editing=True,
         lazy_file_extensions=frozenset({".csv", ".tsv", ".parquet", ".jsonl", ".ndjson"}),
         export_formats=frozenset({"csv", "parquet"}),
@@ -93,9 +180,10 @@ class DuckDBEngine(DataFrameEngine):
         self._lifecycle_lock = RLock()
         self._closed = False
         self._empty_source_frame: DuckDBSqlPlan | None = None
+        self._notebook_relation_owners: list[_DuckDBNotebookRelationOwner] = []
 
     def detect(self, value: Any) -> bool:
-        if isinstance(value, DuckDBSqlPlan):
+        if isinstance(value, (DuckDBSqlPlan, DuckDBNotebookPlan)):
             return True
         try:
             import duckdb
@@ -103,8 +191,8 @@ class DuckDBEngine(DataFrameEngine):
             return False
         return isinstance(value, duckdb.DuckDBPyRelation)
 
-    def normalize(self, value: Any) -> DuckDBSqlPlan:
-        if isinstance(value, DuckDBSqlPlan):
+    def normalize(self, value: Any) -> DuckDBSqlPlan | DuckDBNotebookPlan:
+        if isinstance(value, (DuckDBSqlPlan, DuckDBNotebookPlan)):
             return value
         try:
             import duckdb
@@ -115,6 +203,42 @@ class DuckDBEngine(DataFrameEngine):
         try:
             return _snapshot_native_relation(value)
         except Exception as error:
+            raise EngineError(f"DuckDB query failed: {error}") from error
+
+    def normalize_notebook_relation(self, value: Any) -> DuckDBNotebookPlan:
+        """Bind a notebook relation to its exact user-owned connection."""
+
+        if isinstance(value, DuckDBNotebookPlan):
+            return value
+        try:
+            import duckdb
+        except ImportError as error:
+            raise EngineError("DuckDB sessions require DuckDB.") from error
+        if not isinstance(value, duckdb.DuckDBPyRelation):
+            raise EngineError("DuckDB notebook sessions require a DuckDBPyRelation.")
+        owner: _DuckDBNotebookRelationOwner | None = None
+        try:
+            with self._lifecycle_lock:
+                if self._closed:
+                    raise EngineError("The DuckDB engine is closed.")
+                owner = _DuckDBNotebookRelationOwner(value)
+                self._notebook_relation_owners.append(owner)
+            sql = f"SELECT * FROM {_quote_ident(owner.alias)}"
+            column_names, type_names = owner.describe(sql)
+            return DuckDBNotebookPlan(owner, sql, column_names, type_names)
+        except EngineError:
+            if owner is not None:
+                owner.close()
+            with self._lifecycle_lock:
+                if owner is not None and owner in self._notebook_relation_owners:
+                    self._notebook_relation_owners.remove(owner)
+            raise
+        except Exception as error:
+            if owner is not None:
+                owner.close()
+            with self._lifecycle_lock:
+                if owner is not None and owner in self._notebook_relation_owners:
+                    self._notebook_relation_owners.remove(owner)
             raise EngineError(f"DuckDB query failed: {error}") from error
 
     def interrupt(self) -> None:
@@ -134,6 +258,10 @@ class DuckDBEngine(DataFrameEngine):
                 return
             self._closed = True
             self._empty_source_frame = None
+            owners = list(self._notebook_relation_owners)
+            self._notebook_relation_owners.clear()
+        for owner in owners:
+            owner.close()
 
     def read_file(self, path: str, options: Mapping[str, Any] | None = None) -> Any:
         options = options or {}
@@ -793,6 +921,15 @@ class DuckDBEngine(DataFrameEngine):
 
     def _relation(self, frame: Any, query: str) -> Any:
         source = self.normalize(frame)
+        if isinstance(source, DuckDBNotebookPlan):
+            sql = _compose_sql(source.sql, query)
+            try:
+                column_names, type_names = source.owner.describe(sql)
+            except EngineError:
+                raise
+            except Exception as error:
+                raise EngineError(f"DuckDB query failed: {error}") from error
+            return DuckDBNotebookPlan(source.owner, sql, column_names, type_names)
         return self._relation_from_sql(_compose_sql(source.sql, query))
 
     def _relation_from_sql(self, sql: str) -> DuckDBSqlPlan:
@@ -807,6 +944,15 @@ class DuckDBEngine(DataFrameEngine):
     @contextmanager
     def _terminal_connection(self, frame: Any) -> Iterator[tuple[Any, str]]:
         source = self.normalize(frame)
+        if isinstance(source, DuckDBNotebookPlan):
+            try:
+                with source.owner.terminal() as terminal:
+                    yield terminal, source.sql
+                return
+            except EngineError:
+                raise
+            except Exception as error:
+                raise EngineError(f"DuckDB query failed: {error}") from error
         try:
             with self._tracked_connection() as connection:
                 yield connection, source.sql

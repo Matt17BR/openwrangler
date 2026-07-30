@@ -8,6 +8,7 @@ import {
   acceptancePythonForPhase,
   createRemoteJupyterAcceptanceToken,
   createJupyterAcceptanceKernelPython,
+  probeJupyterAcceptanceJava,
   probeJupyterAcceptancePython,
   writeJupyterAcceptanceEnvironment,
   writeRemoteJupyterAcceptanceDescriptor,
@@ -18,9 +19,16 @@ const dependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   ipykernel: "6.30.1",
   pandas: "2.3.3",
   polars: "1.35.2",
+  duckdb: "1.5.4",
   pyspark: "4.2.0",
   openwranglerRuntimePresent,
   ...overrides
+});
+const javaReport = (specificationVersion = "17", version = "17.0.19") => ({
+  stdout: "",
+  stderr:
+    `Property settings:\n    java.specification.version = ${specificationVersion}\n` +
+    `    java.version = ${version}\nopenjdk version "${version}"\n`
 });
 
 test("remote Jupyter tokens use one fixed redaction-friendly high-entropy shape", () => {
@@ -33,6 +41,49 @@ test("remote Jupyter tokens use one fixed redaction-friendly high-entropy shape"
   assert.match(token, /^owr_[A-Za-z0-9_-]{39}$/u);
   assert.equal(token.length, 43);
   assert.throws(() => createRemoteJupyterAcceptanceToken(() => Buffer.alloc(29)), /exact private-token entropy/u);
+});
+
+test("released-Jupyter PySpark Java probing reports supported versions and rejects older or malformed runtimes", async () => {
+  const environment = Object.freeze({ PATH: "/bounded-java-path" });
+  const supported = await probeJupyterAcceptanceJava({
+    environment,
+    async runCommand(input, options) {
+      assert.equal(input.executable, "java");
+      assert.deepEqual(input.args, ["-XshowSettings:properties", "-version"]);
+      assert.equal(input.environment, environment);
+      assert.deepEqual(options, { timeoutMs: 30_000 });
+      return javaReport("21", "21.0.7+6");
+    }
+  });
+  assert.deepEqual(supported, { major: 21, version: "21.0.7+6" });
+
+  await assert.rejects(
+    probeJupyterAcceptanceJava({
+      environment,
+      async runCommand() {
+        return javaReport("11", "11.0.31");
+      }
+    }),
+    /requires Java 17 or newer; detected Java 11\.0\.31 \(major 11\)/u
+  );
+  await assert.rejects(
+    probeJupyterAcceptanceJava({
+      environment,
+      async runCommand() {
+        return { stdout: "", stderr: 'openjdk version "17.0.19"\n' };
+      }
+    }),
+    /did not report one java\.specification\.version property/u
+  );
+  await assert.rejects(
+    probeJupyterAcceptanceJava({
+      environment,
+      async runCommand() {
+        throw new Error("private command detail");
+      }
+    }),
+    /requires Java 17 or newer, but the Java compatibility probe failed/u
+  );
 });
 
 test("released-Jupyter phases alone receive the dedicated kernel interpreter", () => {
@@ -192,6 +243,9 @@ test("released-Jupyter installs its released compatibility versions into a clean
       platform: "linux",
       async runCommand(input, options) {
         commands.push({ input, options });
+        if (input.label === "Released-Jupyter PySpark Java compatibility probe") {
+          return javaReport();
+        }
         if (input.label === "Released-Jupyter private kernel environment creation") {
           const venvDirectory = input.args.at(-1);
           mkdirSync(join(venvDirectory, "bin"), { recursive: true });
@@ -218,18 +272,21 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.equal(process.env.OPEN_WRANGLER_TEST_PYTHON, previousTestPython);
     assert.notEqual(kernelPython, basePython);
     assert.equal(kernelPython, join(environmentDirectory, "v", "bin", "python"));
-    assert.equal(commands.length, 5);
-    assert.equal(commands[0].input.executable, basePython);
-    assert.match(commands[0].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
+    assert.equal(commands.length, 6);
+    assert.equal(commands[0].input.executable, "java");
+    assert.deepEqual(commands[0].input.args, ["-XshowSettings:properties", "-version"]);
     assert.equal(commands[1].input.executable, basePython);
-    assert.deepEqual(commands[1].input.args.slice(0, 3), ["-I", "-m", "venv"]);
-    assert.equal(commands[2].input.executable, kernelPython);
-    assert.deepEqual(commands[2].input.args.slice(0, 5), ["-I", "-m", "pip", "--isolated", "install"]);
-    assert.ok(commands[2].input.args.includes("--only-binary=:all:"));
-    assert.deepEqual(commands[2].input.args.slice(-10), [
+    assert.match(commands[1].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
+    assert.equal(commands[2].input.executable, basePython);
+    assert.deepEqual(commands[2].input.args.slice(0, 3), ["-I", "-m", "venv"]);
+    assert.equal(commands[3].input.executable, kernelPython);
+    assert.deepEqual(commands[3].input.args.slice(0, 5), ["-I", "-m", "pip", "--isolated", "install"]);
+    assert.ok(commands[3].input.args.includes("--only-binary=:all:"));
+    assert.deepEqual(commands[3].input.args.slice(-11), [
       "ipykernel==6.30.1",
       "pandas==2.3.3",
       "polars==1.35.2",
+      "duckdb==1.5.4",
       "py4j==0.10.9.9",
       "pyarrow==25.0.0",
       "grpcio==1.83.0",
@@ -239,16 +296,16 @@ test("released-Jupyter installs its released compatibility versions into a clean
       "zstandard==0.25.0"
     ]);
     assert.equal(
-      commands[2].input.args.some((value) => /openwrangler.runtime/iu.test(value)),
+      commands[3].input.args.some((value) => /openwrangler.runtime/iu.test(value)),
       false
     );
-    assert.equal(commands[3].input.label, "Released-Jupyter private kernel PySpark installation");
-    assert.equal(commands[3].input.executable, kernelPython);
-    assert.ok(commands[3].input.args.includes("--no-deps"));
-    assert.match(commands[3].input.args.at(-1), /^pyspark @ https:\/\/files\.pythonhosted\.org\/.+#sha256=/u);
+    assert.equal(commands[4].input.label, "Released-Jupyter private kernel PySpark installation");
     assert.equal(commands[4].input.executable, kernelPython);
-    assert.match(commands[4].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
-    assert.match(commands[4].input.args.at(-1), /import pyspark/u);
+    assert.ok(commands[4].input.args.includes("--no-deps"));
+    assert.match(commands[4].input.args.at(-1), /^pyspark @ https:\/\/files\.pythonhosted\.org\/.+#sha256=/u);
+    assert.equal(commands[5].input.executable, kernelPython);
+    assert.match(commands[5].input.args.at(-1), /find_spec\("openwrangler_runtime"\)/u);
+    assert.match(commands[5].input.args.at(-1), /import pyspark/u);
     assert.equal(
       commands.every(({ input }) => input.environment === commandEnvironment),
       true
@@ -277,6 +334,9 @@ test("released-Jupyter rejects a private environment that does not retain its co
         environment: Object.freeze({}),
         platform: "linux",
         async runCommand(input) {
+          if (input.label === "Released-Jupyter PySpark Java compatibility probe") {
+            return javaReport();
+          }
           if (input.label === "Released-Jupyter base dependency version probe") {
             return {
               stdout: JSON.stringify(
@@ -323,8 +383,11 @@ test("released-Jupyter rejects unsafe dependency versions before creating its pr
       createJupyterAcceptanceKernelPython(join(directory, "private-kernel"), basePython, {
         containedBy: directory,
         environment: Object.freeze({}),
-        async runCommand() {
+        async runCommand(input) {
           calls += 1;
+          if (input.label === "Released-Jupyter PySpark Java compatibility probe") {
+            return javaReport();
+          }
           return {
             stdout: JSON.stringify(dependencyReport(true, { pandas: "2.3.3; openwrangler-runtime" }))
           };
@@ -332,7 +395,7 @@ test("released-Jupyter rejects unsafe dependency versions before creating its pr
       }),
       /safe pandas version/u
     );
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -350,6 +413,9 @@ test("released-Jupyter propagates private-root identity loss to the runner bound
         containedBy: directory,
         environment: Object.freeze({}),
         async runCommand(input) {
+          if (input.label === "Released-Jupyter PySpark Java compatibility probe") {
+            return javaReport();
+          }
           if (input.label === "Released-Jupyter base dependency version probe") {
             return { stdout: JSON.stringify(dependencyReport(true)) };
           }

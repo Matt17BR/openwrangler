@@ -663,7 +663,7 @@ describe("renderer notebook provenance", () => {
     const bridge = createKernelBridge(document);
 
     await expect(bridge.prepareNotebookFormatter()).rejects.toThrow(
-      "could not access the selected Jupyter kernel for this notebook"
+      "Select or start a Python kernel, run the cell that defines the dataframe"
     );
 
     expect(activate).toHaveBeenCalledOnce();

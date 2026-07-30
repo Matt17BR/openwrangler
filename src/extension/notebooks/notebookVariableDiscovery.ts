@@ -103,7 +103,7 @@ export function notebookVariablePresentation(type: NotebookVariableType): {
 }
 
 export function isLiveNotebookVariableBackend(backend: DataBackend): boolean {
-  return backend === "pandas" || backend === "polars" || backend === "pyspark";
+  return backend === "pandas" || backend === "polars" || backend === "duckdb" || backend === "pyspark";
 }
 
 async function executeDiscovery(kernel: Kernel, notebook: vscode.NotebookDocument): Promise<NotebookVariableDiscovery> {

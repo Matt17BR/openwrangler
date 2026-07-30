@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
@@ -393,6 +393,9 @@
           "pandas.Series",
           "polars.dataframe.frame.DataFrame",
           "polars.series.series.Series",
+          "DuckDBPyRelation",
+          "_duckdb.DuckDBPyRelation",
+          "duckdb.duckdb.DuckDBPyRelation",
           "pyspark.sql.dataframe.DataFrame",
           "pyspark.sql.classic.dataframe.DataFrame",
           "pyspark.sql.connect.dataframe.DataFrame"
@@ -444,7 +447,7 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Open Wrangler",
-        "description": "Explore, clean, and export tabular data with Pandas, Polars, or DuckDB file sessions and Pandas or Polars notebook sessions without modifying the source.",
+        "description": "Explore, clean, and export tabular data with Pandas, Polars, or DuckDB file sessions and native notebook sessions without modifying the source.",
         "steps": [
           {
             "id": "openData",
