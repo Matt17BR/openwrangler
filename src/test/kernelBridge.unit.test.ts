@@ -12,6 +12,7 @@ import { buildKernelBootstrapCode } from "../extension/notebooks/kernelRuntimeBu
 import type { OpenSessionRequest, OpenWranglerRequest, OpenWranglerResponse } from "../shared/protocol";
 
 const HANG = Symbol("hang kernel request");
+type TestBackend = NonNullable<OpenSessionRequest["backend"]>;
 
 const initializedResponse: OpenWranglerResponse = {
   kind: "initialized",
@@ -225,6 +226,64 @@ describe("kernel retry classification", () => {
     }
   );
 
+  it("keeps old and replacement DuckDB sessions mapped to their exact kernel generations", async () => {
+    const oldRequests: OpenWranglerRequest[] = [];
+    const replacementRequests: OpenWranglerRequest[] = [];
+    const oldKernel = controlledFakeKernel((request) => {
+      oldRequests.push(request);
+      if (request.kind === "openSession") {
+        return openedResponse(request.requestedSessionId!, request.backend ?? "polars");
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      return initializedResponse;
+    });
+    const replacementKernel = controlledFakeKernel((request) => {
+      replacementRequests.push(request);
+      if (request.kind === "openSession") {
+        return openedResponse(request.requestedSessionId!, request.backend ?? "polars");
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      return initializedResponse;
+    });
+    let currentKernel = oldKernel.kernel;
+    const getExtension = vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(openRequest("old-duckdb-session", "duckdb"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "old-duckdb-session", backend: "duckdb" }
+    });
+    currentKernel = replacementKernel.kernel;
+    oldKernel.setStatus("restarting");
+    await expect(bridge.request(openRequest("replacement-duckdb-session", "duckdb"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "replacement-duckdb-session", backend: "duckdb" }
+    });
+
+    await expect(bridge.request(closeRequest("old-duckdb-session"))).resolves.toEqual({
+      kind: "sessionClosed",
+      sessionId: "old-duckdb-session"
+    });
+    await expect(bridge.request(closeRequest("replacement-duckdb-session"))).resolves.toEqual({
+      kind: "sessionClosed",
+      sessionId: "replacement-duckdb-session"
+    });
+
+    expect(
+      oldRequests.map((request) =>
+        request.kind === "openSession" ? `open:${request.requestedSessionId}` : `close:${request.sessionId}`
+      )
+    ).toEqual(["open:old-duckdb-session", "close:old-duckdb-session"]);
+    expect(
+      replacementRequests.map((request) =>
+        request.kind === "openSession" ? `open:${request.requestedSessionId}` : `close:${request.sessionId}`
+      )
+    ).toEqual(["open:replacement-duckdb-session", "close:replacement-duckdb-session"]);
+    expect(getExtension).toHaveBeenCalledTimes(2);
+  });
+
   it("does not replay a non-idempotent request when status invalidates its dispatched generation", async () => {
     const requests: OpenWranglerRequest[] = [];
     let invalidateOnce = true;
@@ -397,7 +456,7 @@ describe("kernel retry classification", () => {
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
-  it("closes a timed-out candidate on its exact kernel after the notebook closes and reopens at the same URI", async () => {
+  it("closes a timed-out DuckDB candidate on its exact kernel after the notebook reopens at the same URI", async () => {
     const document = notebookDocument();
     setOpenNotebookDocuments(document);
     const requests: OpenWranglerRequest[] = [];
@@ -410,7 +469,7 @@ describe("kernel retry classification", () => {
     const getExtension = mockKernel(kernel);
     const bridge = createKernelBridge(document);
 
-    const pending = bridge.request(openRequest(), { timeoutMs: 30 });
+    const pending = bridge.request(openRequest(undefined, "duckdb"), { timeoutMs: 30 });
     const rejection = expect(pending).rejects.toThrow("timed out after 30 ms");
     await vi.waitFor(() => expect(requests[0]?.kind).toBe("openSession"));
     (document as unknown as { isClosed: boolean }).isClosed = true;
@@ -419,6 +478,7 @@ describe("kernel retry classification", () => {
     await rejection;
 
     expect(requests).toHaveLength(2);
+    expect(requests[0]).toMatchObject({ kind: "openSession", backend: "duckdb" });
     expect(requests[1]).toEqual({
       kind: "closeSession",
       sessionId: (requests[0] as Extract<OpenWranglerRequest, { kind: "openSession" }>).requestedSessionId,
@@ -503,7 +563,7 @@ describe("kernel retry classification", () => {
     expect(getExtension).toHaveBeenCalledOnce();
   });
 
-  it("uses a fresh uncancelled exact-kernel close after external cancellation", async () => {
+  it("uses a fresh uncancelled exact-kernel close after cancelling a DuckDB open", async () => {
     const requests: OpenWranglerRequest[] = [];
     const kernel = fakeKernel((request) => {
       requests.push(request);
@@ -515,11 +575,15 @@ describe("kernel retry classification", () => {
     const bridge = createKernelBridge();
     const cancellation = cancellationSource();
 
-    const pending = bridge.request(openRequest(), { cancellation: cancellation.token, timeoutMs: 60_000 });
+    const pending = bridge.request(openRequest(undefined, "duckdb"), {
+      cancellation: cancellation.token,
+      timeoutMs: 60_000
+    });
     await vi.waitFor(() => expect(requests[0]?.kind).toBe("openSession"));
     cancellation.cancel();
 
     await expect(pending).rejects.toThrow("kernel request was cancelled");
+    expect(requests[0]).toMatchObject({ kind: "openSession", backend: "duckdb" });
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
     expect(getExtension).toHaveBeenCalledOnce();
   });
@@ -925,12 +989,12 @@ describe("renderer notebook provenance", () => {
   });
 });
 
-function openRequest(requestedSessionId?: string): OpenWranglerRequest {
+function openRequest(requestedSessionId?: string, backend: TestBackend = "polars"): OpenWranglerRequest {
   return {
     kind: "openSession",
     source: { kind: "notebookVariable", label: "df", variableName: "df" },
     ...(requestedSessionId ? { requestedSessionId } : {}),
-    backend: "polars",
+    backend,
     mode: "viewing",
     pageSize: 200,
     columnOffset: 0,
@@ -1099,14 +1163,14 @@ function cancellationSource(): {
   };
 }
 
-function openedResponse(sessionId: string): OpenWranglerResponse {
+function openedResponse(sessionId: string, backend: TestBackend = "polars"): OpenWranglerResponse {
   return {
     kind: "sessionOpened",
     metadata: {
       protocolVersion: 2,
       sessionId,
       revision: 0,
-      backend: "polars",
+      backend,
       mode: "viewing",
       source: { kind: "notebookVariable", label: "df", variableName: "df" },
       capabilities: {
