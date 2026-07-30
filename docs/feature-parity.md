@@ -60,7 +60,7 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | JSONL file sessions                          | Yes                 | Partial | Native malformed-input diagnostic and packaged import   | Installed malformed/import-state interaction matrix          |
 | Excel file sessions                          | No                  | Planned | Explicit diagnostic directs users to Pandas or Polars   | Deferred; no DuckDB Excel claim                              |
 | `.duckdb` database/catalog/table browsing    | No                  | Planned | Not registered as a source kind                         | Deferred source/connection/security design                   |
-| Notebook variables and inline MIME rendering | Viewing only        | Partial | Exact-origin relation paging/profile and MIME-v2 tests  | Packaged Jupyter matrix in VS Code and Cursor                |
+| Notebook variables and inline MIME rendering | Viewing only        | Partial | Packaged native VS Code/Cursor Jupyter relation matrix  | Large relation, OS, and repeated recovery/performance matrix |
 | Grid pages, typed cells, filters, and sorts  | Yes                 | Partial | Native rich-type matrix; packaged page and query slices | Large-scale mixed data and cross-platform matrix             |
 | Summaries, statistics, and distinct values   | Yes                 | Partial | Exact profiles plus packaged progressive-query matrix   | Large-data resource and repeated performance evidence        |
 | Complete 27-operation catalog                | Yes                 | Partial | All kinds native/generated; packaged group matrix green | Full DuckDB-specific semantic edge matrix                    |
@@ -715,6 +715,25 @@ Operation-builder ergonomics slice, 2026-07-28:
 - Deterministic schema compatibility is applied before preview: numeric formulas/scaling/rounding expose numeric columns, text operations expose strings, datetime formatting exposes dates/datetimes, group and by-example inputs exclude nested/unknown values, and each aggregation calculation updates its compatible value columns.
 - Focused React coverage exercises these controls, duplicate labels, ordering, removal, dynamic aggregation compatibility, and unchanged stable-reference output. Runtime IR validation remains authoritative; this UI slice does not weaken engine or generated-code acceptance.
 
+Complete-schema and native live-notebook UX slice, 2026-07-30:
+
+- Column search now virtualizes the complete matching schema rather than truncating at 100 results. The packaged
+  VS Code and Cursor runs open a 417-column session, expose `aria-setsize="417"`, keep fewer than 30 options
+  mounted, navigate to column 417 with End, select it, and reveal its far-right grid header.
+- Saved MIME-v2 rows remain a portable inline preview only. An unlinked output exposes no workbench action and
+  tells the user to rerun the cell. A canonically linked output exposes one **Open in Open Wrangler** action that
+  opens the complete current variable through the exact visible notebook and selected kernel with fresh live
+  session and column identities; it never substitutes captured rows.
+- One allowlisted development VSIX with SHA-256
+  `e4c97d7abd311f1669742331ed54b7f1a7f8ae7ad43272051450adddd4c37575` passed the complete isolated packaged
+  matrix in VS Code 1.130.0 and Cursor 3.13.10. The same bytes passed the pinned
+  `ms-toolsai.jupyter@2025.9.1` allow phase in both editors against a synthetic 100,000-row
+  connection-private `DuckDBPyRelation`: base and far pages, filtered multi-sort, progressive numeric summary,
+  restored view state, explicit complete unfiltered paging, authoritative close, and post-close user-relation
+  reuse all stayed native. Conversion traps made any Pandas, Polars, or Arrow route fail the phase.
+- The independent PySpark phase currently fails after its cleanup path and is not counted as evidence for this
+  slice. Its resolution remains required before the branch can become a release candidate.
+
 ## Explicitly deferred from 1.0
 
-Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations are limited to native viewing and saved MIME-v2 previews until their installed Jupyter matrix is green; cleaning, generated-code insertion, and data export are unavailable. PySpark's tracked post-parity expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36) is limited to the experimental read-only live-notebook matrix above. Editing, exports, saved output, cancellation, external Spark Connect execution, and large-partition performance claims remain unavailable until their distributed gates are green. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; broader OS, external-cluster, recovery, cancellation, and performance evidence remains required before broadening that claim. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
+Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations remain intentionally limited to native viewing plus their portable inline preview; cleaning, generated-code insertion, and data export are unavailable. PySpark's tracked post-parity expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36) is limited to the experimental read-only live-notebook matrix above. Editing, exports, saved output, cancellation, external Spark Connect execution, and large-partition performance claims remain unavailable until their distributed gates are green. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; broader OS, external-cluster, recovery, cancellation, and performance evidence remains required before broadening that claim. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
