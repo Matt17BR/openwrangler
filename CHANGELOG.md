@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-30
+
 ### Added
 
 - Added a visible **Export** action to the dataframe workbench. The webview sends only a narrow no-argument intent; the extension host continues to own the destination picker, source protections, and atomic CSV or Parquet write.
@@ -12,6 +14,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Replaced the toy packaged platform smoke with a realistic 10,000-row × 15-column UTF-8-BOM, semicolon-delimited first-use journey. It now covers automatic import, typed column search, exact Insights, sorting, filtering and clear, preview/discard/apply, workbench export, reopen/replay/undo, and source-byte immutability in isolated VS Code and Cursor profiles.
 - Reflowed toolbar and grid controls at narrower effective widths and added a packaged high-contrast, approximately 200%-zoom containment check so controls cannot silently clip.
+- Refreshed the editor and README workbench captures from the exact packaged candidate over a 100,000-row × 15-column synthetic source. Zoomed evidence now records the complete physical workbench instead of cropping to the browser's zoomed CSS-pixel viewport.
 
 ### Fixed
 
@@ -20,6 +23,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Consumes column-search navigation after it is handled, so a later in-place preview or restored view cannot unexpectedly jump back to an old horizontal target.
 - Pins cleaned-data export to the exact originating dataframe and revision across the format and Save dialogs; switching tabs can no longer redirect an export to another open session.
 - Made draft diffs distinguish changes to existing cells from values introduced by added columns, avoiding a misleading `0 changed cells` message for add-column operations.
+- Removed the empty cleaning-plan bar after the only draft is discarded or the only applied step is undone, without racing the renderer update.
 
 ## [1.1.1] - 2026-07-30
 

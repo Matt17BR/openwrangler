@@ -58,6 +58,10 @@ _The same packaged session in VS Code's default light and dark themes._
    editor-toolbar action or context menu.
 2. Explore column summaries, search, filter, and sort without changing the source.
 3. Choose **Add step**, review the data diff and generated code, then apply the step or discard it.
+4. Choose **Export** to save cleaned CSV or Parquet data without overwriting the source.
+
+Ordinary CSV and TSV opens infer the delimiter, encoding, quote style, and header automatically. Use **Import
+options** only when a file needs an explicit override.
 
 ## Notebook workflows
 
@@ -133,11 +137,11 @@ universally faster.
 
 ## Roadmap
 
-| Target | Focus                                                                                                                                                                                                                                                                                                                                            |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| v1.1.x | Real-user workflow and visual polish, reproducible performance comparison [#91](https://github.com/Matt17BR/openwrangler/issues/91), DuckDB preview completion [#157](https://github.com/Matt17BR/openwrangler/issues/157), and bounded validation in other VS Code-based desktop IDEs [#86](https://github.com/Matt17BR/openwrangler/issues/86) |
-| v1.2   | Graduate PySpark from its experimental, viewing-only preview to a supported scope after the distributed correctness, recovery, performance, and editor gates in [#36](https://github.com/Matt17BR/openwrangler/issues/36) are green                                                                                                              |
-| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                                                                                                                                             |
+| Target | Focus                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v1.1.x | Real-user interaction and visual polish [#88](https://github.com/Matt17BR/openwrangler/issues/88), reproducible performance comparison [#91](https://github.com/Matt17BR/openwrangler/issues/91), native DuckDB notebook-relation viewing [#157](https://github.com/Matt17BR/openwrangler/issues/157), and bounded validation in other VS Code-based desktop IDEs [#86](https://github.com/Matt17BR/openwrangler/issues/86) |
+| v1.2   | Graduate PySpark from its experimental, viewing-only preview to a supported scope after the distributed correctness, recovery, performance, and editor gates in [#36](https://github.com/Matt17BR/openwrangler/issues/36) are green                                                                                                                                                                                         |
+| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                                                                                                                                                                                                                        |
 
 Patch releases ship as soon as a coherent user-facing improvement passes the exact-artifact release gates.
 
