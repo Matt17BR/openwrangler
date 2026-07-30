@@ -754,14 +754,28 @@ function ensurePackagedFirstUseFixture(workspace: vscode.Uri): vscode.Uri {
     writeFileSync(fixture.fsPath, expected, { encoding: "utf8", flag: "wx" });
   } catch (error) {
     if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-    const metadata = lstatSync(fixture.fsPath);
-    assert.equal(metadata.isFile(), true, "An existing first-use fixture must remain a regular file.");
-    assert.equal(metadata.nlink, 1, "An existing first-use fixture must not be hard linked.");
-    assert.equal(
-      readFileSync(fixture.fsPath, "utf8"),
-      expected,
-      "An existing first-use fixture must retain the exact deterministic source bytes."
-    );
+    const descriptor = openSync(fixture.fsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = fstatSync(descriptor, { bigint: true });
+      assert.equal(opened.isFile(), true, "An existing first-use fixture must remain a regular file.");
+      assert.equal(opened.nlink, 1n, "An existing first-use fixture must not be hard linked.");
+      assert.equal(
+        readFileSync(descriptor, "utf8"),
+        expected,
+        "An existing first-use fixture must retain the exact deterministic source bytes."
+      );
+      const completed = fstatSync(descriptor, { bigint: true });
+      assert.equal(completed.dev, opened.dev, "The first-use fixture device changed while it was read.");
+      assert.equal(completed.ino, opened.ino, "The first-use fixture identity changed while it was read.");
+      assert.equal(completed.size, opened.size, "The first-use fixture size changed while it was read.");
+      assert.equal(
+        completed.mtimeNs,
+        opened.mtimeNs,
+        "The first-use fixture modification time changed while it was read."
+      );
+    } finally {
+      closeSync(descriptor);
+    }
   }
   return fixture;
 }
