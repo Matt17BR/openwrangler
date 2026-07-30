@@ -1113,6 +1113,10 @@ export function App() {
       }
 
       if (response.kind === "sessionOpened") {
+        const current = metadataRef.current;
+        if (current?.sessionId === response.metadata.sessionId && response.metadata.revision < current.revision) {
+          return;
+        }
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
         storeImportOptionsPending(false);

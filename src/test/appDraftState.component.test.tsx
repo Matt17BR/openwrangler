@@ -329,6 +329,59 @@ describe("App draft state boundaries", () => {
     await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
   });
 
+  it("does not let an older renderer snapshot erase a confirmed draft", async () => {
+    const draft: TransformStep = {
+      id: "upper-c",
+      kind: "upperText",
+      params: { column: { id: "c:c", name: "c" } }
+    };
+
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: { ...metadata, revision: 3, draftStep: draft },
+      page,
+      diff: { ...emptyDiff(), changedCells: 1 },
+      code: "def clean_data(df):\n    return df"
+    });
+
+    expect(await screen.findByText("Draft: Uppercase")).toBeVisible();
+    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "T".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: metadata.revision
+    });
+
+    expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+    expect(screen.getByText("1 existing cell changed")).toBeVisible();
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "rendererSynchronized", syncId: "T".repeat(32) })
+    );
+
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "U".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: 3
+    });
+    await waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "U".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: 3
+      })
+    );
+    expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+  });
+
   it("consumes a search reveal and preserves a later manual viewport through an in-place preview", async () => {
     const inPlaceDraft: TransformStep = {
       id: "upper-c-in-place",
