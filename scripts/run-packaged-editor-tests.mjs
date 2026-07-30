@@ -14,9 +14,11 @@ import {
   editorDisplayLaunchArgs,
   editorAcceptanceProgressPath,
   editorProcessTreeMayBeLive,
+  PINNED_DATA_WRANGLER_EXTENSION_ID,
   PINNED_JUPYTER_EXTENSION_ID,
   PINNED_PYTHON_EXTENSION_ID,
   resolveDownloadedEditorCliPath,
+  resolveDataWranglerExtensionAcceptanceInstallTarget,
   resolveJupyterExtensionAcceptanceInstallTarget,
   resolvePythonExtensionAcceptanceInstallTarget,
   runBoundedEditorCliCommand,
@@ -158,6 +160,7 @@ try {
           const expectedExtension = `${packageJson.publisher}.${packageJson.name}@${packageJson.version}`.toLowerCase();
           const pythonExtensionInstallTarget = resolvePythonExtensionAcceptanceInstallTarget();
           let jupyterExtensionInstallTarget = resolveJupyterExtensionAcceptanceInstallTarget();
+          const dataWranglerExtensionInstallTarget = resolveDataWranglerExtensionAcceptanceInstallTarget();
           const remoteJupyterEnabled = remoteJupyterAcceptanceEnabled(process.env);
           if (remoteJupyterEnabled && process.platform !== "linux") {
             throw new Error("Real remote-Jupyter acceptance is supported only on Linux.");
@@ -165,6 +168,11 @@ try {
           if (remoteJupyterEnabled && !jupyterExtensionInstallTarget) {
             throw new Error(
               `Real remote-Jupyter acceptance requires the released Jupyter extension; enable it together with ${REAL_REMOTE_JUPYTER_ENV}=1.`
+            );
+          }
+          if (dataWranglerExtensionInstallTarget && !jupyterExtensionInstallTarget) {
+            throw new Error(
+              "Real Data Wrangler coexistence acceptance requires the released Jupyter extension; enable both opt-in gates."
             );
           }
           let jupyterExtensionSnapshot;
@@ -274,6 +282,11 @@ try {
               "Real Jupyter-extension acceptance needs VS Code to install the pinned Marketplace package, or an absolute OPEN_WRANGLER_JUPYTER_EXTENSION_VSIX override for a Cursor-only run."
             );
           }
+          if (dataWranglerExtensionInstallTarget && !jupyterMarketplaceInstaller) {
+            throw new Error(
+              "Real Data Wrangler coexistence acceptance needs VS Code to install the exact pinned Marketplace package."
+            );
+          }
 
           writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:resolve-python");
           const hostedPython = process.env.pythonLocation
@@ -339,6 +352,8 @@ try {
           writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:display-ready");
 
           for (const editor of candidates) {
+            const dataWranglerCoexistenceEnabled =
+              dataWranglerExtensionInstallTarget !== undefined && editor.key === "vscode";
             writeCorrelatedProgress(
               orchestrationProgressPath,
               orchestrationRunId,
@@ -356,18 +371,25 @@ try {
             const jupyterDenyUserData = resolve(profile, "jd");
             const jupyterPySparkUserData = resolve(profile, "js");
             const jupyterRemoteUserData = resolve(profile, "jr");
+            const coexistOpenUserData = resolve(profile, "co");
+            const coexistDataUserData = resolve(profile, "cd");
             const restrictedUserData = resolve(profile, "r");
             const extensions = resolve(profile, "extensions");
             const jupyterExtensions = resolve(profile, "jx");
+            const coexistenceExtensions = resolve(profile, "cx");
             let jupyterAllowEnvironment;
             let jupyterDenyEnvironment;
             let jupyterPySparkEnvironment;
             let jupyterRemoteEnvironment;
+            let coexistOpenEnvironment;
+            let coexistDataEnvironment;
             const workspace = resolve(profile, "Open Wrangler Demo");
             const jupyterAllowWorkspace = resolve(profile, "Open Wrangler Jupyter Allow");
             const jupyterDenyWorkspace = resolve(profile, "Open Wrangler Jupyter Deny");
             const jupyterPySparkWorkspace = resolve(profile, "Open Wrangler Jupyter PySpark");
             const jupyterRemoteWorkspace = resolve(profile, "Open Wrangler Jupyter Remote");
+            const coexistOpenWorkspace = resolve(profile, "Open Wrangler Coexist Open");
+            const coexistDataWorkspace = resolve(profile, "Open Wrangler Coexist Data");
             const acceptanceHarness = resolve(profile, "acceptance-harness");
             const acceptanceHarnessVsix = resolve(profile, "openwrangler-packaged-test-harness.vsix");
             const resultPaths = {
@@ -395,6 +417,14 @@ try {
                         }
                       : {})
                   }
+                : {}),
+              ...(dataWranglerCoexistenceEnabled
+                ? {
+                    "jupyter-coexist-open-select": resolve(profile, "jupyter-coexist-open-select-result.json"),
+                    "jupyter-coexist-open-restart": resolve(profile, "jupyter-coexist-open-restart-result.json"),
+                    "jupyter-coexist-data-select": resolve(profile, "jupyter-coexist-data-select-result.json"),
+                    "jupyter-coexist-data-restart": resolve(profile, "jupyter-coexist-data-restart-result.json")
+                  }
                 : {})
             };
             const runIds = {
@@ -415,6 +445,14 @@ try {
                           "jupyter-remote-cleanup": randomUUID()
                         }
                       : {})
+                  }
+                : {}),
+              ...(dataWranglerCoexistenceEnabled
+                ? {
+                    "jupyter-coexist-open-select": randomUUID(),
+                    "jupyter-coexist-open-restart": randomUUID(),
+                    "jupyter-coexist-data-select": randomUUID(),
+                    "jupyter-coexist-data-restart": randomUUID()
                   }
                 : {})
             };
@@ -451,7 +489,8 @@ try {
                     jupyterAllowWorkspace,
                     jupyterDenyWorkspace,
                     jupyterPySparkWorkspace,
-                    ...(remoteJupyterEnabled ? [jupyterRemoteWorkspace] : [])
+                    ...(remoteJupyterEnabled ? [jupyterRemoteWorkspace] : []),
+                    ...(dataWranglerCoexistenceEnabled ? [coexistOpenWorkspace, coexistDataWorkspace] : [])
                   ]) {
                     mkdirSync(jupyterWorkspace, { recursive: true });
                     cpSync(resolve(root, "fixtures"), resolve(jupyterWorkspace, "fixtures"), {
@@ -495,6 +534,16 @@ try {
                     resolve(profile, "ks"),
                     jupyterKernelPython
                   );
+                  if (dataWranglerCoexistenceEnabled) {
+                    coexistOpenEnvironment = writeJupyterAcceptanceEnvironment(
+                      resolve(profile, "ko"),
+                      jupyterKernelPython
+                    );
+                    coexistDataEnvironment = writeJupyterAcceptanceEnvironment(
+                      resolve(profile, "kw"),
+                      jupyterKernelPython
+                    );
+                  }
                   if (remoteJupyterEnabled) {
                     jupyterRemoteEnvironment = writeRemoteJupyterAcceptanceEnvironment(resolve(profile, "kr"));
                   }
@@ -502,7 +551,8 @@ try {
                     jupyterAllowUserData,
                     jupyterDenyUserData,
                     jupyterPySparkUserData,
-                    ...(remoteJupyterEnabled ? [jupyterRemoteUserData] : [])
+                    ...(remoteJupyterEnabled ? [jupyterRemoteUserData] : []),
+                    ...(dataWranglerCoexistenceEnabled ? [coexistOpenUserData, coexistDataUserData] : [])
                   ]) {
                     writeEditorSettings(jupyterUserData, {
                       "window.dialogStyle": "custom",
@@ -653,6 +703,77 @@ try {
                     { timeoutMs: 180_000 }
                   );
                 }
+                if (dataWranglerCoexistenceEnabled) {
+                  writeCorrelatedProgress(
+                    progressPaths.setup,
+                    runIds.setup,
+                    "setup",
+                    "setup:install-coexistence-extensions"
+                  );
+                  for (const [installation, target] of [
+                    ["Open Wrangler", vsix],
+                    ["acceptance harness", acceptanceHarnessVsix]
+                  ]) {
+                    await runBoundedEditorCliCommand(
+                      {
+                        editor,
+                        args: [
+                          "--user-data-dir",
+                          coexistOpenUserData,
+                          "--extensions-dir",
+                          coexistenceExtensions,
+                          "--install-extension",
+                          target,
+                          "--force",
+                          ...sandboxArgs
+                        ],
+                        environment: editorEnvironment,
+                        label: `${editor.name} Data Wrangler coexistence ${installation} installation`
+                      },
+                      { timeoutMs: 60_000 }
+                    );
+                  }
+                  if (jupyterExtensionSnapshot) {
+                    jupyterExtensionInstallTarget =
+                      assertJupyterExtensionAcceptanceVsixSnapshot(jupyterExtensionSnapshot);
+                  }
+                  await runBoundedEditorCliCommand(
+                    {
+                      editor: isAbsolute(jupyterExtensionInstallTarget) ? editor : jupyterMarketplaceInstaller,
+                      args: [
+                        "--user-data-dir",
+                        coexistOpenUserData,
+                        "--extensions-dir",
+                        coexistenceExtensions,
+                        "--install-extension",
+                        jupyterExtensionInstallTarget,
+                        "--force",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} Data Wrangler coexistence Jupyter installation`
+                    },
+                    { timeoutMs: 180_000 }
+                  );
+                  await runBoundedEditorCliCommand(
+                    {
+                      editor: jupyterMarketplaceInstaller,
+                      args: [
+                        "--user-data-dir",
+                        coexistOpenUserData,
+                        "--extensions-dir",
+                        coexistenceExtensions,
+                        "--install-extension",
+                        dataWranglerExtensionInstallTarget,
+                        "--force",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} exact Data Wrangler coexistence installation`
+                    },
+                    { timeoutMs: 180_000 }
+                  );
+                }
                 writeCorrelatedProgress(progressPaths.setup, runIds.setup, "setup", "setup:verify-installation");
                 const { stdout: installed } = await runBoundedEditorCliCommand(
                   {
@@ -722,6 +843,41 @@ try {
                     if (!installedJupyterLines.includes(expected)) {
                       throw new Error(
                         `${editor.name} did not report the released-Jupyter package ${expected}. Output: ${jupyterInstalled}`
+                      );
+                    }
+                  }
+                }
+                if (dataWranglerCoexistenceEnabled) {
+                  const { stdout: coexistenceInstalled } = await runBoundedEditorCliCommand(
+                    {
+                      editor,
+                      args: [
+                        "--user-data-dir",
+                        coexistOpenUserData,
+                        "--extensions-dir",
+                        coexistenceExtensions,
+                        "--list-extensions",
+                        "--show-versions",
+                        ...sandboxArgs
+                      ],
+                      environment: editorEnvironment,
+                      label: `${editor.name} Data Wrangler coexistence installed-extension query`
+                    },
+                    { timeoutMs: 60_000 }
+                  );
+                  const installedCoexistenceLines = coexistenceInstalled
+                    .split(/\r?\n/u)
+                    .map((line) => line.trim().toLowerCase())
+                    .filter(Boolean);
+                  for (const expected of [
+                    expectedExtension,
+                    EXPECTED_ACCEPTANCE_HARNESS,
+                    PINNED_JUPYTER_EXTENSION_ID,
+                    PINNED_DATA_WRANGLER_EXTENSION_ID
+                  ]) {
+                    if (!installedCoexistenceLines.includes(expected)) {
+                      throw new Error(
+                        `${editor.name} did not report the coexistence package ${expected}. Output: ${coexistenceInstalled}`
                       );
                     }
                   }
@@ -939,6 +1095,32 @@ try {
                       latchRemoteJupyterOwnershipUncertainty(error);
                       throw error;
                     }
+                  }
+                }
+                if (dataWranglerCoexistenceEnabled) {
+                  for (const phase of [
+                    "jupyter-coexist-open-select",
+                    "jupyter-coexist-open-restart",
+                    "jupyter-coexist-data-select",
+                    "jupyter-coexist-data-restart"
+                  ]) {
+                    const openWranglerChoice = phase.startsWith("jupyter-coexist-open-");
+                    activePhase = phase;
+                    await runEditorAcceptancePhase({
+                      editor: identifiedEditor,
+                      workspace: openWranglerChoice ? coexistOpenWorkspace : coexistDataWorkspace,
+                      userData: openWranglerChoice ? coexistOpenUserData : coexistDataUserData,
+                      extensions: coexistenceExtensions,
+                      developmentPaths: [],
+                      testModule,
+                      python: acceptancePythonForPhase(phase, testPython, jupyterKernelPython),
+                      phase,
+                      resultPath: resultPaths[phase],
+                      runId: runIds[phase],
+                      progressPath: progressPaths[phase],
+                      requiresWorkbenchCdp: true,
+                      jupyterEnvironment: openWranglerChoice ? coexistOpenEnvironment : coexistDataEnvironment
+                    });
                   }
                 }
                 if (acceptanceMode === "full") {

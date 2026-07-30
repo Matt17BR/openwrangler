@@ -70,7 +70,15 @@ export function createRemoteJupyterAcceptanceToken(randomBytesImpl = randomBytes
 }
 
 export function acceptancePythonForPhase(phase, testPython, jupyterKernelPython) {
-  if (phase === "jupyter-deny" || phase === "jupyter-allow" || phase === "jupyter-pyspark") {
+  if (
+    phase === "jupyter-deny" ||
+    phase === "jupyter-allow" ||
+    phase === "jupyter-pyspark" ||
+    phase === "jupyter-coexist-open-select" ||
+    phase === "jupyter-coexist-open-restart" ||
+    phase === "jupyter-coexist-data-select" ||
+    phase === "jupyter-coexist-data-restart"
+  ) {
     if (
       typeof jupyterKernelPython !== "string" ||
       !isAbsolute(jupyterKernelPython) ||
