@@ -5,7 +5,7 @@ import { parseStrictJson } from "./strict-json.mjs";
 const MAX_PIPELINE_BYTES = 32 * 1024;
 const MAX_PACKAGE_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_LOCK_BYTES = 16 * 1024 * 1024;
-const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "240af0fe2b24035bc2d6b4a9c7f411236bbc051aac117c68bfeaabe0072053ae";
+const AUDITED_MARKETPLACE_PIPELINE_SHA256 = "03850f86f4c587687c94fe7a60034742c1b6a840151f63ac277b3f54fe9ec28d";
 const SERVICE_CONNECTION = "openwrangler-marketplace-publishing";
 const VSCE_PACKAGE = "@vscode/vsce";
 const VSCE_LOCK_PATH = "node_modules/@vscode/vsce";
@@ -109,12 +109,14 @@ export function inspectMarketplacePromotionPipeline(source) {
   }
   if (
     !exactKeys(pipeline.trigger, ["batch", "branches", "tags"]) ||
-    pipeline.trigger.batch !== true ||
-    JSON.stringify(pipeline.trigger.branches) !== JSON.stringify({ exclude: ["*"] }) ||
+    pipeline.trigger.batch !== false ||
+    JSON.stringify(pipeline.trigger.branches) !== JSON.stringify({ include: ["main"] }) ||
     JSON.stringify(pipeline.trigger.tags) !== JSON.stringify({ include: ["v*"] }) ||
     pipeline.pr !== "none"
   ) {
-    problems.push("Marketplace promotion must subscribe only to immutable Git tags and disable pull-request runs.");
+    problems.push(
+      "Marketplace promotion must preserve path-independent immutable-tag runs plus fail-closed protected-main recovery and disable pull-request runs."
+    );
   }
   if (
     !Array.isArray(pipeline.parameters) ||

@@ -14,6 +14,12 @@ test("Marketplace promotion pipeline is the reviewed exact-artifact WIF flow", (
 test("Marketplace promotion inspector rejects credentials, rebuilding, and promotion drift", () => {
   const mutations = [
     source.replace('      - "v*"', '      - "main"'),
+    source.replace("  batch: false", "  batch: true"),
+    source.replace("      - main", '      - "*"'),
+    source.replace(
+      '  tags:\n    include:\n      - "v*"',
+      '  tags:\n    include:\n      - "v*"\n  paths:\n    include:\n      - scripts/marketplace-release-intake.mjs'
+    ),
     source.replace("pr: none", "pr:\n  branches:\n    include:\n      - main"),
     source.replace("default: openwrangler-marketplace-publishing", "default: arbitrary-connection"),
     source.replace('    default: ""', '    default: "v1.0.1"'),

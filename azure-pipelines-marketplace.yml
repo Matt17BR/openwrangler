@@ -1,10 +1,10 @@
 name: marketplace-$(Date:yyyyMMdd).$(Rev:r)
 
 trigger:
-  batch: true
+  batch: false
   branches:
-    exclude:
-      - "*"
+    include:
+      - main
   tags:
     include:
       - "v*"

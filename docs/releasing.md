@@ -130,13 +130,81 @@ To recover the current exact GitHub Release `v1.1.3`, dispatch **Promote GitHub 
 
 ### Automatic Microsoft Marketplace promotion
 
-`azure-pipelines-marketplace.yml` subscribes to immutable `v*` Git tags. Its intake stage binds `Build.SourceBranch`, `Build.SourceVersion`, the checked-out automation commit, the selected tag commit, and that tag's `package.json`. Every valid GitHub release channel enters one sequential deployment in the protected `openwrangler-marketplace-publishing` environment. Stable packages publish normally; preview packages publish with VSCE's required `--pre-release` marker and must retain the matching `Microsoft.VisualStudio.Code.PreRelease` package and public-gallery metadata.
+`azure-pipelines-marketplace.yml` subscribes to immutable `v*` Git tags and protected `main`, with batching
+disabled so intake always reasons about one exact event commit. The trigger deliberately has no YAML path filter:
+Microsoft documents [branch and tag filters as an OR](https://learn.microsoft.com/en-us/azure/devops/pipelines/repos/github?view=azure-devops#tags),
+while path filters are defined in terms of changed files on an included branch. Keeping tags path-independent
+prevents a later release tag from being silently suppressed by an unrelated path decision.
+
+The `main` subscription is only a recovery signal. Before authentication, intake requires the checkout to equal
+the exact event commit and classifies its Git history. Only a single-parent commit that changes at least one of
+these reviewed pipeline, lockfile, metadata, archive, and verifier closure files may continue:
+
+- `azure-pipelines-marketplace.yml`
+- `package-lock.json`
+- `package.json`
+- `scripts/bounded-file-read.mjs`
+- `scripts/copy-extension-test-runtime-assets.mjs`
+- `scripts/cursor-acquisition.mjs`
+- `scripts/download-canonical-github-release.mjs`
+- `scripts/editor-acceptance-evidence.mjs`
+- `scripts/editor-acceptance.mjs`
+- `scripts/installed-performance-report.mjs`
+- `scripts/installed-performance-system.mjs`
+- `scripts/marketplace-identity-profile.mjs`
+- `scripts/marketplace-release-intake.mjs`
+- `scripts/packaged-editor-orchestration.mjs`
+- `scripts/prepare-xvfb.mjs`
+- `scripts/release-metadata.mjs`
+- `scripts/remote-workspace-acquisition.mjs`
+- `scripts/remote-workspace-contract.mjs`
+- `scripts/run-installed-performance.mjs`
+- `scripts/strict-json.mjs`
+- `scripts/verify-canonical-release-artifact.mjs`
+- `scripts/verify-marketplace-publication.mjs`
+- `scripts/verify-registry-release-artifact.mjs`
+- `scripts/vsix-archive.mjs`
+- `scripts/vsix-contents.mjs`
+- `src/shared/installedPerformanceFixtureManifest.cjs`
+- `src/shared/strictJson.cjs`
+
+This is the complete bounded repo-local ESM/CommonJS static-import closure of the Marketplace intake, downloader,
+identity probe, canonical verifier, and public verifier, plus the pipeline and the two manifests that select
+locked VSCE/npm code. Its test walks both `./` and `../` imports from the five entry points and fails on a missing
+or unsupported local module, so a new dependency cannot silently fall outside recovery.
+
+Every other ordinary `main` change and every zero- or multi-parent commit completes as an intake-only
+`promote=false` no-op, so it cannot reach dependency restoration, Azure authentication, or VSCE. A relevant
+change must also be the current public `Matt17BR/openwrangler` main head. Intake validates the current manifest,
+derives exactly `v<package.version>`, and resolves the same lightweight tag locally and from public GitHub. If
+that tag does not exist in either place, recovery completes as a clean no-op. If only one copy exists, the tag
+moved, the source identity/version/channel differs, or public main advanced, intake fails closed.
+
+For both paths, intake binds `Build.SourceBranch`, `Build.SourceVersion`, the checked-out automation commit, the
+selected tag commit, and that tag's `package.json`. Every valid GitHub release channel enters one sequential
+deployment in the protected `openwrangler-marketplace-publishing` environment. Stable packages publish normally;
+preview packages publish with VSCE's required `--pre-release` marker and must retain the matching
+`Microsoft.VisualStudio.Code.PreRelease` package and public-gallery metadata.
 
 The deployment polls the public GitHub Release for up to 210 minutes inside a 240-minute job and downloads its exact channel-specific inventory from canonical `Matt17BR/openwrangler` asset URLs with bounded declared sizes. The anonymous GitHub metadata API is the sole source of release metadata, channel, and asset inventory. Shared hosted-runner addresses can receive HTTP 403 after exhausting GitHub's anonymous quota, so that response joins the existing bounded pending-release retry path alongside not-yet-public HTTP 404 and rate-limited HTTP 429 responses. The downloader does not bypass the API or request release assets until a successful metadata response has passed the exact tag, draft, prerelease, inventory, declared-size, and canonical-URL checks. Repeated HTTP 403 responses exhaust the same fixed poll bound and fail visibly; other 4xx responses remain immediately fatal.
 
 Stable releases require `openwrangler.vsix`, its checksum, and canonical provenance; the stable verifier proves the tag, commit, identity, channel, provenance, checksum, archive contents, and local file identities. Existing preview releases contain the VSIX and checksum; their verifier binds those bytes to the immutable preview tag's source manifest and the VSIX pre-release property without fabricating a provenance file that was not present on GitHub. A missing selected-channel file remains pending, and a byte, tag, commit, provenance, checksum, manifest, or package-channel conflict fails before Azure authentication. A preview validation that exceeds the bounded poll fails visibly and can use the same protected-main manual backfill path after its GitHub Release appears.
 
-Normally the tag event supplies both the automation and release commit. A release that predates this YAML cannot contain the promotion scripts, so it must not be queued by checking out that old tag. To recover the current exact release `v1.1.3`, manually queue the pipeline from the exact protected `main` commit and set `existingReleaseTag` to `v1.1.3`. Historical backfill is supported only when that release's canonical asset and provenance format remains compatible with the current verifier; incompatibility fails rather than weakening validation. Intake accepts that parameter only for `Build.Reason=Manual` on `refs/heads/main`, requires the checkout to equal the current public `Matt17BR/openwrangler` main head, resolves the local immutable tag to its full commit, reads `package.json` from that commit, and exports the validated tag/commit/channel as deployment variables. Every artifact verifier repeats both the current automation-HEAD check and selected tag resolution before authentication. Azure DevOps' creation wizard may queue `main` once with the empty default parameter; exactly that manual `main` run succeeds as an intake-only `promote=false` no-op. Every other non-tag or unsafe source still fails closed.
+Normally the tag event supplies both the automation and release commit. When a reviewed recovery entry point
+changes later, the protected-main path keeps the newer automation commit separate from the older immutable
+release commit and still downloads only that release's existing public assets; it never rebuilds or retags them.
+A release that predates this YAML must not be queued by checking out that old tag.
+
+Explicit recovery remains available: manually queue the pipeline from the exact protected `main` commit and set
+`existingReleaseTag` to `v1.1.3` (or the intended numeric version). Historical backfill is supported only when
+that release's canonical asset and provenance format remains compatible with the current verifier;
+incompatibility fails rather than weakening validation. Intake accepts that parameter only for
+`Build.Reason=Manual` on `refs/heads/main`, requires the checkout to equal the current public main head, resolves
+the same immutable lightweight tag locally and on public GitHub, reads `package.json` from that commit, and
+exports the validated tag/commit/channel as deployment variables. Every artifact verifier repeats both the
+current automation-HEAD check and selected tag resolution before authentication. Azure DevOps' creation wizard
+may queue `main` once with the empty default parameter; exactly that manual run succeeds as an intake-only
+`promote=false` no-op. Every other non-tag or unsafe source still fails closed.
 
 Publication runs only inside `AzureCLI@2` using the fixed `openwrangler-marketplace-publishing` Azure Resource Manager workload-identity-federated service connection. After publication, the public verifier uses the maximum reviewed forty attempts at fifteen-second intervals (roughly ten minutes) before reporting a still-pending version as failure. The lockfile-pinned `@vscode/vsce` first runs:
 
