@@ -641,8 +641,7 @@ export async function run(): Promise<void> {
   }
   if (phase === "platform-smoke") {
     recordAcceptanceProgress("platform-smoke:start");
-    const firstUseFixture = vscode.Uri.joinPath(workspace, "fixtures", "[Live] regional orders 2024-2025.csv");
-    writeFileSync(firstUseFixture.fsPath, packagedFirstUseFixtureCsv(), { encoding: "utf8", flag: "wx" });
+    const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
     await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture);
     if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
       recordAcceptanceProgress("platform-smoke:screenshots");
@@ -721,9 +720,10 @@ export async function run(): Promise<void> {
   await exercisePackagedNotebookFlows(testing);
   if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
     recordAcceptanceProgress("verify:file-launch-surfaces");
+    const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
     await exercisePackagedFileLaunchSurfaces(
       testing,
-      vscode.Uri.file(path.join(path.dirname(fixture.fsPath), "[Live] sample.csv")),
+      firstUseFixture,
       process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS
     );
   }
@@ -745,6 +745,25 @@ export async function run(): Promise<void> {
 
   recordAcceptanceProgress("verify:complete");
   console.log("Open Wrangler extension-host acceptance passed.");
+}
+
+function ensurePackagedFirstUseFixture(workspace: vscode.Uri): vscode.Uri {
+  const fixture = vscode.Uri.joinPath(workspace, "fixtures", "[Live] regional orders 2024-2025.csv");
+  const expected = packagedFirstUseFixtureCsv();
+  try {
+    writeFileSync(fixture.fsPath, expected, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+    const metadata = lstatSync(fixture.fsPath);
+    assert.equal(metadata.isFile(), true, "An existing first-use fixture must remain a regular file.");
+    assert.equal(metadata.nlink, 1, "An existing first-use fixture must not be hard linked.");
+    assert.equal(
+      readFileSync(fixture.fsPath, "utf8"),
+      expected,
+      "An existing first-use fixture must retain the exact deterministic source bytes."
+    );
+  }
+  return fixture;
 }
 
 function recordAcceptanceProgress(checkpoint: string): void {
@@ -5782,6 +5801,16 @@ async function exercisePackagedFileLaunchSurfaces(
   );
   const active = testing.activeSession();
   assert.ok(active, "The editor-title action must publish its dataframe session.");
+  assert.deepEqual(
+    active.metadata.shape,
+    { rows: PACKAGED_FIRST_USE_ROW_COUNT, columns: PACKAGED_SCREENSHOT_COLUMNS.length },
+    "The file-launch journey must exercise the complete realistic first-use dataframe."
+  );
+  assert.deepEqual(
+    active.metadata.schema.map((column) => column.name),
+    [...PACKAGED_SCREENSHOT_COLUMNS],
+    "The file-launch journey must retain every realistic first-use column before interaction."
+  );
   await waitFor(
     () => testing.panelHydrated(active.metadata.sessionId),
     SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
