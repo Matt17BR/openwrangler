@@ -1,16 +1,96 @@
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   installedPerformanceGridRowHeight,
   installedPerformanceMaximumCanvasHeight,
   measureRendererGridScroll,
   rendererHasUsableGridGeometry,
+  waitForInstalledPerformanceRendererAcknowledgement,
   type RendererGridMeasurementElement,
   type RendererGridMeasurementRuntime,
   type RendererGridScrollMeasurementInput,
   type RendererUsableGridGeometryInput
 } from "./extensionHost/rendererGridScrollMeasurement";
 import { gridRowHeight, maximumGridScrollCanvasHeight } from "../webviews/grid/rowScrollModel";
+
+describe("installed performance renderer synchronization", () => {
+  it("never replaces an acknowledgement attempt that is still in flight", async () => {
+    let acknowledge: ((value: boolean) => void) | undefined;
+    let active = 0;
+    let maximumActive = 0;
+    const attempt = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          acknowledge = (value) => {
+            active -= 1;
+            resolve(value);
+          };
+        })
+    );
+
+    const pending = waitForInstalledPerformanceRendererAcknowledgement({
+      attempt,
+      timeoutMs: 60_000,
+      retryDelayMs: 25
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(attempt).toHaveBeenCalledOnce();
+    expect(maximumActive).toBe(1);
+    acknowledge?.(true);
+    await expect(pending).resolves.toBe(true);
+    expect(attempt).toHaveBeenCalledOnce();
+  });
+
+  it("retries settled negative acknowledgements without overlapping them", async () => {
+    let now = 0;
+    let active = 0;
+    let maximumActive = 0;
+    const outcomes = [false, false, true];
+    const attempt = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      const outcome = outcomes.shift() ?? false;
+      active -= 1;
+      return outcome;
+    });
+
+    await expect(
+      waitForInstalledPerformanceRendererAcknowledgement({
+        attempt,
+        timeoutMs: 60_000,
+        retryDelayMs: 25,
+        now: () => now,
+        wait: async (durationMs) => {
+          now += durationMs;
+        }
+      })
+    ).resolves.toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(3);
+    expect(maximumActive).toBe(1);
+  });
+
+  it("ends a stalled attempt at the overall deadline without retrying", async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = vi.fn(() => new Promise<boolean>(() => undefined));
+      const pending = waitForInstalledPerformanceRendererAcknowledgement({
+        attempt,
+        timeoutMs: 100,
+        retryDelayMs: 25
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toBe(false);
+      expect(attempt).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 interface MutableStyle {
   display: string;
