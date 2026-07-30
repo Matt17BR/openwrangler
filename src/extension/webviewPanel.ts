@@ -899,7 +899,46 @@ export class OpenWranglerPanel {
 
     this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
     this.codePreviewRevealedDraftStepId = draftStepId;
-    void vscode.commands.executeCommand("openWrangler.codePreview.focus");
+    void this.revealCodePreviewAndRestoreEditorFocus({
+      sessionId: snapshot.metadata.sessionId,
+      revision: snapshot.metadata.revision,
+      draftStepId
+    });
+  }
+
+  private async revealCodePreviewAndRestoreEditorFocus(expected: {
+    sessionId: string;
+    revision: number;
+    draftStepId: string | undefined;
+  }): Promise<void> {
+    try {
+      await vscode.commands.executeCommand("openWrangler.codePreview.focus");
+      const current = this.snapshot;
+      if (
+        this.disposed ||
+        !this.panel.active ||
+        OpenWranglerPanel.activePanel !== this ||
+        current?.metadata.sessionId !== expected.sessionId ||
+        current.metadata.revision !== expected.revision ||
+        current.metadata.draftStep?.id !== expected.draftStepId
+      ) {
+        return;
+      }
+
+      // Revealing a bottom-panel webview can retire the editor's physical
+      // renderer even though VS Code keeps its custom-editor tab active. Return
+      // focus to the exact editor and make the host prove that the renderer is
+      // still reachable before it remains hydrated. The Code Preview panel
+      // stays open, while keyboard input and subsequent draft actions continue
+      // in the dataframe grid.
+      this.invalidateRendererSynchronization();
+      this.panel.reveal(this.panel.viewColumn, false);
+      if (this.rendererReady) await this.enqueueRendererSynchronization(false);
+    } catch (error) {
+      this.bridge.reportDiagnostic?.(
+        `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
