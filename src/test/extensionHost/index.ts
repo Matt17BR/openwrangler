@@ -5628,8 +5628,10 @@ async function exercisePackagedReopenAndUndoJourney(
     30_000,
     "Undo to restore the original schema"
   );
+  const reopenedCleaningPlan = reopenedApp.getByRole("region", { name: "Cleaning plan" });
+  await reopenedCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(
-    await reopenedApp.getByRole("region", { name: "Cleaning plan" }).count(),
+    await reopenedCleaningPlan.count(),
     0,
     "Undoing the only applied step must remove the empty cleaning-plan bar."
   );
@@ -6412,6 +6414,8 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
     const bounds = await locator.boundingBox({ timeout: 2_000 }).catch(() => null);
     if (bounds && bounds.y > 0) workbenchOffsets.push(bounds.y);
   }
+  const screenshotWidth = Math.ceil(viewport.width * viewport.scale);
+  const screenshotHeight = Math.ceil(viewport.height * viewport.scale);
   const titleBarHeight = Math.ceil(Math.min(...workbenchOffsets, Number.POSITIVE_INFINITY) * viewport.scale);
   const screenshotOptions = {
     path: destination,
@@ -6422,8 +6426,8 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
           clip: {
             x: 0,
             y: titleBarHeight,
-            width: viewport.width,
-            height: Math.min(viewport.height - titleBarHeight, maximumHeight ?? Number.POSITIVE_INFINITY)
+            width: screenshotWidth,
+            height: Math.min(screenshotHeight - titleBarHeight, maximumHeight ?? Number.POSITIVE_INFINITY)
           }
         }
       : {})
@@ -7647,7 +7651,11 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
               )
             ).some((item) => {
               const bounds = item.getBoundingClientRect();
-              return bounds.left < headerBounds.left - 1 || bounds.right > headerBounds.right + 1;
+              return (
+                item.scrollWidth > item.clientWidth + 1 ||
+                bounds.left < headerBounds.left - 1 ||
+                bounds.right > headerBounds.right + 1
+              );
             });
             return clipped ? [expected.featured[index] ?? ""] : [];
           });

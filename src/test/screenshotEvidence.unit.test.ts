@@ -138,6 +138,7 @@ describe("packaged editor screenshot evidence", () => {
         (name) => widths[name] >= PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS[name] && widths[name] <= 640
       )
     ).toBe(true);
+    expect(widths.order_date).toBeGreaterThan(Math.max(widths.order_id, widths.market, widths.fulfilled));
     expect(Object.values(widths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(gridClientWidth);
     const wideWidths = packagedScreenshotFeaturedColumnWidths(1_500, rowHeaderWidth);
     expect(Object.values(wideWidths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(1_500);
