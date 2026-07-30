@@ -679,13 +679,15 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: draftMarker.sessionId,
       revision: draftMarker.revision
     });
-    await vi.waitFor(() => expect(executeCommand).toHaveBeenCalledOnce());
-    expect(executeCommand).toHaveBeenCalledWith("openWrangler.codePreview.focus");
+    await vi.waitFor(() => expect(executeCommand).toHaveBeenCalledTimes(2));
+    expect(executeCommand.mock.calls.map(([command]) => command)).toEqual([
+      "openWrangler.codePreview.focus",
+      "workbench.action.focusActiveEditorGroup"
+    ]);
     await vi.waitFor(() => {
-      expect(harness.reveal).toHaveBeenCalledOnce();
       expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
     });
-    expect(harness.reveal).toHaveBeenCalledWith(1, false);
+    expect(harness.reveal).not.toHaveBeenCalled();
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
 
     await harness.receive({
@@ -694,7 +696,7 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: draftMarker.sessionId,
       revision: draftMarker.revision
     });
-    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledTimes(2);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
 
     const restoredMarker = latestRendererSynchronization(harness.posted);
@@ -706,7 +708,7 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: restoredMarker.revision
     });
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
-    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledTimes(2);
 
     harness.posted.length = 0;
     await harness.receive({
@@ -727,7 +729,7 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: discardedMarker.sessionId,
       revision: discardedMarker.revision
     });
-    expect(executeCommand).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledTimes(2);
 
     harness.posted.length = 0;
     await OpenWranglerPanel.previewStepForSessionForTesting({
@@ -749,8 +751,8 @@ describe("OpenWranglerPanel retained view state", () => {
       revision: secondDraftMarker.revision
     });
 
-    expect(executeCommand).toHaveBeenCalledOnce();
-    expect(harness.reveal).toHaveBeenCalledOnce();
+    expect(executeCommand).toHaveBeenCalledTimes(2);
+    expect(harness.reveal).not.toHaveBeenCalled();
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
@@ -816,7 +818,79 @@ describe("OpenWranglerPanel retained view state", () => {
     );
 
     expect(harness.reveal).not.toHaveBeenCalled();
+    expect(executeCommand).not.toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup");
     expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
+    expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
+  });
+
+  it("does not resynchronize the renderer when the user leaves during active-editor restoration", async () => {
+    const focusEditorCommand = deferred<void>();
+    const executeCommand = vi.spyOn(commands, "executeCommand").mockImplementation(async (command) => {
+      if (command === "workbench.action.focusActiveEditorGroup") await focusEditorCommand.promise;
+      return undefined;
+    });
+    const draft = {
+      id: "switched-during-editor-focus",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const harness = createPanelHarness(
+      {
+        request: vi.fn(async (candidate: OpenWranglerRequest) =>
+          candidate.kind === "previewStep" ? preview : openedResponse
+        )
+      },
+      { openResponse: openedResponse }
+    );
+    await harness.open();
+    await harness.receive({ kind: "ready" });
+    await acknowledgeLatestRendererSynchronization(harness);
+    executeCommand.mockClear();
+    harness.posted.length = 0;
+
+    await OpenWranglerPanel.previewStepForSessionForTesting({
+      kind: "previewStep",
+      sessionId: metadata.sessionId,
+      revision: metadata.revision,
+      step: draft,
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 16
+    });
+    await vi.waitFor(() => expect(harness.posted.some(isRendererSynchronizationMessage)).toBe(true));
+    await acknowledgeLatestRendererSynchronization(harness);
+    await vi.waitFor(() => expect(executeCommand).toHaveBeenCalledWith("workbench.action.focusActiveEditorGroup"));
+
+    harness.deactivate();
+    focusEditorCommand.resolve();
+    await vi.waitFor(() =>
+      expect(executeCommand).toHaveBeenCalledWith("setContext", "openWrangler.canChangeImportOptions", false)
+    );
+
+    expect(executeCommand.mock.calls.slice(0, 2).map(([command]) => command)).toEqual([
+      "openWrangler.codePreview.focus",
+      "workbench.action.focusActiveEditorGroup"
+    ]);
+    expect(harness.reveal).not.toHaveBeenCalled();
+    expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(1);
+    expect(harness.htmlAssignmentCount).toBe(1);
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
@@ -886,10 +960,10 @@ describe("OpenWranglerPanel retained view state", () => {
     });
 
     await vi.waitFor(() => {
-      expect(harness.reveal).toHaveBeenCalledOnce();
       expect(synchronizationMarkerCount).toBe(3);
       expect(harness.htmlAssignmentCount).toBe(2);
     });
+    expect(harness.reveal).not.toHaveBeenCalled();
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(false);
 
     await harness.receive({ kind: "ready" });
@@ -907,8 +981,10 @@ describe("OpenWranglerPanel retained view state", () => {
       expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true)
     );
     expect(harness.htmlAssignmentCount).toBe(2);
-    expect(executeCommand).toHaveBeenCalledOnce();
-    expect(executeCommand).toHaveBeenCalledWith("openWrangler.codePreview.focus");
+    expect(executeCommand.mock.calls.map(([command]) => command)).toEqual([
+      "openWrangler.codePreview.focus",
+      "workbench.action.focusActiveEditorGroup"
+    ]);
   });
 
   it("recreates one renderer generation when the restored grid never acknowledges its marker", async () => {
@@ -968,7 +1044,7 @@ describe("OpenWranglerPanel retained view state", () => {
         revision: draftMarker.revision
       });
       await vi.advanceTimersByTimeAsync(0);
-      expect(harness.reveal).toHaveBeenCalledOnce();
+      expect(harness.reveal).not.toHaveBeenCalled();
       expect(harness.posted.filter(isRendererSynchronizationMessage)).toHaveLength(2);
       expect(harness.htmlAssignmentCount).toBe(1);
 

@@ -918,15 +918,17 @@ export class OpenWranglerPanel {
     try {
       await vscode.commands.executeCommand("openWrangler.codePreview.focus");
       if (!this.isExactActiveDraft(expected)) return;
+      await vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+      if (!this.isExactActiveDraft(expected)) return;
 
       // Revealing a bottom-panel webview can retire the editor's physical
-      // renderer even though VS Code keeps its custom-editor tab active. Return
-      // focus to the exact editor and make the host prove that the renderer is
-      // still reachable before it remains hydrated. The Code Preview panel
+      // renderer even though VS Code keeps its custom-editor tab active. The
+      // workbench focus command remounts that editor overlay where a direct
+      // WebviewPanel.reveal() does not. Make the host prove the resulting
+      // renderer is still reachable before it remains hydrated. Code Preview
       // stays open, while keyboard input and subsequent draft actions continue
       // in the dataframe grid.
       this.invalidateRendererSynchronization();
-      this.panel.reveal(this.panel.viewColumn, false);
       let synchronization:
         | {
             syncId: string;
