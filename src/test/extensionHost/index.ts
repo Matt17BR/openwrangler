@@ -10061,8 +10061,8 @@ async function exercisePackagedLinkedRendererLiveOpen(
         nanCount: 0,
         distinctCount: 2,
         topValues: [
-          { value: "5", count: 1 },
-          { value: "7", count: 1 }
+          { value: "7", count: 1 },
+          { value: "5", count: 1 }
         ],
         numeric: { min: 5, max: 7, mean: 6, median: 6, std: Math.SQRT2 },
         visualization: {
