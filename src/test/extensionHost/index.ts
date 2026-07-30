@@ -10192,8 +10192,8 @@ async function exercisePackagedSameGroupRendererSwitch(
       preview: false
     });
     switchedEditor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.InCenter);
-    recordAcceptanceProgress("verify:notebook-renderer-same-group:button");
-    await (await waitForNotebookRendererButton(workbench, label)).dispose();
+    recordAcceptanceProgress("verify:notebook-renderer-same-group:preview-only");
+    await waitForNotebookRendererPreviewOnly(workbench, label);
     assert.equal(
       jupyter.testing.stats(switchedNotebook.uri),
       undefined,
@@ -10739,6 +10739,67 @@ async function waitForNotebookRendererButton(
   const diagnostics = await notebookRendererDiagnostics(workbench, browser, label, buttonName);
   assertNotebookRendererLifecycle(workbench, browser);
   throw new Error(`Timed out waiting for the exact notebook renderer action: ${JSON.stringify(diagnostics)}`);
+}
+
+async function waitForNotebookRendererPreviewOnly(workbench: Page, label: string): Promise<void> {
+  const expectedHint = "Run this cell again to open the current dataframe in Open Wrangler.";
+  const deadline = Date.now() + NOTEBOOK_RENDERER_DISCOVERY_TIMEOUT_MS;
+  do {
+    const browser = workbench.context().browser();
+    assertNotebookRendererLifecycle(workbench, browser);
+    for (const target of openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT)) {
+      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
+      try {
+        const preview = target.frame.locator("section.openwrangler-notebook").filter({
+          hasText: `Open Wrangler preview: ${label}`
+        });
+        if ((await preview.count()) === 1) {
+          const note = preview.locator('[role="note"]').filter({ hasText: expectedHint });
+          const action = preview.getByRole("button", { name: "Open in Open Wrangler", exact: true });
+          if ((await note.count()) === 1 && (await note.isVisible()) && (await action.count()) === 0) return;
+        }
+
+        const nestedMatches = await target.frame.evaluate(
+          ({ expectedLabel, expectedNote }) => {
+            type NestedDocument = NestedElement & { readonly readyState: string };
+            type NestedElement = {
+              readonly contentDocument?: NestedDocument | null;
+              readonly isConnected: boolean;
+              readonly textContent: string | null;
+              querySelector(selector: string): NestedElement | null;
+              querySelectorAll(selector: string): ArrayLike<NestedElement>;
+            };
+            const outerDocument = (globalThis as unknown as { readonly document: NestedDocument }).document;
+            const innerDocument = outerDocument.querySelector("iframe#active-frame")?.contentDocument;
+            if (!innerDocument || innerDocument.readyState === "loading") return false;
+            const titlePrefix = `Open Wrangler preview: ${expectedLabel} (`;
+            const previews = Array.from(innerDocument.querySelectorAll("section.openwrangler-notebook")).filter(
+              (section) => (section.querySelector("header > span")?.textContent ?? "").startsWith(titlePrefix)
+            );
+            if (previews.length !== 1) return false;
+            const preview = previews[0]!;
+            const openActions = Array.from(preview.querySelectorAll("button")).filter(
+              (button) => button.isConnected && (button.textContent ?? "").trim() === "Open in Open Wrangler"
+            );
+            const notes = Array.from(preview.querySelectorAll('[role="note"]')).filter(
+              (note) => note.isConnected && (note.textContent ?? "").trim() === expectedNote
+            );
+            return openActions.length === 0 && notes.length === 1;
+          },
+          { expectedLabel: label, expectedNote: expectedHint }
+        );
+        if (nestedMatches) return;
+      } catch (error) {
+        ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
+      }
+    }
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
+
+  const browser = workbench.context().browser();
+  assertNotebookRendererLifecycle(workbench, browser);
+  const diagnostics = await notebookRendererDiagnostics(workbench, browser, label, "Open in Open Wrangler");
+  throw new Error(`Timed out waiting for the exact preview-only notebook output: ${JSON.stringify(diagnostics)}`);
 }
 
 function directNotebookRendererButtonCandidates(frame: Frame, label: string, buttonName: string): Locator[] {
