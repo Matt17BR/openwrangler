@@ -10109,7 +10109,18 @@ async function exercisePackagedLinkedRendererLiveOpen(
     });
     assert.equal(values.kind, "columnValues");
     if (values.kind !== "columnValues") throw new Error("The linked live values query did not resolve.");
-    assert.deepEqual(values.values, [{ value: "Berlin", count: 1 }]);
+    assert.deepEqual(values.values, [
+      {
+        value: "Berlin",
+        count: 1,
+        selectionValue: {
+          kind: "typedSelection",
+          version: 1,
+          columnType: "string",
+          cell: { kind: "string", raw: "Berlin", display: "Berlin", isNull: false, isNaN: false }
+        }
+      }
+    ]);
     assert.equal(values.hasMore, false);
 
     recordAcceptanceProgress("verify:notebook-renderer-linked-live:close");
