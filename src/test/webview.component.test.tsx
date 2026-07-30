@@ -1463,7 +1463,7 @@ describe("App file import options", () => {
     }
   });
 
-  it("flushes pending grid presentation before acknowledging renderer synchronization", () => {
+  it("acknowledges renderer synchronization before flushing pending grid presentation", () => {
     vi.useFakeTimers();
     try {
       render(<App />);
@@ -1482,15 +1482,15 @@ describe("App file import options", () => {
         .map(([message]) => message)
         .filter((message) => message?.kind === "updateViewState" || message?.kind === "rendererSynchronized");
       expect(synchronizationMessages).toHaveLength(2);
-      expect(synchronizationMessages[0]).toMatchObject({
-        kind: "updateViewState",
-        state: { columnWidths: { "c:0": 200 } }
-      });
-      expect(synchronizationMessages[1]).toEqual({
+      expect(synchronizationMessages[0]).toEqual({
         kind: "rendererSynchronized",
         syncId: "F".repeat(32),
         sessionId: metadata.sessionId,
         revision: metadata.revision
+      });
+      expect(synchronizationMessages[1]).toMatchObject({
+        kind: "updateViewState",
+        state: { columnWidths: { "c:0": 200 } }
       });
     } finally {
       vi.useRealTimers();

@@ -283,6 +283,11 @@ describe("App draft state boundaries", () => {
       sessionId: metadata.sessionId,
       revision: 3
     });
+    await waitFor(() => {
+      expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
+      expect(latestGridProps().goToColumnRequestId).toBe(2);
+    });
+    act(() => latestGridProps().onGoToColumnHandled?.(2));
     await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
 
     dispatch({
@@ -311,7 +316,7 @@ describe("App draft state boundaries", () => {
     });
     await waitFor(() => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
-      expect(latestGridProps().goToColumnRequestId).toBe(2);
+      expect(latestGridProps().goToColumnRequestId).toBe(3);
     });
   });
 

@@ -124,7 +124,14 @@ export function DataGrid({
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const requestedGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
   const handledGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
+  const goToColumnRequestRef = useRef({
+    columnId: goToColumnId,
+    requestId: goToColumnRequestId,
+    restoreVersion: viewStateRestoreVersion,
+    onHandled: onGoToColumnHandled
+  });
   const visibleColumnRangeHandler = useRef(onVisibleColumnRangeChange);
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
@@ -164,6 +171,15 @@ export function DataGrid({
   useEffect(() => {
     visibleColumnRangeHandler.current = onVisibleColumnRangeChange;
   }, [onVisibleColumnRangeChange]);
+
+  useLayoutEffect(() => {
+    goToColumnRequestRef.current = {
+      columnId: goToColumnId,
+      requestId: goToColumnRequestId,
+      restoreVersion: viewStateRestoreVersion,
+      onHandled: onGoToColumnHandled
+    };
+  }, [goToColumnId, goToColumnRequestId, onGoToColumnHandled, viewStateRestoreVersion]);
 
   const reportViewState = useCallback(
     (next: GridViewState): void => {
@@ -310,6 +326,21 @@ export function DataGrid({
     const update = () => updateViewportFromScroller();
     const clearProgrammaticTarget = () => {
       programmaticViewportTarget.current = undefined;
+      const pending = goToColumnRequestRef.current;
+      if (
+        pending.columnId &&
+        pending.requestId !== undefined &&
+        requestedGoToColumnRequest.current?.requestId === pending.requestId &&
+        requestedGoToColumnRequest.current.restoreVersion === pending.restoreVersion &&
+        (handledGoToColumnRequest.current?.requestId !== pending.requestId ||
+          handledGoToColumnRequest.current.restoreVersion !== pending.restoreVersion)
+      ) {
+        handledGoToColumnRequest.current = {
+          requestId: pending.requestId,
+          restoreVersion: pending.restoreVersion
+        };
+        pending.onHandled(pending.requestId);
+      }
     };
     const rebaseAfterResize = () => {
       const logicalRow =
@@ -424,7 +455,9 @@ export function DataGrid({
       !goToColumnId ||
       goToColumnRequestId === undefined ||
       (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
+        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion) ||
+      (requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
     ) {
       return;
     }
@@ -432,6 +465,10 @@ export function DataGrid({
     if (index < 0) return;
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    requestedGoToColumnRequest.current = {
+      requestId: goToColumnRequestId,
+      restoreVersion: viewStateRestoreVersion
+    };
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
     const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
@@ -444,10 +481,6 @@ export function DataGrid({
       firstVisibleRow,
       scrollTop: scroller.scrollTop,
       scrollLeft
-    };
-    handledGoToColumnRequest.current = {
-      requestId: goToColumnRequestId,
-      restoreVersion: viewStateRestoreVersion
     };
     setViewport((current) => ({
       ...current,
@@ -467,15 +500,60 @@ export function DataGrid({
         scrollLeft
       }
     });
-    onGoToColumnHandled(goToColumnRequestId);
   }, [
     defaultColumnWidth,
     goToColumnId,
     goToColumnRequestId,
     metadata.schema,
-    onGoToColumnHandled,
     reportViewState,
     viewStateRestoreVersion,
+    widths
+  ]);
+
+  useLayoutEffect(() => {
+    if (!goToColumnId || goToColumnRequestId === undefined) return;
+    if (
+      requestedGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
+      requestedGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion ||
+      (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
+    ) {
+      return;
+    }
+    const index = metadata.schema.findIndex((column) => column.id === goToColumnId);
+    if (index < 0 || !pageColumnPositionById.has(goToColumnId)) return;
+    if (index < visibleColumnRange.start || index >= visibleColumnRange.end) return;
+    const scroller = scrollerRef.current;
+    const target = scroller?.querySelector<HTMLElement>(`th[data-grid-column="${index}"]`);
+    if (!scroller || !target) return;
+
+    const targetWidth = widths[index] ?? defaultColumnWidth;
+    const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
+    const columnEnd = columnStart + targetWidth;
+    const visibleStart = scroller.scrollLeft + rowHeaderWidth;
+    const visibleEnd = scroller.scrollLeft + scroller.clientWidth;
+    const requiredVisibleWidth = Math.min(targetWidth, Math.max(0, scroller.clientWidth - rowHeaderWidth));
+    const actualVisibleWidth = Math.max(0, Math.min(columnEnd, visibleEnd) - Math.max(columnStart, visibleStart));
+    if (requiredVisibleWidth <= 0 || actualVisibleWidth + scrollQuantizationTolerance < requiredVisibleWidth) return;
+
+    handledGoToColumnRequest.current = {
+      requestId: goToColumnRequestId,
+      restoreVersion: viewStateRestoreVersion
+    };
+    onGoToColumnHandled(goToColumnRequestId);
+  }, [
+    goToColumnId,
+    goToColumnRequestId,
+    loadedColumnSignature,
+    metadata.schema,
+    onGoToColumnHandled,
+    pageColumnPositionById,
+    defaultColumnWidth,
+    viewStateRestoreVersion,
+    viewport.scrollLeft,
+    viewport.width,
+    visibleColumnRange.end,
+    visibleColumnRange.start,
     widths
   ]);
 
@@ -1029,6 +1107,7 @@ function ColumnHeader({
   return (
     <th
       data-column={column.name}
+      data-grid-column={column.position}
       aria-colindex={ariaColumnIndex}
       aria-selected={selected}
       aria-sort={

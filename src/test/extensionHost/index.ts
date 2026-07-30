@@ -5445,8 +5445,10 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "discarding the preview to restore the confirmed dataframe"
   );
+  const emptyCleaningPlan = app.getByRole("region", { name: "Cleaning plan" });
+  await emptyCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(
-    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    await emptyCleaningPlan.count(),
     0,
     "Discarding the only draft must remove the now-empty cleaning-plan bar."
   );
@@ -5552,6 +5554,10 @@ async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, 
   await saveInput.fill(path.resolve(destination));
   await saveInput.press("Enter");
   await saveDialog.waitFor({ state: "hidden", timeout: 30_000 });
+  await workbench
+    .locator(".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible")
+    .filter({ hasText: "Exporting cleaned data…" })
+    .waitFor({ state: "hidden", timeout: 30_000 });
 }
 
 async function exercisePackagedReopenAndUndoJourney(

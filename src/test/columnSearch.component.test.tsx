@@ -248,16 +248,16 @@ describe("DataGrid column search target", () => {
       steps: [],
       schema
     };
-    const page: GridPage = {
+    const pageFor = (projectedColumns: ColumnSchema[]): GridPage => ({
       offset: 0,
       limit: 1,
       totalRows: 1,
-      columnIds: schema.map((column) => column.id),
+      columnIds: projectedColumns.map((column) => column.id),
       rows: [
         {
           id: "r:0",
           rowNumber: 0,
-          values: schema.map((column) => ({
+          values: projectedColumns.map((column) => ({
             kind: "string",
             raw: column.name,
             display: column.name,
@@ -266,10 +266,17 @@ describe("DataGrid column search target", () => {
           }))
         }
       ]
-    };
+    });
+    const initialPage = pageFor(schema.slice(0, 8));
+    const targetPage = pageFor(schema.slice(11));
     const onViewStateChange = vi.fn();
     const onGoToColumnHandled = vi.fn();
-    const renderGrid = (goToColumnRequestId?: number, viewStateRestoreVersion = 0, scrollLeft = 0) => (
+    const renderGrid = (
+      goToColumnRequestId?: number,
+      viewStateRestoreVersion = 0,
+      scrollLeft = 0,
+      page = initialPage
+    ) => (
       <DataGrid
         metadata={metadata}
         page={page}
@@ -305,25 +312,38 @@ describe("DataGrid column search target", () => {
     const target = await screen.findByRole("columnheader", { name: /market_upper/u });
     expect(target).toBeVisible();
     expect(scroller.scrollLeft).toBeGreaterThan(0);
+    expect(onGoToColumnHandled).not.toHaveBeenCalled();
+
+    rerender(renderGrid(1, 0, 0, targetPage));
+    await waitFor(() => expect(onGoToColumnHandled).toHaveBeenLastCalledWith(1));
     expect(onViewStateChange).toHaveBeenCalledWith(
       expect.objectContaining({
         selectedColumnId: "c:15",
         viewport: expect.objectContaining({ scrollLeft: scroller.scrollLeft })
       })
     );
-    expect(onGoToColumnHandled).toHaveBeenLastCalledWith(1);
 
     const persistedOldScrollLeft = 162;
-    rerender(renderGrid(1, 1, persistedOldScrollLeft));
+    rerender(renderGrid(1, 1, persistedOldScrollLeft, targetPage));
     await waitFor(() => expect(scroller.scrollLeft).toBeGreaterThan(persistedOldScrollLeft));
     expect(screen.getByRole("columnheader", { name: /market_upper/u })).toBeVisible();
     expect(onGoToColumnHandled.mock.calls.filter(([requestId]) => requestId === 1)).toHaveLength(2);
 
     rerender(renderGrid());
-    rerender(renderGrid(2));
+    rerender(renderGrid(2, 0, 0, targetPage));
     await waitFor(() =>
       expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:15" }))
     );
     expect(onGoToColumnHandled).toHaveBeenLastCalledWith(2);
+
+    rerender(renderGrid());
+    rerender(renderGrid(3));
+    await screen.findByRole("columnheader", { name: /market_upper/u });
+    fireEvent.wheel(scroller);
+    expect(onGoToColumnHandled).toHaveBeenLastCalledWith(3);
+    const handledCount = onGoToColumnHandled.mock.calls.length;
+    rerender(renderGrid(3, 0, 0, targetPage));
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    expect(onGoToColumnHandled).toHaveBeenCalledTimes(handledCount);
   });
 });
