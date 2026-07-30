@@ -2625,9 +2625,15 @@ async function waitForReleasedJupyterVariableAction(
           return { action, documentRoot: frame.locator("html") };
         } catch (error) {
           if (!isReleasedJupyterVariableActionReplacement(error)) {
-            throw error;
+            // Jupyter may retire a scanned child target while its real kernel
+            // refreshes. Ignore the probe only after the shared lifecycle
+            // guard proves this is a retired non-workbench target; a live
+            // frame, detached workbench main frame, or disconnected browser
+            // must still fail immediately.
+            ignoreRetiredRendererProbeFailure(workbench, workbench.context().browser(), frame.page(), frame, error);
           }
-          // The Variables view can replace a row while its real kernel refreshes.
+          // The Variables view can replace a row or retire its child frame
+          // while its real kernel refreshes.
         }
       }
       return undefined;

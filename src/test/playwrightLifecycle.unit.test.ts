@@ -586,7 +586,7 @@ describe("extension-host Playwright lifecycle", () => {
         connectedBrowser,
         workbench,
         rendererFrame,
-        new Error("frame detached")
+        new Error("locator.count: Frame was detached")
       )
     ).not.toThrow();
   });
@@ -621,7 +621,7 @@ describe("extension-host Playwright lifecycle", () => {
   it("does not retire the detached workbench main frame", () => {
     const workbenchMain = frame(true);
     const workbench = page(workbenchMain);
-    const error = new Error("main frame detached");
+    const error = new Error("locator.count: Frame was detached");
 
     expect(isRetiredRendererTarget(workbench, workbench, workbenchMain)).toBe(false);
     expect(() =>
