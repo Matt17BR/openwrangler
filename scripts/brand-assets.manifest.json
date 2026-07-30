@@ -1,6 +1,8 @@
 {
   "version": 1,
   "sources": {
+    "action-icon-light.svg": "cd671344a563a1cfd1c230ddc367048373abae4ce55b8f7c9a813077f1f47d00",
+    "action-icon-dark.svg": "5fe6950daa4952c5b383f3ef909d2fcb6ab3cddd79e4271a8082d9599c326478",
     "activity-icon.svg": "b64778e508ecefd99cc98d12abfdb46eb2e00ccdce7752b79ea611508b504b9d",
     "icon.svg": "2e505f8d59128ca17102fe2b6e126004f409b4a05e83f06e74fc7fff703b892c"
   },

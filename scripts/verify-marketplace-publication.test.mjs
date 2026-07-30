@@ -63,6 +63,8 @@ function releaseEntries(readme = "# Open Wrangler\n", manifest = packageJson, pr
     ["extension/media/codicon.ttf", "font"],
     ["extension/media/codePreview.js", "export {};"],
     ["extension/media/notebookRenderer.js", "export function activate() {}"],
+    ["extension/media/action-icon-dark.svg", "<svg></svg>"],
+    ["extension/media/action-icon-light.svg", "<svg></svg>"],
     ["extension/media/activity-icon.svg", "<svg></svg>"],
     ["extension/media/icon.png", galleryIcon],
     ["extension/media/icon-128.png", png(128, 128, 33)],

@@ -14,10 +14,19 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Kept text profiling engine-native. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical columns deliberately measure the same normalized display text shown in the grid.
 - Preserved nonzero Pandas NaN counts in semantic text Insights while omitting the irrelevant zero-valued row, and rejected internally contradictory empty/length summaries at the protocol boundary.
-- Removed the ambiguous secondary **Open saved snapshot** button from inline notebook outputs. One **Open in Open Wrangler** action now opens the linked live variable when available or the captured output when no live link exists.
+- Removed the ambiguous secondary **Open saved snapshot** button from inline notebook outputs. The single
+  inline **Open in Open Wrangler** action now always opens the captured result; the notebook toolbar remains
+  the explicit route to a current live variable.
 
 ### Fixed
 
+- Replaced the ultrawide Pandas notebook README capture with a standard-width packaged-editor view that keeps the
+  real notebook toolbar, dataframe preview, horizontal scrolling, and labels legible at documentation width.
+- Gave editor and notebook toolbar actions explicit light- and dark-theme SVG variants. The branded Activity Bar
+  glyph remains `currentColor`, while externally loaded command icons can no longer resolve to black on dark
+  editor surfaces.
+- Reworded notebook portability around the user workflow: files and live variables page directly in the
+  workbench, while only outputs saved into a notebook retain a bounded, truncation-labeled preview.
 - Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema, including when renderer synchronization refreshes that schema mid-retry. Each reveal request now enters layout only once, preventing a far-right generated column from triggering React’s nested-update guard and blanking the editor. Newly generated columns remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
 - Kept a confirmed draft visible when an older page or renderer snapshot finishes late, and drained a renderer synchronization requested at the end of an existing synchronization instead of abandoning its authoritative replay.
 - Committed each authoritative renderer replay before acknowledging it, retired webviews whose synchronization marker could not be delivered, and delayed automatic Code Preview reveal until the exact draft was physically rendered. The default **on first draft** behavior now reveals Code Preview only once per session; later drafts update the existing provider in place and respect a user closing the panel instead of repeatedly focusing it. Automatic reveal uses the native preserve-focus option, so Code Preview opens without taking keyboard focus, remounting the dataframe webview, or starting a redundant synchronization cycle. Recovery polling can no longer race a draft publication or leave packaged editor assertions attached to a hidden prior renderer.

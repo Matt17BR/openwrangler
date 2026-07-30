@@ -140,6 +140,8 @@ function releaseVsixEntries(packageJson = stablePackage) {
     ["extension/media/codicon.ttf", "font"],
     ["extension/media/codePreview.js", "export {};"],
     ["extension/media/notebookRenderer.js", "export function activate() {}"],
+    ["extension/media/action-icon-dark.svg", "<svg></svg>"],
+    ["extension/media/action-icon-light.svg", "<svg></svg>"],
     ["extension/media/activity-icon.svg", "<svg></svg>"],
     ["extension/media/icon.png", "icon"],
     ["extension/media/icon-128.png", "icon"],

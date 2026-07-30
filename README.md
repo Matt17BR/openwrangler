@@ -71,19 +71,18 @@ without requiring an earlier Open Wrangler command. If Microsoft Data Wrangler i
 asks once which extension should own automatic previews; change that choice later with **Open Wrangler: Choose
 Notebook Preview Provider**.
 
-The inline table exposes every captured column, 10/20/50/100-row pages, and horizontal scrolling. Its single
-**Open in Open Wrangler** action opens the complete current value when the output has one exact live-variable
-link; otherwise it opens the portable captured result. The toolbar's branded **Open in Open Wrangler** action
-discovers supported variables from the selected kernel and shows their engine and dataframe type instead of
-asking for a name.
+The button inside an inline table expands the preview saved in that `.ipynb` file. To keep notebooks quick to
+reopen and share, a saved preview may contain only part of a very large dataframe; Open Wrangler says so clearly
+whenever rows or columns were left out.
 
-Files and live variables are not capped at 10,000 rows: the workbench pages from the current source. Only a saved
-inline snapshot is bounded for notebook portability, with headline ceilings of 10,000 rows, 2,048 columns,
-100,000 cells, and 16 MiB.
+To work with the full, current dataframe, use the notebook toolbar's branded **Open in Open Wrangler** action.
+It discovers supported variables from the selected kernel, shows their engine and dataframe type, and pages
+through the live data as you navigate. This portability limit applies only to previews stored inside notebooks,
+not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files.
 
 <a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/notebooks.png"></a>
 
-_A real packaged VS Code notebook with Open Wrangler's Pandas inline preview._
+_A real packaged VS Code notebook with a lightweight Pandas inline preview._
 
 The [engine gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) also shows a live
 native Polars notebook draft with generated Polars code, a native DuckDB rich-Parquet file session, and the

@@ -18,6 +18,8 @@ export const PACKAGED_SCREENSHOT_COLUMNS = [
 export const PACKAGED_SCREENSHOT_ROW_COUNT = 100_000;
 export const PACKAGED_FIRST_USE_ROW_COUNT = 10_000;
 export const PACKAGED_SCREENSHOT_VIEWPORT = { width: 1_920, height: 860 } as const;
+export const PACKAGED_PANDAS_NOTEBOOK_VIEWPORT = { width: 1_280, height: 700 } as const;
+export const PACKAGED_PANDAS_NOTEBOOK_OUTPUT = { width: 1_280, height: 600 } as const;
 export const PACKAGED_SCREENSHOT_MARKETS = [
   "Benelux",
   "DACH",

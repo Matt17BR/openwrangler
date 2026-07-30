@@ -6,7 +6,7 @@ interface CommandContribution {
   command?: string;
   title?: string;
   shortTitle?: string;
-  icon?: string;
+  icon?: string | { light?: string; dark?: string };
 }
 
 interface MenuContribution {
@@ -93,7 +93,10 @@ describe("file launch contributions", () => {
     expect(manifest.contributes?.commands).toContainEqual({
       command: "openWrangler.openFile",
       title: "Open in Open Wrangler",
-      icon: "media/activity-icon.svg"
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
     });
 
     expect(manifest.contributes?.menus?.["explorer/context"]).toContainEqual({
@@ -179,7 +182,10 @@ describe("notebook launch contributions", () => {
       title: "Open in Open Wrangler",
       shortTitle: "Open in Open Wrangler",
       category: "Open Wrangler",
-      icon: "media/activity-icon.svg"
+      icon: {
+        light: "media/action-icon-light.svg",
+        dark: "media/action-icon-dark.svg"
+      }
     });
     expect(manifest.contributes?.menus?.["notebook/toolbar"]).toContainEqual({
       command: "openWrangler.openNotebookVariable",

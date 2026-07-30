@@ -30,11 +30,11 @@ const compositions = [
   },
   {
     name: "notebooks",
-    width: 1_920,
-    height: 450,
+    width: 1_280,
+    height: 600,
     destination: resolve(readmeImages, "notebooks.png"),
     sources: {
-      pandas: sourceImage("vscode-notebook-pandas-dark.png", 1_920, 450)
+      pandas: sourceImage("vscode-notebook-pandas-dark.png", 1_280, 600)
     },
     render: renderNotebooks
   },
@@ -182,8 +182,8 @@ function renderNotebooks(sources) {
     `
       .nativeCapture {
         display: block;
-        height: 450px;
-        width: 1920px;
+        height: 600px;
+        width: 1280px;
       }
     `
   );

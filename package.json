@@ -163,7 +163,10 @@
       {
         "command": "openWrangler.openFile",
         "title": "Open in Open Wrangler",
-        "icon": "media/activity-icon.svg"
+        "icon": {
+          "light": "media/action-icon-light.svg",
+          "dark": "media/action-icon-dark.svg"
+        }
       },
       {
         "command": "openWrangler.openPath",
@@ -184,7 +187,10 @@
         "title": "Open in Open Wrangler",
         "shortTitle": "Open in Open Wrangler",
         "category": "Open Wrangler",
-        "icon": "media/activity-icon.svg"
+        "icon": {
+          "light": "media/action-icon-light.svg",
+          "dark": "media/action-icon-dark.svg"
+        }
       },
       {
         "command": "openWrangler.checkJupyterIntegration",
