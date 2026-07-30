@@ -18,7 +18,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
-- Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema. Newly generated columns now remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
+- Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema, including when renderer synchronization refreshes that schema mid-retry. Newly generated columns now remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
 
 ## [1.1.2] - 2026-07-30
 

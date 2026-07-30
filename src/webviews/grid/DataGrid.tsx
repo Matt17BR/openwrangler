@@ -467,9 +467,7 @@ export function DataGrid({
       !goToColumnId ||
       goToColumnRequestId === undefined ||
       (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion) ||
-      (requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
-        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
+        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
     ) {
       return;
     }

@@ -287,10 +287,11 @@ describe("DataGrid column search target", () => {
         goToColumnRequestId?: number,
         viewStateRestoreVersion = 0,
         scrollLeft = 0,
-        page = initialPage
+        page = initialPage,
+        currentMetadata = metadata
       ) => (
         <DataGrid
-          metadata={metadata}
+          metadata={currentMetadata}
           page={page}
           summaries={[]}
           pageSize={1}
@@ -338,8 +339,12 @@ describe("DataGrid column search target", () => {
       expect(screen.queryByRole("columnheader", { name: /market_upper/u })).not.toBeInTheDocument();
       expect(onViewStateChange).not.toHaveBeenCalled();
 
+      rerender(renderGrid(1, 0, 0, initialPage, { ...metadata, schema: [...schema] }));
+      await waitFor(() => expect(frames).toHaveLength(2));
+      const resumedReveal = frames.at(-1);
+      frames.length = 0;
       layoutReady = true;
-      act(() => frames.shift()?.(performance.now()));
+      act(() => resumedReveal?.(performance.now()));
 
       const target = await screen.findByRole("columnheader", { name: /market_upper/u });
       expect(target).toBeVisible();

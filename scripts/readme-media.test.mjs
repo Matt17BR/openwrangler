@@ -89,7 +89,11 @@ test("README media is compact, portable, and composition-verified", () => {
     /If Microsoft Data Wrangler is installed too, Open Wrangler\s+asks once which extension should own automatic previews/u
   );
   assert.match(readme, /10\/20\/50\/100-row pages/u);
-  assert.match(readme, /\*\*Open saved\s+snapshot\*\* keeps the portable captured result available as a fallback/u);
+  assert.match(
+    readme,
+    /single\s+\*\*Open in Open Wrangler\*\* action opens the complete current value[\s\S]{0,180}otherwise it opens the portable captured result/u
+  );
+  assert.doesNotMatch(readme, /\*\*Open saved\s+snapshot\*\*/u);
   assert.match(readme, /engine gallery/u);
   assert.match(readme, /DuckDB notebook relations are not yet supported/u);
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
