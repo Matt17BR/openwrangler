@@ -30,6 +30,20 @@ export function acceptanceProgressSignalPath(progressPath: string, runId: string
   return `${progressPath}.${runId.replaceAll("-", "")}.${phase}.heartbeat`;
 }
 
+export function failedAcceptanceProgressCheckpoint(phase: string, lastCheckpoint: string | undefined): string {
+  if (!/^[a-z][a-z0-9-]{0,63}$/u.test(phase)) {
+    throw new Error("An editor acceptance failure checkpoint requires one bounded phase.");
+  }
+  const retained =
+    typeof lastCheckpoint === "string" &&
+    lastCheckpoint.startsWith(`${phase}:`) &&
+    lastCheckpoint.length <= 768 &&
+    !/[\0\r\n]/u.test(lastCheckpoint)
+      ? lastCheckpoint
+      : phase;
+  return `${retained}:failed`;
+}
+
 export function writeAcceptanceProgressCheckpoint(
   progressPath: string,
   envelope: AcceptanceProgressEnvelope,

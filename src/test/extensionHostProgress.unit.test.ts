@@ -7,6 +7,7 @@ import {
   ACCEPTANCE_PROGRESS_MAX_BYTES,
   ACCEPTANCE_PROGRESS_PROTOCOL,
   acceptanceProgressSignalPath,
+  failedAcceptanceProgressCheckpoint,
   writeAcceptanceProgressCheckpoint,
   type AcceptanceProgressEnvelope
 } from "./extensionHost/progress";
@@ -26,6 +27,20 @@ afterEach(async () => {
 });
 
 describe("extension-host acceptance progress", () => {
+  it("preserves the last correlated work stage when cleanup follows a failure", () => {
+    expect(
+      failedAcceptanceProgressCheckpoint("jupyter-pyspark", "jupyter-pyspark:classic-setup:execution-failed")
+    ).toBe("jupyter-pyspark:classic-setup:execution-failed:failed");
+    expect(failedAcceptanceProgressCheckpoint("jupyter-allow", "jupyter-allow:duckdb-inline:activate")).toBe(
+      "jupyter-allow:duckdb-inline:activate:failed"
+    );
+    expect(failedAcceptanceProgressCheckpoint("jupyter-pyspark", "other-phase:checkpoint")).toBe(
+      "jupyter-pyspark:failed"
+    );
+    expect(failedAcceptanceProgressCheckpoint("jupyter-pyspark", "x".repeat(769))).toBe("jupyter-pyspark:failed");
+    assert.throws(() => failedAcceptanceProgressCheckpoint("wrong phase", "wrong phase:checkpoint"), /bounded phase/u);
+  });
+
   it("publishes one bounded checkpoint through an exclusive randomized sibling", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ow-host-progress-"));
     temporaryDirectories.push(directory);

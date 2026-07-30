@@ -51,6 +51,8 @@ const PYSPARK_SOURCE_REQUIREMENT =
   "pyspark @ https://files.pythonhosted.org/packages/c3/33/c987434f5d50aa802779a004ca0fd45ee4350caab50554ad7283d5a22b50/pyspark-4.2.0.tar.gz#sha256=5ad689d53570ee1674193fd4f9bda065f0db3be9363a27d2a3406cc457b70b61";
 const BOUNDED_PYTHON_VERSION =
   /^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:(?:\.post|\.dev)[0-9]+)*(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/iu;
+const BOUNDED_JAVA_VERSION = /^[0-9][0-9A-Za-z._+-]{0,127}$/u;
+const MINIMUM_PYSPARK_JAVA_MAJOR = 17;
 const REMOTE_JUPYTER_DESCRIPTOR_PROTOCOL = "openwrangler-remote-jupyter-v1";
 const REMOTE_JUPYTER_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const REMOTE_JUPYTER_TOKEN = /^owr_[A-Za-z0-9_-]{39}$/u;
@@ -122,6 +124,11 @@ export async function createJupyterAcceptanceKernelPython(
     );
   }
 
+  const java = await probeJupyterAcceptanceJava({
+    environment,
+    runCommand
+  });
+  console.log(`Released-Jupyter PySpark Java preflight passed: Java ${java.version} (major ${java.major}).`);
   await probeJupyterAcceptancePython(basePython, {
     environment,
     requirePySpark: false,
@@ -204,6 +211,67 @@ export async function createJupyterAcceptanceKernelPython(
   }
   assertEditorAcceptancePrivateRootReceipt(directoryReceipt);
   return kernelPython;
+}
+
+export async function probeJupyterAcceptanceJava({
+  environment = createEditorAcceptanceEnvironment(),
+  runCommand = runBoundedEditorCommand
+} = {}) {
+  let result;
+  try {
+    result = await runCommand(
+      {
+        executable: "java",
+        args: ["-XshowSettings:properties", "-version"],
+        environment,
+        label: "Released-Jupyter PySpark Java compatibility probe"
+      },
+      { timeoutMs: 30_000 }
+    );
+  } catch {
+    throw new Error(
+      "Released-Jupyter PySpark acceptance requires Java 17 or newer, but the Java compatibility probe failed."
+    );
+  }
+  const output = `${result?.stdout ?? ""}\n${result?.stderr ?? ""}`;
+  const specificationVersion = singleJavaProperty(output, "java.specification.version");
+  const version = singleJavaProperty(output, "java.version");
+  if (!BOUNDED_JAVA_VERSION.test(version)) {
+    throw new Error("Released-Jupyter PySpark Java compatibility probe returned an unsafe Java version.");
+  }
+  const major = javaSpecificationMajor(specificationVersion);
+  if (major < MINIMUM_PYSPARK_JAVA_MAJOR) {
+    throw new Error(
+      `Released-Jupyter PySpark acceptance requires Java ${MINIMUM_PYSPARK_JAVA_MAJOR} or newer; ` +
+        `detected Java ${version} (major ${major}).`
+    );
+  }
+  return { major, version };
+}
+
+function singleJavaProperty(output, property) {
+  const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const matches = [
+    ...output.matchAll(
+      new RegExp(`^[^\\S\\r\\n]*${escapedProperty}[^\\S\\r\\n]*=[^\\S\\r\\n]*(\\S+)[^\\S\\r\\n]*$`, "gmu")
+    )
+  ];
+  if (matches.length !== 1 || typeof matches[0]?.[1] !== "string") {
+    throw new Error(`Released-Jupyter PySpark Java compatibility probe did not report one ${property} property.`);
+  }
+  return matches[0][1];
+}
+
+function javaSpecificationMajor(specificationVersion) {
+  if (!/^[0-9]+(?:\.[0-9]+)?$/u.test(specificationVersion)) {
+    throw new Error("Released-Jupyter PySpark Java compatibility probe returned an unsafe specification version.");
+  }
+  const parts = specificationVersion.split(".").map(Number);
+  const major = parts[0] === 1 && parts.length === 2 ? parts[1] : parts[0];
+  if (!Number.isSafeInteger(major) || major <= 0) {
+    throw new Error("Released-Jupyter PySpark Java compatibility probe returned an invalid specification version.");
+  }
+  return major;
 }
 
 export function writeJupyterAcceptanceEnvironment(directory, python) {

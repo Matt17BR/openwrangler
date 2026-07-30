@@ -599,6 +599,54 @@ describe("DataGrid", () => {
     expect(onPage).not.toHaveBeenCalled();
   });
 
+  it("preserves the confirmed viewport while a native modal owns workbench focus", () => {
+    const onViewStateChange = vi.fn();
+    const onPage = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      viewState: {
+        columnWidths: {},
+        selectedColumnId: "c:1",
+        viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+      },
+      viewStateRestoreVersion: 1,
+      onViewStateChange,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    onViewStateChange.mockClear();
+
+    fireEvent(window, new Event("blur"));
+    rerender(<DataGrid {...props} busy />);
+    scroller.scrollTop = 0;
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(onPage).not.toHaveBeenCalled();
+
+    rerender(<DataGrid {...props} busy={false} />);
+    fireEvent(window, new Event("focus"));
+
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(onPage).not.toHaveBeenCalled();
+  });
+
   it("publishes the physical viewport when the browser clamps impossible restored offsets", () => {
     const onViewStateChange = vi.fn();
     const props = {

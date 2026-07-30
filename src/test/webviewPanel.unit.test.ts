@@ -3366,6 +3366,27 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
   });
 
+  it("observes activation that occurs while an immediately opening panel dispatches its session", async () => {
+    const setActiveSession = vi.fn();
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "openSession") return openedResponse;
+      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+
+    createPanelHarness(
+      { request, setActiveSession },
+      {
+        createViaFactory: true,
+        delegateOpen: true,
+        active: false,
+        activateDuringOpenRequest: true
+      }
+    );
+
+    await vi.waitFor(() => expect(setActiveSession).toHaveBeenLastCalledWith("session"));
+  });
+
   it("forces a Variables-view PySpark session into viewing mode", async () => {
     const source: SessionSource = {
       kind: "notebookVariable",
@@ -3445,23 +3466,6 @@ describe("OpenWranglerPanel retained view state", () => {
       sessionId: null,
       revision: null
     });
-  });
-
-  it("keeps saved notebook snapshots lazy until their renderer is ready", async () => {
-    const source: SessionSource = { kind: "notebookOutput", label: "saved output" };
-    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
-      if (candidate.kind === "openSession") {
-        return { ...openedResponse, metadata: { ...metadata, source } };
-      }
-      if (candidate.kind === "closeSession") return { kind: "sessionClosed", sessionId: candidate.sessionId };
-      throw new Error(`Unexpected request ${candidate.kind}`);
-    });
-    const harness = createPanelHarness({ request }, { createViaFactory: true, delegateOpen: true, source });
-
-    expect(request).not.toHaveBeenCalled();
-    await harness.receive({ kind: "ready" });
-
-    expect(request.mock.calls.filter(([candidate]) => candidate.kind === "openSession")).toHaveLength(1);
   });
 });
 
@@ -3618,6 +3622,7 @@ function createPanelHarness(
     openResponse?: SessionOpenedResponse;
     source?: SessionSource;
     active?: boolean;
+    activateDuringOpenRequest?: boolean;
     workspaceState?: Pick<vscode.Memento, "get" | "update">;
     backend?: DataBackend;
     backendPreference?: DataBackend | "auto";
@@ -3678,18 +3683,25 @@ function createPanelHarness(
     }
   };
   const context = { extensionPath: "/extension", workspaceState: options?.workspaceState };
-  const panelBridge: OpenWranglerBridge = options?.delegateOpen
-    ? bridge
-    : {
-        ...bridge,
-        request: (request, requestOptions) => {
-          if (request.kind === "openSession") return Promise.resolve(options?.openResponse ?? openedResponse);
-          if (request.kind === "closeSession") {
-            return Promise.resolve({ kind: "sessionClosed", sessionId: request.sessionId });
-          }
-          return bridge.request(request, requestOptions);
+  const delegatedRequest: OpenWranglerBridge["request"] = options?.delegateOpen
+    ? (request, requestOptions) => bridge.request(request, requestOptions)
+    : (request, requestOptions) => {
+        if (request.kind === "openSession") return Promise.resolve(options?.openResponse ?? openedResponse);
+        if (request.kind === "closeSession") {
+          return Promise.resolve({ kind: "sessionClosed", sessionId: request.sessionId });
         }
+        return bridge.request(request, requestOptions);
       };
+  const panelBridge: OpenWranglerBridge = {
+    ...bridge,
+    request: (request, requestOptions) => {
+      if (request.kind === "openSession" && options?.activateDuringOpenRequest) {
+        panel.active = true;
+        viewStateListener?.({ webviewPanel: panel });
+      }
+      return delegatedRequest(request, requestOptions);
+    }
+  };
   const source = options?.source ?? metadata.source;
   const backend = options?.backend ?? metadata.backend;
   const backendPreference = options?.backendPreference ?? backend;

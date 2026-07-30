@@ -31,6 +31,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Made the column picker search and navigate the complete schema instead of stopping after the first 100
   matches. The list virtualizes wide schemas, keeps every result keyboard-reachable, and exposes its exact
   position and result count to assistive technology without rendering thousands of options at once.
+- Preserved the exact grid row and horizontal position while native menus or Quick Input temporarily own
+  workbench focus. Incidental layout scrolls on macOS can no longer overwrite the confirmed viewport.
+- Registered a new workbench panel's activation listener before dispatching its session open. Fast Windows
+  activation can no longer leave a successfully opened dataframe disconnected from the active-session UI.
 
 ## [1.1.3] - 2026-07-30
 

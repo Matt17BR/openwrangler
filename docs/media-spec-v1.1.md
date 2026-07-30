@@ -59,14 +59,15 @@ The README may link to a separate gallery rather than stacking more full-width i
 
 - DuckDB: `docs/images/readme/v1.1/gallery/duckdb-rich-parquet.png`, a deterministic 100,000-row file-backed
   1920 x 640 rich Parquet session captured from the production webview and native DuckDB runtime in the browser
-  harness, with decimal, time-zone, list, and struct columns; do not imply notebook support
+  harness, with decimal, time-zone, list, and struct columns; the caption must keep this file-backed scene distinct
+  from the separately supported native, viewing-only live `DuckDBPyRelation` notebook path
 - Polars: `docs/images/readme/v1.1/gallery/notebook-polars.png`, an unaltered 1920 x 760 packaged-editor capture
   of a live native Polars notebook session, including its generated Polars code
 - PySpark: `docs/images/readme/v1.1/gallery/pyspark-live-notebook.png`, the unaltered 1920 x 640 native packaged
   VS Code and released-Jupyter capture of a deterministic 100,000-row by 15-column Classic DataFrame; the
   compositor may add only the sRGB metadata chunk and must not crop, scale, frame, badge, or decorate it
-- The PySpark panel must say `Experimental` and `Viewing only`; it must not imply file opening, cleaning, export,
-  code insertion, saved-output, or DuckDB notebook support
+- The PySpark panel must say `Experimental` and `Viewing only`; it must not imply PySpark file opening, cleaning,
+  export, code insertion, or saved-output support
 - Cursor: one optional compatibility capture using the same orders fixture and composition
 
 ## Capture checklist

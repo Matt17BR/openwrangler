@@ -98,9 +98,6 @@ export class OpenWranglerPanel {
     );
     this.panel.webview.html = this.renderHtml();
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
-    OpenWranglerPanel.panels.add(this);
-    if (this.panel.active) this.activate();
-    if (openImmediately) void this.open();
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
@@ -109,6 +106,9 @@ export class OpenWranglerPanel {
       undefined,
       this.disposables
     );
+    OpenWranglerPanel.panels.add(this);
+    if (this.panel.active) this.activate();
+    if (openImmediately) void this.open();
   }
 
   static sendEditorAction(message: EditorActionMessage): boolean {
@@ -186,20 +186,7 @@ export class OpenWranglerPanel {
       }
     );
 
-    // Live sources must not depend on a renderer-ready event before the host
-    // starts their session. Some editor builds can delay that event while a
-    // previous webview tab is closing; the retained snapshot is posted again
-    // when the renderer eventually becomes ready. Saved output stays lazy so
-    // an unopened snapshot panel does not retain an unnecessary host session.
-    return new OpenWranglerPanel(
-      panel,
-      context,
-      bridge,
-      source,
-      backend,
-      source.kind !== "notebookOutput",
-      backendPreference
-    );
+    return new OpenWranglerPanel(panel, context, bridge, source, backend, true, backendPreference);
   }
 
   async open(): Promise<void> {

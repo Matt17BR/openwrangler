@@ -17,9 +17,7 @@ const rendererMocks = vi.hoisted(() => ({
   showErrorMessage: vi.fn(async () => undefined),
   createPanel: vi.fn(),
   kernelNotebookUris: [] as string[],
-  kernelNotebookDocuments: [] as NotebookDocument[],
-  snapshotPayloads: [] as unknown[],
-  snapshotBridges: [] as object[]
+  kernelNotebookDocuments: [] as NotebookDocument[]
 }));
 
 vi.mock("vscode", () => ({
@@ -68,19 +66,6 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
   }
 }));
 
-vi.mock("../extension/notebooks/snapshotBridge", () => ({
-  SnapshotBridge: class {
-    static fromNormalized(payload: unknown) {
-      return new this(payload);
-    }
-
-    constructor(payload: unknown) {
-      rendererMocks.snapshotPayloads.push(payload);
-      rendererMocks.snapshotBridges.push(this);
-    }
-  }
-}));
-
 import { registerNotebookRendererMessaging } from "../extension/notebooks/rendererMessaging";
 
 describe("notebook renderer messaging", () => {
@@ -94,8 +79,6 @@ describe("notebook renderer messaging", () => {
     rendererMocks.createPanel.mockReset();
     rendererMocks.kernelNotebookUris.length = 0;
     rendererMocks.kernelNotebookDocuments.length = 0;
-    rendererMocks.snapshotPayloads.length = 0;
-    rendererMocks.snapshotBridges.length = 0;
   });
 
   it("opens the primary renderer action as the exact current live variable without pinning the saved backend", () => {
@@ -120,7 +103,6 @@ describe("notebook renderer messaging", () => {
       uri: "file:///workspace/a.ipynb"
     });
     expect(rendererMocks.createPanel.mock.calls[0]).toHaveLength(3);
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
 
@@ -136,8 +118,6 @@ describe("notebook renderer messaging", () => {
 
     dispatch(editorA, validPayload(null));
 
-    expect(rendererMocks.snapshotPayloads).toEqual([]);
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
@@ -210,7 +190,6 @@ describe("notebook renderer messaging", () => {
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.kernelNotebookUris).toEqual([]);
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
       "The notebook behind this preview is no longer open. Reopen it, run the cell that defines the dataframe, and try again."
     );
@@ -230,7 +209,6 @@ describe("notebook renderer messaging", () => {
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
   });
 
   it("rejects a reopened editor and document that merely reuse the originating URI", () => {
@@ -247,7 +225,6 @@ describe("notebook renderer messaging", () => {
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
   });
 
   it("rejects a live action while another open document shares the captured URI", () => {
@@ -279,7 +256,6 @@ describe("notebook renderer messaging", () => {
 
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
       "This Open Wrangler notebook output is malformed or unsupported."
     );
@@ -316,7 +292,6 @@ describe("notebook renderer messaging", () => {
     dispatch(editorA, validPayload());
 
     expect(rendererMocks.createPanel).not.toHaveBeenCalled();
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.showErrorMessage).toHaveBeenCalledWith(
       "Open Wrangler could not access the live dataframe. Select or start the notebook's Python kernel, run the cell that defines frame, and try again. Kernel access denied."
     );
@@ -330,7 +305,6 @@ describe("notebook renderer messaging", () => {
       expect.anything(),
       expect.objectContaining({ uri: "file:///workspace/b.ipynb" })
     );
-    expect(rendererMocks.snapshotBridges).toEqual([]);
     expect(rendererMocks.activeEditorReads).toBe(0);
   });
 });

@@ -57,17 +57,26 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
+  activateAcceptancePointerTargetAtCurrentCenter,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
   isRetiredRendererTarget,
   pollAcceptanceCondition,
   pressKeyboardKeyPairWithoutTransitionGap,
-  probeRendererButtonReadiness,
   withAcceptanceOperationDeadline
 } from "./playwrightLifecycle";
-import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
+import { findExactActiveNotebookRendererButton } from "./notebookRendererFrame";
+import {
+  ACCEPTANCE_PROGRESS_PROTOCOL,
+  failedAcceptanceProgressCheckpoint,
+  writeAcceptanceProgressCheckpoint
+} from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
+import {
+  releasedNotebookExecutionFailureMessage,
+  releasedNotebookOutputClassification
+} from "./releasedNotebookFailure";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
@@ -807,9 +816,14 @@ function ensurePackagedFirstUseFixture(workspace: vscode.Uri): vscode.Uri {
   return fixture;
 }
 
+let lastAcceptanceProgressCheckpoint: string | undefined;
+
 function recordAcceptanceProgress(checkpoint: string): void {
   const progressPath = process.env.OPEN_WRANGLER_TEST_PROGRESS;
-  if (!progressPath) return;
+  if (!progressPath) {
+    lastAcceptanceProgressCheckpoint = checkpoint;
+    return;
+  }
   const runId = process.env.OPEN_WRANGLER_TEST_RUN_ID;
   const phase = process.env.OPEN_WRANGLER_TEST_PHASE;
   if (!runId || !phase) {
@@ -821,6 +835,7 @@ function recordAcceptanceProgress(checkpoint: string): void {
     phase,
     checkpoint
   });
+  lastAcceptanceProgressCheckpoint = checkpoint;
 }
 
 type DataWranglerCoexistencePhase =
@@ -1251,6 +1266,7 @@ async function exerciseReleasedJupyterExtension(
   let notebook: vscode.NotebookDocument | undefined;
   let rendererLoadObserver: NotebookRendererLoadObserver | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
+  let failureCheckpoint: string | undefined;
   try {
     await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
     recordAcceptanceProgress(`${phase}:notebook-open`);
@@ -1516,18 +1532,20 @@ async function exerciseReleasedJupyterExtension(
       if (phase === "jupyter-allow" && screenshotOutput) {
         await captureReleasedJupyterPandasPreview(workbench, rendererButton, screenshotOutput);
       }
+      let liveShowcase: NonNullable<ReturnType<TestApi["activeSession"]>>;
       try {
-        await rendererButton.click();
+        liveShowcase = await openReleasedRendererVariableSession(
+          rendererButton,
+          workbench,
+          testing,
+          notebook,
+          { name: "orders_df", type: "DataFrame", backend: "pandas", firstValue: "2400001" },
+          "the complete current orders_df opened from the primary MIME-v2 renderer action",
+          `${phase}:orders-inline`
+        );
       } finally {
         await rendererButton.dispose();
       }
-      const liveShowcase = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        { name: "orders_df", type: "DataFrame", backend: "pandas", firstValue: "2400001" },
-        "the complete current orders_df opened from the primary MIME-v2 renderer action"
-      );
       assert.equal(liveShowcase.metadata.mode, "viewing");
       assert.deepEqual(liveShowcase.metadata.shape, { rows: 100_000, columns: 15 });
       assert.deepEqual(liveShowcase.metadata.filteredShape, liveShowcase.metadata.shape);
@@ -1602,25 +1620,26 @@ async function exerciseReleasedJupyterExtension(
         "duckdb_relation",
         "Open in Open Wrangler"
       );
+      let duckdbRelation: NonNullable<ReturnType<TestApi["activeSession"]>>;
       try {
-        await duckdbRendererButton.click();
+        duckdbRelation = await openReleasedRendererVariableSession(
+          duckdbRendererButton,
+          workbench,
+          testing,
+          notebook,
+          {
+            name: "duckdb_relation",
+            type: "_duckdb.DuckDBPyRelation",
+            backend: "duckdb",
+            firstValue: "3400001",
+            notebookInsert: false
+          },
+          "the complete connection-private DuckDB relation opened from its primary inline action",
+          `${phase}:duckdb-inline`
+        );
       } finally {
         await duckdbRendererButton.dispose();
       }
-
-      const duckdbRelation = await waitForReleasedVariableSession(
-        workbench,
-        testing,
-        notebook,
-        {
-          name: "duckdb_relation",
-          type: "_duckdb.DuckDBPyRelation",
-          backend: "duckdb",
-          firstValue: "3400001",
-          notebookInsert: false
-        },
-        "the complete connection-private DuckDB relation opened from its primary inline action"
-      );
       assert.equal(
         duckdbRelation.metadata.mode,
         "viewing",
@@ -1913,17 +1932,24 @@ async function exerciseReleasedJupyterExtension(
       "the recovered released-Jupyter Pandas session"
     );
     assert.equal(testing.diagnostics().sessionCount, 0);
+  } catch (error) {
+    failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
+    throw error;
   } finally {
-    rendererLoadObserver?.dispose();
-    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
-    remoteServerCollection?.dispose();
-    await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
-    await configuration.update(
-      "notebookPreviewProvider",
-      originalNotebookPreviewProvider,
-      vscode.ConfigurationTarget.Workspace
-    );
-    cleanupAcceptanceTemporaryDirectory(directory);
+    try {
+      rendererLoadObserver?.dispose();
+      await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+      remoteServerCollection?.dispose();
+      await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
+      await configuration.update(
+        "notebookPreviewProvider",
+        originalNotebookPreviewProvider,
+        vscode.ConfigurationTarget.Workspace
+      );
+      cleanupAcceptanceTemporaryDirectory(directory);
+    } finally {
+      if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
+    }
   }
 }
 
@@ -1955,6 +1981,7 @@ async function exerciseReleasedPySparkJupyterExtension(
   writeReleasedPySparkNotebook(notebookPath, extension.extensionPath);
 
   let notebook: vscode.NotebookDocument | undefined;
+  let failureCheckpoint: string | undefined;
   try {
     recordAcceptanceProgress(`${phase}:notebook-open`);
     notebook = await vscode.workspace.openNotebookDocument(notebookUri);
@@ -2001,7 +2028,11 @@ async function exerciseReleasedPySparkJupyterExtension(
       "PySpark Classic setup"
     );
     assert.equal(classicSetup.sparkVersion, "4.2.0");
-    assert.equal(classicSetup.javaVersion, "17");
+    const classicJavaMajor = Number(classicSetup.javaVersion);
+    assert.ok(
+      Number.isSafeInteger(classicJavaMajor) && classicJavaMajor >= 17,
+      `PySpark 4.2 requires Java 17 or newer; the notebook reported ${JSON.stringify(classicSetup.javaVersion)}.`
+    );
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
     assert.equal(classicSetup.workerPythonPinned, true);
 
@@ -2210,9 +2241,16 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(testing.diagnostics().sessionCount, 0);
     assert.equal(releasedJupyterSessionTabs().length, 0);
     assert.ok(jupyterApi, "The released Jupyter API must remain active through PySpark cleanup.");
+  } catch (error) {
+    failureCheckpoint = failedAcceptanceProgressCheckpoint(phase, lastAcceptanceProgressCheckpoint);
+    throw error;
   } finally {
-    await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
-    cleanupAcceptanceTemporaryDirectory(directory);
+    try {
+      await bestEffortReleasedJupyterCleanup(testing, notebook, phase);
+      cleanupAcceptanceTemporaryDirectory(directory);
+    } finally {
+      if (failureCheckpoint) recordAcceptanceProgress(failureCheckpoint);
+    }
   }
 }
 
@@ -3229,14 +3267,15 @@ async function executeReleasedNotebookCell(
         }
       }
       if (observedFreshExecutionSummary && cell.executionSummary?.success === false) {
-        throw new Error(`Released-Jupyter cell ${index} failed: ${notebookCellOutputText(cell)}`);
+        recordAcceptanceProgress(`${checkpoint}:execution-failed`);
+        throw new Error(releasedNotebookExecutionFailureMessage(index, cell.outputs));
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     } while (Date.now() < deadline);
     recordAcceptanceProgress(`${checkpoint}:timeout`);
     throw new Error(
       `Timed out waiting for a fresh released-Jupyter execution of cell ${index}. ` +
-        `Command: ${readCommandState().kind}. Output: ${JSON.stringify(notebookCellOutputText(cell))}`
+        `Command: ${readCommandState().kind}. Output: ${releasedNotebookOutputClassification(cell.outputs)}.`
     );
   } finally {
     executionListener.dispose();
@@ -3713,6 +3752,32 @@ async function waitForReleasedVariableSession(
   assert.equal(active.metadata.source.uri, notebook.uri.toString());
   assert.equal(active.metadata.capabilities.notebookInsert, expected.notebookInsert ?? true);
   return active;
+}
+
+async function openReleasedRendererVariableSession(
+  action: NotebookRendererButton,
+  workbench: Page,
+  testing: TestApi,
+  notebook: vscode.NotebookDocument,
+  expected: ReleasedVariableExpectation,
+  description: string,
+  checkpoint: string
+): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> {
+  recordAcceptanceProgress(`${checkpoint}:button-ready`);
+  const receipt = async (): Promise<NonNullable<ReturnType<TestApi["activeSession"]>>> => {
+    const active = await waitForReleasedVariableSession(workbench, testing, notebook, expected, description);
+    recordAcceptanceProgress(`${checkpoint}:receipt`);
+    return active;
+  };
+  return invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+    description,
+    activate: async () => {
+      recordAcceptanceProgress(`${checkpoint}:activate`);
+      await activateAcceptancePointerTargetAtCurrentCenter(action, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS);
+    },
+    receipt,
+    authoritativeReceiptAfterActivationFailure: receipt
+  });
 }
 
 async function openReleasedVariableSession(
@@ -10688,29 +10753,6 @@ async function waitForNotebookRendererButton(
     const browser = workbench.context().browser();
     assertNotebookRendererLifecycle(workbench, browser);
     const targets = openWranglerWebviewTargets(workbench, browser, NOTEBOOK_RENDERER_TARGET_LIMIT);
-    for (const target of targets) {
-      if (isRetiredRendererTarget(workbench, target.page, target.frame)) continue;
-      for (const button of directNotebookRendererButtonCandidates(target.frame, label, buttonName)) {
-        try {
-          const remainingMs = deadline - Date.now();
-          if (remainingMs <= 0) break discovery;
-          const probeTimeoutMs = Math.min(NOTEBOOK_RENDERER_PROBE_TIMEOUT_MS, remainingMs);
-          const ready = await withAcceptanceOperationDeadline(
-            probeRendererButtonReadiness(button, probeTimeoutMs),
-            probeTimeoutMs,
-            "the notebook renderer action readiness probe"
-          );
-          if (ready) return locatorNotebookRendererButton(button, target.page.mouse);
-        } catch (error) {
-          const discoveryExpired = Date.now() >= deadline;
-          if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
-            ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
-          }
-          if (discoveryExpired) break discovery;
-        }
-      }
-    }
-
     const nestedButtons: NotebookRendererButton[] = [];
     let returnedNestedButton: NotebookRendererButton | undefined;
     try {
@@ -10738,9 +10780,6 @@ async function waitForNotebookRendererButton(
       if (nestedButtons.length === 1) {
         returnedNestedButton = nestedButtons[0]!;
         return returnedNestedButton;
-      }
-      if (nestedButtons.length > 1) {
-        throw new Error("Multiple visible notebook renderer actions matched the exact requested output.");
       }
     } finally {
       await Promise.allSettled(
@@ -10819,26 +10858,6 @@ async function waitForNotebookRendererPreviewOnly(workbench: Page, label: string
   throw new Error(`Timed out waiting for the exact preview-only notebook output: ${JSON.stringify(diagnostics)}`);
 }
 
-function directNotebookRendererButtonCandidates(frame: Frame, label: string, buttonName: string): Locator[] {
-  const preview = frame.locator("section.openwrangler-notebook").filter({
-    hasText: `Open Wrangler preview: ${label}`
-  });
-  return [preview.getByRole("button", { name: buttonName, exact: true }).first()];
-}
-
-function locatorNotebookRendererButton(
-  button: Locator,
-  pointer: NotebookRendererButton["pointer"]
-): NotebookRendererButton {
-  return {
-    pointer,
-    click: () => button.click(),
-    boundingBox: () => button.boundingBox(),
-    evaluate: <Result>(pageFunction: (element: unknown) => Result | Promise<Result>) => button.evaluate(pageFunction),
-    dispose: () => Promise.resolve()
-  };
-}
-
 async function resolveNestedNotebookRendererButtonWithDeadline(
   frame: Frame,
   label: string,
@@ -10863,31 +10882,10 @@ async function resolveNestedNotebookRendererButton(
   label: string,
   buttonName: string
 ): Promise<NotebookRendererButton | undefined> {
-  const raw = await frame.evaluateHandle(
-    ({ expectedLabel, expectedButtonName }) => {
-      type NestedDocument = NestedElement & { readonly readyState: string };
-      type NestedElement = {
-        readonly contentDocument?: NestedDocument | null;
-        readonly isConnected: boolean;
-        readonly textContent: string | null;
-        querySelector(selector: string): NestedElement | null;
-        querySelectorAll(selector: string): ArrayLike<NestedElement>;
-      };
-      const outerDocument = (globalThis as unknown as { readonly document: NestedDocument }).document;
-      const innerDocument = outerDocument.querySelector("iframe#active-frame")?.contentDocument;
-      if (!innerDocument || innerDocument.readyState === "loading") return null;
-      const titlePrefix = `Open Wrangler preview: ${expectedLabel} (`;
-      const matches = Array.from(innerDocument.querySelectorAll("section.openwrangler-notebook")).flatMap((section) => {
-        const title = section.querySelector("header > span")?.textContent ?? "";
-        if (!title.startsWith(titlePrefix)) return [];
-        return Array.from(section.querySelectorAll("button")).filter(
-          (button) => button.isConnected && (button.textContent ?? "").trim() === expectedButtonName
-        );
-      });
-      return matches.length === 1 ? matches[0] : null;
-    },
-    { expectedLabel: label, expectedButtonName: buttonName }
-  );
+  const raw = await frame.evaluateHandle(findExactActiveNotebookRendererButton, {
+    expectedLabel: label,
+    expectedButtonName: buttonName
+  });
   const element = raw.asElement() as ElementHandle<unknown> | null;
   if (!element) {
     await raw.dispose();
@@ -10915,13 +10913,6 @@ async function resolveNestedNotebookRendererButton(
       element.evaluate(pageFunction),
     dispose: () => element.dispose()
   };
-}
-
-function isNotebookRendererProbeDeadline(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.startsWith("Timed out waiting for the notebook renderer action readiness probe after ")
-  );
 }
 
 function isNestedNotebookRendererProbeDeadline(error: unknown): boolean {

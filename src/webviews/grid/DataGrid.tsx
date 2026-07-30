@@ -140,6 +140,7 @@ export function DataGrid({
   const focusRequested = useRef(false);
   const preserveGridFocusAfterScroll = useRef(false);
   const programmaticViewportTarget = useRef<ProgrammaticViewportTarget | undefined>(undefined);
+  const viewportUpdatesSuspended = useRef(false);
   const viewStateRef = useRef(viewState);
   const restorationRef = useRef({ viewState, metadata, page, pageSize });
   const scrollInputsRef = useRef<ScrollInputs>({
@@ -274,9 +275,37 @@ export function DataGrid({
       reportViewState,
       totalRows
     } = scrollInputsRef.current;
+    const target = programmaticViewportTarget.current;
+    if (viewportUpdatesSuspended.current) {
+      const firstVisibleRow = Math.max(
+        0,
+        Math.min(target?.firstVisibleRow ?? viewStateRef.current.viewport.firstVisibleRow, Math.max(0, totalRows - 1))
+      );
+      const scrollTop = scrollTopForLogicalRow(createRowScrollModel(totalRows, scroller.clientHeight), firstVisibleRow);
+      const scrollLeft = target?.scrollLeft ?? viewStateRef.current.viewport.scrollLeft;
+      programmaticViewportTarget.current = { firstVisibleRow, scrollTop, scrollLeft };
+      scroller.scrollTop = scrollTop;
+      scroller.scrollLeft = scrollLeft;
+      setViewport((current) => {
+        const next = {
+          firstVisibleRow,
+          scrollLeft,
+          scrollTop,
+          width: scroller.clientWidth,
+          height: scroller.clientHeight
+        };
+        return current.firstVisibleRow === next.firstVisibleRow &&
+          current.scrollLeft === next.scrollLeft &&
+          current.scrollTop === next.scrollTop &&
+          current.width === next.width &&
+          current.height === next.height
+          ? current
+          : next;
+      });
+      return;
+    }
     const gridOwnsFocus = document.hasFocus() && scroller.contains(document.activeElement);
     preserveGridFocusAfterScroll.current = !focusRequested.current && gridOwnsFocus;
-    const target = programmaticViewportTarget.current;
     const targetStillQuantized =
       target !== undefined &&
       Math.abs(scroller.scrollTop - target.scrollTop) <= scrollQuantizationTolerance &&
@@ -337,6 +366,7 @@ export function DataGrid({
     if (!scroller) return;
     const update = () => updateViewportFromScroller();
     const clearProgrammaticTarget = () => {
+      viewportUpdatesSuspended.current = false;
       programmaticViewportTarget.current = undefined;
       const pending = goToColumnRequestRef.current;
       if (
@@ -354,6 +384,32 @@ export function DataGrid({
         pending.onHandled(pending.requestId, "interrupted");
       }
     };
+    const suspendViewportUpdates = () => {
+      viewportUpdatesSuspended.current = true;
+      const firstVisibleRow =
+        programmaticViewportTarget.current?.firstVisibleRow ?? viewStateRef.current.viewport.firstVisibleRow;
+      const scrollTop = scrollTopForLogicalRow(
+        createRowScrollModel(scrollInputsRef.current.totalRows, scroller.clientHeight),
+        firstVisibleRow
+      );
+      const scrollLeft = programmaticViewportTarget.current?.scrollLeft ?? viewStateRef.current.viewport.scrollLeft;
+      programmaticViewportTarget.current = { firstVisibleRow, scrollTop, scrollLeft };
+    };
+    const resumeViewportUpdates = () => {
+      if (!viewportUpdatesSuspended.current) return;
+      const target = programmaticViewportTarget.current;
+      if (target) {
+        const scrollTop = scrollTopForLogicalRow(
+          createRowScrollModel(scrollInputsRef.current.totalRows, scroller.clientHeight),
+          target.firstVisibleRow
+        );
+        programmaticViewportTarget.current = { ...target, scrollTop };
+        scroller.scrollTop = scrollTop;
+        scroller.scrollLeft = target.scrollLeft;
+      }
+      viewportUpdatesSuspended.current = false;
+      update();
+    };
     const rebaseAfterResize = () => {
       const logicalRow =
         programmaticViewportTarget.current?.firstVisibleRow ?? viewStateRef.current.viewport.firstVisibleRow;
@@ -364,7 +420,9 @@ export function DataGrid({
       programmaticViewportTarget.current = {
         firstVisibleRow: logicalRow,
         scrollTop,
-        scrollLeft: scroller.scrollLeft
+        scrollLeft: viewportUpdatesSuspended.current
+          ? (programmaticViewportTarget.current?.scrollLeft ?? viewStateRef.current.viewport.scrollLeft)
+          : scroller.scrollLeft
       };
       scroller.scrollTop = scrollTop;
       update();
@@ -374,12 +432,16 @@ export function DataGrid({
     scroller.addEventListener("wheel", clearProgrammaticTarget, { passive: true });
     scroller.addEventListener("pointerdown", clearProgrammaticTarget, { passive: true });
     scroller.addEventListener("touchstart", clearProgrammaticTarget, { passive: true });
+    window.addEventListener("blur", suspendViewportUpdates);
+    window.addEventListener("focus", resumeViewportUpdates);
     window.addEventListener("resize", rebaseAfterResize);
     return () => {
       scroller.removeEventListener("scroll", update);
       scroller.removeEventListener("wheel", clearProgrammaticTarget);
       scroller.removeEventListener("pointerdown", clearProgrammaticTarget);
       scroller.removeEventListener("touchstart", clearProgrammaticTarget);
+      window.removeEventListener("blur", suspendViewportUpdates);
+      window.removeEventListener("focus", resumeViewportUpdates);
       window.removeEventListener("resize", rebaseAfterResize);
     };
   }, [updateViewportFromScroller]);
