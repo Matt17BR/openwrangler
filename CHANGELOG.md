@@ -4,6 +4,27 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-07-30
+
+### Added
+
+- Added exact text-column Insights for empty strings and minimum, maximum, and mean character length across Pandas, Polars, DuckDB, PySpark, and saved notebook snapshots. Nulls stay separate, empty strings are measured without trimming, and Unicode length counts code points consistently across engines.
+
+### Changed
+
+- Kept text profiling engine-native. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical columns deliberately measure the same normalized display text shown in the grid.
+- Preserved nonzero Pandas NaN counts in semantic text Insights while omitting the irrelevant zero-valued row, and rejected internally contradictory empty/length summaries at the protocol boundary.
+- Removed the ambiguous secondary **Open saved snapshot** button from inline notebook outputs. One **Open in Open Wrangler** action now opens the linked live variable when available or the captured output when no live link exists.
+
+### Fixed
+
+- Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema, including when renderer synchronization refreshes that schema mid-retry. Each reveal request now enters layout only once, preventing a far-right generated column from triggering React’s nested-update guard and blanking the editor. Newly generated columns remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
+- Kept a confirmed draft visible when an older page or renderer snapshot finishes late, and drained a renderer synchronization requested at the end of an existing synchronization instead of abandoning its authoritative replay.
+- Committed each authoritative renderer replay before acknowledging it, retired webviews whose synchronization marker could not be delivered, and delayed automatic Code Preview reveal until the exact draft was physically rendered. The default **on first draft** behavior now reveals Code Preview only once per session; later drafts update the existing provider in place and respect a user closing the panel instead of repeatedly focusing it. Automatic reveal uses the native preserve-focus option, so Code Preview opens without taking keyboard focus, remounting the dataframe webview, or starting a redundant synchronization cycle. Recovery polling can no longer race a draft publication or leave packaged editor assertions attached to a hidden prior renderer.
+- Made column-header sorts accumulate instead of erasing earlier keys: the newest choice becomes priority 1 while every other key remains as a lower-priority tie-breaker. Filters / Sorts now exposes concise move-up/down, direction, null-placement, remove, clear, apply, and discard controls for the complete ordered sort; the native Activity Bar mirrors priorities and offers immediate validated reorder/removal actions.
+- Rejected stale native sort actions when a newer quick sort is still pending, reset uncommitted sort edits through **Clear column** and **Clear all**, and reject duplicate sort columns at every persisted/protocol boundary. Only priority 1 now owns the grid's `aria-sort`; lower-priority keys remain explicitly labeled. During applied-step inspection, Activity Bar filter/sort controls pause behind a clear return-to-current-view action.
+- Gave column names their own full-width header row and moved compact type, sort, and menu controls onto the metadata row. The resize target now sits on the column edge instead of consuming title width, so realistic names remain readable at narrow widths and high zoom without losing keyboard access or visible sort priority.
+
 ## [1.1.2] - 2026-07-30
 
 ### Added

@@ -410,6 +410,8 @@ class PolarsEngine(DataFrameEngine):
             elif semantic_type in {"datetime", "date"}:
                 summary["visualization"] = datetime_visualization(series.min(), series.max())
             else:
+                if semantic_type == "string":
+                    summary["text"] = _polars_text_summary(series)
                 summary["visualization"] = categorical_visualization(
                     summary["topValues"],
                     int(df.height) - int(null_counts.get(f"__open_wrangler_null_{index}", 0)) - summary["nanCount"],
@@ -472,6 +474,16 @@ class PolarsEngine(DataFrameEngine):
                     [
                         expression.min().alias(f"{prefix}min"),
                         expression.max().alias(f"{prefix}max"),
+                    ]
+                )
+            elif semantic_type == "string":
+                text_lengths = expression.cast(pl.String, strict=False).str.len_chars()
+                metric_expressions.extend(
+                    [
+                        (text_lengths == 0).fill_null(False).sum().alias(f"{prefix}text_empty"),
+                        text_lengths.min().alias(f"{prefix}text_min"),
+                        text_lengths.max().alias(f"{prefix}text_max"),
+                        text_lengths.mean().alias(f"{prefix}text_mean"),
                     ]
                 )
 
@@ -589,6 +601,22 @@ class PolarsEngine(DataFrameEngine):
             elif semantic_type in {"datetime", "date"}:
                 summary["visualization"] = datetime_visualization(metrics[f"{prefix}min"], metrics[f"{prefix}max"])
             else:
+                if semantic_type == "string":
+                    text_summary: dict[str, int | float] = {
+                        "emptyCount": int(metrics[f"{prefix}text_empty"]),
+                    }
+                    minimum = metrics[f"{prefix}text_min"]
+                    maximum = metrics[f"{prefix}text_max"]
+                    mean = metrics[f"{prefix}text_mean"]
+                    if minimum is not None and maximum is not None and mean is not None:
+                        text_summary.update(
+                            {
+                                "minLength": int(minimum),
+                                "maxLength": int(maximum),
+                                "meanLength": float(mean),
+                            }
+                        )
+                    summary["text"] = text_summary
                 summary["visualization"] = categorical_visualization(top_values, total_count - null_count - nan_count)
             summaries.append(summary)
         return summaries
@@ -1978,6 +2006,20 @@ def _polars_predicate_expression(
     if column_type == "float":
         valid = f"({valid} & {expression}.is_not_nan().fill_null(False))"
     return f"(({result}).fill_null(False) & {valid})"
+
+
+def _polars_text_summary(series: Any) -> dict[str, int | float]:
+    import polars as pl
+
+    lengths = series.cast(pl.String, strict=False).str.len_chars().drop_nulls()
+    if lengths.is_empty():
+        return {"emptyCount": 0}
+    return {
+        "emptyCount": int((lengths == 0).sum()),
+        "minLength": int(lengths.min()),
+        "maxLength": int(lengths.max()),
+        "meanLength": float(lengths.mean()),
+    }
 
 
 def _maybe_float(value: Any) -> float | None:

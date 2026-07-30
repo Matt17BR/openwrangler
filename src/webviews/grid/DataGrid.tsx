@@ -51,7 +51,7 @@ interface DataGridProps {
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn?(column: string): void;
   onOpenFilter(column: string): void;
-  onGoToColumnHandled?(requestId: number): void;
+  onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
   onVisibleSummaryColumnsChange(columnIds: string[]): void;
   onViewStateChange?(state: GridViewState): void;
@@ -80,6 +80,7 @@ const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
+const columnRevealLayoutRetryLimit = 12;
 const maximumRenderedCellCharacters = 4_096;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
@@ -304,7 +305,18 @@ export function DataGrid({
         : next
     );
     const currentViewState = viewStateRef.current;
-    if (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft) {
+    const pendingColumnReveal = goToColumnRequestRef.current;
+    const columnRevealIsPending =
+      pendingColumnReveal.columnId !== undefined &&
+      pendingColumnReveal.requestId !== undefined &&
+      requestedGoToColumnRequest.current?.requestId === pendingColumnReveal.requestId &&
+      requestedGoToColumnRequest.current.restoreVersion === pendingColumnReveal.restoreVersion &&
+      (handledGoToColumnRequest.current?.requestId !== pendingColumnReveal.requestId ||
+        handledGoToColumnRequest.current.restoreVersion !== pendingColumnReveal.restoreVersion);
+    if (
+      !columnRevealIsPending &&
+      (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft)
+    ) {
       reportViewState({
         ...currentViewState,
         viewport: { firstVisibleRow: row, scrollLeft: next.scrollLeft }
@@ -339,7 +351,7 @@ export function DataGrid({
           requestId: pending.requestId,
           restoreVersion: pending.restoreVersion
         };
-        pending.onHandled(pending.requestId);
+        pending.onHandled(pending.requestId, "interrupted");
       }
     };
     const rebaseAfterResize = () => {
@@ -471,35 +483,84 @@ export function DataGrid({
     };
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
-    const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
-    const targetWidth = widths[index] ?? defaultColumnWidth;
-    const centeredOffset = Math.max(rowHeaderWidth, (scroller.clientWidth - targetWidth) / 2);
-    scroller.scrollLeft = Math.max(0, columnStart - centeredOffset);
-    const scrollLeft = scroller.scrollLeft;
-    const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
-    programmaticViewportTarget.current = {
-      firstVisibleRow,
-      scrollTop: scroller.scrollTop,
-      scrollLeft
-    };
-    setViewport((current) => ({
-      ...current,
-      firstVisibleRow,
-      scrollLeft,
-      scrollTop: scroller.scrollTop,
-      width: scroller.clientWidth,
-      height: scroller.clientHeight
-    }));
-    setFocusedCell((current) => ({ ...current, column: index }));
-    const currentViewState = viewStateRef.current;
-    reportViewState({
-      ...currentViewState,
-      selectedColumnId: metadata.schema[index].id,
-      viewport: {
-        ...currentViewState.viewport,
-        scrollLeft
+    let retryFrame: number | undefined;
+    let remainingLayoutRetries = columnRevealLayoutRetryLimit;
+    const reveal = (): boolean => {
+      if (scrollerRef.current !== scroller) return true;
+      const pending = goToColumnRequestRef.current;
+      if (
+        pending.columnId !== goToColumnId ||
+        pending.requestId !== goToColumnRequestId ||
+        pending.restoreVersion !== viewStateRestoreVersion ||
+        (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+          handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
+      ) {
+        return true;
       }
-    });
+
+      const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
+      const targetWidth = widths[index] ?? defaultColumnWidth;
+      const centeredOffset = Math.max(rowHeaderWidth, (scroller.clientWidth - targetWidth) / 2);
+      scroller.scrollLeft = Math.max(0, columnStart - centeredOffset);
+      const scrollLeft = scroller.scrollLeft;
+      const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
+      programmaticViewportTarget.current = {
+        firstVisibleRow,
+        scrollTop: scroller.scrollTop,
+        scrollLeft
+      };
+      setViewport((current) => ({
+        ...current,
+        firstVisibleRow,
+        scrollLeft,
+        scrollTop: scroller.scrollTop,
+        width: scroller.clientWidth,
+        height: scroller.clientHeight
+      }));
+
+      const columnEnd = columnStart + targetWidth;
+      const visibleStart = scrollLeft + rowHeaderWidth;
+      const visibleEnd = scrollLeft + scroller.clientWidth;
+      const requiredVisibleWidth = Math.min(targetWidth, Math.max(0, scroller.clientWidth - rowHeaderWidth));
+      const actualVisibleWidth = Math.max(0, Math.min(columnEnd, visibleEnd) - Math.max(columnStart, visibleStart));
+      const targetIsVisible =
+        requiredVisibleWidth > 0 && actualVisibleWidth + scrollQuantizationTolerance >= requiredVisibleWidth;
+      if (!targetIsVisible) return false;
+
+      setFocusedCell((current) => ({ ...current, column: index }));
+      const currentViewState = viewStateRef.current;
+      reportViewState({
+        ...currentViewState,
+        selectedColumnId: metadata.schema[index].id,
+        viewport: {
+          ...currentViewState.viewport,
+          scrollLeft
+        }
+      });
+      return true;
+    };
+    const retryAfterLayout = () => {
+      retryFrame = undefined;
+      if (reveal() || remainingLayoutRetries <= 0) return;
+      remainingLayoutRetries -= 1;
+      retryFrame = window.requestAnimationFrame(retryAfterLayout);
+    };
+    if (!reveal()) {
+      remainingLayoutRetries -= 1;
+      retryFrame = window.requestAnimationFrame(retryAfterLayout);
+    }
+    return () => {
+      if (retryFrame === undefined) return;
+      window.cancelAnimationFrame(retryFrame);
+      if (
+        requestedGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+        requestedGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion &&
+        (handledGoToColumnRequest.current?.requestId !== goToColumnRequestId ||
+          handledGoToColumnRequest.current.restoreVersion !== viewStateRestoreVersion)
+      ) {
+        requestedGoToColumnRequest.current = undefined;
+      }
+    };
   }, [
     defaultColumnWidth,
     goToColumnId,
@@ -540,7 +601,7 @@ export function DataGrid({
       requestId: goToColumnRequestId,
       restoreVersion: viewStateRestoreVersion
     };
-    onGoToColumnHandled(goToColumnRequestId);
+    onGoToColumnHandled(goToColumnRequestId, "revealed");
   }, [
     goToColumnId,
     goToColumnRequestId,
@@ -1111,7 +1172,13 @@ function ColumnHeader({
       aria-colindex={ariaColumnIndex}
       aria-selected={selected}
       aria-sort={
-        activeSort?.direction === "asc" ? "ascending" : activeSort?.direction === "desc" ? "descending" : undefined
+        activeSortIndex === 0
+          ? activeSort?.direction === "asc"
+            ? "ascending"
+            : activeSort?.direction === "desc"
+              ? "descending"
+              : undefined
+          : undefined
       }
       aria-label={[column.name, added ? "added column" : "", activeSortLabel ? `sorted ${activeSortLabel}` : ""]
         .filter(Boolean)
@@ -1121,84 +1188,93 @@ function ColumnHeader({
       title={`${column.rawType}${column.nullable ? " nullable" : ""}${added ? ", added column" : ""}`}
     >
       <div className="columnHeader">
-        <span className={`typeIcon codicon ${columnTypePresentation(column).icon}`} aria-hidden="true" />
-        <span className="columnTitle">{column.name}</span>
-        {activeSort && (
-          <button
-            type="button"
-            className={`columnSortIndicator codicon ${
-              activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
-            }`}
-            aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
-            title={`Sorted ${activeSortLabel}. Clear sort`}
-            disabled={viewControlsDisabled}
-            onClick={() => onClearSortColumn(column.name)}
-          >
-            {sortCount > 1 && activeSortIndex !== undefined && (
-              <span className="sortPriority" aria-hidden="true">
-                {activeSortIndex + 1}
-              </span>
-            )}
-          </button>
-        )}
-        <details ref={menuRef} className="columnMenu">
-          <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
-          <div className="columnMenuContent">
-            {viewQueryControlsDisabled && (
-              <span id={disabledDescriptionId} className="columnMenuNotice">
-                {viewQueryControlsDisabledReason}
-              </span>
-            )}
-            <button
-              type="button"
-              disabled={viewQueryControlsDisabled}
-              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-              title={viewQueryControlsDisabledReason}
-              onClick={() => runMenuAction(() => onOpenFilter(column.name))}
-            >
-              Filter…
-            </button>
-            <button
-              type="button"
-              disabled={viewQueryControlsDisabled || comparisonUnavailable}
-              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-              title={
-                viewQueryControlsDisabled
-                  ? viewQueryControlsDisabledReason
-                  : comparisonUnavailable
-                    ? `Sorting is unavailable for ${column.type} columns`
-                    : undefined
-              }
-              onClick={() => runMenuAction(() => onSortColumn(column.name, "asc"))}
-            >
-              Sort ascending
-            </button>
-            <button
-              type="button"
-              disabled={viewQueryControlsDisabled || comparisonUnavailable}
-              aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
-              title={
-                viewQueryControlsDisabled
-                  ? viewQueryControlsDisabledReason
-                  : comparisonUnavailable
-                    ? `Sorting is unavailable for ${column.type} columns`
-                    : undefined
-              }
-              onClick={() => runMenuAction(() => onSortColumn(column.name, "desc"))}
-            >
-              Sort descending
-            </button>
+        <span className="columnTitle" title={column.name}>
+          {column.name}
+        </span>
+        <div className="columnMetaRow">
+          <span className="columnType" title={column.rawType}>
+            <span className={`typeIcon codicon ${columnTypePresentation(column).icon}`} aria-hidden="true" />
+            <small>{column.rawType}</small>
+          </span>
+          <div className="columnHeaderActions">
             {activeSort && (
               <button
                 type="button"
+                className={`columnSortIndicator codicon ${
+                  activeSort.direction === "asc" ? "codicon-arrow-up" : "codicon-arrow-down"
+                }`}
+                aria-label={`Clear sort for ${column.name}; currently ${activeSortLabel}`}
+                title={`Sorted ${activeSortLabel}. Clear sort`}
                 disabled={viewControlsDisabled}
-                onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
+                onClick={() => onClearSortColumn(column.name)}
               >
-                Clear sort
+                {sortCount > 1 && activeSortIndex !== undefined && (
+                  <span className="sortPriority" aria-hidden="true">
+                    {activeSortIndex + 1}
+                  </span>
+                )}
               </button>
             )}
+            <details ref={menuRef} className="columnMenu">
+              <summary aria-label={`Column actions for ${column.name}`} className="codicon codicon-ellipsis" />
+              <div className="columnMenuContent">
+                {viewQueryControlsDisabled && (
+                  <span id={disabledDescriptionId} className="columnMenuNotice">
+                    {viewQueryControlsDisabledReason}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  disabled={viewQueryControlsDisabled}
+                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  title={viewQueryControlsDisabledReason}
+                  onClick={() => runMenuAction(() => onOpenFilter(column.name))}
+                >
+                  Filter…
+                </button>
+                <button
+                  type="button"
+                  disabled={viewQueryControlsDisabled || comparisonUnavailable}
+                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  title={
+                    viewQueryControlsDisabled
+                      ? viewQueryControlsDisabledReason
+                      : comparisonUnavailable
+                        ? `Sorting is unavailable for ${column.type} columns`
+                        : undefined
+                  }
+                  onClick={() => runMenuAction(() => onSortColumn(column.name, "asc"))}
+                >
+                  Sort ascending
+                </button>
+                <button
+                  type="button"
+                  disabled={viewQueryControlsDisabled || comparisonUnavailable}
+                  aria-describedby={viewQueryControlsDisabled ? disabledDescriptionId : undefined}
+                  title={
+                    viewQueryControlsDisabled
+                      ? viewQueryControlsDisabledReason
+                      : comparisonUnavailable
+                        ? `Sorting is unavailable for ${column.type} columns`
+                        : undefined
+                  }
+                  onClick={() => runMenuAction(() => onSortColumn(column.name, "desc"))}
+                >
+                  Sort descending
+                </button>
+                {activeSort && (
+                  <button
+                    type="button"
+                    disabled={viewControlsDisabled}
+                    onClick={() => runMenuAction(() => onClearSortColumn(column.name))}
+                  >
+                    Clear sort
+                  </button>
+                )}
+              </div>
+            </details>
           </div>
-        </details>
+        </div>
         <button
           type="button"
           className="columnResizeHandle codicon codicon-gripper"
@@ -1210,7 +1286,6 @@ function ColumnHeader({
           onKeyDown={resizeWithKeyboard}
         />
       </div>
-      <small>{column.rawType}</small>
       {showInsights &&
         (summary ? (
           <div className="columnInsight">

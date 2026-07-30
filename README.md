@@ -43,8 +43,9 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
   Pandas. Polars and DuckDB operations never detour through Pandas.
 - **Preview every change.** Review the draft result, data diff, and executable engine-specific code before
   applying or discarding a step.
-- **Keep exploration separate from cleaning.** Filters and sorts change the view, not the source or cleaning
-  plan. Exports always target a separate file.
+- **Keep exploration separate from cleaning.** Filters and ordered multi-column sorts change the view, not the
+  source or cleaning plan. The newest sort becomes priority 1, and priorities remain editable from Filters /
+  Sorts in the workbench or Activity Bar. Exports always target a separate file.
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
@@ -70,11 +71,11 @@ without requiring an earlier Open Wrangler command. If Microsoft Data Wrangler i
 asks once which extension should own automatic previews; change that choice later with **Open Wrangler: Choose
 Notebook Preview Provider**.
 
-The inline table exposes every captured column, 10/20/50/100-row pages, and horizontal scrolling. When one exact
-live variable produced the output, **Open in Open Wrangler** opens its complete current value; **Open saved
-snapshot** keeps the portable captured result available as a fallback. The toolbar's branded **Open in Open
-Wrangler** action discovers supported variables from the selected kernel and shows their engine and dataframe
-type instead of asking for a name.
+The inline table exposes every captured column, 10/20/50/100-row pages, and horizontal scrolling. Its single
+**Open in Open Wrangler** action opens the complete current value when the output has one exact live-variable
+link; otherwise it opens the portable captured result. The toolbar's branded **Open in Open Wrangler** action
+discovers supported variables from the selected kernel and shows their engine and dataframe type instead of
+asking for a name.
 
 Files and live variables are not capped at 10,000 rows: the workbench pages from the current source. Only a saved
 inline snapshot is bounded for notebook portability, with headline ceilings of 10,000 rows, 2,048 columns,
@@ -113,9 +114,11 @@ pickle data to Parquet, CSV, or JSONL in a controlled Python environment before 
 
 ## From source to reusable code
 
-Open Wrangler combines progressive summaries, column search, 27 built-in cleaning operations, editable
-engine-native code, and replayable history. Copy generated Python, save it as a script, insert it into the
-originating notebook, or export cleaned CSV and Parquet data without overwriting the source.
+Open Wrangler combines progressive, type-aware summaries, column search, 27 built-in cleaning operations,
+editable engine-native code, and replayable history. Numeric columns expose exact distribution and scalar
+statistics; text columns expose exact empty-string and character-length statistics. Copy generated Python, save
+it as a script, insert it into the originating notebook, or export cleaned CSV and Parquet data without
+overwriting the source.
 Each open dataframe owns its view, cleaning plan, runtime session, and export target, so simultaneous tabs do
 not share state.
 

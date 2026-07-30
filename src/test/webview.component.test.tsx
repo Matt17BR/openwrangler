@@ -130,6 +130,46 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("keeps the column name on its own row above compact metadata and actions", () => {
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        sortRules={[{ column: "city", direction: "asc", nulls: "last" }]}
+        pageSize={2}
+        defaultColumnWidth={140}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onClearSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const header = document.querySelector<HTMLElement>('th[data-column="city"]');
+    if (!header) throw new Error("Expected the city header.");
+    const layout = header.querySelector<HTMLElement>(".columnHeader");
+    const title = header.querySelector<HTMLElement>(".columnTitle");
+    const metadataRow = header.querySelector<HTMLElement>(".columnMetaRow");
+    const actions = header.querySelector<HTMLElement>(".columnHeaderActions");
+    const resize = header.querySelector<HTMLElement>(".columnResizeHandle");
+    const menu = within(header).getByLabelText("Column actions for city").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the city details menu.");
+
+    expect(layout?.firstElementChild).toBe(title);
+    expect(title).toHaveTextContent("city");
+    expect(title).toHaveAttribute("title", "city");
+    expect(metadataRow).toContainElement(header.querySelector<HTMLElement>(".columnType"));
+    expect(metadataRow).toContainElement(actions);
+    expect(actions).toContainElement(menu);
+    expect(actions).toContainElement(
+      within(header).getByRole("button", { name: /Clear sort for city; currently ascending/u })
+    );
+    expect(resize).toHaveAccessibleName("Resize city column");
+  });
+
   it("closes header sort menus and exposes the active primary sort as a clearable accessible state", () => {
     const onSortColumn = vi.fn();
     const onClearSortColumn = vi.fn();
@@ -171,6 +211,41 @@ describe("DataGrid", () => {
     expect(cityHeader).toHaveAttribute("aria-sort", "descending");
     fireEvent.click(city.getByRole("button", { name: /Clear sort for city; currently descending/u }));
     expect(onClearSortColumn).toHaveBeenCalledWith("city");
+  });
+
+  it("exposes aria-sort only on the primary header while labeling secondary sort priority", () => {
+    render(
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        sortRules={[
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]}
+        pageSize={2}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onClearSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
+    const salesHeader = document.querySelector<HTMLElement>('th[data-column="sales"]');
+    if (!cityHeader || !salesHeader) throw new Error("Expected both sorted column headers.");
+    expect(cityHeader).toHaveAttribute("aria-sort", "ascending");
+    expect(cityHeader).toHaveAccessibleName("city, sorted ascending, priority 1 of 2");
+    expect(salesHeader).not.toHaveAttribute("aria-sort");
+    expect(salesHeader).toHaveAccessibleName("sales, sorted descending, priority 2 of 2");
+    expect(
+      within(salesHeader).getByRole("button", {
+        name: "Clear sort for sales; currently descending, priority 2 of 2"
+      })
+    ).toBeVisible();
   });
 
   it("renders exact min/max separately from accessible non-color-only summary visuals", async () => {
@@ -1419,7 +1494,137 @@ describe("App file import options", () => {
     });
   });
 
-  it("acknowledges the exact rendered snapshot only after React commits it", () => {
+  it("opens the Filters drawer from a native sort node and applies validated priority changes", async () => {
+    const sortedMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        filters: [],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "sales" });
+
+    expect(await screen.findByRole("complementary", { name: "Insights and filters" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("combobox", { name: "Sort column" })).toHaveValue("c:1");
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "city",
+      sortAction: "moveDown",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(sortedMetadata.filterModel.sort),
+      expectedSortIndex: 0
+    });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage")
+      .at(-1);
+    expect(pageRequest?.request.filterModel.sort).toEqual([
+      { column: "sales", direction: "desc", nulls: "first" },
+      { column: "city", direction: "asc", nulls: "last" }
+    ]);
+  });
+
+  it("removes exactly one validated native-tree view sort from the live query", async () => {
+    const sortedMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        filters: [],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "sales",
+      sortAction: "remove",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(sortedMetadata.filterModel.sort),
+      expectedSortIndex: 1
+    });
+
+    const pageRequest = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .find((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
+    expect(pageRequest?.request.filterModel.sort).toEqual([{ column: "city", direction: "asc", nulls: "last" }]);
+
+    webviewPostMessage.mockClear();
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "missing",
+      sortAction: "remove",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(sortedMetadata.filterModel.sort),
+      expectedSortIndex: 1
+    });
+    expect(webviewPostMessage).not.toHaveBeenCalled();
+  });
+
+  it("ignores a native sort action that became stale behind a pending header quick-sort", async () => {
+    const sortedMetadata: SessionMetadata = {
+      ...metadata,
+      filterModel: {
+        filters: [],
+        sort: [
+          { column: "city", direction: "asc", nulls: "last" },
+          { column: "sales", direction: "desc", nulls: "first" }
+        ]
+      }
+    };
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata: sortedMetadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+    webviewPostMessage.mockClear();
+
+    const salesHeader = document.querySelector<HTMLElement>('th[data-column="sales"]');
+    if (!salesHeader) throw new Error("Expected the sales header.");
+    const sales = within(salesHeader);
+    const menu = sales.getByLabelText("Column actions for sales").closest("details");
+    if (!(menu instanceof HTMLDetailsElement)) throw new Error("Expected the sales details menu.");
+    menu.open = true;
+    fireEvent.click(sales.getByRole("button", { name: "Sort ascending" }));
+
+    dispatchAppMessage({
+      kind: "editorAction",
+      action: "changeViewSort",
+      column: "city",
+      sortAction: "moveDown",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(sortedMetadata.filterModel.sort),
+      expectedSortIndex: 0
+    });
+
+    const pageRequests = webviewPostMessage.mock.calls
+      .map(([message]) => message)
+      .filter((message) => message?.kind === "runtimeRequest" && message.request?.kind === "getPage");
+    expect(pageRequests).toHaveLength(1);
+    expect(pageRequests[0]?.request.filterModel.sort).toEqual([
+      { column: "sales", direction: "asc", nulls: "first" },
+      { column: "city", direction: "asc", nulls: "last" }
+    ]);
+  });
+
+  it("atomically commits the exact rendered snapshot before acknowledging it", () => {
     const previousImplementation = webviewPostMessage.getMockImplementation();
     try {
       render(<App />);
@@ -1448,7 +1653,7 @@ describe("App file import options", () => {
             origin: window.location.origin
           })
         );
-        expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(false);
+        expect(webviewPostMessage.mock.calls.some(([message]) => message?.kind === "rendererSynchronized")).toBe(true);
       });
 
       expect(document.querySelector("main.app")).toHaveAttribute("data-session-id", metadata.sessionId);
@@ -1987,7 +2192,7 @@ describe("App file import options", () => {
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();
   });
 
-  it("treats a header sort as one primary view-only sort and replaces earlier quick sorts", async () => {
+  it("promotes a header sort without dropping the remaining view-only sort priorities", async () => {
     render(<App />);
     dispatchAppMessage({
       kind: "sessionOpened",
@@ -2023,12 +2228,17 @@ describe("App file import options", () => {
           kind: "getPage",
           filterModel: {
             filters: [],
-            sort: [{ column: "city", direction: "desc", nulls: "last" }]
+            sort: [
+              { column: "city", direction: "desc", nulls: "last" },
+              { column: "sales", direction: "asc", nulls: "last" }
+            ]
           }
         })
       })
     );
-    expect(city.getByRole("button", { name: /Clear sort for city; currently descending/u })).toBeVisible();
+    expect(
+      city.getByRole("button", { name: /Clear sort for city; currently descending, priority 1 of 2/u })
+    ).toBeVisible();
   });
 
   it("keeps the grid loading when a drained cleaning completion lands during import reconfiguration", async () => {

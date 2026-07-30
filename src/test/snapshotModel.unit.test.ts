@@ -825,6 +825,30 @@ describe("saved notebook snapshot model", () => {
     expect(snapshotSummaries(metadata, numericTextRows)[0]?.numeric).toBeUndefined();
   });
 
+  it("profiles exact text empties and Unicode code-point lengths without counting nulls", () => {
+    const textMetadata = singleColumnMetadata("string", "String", 6);
+    const textRows = [
+      row(0, nullCell()),
+      row(1, stringCell("")),
+      row(2, stringCell("A")),
+      row(3, stringCell("é")),
+      row(4, stringCell("e\u0301")),
+      row(5, stringCell("😀"))
+    ];
+
+    expect(snapshotSummaries(textMetadata, textRows)[0]?.text).toEqual({
+      emptyCount: 1,
+      minLength: 0,
+      maxLength: 2,
+      meanLength: 1
+    });
+
+    const allNullMetadata = singleColumnMetadata("string", "String", 2);
+    expect(snapshotSummaries(allNullMetadata, [row(0, nullCell()), row(1, nullCell())])[0]?.text).toEqual({
+      emptyCount: 0
+    });
+  });
+
   it("keeps infinities in statistics while omitting non-finite results and histogram inputs", () => {
     const infinityMetadata: SessionMetadata = {
       ...metadata,

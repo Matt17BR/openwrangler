@@ -353,6 +353,37 @@ def test_view_queries_require_non_empty_view_request_ids(kind: str) -> None:
         decode_envelope(envelope)
 
 
+@pytest.mark.parametrize("kind", ["getPage", "getSummary", "getDatasetStats", "getColumnValues"])
+def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
+    request: dict[str, object] = {
+        "kind": kind,
+        "sessionId": "session-1",
+        "revision": 0,
+        "viewRequestId": "view-17",
+        "filterModel": {
+            "filters": [],
+            "sort": [
+                {"column": "city", "direction": "asc", "nulls": "last"},
+                {"column": "city", "direction": "desc", "nulls": "first"},
+            ],
+        },
+    }
+    if kind == "getPage":
+        request.update(offset=0, limit=200, columnOffset=0, columnLimit=64)
+    elif kind == "getColumnValues":
+        request.update(column="city", limit=100)
+
+    with pytest.raises(ProtocolError, match=r"filterModel\.sort contains duplicate columns"):
+        decode_envelope(
+            {
+                "protocolVersion": 2,
+                "requestId": "transport-1",
+                "priority": "background" if kind != "getPage" else "interactive",
+                "request": request,
+            }
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

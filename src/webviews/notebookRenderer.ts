@@ -74,13 +74,6 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
         }
       )
     );
-    if (hasLiveVariable) {
-      actions.appendChild(
-        actionButton("Open saved snapshot", "Open the captured notebook output instead of the current variable", () => {
-          context.postMessage?.({ kind: "openInOpenWrangler", payload });
-        })
-      );
-    }
   }
   header.appendChild(actions);
 

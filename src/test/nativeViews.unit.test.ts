@@ -12,6 +12,7 @@ interface TestTreeNode {
   label: string;
   description?: string;
   command?: unknown;
+  contextValue?: string;
   tooltip?: unknown;
 }
 interface TestTreeProvider {
@@ -228,14 +229,18 @@ describe("native operation commands", () => {
           predicates: []
         }
       ],
-      sort: [{ column: "city", direction: "asc", nulls: "last" }]
+      sort: [
+        { column: "city", direction: "asc", nulls: "last" },
+        { column: "sales", direction: "desc", nulls: "first" }
+      ]
     };
-    register(filtered);
+    const registered = register(filtered);
 
     const nodes = treeChildren("openWrangler.filters");
     expect(nodes.map(nodePresentation)).toEqual([
       ["city", "1 selected value · 1 condition"],
-      ["city", "Ascending · nulls last"]
+      ["city", "Priority 1 · Ascending · nulls last"],
+      ["sales", "Priority 2 · Descending · nulls first"]
     ]);
     expect(nodes[0]?.command).toEqual({
       command: "openWrangler.clearViewFilterColumn",
@@ -249,9 +254,96 @@ describe("native operation commands", () => {
       column: "city"
     });
 
+    expect(nodes[1]?.command).toEqual({
+      command: "openWrangler.openViewSort",
+      title: "Edit city sort",
+      arguments: ["city"]
+    });
+    expect(nodes[1]?.contextValue).toBe("openWrangler.viewSortFirst");
+    expect(nodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.openViewSort")("sales");
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "openFilters",
+      column: "sales"
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortUp")(nodes[2]);
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "changeViewSort",
+      column: "sales",
+      sortAction: "moveUp",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 1
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortDown")(nodes[1]);
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "changeViewSort",
+      column: "city",
+      sortAction: "moveDown",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 0
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.removeViewSort")(nodes[2]);
+    expect(nativeMocks.sendEditorAction).toHaveBeenCalledWith({
+      action: "changeViewSort",
+      column: "sales",
+      sortAction: "remove",
+      expectedSessionId: "session",
+      expectedSortModelSignature: JSON.stringify(filtered.viewState.filterModel.sort),
+      expectedSortIndex: 1
+    });
+
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortUp")(nodes[1]);
+    await command("openWrangler.moveViewSortDown")(nodes[2]);
+    await command("openWrangler.removeViewSort")("sales");
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    filtered.viewState.filterModel = {
+      ...filtered.viewState.filterModel,
+      sort: [...filtered.viewState.filterModel.sort].reverse()
+    };
+    registered.setActiveSession(filtered);
+    await command("openWrangler.removeViewSort")(nodes[2]);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    filtered.stepInspectionActive = true;
+    registered.setActiveSession(filtered);
+    const inspectionNodes = treeChildren("openWrangler.filters");
+    expect(nodePresentation(inspectionNodes[0]!)).toEqual(["Filters and sorts paused", "Inspecting an applied step"]);
+    expect(inspectionNodes[0]?.command).toEqual({
+      command: "openWrangler.selectStep",
+      title: "Return to current view",
+      arguments: []
+    });
+    for (const node of inspectionNodes.slice(1)) {
+      expect(node.command).toBeUndefined();
+      expect(node.contextValue).toBeUndefined();
+      expect(String(node.tooltip)).toContain("Return to the current view to edit filters and sorts");
+    }
+    nativeMocks.sendEditorAction.mockClear();
+    await command("openWrangler.moveViewSortDown")(nodes[1]);
+    expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
     nativeMocks.sendEditorAction.mockClear();
     await command("openWrangler.clearViewFilterColumn")("sales");
     expect(nativeMocks.sendEditorAction).not.toHaveBeenCalled();
+
+    filtered.stepInspectionActive = undefined;
+    registered.setActiveSession(filtered);
+    const restoredNodes = treeChildren("openWrangler.filters");
+    expect(restoredNodes[0]?.command).toBeDefined();
+    expect(restoredNodes[1]?.contextValue).toBe("openWrangler.viewSortFirst");
+    expect(restoredNodes[2]?.contextValue).toBe("openWrangler.viewSortLast");
   });
 
   it("does not forward editLatestStep while a draft is active", async () => {

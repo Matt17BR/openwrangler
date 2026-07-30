@@ -318,6 +318,132 @@ describe("App draft state boundaries", () => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
       expect(latestGridProps().goToColumnRequestId).toBe(3);
     });
+    act(() => latestGridProps().onGoToColumnHandled?.(3, "interrupted"));
+    await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "S".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: 5
+    });
+    await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
+  });
+
+  it("does not let an older renderer snapshot erase a confirmed draft", async () => {
+    const draft: TransformStep = {
+      id: "upper-c",
+      kind: "upperText",
+      params: { column: { id: "c:c", name: "c" } }
+    };
+
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: { ...metadata, revision: 3, draftStep: draft },
+      page,
+      diff: { ...emptyDiff(), changedCells: 1 },
+      code: "def clean_data(df):\n    return df"
+    });
+
+    expect(await screen.findByText("Draft: Uppercase")).toBeVisible();
+    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "T".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: metadata.revision
+    });
+
+    expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+    expect(screen.getByText("1 existing cell changed")).toBeVisible();
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "rendererSynchronized", syncId: "T".repeat(32) })
+    );
+
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "U".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: 3
+    });
+    await waitFor(() =>
+      expect(postMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "U".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: 3
+      })
+    );
+    expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+  });
+
+  it("commits a draft before its synchronization acknowledgement and suppresses the pending recovery pull", () => {
+    const draft: TransformStep = {
+      id: "upper-c-publication",
+      kind: "upperText",
+      params: { column: { id: "c:c", name: "c" } }
+    };
+    const previousImplementation = postMessage.getMockImplementation();
+    vi.useFakeTimers();
+    try {
+      render(<App />);
+      postMessage.mockClear();
+      postMessage.mockImplementation((message) => {
+        if (message?.kind !== "rendererSynchronized") return;
+        expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+        expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+      });
+
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { kind: "sessionOpened", metadata, page, summaries: [] },
+            origin: window.location.origin
+          })
+        );
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              kind: "stepPreview",
+              revision: 3,
+              metadata: { ...metadata, revision: 3, draftStep: draft },
+              page,
+              diff: { ...emptyDiff(), changedCells: 1 },
+              code: "def clean_data(df):\n    return df"
+            },
+            origin: window.location.origin
+          })
+        );
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: {
+              kind: "rendererSynchronization",
+              syncId: "V".repeat(32),
+              sessionId: metadata.sessionId,
+              revision: 3
+            },
+            origin: window.location.origin
+          })
+        );
+        vi.advanceTimersByTime(250);
+      });
+
+      expect(postMessage).toHaveBeenCalledWith({
+        kind: "rendererSynchronized",
+        syncId: "V".repeat(32),
+        sessionId: metadata.sessionId,
+        revision: 3
+      });
+      expect(postMessage.mock.calls.some(([message]) => message?.kind === "requestSessionSnapshot")).toBe(false);
+    } finally {
+      postMessage.mockImplementation(previousImplementation ?? (() => undefined));
+      vi.useRealTimers();
+    }
   });
 
   it("consumes a search reveal and preserves a later manual viewport through an in-place preview", async () => {
@@ -428,7 +554,7 @@ function latestGridProps(): {
   beforePage?: GridPage;
   goToColumnId?: string;
   goToColumnRequestId?: number;
-  onGoToColumnHandled?(requestId: number): void;
+  onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
   onViewStateChange?(state: {
     columnWidths: Record<string, number>;
     selectedColumnId?: string;
@@ -447,7 +573,7 @@ function latestGridProps(): {
     beforePage?: GridPage;
     goToColumnId?: string;
     goToColumnRequestId?: number;
-    onGoToColumnHandled?(requestId: number): void;
+    onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
     onViewStateChange?(state: {
       columnWidths: Record<string, number>;
       selectedColumnId?: string;

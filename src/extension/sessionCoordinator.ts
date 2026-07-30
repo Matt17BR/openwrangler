@@ -96,6 +96,7 @@ export interface ActiveSessionSnapshot {
   metadata: SessionMetadata;
   code: string;
   viewState: PersistedViewingState;
+  stepInspectionActive?: boolean;
   stepInspection?: StepInspectionResponse;
 }
 
@@ -426,7 +427,7 @@ export class SessionCoordinator implements vscode.Disposable {
       const inspectionChanged = Boolean(session.stepInspection && session.stepInspection.stepId !== request.stepId);
       if (inspectionChanged) session.stepInspection = undefined;
       session.latestStepInspectionKey = stepInspectionKey(request);
-      if (inspectionChanged && this.activeSessionId === session.publicId) {
+      if (this.isLiveSession(session) && this.activeSessionId === session.publicId) {
         this.activeSessionEmitter.fire(activeSnapshot(session));
       }
     } else if (isRuntimeStateMutation(request)) {
@@ -2381,6 +2382,7 @@ function activeSnapshot(session: CoordinatedSession): ActiveSessionSnapshot {
     metadata: publicMetadata(session.metadata, session.publicId, session.publicRevision, session.openRequest.source),
     code: stepInspection?.code ?? session.code,
     viewState: session.viewState,
+    ...(session.latestStepInspectionKey ? { stepInspectionActive: true } : {}),
     ...(stepInspection ? { stepInspection } : {})
   };
 }

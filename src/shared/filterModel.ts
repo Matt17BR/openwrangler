@@ -97,6 +97,13 @@ export const hasActiveSort = (model: Pick<EffectiveFilterModel, "sort">): boolea
 export const hasActiveViewQuery = (model: EffectiveFilterModel): boolean =>
   hasActiveFilters(model) || hasActiveSort(model);
 
+export const prioritizeSortRule = (rules: readonly SortRule[], rule: SortRule): SortRule[] => [
+  rule,
+  ...rules.filter((candidate) => candidate.column !== rule.column)
+];
+
+export const viewSortModelSignature = (model: Pick<FilterModel, "sort">): string => JSON.stringify(model.sort);
+
 export const compactColumnFilter = (filter: ColumnFilter): ColumnFilter | undefined => {
   const valueFilter =
     filter.valueFilter &&

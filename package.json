@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
@@ -130,6 +130,10 @@
     "onCommand:openWrangler.editLatestStep",
     "onCommand:openWrangler.selectStep",
     "onCommand:openWrangler.undoStep",
+    "onCommand:openWrangler.openViewSort",
+    "onCommand:openWrangler.moveViewSortUp",
+    "onCommand:openWrangler.moveViewSortDown",
+    "onCommand:openWrangler.removeViewSort",
     "onCommand:openWrangler.copyCode",
     "onCommand:openWrangler.exportCode",
     "onCommand:openWrangler.insertNotebookCode",
@@ -234,6 +238,26 @@
         "command": "openWrangler.undoStep",
         "title": "Open Wrangler: Undo Latest Step",
         "icon": "$(discard)"
+      },
+      {
+        "command": "openWrangler.openViewSort",
+        "title": "Open Wrangler: Edit View Sorts",
+        "icon": "$(list-ordered)"
+      },
+      {
+        "command": "openWrangler.moveViewSortUp",
+        "title": "Open Wrangler: Move View Sort Up",
+        "icon": "$(chevron-up)"
+      },
+      {
+        "command": "openWrangler.moveViewSortDown",
+        "title": "Open Wrangler: Move View Sort Down",
+        "icon": "$(chevron-down)"
+      },
+      {
+        "command": "openWrangler.removeViewSort",
+        "title": "Open Wrangler: Remove View Sort",
+        "icon": "$(close)"
       },
       {
         "command": "openWrangler.copyCode",
@@ -480,6 +504,18 @@
         {
           "command": "openWrangler.launchDataViewer",
           "when": "false"
+        },
+        {
+          "command": "openWrangler.moveViewSortUp",
+          "when": "false"
+        },
+        {
+          "command": "openWrangler.moveViewSortDown",
+          "when": "false"
+        },
+        {
+          "command": "openWrangler.removeViewSort",
+          "when": "false"
         }
       ],
       "notebook/toolbar": [
@@ -531,6 +567,21 @@
           "command": "openWrangler.editLatestStep",
           "when": "view == openWrangler.cleaningSteps && viewItem == openWrangler.latestCleaningStep && openWrangler.canChangePlan",
           "group": "inline@10"
+        },
+        {
+          "command": "openWrangler.moveViewSortUp",
+          "when": "view == openWrangler.filters && (viewItem == openWrangler.viewSortMiddle || viewItem == openWrangler.viewSortLast)",
+          "group": "inline@10"
+        },
+        {
+          "command": "openWrangler.moveViewSortDown",
+          "when": "view == openWrangler.filters && (viewItem == openWrangler.viewSortFirst || viewItem == openWrangler.viewSortMiddle)",
+          "group": "inline@11"
+        },
+        {
+          "command": "openWrangler.removeViewSort",
+          "when": "view == openWrangler.filters && (viewItem == openWrangler.viewSortOnly || viewItem == openWrangler.viewSortFirst || viewItem == openWrangler.viewSortMiddle || viewItem == openWrangler.viewSortLast)",
+          "group": "inline@12"
         }
       ]
     },
@@ -650,7 +701,7 @@
             "never"
           ],
           "default": "onDraft",
-          "description": "When to reveal the bottom-panel Code Preview."
+          "description": "When to reveal the bottom-panel Code Preview: on the first draft in each session, once when each session opens, or never automatically."
         },
         "openWrangler.pythonPath": {
           "type": "string",

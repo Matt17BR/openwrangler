@@ -203,6 +203,21 @@ export function snapshotSummaries(
             median: median(numericValues),
             std: standardDeviation
           });
+    const text =
+      schema.type === "string"
+        ? (() => {
+            const lengths = values.map((cell) => [...cell.display].length);
+            if (lengths.length === 0) {
+              return { emptyCount: 0 };
+            }
+            return {
+              emptyCount: lengths.filter((length) => length === 0).length,
+              minLength: Math.min(...lengths),
+              maxLength: Math.max(...lengths),
+              meanLength: lengths.reduce((sum, length) => sum + length, 0) / lengths.length
+            };
+          })()
+        : undefined;
 
     return {
       columnId: schema.id,
@@ -215,6 +230,7 @@ export function snapshotSummaries(
       distinctCount: counts.size,
       topValues,
       ...(numeric ? { numeric } : {}),
+      ...(text ? { text } : {}),
       visualization: snapshotVisualization(schema.type, values, topValues, numericValues)
     };
   });

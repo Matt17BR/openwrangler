@@ -411,6 +411,9 @@ export interface SessionRequestBase {
 export interface FilterModel {
   logic?: "and" | "or";
   filters: ColumnFilter[];
+  /**
+   * Ordered viewing sorts. TypeScript and Python decoders enforce that each column appears at most once; JSON Schema uniqueItems rejects identical rule objects.
+   */
   sort: SortRule[];
 }
 export interface ColumnFilter {
@@ -1046,6 +1049,7 @@ export interface ColumnSummary {
   nanCount: number;
   distinctCount?: number;
   numeric?: NumericSummary;
+  text?: TextSummary;
   visualization?: ColumnVisualization;
   topValues: ValueCount[];
 }
@@ -1055,6 +1059,12 @@ export interface NumericSummary {
   mean?: number;
   median?: number;
   std?: number;
+}
+export interface TextSummary {
+  emptyCount: number;
+  minLength?: number;
+  maxLength?: number;
+  meanLength?: number;
 }
 export interface NumericBin {
   min: number;

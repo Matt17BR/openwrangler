@@ -207,12 +207,72 @@ async function verifyInsightsDrawerWorkflow(browser) {
       /categorical distribution/u,
       /datetime distribution/u
     ]) {
-      await page.getByRole("img", { name }).waitFor();
+      const charts = page.getByRole("img", { name });
+      await charts.first().waitFor();
     }
-    await page.getByText("True 3", { exact: true }).waitFor();
-    await page.getByText("False 1", { exact: true }).waitFor();
+    await page.getByText("True 4", { exact: true }).waitFor();
+    await page.getByText("False 2", { exact: true }).waitFor();
     await page.getByText("Min 1", { exact: true }).waitFor();
-    await page.getByText("Max 4", { exact: true }).waitFor();
+    await page.getByText("Max 6", { exact: true }).waitFor();
+
+    const headerLayout = await page.locator("th[data-column]").evaluateAll((headers) =>
+      headers.flatMap((header) => {
+        const scroller = header.closest('[data-testid="data-grid-scroller"]');
+        const title = header.querySelector(".columnTitle");
+        const metadata = header.querySelector(".columnMetaRow");
+        if (!scroller || !title || !metadata) return [];
+        const scrollerBounds = scroller.getBoundingClientRect();
+        const headerBounds = header.getBoundingClientRect();
+        if (
+          headerBounds.left < scrollerBounds.left - 1 ||
+          headerBounds.right > scrollerBounds.right + 1 ||
+          headerBounds.width <= 0
+        ) {
+          return [];
+        }
+        const titleBounds = title.getBoundingClientRect();
+        const metadataBounds = metadata.getBoundingClientRect();
+        return [
+          {
+            column: header.getAttribute("data-column") ?? "",
+            headerWidth: header.clientWidth,
+            titleWidth: title.clientWidth,
+            titleScrollWidth: title.scrollWidth,
+            titleBottom: titleBounds.bottom,
+            metadataTop: metadataBounds.top
+          }
+        ];
+      })
+    );
+    if (headerLayout.length < 2) {
+      throw new Error(`${harness} did not expose enough complete column headers for layout verification.`);
+    }
+    const crampedHeaders = headerLayout.filter(
+      ({ headerWidth, titleWidth }) => titleWidth < Math.max(1, headerWidth * 0.72)
+    );
+    if (crampedHeaders.length > 0) {
+      throw new Error(
+        `${harness} let metadata controls consume column-name space: ${crampedHeaders
+          .map(({ column, headerWidth, titleWidth }) => `${column} (${titleWidth}/${headerWidth}px)`)
+          .join(", ")}.`
+      );
+    }
+    const clippedHeaders = headerLayout.filter(({ titleScrollWidth, titleWidth }) => titleScrollWidth > titleWidth + 1);
+    if (clippedHeaders.length > 0) {
+      throw new Error(
+        `${harness} clipped realistic column names despite the dedicated title row: ${clippedHeaders
+          .map(({ column }) => column)
+          .join(", ")}.`
+      );
+    }
+    const overlappingHeaders = headerLayout.filter(({ titleBottom, metadataTop }) => titleBottom > metadataTop + 1);
+    if (overlappingHeaders.length > 0) {
+      throw new Error(
+        `${harness} overlapped column names and metadata controls: ${overlappingHeaders
+          .map(({ column }) => column)
+          .join(", ")}.`
+      );
+    }
 
     const toggle = page.getByRole("button", { name: "Insights & filters" });
     if ((await toggle.getAttribute("aria-controls")) !== "openwrangler-insights-panel") {
@@ -297,7 +357,45 @@ async function verifyInsightsDrawerWorkflow(browser) {
     }
     await page.close();
   }
-  console.log("Insights drawer focus, duplicate labels, and summary-family semantics verified.");
+
+  const textPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
+  const textHarness = "summary-text-dark-800.html";
+  await textPage.goto(pathToFileURL(resolve(harnessDir, textHarness)).href, { waitUntil: "load" });
+  const textToggle = textPage.getByRole("button", { name: "Insights & filters" });
+  if ((await textToggle.getAttribute("aria-expanded")) !== "true") {
+    await textToggle.focus();
+    await textPage.keyboard.press("Enter");
+  }
+  const textPanel = textPage.getByRole("complementary", { name: "Insights and filters" });
+  await textPanel.getByRole("heading", { name: "account_note" }).waitFor();
+  for (const [label, value] of [
+    ["Null", "1"],
+    ["Empty", "1"],
+    ["Min length", "0"],
+    ["Max length", "2"],
+    ["Mean length", "1"]
+  ]) {
+    const term = textPanel.locator("dt", { hasText: new RegExp(`^${label}$`, "u") });
+    if (
+      (await term.count()) !== 1 ||
+      (await term.locator("xpath=following-sibling::dd[1]").textContent())?.trim() !== value
+    ) {
+      throw new Error(`${textHarness} did not expose exact ${label.toLowerCase()} ${value}.`);
+    }
+  }
+  if (await textPanel.locator("dt", { hasText: /^NaN$/u }).count()) {
+    throw new Error(`${textHarness} exposed an irrelevant NaN row for a text column.`);
+  }
+  await textPage.addScriptTag({ path: axePath });
+  await scanPageAccessibility(textPage, `${textHarness} (Column tab)`);
+  await textPage.keyboard.press("Escape");
+  await textPanel.waitFor({ state: "detached" });
+  if (!(await textToggle.evaluate((element) => document.activeElement === element))) {
+    throw new Error(`${textHarness} did not restore focus to the exact Insights opener.`);
+  }
+  await textPage.close();
+
+  console.log("Insights drawer focus, duplicate labels, and numeric/text summary-family semantics verified.");
 }
 
 async function scanPageAccessibility(page, harness) {

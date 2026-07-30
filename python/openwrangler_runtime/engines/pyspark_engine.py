@@ -374,6 +374,19 @@ class PySparkEngine(DataFrameEngine):
                         functions.max(column).alias("__ow_max"),
                     ]
                 )
+            elif column_type == "string":
+                text_length = functions.length(column.cast("string"))
+                valid_text_length = functions.when(valid, text_length)
+                metric_expressions.extend(
+                    [
+                        functions.sum(functions.when(valid & (text_length == functions.lit(0)), 1).otherwise(0)).alias(
+                            "__ow_empty"
+                        ),
+                        functions.min(valid_text_length).alias("__ow_min_length"),
+                        functions.max(valid_text_length).alias("__ow_max_length"),
+                        functions.avg(valid_text_length).alias("__ow_mean_length"),
+                    ]
+                )
 
             metrics = frame.agg(*metric_expressions).collect()[0]
             total_count = int(metrics["__ow_total"] or 0)
@@ -456,6 +469,18 @@ class PySparkEngine(DataFrameEngine):
                 }
             elif column_type in {"datetime", "date"}:
                 summary["visualization"] = datetime_visualization(metrics["__ow_min"], metrics["__ow_max"])
+            elif column_type == "string":
+                text_summary: dict[str, int | float] = {"emptyCount": int(metrics["__ow_empty"] or 0)}
+                if metrics["__ow_min_length"] is not None:
+                    text_summary.update(
+                        {
+                            "minLength": int(metrics["__ow_min_length"]),
+                            "maxLength": int(metrics["__ow_max_length"]),
+                            "meanLength": float(metrics["__ow_mean_length"]),
+                        }
+                    )
+                summary["text"] = text_summary
+                summary["visualization"] = categorical_visualization(top_values, valid_count)
             else:
                 summary["visualization"] = categorical_visualization(top_values, valid_count)
             summaries.append(summary)

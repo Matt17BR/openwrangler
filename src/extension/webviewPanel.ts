@@ -63,6 +63,7 @@ export class OpenWranglerPanel {
   private rendererSynchronization: Promise<void> | undefined;
   private rendererSynchronizationRequested = false;
   private rendererSynchronizationNeedsInspectionClear = false;
+  private codePreviewRevealedSessionId: string | undefined;
   private pendingRendererImportAction:
     | {
         actionId: string;
@@ -304,6 +305,7 @@ export class OpenWranglerPanel {
         this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
+        this.revealCodePreviewAfterRendererSynchronization();
       }
       return;
     }
@@ -730,13 +732,16 @@ export class OpenWranglerPanel {
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         if (response.kind !== "page") this.invalidateRendererSynchronization();
-        this.sessionId = response.metadata.sessionId;
-        this.sessionRevision = response.revision;
         const acceptsPage =
           response.kind !== "page" ||
           (request.kind === "getPage" &&
             response.viewRequestId === request.viewRequestId &&
             this.latestPageViewRequestId === response.viewRequestId);
+        if (acceptsPage) {
+          this.sessionId = response.metadata.sessionId;
+          this.sessionRevision = response.revision;
+          if (response.kind !== "page") this.latestPageViewRequestId = undefined;
+        }
         if (this.snapshot && acceptsPage) {
           const sameView =
             response.kind === "page" && viewContextId !== undefined && viewContextId === this.snapshotViewContextId;
@@ -875,6 +880,29 @@ export class OpenWranglerPanel {
     return true;
   }
 
+  private revealCodePreviewAfterRendererSynchronization(): void {
+    const snapshot = this.snapshot;
+    if (!snapshot || !this.hasHydratedRenderer() || !this.panel.active || OpenWranglerPanel.activePanel !== this) {
+      return;
+    }
+    const behavior = getSetting<"onDraft" | "always" | "never">("panelRevealBehavior", "onDraft");
+    const draftStepId = snapshot.metadata.draftStep?.id;
+    const changedSession = this.codePreviewRevealedSessionId !== snapshot.metadata.sessionId;
+    if (behavior === "never") return;
+
+    const shouldReveal = changedSession && (behavior === "always" || draftStepId !== undefined);
+    if (!shouldReveal) return;
+
+    this.codePreviewRevealedSessionId = snapshot.metadata.sessionId;
+    void vscode.commands
+      .executeCommand("openWrangler.codePreview.focus", { preserveFocus: true })
+      .then(undefined, (error: unknown) => {
+        this.bridge.reportDiagnostic?.(
+          `Open Wrangler could not reveal Code Preview: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+  }
+
   private requestRendererImportOptionsChange(): Promise<RendererImportPreparation | undefined> {
     if (!this.hasHydratedRenderer()) return Promise.resolve(undefined);
     this.settleRendererImportAction(undefined, undefined);
@@ -917,22 +945,18 @@ export class OpenWranglerPanel {
     if (this.rendererSynchronization) return this.rendererSynchronization;
 
     const synchronization = (async () => {
-      do {
-        this.rendererSynchronizationRequested = false;
-        const shouldClearInspection = this.rendererSynchronizationNeedsInspectionClear;
-        this.rendererSynchronizationNeedsInspectionClear = false;
-        await this.synchronizeRenderer(shouldClearInspection);
-      } while (!this.disposed && this.rendererSynchronizationRequested);
+      try {
+        do {
+          this.rendererSynchronizationRequested = false;
+          const shouldClearInspection = this.rendererSynchronizationNeedsInspectionClear;
+          this.rendererSynchronizationNeedsInspectionClear = false;
+          await this.synchronizeRenderer(shouldClearInspection);
+        } while (!this.disposed && this.rendererSynchronizationRequested);
+      } finally {
+        this.rendererSynchronization = undefined;
+      }
     })();
     this.rendererSynchronization = synchronization;
-    void synchronization.then(
-      () => {
-        if (this.rendererSynchronization === synchronization) this.rendererSynchronization = undefined;
-      },
-      () => {
-        if (this.rendererSynchronization === synchronization) this.rendererSynchronization = undefined;
-      }
-    );
     return synchronization;
   }
 
@@ -984,7 +1008,13 @@ export class OpenWranglerPanel {
       this.rendererSynchronizationRequested = true;
       return;
     }
-    await this.panel.webview.postMessage({ kind: "rendererSynchronization", ...synchronization });
+    const posted = await this.panel.webview.postMessage({ kind: "rendererSynchronization", ...synchronization });
+    if (!posted && this.rendererSynchronizationIdentity === synchronization) {
+      // VS Code returns false when the renderer generation is no longer
+      // reachable. Do not keep treating that retired generation as ready.
+      this.rendererReady = false;
+      this.invalidateRendererSynchronization();
+    }
   }
 
   private activate(): void {
@@ -1294,13 +1324,31 @@ function hasExactKeys(
   );
 }
 
-export interface EditorActionMessage {
-  action:
-    "openOperation" | "editLatest" | "selectStep" | "clearFilterColumn" | "applyDraft" | "discardDraft" | "undoStep";
-  operationKind?: OperationKind;
-  stepId?: string;
-  column?: string;
-}
+type NonSortEditorAction =
+  | "openOperation"
+  | "editLatest"
+  | "selectStep"
+  | "clearFilterColumn"
+  | "openFilters"
+  | "applyDraft"
+  | "discardDraft"
+  | "undoStep";
+
+export type EditorActionMessage =
+  | {
+      action: "changeViewSort";
+      column: string;
+      sortAction: "moveUp" | "moveDown" | "remove";
+      expectedSessionId: string;
+      expectedSortModelSignature: string;
+      expectedSortIndex: number;
+    }
+  | {
+      action: NonSortEditorAction;
+      operationKind?: OperationKind;
+      stepId?: string;
+      column?: string;
+    };
 
 const randomNonce = (): string => {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

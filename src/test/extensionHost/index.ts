@@ -57,7 +57,6 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
-  activateAcceptancePointerTargetAtCurrentCenter,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -77,8 +76,10 @@ import {
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
-  packagedScreenshotFixtureCsv
+  packagedScreenshotFixtureCsv,
+  packagedScreenshotRow
 } from "./screenshotEvidence";
 import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
 
@@ -1514,28 +1515,6 @@ async function exerciseReleasedJupyterExtension(
         liveShowcase.sessionId,
         "the released-Jupyter live MIME variable session"
       );
-
-      const snapshotEditor = await showExactReleasedNotebook(notebook);
-      snapshotEditor.selection = renderedCell;
-      snapshotEditor.selections = [renderedCell];
-      snapshotEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
-      const snapshotButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open saved snapshot");
-      try {
-        await snapshotButton.click();
-      } finally {
-        await snapshotButton.dispose();
-      }
-      await waitFor(
-        () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
-        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "the released-Jupyter MIME v2 saved snapshot fallback"
-      );
-      const snapshot = testing.activeSession();
-      assert.ok(snapshot, "The renderer's saved-snapshot action must publish a snapshot session.");
-      assert.equal(snapshot.metadata.source.kind, "notebookOutput");
-      assert.equal(snapshot.metadata.source.label, "notebook_showcase");
-      assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
-      await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
     } finally {
       await restoreScreenshotWorkbench?.();
     }
@@ -4862,7 +4841,13 @@ async function exercisePackagedPlatformSmoke(
     .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
     .waitFor({ state: "visible", timeout: 5_000 });
 
-  await exercisePrimarySortJourney(testing, gridTarget.frame, "platform-smoke:sort-journey");
+  await exercisePrimarySortJourney(
+    testing,
+    page,
+    gridTarget.frame,
+    active.metadata.sessionId,
+    "platform-smoke:sort-journey"
+  );
   await exercisePackagedFirstUseInteractionJourney(
     testing,
     page,
@@ -5199,7 +5184,13 @@ async function focusAndSynchronizeExactSessionPanel(
   return waitForExactSessionWebviewButton(workbench, testing, expectedSessionId, "Import options", true);
 }
 
-async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
+async function exercisePrimarySortJourney(
+  testing: TestApi,
+  workbench: Page,
+  frame: Frame,
+  sessionId: string,
+  checkpoint: string
+): Promise<void> {
   recordAcceptanceProgress(checkpoint);
   const marketHeader = frame.locator('th[data-column="market"]').first();
   const marketMenu = marketHeader.locator("details.columnMenu").first();
@@ -5218,11 +5209,15 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
       );
     },
     10_000,
-    "the market quick sort to become the only active viewing sort"
+    "the market quick sort to become the highest-priority viewing sort"
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="1"]')
     .filter({ hasText: "UK & Ireland" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2400005" })
     .waitFor({ state: "visible", timeout: 10_000 });
   await marketHeader.getByRole("button", { name: /Clear sort for market; currently descending/u }).waitFor({
     state: "visible",
@@ -5242,26 +5237,170 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
       return (
-        sort?.length === 1 && sort[0]?.column === "revenue" && sort[0].direction === "desc" && sort[0].nulls === "last"
+        sort?.length === 2 &&
+        sort[0]?.column === "revenue" &&
+        sort[0].direction === "desc" &&
+        sort[0].nulls === "last" &&
+        sort[1]?.column === "market" &&
+        sort[1].direction === "desc" &&
+        sort[1].nulls === "last"
       );
     },
     10_000,
-    "the revenue quick sort to replace the earlier market sort"
+    "the revenue quick sort to become priority 1 while retaining market as its tie-breaker"
   );
-  assert.equal(
-    await marketHeader.getByRole("button", { name: /Clear sort for market/u }).count(),
-    0,
-    "Replacing a quick sort must remove the prior column's active-sort indicator."
-  );
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2409089" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await marketHeader
+    .getByRole("button", { name: /Clear sort for market; currently descending, priority 2 of 2/u })
+    .waitFor({ state: "visible", timeout: 10_000 });
   const clearRevenueSort = revenueHeader.getByRole("button", {
-    name: /Clear sort for revenue; currently descending/u
+    name: /Clear sort for revenue; currently descending, priority 1 of 2/u
   });
   await clearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
-  await clearRevenueSort.click();
+
+  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  const sidebar = workbench.locator(".part.sidebar:visible");
+  const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+  if (!(await filtersTree.isVisible().catch(() => false))) {
+    const filtersHeader = sidebar.getByText("Filters / Sorts", { exact: true }).first();
+    await filtersHeader.waitFor({ state: "visible", timeout: 10_000 });
+    await filtersHeader.click();
+  }
+  await filtersTree.waitFor({ state: "visible", timeout: 10_000 });
+
+  const revenuePriorityOne = filtersTree
+    .getByRole("treeitem", {
+      name: /^revenue, Priority 1 · Descending · nulls last/u
+    })
+    .first();
+  const marketPriorityTwo = filtersTree
+    .getByRole("treeitem", {
+      name: /^market, Priority 2 · Descending · nulls last/u
+    })
+    .first();
+  await revenuePriorityOne.waitFor({ state: "visible", timeout: 10_000 });
+  await marketPriorityTwo.waitFor({ state: "visible", timeout: 10_000 });
+  await marketPriorityTwo.hover();
+  const moveMarketUp = marketPriorityTwo.getByRole("button", { name: /Move View Sort Up$/u }).first();
+  await moveMarketUp.waitFor({ state: "visible", timeout: 5_000 });
+  await moveMarketUp.click();
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return (
+        sort?.length === 2 &&
+        sort[0]?.column === "market" &&
+        sort[0].direction === "desc" &&
+        sort[0].nulls === "last" &&
+        sort[1]?.column === "revenue" &&
+        sort[1].direction === "desc" &&
+        sort[1].nulls === "last"
+      );
+    },
+    10_000,
+    "the real Filters / Sorts move-up action to make market priority 1"
+  );
+  await filtersTree
+    .getByRole("treeitem", {
+      name: /^market, Priority 1 · Descending · nulls last/u
+    })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await filtersTree
+    .getByRole("treeitem", {
+      name: /^revenue, Priority 2 · Descending · nulls last/u
+    })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const marketFirstTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  await marketFirstTarget.frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2400488" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  const marketPriorityOne = filtersTree
+    .getByRole("treeitem", {
+      name: /^market, Priority 1 · Descending · nulls last/u
+    })
+    .first();
+  await marketPriorityOne.hover();
+  const moveMarketDown = marketPriorityOne.getByRole("button", { name: /Move View Sort Down$/u }).first();
+  await moveMarketDown.waitFor({ state: "visible", timeout: 5_000 });
+  await moveMarketDown.click();
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return (
+        sort?.length === 2 &&
+        sort[0]?.column === "revenue" &&
+        sort[0].direction === "desc" &&
+        sort[0].nulls === "last" &&
+        sort[1]?.column === "market" &&
+        sort[1].direction === "desc" &&
+        sort[1].nulls === "last"
+      );
+    },
+    10_000,
+    "the real Filters / Sorts move-down action to restore revenue as priority 1"
+  );
+  await filtersTree
+    .getByRole("treeitem", {
+      name: /^revenue, Priority 1 · Descending · nulls last/u
+    })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await filtersTree
+    .getByRole("treeitem", {
+      name: /^market, Priority 2 · Descending · nulls last/u
+    })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  const restoredTarget = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  frame = restoredTarget.frame;
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2409089" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const restoredRevenueHeader = frame.locator('th[data-column="revenue"]').first();
+  const restoredMarketHeader = frame.locator('th[data-column="market"]').first();
+  const restoredClearRevenueSort = restoredRevenueHeader.getByRole("button", {
+    name: /Clear sort for revenue; currently descending, priority 1 of 2/u
+  });
+  await restoredClearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
+  await restoredClearRevenueSort.click();
+  await waitFor(
+    () => {
+      const sort = testing.activeSession()?.viewState.filterModel.sort;
+      return sort?.length === 1 && sort[0]?.column === "market" && sort[0].direction === "desc";
+    },
+    10_000,
+    "clearing the primary revenue sort to retain the market tie-breaker as priority 1"
+  );
+  const revenueSortIndicator = restoredRevenueHeader.getByRole("button", { name: /Clear sort for revenue/u });
+  await revenueSortIndicator.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await revenueSortIndicator.count(),
+    0,
+    "Clearing one sort key must remove only that column's indicator."
+  );
+  const clearMarketSort = restoredMarketHeader.getByRole("button", {
+    name: "Clear sort for market; currently descending",
+    exact: true
+  });
+  await clearMarketSort.waitFor({ state: "visible", timeout: 10_000 });
+  await frame
+    .locator('td[data-grid-row="0"][data-grid-column="0"]')
+    .filter({ hasText: "2400005" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await clearMarketSort.click();
   await waitFor(
     () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
     10_000,
-    "the visible sort indicator to clear the viewing sort"
+    "clearing the final market sort"
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="0"]')
@@ -5277,8 +5416,14 @@ async function exercisePackagedFirstUseInteractionJourney(
   fixture: vscode.Uri,
   sourceBytes: Uint8Array
 ): Promise<void> {
-  const app = await exactSessionApp(frame, sessionId);
+  let app = await exactSessionApp(frame, sessionId);
   assert.ok(app, "The first-use journey requires the exact active Open Wrangler application.");
+  const rediscoverApp = async (phase: string): Promise<Locator> => {
+    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const current = await exactSessionApp(target.frame, sessionId);
+    assert.ok(current, `${phase} requires the exact visible Open Wrangler renderer for the active session.`);
+    return current;
+  };
   assert.equal(
     await app.getByRole("region", { name: "Cleaning plan" }).count(),
     0,
@@ -5328,6 +5473,99 @@ async function exercisePackagedFirstUseInteractionJourney(
     "The Insights drawer must not clip content horizontally."
   );
 
+  recordAcceptanceProgress("platform-smoke:text-insights");
+  const accountNote = columnReference(testing.activeSession()!.metadata, "account_note");
+  await columnSearch.fill("account_note");
+  const accountNoteOption = app.getByRole("option", { name: "account_note, Text column", exact: true });
+  await accountNoteOption.waitFor({ state: "visible", timeout: 10_000 });
+  await accountNoteOption.getByRole("img", { name: "Text column type" }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === accountNote.id,
+    10_000,
+    "column search to navigate to the realistic text column"
+  );
+  await drawer.getByRole("heading", { name: "account_note", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await waitForLocatorText(
+    drawer,
+    (text) =>
+      !text.includes("Profiling selected column") &&
+      ["Exact statistics", "Null", "Empty", "Min length", "Max length", "Mean length"].every((label) =>
+        text.includes(label)
+      ),
+    30_000,
+    "complete exact account-note insights"
+  );
+
+  // Inspect exact values only after the user-facing profile has completed, so
+  // the acceptance assertion cannot contend with or mask the renderer request.
+  const accountNoteProfile = await testing.request({
+    kind: "getSummary",
+    sessionId,
+    revision: testing.activeSession()!.metadata.revision,
+    viewRequestId: "platform-smoke-account-note-summary",
+    filterModel: testing.activeSession()!.viewState.filterModel,
+    columnIds: [accountNote.id]
+  });
+  assert.equal(accountNoteProfile.kind, "summary", "The realistic text profile must complete natively.");
+  if (accountNoteProfile.kind !== "summary") throw new Error("The realistic text profile did not resolve.");
+  const accountNoteSummary = accountNoteProfile.summaries[0];
+  assert.equal(accountNoteSummary?.columnId, accountNote.id);
+  const accountNotePosition = PACKAGED_SCREENSHOT_COLUMNS.length - 1;
+  assert.equal(PACKAGED_SCREENSHOT_COLUMNS[accountNotePosition], "account_note");
+  const sourceNotes = Array.from({ length: PACKAGED_FIRST_USE_ROW_COUNT }, (_, index) => ({
+    kind: packagedFirstUseAccountNoteKind(index),
+    value: packagedScreenshotRow(index)[accountNotePosition]!
+  }));
+  const presentNotes = sourceNotes.filter((item) => item.kind !== "null").map((item) => item.value);
+  const lengths = presentNotes.map((value) => [...value].length);
+  const expectedNullCount = sourceNotes.filter((item) => item.kind === "null").length;
+  const expectedEmptyCount = sourceNotes.filter((item) => item.kind === "empty").length;
+  assert.equal(accountNoteSummary?.nullCount, expectedNullCount);
+  assert.equal(accountNoteSummary?.text?.emptyCount, expectedEmptyCount);
+  assert.equal(accountNoteSummary?.text?.minLength, Math.min(...lengths));
+  assert.equal(accountNoteSummary?.text?.maxLength, Math.max(...lengths));
+  assert.ok(
+    Math.abs(
+      (accountNoteSummary?.text?.meanLength ?? Number.NaN) -
+        lengths.reduce((sum, length) => sum + length, 0) / lengths.length
+    ) < 1e-10,
+    "The realistic text profile must publish its exact mean Unicode code-point length."
+  );
+  const accountNoteText = accountNoteSummary?.text;
+  assert.ok(accountNoteText, "The realistic text column must publish exact text metrics.");
+
+  assert.equal(await drawer.locator("dt", { hasText: /^NaN$/u }).count(), 0);
+  const expectedVisibleMetrics = new Map<string, string>([
+    ["Null", expectedNullCount.toLocaleString()],
+    ["Empty", expectedEmptyCount.toLocaleString()],
+    ["Min length", accountNoteText.minLength!.toLocaleString(undefined, { maximumFractionDigits: 4 })],
+    ["Max length", accountNoteText.maxLength!.toLocaleString(undefined, { maximumFractionDigits: 4 })],
+    ["Mean length", accountNoteText.meanLength!.toLocaleString(undefined, { maximumFractionDigits: 4 })]
+  ]);
+  for (const [label, expectedValue] of expectedVisibleMetrics) {
+    const value = drawer
+      .locator("dt", { hasText: new RegExp(`^${label}$`, "u") })
+      .locator("xpath=following-sibling::dd[1]");
+    await value.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      (await value.innerText()).trim(),
+      expectedValue,
+      `${label} must match the exact native profile for the realistic text column.`
+    );
+  }
+  assert.equal(
+    await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    true,
+    "The text Insights drawer must not clip content horizontally."
+  );
+
   recordAcceptanceProgress("platform-smoke:filter");
   await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
   const filterPanel = drawer.locator(".filterSortPanel").first();
@@ -5352,6 +5590,25 @@ async function exercisePackagedFirstUseInteractionJourney(
     await testing.synchronizePanel(sessionId),
     true,
     "The filtered host state must be acknowledged by its exact renderer before visible values are inspected."
+  );
+  // Text profiling intentionally navigated to the far-right account_note
+  // column. Return to revenue before inspecting its virtualized grid cell;
+  // off-screen columns are correctly absent from the DOM.
+  await columnSearch.fill("revenue");
+  await app.getByRole("option", { name: "revenue, Number column", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === revenue.id,
+    10_000,
+    "column search to return to the filtered numeric column"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The revenue navigation must be acknowledged before its virtualized cell is inspected."
   );
   const visibleRevenueCell = frame.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
   await waitForLocatorText(
@@ -5396,6 +5653,21 @@ async function exercisePackagedFirstUseInteractionJourney(
 
   recordAcceptanceProgress("platform-smoke:draft-discard");
   await previewUppercaseMarket(app, testing, "market_upper");
+  const draftCodePreview = await waitForCodePreview(workbench, "market_upper");
+  const draftCodePreviewText = await draftCodePreview.innerText();
+  assert.match(draftCodePreviewText, /import polars as pl/u);
+  assert.match(draftCodePreviewText, /market_upper/u);
+  // `view.focus` resolves independently from the workbench's asynchronous
+  // panel-title layout. VS Code can briefly report no title while Cursor
+  // mirrors the same visible title in both the panel and view headers. The
+  // rendered Code Preview webview above is the cross-editor source of truth;
+  // rediscover the exact dataframe renderer afterwards to prove that opening
+  // the panel did not replace or hide the custom editor.
+  app = await rediscoverApp("Code Preview reveal validation");
+  await app.locator('[data-testid="data-grid-scroller"] [role="grid"]').first().waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
   const discardedDraft = testing.activeSession();
   assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
   assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
@@ -5498,6 +5770,7 @@ async function exercisePackagedFirstUseInteractionJourney(
 
   recordAcceptanceProgress("platform-smoke:draft-apply");
   await previewUppercaseMarket(app, testing, "market_upper");
+  app = await rediscoverApp("Draft-apply validation");
   await app.getByRole("button", { name: "Apply step", exact: true }).click();
   await waitFor(
     () => {
@@ -5867,7 +6140,13 @@ async function exercisePackagedFileLaunchSurfaces(
     () => JSON.stringify(activeEditorTabDiagnostic())
   );
   const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
-  await exercisePrimarySortJourney(testing, gridTarget.frame, "verify:file-launch:title-action:sort-journey");
+  await exercisePrimarySortJourney(
+    testing,
+    page,
+    gridTarget.frame,
+    active.metadata.sessionId,
+    "verify:file-launch:title-action:sort-journey"
+  );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "The editor-title action must not modify its source.");
   await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   await waitFor(
@@ -6708,7 +6987,7 @@ async function captureReleasedJupyterPolarsDraft(
     1,
     "The Polars notebook screenshot must open the Code Preview panel."
   );
-  const codePreview = await waitForReleasedJupyterCodePreview(workbench, "double_units");
+  const codePreview = await waitForCodePreview(workbench, "double_units");
   const codeText = await codePreview.innerText();
   assert.ok(codeText.includes("import polars as pl"), "The Polars notebook screenshot must show its native import.");
   assert.ok(
@@ -7188,7 +7467,7 @@ async function captureReleasedJupyterPySparkLive(
   }
 }
 
-async function waitForReleasedJupyterCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {
+async function waitForCodePreview(workbench: Page, expectedCode: string): Promise<Locator> {
   const deadline = Date.now() + 10_000;
   do {
     for (const frame of workbench.frames()) {
@@ -7198,7 +7477,7 @@ async function waitForReleasedJupyterCodePreview(workbench: Page, expectedCode: 
     }
     await workbench.waitForTimeout(50);
   } while (Date.now() < deadline);
-  throw new Error(`The generated Polars notebook code did not expose ${JSON.stringify(expectedCode)}.`);
+  throw new Error(`The generated code preview did not expose ${JSON.stringify(expectedCode)}.`);
 }
 
 async function closeVisibleWorkbenchPart(
@@ -9251,7 +9530,7 @@ async function exercisePackagedSavedSnapshot(
       revision: 0,
       backend: "polars",
       mode: "viewing",
-      source: { kind: "notebookOutput", label, variableName: "stale_saved_frame" },
+      source: { kind: "notebookOutput", label },
       capabilities: {
         editable: false,
         lazy: false,
@@ -9324,8 +9603,7 @@ async function exercisePackagedSavedSnapshot(
     );
 
     const workbench = await connectToEditorWorkbench();
-    await (await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler")).dispose();
-    const button = await waitForNotebookRendererButton(workbench, label, "Open saved snapshot");
+    const button = await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler");
     recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
     try {
       await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
@@ -9796,7 +10074,12 @@ async function exercisePackagedRendererProvenance(
       try {
         await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
           description: "notebook A's renderer action while notebook B is active",
-          activate: () => activateAcceptancePointerTargetAtCurrentCenter(originButton, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS),
+          activate: () =>
+            withAcceptanceOperationDeadline(
+              originButton.click(),
+              WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+              "the exact notebook renderer action to receive one Playwright click"
+            ),
           receipt: waitForOriginReceipt,
           authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
         });

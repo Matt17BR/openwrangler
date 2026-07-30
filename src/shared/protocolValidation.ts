@@ -680,7 +680,7 @@ export function isFilterModel(value: unknown): value is FilterModel {
     candidate !== undefined &&
     optional(candidate, "logic", (logic) => isOneOf(logic, ["and", "or"])) &&
     isArrayOf(candidate.filters, isColumnFilter) &&
-    isArrayOf(candidate.sort, isSortRule)
+    isUniqueViewSortRuleArray(candidate.sort)
   );
 }
 
@@ -725,7 +725,7 @@ function isPredicateFilter(value: unknown): boolean {
   return candidate.operator !== "between" || Object.prototype.hasOwnProperty.call(candidate, "secondValue");
 }
 
-function isSortRule(value: unknown): boolean {
+function isSortRule(value: unknown): value is FilterModel["sort"][number] {
   const candidate = exactRecord(value, ["column", "direction", "nulls"]);
   return (
     candidate !== undefined &&
@@ -733,6 +733,11 @@ function isSortRule(value: unknown): boolean {
     isOneOf(candidate.direction, ["asc", "desc"]) &&
     isOneOf(candidate.nulls, ["first", "last"])
   );
+}
+
+function isUniqueViewSortRuleArray(value: unknown): value is FilterModel["sort"] {
+  if (!Array.isArray(value) || !value.every(isSortRule)) return false;
+  return new Set(value.map((rule) => rule.column)).size === value.length;
 }
 
 function isTransformSortRule(value: unknown): value is TransformSortRule {
@@ -1292,9 +1297,9 @@ function isColumnSummary(value: unknown): boolean {
   const candidate = exactRecord(
     value,
     ["columnId", "column", "type", "rawType", "totalCount", "nullCount", "nanCount", "topValues"],
-    ["distinctCount", "numeric", "visualization"]
+    ["distinctCount", "numeric", "text", "visualization"]
   );
-  return (
+  if (!(
     candidate !== undefined &&
     isNonEmptyString(candidate.columnId) &&
     isString(candidate.column) &&
@@ -1307,6 +1312,15 @@ function isColumnSummary(value: unknown): boolean {
     optional(candidate, "numeric", isNumericSummary) &&
     optional(candidate, "visualization", isColumnVisualization) &&
     isArrayOf(candidate.topValues, isValueCount)
+  )) {
+    return false;
+  }
+  if (!Object.prototype.hasOwnProperty.call(candidate, "text")) {
+    return true;
+  }
+  return (
+    candidate.type === "string" &&
+    isTextSummary(candidate.text, candidate.totalCount - candidate.nullCount - candidate.nanCount)
   );
 }
 
@@ -1338,6 +1352,48 @@ function isNumericSummary(value: unknown): boolean {
     optional(candidate, "median", isFiniteNumber) &&
     optional(candidate, "std", isFiniteNumber)
   );
+}
+
+function isTextSummary(value: unknown, valueCount: number): boolean {
+  const candidate = exactRecord(value, ["emptyCount"], ["minLength", "maxLength", "meanLength"]);
+  if (
+    candidate === undefined ||
+    !isNonNegativeInteger(candidate.emptyCount) ||
+    !Number.isInteger(valueCount) ||
+    valueCount < 0 ||
+    candidate.emptyCount > valueCount
+  ) {
+    return false;
+  }
+
+  const lengthKeys = ["minLength", "maxLength", "meanLength"] as const;
+  const presentLengthCount = lengthKeys.filter((key) => Object.prototype.hasOwnProperty.call(candidate, key)).length;
+  if (presentLengthCount === 0) {
+    return valueCount === 0 && candidate.emptyCount === 0;
+  }
+  if (presentLengthCount !== lengthKeys.length || valueCount === 0) {
+    return false;
+  }
+
+  const { minLength, maxLength, meanLength } = candidate;
+  if (
+    !isNonNegativeInteger(minLength) ||
+    !isNonNegativeInteger(maxLength) ||
+    !isFiniteNumber(meanLength) ||
+    meanLength < 0 ||
+    minLength > maxLength ||
+    meanLength < minLength ||
+    meanLength > maxLength
+  ) {
+    return false;
+  }
+  if (candidate.emptyCount > 0 !== (minLength === 0)) {
+    return false;
+  }
+  if (candidate.emptyCount === valueCount) {
+    return minLength === 0 && maxLength === 0 && meanLength === 0;
+  }
+  return maxLength > 0 && meanLength > 0;
 }
 
 function isColumnVisualization(value: unknown): boolean {

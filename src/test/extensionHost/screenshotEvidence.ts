@@ -61,7 +61,7 @@ const PRIORITIES = ["High", "Standard", "Strategic"] as const;
 const ACCOUNT_NOTES = [
   'Renewal review follows the Q2 pilot, with "steady adoption" reported across the regional account',
   "Expansion opportunity spans analytics and planning workflows with a staged rollout requested",
-  "Implementation is on track after the accessibility review and regional enablement sessions",
+  "Implementation is on track after accessibility reviews and enablement sessions in Zürich and São Paulo",
   "Procurement requested a consolidated proposal covering support levels and implementation milestones",
   "Customer success flagged strong adoption while the data-governance workstream remains in progress"
 ] as const;
@@ -80,13 +80,27 @@ export function packagedFirstUseFixtureCsv(): string {
     `\uFEFF${PACKAGED_SCREENSHOT_COLUMNS.map((value) => delimitedCell(value, delimiter)).join(delimiter)}`
   ];
   for (let index = 0; index < PACKAGED_FIRST_USE_ROW_COUNT; index += 1) {
+    const accountNoteKind = packagedFirstUseAccountNoteKind(index);
     lines.push(
       packagedScreenshotRow(index)
-        .map((value) => delimitedCell(value, delimiter))
+        .map((value, columnIndex) =>
+          columnIndex === PACKAGED_SCREENSHOT_COLUMNS.length - 1 && accountNoteKind === "empty"
+            ? '""'
+            : delimitedCell(value, delimiter)
+        )
         .join(delimiter)
     );
   }
   return `${lines.join("\n")}\n`;
+}
+
+export function packagedFirstUseAccountNoteKind(index: number): "value" | "empty" | "null" {
+  const value = packagedScreenshotRow(index)[PACKAGED_SCREENSHOT_COLUMNS.length - 1];
+  if (value !== "") return "value";
+  // Alternate absent notes between an explicit quoted empty string and an
+  // unquoted missing field. The installed-editor journey therefore proves
+  // that real CSV parsing and Insights preserve the user-visible distinction.
+  return index % 2 === 0 ? "empty" : "null";
 }
 
 export function packagedScreenshotRow(index: number): readonly string[] {

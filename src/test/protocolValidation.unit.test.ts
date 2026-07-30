@@ -219,6 +219,21 @@ describe("protocol-v2 response validation", () => {
     ).toBe(false);
     expect(
       isOpenWranglerResponse({
+        ...responses[1],
+        metadata: {
+          ...metadata,
+          filterModel: {
+            filters: [],
+            sort: [
+              { column: "value", direction: "asc", nulls: "last" },
+              { column: "value", direction: "desc", nulls: "first" }
+            ]
+          }
+        }
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
         kind: "page",
         revision: 3,
         viewRequestId: "view-1",
@@ -465,6 +480,80 @@ describe("protocol-v2 response validation", () => {
         })
       ).toBe(false);
     }
+  });
+
+  it("accepts backward-compatible and exact text summaries while rejecting malformed metrics", () => {
+    const response = (summary: unknown): unknown => ({
+      kind: "summary",
+      revision: 3,
+      viewRequestId: "view-1",
+      summaries: [summary]
+    });
+    const textSummary = {
+      columnId: "column:text",
+      column: "text",
+      type: "string" as const,
+      rawType: "String",
+      totalCount: 6,
+      nullCount: 1,
+      nanCount: 0,
+      distinctCount: 5,
+      topValues: [],
+      text: { emptyCount: 1, minLength: 0, maxLength: 2, meanLength: 1 }
+    };
+
+    expect(isOpenWranglerResponse(response(textSummary))).toBe(true);
+    const { text: omittedText, ...legacySummary } = textSummary;
+    expect(omittedText.emptyCount).toBe(1);
+    expect(isOpenWranglerResponse(response(legacySummary))).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...textSummary,
+          totalCount: 2,
+          nullCount: 2,
+          distinctCount: 0,
+          text: { emptyCount: 0 }
+        })
+      )
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...textSummary,
+          text: { emptyCount: 5, minLength: 0, maxLength: 0, meanLength: 0 }
+        })
+      )
+    ).toBe(true);
+
+    for (const text of [
+      { emptyCount: -1, minLength: 0, maxLength: 2, meanLength: 1 },
+      { emptyCount: 1, minLength: -1, maxLength: 2, meanLength: 1 },
+      { emptyCount: 1, minLength: 0 },
+      { emptyCount: 1, minLength: 0, maxLength: 2 },
+      { emptyCount: 1, minLength: 0, maxLength: 2, meanLength: -1 },
+      { emptyCount: 1, minLength: 0, maxLength: 2, meanLength: 3 },
+      { emptyCount: 6, minLength: 0, maxLength: 2, meanLength: 1 },
+      { emptyCount: 0, minLength: 0, maxLength: 2, meanLength: 1 },
+      { emptyCount: 1, minLength: 1, maxLength: 2, meanLength: 1.5 },
+      { emptyCount: 5, minLength: 0, maxLength: 2, meanLength: 1 }
+    ]) {
+      expect(isOpenWranglerResponse(response({ ...textSummary, text }))).toBe(false);
+    }
+
+    expect(isOpenWranglerResponse(response({ ...textSummary, text: { emptyCount: 1 } }))).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...textSummary,
+          totalCount: 2,
+          nullCount: 2,
+          distinctCount: 0,
+          text: { emptyCount: 0, minLength: 0, maxLength: 0, meanLength: 0 }
+        })
+      )
+    ).toBe(false);
+    expect(isOpenWranglerResponse(response({ ...summaries[0], text: textSummary.text }))).toBe(false);
   });
 
   it("binds changed-cell identities and labels to the output schema", () => {
@@ -828,6 +917,28 @@ describe("protocol-v2 request validation", () => {
     expect(isOpenWranglerRequest({ ...request, columnIds: [""] })).toBe(false);
     expect(isOpenWranglerRequest({ ...request, columns: ["value"] })).toBe(false);
   });
+
+  it.each(["getPage", "getSummary", "getDatasetStats", "getColumnValues"] as const)(
+    "rejects duplicate viewing sort columns in %s requests",
+    (kind) => {
+      const request = requests.find((candidate) => candidate.kind === kind);
+      expect(request?.kind).toBe(kind);
+      if (!request || !("filterModel" in request)) return;
+
+      expect(
+        isOpenWranglerRequest({
+          ...request,
+          filterModel: {
+            filters: [],
+            sort: [
+              { column: "value", direction: "asc", nulls: "last" },
+              { column: "value", direction: "desc", nulls: "first" }
+            ]
+          }
+        })
+      ).toBe(false);
+    }
+  );
 
   it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {
     const requestWithOptions = (importOptions: unknown, fileName = "fixture.csv"): unknown => ({

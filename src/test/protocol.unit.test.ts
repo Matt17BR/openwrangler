@@ -4,7 +4,8 @@ import {
   emptyFilterModel,
   hasActiveFilters,
   hasActiveSort,
-  hasActiveViewQuery
+  hasActiveViewQuery,
+  prioritizeSortRule
 } from "../shared/filterModel";
 import { dataBackendLabel } from "../shared/protocol";
 
@@ -106,6 +107,28 @@ describe("filter model", () => {
     expect(hasActiveFilters(model)).toBe(false);
     expect(hasActiveViewQuery(model)).toBe(false);
     expect(compactFilterModel(model).filters).toEqual([]);
+  });
+
+  it("makes the latest sort highest priority without duplicating its column", () => {
+    const existing = [
+      { column: "city", direction: "asc" as const, nulls: "last" as const },
+      { column: "sales", direction: "desc" as const, nulls: "first" as const }
+    ];
+
+    expect(
+      prioritizeSortRule(existing, {
+        column: "sales",
+        direction: "asc",
+        nulls: "last"
+      })
+    ).toEqual([
+      { column: "sales", direction: "asc", nulls: "last" },
+      { column: "city", direction: "asc", nulls: "last" }
+    ]);
+    expect(existing).toEqual([
+      { column: "city", direction: "asc", nulls: "last" },
+      { column: "sales", direction: "desc", nulls: "first" }
+    ]);
   });
 });
 

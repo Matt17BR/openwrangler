@@ -14,6 +14,7 @@ import {
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
   packagedScreenshotFixtureCsv,
   packagedScreenshotRow
@@ -35,6 +36,17 @@ describe("packaged editor screenshot evidence", () => {
     expect(csv).toContain(
       '"Renewal review follows the Q2 pilot, with ""steady adoption"" reported across the regional account"'
     );
+    const explicitEmptyIndex = Array.from({ length: PACKAGED_FIRST_USE_ROW_COUNT }, (_, index) => index).find(
+      (index) => packagedFirstUseAccountNoteKind(index) === "empty"
+    );
+    const nullIndex = Array.from({ length: PACKAGED_FIRST_USE_ROW_COUNT }, (_, index) => index).find(
+      (index) => packagedFirstUseAccountNoteKind(index) === "null"
+    );
+    expect(explicitEmptyIndex).toBeTypeOf("number");
+    expect(nullIndex).toBeTypeOf("number");
+    expect(lines[(explicitEmptyIndex ?? -1) + 1]).toMatch(/;""$/u);
+    expect(lines[(nullIndex ?? -1) + 1]).toMatch(/;$/u);
+    expect(csv).toContain("Zürich and São Paulo");
   });
 
   it("generates one deterministic, realistic business fixture without private data", () => {
@@ -81,11 +93,12 @@ describe("packaged editor screenshot evidence", () => {
     expect(notes).toContain("");
     expect(notes.some((value) => value.length > 80 && value.includes(","))).toBe(true);
     expect(notes.some((value) => value.includes('"'))).toBe(true);
+    expect(notes.some((value) => value.includes("Zürich") && value.includes("São Paulo"))).toBe(true);
     expect(csv).not.toMatch(
       /(?:celonis|mmazzarelli|dropbox|@(?:gmail|celonis)|\/home\/|\\users\\|(?:sample|fixture|test)[-_ ]?(?:data|value)?)/iu
     );
     expect(createHash("sha256").update(csv).digest("hex")).toBe(
-      "9bb0afb081ade0a7d4a680a4cf292118f4cfa6ed3de874584d63e8e3c5cf09d1"
+      "68da203d980c6ce56c4be5f2fc8b953ed753a86b1e12848f69f9fbb99cfb61dd"
     );
     expect(packagedScreenshotRow(0)).toEqual([
       "2400001",
