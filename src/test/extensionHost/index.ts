@@ -5448,6 +5448,25 @@ async function exercisePackagedFirstUseInteractionJourney(
     true,
     "The filtered host state must be acknowledged by its exact renderer before visible values are inspected."
   );
+  // Text profiling intentionally navigated to the far-right account_note
+  // column. Return to revenue before inspecting its virtualized grid cell;
+  // off-screen columns are correctly absent from the DOM.
+  await columnSearch.fill("revenue");
+  await app.getByRole("option", { name: "revenue, Number column", exact: true }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await columnSearch.press("Enter");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === revenue.id,
+    10_000,
+    "column search to return to the filtered numeric column"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The revenue navigation must be acknowledged before its virtualized cell is inspected."
+  );
   const visibleRevenueCell = frame.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
   await waitForLocatorText(
     visibleRevenueCell,
