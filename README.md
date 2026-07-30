@@ -112,6 +112,8 @@ pickle data to Parquet, CSV, or JSONL in a controlled Python environment before 
 Open Wrangler combines progressive summaries, column search, 27 built-in cleaning operations, editable
 engine-native code, and replayable history. Copy generated Python, save it as a script, insert it into the
 originating notebook, or export cleaned CSV and Parquet data without overwriting the source.
+Each open dataframe owns its view, cleaning plan, runtime session, and export target, so simultaneous tabs do
+not share state.
 
 See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
 for the complete surface.
@@ -131,11 +133,11 @@ universally faster.
 
 ## Roadmap
 
-| Target | Focus |
-| ------ | ----- |
+| Target | Focus                                                                                                                                                                                                                                                                                                                                            |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | v1.1.x | Real-user workflow and visual polish, reproducible performance comparison [#91](https://github.com/Matt17BR/openwrangler/issues/91), DuckDB preview completion [#157](https://github.com/Matt17BR/openwrangler/issues/157), and bounded validation in other VS Code-based desktop IDEs [#86](https://github.com/Matt17BR/openwrangler/issues/86) |
-| v1.2   | Graduate PySpark from its experimental, viewing-only preview to a supported scope after the distributed correctness, recovery, performance, and editor gates in [#36](https://github.com/Matt17BR/openwrangler/issues/36) are green |
-| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87) |
+| v1.2   | Graduate PySpark from its experimental, viewing-only preview to a supported scope after the distributed correctness, recovery, performance, and editor gates in [#36](https://github.com/Matt17BR/openwrangler/issues/36) are green                                                                                                              |
+| v2     | Native R data frames, tibbles, and `data.table`, including Quarto and R Markdown workflows [#87](https://github.com/Matt17BR/openwrangler/issues/87)                                                                                                                                                                                             |
 
 Patch releases ship as soon as a coherent user-facing improvement passes the exact-artifact release gates.
 

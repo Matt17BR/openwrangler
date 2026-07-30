@@ -80,6 +80,64 @@ describe("SessionCoordinator", () => {
     expect(listExcelSheets).toHaveBeenCalledOnce();
   });
 
+  it("exports through an exact public session and revision instead of the later active session", async () => {
+    const makeDelegate = (runtimeId: string) =>
+      vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+        if (request.kind === "openSession") {
+          const opened = openedResponse(runtimeId);
+          opened.metadata = { ...opened.metadata, source: request.source };
+          return opened;
+        }
+        if (request.kind === "exportData") {
+          return {
+            kind: "dataExported",
+            revision: request.revision,
+            path: request.path,
+            format: request.format,
+            shape: { rows: 2, columns: 1 }
+          };
+        }
+        throw new Error(`Unexpected exact-export request: ${request.kind}`);
+      });
+    const firstDelegate = makeDelegate("runtime-first");
+    const secondDelegate = makeDelegate("runtime-second");
+    const coordinator = new SessionCoordinator();
+    const firstBridge = coordinator.createBridge({ request: firstDelegate });
+    const secondBridge = coordinator.createBridge({ request: secondDelegate });
+    const first = await firstBridge.request({
+      ...openRequest,
+      source: { kind: "file", label: "first.csv", path: "/workspace/first.csv" }
+    });
+    const second = await secondBridge.request({
+      ...openRequest,
+      source: { kind: "file", label: "second.csv", path: "/workspace/second.csv" }
+    });
+    if (first.kind !== "sessionOpened" || second.kind !== "sessionOpened") {
+      throw new Error("Expected both exact-export sessions to open.");
+    }
+    expect(coordinator.activeSession()?.sessionId).toBe(second.metadata.sessionId);
+
+    await expect(
+      coordinator.exportData(first.metadata.sessionId, first.metadata.revision, "/tmp/first.csv", "csv")
+    ).resolves.toMatchObject({ kind: "dataExported", path: "/tmp/first.csv", format: "csv" });
+    expect(firstDelegate).toHaveBeenLastCalledWith(
+      {
+        kind: "exportData",
+        sessionId: "runtime-first",
+        revision: 0,
+        path: "/tmp/first.csv",
+        format: "csv"
+      },
+      undefined
+    );
+    expect(secondDelegate).toHaveBeenCalledOnce();
+
+    await expect(
+      coordinator.exportData(first.metadata.sessionId, first.metadata.revision + 1, "/tmp/stale.csv", "csv")
+    ).rejects.toThrow("Ignored stale request revision");
+    expect(firstDelegate).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps bounded notebook-output snapshots ephemeral and ignores stale persisted state", async () => {
     const source = { kind: "notebookOutput" as const, label: "Saved sales preview" };
     const runtimeOpened = openedResponse();

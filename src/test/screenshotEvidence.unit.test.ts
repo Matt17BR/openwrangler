@@ -142,14 +142,14 @@ describe("packaged editor screenshot evidence", () => {
     const wideWidths = packagedScreenshotFeaturedColumnWidths(1_500, rowHeaderWidth);
     expect(Object.values(wideWidths).reduce((total, width) => total + width, 0) + rowHeaderWidth).toBe(1_500);
     expect(Object.values(wideWidths).every((width) => width <= 640)).toBe(true);
-    expect(packagedScreenshotFeaturedColumnWidths(893, rowHeaderWidth)).toEqual(
+    expect(packagedScreenshotFeaturedColumnWidths(943, rowHeaderWidth)).toEqual(
       PACKAGED_SCREENSHOT_MINIMUM_FEATURED_WIDTHS
     );
     expect(Object.values(packagedScreenshotFeaturedColumnWidths(3_248, rowHeaderWidth))).toEqual([
       640, 640, 640, 640, 640
     ]);
     expect(() => packagedScreenshotFeaturedColumnWidths(0, rowHeaderWidth)).toThrow(TypeError);
-    expect(() => packagedScreenshotFeaturedColumnWidths(892, rowHeaderWidth)).toThrow(RangeError);
+    expect(() => packagedScreenshotFeaturedColumnWidths(942, rowHeaderWidth)).toThrow(RangeError);
     expect(() => packagedScreenshotFeaturedColumnWidths(3_249, rowHeaderWidth)).toThrow(RangeError);
   });
 

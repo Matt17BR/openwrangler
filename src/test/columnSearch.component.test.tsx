@@ -268,11 +268,8 @@ describe("DataGrid column search target", () => {
       ]
     };
     const onViewStateChange = vi.fn();
-    const renderGrid = (
-      goToColumnRequestId?: number,
-      viewStateRestoreVersion = 0,
-      scrollLeft = scroller?.scrollLeft ?? 0
-    ) => (
+    const onGoToColumnHandled = vi.fn();
+    const renderGrid = (goToColumnRequestId?: number, viewStateRestoreVersion = 0, scrollLeft = 0) => (
       <DataGrid
         metadata={metadata}
         page={page}
@@ -290,13 +287,13 @@ describe("DataGrid column search target", () => {
         onPage={() => undefined}
         onSortColumn={() => undefined}
         onOpenFilter={() => undefined}
+        onGoToColumnHandled={onGoToColumnHandled}
         onVisibleSummaryColumnsChange={() => undefined}
         onViewStateChange={onViewStateChange}
       />
     );
-    let scroller: HTMLElement | undefined;
     const { rerender } = render(renderGrid());
-    scroller = screen.getByTestId("data-grid-scroller");
+    const scroller = screen.getByTestId("data-grid-scroller");
     Object.defineProperties(scroller, {
       clientWidth: { configurable: true, value: 760 },
       clientHeight: { configurable: true, value: 400 }
@@ -314,16 +311,19 @@ describe("DataGrid column search target", () => {
         viewport: expect.objectContaining({ scrollLeft: scroller.scrollLeft })
       })
     );
+    expect(onGoToColumnHandled).toHaveBeenLastCalledWith(1);
 
     const persistedOldScrollLeft = 162;
     rerender(renderGrid(1, 1, persistedOldScrollLeft));
     await waitFor(() => expect(scroller.scrollLeft).toBeGreaterThan(persistedOldScrollLeft));
     expect(screen.getByRole("columnheader", { name: /market_upper/u })).toBeVisible();
+    expect(onGoToColumnHandled.mock.calls.filter(([requestId]) => requestId === 1)).toHaveLength(2);
 
     rerender(renderGrid());
     rerender(renderGrid(2));
     await waitFor(() =>
       expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:15" }))
     );
+    expect(onGoToColumnHandled).toHaveBeenLastCalledWith(2);
   });
 });

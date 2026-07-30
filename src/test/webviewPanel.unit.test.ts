@@ -1704,7 +1704,7 @@ describe("OpenWranglerPanel retained view state", () => {
 
     await harness.receive({ kind: "exportData" });
     expect(executeCommand).toHaveBeenCalledOnce();
-    expect(executeCommand).toHaveBeenCalledWith("openWrangler.exportData");
+    expect(executeCommand).toHaveBeenCalledWith("openWrangler.internal.exportSessionData", "session", 0);
   });
 
   it("keeps an initial dependency error retryable when installation is declined", async () => {

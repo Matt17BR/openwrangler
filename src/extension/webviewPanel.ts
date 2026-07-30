@@ -19,6 +19,7 @@ import { ImportCancelledError, promptImportOptions } from "./files/importOptions
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
+export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
 
 export class OpenWranglerPanel {
   private static activePanel: OpenWranglerPanel | undefined;
@@ -357,7 +358,10 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "exportData") {
-      await vscode.commands.executeCommand("openWrangler.exportData");
+      const sessionId = this.sessionId;
+      const revision = this.sessionRevision;
+      if (!sessionId) return;
+      await vscode.commands.executeCommand(SESSION_BOUND_EXPORT_DATA_COMMAND, sessionId, revision);
       return;
     }
 

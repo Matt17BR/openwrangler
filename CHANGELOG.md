@@ -17,6 +17,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Replaced internal operation-kind labels such as `upperText` with the operation's human title in draft and preview UI.
 - Automatically reveals the first column added by a draft preview instead of leaving its result off-screen in a wide dataframe.
+- Consumes column-search navigation after it is handled, so a later in-place preview or restored view cannot unexpectedly jump back to an old horizontal target.
+- Pins cleaned-data export to the exact originating dataframe and revision across the format and Save dialogs; switching tabs can no longer redirect an export to another open session.
 - Made draft diffs distinguish changes to existing cells from values introduced by added columns, avoiding a misleading `0 changed cells` message for add-column operations.
 
 ## [1.1.1] - 2026-07-30

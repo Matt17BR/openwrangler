@@ -63,8 +63,10 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
-  const [goToColumnRequest, setGoToColumnRequest] = useState<{ columnId: string; requestId: number } | undefined>();
+  const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
   const goToColumnRequestSequence = useRef(0);
+  const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
+  const handledGoToColumnRequestId = useRef<number | undefined>(undefined);
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
@@ -239,6 +241,39 @@ export function App() {
     gridViewStateRef.current = next;
     setGridViewState(next);
   }, []);
+
+  const storeGoToColumnRequest = useCallback((next: ColumnRevealRequest | undefined) => {
+    if (goToColumnRequestRef.current?.requestId !== next?.requestId) {
+      handledGoToColumnRequestId.current = undefined;
+    }
+    goToColumnRequestRef.current = next;
+    setGoToColumnRequest(next);
+  }, []);
+
+  const requestColumnReveal = useCallback(
+    (columnId: string, retainUntilSynchronization?: ColumnRevealSynchronization) => {
+      goToColumnRequestSequence.current += 1;
+      storeGoToColumnRequest({
+        columnId,
+        requestId: goToColumnRequestSequence.current,
+        ...(retainUntilSynchronization ? { retainUntilSynchronization } : {})
+      });
+    },
+    [storeGoToColumnRequest]
+  );
+
+  const handleColumnReveal = useCallback(
+    (requestId: number) => {
+      const request = goToColumnRequestRef.current;
+      if (!request || request.requestId !== requestId) return;
+      if (request.retainUntilSynchronization) {
+        handledGoToColumnRequestId.current = requestId;
+        return;
+      }
+      storeGoToColumnRequest(undefined);
+    },
+    [storeGoToColumnRequest]
+  );
 
   const storeImportOptionsPending = useCallback(
     (pending: boolean) => {
@@ -782,6 +817,17 @@ export function App() {
             ? current === undefined
             : current?.sessionId === response.sessionId && current.revision === response.revision;
         if (matchesSession) {
+          const reveal = goToColumnRequestRef.current;
+          if (
+            reveal?.retainUntilSynchronization?.sessionId === response.sessionId &&
+            reveal.retainUntilSynchronization.revision === response.revision
+          ) {
+            if (handledGoToColumnRequestId.current === reveal.requestId) {
+              storeGoToColumnRequest(undefined);
+            } else {
+              storeGoToColumnRequest({ ...reveal, retainUntilSynchronization: undefined });
+            }
+          }
           setPendingRendererSynchronization(response);
         }
         return;
@@ -1154,20 +1200,15 @@ export function App() {
           const addedColumnName = response.diff.addedColumns[0];
           const addedColumn = nextMetadata.schema.find((column) => column.name === addedColumnName);
           if (addedColumn) {
-            goToColumnRequestSequence.current += 1;
-            setGoToColumnRequest({
-              columnId: addedColumn.id,
-              requestId: goToColumnRequestSequence.current
+            requestColumnReveal(addedColumn.id, {
+              sessionId: nextMetadata.sessionId,
+              revision: response.revision
             });
           } else {
-            setGoToColumnRequest((current) =>
-              current && nextMetadata.schema.some((column) => column.id === current.columnId) ? current : undefined
-            );
+            storeGoToColumnRequest(undefined);
           }
         } else {
-          setGoToColumnRequest((current) =>
-            current && nextMetadata.schema.some((column) => column.id === current.columnId) ? current : undefined
-          );
+          storeGoToColumnRequest(undefined);
         }
         setGeneratedCode(response.code);
         setDiff(response.kind === "stepPreview" ? response.diff : undefined);
@@ -1272,6 +1313,7 @@ export function App() {
     releaseBackgroundRequest,
     rememberOperationReturnFocus,
     requestImportOptionsChange,
+    requestColumnReveal,
     requestStatsForConfirmedView,
     requestStepInspection,
     restartProfilingForConfirmedView,
@@ -1284,6 +1326,7 @@ export function App() {
     storeFailedPageRequest,
     storeFilterModel,
     storeGridViewState,
+    storeGoToColumnRequest,
     storeImportOptionsPending,
     storeMetadata,
     storePage,
@@ -1913,14 +1956,8 @@ export function App() {
               </button>
               <ColumnSearch
                 columns={(displayMetadata ?? metadata).schema}
-                selectedColumnId={goToColumnRequest?.columnId}
-                onSelect={(columnId) => {
-                  goToColumnRequestSequence.current += 1;
-                  setGoToColumnRequest({
-                    columnId,
-                    requestId: goToColumnRequestSequence.current
-                  });
-                }}
+                selectedColumnId={gridViewState.selectedColumnId}
+                onSelect={requestColumnReveal}
               />
               {metadata.backend === "pyspark" && (
                 <span className="experimentalBadge" title="PySpark support is experimental.">
@@ -2110,6 +2147,7 @@ export function App() {
                 }
                 goToColumnId={goToColumnRequest?.columnId}
                 goToColumnRequestId={goToColumnRequest?.requestId}
+                onGoToColumnHandled={handleColumnReveal}
                 viewState={inspectionMode ? inspectionGridViewState : gridViewState}
                 viewStateRestoreVersion={
                   inspectionMode ? (stepInspection?.outputPage.offset ?? 0) : viewStateRestoreVersion
@@ -2360,6 +2398,17 @@ interface PendingPageRequest {
 export interface ColumnWindow {
   offset: number;
   limit: number;
+}
+
+interface ColumnRevealSynchronization {
+  sessionId: string;
+  revision: number;
+}
+
+interface ColumnRevealRequest {
+  columnId: string;
+  requestId: number;
+  retainUntilSynchronization?: ColumnRevealSynchronization;
 }
 
 type PageRequestReason = "view" | "row" | "projection";

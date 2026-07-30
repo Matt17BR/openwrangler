@@ -7565,6 +7565,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
           partialColumns: string[];
           clippedColumnTitles: string[];
           clippedColumnStats: string[];
+          clippedColumnVisualizations: string[];
           clippedCells: number;
           clippedControls: string[];
           revenueSummary: string;
@@ -7631,6 +7632,19 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             );
             return clipped ? [expected.featured[index] ?? ""] : [];
           });
+          const clippedColumnVisualizations = featuredHeaders.flatMap((header, index) => {
+            if (!header) return [];
+            const headerBounds = header.getBoundingClientRect();
+            const clipped = Array.from(
+              header.querySelectorAll(
+                ".categoryMiniRow small, .datetimeMiniChart span, .numericMiniChart text, .booleanMiniChart span"
+              )
+            ).some((item) => {
+              const bounds = item.getBoundingClientRect();
+              return bounds.left < headerBounds.left - 1 || bounds.right > headerBounds.right + 1;
+            });
+            return clipped ? [expected.featured[index] ?? ""] : [];
+          });
           const visibleCells = Array.from(appRoot.querySelectorAll("td[data-grid-column]")).filter((cell) => {
             const bounds = cell.getBoundingClientRect();
             return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
@@ -7656,6 +7670,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             partialColumns: [...new Set(partialColumns)],
             clippedColumnTitles,
             clippedColumnStats,
+            clippedColumnVisualizations,
             clippedCells: visibleCells.filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length,
             clippedControls,
             revenueSummary: revenueHeader?.querySelector(".exactSummaryStats")?.innerText ?? "",
@@ -7686,6 +7701,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         measurement.partialColumns.length === 0 &&
         measurement.clippedColumnTitles.length === 0 &&
         measurement.clippedColumnStats.length === 0 &&
+        measurement.clippedColumnVisualizations.length === 0 &&
         measurement.clippedCells === 0 &&
         measurement.clippedControls.length === 0 &&
         /\bMin\b/u.test(measurement.revenueSummary) &&

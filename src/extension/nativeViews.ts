@@ -5,7 +5,7 @@ import { canEditLatestStep, canStartOperation, operationCatalog, operationByKind
 import { dataBackendLabel } from "../shared/protocol";
 import type { FilterModel, OperationKind, SessionMetadata } from "../shared/protocol";
 import { SessionCoordinator, type ActiveSessionSnapshot } from "./sessionCoordinator";
-import { OpenWranglerPanel } from "./webviewPanel";
+import { OpenWranglerPanel, SESSION_BOUND_EXPORT_DATA_COMMAND } from "./webviewPanel";
 import { insertGeneratedNotebookCell, type NotebookInsertionResult } from "./notebooks/notebookInsertion";
 import { getSetting } from "./configuration";
 import { exportFileSafely } from "./files/safeFileExport";
@@ -196,6 +196,8 @@ export function registerNativeViews(
   }
   const codePreview = new CodePreviewViewProvider(context, coordinator);
   let lastNotebookInsertionStatus: NotebookInsertionDiagnosticStatus | undefined;
+  const exportPinnedData = (sessionId: string, revision: number) =>
+    exportSessionData(coordinator, { sessionId, revision });
   context.subscriptions.push(
     contextSubscription,
     vscode.commands.registerCommand("openWrangler.clearViewFilterColumn", async (column?: unknown) => {
@@ -372,57 +374,23 @@ export function registerNativeViews(
       return true;
     }),
     vscode.commands.registerCommand("openWrangler.exportData", async () => {
-      if (!(await requireTrustedWorkspace("export cleaned data"))) return;
       const snapshot = coordinator.activeSession();
       if (!snapshot) {
+        if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
         void vscode.window.showInformationMessage("Open a dataframe in Open Wrangler before exporting cleaned data.");
-        return;
+        return false;
       }
-      if (snapshot.metadata.draftStep) {
-        void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
-        return;
-      }
-      const choices = [
-        snapshot.metadata.capabilities.exportCsv
-          ? { label: "CSV", description: "Comma-separated values", format: "csv" as const }
-          : undefined,
-        snapshot.metadata.capabilities.exportParquet
-          ? { label: "Parquet", description: "Typed columnar data", format: "parquet" as const }
-          : undefined
-      ].filter((choice): choice is NonNullable<typeof choice> => Boolean(choice));
-      if (!choices.length) {
-        void vscode.window.showWarningMessage("The active dataframe does not support cleaned-data export.");
-        return;
-      }
-      const selected = await vscode.window.showQuickPick(choices, {
-        title: "Export Cleaned Data",
-        placeHolder: "Choose a file format"
-      });
-      if (!selected) return;
-      const extension = selected.format === "csv" ? ".cleaned.csv" : ".cleaned.parquet";
-      const destination = await vscode.window.showSaveDialog({
-        title: "Export Cleaned Data",
-        defaultUri: defaultExportUri(snapshot, extension),
-        filters: selected.format === "csv" ? { CSV: ["csv"] } : { Parquet: ["parquet"] },
-        saveLabel: "Export data"
-      });
-      if (!destination) return;
-      if (destination.scheme !== "file") {
-        void vscode.window.showErrorMessage("Cleaned-data export currently requires a file-system destination.");
-        return;
-      }
-      try {
-        const exported = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
-          () => coordinator.exportActiveData(destination.fsPath, selected.format)
-        );
-        void vscode.window.showInformationMessage(
-          `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`
-        );
-      } catch (error) {
-        void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
-      }
+      return exportPinnedData(snapshot.sessionId, snapshot.metadata.revision);
     }),
+    vscode.commands.registerCommand(SESSION_BOUND_EXPORT_DATA_COMMAND, async (sessionId: unknown, revision: unknown) =>
+      typeof sessionId === "string" &&
+      sessionId.length > 0 &&
+      typeof revision === "number" &&
+      Number.isSafeInteger(revision) &&
+      revision >= 0
+        ? exportPinnedData(sessionId, revision)
+        : false
+    ),
     codePreview,
     vscode.window.registerWebviewViewProvider("openWrangler.codePreview", codePreview, {
       webviewOptions: { retainContextWhenHidden: true }
@@ -696,6 +664,112 @@ function sourceUris(snapshot: ActiveSessionSnapshot): vscode.Uri[] {
           other.fsPath === candidate.fsPath
       ) === index
   );
+}
+
+interface SessionExportPin {
+  readonly sessionId: string;
+  readonly revision: number;
+}
+
+async function exportSessionData(coordinator: SessionCoordinator, pin: SessionExportPin): Promise<boolean> {
+  if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
+  const initial = pinnedExportSnapshot(coordinator, pin);
+  if (!initial) return false;
+  if (initial.metadata.draftStep) {
+    void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+    return false;
+  }
+  const choices = [
+    initial.metadata.capabilities.exportCsv
+      ? { label: "CSV", description: "Comma-separated values", format: "csv" as const }
+      : undefined,
+    initial.metadata.capabilities.exportParquet
+      ? { label: "Parquet", description: "Typed columnar data", format: "parquet" as const }
+      : undefined
+  ].filter((choice): choice is NonNullable<typeof choice> => Boolean(choice));
+  if (!choices.length) {
+    void vscode.window.showWarningMessage("This dataframe does not support cleaned-data export.");
+    return false;
+  }
+  const selected = await vscode.window.showQuickPick(choices, {
+    title: "Export Cleaned Data",
+    placeHolder: "Choose a file format"
+  });
+  if (!selected) return false;
+  const confirmedBeforeSave = pinnedExportSnapshot(coordinator, pin);
+  if (!confirmedBeforeSave || confirmedBeforeSave.metadata.draftStep) {
+    if (confirmedBeforeSave?.metadata.draftStep) {
+      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+    }
+    return false;
+  }
+  const stillSupported =
+    selected.format === "csv"
+      ? confirmedBeforeSave.metadata.capabilities.exportCsv
+      : confirmedBeforeSave.metadata.capabilities.exportParquet;
+  if (!stillSupported) {
+    void vscode.window.showWarningMessage("The selected export format is no longer available for this dataframe.");
+    return false;
+  }
+  const extension = selected.format === "csv" ? ".cleaned.csv" : ".cleaned.parquet";
+  const destination = await vscode.window.showSaveDialog({
+    title: "Export Cleaned Data",
+    defaultUri: defaultExportUri(confirmedBeforeSave, extension),
+    filters: selected.format === "csv" ? { CSV: ["csv"] } : { Parquet: ["parquet"] },
+    saveLabel: "Export data"
+  });
+  if (!destination) return false;
+  if (destination.scheme !== "file") {
+    void vscode.window.showErrorMessage("Cleaned-data export currently requires a file-system destination.");
+    return false;
+  }
+  if (!(await requireTrustedWorkspace("export cleaned data"))) return false;
+  const confirmedBeforeDispatch = pinnedExportSnapshot(coordinator, pin);
+  if (!confirmedBeforeDispatch || confirmedBeforeDispatch.metadata.draftStep) {
+    if (confirmedBeforeDispatch?.metadata.draftStep) {
+      void vscode.window.showWarningMessage("Apply or discard the draft step before exporting cleaned data.");
+    }
+    return false;
+  }
+  const dispatchSupported =
+    selected.format === "csv"
+      ? confirmedBeforeDispatch.metadata.capabilities.exportCsv
+      : confirmedBeforeDispatch.metadata.capabilities.exportParquet;
+  if (!dispatchSupported) {
+    void vscode.window.showWarningMessage("The selected export format is no longer available for this dataframe.");
+    return false;
+  }
+  try {
+    const exported = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Exporting cleaned data…", cancellable: false },
+      () => coordinator.exportData(pin.sessionId, pin.revision, destination.fsPath, selected.format)
+    );
+    void vscode.window.showInformationMessage(
+      `Exported ${exported.shape.rows.toLocaleString()} rows × ${exported.shape.columns.toLocaleString()} columns to ${exported.path}.`
+    );
+    return true;
+  } catch (error) {
+    void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+function pinnedExportSnapshot(
+  coordinator: SessionCoordinator,
+  pin: SessionExportPin
+): ActiveSessionSnapshot | undefined {
+  const snapshot = coordinator.sessionSnapshot(pin.sessionId);
+  if (!snapshot) {
+    void vscode.window.showWarningMessage("The dataframe that started this export is no longer open.");
+    return undefined;
+  }
+  if (snapshot.metadata.revision !== pin.revision) {
+    void vscode.window.showWarningMessage(
+      "The dataframe changed while export was open. Review the current data and try again."
+    );
+    return undefined;
+  }
+  return snapshot;
 }
 
 async function requireTrustedWorkspace(action: string): Promise<boolean> {

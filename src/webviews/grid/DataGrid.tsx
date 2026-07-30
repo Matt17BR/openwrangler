@@ -51,6 +51,7 @@ interface DataGridProps {
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn?(column: string): void;
   onOpenFilter(column: string): void;
+  onGoToColumnHandled?(requestId: number): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
   onVisibleSummaryColumnsChange(columnIds: string[]): void;
   onViewStateChange?(state: GridViewState): void;
@@ -108,6 +109,7 @@ export function DataGrid({
   onSortColumn,
   onClearSortColumn = () => undefined,
   onOpenFilter,
+  onGoToColumnHandled = () => undefined,
   onVisibleColumnRangeChange = ignoreVisibleColumnRangeChange,
   onVisibleSummaryColumnsChange,
   onViewStateChange = ignoreViewStateChange
@@ -465,11 +467,13 @@ export function DataGrid({
         scrollLeft
       }
     });
+    onGoToColumnHandled(goToColumnRequestId);
   }, [
     defaultColumnWidth,
     goToColumnId,
     goToColumnRequestId,
     metadata.schema,
+    onGoToColumnHandled,
     reportViewState,
     viewStateRestoreVersion,
     widths
