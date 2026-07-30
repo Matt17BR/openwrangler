@@ -15112,7 +15112,8 @@ async function exercisePackagedViewingQueries(testing: TestApi, fixture: vscode.
 async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
   const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-wide-projection-"));
   const sourcePath = path.join(directory, "wide.csv");
-  const columnCount = 300;
+  const columnCount = 417;
+  const farColumnOffset = columnCount - 12;
   const names = Array.from({ length: columnCount }, (_, column) => `column_${column.toString().padStart(3, "0")}`);
   const values = (row: number) => names.map((_name, column) => String(row * 1_000 + column));
   const source = [names, values(0), values(1)].map((row) => row.join(",")).join("\n") + "\n";
@@ -15146,7 +15147,7 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
         viewRequestId: `${backend}-wide-far-columns`,
         offset: 0,
         limit: 2,
-        columnOffset: 288,
+        columnOffset: farColumnOffset,
         columnLimit: 12,
         filterModel: {
           logic: "and",
@@ -15165,10 +15166,10 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
       assert.equal(projected.page.totalRows, 1, `${backend} must filter on an untransported column.`);
       assert.deepEqual(
         projected.page.columnIds,
-        projected.metadata.schema.slice(288, 300).map((column) => column.id)
+        projected.metadata.schema.slice(farColumnOffset, columnCount).map((column) => column.id)
       );
-      assert.equal(projected.page.rows[0]?.values[0]?.display, "1288");
-      assert.equal(projected.page.rows[0]?.values[11]?.display, "1299");
+      assert.equal(projected.page.rows[0]?.values[0]?.display, String(1_000 + farColumnOffset));
+      assert.equal(projected.page.rows[0]?.values[11]?.display, String(1_000 + columnCount - 1));
       assert.ok(projected.page.rows.every((row) => row.values.length === 12));
 
       const closed = await testing.request({
@@ -15178,6 +15179,102 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
       });
       assert.equal(closed.kind, "sessionClosed");
     }
+
+    if (process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+      const sourceUri = vscode.Uri.file(sourcePath);
+      const originalBackend = vscode.workspace
+        .getConfiguration("openWrangler")
+        .get<"auto" | "polars" | "pandas" | "duckdb">("defaultBackend", "auto");
+      await vscode.workspace
+        .getConfiguration("openWrangler")
+        .update("defaultBackend", "polars", vscode.ConfigurationTarget.Global);
+      try {
+        recordAcceptanceProgress("verify:wide-projection:picker:open");
+        await vscode.commands.executeCommand("openWrangler.openFile", sourceUri);
+        await waitFor(
+          () => {
+            const active = testing.activeSession();
+            return (
+              active?.metadata.source.path === sourcePath &&
+              active.metadata.backend === "polars" &&
+              active.metadata.shape.rows === 2 &&
+              active.metadata.shape.columns === columnCount
+            );
+          },
+          SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+          "the public wide-schema file workflow to open every column"
+        );
+
+        const active = testing.activeSession();
+        assert.ok(active, "The wide-schema picker journey requires its exact active session.");
+        const sessionId = active.sessionId;
+        const finalColumn = active.metadata.schema[columnCount - 1];
+        assert.ok(finalColumn, "The wide-schema picker journey requires its final column.");
+        const workbench = await connectToEditorWorkbench();
+        const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+        const app = await exactSessionApp(target.frame, sessionId);
+        assert.ok(app, "The wide-schema picker journey requires its exact visible application.");
+        const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+
+        recordAcceptanceProgress("verify:wide-projection:picker:all-columns");
+        await columnSearch.focus();
+        const listbox = app.getByRole("listbox", { name: "Matching columns", exact: true });
+        await listbox.waitFor({ state: "visible", timeout: 10_000 });
+        const firstOption = listbox.getByRole("option").first();
+        assert.equal(
+          await firstOption.getAttribute("aria-setsize"),
+          String(columnCount),
+          "The real column picker must expose the complete schema instead of a 100-result subset."
+        );
+        assert.equal(
+          await app.getByText(/Showing 100 of/u).count(),
+          0,
+          "The real column picker must not retain the old 100-result cap."
+        );
+
+        await columnSearch.press("End");
+        const finalOption = listbox.locator(`[role="option"][aria-posinset="${columnCount}"]`);
+        await finalOption.waitFor({ state: "visible", timeout: 10_000 });
+        assert.match(
+          (await finalOption.getAttribute("aria-label")) ?? "",
+          /^column_416, /u,
+          "End must reach the final column in a 417-column schema."
+        );
+        assert.equal(
+          await finalOption.getAttribute("aria-setsize"),
+          String(columnCount),
+          "The final virtualized option must retain the complete result count."
+        );
+        assert.ok(
+          (await listbox.getByRole("option").count()) < 30,
+          "The complete column picker must remain DOM-bounded while exposing all results."
+        );
+
+        await columnSearch.press("Enter");
+        await waitFor(
+          () => testing.activeSession()?.viewState.selectedColumnId === finalColumn.id,
+          10_000,
+          "the real column picker to select its final schema column"
+        );
+        await app
+          .locator('th[data-column="column_416"]')
+          .first()
+          .waitFor({ state: "visible", timeout: 10_000 });
+        assert.equal(
+          await app.locator('th[data-column="column_416"]').first().getAttribute("aria-colindex"),
+          String(columnCount + 1),
+          "The selected far-right grid header must keep its full-schema ARIA coordinate."
+        );
+
+        await disposePackagedSessionPanel(testing, sessionId, "the real wide-schema picker session");
+        recordAcceptanceProgress("verify:wide-projection:picker:complete");
+      } finally {
+        await vscode.workspace
+          .getConfiguration("openWrangler")
+          .update("defaultBackend", originalBackend, vscode.ConfigurationTarget.Global);
+      }
+    }
+
     await waitFor(
       () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
       10_000,

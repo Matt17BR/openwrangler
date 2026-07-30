@@ -6,7 +6,13 @@ const REPOSITORY_ROOT = resolve(import.meta.dirname, "..");
 
 export const REMOTE_JUPYTER_INPUT_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.in");
 export const REMOTE_JUPYTER_LOCK_PATH = resolve(REPOSITORY_ROOT, "scripts", "remote-jupyter", "requirements.txt");
-export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze(["ipykernel", "jupyter-server", "pandas", "polars"]);
+export const REMOTE_JUPYTER_DIRECT_DEPENDENCIES = Object.freeze([
+  "duckdb",
+  "ipykernel",
+  "jupyter-server",
+  "pandas",
+  "polars"
+]);
 export const REMOTE_JUPYTER_MINIMUM_SAFE_SERVER_VERSION = "2.20.0";
 export const REMOTE_JUPYTER_LOCK_TOOL_VERSION = "0.11.32";
 export const REMOTE_JUPYTER_LOCK_PYTHON_VERSION = "3.12";

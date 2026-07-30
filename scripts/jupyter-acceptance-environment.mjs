@@ -19,11 +19,12 @@ import {
   createEditorAcceptancePrivateRootReceipt
 } from "./packaged-editor-orchestration.mjs";
 
-const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "pyspark"]);
+const DEPENDENCIES = Object.freeze(["ipykernel", "pandas", "polars", "duckdb", "pyspark"]);
 const BINARY_DEPENDENCIES = Object.freeze([
   "ipykernel",
   "pandas",
   "polars",
+  "duckdb",
   "py4j",
   "pyarrow",
   "grpcio",
@@ -36,6 +37,7 @@ const RELEASED_JUPYTER_COMPATIBILITY_VERSIONS = Object.freeze({
   ipykernel: "6.30.1",
   pandas: "2.3.3",
   polars: "1.35.2",
+  duckdb: "1.5.4",
   pyspark: "4.2.0",
   py4j: "0.10.9.9",
   pyarrow: "25.0.0",
@@ -415,11 +417,13 @@ export async function probeJupyterAcceptancePython(
     "import ipykernel",
     "import pandas",
     "import polars",
+    "import duckdb",
     ...(requirePySpark ? ["import pyspark"] : []),
     "print(json.dumps({",
     '  "ipykernel": importlib.metadata.version("ipykernel"),',
     '  "pandas": importlib.metadata.version("pandas"),',
     '  "polars": importlib.metadata.version("polars"),',
+    '  "duckdb": importlib.metadata.version("duckdb"),',
     ...(requirePySpark ? ['  "pyspark": importlib.metadata.version("pyspark"),'] : []),
     '  "openwranglerRuntimePresent": importlib.util.find_spec("openwrangler_runtime") is not None,',
     "}, sort_keys=True))"

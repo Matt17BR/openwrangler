@@ -18,6 +18,7 @@ const dependencyReport = (openwranglerRuntimePresent, overrides = {}) => ({
   ipykernel: "6.30.1",
   pandas: "2.3.3",
   polars: "1.35.2",
+  duckdb: "1.5.4",
   pyspark: "4.2.0",
   openwranglerRuntimePresent,
   ...overrides
@@ -226,10 +227,11 @@ test("released-Jupyter installs its released compatibility versions into a clean
     assert.equal(commands[2].input.executable, kernelPython);
     assert.deepEqual(commands[2].input.args.slice(0, 5), ["-I", "-m", "pip", "--isolated", "install"]);
     assert.ok(commands[2].input.args.includes("--only-binary=:all:"));
-    assert.deepEqual(commands[2].input.args.slice(-10), [
+    assert.deepEqual(commands[2].input.args.slice(-11), [
       "ipykernel==6.30.1",
       "pandas==2.3.3",
       "polars==1.35.2",
+      "duckdb==1.5.4",
       "py4j==0.10.9.9",
       "pyarrow==25.0.0",
       "grpcio==1.83.0",
