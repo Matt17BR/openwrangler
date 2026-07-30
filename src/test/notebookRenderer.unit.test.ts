@@ -29,6 +29,9 @@ describe("notebook renderer", () => {
     expect(actions).toHaveLength(1);
     expect(actions[0]?.textContent).toBe("Open in Open Wrangler");
     expect(actions[0]?.title).toContain("complete current value of frame");
+    expect(element.querySelector("table")?.getAttribute("aria-label")).toBe(
+      "Open Wrangler inline preview of saved frame"
+    );
 
     actions[0]?.click();
     expect(postMessage).toHaveBeenCalledOnce();

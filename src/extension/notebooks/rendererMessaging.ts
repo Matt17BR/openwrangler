@@ -87,9 +87,5 @@ function isOpenInOpenWranglerMessage(message: unknown): message is OpenInOpenWra
     return false;
   }
   const candidate = message as { kind?: unknown; payload?: unknown };
-  return (
-    candidate.kind === "openInOpenWrangler" &&
-    typeof candidate.payload === "object" &&
-    candidate.payload !== null
-  );
+  return candidate.kind === "openInOpenWrangler" && typeof candidate.payload === "object" && candidate.payload !== null;
 }

@@ -134,7 +134,7 @@ function renderPayload(payload: NotebookOutputPayload, context: RendererContext)
   preview.appendChild(scroller);
 
   const table = document.createElement("table");
-  table.setAttribute("aria-label", `Open Wrangler snapshot of ${sourceLabel.text}`);
+  table.setAttribute("aria-label", `Open Wrangler inline preview of ${sourceLabel.text}`);
   table.style.borderCollapse = "collapse";
   table.style.width = "max-content";
   table.style.minWidth = "100%";

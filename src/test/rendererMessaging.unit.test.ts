@@ -350,10 +350,7 @@ function register(): {
   return { context, coordinator, coordinatedBridge };
 }
 
-function dispatch(
-  origin: NotebookEditor,
-  payload: unknown
-): void {
+function dispatch(origin: NotebookEditor, payload: unknown): void {
   rendererMocks.listener?.({
     editor: origin,
     message: { kind: "openInOpenWrangler", payload }

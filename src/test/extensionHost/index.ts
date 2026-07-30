@@ -204,6 +204,7 @@ const RELEASED_JUPYTER_NOTEBOOK_VARIABLE_PICKER_TITLE = "Open Wrangler: Open Not
 const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
+const RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT = "__OW_RELEASED_DUCKDB_ALIVE__";
 const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
@@ -846,7 +847,7 @@ interface ReleasedJupyterKernelTarget {
 interface ReleasedVariableExpectation {
   readonly name: string;
   readonly type: string;
-  readonly backend: "pandas" | "polars" | "pyspark";
+  readonly backend: "pandas" | "polars" | "duckdb" | "pyspark";
   readonly firstValue: string;
   readonly notebookInsert?: boolean;
 }
@@ -1544,6 +1545,219 @@ async function exerciseReleasedJupyterExtension(
       );
     } finally {
       await restoreScreenshotWorkbench?.();
+    }
+
+    recordAcceptanceProgress(`${phase}:duckdb-inline`);
+    const duckdbCellRange = new vscode.NotebookRange(5, 6);
+    const duckdbRendererEditor = await showExactReleasedNotebook(notebook);
+    duckdbRendererEditor.selection = duckdbCellRange;
+    duckdbRendererEditor.selections = [duckdbCellRange];
+    duckdbRendererEditor.revealRange(duckdbCellRange, vscode.NotebookEditorRevealType.InCenter);
+    await waitFor(
+      () => duckdbRendererEditor.visibleRanges.some((range) => range.start <= 5 && range.end > 5),
+      WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+      "the native DuckDB MIME cell to become visible before execution"
+    );
+    await executeReleasedNotebookCellUntilMime(
+      notebook,
+      5,
+      OPEN_WRANGLER_MIME_V2,
+      `${phase}:duckdb-mime-cell`,
+      duckdbRendererEditor
+    );
+    const duckdbOutputMimes = notebook.cellAt(5).outputs.flatMap((output) => output.items.map((item) => item.mime));
+    assert.ok(
+      duckdbOutputMimes.includes(OPEN_WRANGLER_MIME_V2),
+      `The exact DuckDB relation must emit Open Wrangler MIME v2. Actual MIME types: ${JSON.stringify(
+        duckdbOutputMimes
+      )}.`
+    );
+    assert.equal(
+      duckdbOutputMimes.includes("text/html"),
+      false,
+      "The native DuckDB formatter must suppress the competing default HTML representation."
+    );
+    const duckdbMimeItem = notebook
+      .cellAt(5)
+      .outputs.flatMap((output) => output.items)
+      .find((item) => item.mime === OPEN_WRANGLER_MIME_V2);
+    assert.ok(duckdbMimeItem, "The exact DuckDB relation output must retain its MIME-v2 item.");
+    const duckdbMimePayload = normalizeNotebookOutputPayload(
+      JSON.parse(new TextDecoder().decode(duckdbMimeItem.data)) as unknown
+    );
+    assert.ok(duckdbMimePayload, "The DuckDB MIME-v2 item must satisfy the saved-output contract.");
+    assert.equal(duckdbMimePayload.metadata.backend, "duckdb");
+    assert.equal(duckdbMimePayload.metadata.source.label, "duckdb_relation");
+    assert.equal(duckdbMimePayload.metadata.source.variableName, "duckdb_relation");
+    assert.deepEqual(duckdbMimePayload.metadata.shape, { rows: 100_000, columns: 4 });
+    assert.ok(
+      duckdbMimePayload.page.rows.length > 0 && duckdbMimePayload.page.rows.length < 100_000,
+      "The portable DuckDB table must remain a bounded inline preview before its live action is used."
+    );
+
+    await configuration.update("notebookStartMode", "editing", vscode.ConfigurationTarget.Workspace);
+    try {
+      const duckdbRendererButton = await waitForNotebookRendererButton(
+        workbench,
+        "duckdb_relation",
+        "Open in Open Wrangler"
+      );
+      try {
+        await duckdbRendererButton.click();
+      } finally {
+        await duckdbRendererButton.dispose();
+      }
+
+      const duckdbRelation = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "duckdb_relation",
+          type: "_duckdb.DuckDBPyRelation",
+          backend: "duckdb",
+          firstValue: "3400001",
+          notebookInsert: false
+        },
+        "the complete connection-private DuckDB relation opened from its primary inline action"
+      );
+      assert.equal(
+        duckdbRelation.metadata.mode,
+        "viewing",
+        "A live DuckDB relation must stay viewing-only even when notebook sessions default to editing."
+      );
+      assert.deepEqual(duckdbRelation.metadata.shape, { rows: 100_000, columns: 4 });
+      assert.deepEqual(duckdbRelation.metadata.filteredShape, duckdbRelation.metadata.shape);
+      assert.deepEqual(duckdbRelation.metadata.capabilities, {
+        editable: false,
+        lazy: false,
+        cancel: false,
+        exportCsv: false,
+        exportParquet: false,
+        notebookInsert: false
+      });
+      await assertReleasedSessionPage(testing, duckdbRelation, "3400001", "released-jupyter-duckdb-native-page");
+
+      const farDuckdbPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-native-far-page",
+        sessionId: duckdbRelation.sessionId,
+        revision: duckdbRelation.metadata.revision,
+        offset: 99_990,
+        limit: 10,
+        filterModel: duckdbRelation.metadata.filterModel
+      });
+      assert.equal(farDuckdbPage.kind, "page");
+      if (farDuckdbPage.kind !== "page") throw new Error("The far native DuckDB page did not resolve.");
+      assert.equal(farDuckdbPage.page.totalRows, 100_000);
+      assert.equal(farDuckdbPage.page.rows[0]?.values[0]?.display, "3499991");
+      assert.equal(farDuckdbPage.page.rows[9]?.values[0]?.display, "3500000");
+
+      const filteredDuckdbModel: FilterModel = {
+        logic: "and",
+        filters: [
+          {
+            column: "market",
+            type: "string",
+            logic: "and",
+            predicates: [{ kind: "predicate", operator: "equals", value: "DACH" }]
+          }
+        ],
+        sort: [{ column: "order_id", direction: "desc", nulls: "last" }]
+      };
+      const filteredDuckdbPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-native-filter-sort",
+        sessionId: duckdbRelation.sessionId,
+        revision: farDuckdbPage.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: filteredDuckdbModel
+      });
+      assert.equal(filteredDuckdbPage.kind, "page");
+      if (filteredDuckdbPage.kind !== "page") {
+        throw new Error("The filtered and sorted native DuckDB page did not resolve.");
+      }
+      assert.equal(filteredDuckdbPage.page.totalRows, 25_000);
+      assert.equal(filteredDuckdbPage.page.rows[0]?.values[0]?.display, "3499997");
+      assert.equal(filteredDuckdbPage.page.rows[0]?.values[1]?.display, "DACH");
+
+      const duckdbRevenue = columnReference(duckdbRelation.metadata, "revenue");
+      const duckdbSummary = await testing.request({
+        kind: "getSummary",
+        sessionId: duckdbRelation.sessionId,
+        revision: filteredDuckdbPage.revision,
+        viewRequestId: "released-jupyter-duckdb-native-summary",
+        filterModel: filteredDuckdbModel,
+        columnIds: [duckdbRevenue.id]
+      });
+      assert.equal(duckdbSummary.kind, "summary");
+      if (duckdbSummary.kind !== "summary") throw new Error("The native DuckDB summary did not resolve.");
+      assert.equal(duckdbSummary.summaries[0]?.totalCount, 25_000);
+      assert.equal(duckdbSummary.summaries[0]?.numeric?.min, 100.5);
+      assert.equal(duckdbSummary.summaries[0]?.numeric?.max, 5_099.94);
+
+      await disposePackagedSessionPanel(
+        testing,
+        duckdbRelation.sessionId,
+        "the released-Jupyter native DuckDB relation session"
+      );
+      const duckdbAliveEditor = await showExactReleasedNotebook(notebook);
+      await executeReleasedNotebookCell(
+        notebook,
+        6,
+        RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT,
+        `${phase}:duckdb-user-relation-after-close`,
+        duckdbAliveEditor
+      );
+      const duckdbAlive = releasedNotebookJsonResult(
+        notebook.cellAt(6),
+        RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT,
+        "DuckDB user relation after Open Wrangler close"
+      );
+      assert.equal(duckdbAlive.count, 100_000);
+      assert.equal(duckdbAlive.first, 3_400_001);
+
+      recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
+      const duckdbVariablesEditor = await showExactReleasedNotebook(notebook);
+      assertExactVisibleReleasedNotebookEditor(
+        notebook,
+        duckdbVariablesEditor,
+        "before opening the real Jupyter Variables action for DuckDB"
+      );
+      await vscode.commands.executeCommand("jupyter.openVariableView");
+      await dispatchReleasedJupyterVariableAction(workbench, notebook, "duckdb_relation", `${phase}:duckdb-variables`);
+      const duckdbVariablesRelation = await waitForReleasedVariableSession(
+        workbench,
+        testing,
+        notebook,
+        {
+          name: "duckdb_relation",
+          type: "_duckdb.DuckDBPyRelation",
+          backend: "duckdb",
+          firstValue: "3400001",
+          notebookInsert: false
+        },
+        "the exact DuckDB relation opened from the real Jupyter Variables view"
+      );
+      assert.equal(duckdbVariablesRelation.metadata.mode, "viewing");
+      await assertReleasedSessionPage(
+        testing,
+        duckdbVariablesRelation,
+        "3400001",
+        "released-jupyter-duckdb-variables-page"
+      );
+      await disposePackagedSessionPanel(
+        testing,
+        duckdbVariablesRelation.sessionId,
+        "the released-Jupyter Variables DuckDB relation session"
+      );
+    } finally {
+      await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
     }
 
     recordAcceptanceProgress(`${phase}:pandas-series`);
@@ -2496,6 +2710,7 @@ function writeReleasedJupyterNotebook(
     "import socket",
     "import sys",
     "from datetime import date, timedelta",
+    "import duckdb",
     "import pandas as pd",
     "import polars as pl",
     "pandas_frame = pd.DataFrame({'value': [1, 2], 'label': ['a', 'b']})",
@@ -2542,6 +2757,16 @@ function writeReleasedJupyterNotebook(
     "    'account_status': [showcase_statuses[index % len(showcase_statuses)] for index in range(showcase_rows)],",
     "})",
     "polars_series = pl.Series('series_value', [7, 8])",
+    "duckdb_connection = duckdb.connect()",
+    'duckdb_connection.execute(f"CREATE TABLE private_duck_orders AS SELECT ' +
+      "3400001 + row_index AS order_id, " +
+      "CASE row_index % 4 WHEN 0 THEN 'DACH' WHEN 1 THEN 'Nordics' WHEN 2 THEN 'Iberia' ELSE 'Benelux' END AS market, " +
+      "CAST(100.50 + ((row_index * 17) % 500000) / 100.0 AS DECIMAL(18,2)) AS revenue, " +
+      "DATE '2026-01-01' + CAST(row_index % 365 AS INTEGER) AS order_date " +
+      'FROM range({showcase_rows}) AS source(row_index)")',
+    "duckdb_relation = duckdb_connection.table('private_duck_orders')",
+    "def _open_wrangler_forbid_duckdb_conversion(*_args, **_kwargs):",
+    "    raise AssertionError('DuckDB notebook acceptance forbids conversion through Pandas, Polars, or Arrow')",
     `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
     `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
       "'executable': sys.executable, 'pid': os.getpid(), " +
@@ -2608,6 +2833,30 @@ function writeReleasedJupyterNotebook(
               "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
               "'hostname': socket.gethostname(), " +
               `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)})` +
+              "}, sort_keys=True))\n"
+          ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "for _duckdb_conversion_name in ('df', 'to_df', 'fetchdf', 'pl', 'arrow'):\n",
+            "    setattr(duckdb.DuckDBPyRelation, _duckdb_conversion_name, _open_wrangler_forbid_duckdb_conversion)\n",
+            "duckdb_relation\n"
+          ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "import json\n",
+            `print(${JSON.stringify(RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT)} + json.dumps({` +
+              "'count': duckdb_relation.aggregate('count(*) AS count').fetchone()[0], " +
+              "'first': duckdb_relation.order('order_id').limit(1).fetchone()[0]" +
               "}, sort_keys=True))\n"
           ]
         }
@@ -15241,10 +15490,7 @@ async function exerciseWideColumnProjection(testing: TestApi): Promise<void> {
           10_000,
           "the real column picker to select its final schema column"
         );
-        await app
-          .locator('th[data-column="column_416"]')
-          .first()
-          .waitFor({ state: "visible", timeout: 10_000 });
+        await app.locator('th[data-column="column_416"]').first().waitFor({ state: "visible", timeout: 10_000 });
         assert.equal(
           await app.locator('th[data-column="column_416"]').first().getAttribute("aria-colindex"),
           String(columnCount + 1),
