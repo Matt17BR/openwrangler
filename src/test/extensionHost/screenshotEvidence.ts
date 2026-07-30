@@ -16,6 +16,7 @@ export const PACKAGED_SCREENSHOT_COLUMNS = [
   "account_note"
 ] as const;
 export const PACKAGED_SCREENSHOT_ROW_COUNT = 100_000;
+export const PACKAGED_FIRST_USE_ROW_COUNT = 10_000;
 export const PACKAGED_SCREENSHOT_VIEWPORT = { width: 1_920, height: 860 } as const;
 export const PACKAGED_SCREENSHOT_MARKETS = [
   "Benelux",
@@ -62,6 +63,21 @@ export function packagedScreenshotFixtureCsv(): string {
   const lines = [PACKAGED_SCREENSHOT_COLUMNS.map(csvCell).join(",")];
   for (let index = 0; index < PACKAGED_SCREENSHOT_ROW_COUNT; index += 1) {
     lines.push(packagedScreenshotRow(index).map(csvCell).join(","));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function packagedFirstUseFixtureCsv(): string {
+  const delimiter = ";";
+  const lines = [
+    `\uFEFF${PACKAGED_SCREENSHOT_COLUMNS.map((value) => delimitedCell(value, delimiter)).join(delimiter)}`
+  ];
+  for (let index = 0; index < PACKAGED_FIRST_USE_ROW_COUNT; index += 1) {
+    lines.push(
+      packagedScreenshotRow(index)
+        .map((value) => delimitedCell(value, delimiter))
+        .join(delimiter)
+    );
   }
   return `${lines.join("\n")}\n`;
 }
@@ -161,7 +177,11 @@ export function packagedScreenshotFileName(
 }
 
 function csvCell(value: string): string {
-  return /[",\r\n]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+  return delimitedCell(value, ",");
+}
+
+function delimitedCell(value: string, delimiter: string): string {
+  return value.includes(delimiter) || /["\r\n]/u.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }
 
 function isoDate(timestamp: number): string {

@@ -122,7 +122,7 @@ export function DataGrid({
     [beforePage, beforeSchema, diff, metadata.schema, page]
   );
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const handledGoToColumnRequestId = useRef<number | undefined>(undefined);
+  const handledGoToColumnRequest = useRef<{ requestId: number; restoreVersion: number } | undefined>(undefined);
   const visibleColumnRangeHandler = useRef(onVisibleColumnRangeChange);
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
@@ -417,35 +417,63 @@ export function DataGrid({
     [onVisibleSummaryColumnsChange]
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       !goToColumnId ||
       goToColumnRequestId === undefined ||
-      handledGoToColumnRequestId.current === goToColumnRequestId
+      (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+        handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
     ) {
       return;
     }
     const index = metadata.schema.findIndex((column) => column.id === goToColumnId);
     if (index < 0) return;
-    const animationFrame = window.requestAnimationFrame(() => {
-      preserveGridFocusAfterScroll.current = false;
-      focusRequested.current = document.hasFocus();
-      const scroller = scrollerRef.current;
-      if (scroller) scroller.scrollLeft = Math.max(0, sum(widths.slice(0, index)) - scroller.clientWidth / 3);
-      setFocusedCell((current) => ({ ...current, column: index }));
-      const currentViewState = viewStateRef.current;
-      reportViewState({
-        ...currentViewState,
-        selectedColumnId: metadata.schema[index].id,
-        viewport: {
-          ...currentViewState.viewport,
-          scrollLeft: scroller?.scrollLeft ?? currentViewState.viewport.scrollLeft
-        }
-      });
-      handledGoToColumnRequestId.current = goToColumnRequestId;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    preserveGridFocusAfterScroll.current = false;
+    focusRequested.current = document.hasFocus();
+    const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
+    const targetWidth = widths[index] ?? defaultColumnWidth;
+    const centeredOffset = Math.max(rowHeaderWidth, (scroller.clientWidth - targetWidth) / 2);
+    scroller.scrollLeft = Math.max(0, columnStart - centeredOffset);
+    const scrollLeft = scroller.scrollLeft;
+    const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
+    programmaticViewportTarget.current = {
+      firstVisibleRow,
+      scrollTop: scroller.scrollTop,
+      scrollLeft
+    };
+    handledGoToColumnRequest.current = {
+      requestId: goToColumnRequestId,
+      restoreVersion: viewStateRestoreVersion
+    };
+    setViewport((current) => ({
+      ...current,
+      firstVisibleRow,
+      scrollLeft,
+      scrollTop: scroller.scrollTop,
+      width: scroller.clientWidth,
+      height: scroller.clientHeight
+    }));
+    setFocusedCell((current) => ({ ...current, column: index }));
+    const currentViewState = viewStateRef.current;
+    reportViewState({
+      ...currentViewState,
+      selectedColumnId: metadata.schema[index].id,
+      viewport: {
+        ...currentViewState.viewport,
+        scrollLeft
+      }
     });
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [goToColumnId, goToColumnRequestId, metadata.schema, reportViewState, widths]);
+  }, [
+    defaultColumnWidth,
+    goToColumnId,
+    goToColumnRequestId,
+    metadata.schema,
+    reportViewState,
+    viewStateRestoreVersion,
+    widths
+  ]);
 
   useEffect(() => {
     if (!focusRequested.current) return;
@@ -561,6 +589,7 @@ export function DataGrid({
       <div className="tableScroller" ref={scrollerRef} data-testid="data-grid-scroller">
         <table
           role="grid"
+          style={{ width: rowHeaderWidth + sum(widths), minWidth: rowHeaderWidth + sum(widths) }}
           aria-busy={busy || projecting}
           aria-label={`Data grid for ${metadata.source.label}`}
           aria-rowcount={page.totalRows + 1}

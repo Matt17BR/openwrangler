@@ -68,12 +68,14 @@ import {
 import { ACCEPTANCE_PROGRESS_PROTOCOL, writeAcceptanceProgressCheckpoint } from "./progress";
 import { readReleasedRemoteJupyterDescriptorToken } from "./remoteJupyterDescriptor";
 import {
+  PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedFirstUseFixtureCsv,
   packagedScreenshotFixtureCsv
 } from "./screenshotEvidence";
 import { prioritizeNewestRendererTargets } from "./webviewTargetOrdering";
@@ -622,11 +624,9 @@ export async function run(): Promise<void> {
   }
   if (phase === "platform-smoke") {
     recordAcceptanceProgress("platform-smoke:start");
-    await exercisePackagedPlatformSmoke(
-      testing,
-      extension,
-      vscode.Uri.joinPath(workspace, "fixtures", "[Live] sample.csv")
-    );
+    const firstUseFixture = vscode.Uri.joinPath(workspace, "fixtures", "[Live] regional orders 2024-2025.csv");
+    writeFileSync(firstUseFixture.fsPath, packagedFirstUseFixtureCsv(), { encoding: "utf8", flag: "wx" });
+    await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture);
     if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
       recordAcceptanceProgress("platform-smoke:screenshots");
       await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
@@ -4421,17 +4421,26 @@ async function exercisePackagedPlatformSmoke(
   const active = testing.activeSession();
   assert.ok(active, `The ${editorName} journey must publish an active dataframe session.`);
   assert.equal(active.metadata.source.path, fixture.fsPath);
-  assert.equal(active.metadata.shape.rows > 0, true);
-  assert.equal(active.metadata.shape.columns, 4);
+  assert.deepEqual(active.metadata.shape, {
+    rows: PACKAGED_FIRST_USE_ROW_COUNT,
+    columns: PACKAGED_SCREENSHOT_COLUMNS.length
+  });
+  assert.equal(active.metadata.backend, "polars");
+  assert.deepEqual(active.metadata.source.importOptions, {
+    delimiter: ";",
+    encoding: "utf-8",
+    quoteChar: '"',
+    hasHeader: true
+  });
 
   recordAcceptanceProgress("platform-smoke:grid");
   const gridTarget = await waitForOpenWranglerGridTarget(page, testing, active.metadata.sessionId);
   const grid = gridTarget.frame.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
   await grid.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal(await grid.getAttribute("aria-colcount"), "5");
+  assert.equal(await grid.getAttribute("aria-colcount"), String(PACKAGED_SCREENSHOT_COLUMNS.length + 1));
   const firstCell = gridTarget.frame.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
   await firstCell.waitFor({ state: "visible", timeout: 10_000 });
-  assert.equal((await firstCell.innerText()).trim(), "Milan");
+  assert.equal((await firstCell.innerText()).trim(), "2400001");
   await firstCell.focus();
   await firstCell.press("ArrowRight");
   await gridTarget.frame
@@ -4439,6 +4448,14 @@ async function exercisePackagedPlatformSmoke(
     .waitFor({ state: "visible", timeout: 5_000 });
 
   await exercisePrimarySortJourney(testing, gridTarget.frame, "platform-smoke:sort-journey");
+  await exercisePackagedFirstUseInteractionJourney(
+    testing,
+    page,
+    gridTarget.frame,
+    active.metadata.sessionId,
+    fixture,
+    sourceBytes
+  );
 
   recordAcceptanceProgress("platform-smoke:theme");
   const themeAttestation = await gridTarget.frame.locator("main.app").evaluate((element) => {
@@ -4480,6 +4497,8 @@ async function exercisePackagedPlatformSmoke(
     await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
   }
   assert.equal(extension.isActive, true);
+
+  await exercisePackagedReopenAndUndoJourney(testing, page, fixture, sourceBytes, editorName);
 
   recordAcceptanceProgress("platform-smoke:cleanup");
   assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
@@ -4767,12 +4786,12 @@ async function focusAndSynchronizeExactSessionPanel(
 
 async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkpoint: string): Promise<void> {
   recordAcceptanceProgress(checkpoint);
-  const cityHeader = frame.locator('th[data-column="city"]').first();
-  const cityMenu = cityHeader.locator("details.columnMenu").first();
-  await cityMenu.getByLabel("Column actions for city").click();
-  await cityMenu.getByRole("button", { name: "Sort ascending", exact: true }).click();
+  const marketHeader = frame.locator('th[data-column="market"]').first();
+  const marketMenu = marketHeader.locator("details.columnMenu").first();
+  await marketMenu.getByLabel("Column actions for market").click();
+  await marketMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
   assert.equal(
-    await cityMenu.evaluate((element) => element.hasAttribute("open")),
+    await marketMenu.evaluate((element) => element.hasAttribute("open")),
     false,
     "A quick-sort choice must close its column menu."
   );
@@ -4780,27 +4799,27 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
       return (
-        sort?.length === 1 && sort[0]?.column === "city" && sort[0].direction === "asc" && sort[0].nulls === "last"
+        sort?.length === 1 && sort[0]?.column === "market" && sort[0].direction === "desc" && sort[0].nulls === "last"
       );
     },
     10_000,
-    "the city quick sort to become the only active viewing sort"
+    "the market quick sort to become the only active viewing sort"
   );
   await frame
-    .locator('td[data-grid-row="0"][data-grid-column="0"]')
-    .filter({ hasText: "Berlin" })
+    .locator('td[data-grid-row="0"][data-grid-column="1"]')
+    .filter({ hasText: "UK & Ireland" })
     .waitFor({ state: "visible", timeout: 10_000 });
-  await cityHeader.getByRole("button", { name: /Clear sort for city; currently ascending/u }).waitFor({
+  await marketHeader.getByRole("button", { name: /Clear sort for market; currently descending/u }).waitFor({
     state: "visible",
     timeout: 10_000
   });
 
-  const salesHeader = frame.locator('th[data-column="sales"]').first();
-  const salesMenu = salesHeader.locator("details.columnMenu").first();
-  await salesMenu.getByLabel("Column actions for sales").click();
-  await salesMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
+  const revenueHeader = frame.locator('th[data-column="revenue"]').first();
+  const revenueMenu = revenueHeader.locator("details.columnMenu").first();
+  await revenueMenu.getByLabel("Column actions for revenue").click();
+  await revenueMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
   assert.equal(
-    await salesMenu.evaluate((element) => element.hasAttribute("open")),
+    await revenueMenu.evaluate((element) => element.hasAttribute("open")),
     false,
     "A later quick sort must also close its column menu."
   );
@@ -4808,22 +4827,22 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
     () => {
       const sort = testing.activeSession()?.viewState.filterModel.sort;
       return (
-        sort?.length === 1 && sort[0]?.column === "sales" && sort[0].direction === "desc" && sort[0].nulls === "last"
+        sort?.length === 1 && sort[0]?.column === "revenue" && sort[0].direction === "desc" && sort[0].nulls === "last"
       );
     },
     10_000,
-    "the sales quick sort to replace the earlier city sort"
+    "the revenue quick sort to replace the earlier market sort"
   );
   assert.equal(
-    await cityHeader.getByRole("button", { name: /Clear sort for city/u }).count(),
+    await marketHeader.getByRole("button", { name: /Clear sort for market/u }).count(),
     0,
     "Replacing a quick sort must remove the prior column's active-sort indicator."
   );
-  const clearSalesSort = salesHeader.getByRole("button", {
-    name: /Clear sort for sales; currently descending/u
+  const clearRevenueSort = revenueHeader.getByRole("button", {
+    name: /Clear sort for revenue; currently descending/u
   });
-  await clearSalesSort.waitFor({ state: "visible", timeout: 10_000 });
-  await clearSalesSort.click();
+  await clearRevenueSort.waitFor({ state: "visible", timeout: 10_000 });
+  await clearRevenueSort.click();
   await waitFor(
     () => testing.activeSession()?.viewState.filterModel.sort.length === 0,
     10_000,
@@ -4831,8 +4850,426 @@ async function exercisePrimarySortJourney(testing: TestApi, frame: Frame, checkp
   );
   await frame
     .locator('td[data-grid-row="0"][data-grid-column="0"]')
-    .filter({ hasText: "Milan" })
+    .filter({ hasText: "2400001" })
     .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function exercisePackagedFirstUseInteractionJourney(
+  testing: TestApi,
+  workbench: Page,
+  frame: Frame,
+  sessionId: string,
+  fixture: vscode.Uri,
+  sourceBytes: Uint8Array
+): Promise<void> {
+  const app = await exactSessionApp(frame, sessionId);
+  assert.ok(app, "The first-use journey requires the exact active Open Wrangler application.");
+  assert.equal(
+    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    0,
+    "A new dataframe must not waste vertical space on an empty cleaning-plan bar."
+  );
+  await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress("platform-smoke:column-search");
+  const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+  await columnSearch.fill("revenue");
+  const revenueOption = app.getByRole("option", { name: "revenue, Number column", exact: true });
+  await revenueOption.waitFor({ state: "visible", timeout: 10_000 });
+  await revenueOption.getByRole("img", { name: "Number column type" }).waitFor({ state: "visible", timeout: 10_000 });
+  await columnSearch.press("Enter");
+  const revenue = columnReference(testing.activeSession()!.metadata, "revenue");
+  await waitFor(
+    () => testing.activeSession()?.viewState.selectedColumnId === revenue.id,
+    10_000,
+    "column search to navigate to the selected numeric column"
+  );
+
+  recordAcceptanceProgress("platform-smoke:insights");
+  const insightsToggle = app.getByRole("button", { name: "Insights & filters" });
+  await insightsToggle.click();
+  const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+  await drawer.waitFor({ state: "visible", timeout: 10_000 });
+  await drawer.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await waitForLocatorText(
+    drawer,
+    (text) =>
+      !text.includes("Profiling selected column") &&
+      ["Exact statistics", "Min", "Max", "Mean", "Median"].every((label) => text.includes(label)) &&
+      (text.includes("Exact distribution") || text.includes("Sampled distribution")),
+    30_000,
+    "complete exact revenue insights"
+  );
+  const histogramBars = drawer.locator('[role="graphics-symbol"]');
+  assert.ok(await histogramBars.count(), "Numeric insights must expose keyboard-focusable histogram bins.");
+  assert.match(
+    (await histogramBars.first().getAttribute("aria-label")) ?? "",
+    /: [\d,.]+ rows?$/u,
+    "Every histogram bin must expose its exact row count."
+  );
+  assert.equal(
+    await drawer.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+    true,
+    "The Insights drawer must not clip content horizontally."
+  );
+
+  recordAcceptanceProgress("platform-smoke:filter");
+  await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+  const filterPanel = drawer.locator(".filterSortPanel").first();
+  await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+  await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "revenue" });
+  await filterPanel.getByLabel("Predicate operator").selectOption("gte");
+  await filterPanel.getByLabel("gte predicate value").fill("20000");
+  await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.filterModel.filters.length === 1 &&
+        active.metadata.filteredShape.rows > 0 &&
+        active.metadata.filteredShape.rows < PACKAGED_FIRST_USE_ROW_COUNT
+      );
+    },
+    30_000,
+    "the realistic numeric filter to update the visible dataframe"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The filtered host state must be acknowledged by its exact renderer before visible values are inspected."
+  );
+  const visibleRevenueCell = frame.locator('td[data-grid-row="0"][data-grid-column="2"]').first();
+  await waitForLocatorText(
+    visibleRevenueCell,
+    (text) => {
+      const value = Number(text.replaceAll(",", ""));
+      return Number.isFinite(value) && value >= 20_000;
+    },
+    10_000,
+    "the first visible revenue to satisfy the chosen predicate"
+  );
+  const visibleRevenue = Number((await visibleRevenueCell.innerText()).replaceAll(",", ""));
+  assert.ok(
+    Number.isFinite(visibleRevenue) && visibleRevenue >= 20_000,
+    `The first visible filtered revenue must satisfy the chosen predicate, received ${visibleRevenue}.`
+  );
+  await filterPanel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.viewState.filterModel.filters.length === 0 &&
+        active.viewState.filterModel.sort.length === 0 &&
+        active.metadata.filteredShape.rows === PACKAGED_FIRST_USE_ROW_COUNT
+      );
+    },
+    30_000,
+    "Clear all to restore the complete dataframe view"
+  );
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The restored host view must be acknowledged by its exact renderer before the next operation."
+  );
+  await drawer.getByRole("button", { name: "Close panel" }).click();
+  await drawer.waitFor({ state: "hidden", timeout: 10_000 });
+  assert.equal(
+    await insightsToggle.evaluate((element) => element.ownerDocument.activeElement === element),
+    true,
+    "Closing Insights must restore focus to its toolbar toggle."
+  );
+
+  recordAcceptanceProgress("platform-smoke:draft-discard");
+  await previewUppercaseMarket(app, testing, "market_upper");
+  const discardedDraft = testing.activeSession();
+  assert.ok(discardedDraft, "The uppercase preview must retain the active dataframe session.");
+  assert.equal(discardedDraft.metadata.draftStep?.kind, "upperText");
+  assert.ok(
+    discardedDraft.metadata.schema.some((column) => column.name === "market_upper"),
+    "The draft grid must preview its added output column."
+  );
+  await app.getByRole("region", { name: "Cleaning plan" }).getByText("Draft: Uppercase").waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await app.getByText("Previewing Uppercase", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await app.getByText(`+1 column`, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await app.getByText(/values added in this block$/u).waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await app.getByText(/0 changed cells/u).count(),
+    0,
+    "An added-column preview must not misleadingly report zero changed cells."
+  );
+  const addedHeader = app.locator('th[data-column="market_upper"]').first();
+  try {
+    await addedHeader.waitFor({ state: "visible", timeout: 10_000 });
+  } catch (error) {
+    const revealDiagnostics = await app.evaluate((root: unknown) => {
+      const queryRoot = root as {
+        querySelector(selector: string): unknown;
+        querySelectorAll(selector: string): Iterable<{ getAttribute(name: string): string | null }> & {
+          length: number;
+        };
+      };
+      const scroller = queryRoot.querySelector('[data-testid="data-grid-scroller"]') as {
+        scrollLeft: number;
+        scrollWidth: number;
+        clientWidth: number;
+      } | null;
+      const search = queryRoot.querySelector('input[aria-label="Column"]') as { value: string } | null;
+      const renderedHeaders = Array.from(queryRoot.querySelectorAll("th[data-column]"));
+      return {
+        selectedSearchValue: search?.value ?? null,
+        renderedColumnCount: renderedHeaders.length,
+        renderedLastColumn: renderedHeaders.at(-1)?.getAttribute("data-column") ?? null,
+        scrollLeft: scroller?.scrollLeft ?? null,
+        scrollWidth: scroller?.scrollWidth ?? null,
+        clientWidth: scroller?.clientWidth ?? null
+      };
+    });
+    throw new Error(`The generated column was not revealed: ${JSON.stringify(revealDiagnostics)}`, {
+      cause: error
+    });
+  }
+  const addedHeaderVisibility = await addedHeader.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const scroller = element.closest('[data-testid="data-grid-scroller"]');
+    if (!scroller) return { visible: false };
+    const viewport = scroller.getBoundingClientRect();
+    return {
+      visible: bounds.left >= viewport.left - 1 && bounds.right <= viewport.right + 1,
+      headerLeft: bounds.left,
+      headerRight: bounds.right,
+      viewportLeft: viewport.left,
+      viewportRight: viewport.right,
+      scrollLeft: scroller.scrollLeft,
+      scrollWidth: scroller.scrollWidth,
+      clientWidth: scroller.clientWidth
+    };
+  });
+  assert.equal(
+    addedHeaderVisibility.visible,
+    true,
+    `Previewing a new column must automatically reveal its complete grid header: ${JSON.stringify(
+      addedHeaderVisibility
+    )}`
+  );
+  await app
+    .locator('td[data-grid-row="0"][data-grid-column="15"]')
+    .filter({ hasText: "BENELUX" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const generatedCodeDetails = app.locator("details.draftCode").first();
+  await generatedCodeDetails.locator("summary").click();
+  const generatedCode = await app.getByLabel("Generated Python code preview").innerText();
+  assert.match(generatedCode, /import polars as pl/u);
+  assert.match(generatedCode, /market_upper/u);
+  await app.getByRole("button", { name: "Discard", exact: true }).click();
+  await waitFor(
+    () =>
+      testing.activeSession()?.metadata.draftStep === undefined &&
+      testing.activeSession()?.metadata.steps.length === 0 &&
+      testing.activeSession()?.metadata.schema.some((column) => column.name === "market") === true &&
+      testing.activeSession()?.metadata.schema.some((column) => column.name === "market_upper") === false,
+    30_000,
+    "discarding the preview to restore the confirmed dataframe"
+  );
+  assert.equal(
+    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    0,
+    "Discarding the only draft must remove the now-empty cleaning-plan bar."
+  );
+
+  recordAcceptanceProgress("platform-smoke:draft-apply");
+  await previewUppercaseMarket(app, testing, "market_upper");
+  await app.getByRole("button", { name: "Apply step", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      if (!active) return false;
+      return (
+        active.metadata.draftStep === undefined &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.schema.some((column) => column.name === "market") &&
+        active.metadata.schema.some((column) => column.name === "market_upper")
+      );
+    },
+    30_000,
+    "applying the previewed uppercase step"
+  );
+  const appliedPlan = app.getByRole("region", { name: "Cleaning plan" });
+  await appliedPlan.getByText("1 applied step").waitFor({ state: "visible", timeout: 10_000 });
+  assert.match(testing.activeSession()?.code ?? "", /import polars as pl/u);
+  assert.match(testing.activeSession()?.code ?? "", /market_upper/u);
+
+  recordAcceptanceProgress("platform-smoke:export");
+  const exportDirectory = mkdtempSync(path.join(tmpdir(), "openwrangler-first-use-export-"));
+  const exportPath = path.join(exportDirectory, "regional-orders-cleaned.csv");
+  try {
+    await exportCleanedDataThroughWorkbench(app, workbench, exportPath);
+    await waitFor(() => existsSync(exportPath), 30_000, "the cleaned CSV export to appear");
+    const exportedHeader = readFileSync(exportPath, "utf8").split(/\r?\n/u, 1)[0] ?? "";
+    assert.match(exportedHeader, /(?:^|,)market(?:,|$)/u);
+    assert.match(exportedHeader, /(?:^|,)market_upper(?:,|$)/u);
+    assert.equal(
+      readFileSync(exportPath, "utf8").split(/\r?\n/u).filter(Boolean).length,
+      PACKAGED_FIRST_USE_ROW_COUNT + 1,
+      "The exported CSV must contain every cleaned row plus its header."
+    );
+  } finally {
+    cleanupAcceptanceTemporaryDirectory(exportDirectory);
+  }
+  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+  await clearReleasedJupyterScreenshotTransientUi(workbench);
+}
+
+async function previewUppercaseMarket(app: Locator, testing: TestApi, newColumn: string): Promise<void> {
+  await app.getByRole("button", { name: "Add step", exact: true }).click();
+  const dialog = app.getByRole("dialog", { name: "Add cleaning step" });
+  await dialog.waitFor({ state: "visible", timeout: 10_000 });
+  await dialog.getByPlaceholder("Search operations").fill("uppercase");
+  await dialog.getByRole("button", { name: /^Uppercase/u }).click();
+  const textColumn = dialog.getByLabel("Text column", { exact: true });
+  await textColumn.waitFor({ state: "visible", timeout: 10_000 });
+  assert.match(
+    (await textColumn.locator("option:checked").innerText()).trim(),
+    /^market, column \d+$/u,
+    "The Uppercase form should default to the first compatible text column."
+  );
+  await dialog.getByLabel("Output column (blank replaces in place)", { exact: true }).fill(newColumn);
+  const commands = new Set(await vscode.commands.getCommands(true));
+  if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+  if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+  await dialog.getByRole("button", { name: "Preview changes", exact: true }).click();
+  await waitFor(
+    () =>
+      testing.activeSession()?.metadata.draftStep?.kind === "upperText" &&
+      testing.activeSession()?.metadata.schema.some((column) => column.name === newColumn) === true,
+    30_000,
+    `the uppercase preview for ${newColumn}`
+  );
+  await dialog.waitFor({ state: "hidden", timeout: 10_000 });
+}
+
+async function exportCleanedDataThroughWorkbench(app: Locator, workbench: Page, destination: string): Promise<void> {
+  await app.getByRole("button", { name: "Export", exact: true }).click();
+  const formatPicker = workbench
+    .locator(".quick-input-widget:visible")
+    .filter({ hasText: "Export Cleaned Data" })
+    .last();
+  await formatPicker.waitFor({ state: "visible", timeout: 10_000 });
+  await formatPicker.getByRole("option").filter({ hasText: /^CSV/u }).first().click();
+  assert.equal(
+    await pollAcceptanceCondition(
+      async () =>
+        workbench
+          .locator(".quick-input-widget:visible")
+          .filter({ hasText: "Export Cleaned Data" })
+          .last()
+          .locator(".quick-input-box input")
+          .first()
+          .inputValue()
+          .then((value) => /\.cleaned\.csv$/u.test(value))
+          .catch(() => false),
+      { timeoutMs: 10_000, intervalMs: 50 }
+    ),
+    true,
+    "The cleaned-data Save dialog must retain the suggested .cleaned.csv destination."
+  );
+  const saveDialog = workbench.locator(".quick-input-widget:visible").filter({ hasText: "Export Cleaned Data" }).last();
+  const saveInput = saveDialog.locator(".quick-input-box input").first();
+  await saveInput.fill(path.resolve(destination));
+  await saveInput.press("Enter");
+  await saveDialog.waitFor({ state: "hidden", timeout: 30_000 });
+}
+
+async function exercisePackagedReopenAndUndoJourney(
+  testing: TestApi,
+  workbench: Page,
+  fixture: vscode.Uri,
+  sourceBytes: Uint8Array,
+  editorName: string
+): Promise<void> {
+  recordAcceptanceProgress("platform-smoke:reopen");
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+    15_000,
+    `the ${editorName} first-use session to close before recovery`
+  );
+  await vscode.commands.executeCommand("vscode.open", fixture, {
+    preview: false,
+    viewColumn: vscode.ViewColumn.One
+  });
+  await waitFor(
+    () => {
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      return input instanceof vscode.TabInputText && input.uri.toString() === fixture.toString();
+    },
+    10_000,
+    `the CSV source editor before the ${editorName} recovery action`
+  );
+  const activeEditorGroup = workbench.locator(".part.editor .editor-group-container.active");
+  const titleAction = activeEditorGroup.locator('.editor-actions [aria-label="Open in Open Wrangler"]:visible').first();
+  await titleAction.waitFor({ state: "visible", timeout: 10_000 });
+  await titleAction.click();
+  await waitForAutomaticDelimitedImport(workbench, testing, fixture, "platform-smoke:reopen-import");
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.source.uri === fixture.toString() &&
+        active.metadata.steps.length === 1 &&
+        active.metadata.schema.some((column) => column.name === "market_upper")
+      );
+    },
+    SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+    "the applied cleaning plan to replay after closing and reopening the source"
+  );
+  const reopened = testing.activeSession();
+  assert.ok(reopened, "Reopening the source must publish its recovered dataframe session.");
+  const reopenedTarget = await waitForOpenWranglerGridTarget(workbench, testing, reopened.sessionId);
+  const reopenedApp = await exactSessionApp(reopenedTarget.frame, reopened.sessionId);
+  assert.ok(reopenedApp, "The recovered session must expose its exact Open Wrangler application.");
+  await reopenedApp
+    .getByRole("region", { name: "Cleaning plan" })
+    .getByText("1 applied step")
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  recordAcceptanceProgress("platform-smoke:undo");
+  await reopenedApp.getByRole("button", { name: "Undo", exact: true }).click();
+  await waitFor(
+    () => {
+      const active = testing.activeSession();
+      return (
+        active?.metadata.steps.length === 0 &&
+        active.metadata.draftStep === undefined &&
+        active.metadata.schema.some((column) => column.name === "market") &&
+        !active.metadata.schema.some((column) => column.name === "market_upper")
+      );
+    },
+    30_000,
+    "Undo to restore the original schema"
+  );
+  assert.equal(
+    await reopenedApp.getByRole("region", { name: "Cleaning plan" }).count(),
+    0,
+    "Undoing the only applied step must remove the empty cleaning-plan bar."
+  );
+  assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
+}
+
+async function waitForLocatorText(
+  locator: Locator,
+  predicate: (text: string) => boolean,
+  timeoutMs: number,
+  expectation: string
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (predicate(await locator.innerText())) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error(`Timed out waiting for ${expectation}.`);
 }
 
 async function waitForSettledViewState(testing: TestApi, expectation: string): Promise<void> {
@@ -6529,7 +6966,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       highContrastTheme,
       vscode.ColorThemeKind.HighContrast,
       4,
-      `${editor}-high-contrast-zoom-200.png`
+      `${editor}-high-contrast-zoom-200.png`,
+      "responsive"
     );
     recordAcceptanceProgress("verify:screenshots:restore");
   } finally {
@@ -6567,7 +7005,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     expectedKind: vscode.ColorThemeKind,
     zoomLevel: number,
     fileName: string,
-    scene?: "hero"
+    scene?: "hero" | "responsive"
   ): Promise<void> {
     await workbench.update("colorTheme", theme, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("zoomLevel", zoomLevel, vscode.ConfigurationTarget.Global);
@@ -6610,7 +7048,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       0,
       `A packaged screenshot must not contain transient workbench UI: ${JSON.stringify(transientUi)}`
     );
-    if (scene) await assertPackagedScreenshotScene(scene);
+    if (scene === "hero") await assertPackagedScreenshotScene(scene);
+    if (scene === "responsive") await assertResponsivePackagedControls();
     await captureWorkbenchScreenshot(capturePage, destination);
   }
 
@@ -6892,6 +7331,69 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       await capturePage.waitForTimeout(50);
     } while (Date.now() < deadline);
     throw new Error(`The ${scene} screenshot scene is clipped or incomplete: ${JSON.stringify(measurement)}`);
+  }
+
+  async function assertResponsivePackagedControls(): Promise<void> {
+    const active = testing.activeSession();
+    assert.ok(active, "Responsive screenshot geometry requires the active packaged dataframe session.");
+    const target = await waitForOpenWranglerGridTarget(capturePage, testing, active.sessionId);
+    const app = await exactSessionApp(target.frame, active.sessionId);
+    assert.ok(app, "Responsive screenshot geometry requires the exact live Open Wrangler renderer.");
+    const measurement = await app.evaluate((root) => {
+      const appBounds = root.getBoundingClientRect();
+      const toolbar = root.querySelector(".toolbar");
+      const toolbarActions = root.querySelector(".toolbarActions");
+      const gridControls = root.querySelector(".gridControls");
+      if (!toolbar || !toolbarActions || !gridControls) {
+        throw new Error("Responsive screenshot controls are incomplete.");
+      }
+      const clippedChildren = (containerSelector: string, selector: string): string[] => {
+        const container = root.querySelector(containerSelector);
+        if (!container) return [`Missing ${containerSelector}`];
+        const containerBounds = container.getBoundingClientRect();
+        return [...container.querySelectorAll(selector)]
+          .filter((element) => {
+            const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+            if (!style || style.display === "none" || style.visibility === "hidden") return false;
+            const bounds = element.getBoundingClientRect();
+            return (
+              bounds.left < Math.max(appBounds.left, containerBounds.left) - 1 ||
+              bounds.right > Math.min(appBounds.right, containerBounds.right) + 1 ||
+              bounds.top < containerBounds.top - 1 ||
+              bounds.bottom > containerBounds.bottom + 1
+            );
+          })
+          .map(
+            (element) =>
+              element.getAttribute("aria-label") ?? element.textContent?.replace(/\s+/gu, " ").trim() ?? element.tagName
+          );
+      };
+      return {
+        appOverflow: root.scrollWidth - root.clientWidth,
+        toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
+        toolbarActionsOverflow: toolbarActions.scrollWidth - toolbarActions.clientWidth,
+        gridControlsOverflow: gridControls.scrollWidth - gridControls.clientWidth,
+        clippedToolbarControls: clippedChildren(".toolbarActions", ":scope > *"),
+        clippedGridControls: clippedChildren(".gridControls", ":scope > *")
+      };
+    });
+    assert.ok(
+      measurement.appOverflow <= 1 &&
+        measurement.toolbarOverflow <= 1 &&
+        measurement.toolbarActionsOverflow <= 1 &&
+        measurement.gridControlsOverflow <= 1,
+      `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
+    );
+    assert.deepEqual(
+      measurement.clippedToolbarControls,
+      [],
+      "Every toolbar action must remain completely visible at 200% zoom."
+    );
+    assert.deepEqual(
+      measurement.clippedGridControls,
+      [],
+      "Every grid control must remain completely visible at 200% zoom."
+    );
   }
 
   async function prepareWorkbenchForEvidence(): Promise<void> {

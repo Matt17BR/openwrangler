@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
@@ -13,11 +14,29 @@ import {
   PACKAGED_SCREENSHOT_VIEWPORT,
   packagedScreenshotFeaturedColumnWidths,
   packagedScreenshotFileName,
+  packagedFirstUseFixtureCsv,
   packagedScreenshotFixtureCsv,
   packagedScreenshotRow
 } from "./extensionHost/screenshotEvidence";
 
 describe("packaged editor screenshot evidence", () => {
+  it("generates a realistic first-use CSV dialect for the native editor journey", () => {
+    const csv = packagedFirstUseFixtureCsv();
+    const lines = csv.trimEnd().split("\n");
+
+    expect(PACKAGED_FIRST_USE_ROW_COUNT).toBe(10_000);
+    expect(lines).toHaveLength(PACKAGED_FIRST_USE_ROW_COUNT + 1);
+    expect(lines[0]).toBe(`\uFEFF${PACKAGED_SCREENSHOT_COLUMNS.join(";")}`);
+    expect(parseDelimitedRecord(lines[1] ?? "", ";")).toEqual(packagedScreenshotRow(0));
+    expect(parseDelimitedRecord(lines.at(-1) ?? "", ";")).toEqual(
+      packagedScreenshotRow(PACKAGED_FIRST_USE_ROW_COUNT - 1)
+    );
+    expect(lines.slice(1).every((line) => parseDelimitedRecord(line, ";").length === 15)).toBe(true);
+    expect(csv).toContain(
+      '"Renewal review follows the Q2 pilot, with ""steady adoption"" reported across the regional account"'
+    );
+  });
+
   it("generates one deterministic, realistic business fixture without private data", () => {
     const csv = packagedScreenshotFixtureCsv();
     const lines = csv.trimEnd().split("\n");
@@ -220,6 +239,10 @@ describe("packaged editor screenshot evidence", () => {
 });
 
 function parseCsvRecord(record: string): string[] {
+  return parseDelimitedRecord(record, ",");
+}
+
+function parseDelimitedRecord(record: string, delimiter: string): string[] {
   const values: string[] = [];
   let value = "";
   let quoted = false;
@@ -232,14 +255,14 @@ function parseCsvRecord(record: string): string[] {
       } else {
         quoted = !quoted;
       }
-    } else if (character === "," && !quoted) {
+    } else if (character === delimiter && !quoted) {
       values.push(value);
       value = "";
     } else {
       value += character;
     }
   }
-  if (quoted) throw new Error("Unterminated quoted CSV fixture field.");
+  if (quoted) throw new Error("Unterminated quoted delimited fixture field.");
   values.push(value);
   return values;
 }

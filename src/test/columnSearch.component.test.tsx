@@ -217,4 +217,113 @@ describe("DataGrid column search target", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 20));
     expect(onViewStateChange).not.toHaveBeenCalled();
   });
+
+  it("renders and completely reveals a newly appended virtualized column", async () => {
+    const schema = Array.from({ length: 16 }, (_, position): ColumnSchema => ({
+      id: `c:${position}`,
+      name: position === 15 ? "market_upper" : `column_${position}`,
+      position,
+      rawType: "String",
+      type: "string",
+      nullable: false
+    }));
+    const metadata: SessionMetadata = {
+      protocolVersion: 2,
+      sessionId: "session",
+      revision: 1,
+      backend: "polars",
+      mode: "editing",
+      source: { kind: "file", label: "orders.csv", path: "orders.csv" },
+      capabilities: {
+        editable: true,
+        lazy: true,
+        cancel: true,
+        exportCsv: true,
+        exportParquet: true,
+        notebookInsert: false
+      },
+      shape: { rows: 1, columns: schema.length },
+      filteredShape: { rows: 1, columns: schema.length },
+      filterModel: { filters: [], sort: [] },
+      steps: [],
+      schema
+    };
+    const page: GridPage = {
+      offset: 0,
+      limit: 1,
+      totalRows: 1,
+      columnIds: schema.map((column) => column.id),
+      rows: [
+        {
+          id: "r:0",
+          rowNumber: 0,
+          values: schema.map((column) => ({
+            kind: "string",
+            raw: column.name,
+            display: column.name,
+            isNull: false,
+            isNaN: false
+          }))
+        }
+      ]
+    };
+    const onViewStateChange = vi.fn();
+    const renderGrid = (
+      goToColumnRequestId?: number,
+      viewStateRestoreVersion = 0,
+      scrollLeft = scroller?.scrollLeft ?? 0
+    ) => (
+      <DataGrid
+        metadata={metadata}
+        page={page}
+        summaries={[]}
+        pageSize={1}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        goToColumnId={goToColumnRequestId === undefined ? undefined : "c:15"}
+        goToColumnRequestId={goToColumnRequestId}
+        viewState={{
+          columnWidths: {},
+          viewport: { firstVisibleRow: 0, scrollLeft }
+        }}
+        viewStateRestoreVersion={viewStateRestoreVersion}
+        onPage={() => undefined}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+        onViewStateChange={onViewStateChange}
+      />
+    );
+    let scroller: HTMLElement | undefined;
+    const { rerender } = render(renderGrid());
+    scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 760 },
+      clientHeight: { configurable: true, value: 400 }
+    });
+    expect(screen.queryByRole("columnheader", { name: /market_upper/u })).not.toBeInTheDocument();
+
+    rerender(renderGrid(1));
+
+    const target = await screen.findByRole("columnheader", { name: /market_upper/u });
+    expect(target).toBeVisible();
+    expect(scroller.scrollLeft).toBeGreaterThan(0);
+    expect(onViewStateChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedColumnId: "c:15",
+        viewport: expect.objectContaining({ scrollLeft: scroller.scrollLeft })
+      })
+    );
+
+    const persistedOldScrollLeft = 162;
+    rerender(renderGrid(1, 1, persistedOldScrollLeft));
+    await waitFor(() => expect(scroller.scrollLeft).toBeGreaterThan(persistedOldScrollLeft));
+    expect(screen.getByRole("columnheader", { name: /market_upper/u })).toBeVisible();
+
+    rerender(renderGrid());
+    rerender(renderGrid(2));
+    await waitFor(() =>
+      expect(onViewStateChange).toHaveBeenLastCalledWith(expect.objectContaining({ selectedColumnId: "c:15" }))
+    );
+  });
 });

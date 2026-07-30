@@ -356,6 +356,11 @@ export class OpenWranglerPanel {
       return;
     }
 
+    if (decoded.kind === "exportData") {
+      await vscode.commands.executeCommand("openWrangler.exportData");
+      return;
+    }
+
     if (this.changingImportOptions) {
       await this.post({
         kind: "error",
@@ -1119,6 +1124,9 @@ export class OpenWranglerPanel {
     if (message.kind === "installRuntimeDependencies") {
       return hasExactKeys(message, ["kind"]) ? { kind: "installRuntimeDependencies" } : undefined;
     }
+    if (message.kind === "exportData") {
+      return hasExactKeys(message, ["kind"]) ? { kind: "exportData" } : undefined;
+    }
     if (
       message.kind !== "runtimeRequest" ||
       !hasExactKeys(message, ["kind", "request"], ["viewContextId"]) ||
@@ -1219,6 +1227,7 @@ type WebviewRequest =
   | { kind: "clearStepInspection" }
   | { kind: "changeImportOptions"; actionId?: string }
   | { kind: "installRuntimeDependencies" }
+  | { kind: "exportData" }
   | {
       kind: "runtimeRequest";
       request: OpenWranglerRequest;

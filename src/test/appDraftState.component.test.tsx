@@ -106,6 +106,22 @@ describe("App draft state boundaries", () => {
     });
   });
 
+  it("keeps an empty cleaning plan out of the way and exposes cleaned-data export", async () => {
+    render(<App />);
+    dispatch({
+      kind: "sessionOpened",
+      metadata: { ...metadata, revision: 0, steps: [], latestStepInputSchema: undefined },
+      page,
+      summaries: []
+    });
+
+    expect(screen.queryByRole("region", { name: "Cleaning plan" })).toBeNull();
+    const exportButton = await screen.findByRole("button", { name: "Export" });
+    expect(exportButton).toBeEnabled();
+    fireEvent.click(exportButton);
+    expect(postMessage).toHaveBeenCalledWith({ kind: "exportData" });
+  });
+
   it("uses the latest applied-step input schema for a replacement draft", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -184,7 +200,7 @@ describe("App draft state boundaries", () => {
     expect(screen.queryByText("# stale polars code")).toBeNull();
     expect(screen.getByText("candidate backend warning")).toBeInTheDocument();
     expect(screen.queryByText("stale warning")).toBeNull();
-    expect(screen.getByText("1 changed cells")).toBeInTheDocument();
+    expect(screen.getByText("1 existing cell changed")).toBeInTheDocument();
     const draftCode = document.querySelector(".draftCode");
     expect(draftCode?.querySelector("summary")).toHaveTextContent(/Generated\s+Pandas\s*code/u);
     expect(draftCode).not.toHaveAttribute("open");
@@ -196,6 +212,87 @@ describe("App draft state boundaries", () => {
     });
     expect(screen.queryByText("# stale late code")).toBeNull();
     expect(screen.getByText("# restored pandas code")).toBeInTheDocument();
+  });
+
+  it("uses human draft labels, reports added values, and reveals a new output column", async () => {
+    const addedColumn: ColumnSchema = {
+      id: "c:upper",
+      name: "c_upper",
+      position: committedSchema.length,
+      rawType: "String",
+      type: "string",
+      nullable: false
+    };
+    const draft: TransformStep = {
+      id: "upper-c",
+      kind: "upperText",
+      params: { column: { id: "c:c", name: "c" }, newColumn: "c_upper" }
+    };
+    const previewPage: GridPage = {
+      ...page,
+      columnIds: [...page.columnIds, addedColumn.id],
+      rows: page.rows.map((row) => ({
+        ...row,
+        values: [...row.values, { kind: "string", raw: "C", display: "C", isNull: false, isNaN: false }]
+      }))
+    };
+
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: {
+        ...metadata,
+        revision: 3,
+        shape: { rows: 1, columns: 3 },
+        filteredShape: { rows: 1, columns: 3 },
+        schema: [...committedSchema, addedColumn],
+        draftStep: draft
+      },
+      page: previewPage,
+      diff: { ...emptyDiff(), addedColumns: ["c_upper"] },
+      code: "def clean_data(df):\n    return df"
+    });
+
+    expect(await screen.findByText("Draft: Uppercase")).toBeVisible();
+    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+    expect(screen.getByText("+1 column")).toBeVisible();
+    expect(screen.getByText("1 value added in this block")).toBeVisible();
+    expect(screen.queryByText(/0 changed cells/u)).toBeNull();
+    await waitFor(() => {
+      expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
+      expect(latestGridProps().goToColumnRequestId).toBe(1);
+    });
+
+    dispatch({
+      kind: "planUpdated",
+      revision: 4,
+      metadata: { ...metadata, revision: 4 },
+      page,
+      code: "def clean_data(df):\n    return df"
+    });
+    await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
+
+    dispatch({
+      kind: "stepPreview",
+      revision: 5,
+      metadata: {
+        ...metadata,
+        revision: 5,
+        shape: { rows: 1, columns: 3 },
+        filteredShape: { rows: 1, columns: 3 },
+        schema: [...committedSchema, addedColumn],
+        draftStep: draft
+      },
+      page: previewPage,
+      diff: { ...emptyDiff(), addedColumns: ["c_upper"] },
+      code: "def clean_data(df):\n    return df"
+    });
+    await waitFor(() => {
+      expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
+      expect(latestGridProps().goToColumnRequestId).toBe(2);
+    });
   });
 
   it("opens the generic operation picker for a host action without an operation kind", async () => {
@@ -223,6 +320,9 @@ describe("App draft state boundaries", () => {
     });
 
     expect(await screen.findByRole("button", { name: "Add step" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+    expect(screen.getByText("Draft: Convert type")).toBeVisible();
+    expect(screen.getByText("Previewing Convert type")).toBeVisible();
     expect(screen.getByRole("button", { name: "Apply step" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
 
@@ -247,10 +347,20 @@ function onlyPreviewRequest(): { step: TransformStep; replaceStepId?: string } {
   return requests[0] as { step: TransformStep; replaceStepId?: string };
 }
 
-function latestGridProps(): { beforeSchema?: ColumnSchema[]; beforePage?: GridPage } {
+function latestGridProps(): {
+  beforeSchema?: ColumnSchema[];
+  beforePage?: GridPage;
+  goToColumnId?: string;
+  goToColumnRequestId?: number;
+} {
   const call = dataGridProps.mock.calls.at(-1);
   if (!call) throw new Error("Expected DataGrid to render.");
-  return call[0] as { beforeSchema?: ColumnSchema[]; beforePage?: GridPage };
+  return call[0] as {
+    beforeSchema?: ColumnSchema[];
+    beforePage?: GridPage;
+    goToColumnId?: string;
+    goToColumnRequestId?: number;
+  };
 }
 
 function emptyDiff() {
