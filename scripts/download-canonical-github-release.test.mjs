@@ -95,6 +95,90 @@ test("downloads the exact two-asset canonical pre-release without inventing prov
   assert.deepEqual(readdirSync(output).sort(), [...PREVIEW_RELEASE_FILES].sort());
 });
 
+test("retries an anonymous API 403 and still requires complete release metadata before downloading", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-forbidden-retry-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  const requests = [];
+  let metadataCalls = 0;
+  let sleeps = 0;
+  const output = join(parent, "canonical-release");
+  const success = successfulFetch();
+  await downloadCanonicalGithubRelease({
+    attempts: 2,
+    delayMs: 1,
+    fetchImpl: async (...args) => {
+      requests.push(args[0]);
+      if (args[0].startsWith("https://api.github.com/") && metadataCalls++ === 0) {
+        return response("", { status: 403 });
+      }
+      return success(...args);
+    },
+    outputDirectory: output,
+    prerelease: false,
+    releaseTag,
+    sleep: async () => {
+      sleeps += 1;
+    }
+  });
+  assert.equal(sleeps, 1);
+  assert.equal(metadataCalls, 2);
+  assert.equal(
+    requests.slice(0, 2).every((url) => url.startsWith("https://api.github.com/")),
+    true
+  );
+  assert.deepEqual(readdirSync(output).sort(), [...CANONICAL_RELEASE_FILES].sort());
+});
+
+test("an exhausted API 403 remains a pending-class failure without downloading assets", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-forbidden-exhausted-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  let calls = 0;
+  let sleeps = 0;
+  await assert.rejects(
+    downloadCanonicalGithubRelease({
+      attempts: 3,
+      delayMs: 1,
+      fetchImpl: async () => {
+        calls += 1;
+        return response("", { status: 403 });
+      },
+      outputDirectory: join(parent, "canonical-release"),
+      prerelease: false,
+      releaseTag,
+      sleep: async () => {
+        sleeps += 1;
+      }
+    }),
+    (error) => error instanceof GithubReleasePendingError && /\(403\)/u.test(error.message)
+  );
+  assert.equal(calls, 3);
+  assert.equal(sleeps, 2);
+  assert.deepEqual(readdirSync(parent), []);
+});
+
+test("non-pending API 4xx failures remain fatal and are not retried", async (context) => {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-fatal-4xx-")));
+  context.after(() => rmSync(parent, { force: true, recursive: true }));
+  for (const status of [400, 401, 402, 405, 409, 422]) {
+    let calls = 0;
+    await assert.rejects(
+      downloadCanonicalGithubRelease({
+        attempts: 2,
+        fetchImpl: async () => {
+          calls += 1;
+          return response("", { status });
+        },
+        outputDirectory: join(parent, `status-${status}`),
+        prerelease: false,
+        releaseTag,
+        sleep: async () => assert.fail("fatal API responses must not be retried")
+      }),
+      new RegExp(`lookup failed with HTTP ${status}`, "u")
+    );
+    assert.equal(calls, 1);
+  }
+});
+
 test("polls only while a public release is genuinely pending", async (context) => {
   const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "ow-github-pending-")));
   context.after(() => rmSync(parent, { force: true, recursive: true }));

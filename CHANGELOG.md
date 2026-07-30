@@ -4,6 +4,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Fixed
+
+- Kept Microsoft Marketplace promotion resumable when GitHub's anonymous release-metadata API returns HTTP 403 on a shared Azure runner by treating that response as pending within the existing bounded poll. There is no alternate asset path: a successful metadata response must still pass every release-channel, inventory, URL, and size check before any asset download, and repeated 403 responses fail when the poll is exhausted.
+
 ## [1.1.3] - 2026-07-30
 
 ### Added

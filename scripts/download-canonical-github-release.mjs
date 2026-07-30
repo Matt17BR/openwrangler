@@ -166,7 +166,7 @@ async function fetchReleaseAssets({ fetchImpl, prerelease, releaseTag }) {
   if (response.status === 404) {
     throw new GithubReleasePendingError(`GitHub release ${releaseTag} is not public yet.`);
   }
-  if (response.status === 429 || response.status >= 500) {
+  if (response.status === 403 || response.status === 429 || response.status >= 500) {
     throw new GithubReleasePendingError(`GitHub release lookup is temporarily unavailable (${response.status}).`);
   }
   if (!response.ok) {
