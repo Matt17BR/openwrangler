@@ -57,7 +57,6 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
-  activateAcceptancePointerTargetAtCurrentCenter,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -9887,7 +9886,12 @@ async function exercisePackagedRendererProvenance(
       try {
         await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
           description: "notebook A's renderer action while notebook B is active",
-          activate: () => activateAcceptancePointerTargetAtCurrentCenter(originButton, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS),
+          activate: () =>
+            withAcceptanceOperationDeadline(
+              originButton.click(),
+              WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+              "the exact notebook renderer action to receive one Playwright click"
+            ),
           receipt: waitForOriginReceipt,
           authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
         });
