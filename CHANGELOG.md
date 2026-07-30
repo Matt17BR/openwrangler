@@ -4,6 +4,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-07-30
+
 ### Added
 
 - Added native DuckDB notebook previews and viewing-only live sessions. Open Wrangler retains the exact
