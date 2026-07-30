@@ -90,11 +90,11 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.doesNotMatch(readme, /<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/u);
   assert.match(
     readme,
-    /button inside an inline table expands exactly the preview stored in that notebook\.[\s\S]{0,180}Saved previews are\s+intentionally bounded[\s\S]{0,180}labels them when\s+anything was left out\./u
+    /button inside an inline table expands the preview saved in that `\.ipynb` file\.[\s\S]{0,180}saved preview may contain only part of a very large dataframe[\s\S]{0,180}says so clearly\s+whenever rows or columns were left out\./u
   );
   assert.match(
     readme,
-    /full, current dataframe[\s\S]{0,120}notebook toolbar's branded \*\*Open in Open Wrangler\*\* action[\s\S]{0,180}pages\s+through the live data as you navigate\.[\s\S]{0,120}saved-preview limit does not apply to live dataframes or files\./u
+    /full, current dataframe[\s\S]{0,120}notebook toolbar's branded \*\*Open in Open Wrangler\*\* action[\s\S]{0,180}pages\s+through the live data as you navigate\.[\s\S]{0,180}portability limit applies only to previews stored inside notebooks,\s+not to live dataframes or CSV, TSV, Excel, Parquet, and JSONL files\./u
   );
   assert.doesNotMatch(readme, /headline ceilings|10,000 rows|16 MiB|2,048 columns|100,000 cells/u);
   assert.match(
