@@ -70,11 +70,11 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix         |
 | Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate |
 
-### Pending native DuckDB replacement-kernel recovery gate
+### Native DuckDB replacement-kernel recovery evidence
 
-The v1.1.5 candidate adds the following requirements to the real released-Jupyter allow path. They remain
-pending, not recorded acceptance evidence, until the exact candidate head passes the hosted packaged-Jupyter
-workflow:
+Exact head `152d5cca95e4c57f0187d19bac00ed594ac04820` passed
+[released-Jupyter run 30590890283](https://github.com/Matt17BR/openwrangler/actions/runs/30590890283).
+The real packaged-Jupyter allow path records the following behavior:
 
 - Retain a 100,000-row connection-private DuckDB relation alongside concurrent Polars and Pandas sessions
   during an actual kernel restart. Before replacement, confirm a filter, two ordered sort rules, the complete
