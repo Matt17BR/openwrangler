@@ -1859,29 +1859,78 @@ describe("App file import options", () => {
     );
 
     fireEvent.keyDown(screen.getByRole("button", { name: "Resize city column" }), { key: "ArrowRight" });
+    const importAction = screen.getByRole<HTMLButtonElement>("button", { name: "Import options" });
+    act(() => importAction.focus());
+    const frames: FrameRequestCallback[] = [];
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
     webviewPostMessage.mockClear();
-    dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "A".repeat(32) });
+    try {
+      dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "A".repeat(32) });
 
-    const orderedMessages = webviewPostMessage.mock.calls
-      .map(([message]) => message)
-      .filter(
-        (message) =>
-          message?.kind === "updateViewState" ||
-          message?.kind === "cancelViewRequests" ||
-          message?.kind === "changeImportOptions"
-      );
-    expect(orderedMessages).toHaveLength(3);
-    expect(orderedMessages[0]).toMatchObject({
-      kind: "updateViewState",
-      state: { columnWidths: { "c:0": 200 } }
+      expect(document.activeElement).toBe(document.body);
+      expect(frames).toHaveLength(1);
+      expect(outboundImportOptionMessages()).toEqual([]);
+      expect(importAction).toBeDisabled();
+      expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+
+      act(() => frames[0](performance.now()));
+      const orderedMessages = webviewPostMessage.mock.calls
+        .map(([message]) => message)
+        .filter(
+          (message) =>
+            message?.kind === "updateViewState" ||
+            message?.kind === "cancelViewRequests" ||
+            message?.kind === "changeImportOptions"
+        );
+      expect(orderedMessages).toHaveLength(3);
+      expect(orderedMessages[0]).toMatchObject({
+        kind: "updateViewState",
+        state: { columnWidths: { "c:0": 200 } }
+      });
+      expect(orderedMessages[1]).toMatchObject({
+        kind: "cancelViewRequests",
+        viewRequestIds: expect.arrayContaining([expect.any(String)])
+      });
+      expect(orderedMessages[2]).toEqual({ kind: "changeImportOptions", actionId: "A".repeat(32) });
+    } finally {
+      requestFrame.mockRestore();
+    }
+  });
+
+  it("cancels a deferred native import request when the host releases its busy barrier", async () => {
+    render(<App />);
+    dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 1;
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const frame = nextFrame++;
+      frames.set(frame, callback);
+      return frame;
     });
-    expect(orderedMessages[1]).toMatchObject({
-      kind: "cancelViewRequests",
-      viewRequestIds: expect.arrayContaining([expect.any(String)])
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+      frames.delete(frame);
     });
-    expect(orderedMessages[2]).toEqual({ kind: "changeImportOptions", actionId: "A".repeat(32) });
-    expect(screen.getByRole("button", { name: "Import options" })).toBeDisabled();
-    expect(screen.getByRole("grid")).toHaveAttribute("aria-busy", "true");
+    webviewPostMessage.mockClear();
+    try {
+      dispatchAppMessage({ kind: "requestImportOptionsChange", actionId: "C".repeat(32) });
+      expect(frames.size).toBe(1);
+      expect(outboundImportOptionMessages()).toEqual([]);
+
+      dispatchAppMessage({ kind: "importOptionsState", busy: false });
+
+      expect(cancelFrame).toHaveBeenCalledTimes(1);
+      expect(frames.size).toBe(0);
+      expect(outboundImportOptionMessages()).toEqual([]);
+      expect(screen.getByRole("button", { name: "Import options" })).toBeEnabled();
+    } finally {
+      requestFrame.mockRestore();
+      cancelFrame.mockRestore();
+    }
   });
 
   it("flushes pending presentation state before a busy renderer leaves the native request to host fallback", async () => {

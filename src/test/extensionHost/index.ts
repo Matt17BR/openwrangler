@@ -57,6 +57,7 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
+  activateAcceptancePointerTargetAtCurrentCenter,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -9752,17 +9753,22 @@ async function exercisePackagedRendererProvenance(
       openedSecondNotebook,
       "Notebook B must still be the exact active document immediately before notebook A's renderer action."
     );
+    assert.equal(testing.activeSession(), undefined);
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      0,
+      "The renderer provenance action requires zero coordinator sessions for its authoritative receipt."
+    );
+    assert.equal(
+      releasedJupyterSessionTabs().length,
+      0,
+      "The renderer provenance action requires zero Open Wrangler tabs for its authoritative receipt."
+    );
     let originFocusObserved = false;
     const focusListener = vscode.window.onDidChangeActiveNotebookEditor((editor) => {
       if (editor?.notebook === originNotebook) originFocusObserved = true;
     });
-    try {
-      recordAcceptanceProgress("verify:notebook-renderer:click");
-      try {
-        await originButton.click();
-      } finally {
-        await originButton.dispose();
-      }
+    const waitForOriginReceipt = async (): Promise<void> => {
       if (vscode.window.activeNotebookEditor?.notebook === originNotebook) originFocusObserved = true;
       await waitFor(
         () => originFocusObserved,
@@ -9770,23 +9776,36 @@ async function exercisePackagedRendererProvenance(
         "the real renderer action to focus its exact originating notebook before opening the session panel",
         () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
       );
+      recordAcceptanceProgress("verify:notebook-renderer:session");
+      await waitFor(
+        () => {
+          const source = testing.activeSession()?.metadata.source;
+          return (
+            source?.kind === "notebookVariable" &&
+            source.variableName === "renderer_frame" &&
+            source.uri === originNotebook.uri.toString()
+          );
+        },
+        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+        "notebook A's real renderer action to open notebook A after notebook B was active immediately before dispatch",
+        () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
+      );
+    };
+    try {
+      recordAcceptanceProgress("verify:notebook-renderer:activate");
+      try {
+        await invokeAcceptanceActionOnceWithAuthoritativeReceipt({
+          description: "notebook A's renderer action while notebook B is active",
+          activate: () => activateAcceptancePointerTargetAtCurrentCenter(originButton, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS),
+          receipt: waitForOriginReceipt,
+          authoritativeReceiptAfterActivationFailure: waitForOriginReceipt
+        });
+      } finally {
+        await originButton.dispose();
+      }
     } finally {
       focusListener.dispose();
     }
-    recordAcceptanceProgress("verify:notebook-renderer:session");
-    await waitFor(
-      () => {
-        const source = testing.activeSession()?.metadata.source;
-        return (
-          source?.kind === "notebookVariable" &&
-          source.variableName === "renderer_frame" &&
-          source.uri === originNotebook.uri.toString()
-        );
-      },
-      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "notebook A's real renderer action to open notebook A after notebook B was active immediately before dispatch",
-      () => rendererProvenanceDiagnostics(testing, jupyter, originNotebook, openedSecondNotebook)
-    );
 
     const active = testing.activeSession();
     assert.ok(active, "The renderer provenance scenario must open a live notebook session.");
@@ -9983,7 +10002,16 @@ interface NotebookRendererLoadObserver {
 }
 
 interface NotebookRendererButton {
+  readonly pointer: {
+    click(x: number, y: number): Promise<void>;
+  };
   click(): Promise<void>;
+  boundingBox(): Promise<{
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  } | null>;
   evaluate<Result>(pageFunction: (element: unknown) => Result | Promise<Result>): Promise<Result>;
   dispose(): Promise<void>;
 }
@@ -10061,7 +10089,7 @@ async function waitForNotebookRendererButton(
             probeTimeoutMs,
             "the notebook renderer action readiness probe"
           );
-          if (ready) return locatorNotebookRendererButton(button);
+          if (ready) return locatorNotebookRendererButton(button, target.page.mouse);
         } catch (error) {
           const discoveryExpired = Date.now() >= deadline;
           if (!(discoveryExpired && isNotebookRendererProbeDeadline(error))) {
@@ -10126,9 +10154,14 @@ function directNotebookRendererButtonCandidates(frame: Frame, label: string, but
   return [preview.getByRole("button", { name: buttonName, exact: true }).first()];
 }
 
-function locatorNotebookRendererButton(button: Locator): NotebookRendererButton {
+function locatorNotebookRendererButton(
+  button: Locator,
+  pointer: NotebookRendererButton["pointer"]
+): NotebookRendererButton {
   return {
+    pointer,
     click: () => button.click(),
+    boundingBox: () => button.boundingBox(),
     evaluate: <Result>(pageFunction: (element: unknown) => Result | Promise<Result>) => button.evaluate(pageFunction),
     dispose: () => Promise.resolve()
   };
@@ -10203,7 +10236,9 @@ async function resolveNestedNotebookRendererButton(
     throw error;
   }
   return {
+    pointer: frame.page().mouse,
     click: () => element.click(),
+    boundingBox: () => element.boundingBox(),
     evaluate: <Result>(pageFunction: (candidate: unknown) => Result | Promise<Result>) =>
       element.evaluate(pageFunction),
     dispose: () => element.dispose()
