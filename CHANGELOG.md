@@ -15,6 +15,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 ### Fixed
 
 - Kept Microsoft Marketplace promotion resumable when GitHub's anonymous release-metadata API returns HTTP 403 on a shared Azure runner by treating that response as pending within the existing bounded poll. There is no alternate asset path: a successful metadata response must still pass every release-channel, inventory, URL, and size check before any asset download, and repeated 403 responses fail when the poll is exhausted.
+- Made the column picker search and navigate the complete schema instead of stopping after the first 100
+  matches. The list virtualizes wide schemas, keeps every result keyboard-reachable, and exposes its exact
+  position and result count to assistive technology without rendering thousands of options at once.
 
 ## [1.1.3] - 2026-07-30
 

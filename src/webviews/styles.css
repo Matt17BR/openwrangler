@@ -328,9 +328,18 @@ textarea {
 .columnSearchResults {
   list-style: none;
   margin: 0;
-  max-height: min(360px, 55vh);
+  max-height: min(var(--column-search-viewport-height, 360px), 55vh);
   overflow: auto;
   padding: 3px;
+  position: relative;
+}
+
+.columnSearchResults::before {
+  content: "";
+  display: block;
+  height: var(--column-search-content-height, 0);
+  pointer-events: none;
+  width: 1px;
 }
 
 .columnSearchResults:empty {
@@ -344,8 +353,12 @@ textarea {
   display: grid;
   gap: 8px;
   grid-template-columns: 18px minmax(100px, 1fr) auto auto;
-  min-height: 28px;
+  box-sizing: border-box;
+  height: var(--column-search-result-height, 32px);
+  left: 3px;
   padding: 2px 7px;
+  position: absolute;
+  right: 3px;
 }
 
 .columnSearchResults [role="option"].active {
