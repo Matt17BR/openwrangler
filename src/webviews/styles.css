@@ -478,6 +478,15 @@ textarea {
   min-height: 260px;
 }
 
+.filterSortPanel .row {
+  flex-wrap: wrap;
+}
+
+.filterSortPanel .row > select {
+  flex: 1 1 130px;
+  min-width: 0;
+}
+
 .filterSection {
   border-top: 1px solid var(--vscode-panel-border);
   padding: 8px 0;
@@ -602,7 +611,7 @@ textarea {
   border-radius: 4px;
   display: grid;
   gap: 6px;
-  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
   padding: 4px;
 }
 
@@ -628,6 +637,14 @@ textarea {
   align-items: center;
   display: inline-flex;
   gap: 4px;
+}
+
+.sortRuleControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
 .rulePillButton {

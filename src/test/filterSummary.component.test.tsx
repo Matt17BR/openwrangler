@@ -159,8 +159,10 @@ describe("FilterPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
 
     fireEvent.change(screen.getByLabelText("Sort direction"), { target: { value: "desc" } });
-    fireEvent.click(screen.getByRole("button", { name: "Update sort" }));
+    fireEvent.change(screen.getByLabelText("Sort null placement"), { target: { value: "first" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prioritize sort" }));
     expect(screen.getByRole("list", { name: "Active sort order" })).toHaveTextContent("salesdescending");
+    expect(screen.getByRole("list", { name: "Active sort order" })).toHaveTextContent("nulls first");
 
     fireEvent.click(screen.getByRole("button", { name: "Clear column" }));
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
@@ -205,13 +207,25 @@ describe("FilterPanel", () => {
     const ordered = screen.getByRole("list", { name: "Active sort order" });
     expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("cityascending");
     expect(within(ordered).getAllByRole("listitem")[1]).toHaveTextContent("salesdescending");
-    expect(screen.getByText(/Update this column in place without changing its priority/u)).toBeVisible();
+    expect(screen.getByText(/The newest sort becomes priority 1/u)).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Change sort 1, city, to descending" }));
-    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("citydescending");
+    fireEvent.change(screen.getByLabelText("Sort column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Sort null placement"), { target: { value: "first" } });
+    fireEvent.click(screen.getByRole("button", { name: "Prioritize sort" }));
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("salesdescendingnulls first");
+    expect(within(ordered).getAllByRole("listitem")[1]).toHaveTextContent("cityascending");
     expect(onApply).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove sort 2, sales, descending" }));
+    fireEvent.click(screen.getByRole("button", { name: "Move sort 2, city, up one priority" }));
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("cityascending");
+    fireEvent.click(screen.getByRole("button", { name: "Move sort 2, sales, up one priority" }));
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("salesdescendingnulls first");
+
+    fireEvent.click(screen.getByRole("button", { name: "Change sort 1, sales, to ascending" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change sort 1, sales, to nulls last" }));
+    expect(within(ordered).getAllByRole("listitem")[0]).toHaveTextContent("salesascendingnulls last");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sort 2, city, ascending, nulls last" }));
     expect(within(ordered).getAllByRole("listitem")).toHaveLength(1);
     expect(onApply).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Apply sort order" }));
@@ -219,7 +233,7 @@ describe("FilterPanel", () => {
       expect.objectContaining({
         logic: "or",
         filters: initialModel.filters,
-        sort: [{ column: "city", direction: "desc", nulls: "last" }]
+        sort: [{ column: "sales", direction: "asc", nulls: "last" }]
       })
     );
 

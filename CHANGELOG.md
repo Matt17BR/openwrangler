@@ -20,6 +20,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema, including when renderer synchronization refreshes that schema mid-retry. Newly generated columns now remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
 - Kept a confirmed draft visible when an older page or renderer snapshot finishes late, and drained a renderer synchronization requested at the end of an existing synchronization instead of abandoning its authoritative replay.
+- Made column-header sorts accumulate instead of erasing earlier keys: the newest choice becomes priority 1 while every other key remains as a lower-priority tie-breaker. Filters / Sorts now exposes concise move-up/down, direction, null-placement, remove, clear, apply, and discard controls for the complete ordered sort.
 
 ## [1.1.2] - 2026-07-30
 
