@@ -14,6 +14,7 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Kept text profiling engine-native. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical columns deliberately measure the same normalized display text shown in the grid.
 - Preserved nonzero Pandas NaN counts in semantic text Insights while omitting the irrelevant zero-valued row, and rejected internally contradictory empty/length summaries at the protocol boundary.
+- Removed the ambiguous secondary **Open saved snapshot** button from inline notebook outputs. One **Open in Open Wrangler** action now opens the linked live variable when available or the captured output when no live link exists.
 
 ### Fixed
 

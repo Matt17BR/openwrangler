@@ -16,26 +16,23 @@ describe("notebook renderer", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "openInOpenWrangler", payload });
   });
 
-  it("opens the complete live variable from the primary action and retains a saved-snapshot fallback", () => {
+  it("keeps one clear action and opens the complete linked live variable", () => {
     const postMessage = vi.fn();
     const element = document.createElement("div");
     const payload = canonicalPayload(1, "frame");
 
     activate({ postMessage }).renderOutputItem({ json: () => payload }, element);
 
-    const live = Array.from(element.querySelectorAll("button")).find(
-      (button) => button.textContent === "Open in Open Wrangler"
+    const actions = Array.from(element.querySelectorAll("button")).filter((button) =>
+      button.textContent?.startsWith("Open")
     );
-    const captured = Array.from(element.querySelectorAll("button")).find(
-      (button) => button.textContent === "Open saved snapshot"
-    );
-    expect(live?.title).toContain("complete current value of frame");
-    expect(captured?.title).toContain("captured notebook output");
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.textContent).toBe("Open in Open Wrangler");
+    expect(actions[0]?.title).toContain("complete current value of frame");
 
-    live?.click();
-    captured?.click();
-    expect(postMessage).toHaveBeenNthCalledWith(1, { kind: "openLiveInOpenWrangler", payload });
-    expect(postMessage).toHaveBeenNthCalledWith(2, { kind: "openInOpenWrangler", payload });
+    actions[0]?.click();
+    expect(postMessage).toHaveBeenCalledOnce();
+    expect(postMessage).toHaveBeenCalledWith({ kind: "openLiveInOpenWrangler", payload });
   });
 
   it("rejects capability-elevated notebook metadata before rendering an action", () => {

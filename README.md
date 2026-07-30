@@ -70,11 +70,11 @@ without requiring an earlier Open Wrangler command. If Microsoft Data Wrangler i
 asks once which extension should own automatic previews; change that choice later with **Open Wrangler: Choose
 Notebook Preview Provider**.
 
-The inline table exposes every captured column, 10/20/50/100-row pages, and horizontal scrolling. When one exact
-live variable produced the output, **Open in Open Wrangler** opens its complete current value; **Open saved
-snapshot** keeps the portable captured result available as a fallback. The toolbar's branded **Open in Open
-Wrangler** action discovers supported variables from the selected kernel and shows their engine and dataframe
-type instead of asking for a name.
+The inline table exposes every captured column, 10/20/50/100-row pages, and horizontal scrolling. Its single
+**Open in Open Wrangler** action opens the complete current value when the output has one exact live-variable
+link; otherwise it opens the portable captured result. The toolbar's branded **Open in Open Wrangler** action
+discovers supported variables from the selected kernel and shows their engine and dataframe type instead of
+asking for a name.
 
 Files and live variables are not capped at 10,000 rows: the workbench pages from the current source. Only a saved
 inline snapshot is bounded for notebook portability, with headline ceilings of 10,000 rows, 2,048 columns,

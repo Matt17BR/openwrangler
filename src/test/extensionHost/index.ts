@@ -1516,28 +1516,6 @@ async function exerciseReleasedJupyterExtension(
         liveShowcase.sessionId,
         "the released-Jupyter live MIME variable session"
       );
-
-      const snapshotEditor = await showExactReleasedNotebook(notebook);
-      snapshotEditor.selection = renderedCell;
-      snapshotEditor.selections = [renderedCell];
-      snapshotEditor.revealRange(renderedCell, vscode.NotebookEditorRevealType.InCenter);
-      const snapshotButton = await waitForNotebookRendererButton(workbench, "notebook_showcase", "Open saved snapshot");
-      try {
-        await snapshotButton.click();
-      } finally {
-        await snapshotButton.dispose();
-      }
-      await waitFor(
-        () => testing.activeSession()?.metadata.source.kind === "notebookOutput",
-        SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-        "the released-Jupyter MIME v2 saved snapshot fallback"
-      );
-      const snapshot = testing.activeSession();
-      assert.ok(snapshot, "The renderer's saved-snapshot action must publish a snapshot session.");
-      assert.equal(snapshot.metadata.source.kind, "notebookOutput");
-      assert.equal(snapshot.metadata.source.label, "notebook_showcase");
-      assert.equal(snapshot.metadata.capabilities.notebookInsert, false);
-      await disposePackagedSessionPanel(testing, snapshot.sessionId, "the released-Jupyter MIME snapshot");
     } finally {
       await restoreScreenshotWorkbench?.();
     }
@@ -9365,7 +9343,7 @@ async function exercisePackagedSavedSnapshot(
       revision: 0,
       backend: "polars",
       mode: "viewing",
-      source: { kind: "notebookOutput", label, variableName: "stale_saved_frame" },
+      source: { kind: "notebookOutput", label },
       capabilities: {
         editable: false,
         lazy: false,
@@ -9438,8 +9416,7 @@ async function exercisePackagedSavedSnapshot(
     );
 
     const workbench = await connectToEditorWorkbench();
-    await (await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler")).dispose();
-    const button = await waitForNotebookRendererButton(workbench, label, "Open saved snapshot");
+    const button = await waitForNotebookRendererButton(workbench, label, "Open in Open Wrangler");
     recordAcceptanceProgress("verify:notebook-renderer-snapshot:click");
     try {
       await button.evaluate((candidate: unknown) => (candidate as { click(): void }).click());
