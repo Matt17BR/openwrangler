@@ -1757,6 +1757,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(classicSetup.sparkVersion, "4.2.0");
     assert.equal(classicSetup.javaVersion, "17");
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
+    assert.equal(classicSetup.workerPythonPinned, true);
 
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
@@ -1826,6 +1827,7 @@ async function exerciseReleasedPySparkJupyterExtension(
       "restarted PySpark Classic setup"
     );
     assert.equal(Number(restartedClassicSetup.pid), Number(replacementKernel.pid));
+    assert.equal(restartedClassicSetup.workerPythonPinned, true);
     assert.notEqual(
       restartedClassicSetup.sessionId,
       classicSetup.sessionId,
@@ -1925,6 +1927,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     );
     assert.equal(connectSetup.sparkVersion, "4.2.0");
     assert.equal(connectSetup.module, "pyspark.sql.connect.dataframe");
+    assert.equal(connectSetup.workerPythonPinned, true);
 
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_connect_frame", `${phase}:connect-action`);
     const connect = await waitForReleasedVariableSession(
@@ -2353,6 +2356,9 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
         cell([
           "import json",
           "import os",
+          "import sys",
+          "os.environ['PYSPARK_PYTHON'] = sys.executable",
+          "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
           "from pyspark.sql import SparkSession",
           "from pyspark.sql import functions as F",
           "spark = (SparkSession.builder",
@@ -2404,6 +2410,10 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    'module': type(spark_classic_frame).__module__,",
           "    'pid': os.getpid(),",
           "    'sessionId': f'{os.getpid()}:{id(spark)}',",
+          "    'workerPythonPinned': (",
+          "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
+          "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
+          "    ),",
           "}, sort_keys=True))"
         ]),
         cell([
@@ -2416,6 +2426,10 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
         ]),
         cell([
           "import json",
+          "import os",
+          "import sys",
+          "os.environ['PYSPARK_PYTHON'] = sys.executable",
+          "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
           "spark.stop()",
           "connect_spark = (SparkSession.builder",
           "    .remote('local[2]')",
@@ -2431,6 +2445,10 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    'sparkVersion': connect_spark.version,",
           "    'module': type(spark_connect_frame).__module__,",
           "    'sessionId': str(id(connect_spark)),",
+          "    'workerPythonPinned': (",
+          "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
+          "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
+          "    ),",
           "}, sort_keys=True))"
         ]),
         cell([
