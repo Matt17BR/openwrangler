@@ -267,10 +267,10 @@ export function App() {
   );
 
   const handleColumnReveal = useCallback(
-    (requestId: number) => {
+    (requestId: number, outcome: "revealed" | "interrupted" = "revealed") => {
       const request = goToColumnRequestRef.current;
       if (!request || request.requestId !== requestId) return;
-      if (request.retainUntilSynchronization) {
+      if (outcome === "revealed" && request.retainUntilSynchronization) {
         handledGoToColumnRequestId.current = requestId;
         return;
       }

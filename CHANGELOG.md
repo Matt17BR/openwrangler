@@ -15,6 +15,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Kept text profiling engine-native. Lazy Polars, DuckDB, and PySpark return only fixed-size aggregate results; Pandas mixed-object and non-string categorical columns deliberately measure the same normalized display text shown in the grid.
 - Preserved nonzero Pandas NaN counts in semantic text Insights while omitting the irrelevant zero-valued row, and rejected internally contradictory empty/length summaries at the protocol boundary.
 
+### Fixed
+
+- Retried a requested virtual-column reveal for a bounded number of animation frames while the browser finishes laying out an expanded draft schema. Newly generated columns now remain discoverable in Windows Cursor instead of leaving the grid clamped to its previous horizontal extent.
+
 ## [1.1.2] - 2026-07-30
 
 ### Added

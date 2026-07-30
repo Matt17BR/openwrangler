@@ -51,7 +51,7 @@ interface DataGridProps {
   onSortColumn(column: string, direction: SortDirection): void;
   onClearSortColumn?(column: string): void;
   onOpenFilter(column: string): void;
-  onGoToColumnHandled?(requestId: number): void;
+  onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
   onVisibleColumnRangeChange?(range: VisibleColumnRange): void;
   onVisibleSummaryColumnsChange(columnIds: string[]): void;
   onViewStateChange?(state: GridViewState): void;
@@ -80,6 +80,7 @@ const rowHeaderWidth = 58;
 const overscanRows = 8;
 const overscanColumns = 2;
 const scrollQuantizationTolerance = 1;
+const columnRevealLayoutRetryLimit = 12;
 const maximumRenderedCellCharacters = 4_096;
 const defaultViewState: GridViewState = { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } };
 const ignoreViewStateChange = (): void => undefined;
@@ -304,7 +305,18 @@ export function DataGrid({
         : next
     );
     const currentViewState = viewStateRef.current;
-    if (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft) {
+    const pendingColumnReveal = goToColumnRequestRef.current;
+    const columnRevealIsPending =
+      pendingColumnReveal.columnId !== undefined &&
+      pendingColumnReveal.requestId !== undefined &&
+      requestedGoToColumnRequest.current?.requestId === pendingColumnReveal.requestId &&
+      requestedGoToColumnRequest.current.restoreVersion === pendingColumnReveal.restoreVersion &&
+      (handledGoToColumnRequest.current?.requestId !== pendingColumnReveal.requestId ||
+        handledGoToColumnRequest.current.restoreVersion !== pendingColumnReveal.restoreVersion);
+    if (
+      !columnRevealIsPending &&
+      (currentViewState.viewport.firstVisibleRow !== row || currentViewState.viewport.scrollLeft !== next.scrollLeft)
+    ) {
       reportViewState({
         ...currentViewState,
         viewport: { firstVisibleRow: row, scrollLeft: next.scrollLeft }
@@ -339,7 +351,7 @@ export function DataGrid({
           requestId: pending.requestId,
           restoreVersion: pending.restoreVersion
         };
-        pending.onHandled(pending.requestId);
+        pending.onHandled(pending.requestId, "interrupted");
       }
     };
     const rebaseAfterResize = () => {
@@ -471,35 +483,75 @@ export function DataGrid({
     };
     preserveGridFocusAfterScroll.current = false;
     focusRequested.current = document.hasFocus();
-    const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
-    const targetWidth = widths[index] ?? defaultColumnWidth;
-    const centeredOffset = Math.max(rowHeaderWidth, (scroller.clientWidth - targetWidth) / 2);
-    scroller.scrollLeft = Math.max(0, columnStart - centeredOffset);
-    const scrollLeft = scroller.scrollLeft;
-    const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
-    programmaticViewportTarget.current = {
-      firstVisibleRow,
-      scrollTop: scroller.scrollTop,
-      scrollLeft
-    };
-    setViewport((current) => ({
-      ...current,
-      firstVisibleRow,
-      scrollLeft,
-      scrollTop: scroller.scrollTop,
-      width: scroller.clientWidth,
-      height: scroller.clientHeight
-    }));
-    setFocusedCell((current) => ({ ...current, column: index }));
-    const currentViewState = viewStateRef.current;
-    reportViewState({
-      ...currentViewState,
-      selectedColumnId: metadata.schema[index].id,
-      viewport: {
-        ...currentViewState.viewport,
-        scrollLeft
+    let retryFrame: number | undefined;
+    let remainingLayoutRetries = columnRevealLayoutRetryLimit;
+    const reveal = (): boolean => {
+      if (scrollerRef.current !== scroller) return true;
+      const pending = goToColumnRequestRef.current;
+      if (
+        pending.columnId !== goToColumnId ||
+        pending.requestId !== goToColumnRequestId ||
+        pending.restoreVersion !== viewStateRestoreVersion ||
+        (handledGoToColumnRequest.current?.requestId === goToColumnRequestId &&
+          handledGoToColumnRequest.current.restoreVersion === viewStateRestoreVersion)
+      ) {
+        return true;
       }
-    });
+
+      const columnStart = rowHeaderWidth + sum(widths.slice(0, index));
+      const targetWidth = widths[index] ?? defaultColumnWidth;
+      const centeredOffset = Math.max(rowHeaderWidth, (scroller.clientWidth - targetWidth) / 2);
+      scroller.scrollLeft = Math.max(0, columnStart - centeredOffset);
+      const scrollLeft = scroller.scrollLeft;
+      const firstVisibleRow = viewStateRef.current.viewport.firstVisibleRow;
+      programmaticViewportTarget.current = {
+        firstVisibleRow,
+        scrollTop: scroller.scrollTop,
+        scrollLeft
+      };
+      setViewport((current) => ({
+        ...current,
+        firstVisibleRow,
+        scrollLeft,
+        scrollTop: scroller.scrollTop,
+        width: scroller.clientWidth,
+        height: scroller.clientHeight
+      }));
+
+      const columnEnd = columnStart + targetWidth;
+      const visibleStart = scrollLeft + rowHeaderWidth;
+      const visibleEnd = scrollLeft + scroller.clientWidth;
+      const requiredVisibleWidth = Math.min(targetWidth, Math.max(0, scroller.clientWidth - rowHeaderWidth));
+      const actualVisibleWidth = Math.max(0, Math.min(columnEnd, visibleEnd) - Math.max(columnStart, visibleStart));
+      const targetIsVisible =
+        requiredVisibleWidth > 0 && actualVisibleWidth + scrollQuantizationTolerance >= requiredVisibleWidth;
+      if (!targetIsVisible) return false;
+
+      setFocusedCell((current) => ({ ...current, column: index }));
+      const currentViewState = viewStateRef.current;
+      reportViewState({
+        ...currentViewState,
+        selectedColumnId: metadata.schema[index].id,
+        viewport: {
+          ...currentViewState.viewport,
+          scrollLeft
+        }
+      });
+      return true;
+    };
+    const retryAfterLayout = () => {
+      retryFrame = undefined;
+      if (reveal() || remainingLayoutRetries <= 0) return;
+      remainingLayoutRetries -= 1;
+      retryFrame = window.requestAnimationFrame(retryAfterLayout);
+    };
+    if (!reveal()) {
+      remainingLayoutRetries -= 1;
+      retryFrame = window.requestAnimationFrame(retryAfterLayout);
+    }
+    return () => {
+      if (retryFrame !== undefined) window.cancelAnimationFrame(retryFrame);
+    };
   }, [
     defaultColumnWidth,
     goToColumnId,
@@ -540,7 +592,7 @@ export function DataGrid({
       requestId: goToColumnRequestId,
       restoreVersion: viewStateRestoreVersion
     };
-    onGoToColumnHandled(goToColumnRequestId);
+    onGoToColumnHandled(goToColumnRequestId, "revealed");
   }, [
     goToColumnId,
     goToColumnRequestId,

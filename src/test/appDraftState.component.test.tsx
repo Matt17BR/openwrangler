@@ -318,6 +318,15 @@ describe("App draft state boundaries", () => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
       expect(latestGridProps().goToColumnRequestId).toBe(3);
     });
+    act(() => latestGridProps().onGoToColumnHandled?.(3, "interrupted"));
+    await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "S".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: 5
+    });
+    await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
   });
 
   it("consumes a search reveal and preserves a later manual viewport through an in-place preview", async () => {
@@ -428,7 +437,7 @@ function latestGridProps(): {
   beforePage?: GridPage;
   goToColumnId?: string;
   goToColumnRequestId?: number;
-  onGoToColumnHandled?(requestId: number): void;
+  onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
   onViewStateChange?(state: {
     columnWidths: Record<string, number>;
     selectedColumnId?: string;
@@ -447,7 +456,7 @@ function latestGridProps(): {
     beforePage?: GridPage;
     goToColumnId?: string;
     goToColumnRequestId?: number;
-    onGoToColumnHandled?(requestId: number): void;
+    onGoToColumnHandled?(requestId: number, outcome?: "revealed" | "interrupted"): void;
     onViewStateChange?(state: {
       columnWidths: Record<string, number>;
       selectedColumnId?: string;
