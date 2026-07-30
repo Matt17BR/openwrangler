@@ -519,6 +519,73 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(harness.posted).toContainEqual(preview);
   });
 
+  it("does not let a pre-draft page replace the retained preview snapshot", async () => {
+    const oldPage = deferred<OpenWranglerResponse>();
+    const draft = {
+      id: "uppercase-after-page",
+      kind: "upperText",
+      params: { column: { id: "c:0", name: "city" } }
+    } as const;
+    const preview: OpenWranglerResponse = {
+      kind: "stepPreview",
+      revision: 1,
+      metadata: { ...metadata, revision: 1, draftStep: draft },
+      page,
+      diff: {
+        addedRows: 0,
+        removedRows: 0,
+        addedColumns: [],
+        removedColumns: [],
+        changedCells: 1,
+        cells: [],
+        truncated: false
+      },
+      code: "def clean_data(df):\n    return df\n"
+    };
+    const request = vi.fn(async (candidate: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (candidate.kind === "getPage") return oldPage.promise;
+      if (candidate.kind === "previewStep") return preview;
+      throw new Error(`Unexpected request ${candidate.kind}`);
+    });
+    const harness = createPanelHarness({ request }, { openResponse: openedResponse });
+    await harness.open();
+
+    const pendingPage = harness.receive(pageMessage("pre-draft-page", "pre-draft-view"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await harness.receive({
+      kind: "runtimeRequest",
+      request: {
+        kind: "previewStep",
+        step: draft,
+        offset: 0,
+        limit: 20,
+        columnOffset: 0,
+        columnLimit: 16
+      }
+    });
+
+    const stalePage: OpenWranglerResponse = {
+      kind: "page",
+      revision: 0,
+      viewRequestId: "pre-draft-page",
+      metadata,
+      page
+    };
+    oldPage.resolve(stalePage);
+    await pendingPage;
+    harness.posted.length = 0;
+
+    await harness.receive({ kind: "requestSessionSnapshot" });
+
+    const retained = harness.posted.find(isSessionOpenedResponse);
+    expect(retained?.metadata.revision).toBe(1);
+    expect(retained?.metadata.draftStep).toEqual(draft);
+    expect(latestRendererSynchronization(harness.posted)).toMatchObject({
+      sessionId: metadata.sessionId,
+      revision: 1
+    });
+  });
+
   it("replays retained state when an unhydrated renderer pulls its snapshot", async () => {
     const source: SessionSource = {
       kind: "file",

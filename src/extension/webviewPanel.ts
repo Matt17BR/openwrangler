@@ -730,13 +730,16 @@ export class OpenWranglerPanel {
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         if (response.kind !== "page") this.invalidateRendererSynchronization();
-        this.sessionId = response.metadata.sessionId;
-        this.sessionRevision = response.revision;
         const acceptsPage =
           response.kind !== "page" ||
           (request.kind === "getPage" &&
             response.viewRequestId === request.viewRequestId &&
             this.latestPageViewRequestId === response.viewRequestId);
+        if (acceptsPage) {
+          this.sessionId = response.metadata.sessionId;
+          this.sessionRevision = response.revision;
+          if (response.kind !== "page") this.latestPageViewRequestId = undefined;
+        }
         if (this.snapshot && acceptsPage) {
           const sameView =
             response.kind === "page" && viewContextId !== undefined && viewContextId === this.snapshotViewContextId;
