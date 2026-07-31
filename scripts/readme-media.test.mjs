@@ -118,10 +118,13 @@ test("README media is compact, portable, and composition-verified", () => {
     /File sessions,\s+cleaning, exports, code insertion, and saved inline snapshots are not supported\./u
   );
   assert.match(readme, /indexes and\s+counts the complete frame[\s\S]{0,100}not dataframe row limits/u);
-  assert.match(readme, /\| v1\.1\.x\s+\| Real-user interaction and visual polish[\s\S]{0,120}#88/u);
-  assert.match(readme, /\| v1\.2\s+\| Graduate PySpark[\s\S]{0,300}#36/u);
+  assert.match(
+    readme,
+    /\| v1\.2\s+\| Finish the real-user interaction and visual polish[\s\S]{0,700}#88[\s\S]{0,700}#36/u
+  );
   assert.match(readme, /\| v2\s+\| Native R data frames[\s\S]{0,200}#87/u);
-  assert.match(readme, /Patch releases ship as soon as a coherent user-facing improvement passes/u);
+  assert.match(readme, /The next public package is one coherent v1\.2 release/u);
+  assert.match(readme, /Development commits are not published as a stream of patch releases/u);
   assert.doesNotMatch(readme, /complex-value nodes, and nesting depth/u);
 
   const galleryImage = readFileSync(
