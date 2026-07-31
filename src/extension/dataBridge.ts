@@ -14,6 +14,31 @@ export interface CancellationTokenLike {
   onCancellationRequested(listener: () => void): { dispose(): void };
 }
 
+export type DetachedBridgeRequestReason = "timeout" | "cancellation";
+
+/**
+ * The host stopped waiting while the transport execution was deliberately
+ * left running. This is not transport loss: callers must not replay the
+ * request until `settlement` confirms that the original execution finished.
+ */
+export class DetachedBridgeRequestError extends Error {
+  readonly settlement: Promise<void>;
+
+  constructor(
+    message: string,
+    readonly reason: DetachedBridgeRequestReason,
+    readonly dispatched: boolean,
+    settlement: Promise<void>
+  ) {
+    super(message);
+    this.name = "DetachedBridgeRequestError";
+    this.settlement = settlement.then(
+      () => undefined,
+      () => undefined
+    );
+  }
+}
+
 export interface BridgeRequestOptions {
   cancellation?: CancellationTokenLike;
   priority?: "interactive" | "background";

@@ -111,20 +111,23 @@ export function isLiveNotebookVariableBackend(backend: DataBackend): boolean {
 async function executeDiscovery(kernel: Kernel, notebook: vscode.NotebookDocument): Promise<NotebookVariableDiscovery> {
   const marker = randomUUID().replaceAll("-", "");
   const tokenSource = new vscode.CancellationTokenSource();
-  const abort = (): void => tokenSource.cancel();
-  try {
+  const completion = (async () => {
+    // Jupyter implements token cancellation by interrupting the Python kernel.
+    // PySpark's default SIGINT handler can translate that interrupt into
+    // SparkContext.cancelAllJobs(), including jobs unrelated to discovery.
+    // Discovery therefore uses a never-cancel token and validates notebook
+    // provenance between every output item instead of interrupting execution.
     const output = kernel.executeCode(buildNotebookVariableDiscoveryCode(marker), tokenSource.token);
-    const text = await revalidateAfter(
-      withKernelTimeout(collectBoundedKernelText(output, notebook), DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS, abort),
-      notebook
-    );
+    const text = await revalidateAfter(collectBoundedKernelText(output, notebook), notebook);
     return parseNotebookVariableDiscoveryOutput(text, marker);
-  } catch (error) {
-    abort();
-    throw error;
-  } finally {
+  })().finally(() => {
     tokenSource.dispose();
-  }
+  });
+  void completion.catch(() => undefined);
+  // This deadline bounds only the command's wait. The exact discovery
+  // execution continues with its never-cancel token and its late output is
+  // discarded after provenance validation.
+  return withKernelTimeout(completion, DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS, () => undefined);
 }
 
 async function collectBoundedKernelText(
@@ -135,38 +138,61 @@ async function collectBoundedKernelText(
   let bytes = 0;
   let outputCount = 0;
   let itemCount = 0;
+  let firstFailure: { readonly error: unknown } | undefined;
   const iterator = output[Symbol.asyncIterator]();
   while (true) {
-    const next = await revalidateAfter(iterator.next(), notebook);
+    let next: IteratorResult<unknown>;
+    try {
+      next = await iterator.next();
+    } catch (error) {
+      firstFailure ??= { error };
+      break;
+    }
+
+    if (!firstFailure) {
+      try {
+        // Validate the exact captured document after every await, including
+        // the terminal iterator result. Once validation fails, keep draining
+        // the dispatched iterator but never inspect or retain later output.
+        assertNotebookProvenance(notebook);
+        if (!next.done) {
+          outputCount += 1;
+          if (outputCount > MAX_DISCOVERY_OUTPUTS) {
+            throw oversizedDiscoveryResponse();
+          }
+          if (!isKernelOutput(next.value)) {
+            throw malformedDiscoveryResponse();
+          }
+          itemCount += next.value.items.length;
+          if (next.value.items.length > MAX_DISCOVERY_OUTPUT_ITEMS || itemCount > MAX_DISCOVERY_OUTPUT_ITEMS) {
+            throw oversizedDiscoveryResponse();
+          }
+          for (const item of next.value.items) {
+            if (!isKernelOutputItem(item)) {
+              throw malformedDiscoveryResponse();
+            }
+            if (item.mime === "application/vnd.code.notebook.error") {
+              throw new NotebookVariableDiscoveryError(
+                "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
+              );
+            }
+            if (!isKernelTextMime(item.mime)) continue;
+            bytes += item.data.byteLength;
+            if (bytes > MAX_DISCOVERY_OUTPUT_BYTES) {
+              throw oversizedDiscoveryResponse();
+            }
+            chunks.push(Buffer.from(item.data.buffer, item.data.byteOffset, item.data.byteLength).toString("utf8"));
+          }
+        }
+      } catch (error) {
+        firstFailure = { error };
+        chunks.length = 0;
+      }
+    }
+
     if (next.done) break;
-    outputCount += 1;
-    if (outputCount > MAX_DISCOVERY_OUTPUTS) {
-      throw oversizedDiscoveryResponse();
-    }
-    if (!isKernelOutput(next.value)) {
-      throw malformedDiscoveryResponse();
-    }
-    itemCount += next.value.items.length;
-    if (next.value.items.length > MAX_DISCOVERY_OUTPUT_ITEMS || itemCount > MAX_DISCOVERY_OUTPUT_ITEMS) {
-      throw oversizedDiscoveryResponse();
-    }
-    for (const item of next.value.items) {
-      if (!isKernelOutputItem(item)) {
-        throw malformedDiscoveryResponse();
-      }
-      if (item.mime === "application/vnd.code.notebook.error") {
-        throw new NotebookVariableDiscoveryError(
-          "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
-        );
-      }
-      if (!isKernelTextMime(item.mime)) continue;
-      bytes += item.data.byteLength;
-      if (bytes > MAX_DISCOVERY_OUTPUT_BYTES) {
-        throw oversizedDiscoveryResponse();
-      }
-      chunks.push(Buffer.from(item.data.buffer, item.data.byteOffset, item.data.byteLength).toString("utf8"));
-    }
   }
+  if (firstFailure) throw firstFailure.error;
   return chunks.join("");
 }
 
@@ -322,11 +348,9 @@ function assertNotebookProvenance(notebook: vscode.NotebookDocument): void {
 }
 
 async function revalidateAfter<T>(value: PromiseLike<T>, notebook: vscode.NotebookDocument): Promise<T> {
-  try {
-    return await value;
-  } finally {
-    assertNotebookProvenance(notebook);
-  }
+  const result = await value;
+  assertNotebookProvenance(notebook);
+  return result;
 }
 
 function isJupyterApi(value: unknown): value is Jupyter {

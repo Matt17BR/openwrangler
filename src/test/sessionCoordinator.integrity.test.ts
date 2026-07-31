@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Memento } from "vscode";
-import type { OpenWranglerBridge } from "../extension/dataBridge";
+import { DetachedBridgeRequestError, type OpenWranglerBridge } from "../extension/dataBridge";
 import { SessionCoordinator } from "../extension/sessionCoordinator";
 import type {
   ColumnSummary,
@@ -385,6 +385,213 @@ describe("SessionCoordinator response integrity", () => {
 });
 
 describe("SessionCoordinator recovery boundaries", () => {
+  it("parks after a host-detached read and never replays or reissues it while the original is in flight", async () => {
+    const settlement = deferred<void>();
+    const requests: OpenWranglerRequest[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "getPage" && request.viewRequestId === "detached-page") {
+        throw new DetachedBridgeRequestError(
+          "The host stopped waiting for the page.",
+          "timeout",
+          true,
+          settlement.promise
+        );
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: 0,
+        viewRequestId: "detached-page",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    ).rejects.toMatchObject({ name: "DetachedBridgeRequestError", dispatched: true });
+
+    const followUp = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      viewRequestId: "after-detached-page",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage"]);
+
+    settlement.resolve(undefined);
+    await expect(followUp).resolves.toMatchObject({ kind: "page", viewRequestId: "after-detached-page" });
+    expect(requests.filter((request) => request.kind === "openSession")).toHaveLength(1);
+    expect(
+      requests.filter((request) => request.kind === "getPage" && request.viewRequestId === "detached-page")
+    ).toHaveLength(1);
+  });
+
+  it("keeps deactivation close behind detached runtime settlement even after the shutdown deadline", async () => {
+    const settlement = deferred<void>();
+    const requests: OpenWranglerRequest[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "getPage") {
+        throw new DetachedBridgeRequestError(
+          "The exact notebook page is still settling.",
+          "timeout",
+          true,
+          settlement.promise
+        );
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision,
+        viewRequestId: "detached-before-shutdown",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    ).rejects.toMatchObject({ name: "DetachedBridgeRequestError", dispatched: true });
+
+    await coordinator.shutdown(0);
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage"]);
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+
+    settlement.resolve(undefined);
+    await vi.waitFor(() =>
+      expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage", "closeSession"])
+    );
+    expect(requests.filter((request) => request.kind === "closeSession")).toEqual([
+      { kind: "closeSession", sessionId: "runtime-session", revision: 0 }
+    ]);
+  });
+
+  it("waits for a detached mutation to settle before restoring confirmed state without replaying the side effect", async () => {
+    const settlement = deferred<void>();
+    const requests: OpenWranglerRequest[] = [];
+    let openCount = 0;
+    let mutationExecutions = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      requests.push(request);
+      if (request.kind === "openSession") {
+        openCount += 1;
+        return openedResponse(`runtime-${openCount}`);
+      }
+      if (request.kind === "previewStep") {
+        mutationExecutions += 1;
+        throw new DetachedBridgeRequestError(
+          "The host stopped waiting for the preview.",
+          "timeout",
+          true,
+          settlement.promise
+        );
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId: opened.metadata.sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 100,
+        ...columnWindow
+      })
+    ).rejects.toMatchObject({ name: "DetachedBridgeRequestError", dispatched: true });
+
+    const followUp = bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      viewRequestId: "after-detached-preview",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel: opened.metadata.filterModel
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "previewStep"]);
+    expect(mutationExecutions).toBe(1);
+
+    settlement.resolve(undefined);
+    await expect(followUp).resolves.toMatchObject({ kind: "page", viewRequestId: "after-detached-preview" });
+    expect(mutationExecutions).toBe(1);
+    expect(requests.filter((request) => request.kind === "openSession")).toHaveLength(2);
+    expect(requests.filter((request) => request.kind === "previewStep")).toHaveLength(1);
+  });
+
+  it("does not mark recovery or replay after a pre-dispatch host cancellation", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      requests.push(request);
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "previewStep") {
+        throw new DetachedBridgeRequestError("Cancelled before dispatch.", "cancellation", false, Promise.resolve());
+      }
+      if (request.kind === "getPage") return pageResponse(request, request.sessionId);
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "previewStep",
+        sessionId: opened.metadata.sessionId,
+        revision: 0,
+        step,
+        offset: 0,
+        limit: 100,
+        ...columnWindow
+      })
+    ).rejects.toMatchObject({ name: "DetachedBridgeRequestError", dispatched: false });
+
+    await expect(
+      bridge.request({
+        kind: "getPage",
+        sessionId: opened.metadata.sessionId,
+        revision: 0,
+        viewRequestId: "after-pre-dispatch-cancel",
+        offset: 0,
+        limit: 100,
+        ...columnWindow,
+        filterModel: opened.metadata.filterModel
+      })
+    ).resolves.toMatchObject({ kind: "page", viewRequestId: "after-pre-dispatch-cancel" });
+    expect(requests.map((request) => request.kind)).toEqual(["openSession", "previewStep", "getPage"]);
+  });
+
   it.each(["previewStep", "applyDraft", "exportData"] as const)(
     "does not replay or reissue an ambiguous %s transport failure",
     async (kind) => {
@@ -528,6 +735,36 @@ describe("SessionCoordinator recovery boundaries", () => {
 });
 
 describe("SessionCoordinator cleanup diagnostics", () => {
+  it("does not dispatch a duplicate terminal close after a host-only close detaches", async () => {
+    const settlement = deferred<void>();
+    let closeCount = 0;
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return openedResponse();
+      if (request.kind === "closeSession") {
+        closeCount += 1;
+        throw new DetachedBridgeRequestError("The exact close is still settling.", "timeout", true, settlement.promise);
+      }
+      throw new Error(`Unexpected delegate request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator();
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await open(bridge);
+
+    await expect(
+      bridge.request({
+        kind: "closeSession",
+        sessionId: opened.metadata.sessionId,
+        revision: opened.metadata.revision
+      })
+    ).rejects.toMatchObject({ name: "DetachedBridgeRequestError", dispatched: true });
+
+    expect(closeCount).toBe(1);
+    expect(coordinator.diagnostics().sessionCount).toBe(0);
+    settlement.resolve(undefined);
+    await Promise.resolve();
+    expect(closeCount).toBe(1);
+  });
+
   it.each([
     {
       name: "wrong-session acknowledgement with no delegate reporter",

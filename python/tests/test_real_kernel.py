@@ -56,8 +56,26 @@ __ow_notebook.register_formatters()
     assert missing["protocolVersion"] == 2
     assert missing["requestId"] == "missing-session"
     assert missing["response"]["kind"] == "error"
-    assert missing["response"]["code"] == "engine_error"
+    assert missing["response"]["code"] == "unknown_session"
+    assert missing["response"]["sessionId"] == "missing"
     assert missing["response"]["viewRequestId"] == "view-missing"
+
+    missing_close = _dispatch(
+        client,
+        "missing-close",
+        {
+            "kind": "closeSession",
+            "sessionId": "missing-close-candidate",
+            "revision": 0,
+        },
+    )
+    assert missing_close["response"] == {
+        "kind": "error",
+        "code": "unknown_session",
+        "message": "Unknown session: missing-close-candidate",
+        "recoverable": True,
+        "sessionId": "missing-close-candidate",
+    }
 
     malformed = _dispatch(
         client,
@@ -131,6 +149,20 @@ __ow_notebook.register_formatters()
     assert restarted["response"]["kind"] == "initialized"
 
 
+def test_execute_helper_drains_shell_reply_after_kernel_error(live_kernel) -> None:
+    _, client = live_kernel
+
+    with pytest.raises(pytest.fail.Exception, match="ZeroDivisionError"):
+        _execute(client, "1 / 0")
+
+    # A failed execution has the same two-channel completion contract as a
+    # successful one. Its correlated execute_reply must not remain queued.
+    with pytest.raises(Empty):
+        client.get_shell_msg(timeout=0.1)
+
+    assert _execute(client, "print('kernel-still-responsive')") == "kernel-still-responsive\n"
+
+
 def _dispatch(client: Any, request_id: str, request: Mapping[str, Any]) -> dict[str, Any]:
     envelope = {
         "protocolVersion": 2,
@@ -164,6 +196,7 @@ def _execute_with_data(client: Any, code: str) -> tuple[str, dict[str, Any]]:
     message_id = client.execute(code)
     chunks: list[str] = []
     data: dict[str, Any] = {}
+    execution_error: Mapping[str, Any] | None = None
     deadline = monotonic() + 60
     while True:
         remaining = deadline - monotonic()
@@ -182,6 +215,41 @@ def _execute_with_data(client: Any, code: str) -> tuple[str, dict[str, Any]]:
         elif message_type in {"display_data", "execute_result"}:
             data.update(content.get("data", {}))
         elif message_type == "error":
-            pytest.fail("\n".join(content.get("traceback", [])))
+            execution_error = content
         elif message_type == "status" and content.get("execution_state") == "idle":
-            return "".join(chunks), data
+            break
+
+    # An execution is complete only after both its IOPub idle notification and
+    # correlated shell reply arrive. Leaving execute_reply messages unread can
+    # eventually apply shell-channel backpressure and make an unrelated later
+    # request appear to hang, especially on Python 3.14/pyzmq.
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            pytest.fail(f"Kernel execution {message_id} did not return its shell reply within 60 seconds")
+        try:
+            reply = client.get_shell_msg(timeout=min(5, remaining))
+        except Empty:
+            continue
+        if reply.get("parent_header", {}).get("msg_id") != message_id:
+            continue
+        if reply.get("msg_type") != "execute_reply":
+            pytest.fail(
+                f"Kernel execution {message_id} returned correlated shell message "
+                f"{reply.get('msg_type')!r} instead of 'execute_reply'"
+            )
+        content = reply.get("content", {})
+        if execution_error is not None:
+            traceback = execution_error.get("traceback", [])
+            if isinstance(traceback, list) and all(isinstance(line, str) for line in traceback):
+                pytest.fail("\n".join(traceback))
+            pytest.fail(
+                f"Kernel execution {message_id} failed with "
+                f"{execution_error.get('ename')!r}: {execution_error.get('evalue')!r}"
+            )
+        if content.get("status") != "ok":
+            pytest.fail(
+                f"Kernel execution {message_id} returned shell status {content.get('status')!r}: "
+                f"{content.get('ename')!r}: {content.get('evalue')!r}"
+            )
+        return "".join(chunks), data

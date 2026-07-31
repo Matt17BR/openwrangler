@@ -174,6 +174,16 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
             "priority": "interactive",
             "request": {"kind": "initialize"},
         },
+        {
+            "protocolVersion": 2,
+            "requestId": "missing-close",
+            "priority": "interactive",
+            "request": {
+                "kind": "closeSession",
+                "sessionId": "missing-close-candidate",
+                "revision": 0,
+            },
+        },
     ]
     process = subprocess.Popen(
         [sys.executable, "-m", "openwrangler_runtime.server"],
@@ -206,8 +216,21 @@ def test_stdio_server_frames_protocol_v2_responses() -> None:
     assert responses["initialize"]["protocolVersion"] == 2
     assert responses["initialize"]["response"]["kind"] == "initialized"
     assert responses["invalid"]["response"]["code"] == "invalid_request"
-    assert responses["missing-session"]["response"]["kind"] == "error"
-    assert responses["missing-session"]["response"]["viewRequestId"] == "view-missing"
+    assert responses["missing-session"]["response"] == {
+        "kind": "error",
+        "code": "unknown_session",
+        "message": "Unknown session: missing",
+        "recoverable": True,
+        "sessionId": "missing",
+        "viewRequestId": "view-missing",
+    }
+    assert responses["missing-close"]["response"] == {
+        "kind": "error",
+        "code": "unknown_session",
+        "message": "Unknown session: missing-close-candidate",
+        "recoverable": True,
+        "sessionId": "missing-close-candidate",
+    }
 
 
 def test_stdio_server_opens_polars_then_pandas_in_one_process(tmp_path: Path) -> None:

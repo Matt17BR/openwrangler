@@ -46,9 +46,43 @@ def test_unknown_session_error_is_a_correlated_protocol_response(monkeypatch) ->
 
     assert result["protocolVersion"] == 2
     assert result["requestId"] == "unknown-session-request"
-    assert result["response"]["kind"] == "error"
-    assert result["response"]["code"] == "engine_error"
-    assert result["response"]["viewRequestId"] == "view-unknown-session"
+    assert result["response"] == {
+        "kind": "error",
+        "code": "unknown_session",
+        "message": "Unknown session: missing-session",
+        "recoverable": True,
+        "sessionId": "missing-session",
+        "viewRequestId": "view-unknown-session",
+    }
+
+
+def test_unknown_session_close_preserves_the_exact_candidate_identity(monkeypatch) -> None:
+    monkeypatch.setattr(kernel_agent, "_manager", SessionManager())
+
+    result = json.loads(
+        kernel_agent.dispatch_json(
+            _envelope(
+                {
+                    "kind": "closeSession",
+                    "sessionId": "missing-close-candidate",
+                    "revision": 0,
+                },
+                request_id="missing-close-request",
+            )
+        )
+    )
+
+    assert result == {
+        "protocolVersion": 2,
+        "requestId": "missing-close-request",
+        "response": {
+            "kind": "error",
+            "code": "unknown_session",
+            "message": "Unknown session: missing-close-candidate",
+            "recoverable": True,
+            "sessionId": "missing-close-candidate",
+        },
+    }
 
 
 def test_decoder_error_preserves_available_request_and_view_correlation() -> None:

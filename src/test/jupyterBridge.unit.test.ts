@@ -16,6 +16,10 @@ const notebookMocks = vi.hoisted(() => ({
   showQuickPick: vi.fn(async (items: readonly unknown[], _options?: unknown) => items[0]),
   createPanel: vi.fn(),
   kernelOrigins: [] as Array<{ uri: string; document: NotebookDocument | undefined }>,
+  tokenSources: [] as Array<{
+    readonly token: { isCancellationRequested: boolean };
+    disposed: boolean;
+  }>,
   executeCode: vi.fn((code: string) => discoveryOutputs(code)),
   getKernel: vi.fn(async () => ({
     language: "python",
@@ -105,10 +109,16 @@ vi.mock("vscode", () => {
       isCancellationRequested: false,
       onCancellationRequested: () => ({ dispose: () => undefined })
     };
+    disposed = false;
+    constructor() {
+      notebookMocks.tokenSources.push(this);
+    }
     cancel(): void {
       this.token.isCancellationRequested = true;
     }
-    dispose(): void {}
+    dispose(): void {
+      this.disposed = true;
+    }
   }
   function uriComponents(value: string): {
     scheme: string;
@@ -206,6 +216,7 @@ describe("notebook command provenance", () => {
     notebookMocks.showQuickPick.mockImplementation(async (items) => items[0]);
     notebookMocks.createPanel.mockReset();
     notebookMocks.kernelOrigins.length = 0;
+    notebookMocks.tokenSources.length = 0;
     notebookMocks.executeCode.mockReset();
     notebookMocks.executeCode.mockImplementation((code) => discoveryOutputs(code));
     notebookMocks.getKernel.mockReset();
@@ -1083,13 +1094,97 @@ describe("notebook command provenance", () => {
     );
   });
 
+  it.each([
+    [
+      "malformed output",
+      { unexpected: true },
+      "Open Wrangler received a malformed notebook variable discovery response."
+    ],
+    [
+      "oversized output",
+      {
+        items: [
+          {
+            mime: "application/x.notebook.stream.stdout",
+            data: new Uint8Array(64 * 1024 + 1)
+          }
+        ]
+      },
+      "Open Wrangler rejected an oversized notebook variable discovery response."
+    ],
+    [
+      "kernel error output",
+      {
+        items: [
+          {
+            mime: "application/vnd.code.notebook.error",
+            data: Buffer.from(JSON.stringify({ name: "RuntimeError", message: "discovery failed" }), "utf8")
+          }
+        ]
+      },
+      "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
+    ]
+  ] as const)(
+    "drains a dispatched iterator after %s without cancelling or disposing its token",
+    async (_kind, failure, message) => {
+      const original = notebook(`file:///workspace/discovery-${_kind.replaceAll(" ", "-")}.ipynb`);
+      notebookMocks.notebookDocuments.push(original);
+      notebookMocks.activeNotebookEditor = editor(original);
+      const drainStarted = deferred<void>();
+      const releaseDrain = deferred<void>();
+      let drainedTail = false;
+      notebookMocks.executeCode.mockImplementationOnce((code) => {
+        const tail = discoveryOutputs(code);
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield failure;
+            drainStarted.resolve();
+            await releaseDrain.promise;
+            if (_kind === "malformed output") {
+              const replacement = notebook(original.uri.toString());
+              closeNotebook(original);
+              notebookMocks.notebookDocuments.splice(0, 1, replacement);
+              notebookMocks.activeNotebookEditor = editor(replacement);
+            }
+            for await (const output of tail) {
+              drainedTail = true;
+              yield output;
+            }
+          }
+        } as never;
+      });
+      const { coordinator } = register();
+
+      const pending = command("openWrangler.openNotebookVariable")();
+      await drainStarted.promise;
+
+      expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+      expect(coordinator.createBridge).not.toHaveBeenCalled();
+      expect(notebookMocks.tokenSources).toHaveLength(1);
+      expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: false });
+      expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
+
+      releaseDrain.resolve();
+      await pending;
+
+      expect(drainedTail).toBe(true);
+      expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
+      expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
+      expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
+      expect(coordinator.createBridge).not.toHaveBeenCalled();
+      expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(message);
+    }
+  );
+
   it("rejects an excessive zero-byte output stream", async () => {
     const original = notebook("file:///workspace/output-flood.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
+    let emittedOutputs = 0;
     notebookMocks.executeCode.mockImplementationOnce(() => ({
       async *[Symbol.asyncIterator]() {
-        for (let index = 0; index < 129; index += 1) {
+        for (let index = 0; index < 132; index += 1) {
+          emittedOutputs += 1;
           yield {
             items: [
               {
@@ -1110,6 +1205,9 @@ describe("notebook command provenance", () => {
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "Open Wrangler rejected an oversized notebook variable discovery response."
     );
+    expect(emittedOutputs).toBe(132);
+    expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
+    expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
   });
 
   it("does not request a replacement notebook kernel after Jupyter activation", async () => {
@@ -1141,6 +1239,9 @@ describe("notebook command provenance", () => {
     const replacement = notebook("file:///workspace/discovery-output-replaced.ipynb");
     notebookMocks.notebookDocuments.push(original);
     notebookMocks.activeNotebookEditor = editor(original);
+    const drainStarted = deferred<void>();
+    const releaseDrain = deferred<void>();
+    let drainedTail = false;
     notebookMocks.executeCode.mockImplementationOnce((code) => {
       const output = discoveryOutputs(code);
       return {
@@ -1150,18 +1251,37 @@ describe("notebook command provenance", () => {
           notebookMocks.notebookDocuments.splice(0, 1, replacement);
           notebookMocks.activeNotebookEditor = editor(replacement);
           if (!next.done) yield next.value;
+          drainStarted.resolve();
+          await releaseDrain.promise;
+          drainedTail = true;
+          yield { unexpected: true } as never;
         }
       };
     });
     const { coordinator } = register();
 
-    await command("openWrangler.openNotebookVariable")();
+    const pending = command("openWrangler.openNotebookVariable")();
+    await drainStarted.promise;
 
+    expect(notebookMocks.showWarningMessage).not.toHaveBeenCalled();
+    expect(notebookMocks.tokenSources).toHaveLength(1);
+    expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: false });
+    expect(notebookMocks.tokenSources[0]?.token.isCancellationRequested).toBe(false);
+
+    releaseDrain.resolve();
+    await pending;
+
+    expect(drainedTail).toBe(true);
     expect(notebookMocks.showQuickPick).not.toHaveBeenCalled();
     expect(coordinator.createBridge).not.toHaveBeenCalled();
     expect(notebookMocks.showWarningMessage).toHaveBeenCalledWith(
       "The originating notebook is no longer open. Reopen it and try again."
     );
+    const discoveryToken = (
+      notebookMocks.executeCode.mock.calls[0] as unknown as [string, { readonly isCancellationRequested: boolean }]
+    )[1];
+    expect(discoveryToken.isCancellationRequested).toBe(false);
+    expect(notebookMocks.tokenSources[0]).toMatchObject({ disposed: true });
   });
 
   it("discovers types without repr, shape, count, collection, or dataframe imports", () => {
@@ -1354,4 +1474,12 @@ function discoveryOutputs(
       };
     }
   };
+}
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

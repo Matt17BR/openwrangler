@@ -46,6 +46,14 @@ class _SourceChangedError(EngineError):
     """Recoverable source invalidation that must also invalidate cached pages."""
 
 
+class UnknownSessionError(EngineError):
+    """Raised with the exact public identity when a session no longer exists."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"Unknown session: {session_id}")
+
+
 @dataclass(frozen=True, slots=True)
 class _AppliedViewRestore:
     step_id: str
@@ -916,7 +924,7 @@ class SessionManager:
             _ = revision
             with self._sessions_lock:
                 if self.sessions.get(session_id) is not session:
-                    raise EngineError(f"Unknown session: {session_id}")
+                    raise UnknownSessionError(session_id)
                 del self.sessions[session_id]
             session.dispose()
             return {"kind": "sessionClosed", "sessionId": session_id}
@@ -1371,9 +1379,9 @@ class SessionManager:
             try:
                 session = self.sessions[session_id]
             except KeyError as error:
-                raise EngineError(f"Unknown session: {session_id}") from error
+                raise UnknownSessionError(session_id) from error
             if session.disposed:
-                raise EngineError(f"Unknown session: {session_id}")
+                raise UnknownSessionError(session_id)
             return session
 
     def _capabilities(self, session: Session) -> dict[str, bool]:
@@ -1395,7 +1403,7 @@ class SessionManager:
 
     def _assert_revision(self, session: Session, revision: int) -> None:
         if session.disposed:
-            raise EngineError(f"Unknown session: {session.session_id}")
+            raise UnknownSessionError(session.session_id)
         if revision != session.revision:
             raise EngineError(f"Stale session revision {revision}; current revision is {session.revision}.")
 

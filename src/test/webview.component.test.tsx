@@ -1951,7 +1951,7 @@ describe("App file import options", () => {
     webviewPostMessage.mockClear();
   });
 
-  it("announces honest PySpark open stages without offering an ineffective cancellation action", async () => {
+  it("announces honest PySpark open stages without offering an unsafe kernel interrupt", async () => {
     render(<App />);
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "acquiringKernel" });
@@ -1967,8 +1967,9 @@ describe("App file import options", () => {
     expect(status).toHaveTextContent("Preparing the PySpark view");
     expect(status).toHaveTextContent("indexing and counting the complete PySpark DataFrame");
     expect(status).toHaveTextContent("stable row positions and an exact row total");
-    expect(status).toHaveTextContent("Cancellation is unavailable once this Spark work starts");
-    expect(screen.queryByRole("button", { name: /cancel/iu })).not.toBeInTheDocument();
+    expect(status).toHaveTextContent("protect unrelated Spark jobs");
+    expect(status).toHaveTextContent("allowed to finish even if you close the view");
+    expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "untrusted-stage" });
     expect(status).toHaveTextContent("Preparing the PySpark view");
@@ -1976,6 +1977,11 @@ describe("App file import options", () => {
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: null });
     expect(status).toHaveTextContent("Opening session");
     expect(status).not.toHaveTextContent("PySpark");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "openingNotebookVariable" });
+    expect(status).toHaveTextContent("Opening the live notebook variable");
+    expect(status).not.toHaveTextContent("indexing and counting");
+    expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
   });
 
   it("labels PySpark sessions as experimental and viewing-only", async () => {

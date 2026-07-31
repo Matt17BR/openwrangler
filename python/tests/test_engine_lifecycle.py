@@ -13,7 +13,7 @@ import __main__
 import openwrangler_runtime.notebook as notebook
 from openwrangler_runtime.engines import EngineCapabilities, EngineError, EngineRegistry, PandasEngine
 from openwrangler_runtime.engines.base import SummaryColumnProjection
-from openwrangler_runtime.session import SessionManager
+from openwrangler_runtime.session import SessionManager, UnknownSessionError
 
 
 class TrackingPandasEngine(PandasEngine):
@@ -204,10 +204,12 @@ def test_sessions_receive_distinct_engines_and_close_independently(tmp_path) -> 
     assert created[1].close_calls == 0
     assert manager.get_page(second_id, 0, 0, 10, {"filters": [], "sort": []})["page"]["totalRows"] == 2
 
-    with pytest.raises(EngineError, match=f"Unknown session: {first_id}"):
+    with pytest.raises(UnknownSessionError) as close_error:
         manager.close_session(first_id, 0)
-    with pytest.raises(EngineError, match=f"Unknown session: {first_id}"):
+    assert close_error.value.session_id == first_id
+    with pytest.raises(UnknownSessionError) as page_error:
         manager.get_page(first_id, 0, 0, 10, {"filters": [], "sort": []})
+    assert page_error.value.session_id == first_id
     manager.close_all()
     assert created[1].close_calls == 1
 

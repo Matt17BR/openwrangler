@@ -38,6 +38,7 @@ export class OpenWranglerPanel {
   private nativeImportCommand: Promise<boolean> | undefined;
   private runtimeDependencyInstallTask: Promise<void> | undefined;
   private importChangeCancellation: vscode.CancellationTokenSource | undefined;
+  private sessionOpenCancellation: vscode.CancellationTokenSource | undefined;
   private readonly forwardedRequests = new Set<Promise<void>>();
   private changingImportOptions = false;
   private rendererReady = false;
@@ -270,11 +271,12 @@ export class OpenWranglerPanel {
             isFile ? "editing" : "viewing"
           );
     const generation = ++this.openAttemptGeneration;
-    if (this.backend === "pyspark") this.activeSessionOpenProgressGeneration = generation;
+    const reportsNotebookOpenProgress = this.source.kind === "notebookVariable";
+    if (reportsNotebookOpenProgress) this.activeSessionOpenProgressGeneration = generation;
     const cancellation = new vscode.CancellationTokenSource();
-    this.importChangeCancellation?.cancel();
-    this.importChangeCancellation?.dispose();
-    this.importChangeCancellation = cancellation;
+    this.sessionOpenCancellation?.cancel();
+    this.sessionOpenCancellation?.dispose();
+    this.sessionOpenCancellation = cancellation;
     const opening = this.forward(
       {
         kind: "openSession",
@@ -287,9 +289,11 @@ export class OpenWranglerPanel {
       },
       undefined,
       {
+        // KernelBridge treats this as a host-only detach signal. It never
+        // forwards cancellation to Jupyter's executeCode token.
         cancellation: cancellation.token,
         backendPreference: this.backendPreference,
-        ...(this.backend === "pyspark"
+        ...(reportsNotebookOpenProgress
           ? { onOpenProgress: (stage: SessionOpenProgressStage) => this.updateSessionOpenProgress(generation, stage) }
           : {})
       },
@@ -301,8 +305,8 @@ export class OpenWranglerPanel {
     } finally {
       await this.clearSessionOpenProgress(generation);
       if (this.opening === opening) this.opening = undefined;
-      if (this.importChangeCancellation === cancellation) {
-        this.importChangeCancellation = undefined;
+      if (this.sessionOpenCancellation === cancellation) {
+        this.sessionOpenCancellation = undefined;
         cancellation.dispose();
       }
     }
@@ -314,6 +318,9 @@ export class OpenWranglerPanel {
     this.openAttemptGeneration += 1;
     this.activeSessionOpenProgressGeneration = undefined;
     this.sessionOpenProgress = undefined;
+    this.sessionOpenCancellation?.cancel();
+    this.sessionOpenCancellation?.dispose();
+    this.sessionOpenCancellation = undefined;
     this.importChangeCancellation?.cancel();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
@@ -569,7 +576,7 @@ export class OpenWranglerPanel {
       return;
     }
     if (this.opening) {
-      this.importChangeCancellation?.cancel();
+      this.sessionOpenCancellation?.cancel();
       await this.opening.catch(() => undefined);
       if (this.disposed || generation !== this.openAttemptGeneration) return;
     }

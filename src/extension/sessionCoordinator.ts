@@ -22,7 +22,12 @@ import type {
 import { isSessionBoundRequest } from "../shared/protocol";
 import { isOpenWranglerRequest } from "../shared/protocolValidation";
 import { emptyGridViewState, type GridViewState, type PersistedViewingState } from "../shared/viewState";
-import type { BridgeRequestOptions, OpenWranglerBridge, SessionPresentation } from "./dataBridge";
+import {
+  DetachedBridgeRequestError,
+  type BridgeRequestOptions,
+  type OpenWranglerBridge,
+  type SessionPresentation
+} from "./dataBridge";
 import { isSoleOpenNotebookDocument } from "./notebooks/notebookProvenance";
 import {
   decodePersistedSession,
@@ -65,6 +70,8 @@ interface CoordinatedSession extends RuntimeSessionState {
   closing: boolean;
   reconfiguring: boolean;
   recoveryRequired: boolean;
+  /** Host-detached runtime work that must settle before this session may issue more work. */
+  runtimeSettlementBarrier?: Promise<void>;
   stepInspection?: StepInspectionResponse;
   latestStepInspectionKey?: string;
 }
@@ -1131,6 +1138,11 @@ export class SessionCoordinator implements vscode.Disposable {
     publicRequest: SessionBoundRequest,
     options?: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
+    // A notebook deadline only stops the host from waiting; it never
+    // interrupts Jupyter. Keep later work (including recovery and terminal
+    // close) behind the exact detached execution so nothing can overtake or
+    // replay a request that may still be running.
+    await this.waitForRuntimeSettlement(session);
     // Closing is a terminal barrier and intentionally rebases to the latest
     // runtime revision. Every other queued request must still target the public
     // revision that was current when it entered the queue.
@@ -1194,6 +1206,11 @@ export class SessionCoordinator implements vscode.Disposable {
     try {
       response = await session.delegate.request(runtimeRequest(), options);
     } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) {
+        this.installRuntimeSettlementBarrier(session, error.settlement);
+        if (error.dispatched && isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
+        throw error;
+      }
       if (isRuntimeStateMutation(publicRequest)) session.recoveryRequired = true;
       // A transport failure is ambiguous for mutations and exports: the remote
       // runtime may have committed before delivery failed. Only pure reads may
@@ -1512,6 +1529,14 @@ export class SessionCoordinator implements vscode.Disposable {
         session.publicId
       );
     } catch (error) {
+      if (error instanceof DetachedBridgeRequestError) {
+        this.reportRuntimeCleanupDiagnostic(
+          session,
+          "terminal runtime",
+          "the host stopped waiting; the original exact-kernel close remains observed"
+        );
+        throw error;
+      }
       this.reportRuntimeCleanupDiagnostic(
         session,
         "terminal runtime",
@@ -1531,6 +1556,24 @@ export class SessionCoordinator implements vscode.Disposable {
     this.releaseDelegateIfIdle(session.delegate);
   }
 
+  private installRuntimeSettlementBarrier(session: CoordinatedSession, settlement: Promise<void>): void {
+    const preceding = session.runtimeSettlementBarrier ?? Promise.resolve();
+    const barrier = preceding.then(
+      () => settlement,
+      () => settlement
+    );
+    session.runtimeSettlementBarrier = barrier;
+    void barrier.then(() => {
+      if (session.runtimeSettlementBarrier === barrier) session.runtimeSettlementBarrier = undefined;
+    });
+  }
+
+  private async waitForRuntimeSettlement(session: CoordinatedSession): Promise<void> {
+    while (session.runtimeSettlementBarrier) {
+      await session.runtimeSettlementBarrier;
+    }
+  }
+
   private async shutdownSessions(timeoutMs: number): Promise<void> {
     this.disposed = true;
     const sessions = [...this.sessions.values()].map((session) => {
@@ -1541,6 +1584,12 @@ export class SessionCoordinator implements vscode.Disposable {
     });
     const closes = sessions.map(async ({ session, alreadyClosing }) => {
       await this.waitForSessionIdle(session);
+      // A notebook host deadline detaches only the waiter; the exact kernel
+      // request keeps running. Deactivation must not let terminal close
+      // overtake that work. The outer shutdown deadline still bounds how long
+      // disposal waits, while this observed chain closes once settlement is
+      // authoritative.
+      await this.waitForRuntimeSettlement(session);
       if (alreadyClosing) return;
       try {
         await this.closeSession(session, {

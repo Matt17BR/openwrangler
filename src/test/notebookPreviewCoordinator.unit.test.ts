@@ -82,6 +82,12 @@ vi.mock("../extension/notebooks/notebookProvenance", () => ({
 }));
 
 vi.mock("../extension/notebooks/kernelBridge", () => ({
+  NotebookFormatterPreparationPendingError: class extends Error {
+    constructor(readonly settlement: Promise<{ readonly kind: string }>) {
+      super("Formatter preparation is still settling.");
+      this.name = "NotebookFormatterPreparationPendingError";
+    }
+  },
   KernelBridge: class {
     readonly onDidInvalidateKernel = (listener: () => void) => {
       mocks.invalidationListeners.add(listener);
@@ -95,6 +101,7 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
     (mocks.preference === "ask" && !mocks.extensions.has("ms-toolsai.datawrangler"))
 }));
 
+import { NotebookFormatterPreparationPendingError } from "../extension/notebooks/kernelBridge";
 import { NotebookPreviewCoordinator } from "../extension/notebooks/notebookPreviewCoordinator";
 
 describe("NotebookPreviewCoordinator", () => {
@@ -193,6 +200,37 @@ describe("NotebookPreviewCoordinator", () => {
     coordinator.dispose();
   });
 
+  it("parks one timed-out formatter attempt until its underlying kernel execution actually settles", async () => {
+    const notebook = fakeNotebook();
+    const settlement = deferred<{ readonly kind: "prepared" }>();
+    mocks.documents.push(notebook);
+    mocks.visibleEditors.push({ notebook });
+    mocks.prepare.mockRejectedValueOnce(new NotebookFormatterPreparationPendingError(settlement.promise));
+    const coordinator = new NotebookPreviewCoordinator({} as never);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+    expect(mocks.invalidationListeners.size).toBe(1);
+
+    for (let index = 0; index < 20; index += 1) {
+      for (const listener of mocks.channels.change) listener({ notebook });
+      await vi.advanceTimersByTimeAsync(15_000);
+    }
+
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+    expect(mocks.invalidationListeners.size).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    settlement.resolve({ kind: "prepared" });
+    await vi.advanceTimersByTimeAsync(0);
+    for (const listener of mocks.channels.change) listener({ notebook });
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(mocks.prepare).toHaveBeenCalledOnce();
+    expect(mocks.invalidationListeners.size).toBe(1);
+    coordinator.dispose();
+  });
+
   it("lets a visible notebook change bypass a pending kernel-not-ready backoff", async () => {
     const notebook = fakeNotebook();
     mocks.documents.push(notebook);
@@ -248,4 +286,12 @@ function fakeNotebook(): NotebookDocument {
     isClosed: false,
     uri: { toString: () => "file:///workspace/notebook.ipynb" }
   } as unknown as NotebookDocument;
+}
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }

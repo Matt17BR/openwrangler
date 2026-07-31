@@ -11,20 +11,44 @@ import type {
 import { PROTOCOL_VERSION } from "../../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../../shared/protocolValidation";
 import type { SessionOpenProgressStage } from "../../shared/sessionOpenProgress";
-import type { BridgeRequestOptions, OpenWranglerBridge } from "../dataBridge";
+import {
+  DetachedBridgeRequestError,
+  type BridgeRequestOptions,
+  type DetachedBridgeRequestReason,
+  type OpenWranglerBridge
+} from "../dataBridge";
 import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+
+const NOTEBOOK_FORMATTER_REPORTING_TIMEOUT_MS = 30_000;
+
+export type NotebookFormatterPreparationSettlement =
+  | { readonly kind: "prepared" }
+  | { readonly kind: "failed"; readonly error: unknown }
+  | { readonly kind: "generationChanged" };
+
+export class NotebookFormatterPreparationPendingError extends Error {
+  constructor(readonly settlement: Promise<NotebookFormatterPreparationSettlement>) {
+    super(
+      `Open Wrangler kernel request timed out after ${NOTEBOOK_FORMATTER_REPORTING_TIMEOUT_MS} ms; formatter preparation is still settling.`
+    );
+    this.name = "NotebookFormatterPreparationPendingError";
+  }
+}
 
 export class KernelBridge implements OpenWranglerBridge {
   private readonly lifecycle: RestartableKernel<AcquiredKernel>;
   private readonly bootstrapCode: string;
   private readonly sessionKernels = new Map<string, Kernel>();
   private readonly retiredSessionIds = new Set<string>();
-  private cleanupAttempts = new WeakMap<Kernel, Set<string>>();
+  private cleanupAttempts = new WeakMap<Kernel, Map<string, Promise<boolean>>>();
   private kernelObservation: KernelObservation | undefined;
   private lifecycleVersion = 0;
+  private idleRequested = false;
+  private readonly detachedKernelOperations = new Set<Promise<unknown>>();
+  private formatterPreparation: FormatterPreparation | undefined;
   private readonly notebookUri: vscode.Uri;
   private readonly kernelInvalidatedEmitter = new vscode.EventEmitter<void>();
   readonly onDidInvalidateKernel = this.kernelInvalidatedEmitter.event;
@@ -40,13 +64,18 @@ export class KernelBridge implements OpenWranglerBridge {
   }
 
   onIdle(): void {
+    this.idleRequested = true;
     // The user's kernel remains owned by Jupyter; Open Wrangler only releases
     // its cached generation and bootstrap state after its final session closes.
-    this.invalidateLifecycle();
     // Coordinator shutdown can reach its outer deadline while an accepted
     // request is still settling. Keep exact-kernel ownership in that case so
     // the delayed terminal close cannot reacquire by notebook URI.
-    if (this.sessionKernels.size > 0) return;
+    this.releaseIdleStateIfSafe();
+  }
+
+  private releaseIdleStateIfSafe(): void {
+    if (!this.idleRequested || this.sessionKernels.size > 0 || this.detachedKernelOperations.size > 0) return;
+    this.invalidateLifecycle();
     this.sessionKernels.clear();
     this.retiredSessionIds.clear();
     this.cleanupAttempts = new WeakMap();
@@ -55,37 +84,74 @@ export class KernelBridge implements OpenWranglerBridge {
   async prepareNotebookFormatter(): Promise<void> {
     if (!this.registerNotebookFormatters) return;
     this.assertNotebookProvenance();
-    const tokenSource = new vscode.CancellationTokenSource();
-    const requestLifecycleVersion = this.lifecycleVersion;
-    let requestObservation: KernelObservation | undefined;
-    const abort = (): void => {
-      tokenSource.cancel();
-      this.invalidateLifecycle(requestObservation, requestLifecycleVersion);
-    };
+    const preparation = this.currentFormatterPreparation();
+    if (preparation.reportingDeadlineExpired) {
+      throw new NotebookFormatterPreparationPendingError(preparation.settlement);
+    }
+    // This is a reporting deadline only. RestartableKernel retains the exact
+    // acquisition/bootstrap promise. Expose its settlement identity when the
+    // deadline expires so the coordinator parks instead of repeatedly joining
+    // one uncancelled execution and accumulating host timers/listeners.
+    let reportingDeadlineExpired = false;
     try {
-      await withKernelTimeout(
-        this.lifecycle.run(
-          async (acquired) => {
-            requestObservation = this.observeKernelStatus(acquired);
-            await this.ensureKernelAgent(acquired.kernel, tokenSource.token, true);
-          },
-          async () => undefined,
-          {
-            retryAfterDispatch: true,
-            shouldRetry: (_error, phase) =>
-              !tokenSource.token.isCancellationRequested && phase !== "acquire" && phase !== "beforeDispatch",
-            beforeDispatch: () => this.assertNotebookProvenance()
-          }
-        ),
-        30_000,
-        abort,
-        undefined,
-        abort
+      await withKernelTimeout(preparation.completion, NOTEBOOK_FORMATTER_REPORTING_TIMEOUT_MS, () => {
+        reportingDeadlineExpired = true;
+        preparation.reportingDeadlineExpired = true;
+      });
+    } catch (error) {
+      if (reportingDeadlineExpired) {
+        throw new NotebookFormatterPreparationPendingError(preparation.settlement);
+      }
+      throw error;
+    }
+    this.assertNotebookProvenance();
+  }
+
+  private currentFormatterPreparation(): FormatterPreparation {
+    const existing = this.formatterPreparation;
+    if (existing && existing.lifecycleVersion === this.lifecycleVersion) return existing;
+
+    const lifecycleVersion = this.lifecycleVersion;
+    let resolveGenerationChanged: () => void = () => undefined;
+    const generationChanged = new Promise<NotebookFormatterPreparationSettlement>((resolve) => {
+      resolveGenerationChanged = () => resolve({ kind: "generationChanged" });
+    });
+    const completion = (async () => {
+      await this.lifecycle.run(
+        async (acquired) => {
+          this.observeKernelStatus(acquired);
+          await this.ensureKernelAgent(acquired.kernel, true);
+        },
+        async () => undefined,
+        {
+          retryAfterDispatch: true,
+          shouldRetry: (_error, phase) => phase !== "acquire" && phase !== "beforeDispatch",
+          beforeDispatch: () => this.assertNotebookProvenance()
+        }
       );
       this.assertNotebookProvenance();
-    } finally {
-      tokenSource.dispose();
-    }
+    })();
+    const settlement = Promise.race([
+      completion.then<NotebookFormatterPreparationSettlement, NotebookFormatterPreparationSettlement>(
+        () => ({ kind: "prepared" }),
+        (error: unknown) => ({ kind: "failed", error })
+      ),
+      generationChanged
+    ]);
+    const preparation: FormatterPreparation = {
+      lifecycleVersion,
+      completion,
+      settlement,
+      resolveGenerationChanged,
+      reportingDeadlineExpired: false
+    };
+    this.formatterPreparation = preparation;
+    void completion
+      .finally(() => {
+        if (this.formatterPreparation === preparation) this.formatterPreparation = undefined;
+      })
+      .catch(() => undefined);
+    return preparation;
   }
 
   dispose(): void {
@@ -94,51 +160,68 @@ export class KernelBridge implements OpenWranglerBridge {
   }
 
   async request(request: OpenWranglerRequest, options: BridgeRequestOptions = {}): Promise<OpenWranglerResponse> {
-    if (options.cancellation?.isCancellationRequested) throw new KernelRequestCancelledError();
-    if (request.kind === "closeSession") {
-      const kernel = this.sessionKernels.get(request.sessionId);
-      if (kernel) return this.closeMappedSession(request, kernel, options);
-      if (this.retiredSessionIds.has(request.sessionId) || options.startRuntimeIfNeeded === false) {
+    this.idleRequested = false;
+    const runtimeRequest = withKernelSessionIdentity(request);
+    if (runtimeRequest.kind === "closeSession") {
+      const kernel = this.sessionKernels.get(runtimeRequest.sessionId);
+      if (kernel) return this.closeMappedSession(runtimeRequest, kernel, options);
+      if (this.retiredSessionIds.has(runtimeRequest.sessionId) || options.startRuntimeIfNeeded === false) {
         return {
           kind: "error",
           code: "unknown_session",
-          message: `Open Wrangler already attempted to close kernel session ${request.sessionId}.`,
-          recoverable: true
+          message: `Open Wrangler already attempted to close kernel session ${runtimeRequest.sessionId}.`,
+          recoverable: true,
+          sessionId: runtimeRequest.sessionId
         };
       }
     }
-    const isCleanup = request.kind === "closeSession";
+    if (options.cancellation?.isCancellationRequested) {
+      if (runtimeRequest.kind === "openSession") return cancelledSessionOpenResponse();
+      throw new DetachedBridgeRequestError(
+        detachedRequestMessage("cancellation", runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs)),
+        "cancellation",
+        false,
+        Promise.resolve()
+      );
+    }
+    const isCleanup = runtimeRequest.kind === "closeSession";
     if (!isCleanup) this.assertNotebookProvenance();
-    const runtimeRequest = withKernelSessionIdentity(request);
-    const reportsSparkOpenProgress = runtimeRequest.kind === "openSession" && runtimeRequest.backend === "pyspark";
+    const reportsNotebookOpenProgress =
+      runtimeRequest.kind === "openSession" && runtimeRequest.source.kind === "notebookVariable";
+    const reportsSparkOpenProgress = reportsNotebookOpenProgress && runtimeRequest.backend === "pyspark";
     if (runtimeRequest.kind === "openSession") {
       this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
     }
     const framed = frameKernelRequest(runtimeRequest, requestPriority(runtimeRequest, options));
-    const tokenSource = new vscode.CancellationTokenSource();
     const timeoutMs = runtimeRequestTimeoutMs(runtimeRequest, options.timeoutMs);
     let requestObservation: KernelObservation | undefined;
     const requestLifecycleVersion = this.lifecycleVersion;
-    const abort = (): void => {
-      tokenSource.cancel();
+    let requestDispatched = false;
+    let bootstrapSettlement: Promise<void> | undefined;
+    let hostDetachReason: DetachedBridgeRequestReason | undefined;
+    const detach = (reason: DetachedBridgeRequestReason): void => {
+      hostDetachReason = reason;
       // A timed-out acquisition must not trap future cleanup requests behind the
       // same hung promise. Once this request has observed a kernel, invalidate
       // only that exact observation. Before observation, the captured lifecycle
       // version prevents a detached old acquisition from clearing a replacement.
-      this.invalidateLifecycle(requestObservation, requestLifecycleVersion);
+      if (!bootstrapSettlement && !requestDispatched) {
+        this.invalidateLifecycle(requestObservation, requestLifecycleVersion);
+      }
     };
     let mismatchedRuntimeId: string | undefined;
     let cleanupMismatchedRuntimeId = false;
     let openKernel: Kernel | undefined;
+    let operation: Promise<OpenWranglerResponse> | undefined;
     try {
-      if (reportsSparkOpenProgress) reportOpenProgress(options, "acquiringKernel");
-      const operation = this.lifecycle.run(
+      if (reportsNotebookOpenProgress) reportOpenProgress(options, "acquiringKernel");
+      operation = this.lifecycle.run(
         async (acquired) => {
           const observation = this.observeKernelStatus(acquired);
           requestObservation = observation;
           try {
-            if (reportsSparkOpenProgress) reportOpenProgress(options, "bootstrappingRuntime");
-            await this.ensureKernelAgent(acquired.kernel, tokenSource.token, this.registerNotebookFormatters);
+            if (reportsNotebookOpenProgress) reportOpenProgress(options, "bootstrappingRuntime");
+            await this.ensureKernelAgent(acquired.kernel, this.registerNotebookFormatters);
           } catch (error) {
             this.invalidateLifecycle(observation);
             throw error;
@@ -148,13 +231,31 @@ export class KernelBridge implements OpenWranglerBridge {
           const observation = this.requireKernelObservation(acquired);
           requestObservation = observation;
           try {
-            if (reportsSparkOpenProgress) reportOpenProgress(options, "preparingSparkView");
+            if (reportsNotebookOpenProgress) {
+              reportOpenProgress(options, reportsSparkOpenProgress ? "preparingSparkView" : "openingNotebookVariable");
+            }
+            if (hostDetachReason) throw new KernelRequestCancelledError();
             if (runtimeRequest.kind === "openSession") {
               this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
               openKernel = acquired.kernel;
               this.sessionKernels.set(runtimeRequest.requestedSessionId, acquired.kernel);
             }
-            return await this.executeFramedRequest(acquired.kernel, framed, tokenSource.token);
+            requestDispatched = true;
+            const response = await this.executeFramedRequest(acquired.kernel, framed);
+            // Capture a wrong runtime identity before RestartableKernel performs
+            // its post-execution generation check. A host detach can make that
+            // check reject even though the kernel returned a committed open.
+            if (
+              runtimeRequest.kind === "openSession" &&
+              response.kind === "sessionOpened" &&
+              response.metadata.sessionId !== runtimeRequest.requestedSessionId
+            ) {
+              mismatchedRuntimeId = response.metadata.sessionId;
+              const existingKernel = this.sessionKernels.get(mismatchedRuntimeId);
+              cleanupMismatchedRuntimeId = existingKernel !== acquired.kernel;
+              if (!existingKernel) this.sessionKernels.set(mismatchedRuntimeId, acquired.kernel);
+            }
+            return response;
           } catch (error) {
             this.invalidateLifecycle(observation);
             throw error;
@@ -163,27 +264,39 @@ export class KernelBridge implements OpenWranglerBridge {
         {
           retryAfterDispatch: isIdempotentKernelReadRequest(runtimeRequest),
           shouldRetry: (_error, phase) =>
-            !tokenSource.token.isCancellationRequested && phase !== "acquire" && phase !== "beforeDispatch",
+            hostDetachReason === undefined && phase !== "acquire" && phase !== "beforeDispatch",
+          onBootstrapPending: (settlement) => {
+            bootstrapSettlement = settlement;
+            // A rejected bootstrap may be retried on a fresh lifecycle
+            // generation. Do not let the settled promise from the failed
+            // generation make a later acquisition look like it still owns an
+            // in-flight kernel execution. Keep the successful promise marked
+            // through beforeDispatch so host detachment cannot invalidate the
+            // shared, freshly bootstrapped generation in that narrow window.
+            void settlement.catch(() => {
+              if (bootstrapSettlement === settlement) bootstrapSettlement = undefined;
+            });
+          },
           beforeDispatch: () => {
             requestObservation ??= this.kernelObservation;
-            if (tokenSource.token.isCancellationRequested) throw new KernelRequestCancelledError();
+            if (hostDetachReason) throw new KernelRequestCancelledError();
             if (!isCleanup) this.assertNotebookProvenance();
           }
         }
       );
-      const response = await withKernelTimeout(operation, timeoutMs, abort, options.cancellation, abort);
-      if (
-        runtimeRequest.kind === "openSession" &&
-        response.kind === "sessionOpened" &&
-        response.metadata.sessionId !== runtimeRequest.requestedSessionId
-      ) {
-        mismatchedRuntimeId = response.metadata.sessionId;
-        if (openKernel) {
-          const existingKernel = this.sessionKernels.get(mismatchedRuntimeId);
-          cleanupMismatchedRuntimeId = existingKernel !== openKernel;
-          if (!existingKernel) this.sessionKernels.set(mismatchedRuntimeId, openKernel);
-        }
-      }
+      // Jupyter cancellation interrupts the whole Python kernel. If PySpark
+      // has installed its default SIGINT handler, that interrupt calls
+      // SparkContext.cancelAllJobs() even when this request targets Pandas or
+      // Polars. Host deadlines and cancellation therefore detach only the host
+      // waiter; they never cancel the executeCode token or masquerade as
+      // transport loss. A detached open is closed on its exact kernel below.
+      const response = await withKernelTimeout(
+        operation,
+        timeoutMs,
+        () => detach("timeout"),
+        options.cancellation,
+        () => detach("cancellation")
+      );
       if (!isCleanup) this.assertNotebookProvenance();
       if (runtimeRequest.kind === "openSession") {
         if (response.kind !== "sessionOpened") {
@@ -191,7 +304,12 @@ export class KernelBridge implements OpenWranglerBridge {
           // committed. The kernel may have registered the candidate before its
           // final response was replaced, so close the host-known identity just
           // as we do for transport and parsing failures.
-          if (openKernel) await this.cleanupFailedOpen(runtimeRequest.requestedSessionId, openKernel);
+          const cleanupConfirmed = openKernel
+            ? await this.cleanupFailedOpen(runtimeRequest.requestedSessionId, openKernel)
+            : false;
+          if (response.kind === "cancelled" && !cleanupConfirmed) {
+            return indeterminateSessionOpenResponse("cancellation");
+          }
         } else if (mismatchedRuntimeId) {
           throw new Error(
             "Open Wrangler kernel returned a session identity that did not match the requested identity."
@@ -204,38 +322,97 @@ export class KernelBridge implements OpenWranglerBridge {
       // Detach a surviving before-dispatch/provenance generation only when it
       // is still the exact observation used by this request. A late failure
       // must never clear a newer concurrent generation.
-      if (requestObservation) this.invalidateLifecycle(requestObservation);
-      if (runtimeRequest.kind === "openSession" && openKernel) {
-        await this.cleanupFailedOpen(runtimeRequest.requestedSessionId, openKernel);
-        if (mismatchedRuntimeId && cleanupMismatchedRuntimeId) {
-          await this.cleanupFailedOpen(mismatchedRuntimeId, openKernel);
+      if (requestObservation && (!hostDetachReason || (!bootstrapSettlement && !requestDispatched))) {
+        this.invalidateLifecycle(requestObservation);
+      }
+      if (runtimeRequest.kind === "openSession") {
+        if (hostDetachReason && !requestDispatched) {
+          if (bootstrapSettlement && operation) this.trackDetachedKernelOperation(operation);
+          return cancelledSessionOpenResponse();
+        }
+        if (hostDetachReason && requestDispatched && openKernel && operation) {
+          this.cleanupFailedOpenAfterSettlement(runtimeRequest.requestedSessionId, openKernel, operation, () =>
+            cleanupMismatchedRuntimeId ? mismatchedRuntimeId : undefined
+          );
+          return indeterminateSessionOpenResponse(hostDetachReason);
+        }
+        if (error instanceof KernelRequestCancelledError) {
+          if (!requestDispatched) return cancelledSessionOpenResponse();
+          const cleanupConfirmed = openKernel
+            ? await this.cleanupFailedOpen(runtimeRequest.requestedSessionId, openKernel)
+            : false;
+          return cleanupConfirmed ? cancelledSessionOpenResponse() : indeterminateSessionOpenResponse("cancellation");
+        }
+        if (openKernel) {
+          await this.cleanupFailedOpen(runtimeRequest.requestedSessionId, openKernel);
+          if (mismatchedRuntimeId && cleanupMismatchedRuntimeId) {
+            await this.cleanupFailedOpen(mismatchedRuntimeId, openKernel);
+          }
         }
       }
+      if (hostDetachReason && operation) {
+        throw new DetachedBridgeRequestError(
+          detachedRequestMessage(hostDetachReason, timeoutMs),
+          hostDetachReason,
+          requestDispatched,
+          observeSettlement(operation)
+        );
+      }
       throw error;
-    } finally {
-      tokenSource.dispose();
     }
   }
 
-  private async cleanupFailedOpen(sessionId: string, kernel: Kernel): Promise<void> {
-    const attempts = this.cleanupAttempts.get(kernel) ?? new Set<string>();
-    if (attempts.has(sessionId)) return;
-    attempts.add(sessionId);
+  private cleanupFailedOpenAfterSettlement(
+    sessionId: string,
+    kernel: Kernel,
+    settlement: Promise<OpenWranglerResponse>,
+    mismatchedSessionId: () => string | undefined
+  ): void {
+    const cleanup = observeSettlement(settlement).then(async () => {
+      await this.cleanupFailedOpen(sessionId, kernel);
+      const mismatched = mismatchedSessionId();
+      if (mismatched) await this.cleanupFailedOpen(mismatched, kernel);
+    });
+    void cleanup.catch(() => undefined);
+  }
+
+  private trackDetachedKernelOperation(operation: Promise<unknown>): void {
+    if (this.detachedKernelOperations.has(operation)) return;
+    this.detachedKernelOperations.add(operation);
+    void observeSettlement(operation).then(() => {
+      this.detachedKernelOperations.delete(operation);
+      this.releaseIdleStateIfSafe();
+    });
+  }
+
+  private cleanupFailedOpen(sessionId: string, kernel: Kernel): Promise<boolean> {
+    const attempts = this.cleanupAttempts.get(kernel) ?? new Map<string, Promise<boolean>>();
+    const existing = attempts.get(sessionId);
+    if (existing) return existing;
+    const attempt = this.performFailedOpenCleanup(sessionId, kernel);
+    attempts.set(sessionId, attempt);
     this.cleanupAttempts.set(kernel, attempts);
-    const ownsMapping = this.sessionKernels.get(sessionId) === kernel;
-    if (ownsMapping) {
-      this.sessionKernels.delete(sessionId);
-      this.retiredSessionIds.add(sessionId);
-    }
+    return attempt;
+  }
+
+  private async performFailedOpenCleanup(sessionId: string, kernel: Kernel): Promise<boolean> {
+    const completion = this.executeExactKernelRequest(
+      kernel,
+      { kind: "closeSession", sessionId, revision: 0 },
+      { priority: "interactive" }
+    ).then((response) => {
+      const confirmed = isCorrelatedSessionClose(response, sessionId);
+      if (confirmed) this.retireMappedSession(sessionId, kernel);
+      return confirmed;
+    });
+    // The host stops waiting after a bounded interval, but it must never turn
+    // that bound into a Jupyter interrupt. Keep observing the exact execution
+    // so a later correlated close still retires the mapped candidate.
+    void completion.catch(() => undefined);
     try {
-      await this.executeExactKernelRequest(
-        kernel,
-        { kind: "closeSession", sessionId, revision: 0 },
-        { priority: "interactive", timeoutMs: 2_000 }
-      );
+      return await withKernelTimeout(completion, 2_000, () => undefined);
     } catch {
-      // The cleanup has its own hard deadline. Preserve the original open
-      // failure when the kernel is unavailable or the candidate never existed.
+      return false;
     }
   }
 
@@ -244,20 +421,46 @@ export class KernelBridge implements OpenWranglerBridge {
     kernel: Kernel,
     options: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
-    const response = await this.executeExactKernelRequest(kernel, request, options);
-    if (
-      (response.kind === "sessionClosed" && response.sessionId === request.sessionId) ||
-      (response.kind === "error" && response.code === "unknown_session" && response.sessionId === request.sessionId)
-    ) {
-      this.retireMappedSession(request.sessionId, kernel);
+    const completion = this.executeExactKernelRequest(kernel, request, options).then((response) => {
+      if (isCorrelatedSessionClose(response, request.sessionId)) {
+        this.retireMappedSession(request.sessionId, kernel);
+      }
+      return response;
+    });
+    // Bound only the host's wait. The kernel execution receives a fresh
+    // never-cancel token below, and a correlated late response still retires
+    // the mapping even after this caller has timed out.
+    void completion.catch(() => undefined);
+    const timeoutMs = runtimeRequestTimeoutMs(request, options.timeoutMs);
+    let hostDetachReason: DetachedBridgeRequestReason | undefined;
+    try {
+      return await withKernelTimeout(
+        completion,
+        timeoutMs,
+        () => {
+          hostDetachReason = "timeout";
+        },
+        options.cancellation,
+        () => {
+          hostDetachReason = "cancellation";
+        }
+      );
+    } catch (error) {
+      if (!hostDetachReason) throw error;
+      throw new DetachedBridgeRequestError(
+        detachedRequestMessage(hostDetachReason, timeoutMs),
+        hostDetachReason,
+        true,
+        observeSettlement(completion)
+      );
     }
-    return response;
   }
 
   private retireMappedSession(sessionId: string, kernel: Kernel): void {
     if (this.sessionKernels.get(sessionId) !== kernel) return;
     this.sessionKernels.delete(sessionId);
     this.retiredSessionIds.add(sessionId);
+    this.releaseIdleStateIfSafe();
   }
 
   private async executeExactKernelRequest(
@@ -266,49 +469,40 @@ export class KernelBridge implements OpenWranglerBridge {
     options: BridgeRequestOptions
   ): Promise<OpenWranglerResponse> {
     const framed = frameKernelRequest(request, requestPriority(request, options));
-    const tokenSource = new vscode.CancellationTokenSource();
-    const abort = (): void => tokenSource.cancel();
-    try {
-      return await withKernelTimeout(
-        this.executeFramedRequest(kernel, framed, tokenSource.token),
-        runtimeRequestTimeoutMs(request, options.timeoutMs),
-        abort,
-        options.cancellation,
-        abort
-      );
-    } finally {
-      tokenSource.dispose();
-    }
+    // Exact-kernel close is the cleanup path for a detached or failed live
+    // open. Interrupting this execution can target unrelated user Spark jobs,
+    // so it is allowed to settle naturally on the already-mapped kernel.
+    return this.executeFramedRequest(kernel, framed);
   }
 
-  private async executeFramedRequest(
-    kernel: Kernel,
-    framed: FramedKernelRequest,
-    token: vscode.CancellationToken
-  ): Promise<OpenWranglerResponse> {
-    return parseKernelResponse(await this.executePython(kernel, framed.code, token), framed.marker, framed.requestId);
+  private async executeFramedRequest(kernel: Kernel, framed: FramedKernelRequest): Promise<OpenWranglerResponse> {
+    return parseKernelResponse(await this.executePython(kernel, framed.code), framed.marker, framed.requestId);
   }
 
-  private async ensureKernelAgent(
-    kernel: Kernel,
-    token: vscode.CancellationToken,
-    registerNotebookFormatters: boolean
-  ): Promise<void> {
+  private async ensureKernelAgent(kernel: Kernel, registerNotebookFormatters: boolean): Promise<void> {
     this.assertNotebookProvenance();
     await this.executePython(
       kernel,
       `${this.bootstrapCode}
 import openwrangler_runtime.kernel_agent as __ow_kernel_agent
 ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_notebook\n__ow_notebook.register_formatters()" : ""}
-`,
-      token
+`
     );
     this.assertNotebookProvenance();
   }
 
-  private async executePython(kernel: Kernel, code: string, token: vscode.CancellationToken): Promise<string> {
-    if (token.isCancellationRequested) throw new KernelRequestCancelledError();
-    return kernelOutputsToText(kernel.executeCode(code, token));
+  private async executePython(kernel: Kernel, code: string): Promise<string> {
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+      // Jupyter maps cancellation to a whole-kernel SIGINT. With PySpark's
+      // default handler installed, that may call SparkContext.cancelAllJobs()
+      // and stop unrelated user work even when this request targets Pandas,
+      // Polars, or DuckDB. Every execution therefore owns a fresh token that
+      // is never cancelled and remains alive until its output settles.
+      return await kernelOutputsToText(kernel.executeCode(code, tokenSource.token));
+    } finally {
+      tokenSource.dispose();
+    }
   }
 
   private async acquireKernel(): Promise<AcquiredKernel> {
@@ -385,6 +579,11 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
     } else if (expectedVersion !== undefined && this.lifecycleVersion !== expectedVersion) {
       return;
     }
+    const formatterPreparation = this.formatterPreparation;
+    if (formatterPreparation?.lifecycleVersion === this.lifecycleVersion) {
+      this.formatterPreparation = undefined;
+      formatterPreparation.resolveGenerationChanged();
+    }
     this.lifecycleVersion += 1;
     this.lifecycle.invalidate();
     this.disposeKernelObservation(expected);
@@ -414,6 +613,41 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
   }
 }
 
+function cancelledSessionOpenResponse(): OpenWranglerResponse {
+  return { kind: "cancelled", targetRequestId: "session-open" };
+}
+
+function indeterminateSessionOpenResponse(reason: DetachedBridgeRequestReason): OpenWranglerResponse {
+  return {
+    kind: "error",
+    code: "kernel_open_indeterminate",
+    message:
+      `Open Wrangler stopped waiting for the notebook variable after host ${reason}, but its kernel execution may still be finishing. ` +
+      "Cleanup will run only after that exact execution settles. Restart the notebook kernel before trying again if it remains busy.",
+    recoverable: true
+  };
+}
+
+function detachedRequestMessage(reason: DetachedBridgeRequestReason, timeoutMs: number): string {
+  return reason === "timeout"
+    ? `Open Wrangler stopped waiting after ${timeoutMs} ms; the kernel request is still settling.`
+    : "Open Wrangler stopped waiting after host cancellation; the kernel request is still settling.";
+}
+
+function observeSettlement(work: Promise<unknown>): Promise<void> {
+  return work.then(
+    () => undefined,
+    () => undefined
+  );
+}
+
+function isCorrelatedSessionClose(response: OpenWranglerResponse, sessionId: string): boolean {
+  return (
+    (response.kind === "sessionClosed" && response.sessionId === sessionId) ||
+    (response.kind === "error" && response.code === "unknown_session" && response.sessionId === sessionId)
+  );
+}
+
 function reportOpenProgress(options: BridgeRequestOptions, stage: SessionOpenProgressStage): void {
   try {
     options.onOpenProgress?.(stage);
@@ -431,6 +665,14 @@ interface AcquiredKernel {
 interface KernelObservation {
   readonly kernel: Kernel;
   subscription?: vscode.Disposable;
+}
+
+interface FormatterPreparation {
+  readonly lifecycleVersion: number;
+  readonly completion: Promise<void>;
+  readonly settlement: Promise<NotebookFormatterPreparationSettlement>;
+  readonly resolveGenerationChanged: () => void;
+  reportingDeadlineExpired: boolean;
 }
 
 export type NotebookPreviewProvider = "ask" | "openWrangler" | "dataWrangler" | "disabled";

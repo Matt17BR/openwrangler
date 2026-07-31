@@ -8,6 +8,8 @@ export interface RestartableKernelRunOptions {
    */
   retryAfterDispatch?: boolean;
   shouldRetry?: (error: unknown, phase: KernelLifecyclePhase) => boolean;
+  /** Receives the exact shared bootstrap settlement for both its owner and joiners. */
+  onBootstrapPending?: (settlement: Promise<void>) => void;
   /** Runs immediately before user code is handed to the kernel. */
   beforeDispatch?: () => void;
 }
@@ -60,7 +62,7 @@ export class RestartableKernel<TKernel> {
         generation = await this.current();
         phase = "bootstrap";
         this.assertCurrent(generation);
-        await this.ensureBootstrapped(generation, bootstrap);
+        await this.ensureBootstrapped(generation, bootstrap, options.onBootstrapPending);
         this.assertCurrent(generation);
         phase = "beforeDispatch";
         options.beforeDispatch?.();
@@ -124,7 +126,8 @@ export class RestartableKernel<TKernel> {
 
   private async ensureBootstrapped(
     generation: KernelGeneration<TKernel>,
-    bootstrap: (kernel: TKernel) => Promise<void>
+    bootstrap: (kernel: TKernel) => Promise<void>,
+    onPending?: (settlement: Promise<void>) => void
   ): Promise<void> {
     this.assertCurrent(generation);
     if (generation.bootstrapped) return;
@@ -135,6 +138,7 @@ export class RestartableKernel<TKernel> {
     })();
 
     const bootstrapPromise = generation.bootstrapPromise;
+    onPending?.(bootstrapPromise);
     try {
       await bootstrapPromise;
     } catch (error) {
