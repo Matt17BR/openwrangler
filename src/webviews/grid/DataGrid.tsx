@@ -166,7 +166,7 @@ export function DataGrid({
     column: selectedColumnPosition(metadata.schema, viewState.selectedColumnId)
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     viewStateRef.current = viewState;
   }, [viewState]);
 

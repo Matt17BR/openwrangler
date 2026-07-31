@@ -647,7 +647,7 @@ describe("DataGrid", () => {
     expect(onPage).not.toHaveBeenCalled();
   });
 
-  it("publishes the physical viewport when the browser clamps impossible restored offsets", () => {
+  it("keeps authoritative widths and selection when restored scroll emits synchronously", () => {
     const onViewStateChange = vi.fn();
     const props = {
       metadata,
@@ -667,12 +667,16 @@ describe("DataGrid", () => {
     Object.defineProperty(scroller, "scrollTop", {
       configurable: true,
       get: () => 0,
-      set: () => undefined
+      set: () => {
+        scroller.dispatchEvent(new Event("scroll"));
+      }
     });
     Object.defineProperty(scroller, "scrollLeft", {
       configurable: true,
       get: () => 0,
-      set: () => undefined
+      set: () => {
+        scroller.dispatchEvent(new Event("scroll"));
+      }
     });
     onViewStateChange.mockClear();
 
@@ -687,7 +691,6 @@ describe("DataGrid", () => {
         viewStateRestoreVersion={1}
       />
     );
-    fireEvent.scroll(scroller);
 
     expect(onViewStateChange).toHaveBeenLastCalledWith({
       columnWidths: { "c:1": 280 },
