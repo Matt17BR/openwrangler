@@ -57,7 +57,6 @@ import type {
 import type { GridViewState, PersistedViewingState } from "../../shared/viewState";
 import {
   acquirePreparedAcceptanceAction,
-  activateAcceptancePointerTargetAtCurrentCenter,
   activateReplaceableAcceptanceLocator,
   ignoreRetiredRendererProbeFailure,
   invokeAcceptanceActionOnceWithAuthoritativeReceipt,
@@ -3888,7 +3887,11 @@ async function openReleasedRendererVariableSession(
     description,
     activate: async () => {
       recordAcceptanceProgress(`${checkpoint}:activate`);
-      await activateAcceptancePointerTargetAtCurrentCenter(action, WORKBENCH_PLAYWRIGHT_TIMEOUT_MS);
+      await withAcceptanceOperationDeadline(
+        action.click(),
+        WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+        "the exact notebook renderer action to receive one Playwright click"
+      );
     },
     receipt,
     authoritativeReceiptAfterActivationFailure: receipt
