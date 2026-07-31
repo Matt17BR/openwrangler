@@ -7072,7 +7072,13 @@ async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
       ? "action-icon-light.svg"
       : "action-icon-dark.svg";
   const iconReferences = await tab.evaluate((root, expectedIcon) => {
-    const references: Array<{ reference: string; visible: boolean; source: string }> = [];
+    const references: Array<{
+      reference: string;
+      visible: boolean;
+      source: string;
+      matchesExpectedIcon: boolean;
+      className: string;
+    }> = [];
     const browserWindow = root.ownerDocument.defaultView;
     if (!browserWindow) return references;
     for (const element of [root, ...root.querySelectorAll("*")]) {
@@ -7085,13 +7091,19 @@ async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
         elementStyle.visibility !== "hidden" &&
         Number.parseFloat(elementStyle.opacity || "1") > 0;
       const imageSource = element.tagName.toLowerCase() === "img" ? element.getAttribute("src") : null;
-      if (imageSource?.includes(expectedIcon)) {
-        references.push({ reference: imageSource, visible: elementIsVisible, source: "image" });
+      if (imageSource) {
+        references.push({
+          reference: imageSource,
+          visible: elementIsVisible,
+          source: "image",
+          matchesExpectedIcon: imageSource.includes(expectedIcon),
+          className: element.className
+        });
       }
       for (const pseudo of [undefined, "::before", "::after"] as const) {
         const style = browserWindow.getComputedStyle(element, pseudo);
         for (const value of [style.backgroundImage, style.maskImage]) {
-          if (value?.includes(expectedIcon)) {
+          if (value && value !== "none") {
             references.push({
               reference: value,
               visible:
@@ -7099,7 +7111,9 @@ async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
                 style.display !== "none" &&
                 style.visibility !== "hidden" &&
                 Number.parseFloat(style.opacity || "1") > 0,
-              source: pseudo ?? "element"
+              source: pseudo ?? "element",
+              matchesExpectedIcon: value.includes(expectedIcon),
+              className: element.className
             });
           }
         }
@@ -7108,7 +7122,7 @@ async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
     return references;
   }, expectedFileName);
   assert.ok(
-    iconReferences.some(({ visible }) => visible),
+    iconReferences.some(({ visible, matchesExpectedIcon }) => visible && matchesExpectedIcon),
     `The Open Wrangler custom-editor tab must visibly use ${expectedFileName} for the active theme, not a generic or wrong-theme file glyph. Observed matching references: ${JSON.stringify(iconReferences)}.`
   );
 }
