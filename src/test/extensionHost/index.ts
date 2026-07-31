@@ -8253,8 +8253,27 @@ async function captureReleasedJupyterDuckDbRelation(
       await filterPanel.getByLabel("Predicate operator").selectOption("equals");
       await filterPanel.getByLabel("equals predicate value").fill("DACH");
       await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+      await waitFor(
+        () => {
+          const current = testing.activeSession();
+          const filter = current?.metadata.filterModel.filters[0];
+          return (
+            current?.metadata.filteredShape.rows === 25_000 &&
+            current.metadata.filterModel.sort.length === 0 &&
+            current.metadata.filterModel.filters.length === 1 &&
+            filter?.column === "market" &&
+            filter.predicates.length === 1 &&
+            filter.predicates[0]?.kind === "predicate" &&
+            filter.predicates[0].operator === "equals" &&
+            filter.predicates[0].value === "DACH"
+          );
+        },
+        30_000,
+        "the real DuckDB filter editor to publish its filter-only intermediate view",
+        () => JSON.stringify(testing.activeSession()?.metadata.filterModel)
+      );
     }
-    await activeDachFilter.waitFor({ state: "visible", timeout: 10_000 });
+    await activeDachFilter.waitFor({ state: "visible", timeout: 30_000 });
 
     const orderIdHeader = app.locator('th[data-column="order_id"]');
     const revenueHeader = app.locator('th[data-column="revenue"]');
