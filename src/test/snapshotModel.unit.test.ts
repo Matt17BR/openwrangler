@@ -624,6 +624,28 @@ describe("saved notebook snapshot model", () => {
     expect(snapshotDatasetStats(decimalMetadata, decimalRows).duplicateRows).toBe(1);
   });
 
+  it("orders and profiles Decimal extrema beyond JavaScript's safe exponent range", () => {
+    const decimalMetadata = singleColumnMetadata("decimal", "Decimal", 4);
+    const decimalRows = [
+      row(0, decimalCell("-9E+999999999999999999")),
+      row(1, decimalCell("1E-999999999999999999")),
+      row(2, decimalCell("1E+999999999999999999")),
+      row(3, decimalCell("9E+999999999999999999"))
+    ];
+
+    expect(snapshotSummaries(decimalMetadata, decimalRows)[0]?.numeric).toEqual({
+      exactMin: decimalCell("-9E+999999999999999999"),
+      exactMax: decimalCell("9E+999999999999999999")
+    });
+    expect(
+      applySnapshotFilters(decimalMetadata, decimalRows, {
+        filters: [],
+        sort: [{ column: "value", direction: "asc", nulls: "last" }]
+      }).map((item) => item.rowNumber)
+    ).toEqual([0, 1, 2, 3]);
+    expect(snapshotDatasetStats(decimalMetadata, decimalRows).duplicateRows).toBe(0);
+  });
+
   it("keeps wide integer snapshot extrema lossless while retaining legacy numeric statistics", () => {
     const integerMetadata = singleColumnMetadata("integer", "Int128", 3);
     const integerRows = [

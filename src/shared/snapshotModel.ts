@@ -773,7 +773,7 @@ function numberValue(cell: CellValue): number {
 
 interface DecimalValue {
   sign: -1 | 0 | 1;
-  magnitude: number;
+  magnitude: bigint;
   digits: string;
   infinite: boolean;
 }
@@ -812,24 +812,22 @@ function parseDecimal(value: unknown): DecimalValue {
   if (infinity) {
     return {
       sign: infinity[1] === "-" ? -1 : 1,
-      magnitude: Number.POSITIVE_INFINITY,
+      magnitude: 0n,
       digits: "",
       infinite: true
     };
   }
   const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(text);
   if (!match) throw new TypeError("A snapshot decimal cell must contain an exact decimal.");
-  const exponent = Number(match[5] ?? "0");
-  if (!Number.isSafeInteger(exponent))
-    throw new TypeError("A snapshot decimal exponent is outside the supported range.");
+  const exponent = BigInt(match[5] ?? "0");
   const whole = match[2] ?? "";
   const fraction = match[3] ?? match[4] ?? "";
   const combined = whole + fraction;
   const firstNonZero = combined.search(/[1-9]/);
-  if (firstNonZero < 0) return { sign: 0, magnitude: 0, digits: "", infinite: false };
+  if (firstNonZero < 0) return { sign: 0, magnitude: 0n, digits: "", infinite: false };
   return {
     sign: match[1] === "-" ? -1 : 1,
-    magnitude: whole.length + exponent - firstNonZero,
+    magnitude: BigInt(whole.length - firstNonZero) + exponent,
     digits: combined.slice(firstNonZero).replace(/0+$/, ""),
     infinite: false
   };
@@ -842,7 +840,7 @@ function compareDecimals(left: DecimalValue, right: DecimalValue): number {
     if (left.infinite && right.infinite) return 0;
     return left.infinite ? left.sign : -right.sign;
   }
-  let magnitudeComparison = compareNumbers(left.magnitude, right.magnitude);
+  let magnitudeComparison = compareBigInts(left.magnitude, right.magnitude);
   if (magnitudeComparison === 0) {
     const length = Math.max(left.digits.length, right.digits.length);
     for (let index = 0; index < length; index += 1) {
@@ -1028,11 +1026,11 @@ function stableCellValue(cell: CellValue | undefined, type?: SessionMetadata["sc
   if (type === "decimal") {
     const decimal = decimalValue(cell);
     if (decimal.infinite) return ["decimal", decimal.sign, "infinity"];
-    return ["decimal", decimal.sign, decimal.magnitude, decimal.digits];
+    return ["decimal", decimal.sign, decimal.magnitude.toString(), decimal.digits];
   }
   if (type === "duration") {
     const duration = durationValue(cell);
-    return ["duration", duration.sign, duration.magnitude, duration.digits];
+    return ["duration", duration.sign, duration.magnitude.toString(), duration.digits];
   }
   if (type === "date" || type === "datetime") {
     return [type, temporalValue(cell, type).toString()];
@@ -1090,33 +1088,33 @@ function pandasObjectNumericIdentity(cell: CellValue): unknown[] | undefined {
 interface FactoredNumericValue {
   sign: -1 | 0 | 1;
   coefficient: string;
-  power2: number;
-  power5: number;
+  power2: string;
+  power5: string;
 }
 
 function factoredNumericValue(value: number): FactoredNumericValue {
-  return normalizeFactoredNumeric(value < 0 ? -1 : value > 0 ? 1 : 0, BigInt(Math.abs(value)), 0, 0);
+  return normalizeFactoredNumeric(value < 0 ? -1 : value > 0 ? 1 : 0, BigInt(Math.abs(value)), 0n, 0n);
 }
 
 function factoredDecimalValue(value: DecimalValue): FactoredNumericValue {
   if (value.infinite) throw new TypeError("A non-finite decimal cannot be factored.");
-  if (value.sign === 0) return normalizeFactoredNumeric(0, 0n, 0, 0);
+  if (value.sign === 0) return normalizeFactoredNumeric(0, 0n, 0n, 0n);
   // Cross-kind equality is bounded to prevent a hostile captured object from
   // turning value counting into thousands of arbitrary-precision divisions.
   if (value.digits.length > 1_024) {
     return {
       sign: value.sign,
       coefficient: value.digits,
-      power2: value.magnitude - value.digits.length,
-      power5: value.magnitude - value.digits.length
+      power2: (value.magnitude - BigInt(value.digits.length)).toString(),
+      power5: (value.magnitude - BigInt(value.digits.length)).toString()
     };
   }
-  const decimalPower = value.magnitude - value.digits.length;
+  const decimalPower = value.magnitude - BigInt(value.digits.length);
   return normalizeFactoredNumeric(value.sign, BigInt(value.digits), decimalPower, decimalPower);
 }
 
 function factoredNumberValue(value: number): FactoredNumericValue {
-  if (Object.is(value, -0) || value === 0) return normalizeFactoredNumeric(0, 0n, 0, 0);
+  if (Object.is(value, -0) || value === 0) return normalizeFactoredNumeric(0, 0n, 0n, 0n);
   const view = new DataView(new ArrayBuffer(8));
   view.setFloat64(0, value, false);
   const bits = view.getBigUint64(0, false);
@@ -1125,28 +1123,30 @@ function factoredNumberValue(value: number): FactoredNumericValue {
   const fraction = bits & 0x000f_ffff_ffff_ffffn;
   const coefficient = exponentBits === 0 ? fraction : (1n << 52n) + fraction;
   const power2 = exponentBits === 0 ? -1_074 : exponentBits - 1_023 - 52;
-  return normalizeFactoredNumeric(sign, coefficient, power2, 0);
+  return normalizeFactoredNumeric(sign, coefficient, BigInt(power2), 0n);
 }
 
 function normalizeFactoredNumeric(
   sign: -1 | 0 | 1,
   initialCoefficient: bigint,
-  initialPower2: number,
-  initialPower5: number
+  initialPower2: bigint,
+  initialPower5: bigint
 ): FactoredNumericValue {
-  if (sign === 0 || initialCoefficient === 0n) return { sign: 0, coefficient: "0", power2: 0, power5: 0 };
+  if (sign === 0 || initialCoefficient === 0n) {
+    return { sign: 0, coefficient: "0", power2: "0", power5: "0" };
+  }
   let coefficient = initialCoefficient;
   let power2 = initialPower2;
   let power5 = initialPower5;
   while (coefficient % 2n === 0n) {
     coefficient /= 2n;
-    power2 += 1;
+    power2 += 1n;
   }
   while (coefficient % 5n === 0n) {
     coefficient /= 5n;
-    power5 += 1;
+    power5 += 1n;
   }
-  return { sign, coefficient: coefficient.toString(), power2, power5 };
+  return { sign, coefficient: coefficient.toString(), power2: power2.toString(), power5: power5.toString() };
 }
 
 function stableJsonValue(value: unknown): unknown {

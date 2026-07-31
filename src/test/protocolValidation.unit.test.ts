@@ -529,6 +529,17 @@ describe("protocol-v2 response validation", () => {
       isOpenWranglerResponse(
         response({
           ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell("-9E+999999999999999999"),
+            exactMax: decimalCell("9E+999999999999999999")
+          }
+        })
+      )
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
           numeric: { min: 1 }
         })
       )
@@ -591,6 +602,17 @@ describe("protocol-v2 response validation", () => {
           numeric: {
             ...decimalSummary.numeric,
             exactMin: decimalCell("not-a-decimal")
+          }
+        })
+      )
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell("10e9007199254740991"),
+            exactMax: decimalCell("1e9007199254740991")
           }
         })
       )
