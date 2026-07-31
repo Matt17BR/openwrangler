@@ -461,7 +461,10 @@ async function comparisonWorkbenchReadiness(
 async function assertNoVisibleComparisonWorkbenchObstruction(page: Page): Promise<void> {
   const state = await visibleComparisonWorkbenchObstructions(page);
   if (state.visibleQuickInputs > 0 || state.visibleDialogs > 0 || state.visibleModals > 0) {
-    throw new Error("Comparison readiness is blocked by a visible workbench prompt, dialog, or modal surface.");
+    throw new Error(
+      `Comparison readiness is blocked by a visible workbench surface ` +
+        `(quick inputs: ${state.visibleQuickInputs}, dialogs: ${state.visibleDialogs}, modals: ${state.visibleModals}).`
+    );
   }
 }
 
