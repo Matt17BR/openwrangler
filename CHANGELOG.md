@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Replaced the verbose workbench shape subtitle with the compact, standard `rows × columns` form while preserving
+  its full accessible description and hover text. Column profiles now scroll vertically without exposing a
+  misleading empty horizontal scrollbar.
 - Raised the minimum supported VS Code version from 1.105 to 1.106, the first stable release whose custom-editor
   implementation renders an extension-supplied tab icon. This keeps the advertised branded Open Wrangler tab
   contract testable instead of silently accepting the generic file icon shown by 1.105.

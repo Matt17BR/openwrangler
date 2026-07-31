@@ -477,7 +477,8 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   border-left: 1px solid var(--vscode-panel-border);
   background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
 }
@@ -1380,7 +1381,8 @@ th.rowHeader {
 .summaryPanel {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0;
 }
 

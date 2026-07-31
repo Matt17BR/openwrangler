@@ -1960,6 +1960,16 @@ export function App() {
   const projectionActionTitle = projectionLoading ? "Wait for the visible columns to finish loading." : undefined;
   const importOptionsDisabled = loading || mutationPending || projectionLoading || importOptionsPending;
   const installDependencyDisabled = loading || runtimeDependencyInstallPending;
+  const visibleShape = metadata ? (displayMetadata ?? metadata).filteredShape : undefined;
+  const visibleShapeText = visibleShape
+    ? `${visibleShape.rows.toLocaleString()} × ${visibleShape.columns.toLocaleString()}`
+    : "Preparing session";
+  const visibleShapeTitle = visibleShape
+    ? `${visibleShape.rows.toLocaleString()} ${visibleShape.rows === 1 ? "row" : "rows"} × ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
+    : undefined;
+  const visibleShapeLabel = visibleShape
+    ? `${visibleShape.rows.toLocaleString()} ${visibleShape.rows === 1 ? "row" : "rows"} by ${visibleShape.columns.toLocaleString()} ${visibleShape.columns === 1 ? "column" : "columns"}`
+    : undefined;
 
   if (foregroundError && !metadata) {
     return (
@@ -2021,10 +2031,8 @@ export function App() {
         <header className="toolbar">
           <div className="toolbarIdentity">
             <strong>{metadata?.source.label ?? "Loading dataframe..."}</strong>
-            <span>
-              {metadata
-                ? `${(displayMetadata ?? metadata).filteredShape.rows.toLocaleString()} rows x ${(displayMetadata ?? metadata).filteredShape.columns.toLocaleString()} columns`
-                : "Preparing session"}
+            <span aria-label={visibleShapeLabel} title={visibleShapeTitle}>
+              {visibleShapeText}
             </span>
           </div>
           {metadata && (

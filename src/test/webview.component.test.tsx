@@ -1787,6 +1787,44 @@ describe("DataGrid", () => {
   });
 });
 
+describe("App toolbar", () => {
+  beforeAll(async () => {
+    document.body.dataset.canChangeImportOptions = "true";
+    ({ App } = await import("../webviews/App"));
+  });
+
+  it("keeps the visible dataframe shape compact while exposing its full meaning", async () => {
+    const schema = Array.from({ length: 417 }, (_, position) => ({
+      id: `c:${position}`,
+      name: `column_${position}`,
+      position,
+      rawType: "String",
+      type: "string" as const,
+      nullable: false
+    }));
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: {
+        ...metadata,
+        shape: { rows: 10_000, columns: schema.length },
+        filteredShape: { rows: 10_000, columns: schema.length },
+        schema
+      },
+      page: {
+        ...page,
+        totalRows: 10_000
+      },
+      summaries: []
+    });
+
+    const shape = await screen.findByLabelText("10,000 rows by 417 columns");
+    expect(shape).toHaveTextContent("10,000 × 417");
+    expect(shape).toHaveAttribute("title", "10,000 rows × 417 columns");
+    expect(shape).not.toHaveTextContent("rows");
+  });
+});
+
 describe("App file import options", () => {
   beforeAll(async () => {
     document.body.dataset.canChangeImportOptions = "true";
