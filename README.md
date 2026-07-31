@@ -1,17 +1,16 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/assets/icon.png" width="128" height="128" alt="Open Wrangler logo">
+  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/assets/icon.png" width="128" height="128" alt="Open Wrangler logo">
 </p>
 
 <h1 align="center">Open Wrangler</h1>
 
-<p align="center">Visual dataframe exploration and reproducible cleaning for VS Code-family desktop editors, with engine-native Polars, DuckDB, and Pandas execution.</p>
+<p align="center">Explore, profile, clean, and export dataframes in VS Code-family desktop editors with native Polars, Pandas, DuckDB, and experimental PySpark workflows.</p>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its Activity Bar views, virtualized dataframe grid, header summaries, and exact revenue column profile" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/explore.png"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its dataframe grid, column profiles, and native Activity Bar views" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/explore.png"></a>
 
-_Explore a real packaged Polars file session with Operations, Summary, Filters / Sorts, Cleaning Steps, and exact
-column profiles beside the grid._
+_Explore, profile, filter, and navigate a Polars dataframe without leaving VS Code._
 
-<p align="center">Inspired by <a href="https://github.com/microsoft/vscode-data-wrangler">Microsoft Data Wrangler</a>'s explore, transform, and export workflow, Open Wrangler is an independent clean-room implementation with native multi-engine execution, not a fork. It uses no Microsoft Data Wrangler code or assets.</p>
+<p align="center">Inspired by <a href="https://github.com/microsoft/vscode-data-wrangler">Microsoft Data Wrangler</a>'s explore, transform, and export workflow, Open Wrangler is an independent clean-room implementation with native multi-engine execution. It uses no Microsoft Data Wrangler code or assets.</p>
 
 <!-- open-wrangler-release-status:start -->
 
@@ -46,164 +45,151 @@ Opening data or running Python requires a trusted workspace. Open Wrangler stays
 
 ## Why Open Wrangler
 
-- **Stay native to the selected engine.** Polars remains Polars, DuckDB remains DuckDB, and Pandas remains
-  Pandas. Polars and DuckDB operations never detour through Pandas.
-- **Preview every change.** Review the draft result and a bounded, typed diff for the current grid block, with
-  executable engine-specific code in VS Code's native **Code Preview** panel, before applying or discarding a
-  step.
-- **Keep exploration separate from cleaning.** Filters and ordered multi-column sorts change the view, not the
-  source or cleaning plan. The newest sort becomes priority 1, and priorities remain editable from Filters /
-  Sorts in the workbench or Activity Bar. Exports always target a separate file.
-- **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
-  file-backed Polars sessions stay lazy where the format permits.
+- **Work in the engine you chose.** Polars remains Polars, DuckDB remains DuckDB, Pandas remains Pandas, and
+  supported PySpark viewing stays in Spark.
+- **Preview before applying.** Every cleaning step shows highlighted before-and-after values and executable
+  engine-specific code before it changes the plan.
+- **Explore without changing the source.** Filters and ordered multi-column sorts affect only the current view.
+  Exports always target a separate file.
+- **Navigate large and wide data efficiently.** The grid fetches row and column windows on demand; file-backed
+  Polars sessions stay lazy where the format permits.
 
-### Native Activity Bar views
+## The whole workflow stays in VS Code
 
-<table>
-  <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/sidebar-explore.png"><img alt="Open Wrangler Activity Bar views showing the transformation catalog and active dataframe summary" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/sidebar-explore.png"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/sidebar-workflow.png"><img alt="Open Wrangler Activity Bar views showing ordered viewing sorts and separate cleaning history" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/sidebar-workflow.png"></a></td>
-  </tr>
-  <tr>
-    <td><strong>Source at a glance.</strong> Browse transformations and check backend, shape, selected column, missing cells, and duplicates beside the dataframe.</td>
-    <td><strong>View and plan stay separate.</strong> Reorder multi-column sort priorities while applied and draft cleaning steps remain independently visible.</td>
-  </tr>
-</table>
+<a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/sidebar-overview.png"><img alt="Open Wrangler showing Operations, Summary, Filters and Sorts, and Cleaning Steps beside a dataframe draft" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/sidebar-overview.png"></a>
 
-The [full product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) covers file
-entry points, advanced transformations, exports, notebook engines, PySpark, and Cursor.
+Operations, dataset health, viewing state, and cleaning history remain visible beside the data. The
+[full product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) also covers file
+entry points, by-example transformations, themes, Cursor, rich DuckDB types, and every notebook engine.
 
-## Quick start
+## Open and explore real files
 
-1. Open a CSV, TSV, Parquet, JSONL/NDJSON, or Excel file and choose **Open in Open Wrangler** from the branded
-   editor-toolbar action or context menu.
-2. Open **Column profiles**, search, filter, and sort without changing the source.
-3. Choose **Add step**, review the data diff in **Draft review** and the generated engine-specific code in
-   **Code Preview**, then apply the step or discard it.
-4. Choose **Export** to save cleaned CSV or Parquet data without overwriting the source.
-
-Ordinary CSV and TSV opens infer the delimiter, encoding, quote style, and header automatically. Use **Import
-options** only when a file needs an explicit override.
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/filter-result.png"><img alt="A real packaged Open Wrangler file session showing 14,285 DACH rows, the active filter editor, clear controls, and matching native Filters and Sorts state" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/filter-result.png"></a>
-
-_Filter without changing the source: 14,285 matching rows remain visible, the same filter appears in the native
-sidebar, and both per-column and clear-all controls stay one click away._
-
-### Build, preview, and revisit a cleaning plan
-
-<p align="center">
-  <a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/operation-configuration.png"><img width="510" alt="A Formula column operation configured as revenue plus 500 into projected_revenue, ready to preview" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/operation-configuration-detail.png"></a>
-</p>
-
-_Configure precisely: search the catalog, fill the operation parameters, then preview before the plan changes._
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/applied-step-inspection.png"><img alt="The latest applied Formula column step selected for read-only inspection with Edit latest, Undo, and Show confirmed data visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/applied-step-inspection-detail.png"></a>
-
-_Revisit safely: inspect an applied result without changing the confirmed dataframe, then edit or undo the latest
-step explicitly._
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Open Wrangler searching all 417 columns in a realistic wide dataframe, with data-type icons and the final result visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/column-search-wide.png"></a>
-
-_Search the complete schema, not a truncated first page. Type icons distinguish text, integer, number, and boolean
-columns before you navigate._
-
-### Profiles and sort controls that stay usable
+Ordinary CSV and TSV files open with automatic delimiter, encoding, quote, and header detection. **Import
+options** is available when a source needs an explicit override. Excel adds sheet selection; Parquet and
+JSONL/NDJSON open directly.
 
 <table>
   <tr>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="An exact numeric profile with a full-height histogram bin focused and its interval and row count visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/histogram-hover.png"></a></td>
-    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Open Wrangler Filters and Sorts sidebar with two ordered sorts and visible reorder and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/sort-priority.png"></a></td>
+    <td width="58%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/file-explorer-action.png"><img alt="Opening a CSV in Open Wrangler from the VS Code Explorer context menu" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/file-explorer-action-detail.png"></a></td>
+    <td width="42%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Searching to the final item in a 417-column synthetic dataframe" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/column-search-wide-detail.png"></a></td>
   </tr>
   <tr>
-    <td><strong>Inspect every bin.</strong> The whole bin height is an interactive target, including visually small values, with an exact interval and row count.</td>
-    <td><strong>Control compound sorts.</strong> New sorts become priority 1; reorder or remove keys inline, or open one to change its direction and null placement.</td>
+    <td><strong>Open from where you work.</strong> Use the Explorer, editor toolbar, tab menu, Command Palette, or custom-editor picker.</td>
+    <td><strong>Search the complete schema.</strong> Type icons and virtualized results make very wide dataframes navigable.</td>
   </tr>
 </table>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars cleaning draft with ordered viewing sorts, cleaning history, a current-block data diff, Apply and Discard controls, and executable generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/workflow.png"></a>
+<a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/filter-result.png"><img alt="Open Wrangler showing a DACH filter, 14,285 matching rows, clear controls, and the same filter in the native sidebar" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/filter-result.png"></a>
 
-_Viewing state and cleaning stay separate: reorderable sort priorities, applied history, a current-block draft
-diff, and executable Polars code remain reviewable before **Apply step**._
+_Filter without changing the source: the result count, active predicate, grid, and clear controls stay together._
 
-## From exploration to reusable output
+<table>
+  <tr>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="A numeric histogram with an easy-to-target bin and exact interval and row count" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/histogram-hover.png"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Two ordered sorts with inline priority, reorder, edit, and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/sort-priority.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Understand distributions.</strong> Every bin is an accessible full-height target with its interval and row count.</td>
+    <td><strong>Control compound sorts.</strong> New keys become priority 1; reorder, edit, or remove them inline.</td>
+  </tr>
+</table>
 
-Open Wrangler combines progressive, type-aware summaries, searchable navigation across the complete schema,
-27 built-in cleaning operations, editable engine-native code, deterministic transformations learned from
-examples, and replayable history. Numeric columns expose distributions plus lossless finite minimum and maximum
-values for wide integers and decimals; text columns expose exact empty-string and character-length statistics.
+## Clean with a plan
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/export-script.png"><img alt="Open Wrangler generated Polars cleaning script saved and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/export-script-detail.png"></a>
+Choose from 27 built-in operations, custom engine-native code, or deterministic transformations learned from
+examples. A draft remains separate until you apply it, and applied steps can be inspected, edited, or undone.
 
-_Keep the code: copy it, insert it into the originating notebook, or save a standalone Python script._
+<a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars draft with two viewing sorts, cleaning history, highlighted new values, Apply and Discard, and generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/workflow.png"></a>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened with generated columns and profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/export-data-detail.png"></a>
+_Review the visible result and executable Polars code before applying the step. Viewing sorts remain separate from
+the cleaning plan._
 
-_Keep the source: export cleaned CSV or Parquet to a separate destination; Open Wrangler never overwrites the
-input._
+<table>
+  <tr>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/latest-step-edited.png"><img alt="Cleaning Steps after editing the latest formula while preserving the earlier uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/latest-step-edited-detail.png"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/latest-step-undone.png"><img alt="Cleaning Steps after undoing the formula and retaining the uppercase step" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/latest-step-undone-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Edit in place.</strong> Updating the latest step replaces it instead of duplicating history.</td>
+    <td><strong>Undo precisely.</strong> Remove the latest step while retaining the earlier plan and viewing state.</td>
+  </tr>
+</table>
 
 ## Notebook workflows
 
-In a trusted Python notebook, Open Wrangler renders lightweight Pandas, Polars, and DuckDB previews automatically.
-Notebook outputs stay compact; **Open in Open Wrangler** reconnects to the complete current variable and pages it
-in the workbench. A saved output without its live kernel remains preview-only and asks you to rerun the cell.
+In trusted Python notebooks, Open Wrangler renders inline Pandas, Polars, and DuckDB previews and discovers live
+variables from the notebook toolbar. **Open in Open Wrangler** opens the complete current live dataframe in the
+workbench. If only a saved output remains, rerun the cell to reconnect to the live variable.
 
-The notebook toolbar can also discover supported variables and shows each engine and dataframe type. If Microsoft
-Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler: Choose
-Notebook Preview Provider**.
+If Microsoft Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler:
+Choose Notebook Preview Provider**.
 
-<p align="center">
-  <a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img width="602" alt="The Open Wrangler notebook variable picker identifying live DuckDB, Pandas, and Polars variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png"></a>
-</p>
+<table>
+  <tr>
+    <td width="44%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="Notebook variable picker labeling Pandas, Polars, and DuckDB variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-variable-picker-detail.png"></a></td>
+    <td width="56%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-code-insertion.png"><img alt="Generated Pandas cleaning code inserted into the originating VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-code-insertion-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Choose the live engine.</strong> Variables are labeled by dataframe type before launch.</td>
+    <td><strong>Keep the result reproducible.</strong> Insert generated cleaning code into the originating notebook.</td>
+  </tr>
+</table>
 
-_Choose the real engine: the notebook toolbar labels each live variable with its dataframe type before launch._
+<table>
+  <tr>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/notebook-pandas.png"><img alt="Pandas dataframe previewed inline inside a VS Code notebook" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-pandas-detail.png"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A native Polars notebook session with a formula draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-polars-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Pandas.</strong> Preview inline, then open and edit the complete live dataframe.</td>
+    <td><strong>Polars.</strong> Edit natively and generate executable Polars code.</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A native DuckDB relation with filtering, paging, profiles, and ordered sorts" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-pyspark.png"><img alt="An experimental native PySpark notebook session with profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/notebook-pyspark-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>DuckDB, experimental.</strong> Query the same live relation without converting it.</td>
+    <td><strong>PySpark 4.2.x, experimental.</strong> View, filter, sort, page, and profile in Spark.</td>
+  </tr>
+</table>
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/notebook-pandas.png"><img alt="A portable Pandas dataframe preview rendered by Open Wrangler inside a real packaged VS Code notebook, including the Open in Open Wrangler action" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-pandas-detail.png"></a>
+DuckDB and PySpark notebook sessions are currently viewing-only. For PySpark, you provide and retain the Spark
+session; opening a large or remote dataframe may be expensive because Open Wrangler must establish stable paging
+and an exact row count. Open Wrangler does not install PySpark, authenticate a cluster, or stop your session.
 
-_Stay in the notebook with a portable table, then open the complete current live dataframe in the workbench._
+## Keep the result
 
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A live native Polars notebook session in Open Wrangler with a formula-column draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-polars-detail.png"></a>
-
-_**Polars editing.** Preview a formula column, its added values, and executable native Polars code before applying
-the draft. Open the image for the complete packaged-editor scene._
-
-<a href="https://github.com/Matt17BR/openwrangler/blob/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A live native DuckDB relation in Open Wrangler with an exact filter, two ordered sorts, paging, and column profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/c3f490645c56e67aa7c94dd978b37447a8356ec6/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png"></a>
-
-_**Experimental DuckDB exploration.** Filter, profile, page, and reorder multi-column sorts against the
-originating relation. Open the image for the complete packaged-editor scene._
-
-DuckDB relations open as native, viewing-only notebook sessions: paging, filtering, sorting, and requested
-profiles run against the exact originating relation without converting it to Pandas, Polars, or Arrow. Cleaning,
-code insertion, and data export remain unavailable for DuckDB notebook relations.
-
-PySpark 4.2.x DataFrames can open as experimental, viewing-only live notebook sessions. The bridge verifies the
-exact selected kernel before dispatch. Opening scans the complete frame, assigns stable row positions, caches an
-Open Wrangler-owned index, and computes the exact row total, so it can be expensive for large or remote data.
-Subsequent filtering, sorting, paging, and requested profiles stay in Spark and return only bounded results. You
-provide and retain the Spark session; Open Wrangler does not install PySpark, authenticate a cluster, or stop it.
-File sessions, cleaning, exports, code insertion, and saved inline previews are not supported. See the
-[PySpark setup guide](https://spark.apache.org/docs/4.2.0/api/python/getting_started/install.html) and the
-[packaged PySpark scene](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#notebook-workflows).
+<table>
+  <tr>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/export-script.png"><img alt="Generated native Polars cleaning code saved as a Python script" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/export-script-detail.png"></a></td>
+    <td width="50%"><a href="https://github.com/Matt17BR/openwrangler/blob/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A cleaned CSV exported separately and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/8203cfebbd4937c22eeafd49d4ccbdb969a1ba29/docs/images/readme/v1.2/gallery/export-data-detail.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Reusable code.</strong> Copy it, insert it into a notebook, or save an engine-native Python script.</td>
+    <td><strong>Separate output.</strong> Export cleaned CSV or Parquet without overwriting the source.</td>
+  </tr>
+</table>
 
 ## Engines and formats
 
-| Engine                      | Files                                  | Notebook data                | How it runs                                                           |
-| --------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
-| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; text and Parquet formats use lazy scans. Excel loads eagerly. |
-| Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                             |
-| DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only                           |
-| PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Full-frame open/index/cache; then native bounded viewing results      |
+| Engine                      | Files                                  | Notebook data                | How it runs                                               |
+| --------------------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------- |
+| Polars                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; lazy scans where the format permits               |
+| Pandas                      | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                 |
+| DuckDB, experimental        | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only               |
+| PySpark 4.2.x, experimental | Not currently supported                | DataFrame                    | Native notebook viewing, filtering, sorting, and profiles |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
-Notebook variables are matched to their native supported dataframe type, including Pandas 2 and 3, DuckDB
-relations, and PySpark 4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
+Notebook variables are matched to their supported native type, including Pandas 2 and 3, DuckDB relations, and
+PySpark 4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
 
 To keep a notebook result native to DuckDB, open the relation itself. For example,
-`orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly materializes a Pandas DataFrame, so
-Open Wrangler correctly opens that resulting object with the Pandas backend.
+`orders = duckdb.read_csv("orders.csv")`. Calling `orders.df()` explicitly creates a Pandas DataFrame, so Open
+Wrangler correctly opens that resulting object with Pandas.
 
 Python pickle files are deliberately unsupported: loading a pickle can execute arbitrary code. Convert trusted
-pickle data to Parquet, CSV, or JSONL in a controlled Python environment before opening it in Open Wrangler.
+pickle data to Parquet, CSV, or JSONL in a controlled Python environment before opening it.
 
 See the [operation and command reference](https://github.com/Matt17BR/openwrangler/blob/main/docs/reference.md)
 for the complete surface.
@@ -213,13 +199,12 @@ for the complete surface.
 Current installed-editor benchmarks cover first-grid opening for a 100,000 by 50 CSV and a 1,000,000 by 20
 Parquet file through native Polars. The Parquet scenario also measures cached scrolling, uncached paging,
 filtering, and sorting. These fixture sizes are evidence points, not row limits. Practical scale depends on the
-backend, format, operation, storage, memory, and machine. The detailed evidence lives in the
-[feature parity record](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md).
+backend, format, operation, storage, memory, and machine. See the
+[feature parity record](https://github.com/Matt17BR/openwrangler/blob/main/docs/feature-parity.md) for details.
 
-A fair, reproducible black-box comparison with Microsoft Data Wrangler is still in progress in the
-[performance comparison tracker](https://github.com/Matt17BR/openwrangler/issues/91). Until the same files,
-environments, versions, and user-visible timing boundaries can be compared, Open Wrangler does not claim to be
-universally faster.
+A fair, reproducible black-box comparison with Microsoft Data Wrangler is tracked in
+[#91](https://github.com/Matt17BR/openwrangler/issues/91). Until both products are measured against the same files,
+environment, versions, and user-visible timing boundaries, Open Wrangler does not claim to be universally faster.
 
 ## Roadmap
 
