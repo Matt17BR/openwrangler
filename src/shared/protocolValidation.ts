@@ -13,6 +13,7 @@ import type {
   TransformSortRule,
   TransformStep
 } from "./protocol.generated";
+import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { PROTOCOL_VERSION } from "./protocol";
 import { compareTypedCells } from "./snapshotModel";
 
@@ -1376,41 +1377,7 @@ function isNumericSummary(value: unknown, columnType: unknown): boolean {
 }
 
 function isExactNumericExtremum(value: unknown, columnType: "integer" | "decimal"): value is CellValue {
-  if (!isCellValue(value)) return false;
-  const cell = value as CellValue;
-  if (
-    cell.isNull ||
-    cell.isNaN ||
-    Object.prototype.hasOwnProperty.call(cell, "sign") ||
-    !Object.prototype.hasOwnProperty.call(cell, "raw") ||
-    cell.display.length === 0 ||
-    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS
-  ) {
-    return false;
-  }
-
-  if (columnType === "integer") {
-    if (cell.kind !== "integer") return false;
-    if (typeof cell.raw === "number") {
-      return Number.isSafeInteger(cell.raw) && cell.display === String(cell.raw);
-    }
-    if (typeof cell.raw !== "string" || !/^-?(?:0|[1-9]\d*)$/u.test(cell.raw) || cell.display !== cell.raw) {
-      return false;
-    }
-    try {
-      const integer = BigInt(cell.raw);
-      return integer < BigInt(Number.MIN_SAFE_INTEGER) || integer > BigInt(Number.MAX_SAFE_INTEGER);
-    } catch {
-      return false;
-    }
-  }
-
-  return (
-    cell.kind === "decimal" &&
-    typeof cell.raw === "string" &&
-    cell.display === cell.raw &&
-    /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/u.test(cell.raw)
-  );
+  return isExactNumericExtremumCell(value, columnType);
 }
 
 function isTextSummary(value: unknown, valueCount: number): boolean {

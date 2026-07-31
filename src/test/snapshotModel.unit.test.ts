@@ -902,6 +902,34 @@ describe("saved notebook snapshot model", () => {
     });
   });
 
+  it("keeps saved Decimal infinities in approximate profiles without publishing an invalid exact pair", () => {
+    const positiveMetadata = singleColumnMetadata("decimal", "Decimal", 2);
+    const [positive] = snapshotSummaries(positiveMetadata, [row(0, decimalCell("1")), row(1, decimalCell("Infinity"))]);
+    expect(positive?.numeric).toEqual({ min: 1 });
+    expect(positive?.numeric).not.toHaveProperty("exactMin");
+    expect(positive?.numeric).not.toHaveProperty("exactMax");
+
+    const decimalMetadata = singleColumnMetadata("decimal", "Decimal", 3);
+    const decimalRows = [row(0, decimalCell("-Infinity")), row(1, decimalCell("1")), row(2, decimalCell("Infinity"))];
+
+    const [summary] = snapshotSummaries(decimalMetadata, decimalRows);
+
+    expect(summary?.numeric).toEqual({ median: 1 });
+    expect(summary?.numeric).not.toHaveProperty("exactMin");
+    expect(summary?.numeric).not.toHaveProperty("exactMax");
+    expect(summary?.distinctCount).toBe(3);
+    expect(summary?.visualization).toEqual({
+      kind: "numeric",
+      bins: [{ min: 1, max: 1, count: 1 }]
+    });
+    expect(
+      applySnapshotFilters(decimalMetadata, decimalRows, {
+        filters: [],
+        sort: [{ column: "value", direction: "asc", nulls: "last" }]
+      }).map((item) => item.rowNumber)
+    ).toEqual([0, 1, 2]);
+  });
+
   it("uses canonical temporal instants for values, distinct counts, and duplicate rows", () => {
     const temporalMetadata: SessionMetadata = {
       ...metadata,

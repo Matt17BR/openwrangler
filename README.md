@@ -118,8 +118,8 @@ pickle data to Parquet, CSV, or JSONL in a controlled Python environment before 
 
 Open Wrangler combines progressive, type-aware summaries, searchable navigation across the complete schema,
 27 built-in cleaning operations, editable engine-native code, and replayable history. Numeric columns expose
-complete distributions and scalar statistics, with lossless minimum and maximum values for wide integers and
-decimals; text columns expose exact empty-string and character-length statistics. Copy generated Python, save
+complete distributions and scalar statistics, with lossless finite minimum and maximum values for wide integers
+and decimals; text columns expose exact empty-string and character-length statistics. Copy generated Python, save
 it as a script, insert it into the originating notebook, or export
 cleaned CSV and Parquet data without overwriting the source.
 Each open dataframe owns its view, cleaning plan, runtime session, and export target, so simultaneous tabs do

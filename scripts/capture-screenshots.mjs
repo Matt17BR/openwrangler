@@ -674,6 +674,50 @@ writeWebviewHarness(
     }
   }
 );
+const maximumProtocolExtremum = "9".repeat(65_536);
+const minimumProtocolExtremum = `-${"9".repeat(65_535)}`;
+const protocolLimitExtremaPayload = structuredClone(payloads.summaryExtrema);
+const protocolLimitSummary = protocolLimitExtremaPayload.harnessSummaries.find(
+  (summary) => summary.columnId === exactExtremaColumnId
+);
+if (!protocolLimitSummary?.numeric) {
+  throw new Error("The exact-extrema fixture did not expose its numeric summary.");
+}
+protocolLimitSummary.numeric.exactMin = {
+  kind: "integer",
+  raw: minimumProtocolExtremum,
+  display: minimumProtocolExtremum,
+  isNull: false,
+  isNaN: false
+};
+protocolLimitSummary.numeric.exactMax = {
+  kind: "integer",
+  raw: maximumProtocolExtremum,
+  display: maximumProtocolExtremum,
+  isNull: false,
+  isNaN: false
+};
+writeWebviewHarness(
+  "summary-extrema-limit.html",
+  protocolLimitExtremaPayload,
+  {},
+  "acceptance/summary-extrema-limit-unused.png",
+  {},
+  {
+    width: 800,
+    defaultColumnWidth: 220,
+    openInsights: true,
+    capture: false,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        selectedColumnId: exactExtremaColumnId,
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      }
+    }
+  }
+);
 writeWebviewHarness("grid-dark-1920.html", payloads.opened, {}, "acceptance/grid-dark-1920.png", {}, { width: 1920 });
 writeWebviewHarness(
   "grid-light-1280.html",
@@ -900,7 +944,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
 </body>
 </html>`;
   writeFileSync(htmlPath, html);
-  screenshot(htmlPath, outputPath, width, height);
+  if (appearance.capture !== false) screenshot(htmlPath, outputPath, width, height);
 }
 
 function writeNotebookHarness(fileName, payload, outputName) {

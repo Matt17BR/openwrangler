@@ -15,6 +15,7 @@ interface SummaryPanelProps {
 }
 
 const summaryViews: readonly SummaryPanelView[] = ["column", "dataset", "filters"];
+const MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS = 96;
 
 export function SummaryPanel({
   metadata,
@@ -248,15 +249,23 @@ function NumericExtremumValue({
   value: ReturnType<typeof numericExtremumDisplay>;
 }) {
   if (!value) return <dd>n/a</dd>;
+  const visibleValue = value.exact ? boundedExactExtremumText(value.display) : value.display;
   return (
     <dd
       className={value.exact ? "exactNumericExtremum" : undefined}
       title={value.exact ? `${label}: ${value.display}` : undefined}
       aria-label={`${label} ${value.display}`}
     >
-      {value.display}
+      {visibleValue}
     </dd>
   );
+}
+
+function boundedExactExtremumText(value: string): string {
+  if (value.length <= MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS) return value;
+  const leadingCharacters = Math.ceil((MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS - 1) / 2);
+  const trailingCharacters = MAX_VISIBLE_EXACT_EXTREMUM_CHARACTERS - leadingCharacters - 1;
+  return `${value.slice(0, leadingCharacters)}…${value.slice(-trailingCharacters)}`;
 }
 
 function TopValues({ summary }: { summary: ColumnSummary }) {

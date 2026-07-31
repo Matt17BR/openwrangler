@@ -10,6 +10,7 @@ import type {
   ValuesResponse
 } from "./protocol";
 import type { ColumnFilter, FilterModel, PredicateFilter } from "./filterModel";
+import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { supportsTypedViewComparison, supportsViewPredicate } from "./filterModel";
 
 const MAX_PAGE_LIMIT = 10_000;
@@ -774,6 +775,7 @@ interface DecimalValue {
   sign: -1 | 0 | 1;
   magnitude: number;
   digits: string;
+  infinite: boolean;
 }
 
 function decimalValue(cell: CellValue): DecimalValue {
@@ -806,6 +808,15 @@ function durationValue(cell: CellValue): DecimalValue {
 
 function parseDecimal(value: unknown): DecimalValue {
   const text = String(value);
+  const infinity = /^([+-]?)Infinity$/.exec(text);
+  if (infinity) {
+    return {
+      sign: infinity[1] === "-" ? -1 : 1,
+      magnitude: Number.POSITIVE_INFINITY,
+      digits: "",
+      infinite: true
+    };
+  }
   const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(text);
   if (!match) throw new TypeError("A snapshot decimal cell must contain an exact decimal.");
   const exponent = Number(match[5] ?? "0");
@@ -815,17 +826,22 @@ function parseDecimal(value: unknown): DecimalValue {
   const fraction = match[3] ?? match[4] ?? "";
   const combined = whole + fraction;
   const firstNonZero = combined.search(/[1-9]/);
-  if (firstNonZero < 0) return { sign: 0, magnitude: 0, digits: "" };
+  if (firstNonZero < 0) return { sign: 0, magnitude: 0, digits: "", infinite: false };
   return {
     sign: match[1] === "-" ? -1 : 1,
     magnitude: whole.length + exponent - firstNonZero,
-    digits: combined.slice(firstNonZero).replace(/0+$/, "")
+    digits: combined.slice(firstNonZero).replace(/0+$/, ""),
+    infinite: false
   };
 }
 
 function compareDecimals(left: DecimalValue, right: DecimalValue): number {
   if (left.sign !== right.sign) return left.sign < right.sign ? -1 : 1;
   if (left.sign === 0) return 0;
+  if (left.infinite || right.infinite) {
+    if (left.infinite && right.infinite) return 0;
+    return left.infinite ? left.sign : -right.sign;
+  }
   let magnitudeComparison = compareNumbers(left.magnitude, right.magnitude);
   if (magnitudeComparison === 0) {
     const length = Math.max(left.digits.length, right.digits.length);
@@ -1011,6 +1027,7 @@ function stableCellValue(cell: CellValue | undefined, type?: SessionMetadata["sc
   if (cell.isNaN) return ["nan"];
   if (type === "decimal") {
     const decimal = decimalValue(cell);
+    if (decimal.infinite) return ["decimal", decimal.sign, "infinity"];
     return ["decimal", decimal.sign, decimal.magnitude, decimal.digits];
   }
   if (type === "duration") {
@@ -1052,7 +1069,11 @@ function pandasObjectNumericIdentity(cell: CellValue): unknown[] | undefined {
       value = factoredDecimalValue(parseDecimal(cell.raw ?? cell.display));
       break;
     case "decimal":
-      value = factoredDecimalValue(decimalValue(cell));
+      {
+        const decimal = decimalValue(cell);
+        if (decimal.infinite) return ["string", "numeric", decimal.sign < 0 ? "-infinity" : "infinity"];
+        value = factoredDecimalValue(decimal);
+      }
       break;
     case "number": {
       const numeric = numberValue(cell);
@@ -1078,6 +1099,7 @@ function factoredNumericValue(value: number): FactoredNumericValue {
 }
 
 function factoredDecimalValue(value: DecimalValue): FactoredNumericValue {
+  if (value.infinite) throw new TypeError("A non-finite decimal cannot be factored.");
   if (value.sign === 0) return normalizeFactoredNumeric(0, 0n, 0, 0);
   // Cross-kind equality is bounded to prevent a hostile captured object from
   // turning value counting into thousands of arbitrary-precision divisions.
@@ -1225,9 +1247,19 @@ function exactNumericExtrema(
   let exactMin = first;
   let exactMax = first;
   for (const cell of remaining) {
-    if (compareTypedCells(cell, exactMin, type) < 0) exactMin = cell;
-    if (compareTypedCells(cell, exactMax, type) > 0) exactMax = cell;
+    try {
+      if (compareTypedCells(cell, exactMin, type) < 0) exactMin = cell;
+      if (compareTypedCells(cell, exactMax, type) > 0) exactMax = cell;
+    } catch {
+      return undefined;
+    }
   }
+  if (
+    !isExactNumericExtremumCell(exactMin, type) ||
+    !isExactNumericExtremumCell(exactMax, type) ||
+    compareTypedCells(exactMin, exactMax, type) > 0
+  )
+    return undefined;
   return { exactMin, exactMax };
 }
 

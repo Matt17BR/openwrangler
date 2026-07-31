@@ -13,6 +13,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   prefer the lossless typed values while retaining the existing numeric statistics and histograms.
 - Rejected partial, malformed, type-incompatible, non-finite, or reversed exact extrema at the protocol boundary.
   Existing protocol-v2 summaries without the additive fields remain valid.
+- Kept Pandas Decimal profiling native through mean, median, and standard-deviation aggregation, converting only
+  final approximate scalars. Decimal infinities now omit the lossless extrema pair in Pandas and saved snapshots
+  without invalidating the remaining finite statistics or histogram.
+- Bounded the visible exact extrema in **Column profiles** while preserving the full protocol-bounded value in
+  accessible names and hover titles.
 
 ## [1.1.8] - 2026-07-31
 

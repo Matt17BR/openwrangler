@@ -525,6 +525,14 @@ describe("protocol-v2 response validation", () => {
 
     expect(isOpenWranglerResponse(response(integerSummary))).toBe(true);
     expect(isOpenWranglerResponse(response(decimalSummary))).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: { min: 1 }
+        })
+      )
+    ).toBe(true);
 
     const malformedPairs = [
       { ...integerSummary.numeric, exactMax: undefined },
@@ -583,6 +591,44 @@ describe("protocol-v2 response validation", () => {
           numeric: {
             ...decimalSummary.numeric,
             exactMin: decimalCell("not-a-decimal")
+          }
+        })
+      )
+    ).toBe(false);
+    for (const [exactMin, exactMax] of [
+      [decimalCell("-Infinity"), decimalCell("1")],
+      [decimalCell("1"), decimalCell("Infinity")],
+      [decimalCell("-Infinity"), decimalCell("Infinity")]
+    ]) {
+      expect(
+        isOpenWranglerResponse(
+          response({
+            ...decimalSummary,
+            numeric: { exactMin, exactMax }
+          })
+        )
+      ).toBe(false);
+    }
+
+    const maximumLengthDecimal = "9".repeat(65_536);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell(`-${"9".repeat(65_535)}`),
+            exactMax: decimalCell(maximumLengthDecimal)
+          }
+        })
+      )
+    ).toBe(true);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            exactMin: decimalCell("0"),
+            exactMax: decimalCell(`${maximumLengthDecimal}9`)
           }
         })
       )

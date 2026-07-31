@@ -1117,6 +1117,59 @@ describe("SummaryPanel", () => {
     expect(minimumValue).toHaveClass("exactNumericExtremum");
   });
 
+  it("bounds protocol-maximum exact extrema visually while preserving their full accessible values", () => {
+    const minimum = `-${"9".repeat(65_535)}`;
+    const maximum = "9".repeat(65_536);
+    const decimalMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 1 },
+      filteredShape: { rows: 2, columns: 1 },
+      schema: [
+        {
+          id: "c:amount",
+          name: "amount",
+          position: 0,
+          rawType: "Decimal",
+          type: "decimal",
+          nullable: false
+        }
+      ]
+    };
+    const decimalSummary: ColumnSummary = {
+      columnId: "c:amount",
+      column: "amount",
+      type: "decimal",
+      rawType: "Decimal",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      numeric: {
+        exactMin: { kind: "decimal", raw: minimum, display: minimum, isNull: false, isNaN: false },
+        exactMax: { kind: "decimal", raw: maximum, display: maximum, isNull: false, isNaN: false }
+      },
+      visualization: { kind: "numeric", bins: [] },
+      topValues: []
+    };
+
+    renderSummary({
+      metadataValue: decimalMetadata,
+      summaries: [decimalSummary],
+      selectedColumnId: "c:amount"
+    });
+
+    const minimumValue = screen.getByText("Min").nextElementSibling;
+    const maximumValue = screen.getByText("Max").nextElementSibling;
+    expect(minimumValue?.textContent).toHaveLength(96);
+    expect(maximumValue?.textContent).toHaveLength(96);
+    expect(minimumValue).toHaveTextContent("…");
+    expect(maximumValue).toHaveTextContent("…");
+    expect(minimumValue).toHaveAttribute("title", `Minimum: ${minimum}`);
+    expect(maximumValue).toHaveAttribute("title", `Maximum: ${maximum}`);
+    expect(minimumValue).toHaveAccessibleName(`Minimum ${minimum}`);
+    expect(maximumValue).toHaveAccessibleName(`Maximum ${maximum}`);
+  });
+
   it("falls back to the first schema column and labels categorical values and the remainder", () => {
     renderSummary();
 
