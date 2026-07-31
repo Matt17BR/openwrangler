@@ -15,6 +15,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Preserved the last confirmed vertical grid position when macOS emits a synthetic scroll event during
   programmatic restoration or editor teardown. A real wheel, pointer, or touch scroll still replaces the saved
   viewport normally.
+- Fetched the restored row block when an older editor initially hydrates the grid with a different page, so a
+  persisted viewport can no longer remain stranded on stale rows.
 
 ### Changed
 

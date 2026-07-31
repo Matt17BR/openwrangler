@@ -613,6 +613,80 @@ describe("DataGrid", () => {
     expect(onViewStateChange).not.toHaveBeenCalled();
   });
 
+  it("requests a restored row block when the initial page still belongs to the previous viewport", async () => {
+    const onPage = vi.fn();
+    const initialViewState = {
+      columnWidths: {},
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    };
+    const restoredViewState = {
+      columnWidths: {},
+      selectedColumnId: "c:1",
+      viewport: { firstVisibleRow: 400, scrollLeft: 95 }
+    };
+    const props = {
+      metadata: {
+        ...metadata,
+        shape: { rows: 1_000, columns: 2 },
+        filteredShape: { rows: 1_000, columns: 2 }
+      },
+      summaries: [],
+      pageSize: 200,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(
+      <DataGrid
+        {...props}
+        page={pageAt(0, 1_000)}
+        viewState={initialViewState}
+        viewStateRestoreVersion={0}
+        busy={false}
+      />
+    );
+
+    expect(onPage).not.toHaveBeenCalled();
+    const scroller = screen.getByTestId("data-grid-scroller");
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 58 },
+      scrollHeight: { configurable: true, value: 58 },
+      scrollTop: {
+        configurable: true,
+        get: () => 0,
+        set: () => undefined
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(0, 1_000)}
+        viewState={restoredViewState}
+        viewStateRestoreVersion={1}
+        busy={false}
+      />
+    );
+
+    await waitFor(() => expect(onPage).toHaveBeenCalledTimes(1));
+    expect(onPage).toHaveBeenCalledWith(400);
+
+    rerender(
+      <DataGrid
+        {...props}
+        page={pageAt(400, 1_000)}
+        viewState={restoredViewState}
+        viewStateRestoreVersion={1}
+        busy={false}
+      />
+    );
+    expect(onPage).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves a restored logical viewport across device-pixel scroll quantization", async () => {
     const onViewStateChange = vi.fn();
     const onPage = vi.fn();
