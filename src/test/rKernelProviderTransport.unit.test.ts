@@ -122,9 +122,34 @@ describe("native R kernel provider bundle", () => {
     ).toThrow("response marker is invalid");
   });
 
-  it("requires confirmed session state only for page and close requests", () => {
+  it("requires confirmed page state while allowing exact candidate identity for terminal close", () => {
     const close = { kind: "closeSession", sessionId: "r-session", revision: 0 } as const;
-    expect(() => createRProviderDispatchContext("close", close)).toThrow("requires its exact confirmed session");
+    expect(() => createRProviderDispatchContext("close", close)).toThrow("requires its exact session identity");
+    expect(createRProviderDispatchContext("close", close, { sessionId: "r-session", revision: 0 })).toEqual({
+      requestId: "close",
+      request: close,
+      session: { sessionId: "r-session", revision: 0 }
+    });
+    expect(() => createRProviderDispatchContext("close", close, { sessionId: "another-session", revision: 0 })).toThrow(
+      "requires its exact session identity"
+    );
+    expect(() =>
+      createRProviderDispatchContext(
+        "page",
+        {
+          kind: "getPage",
+          sessionId: "r-session",
+          revision: 0,
+          viewRequestId: "view",
+          offset: 0,
+          limit: 1,
+          columnOffset: 0,
+          columnLimit: 1,
+          filterModel: { logic: "and", filters: [], sort: [] }
+        },
+        { sessionId: "r-session", revision: 0 }
+      )
+    ).toThrow("requires its exact confirmed session");
     expect(() =>
       createRProviderDispatchContext(
         "initialize",

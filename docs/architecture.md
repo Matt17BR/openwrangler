@@ -47,6 +47,21 @@ intentionally indistinguishable under base-R value identity; allocator addresses
 are neither observed nor exposed. Discovery has no URI fallback and does not
 itself copy, profile, or serialize a dataframe.
 
+After selection, an exact-kernel R session handle adopts only the correlated
+`sessionOpened` response for its host-generated candidate ID. It retains the
+confirmed revision-zero shape and schema for contextual page validation,
+and serializes page reads. Open and page dispatches have respective 60-second
+and 30-second hard deadlines. A page that times out is detached from publication
+even if its underlying kernel output settles later. Terminal close synchronously
+cancels the active page and prevents queued pages from dispatching before making
+one fresh two-second close attempt; its caller's cancelled token cannot consume
+that attempt. Any error, cancellation, malformed output, or lost response while
+opening likewise triggers one fresh, independently two-second-bounded close for
+the host-known candidate identity on the same transport. That cleanup accepts
+only the candidate ID and revision because an unobserved successful open has no
+trustworthy schema. Unknown-session and cleanup failures never hide the original
+failure, and provider disposal remains the final owner-wide cleanup.
+
 Non-notebook R surfaces never become available from a boolean “connected”
 flag. The experimental helper handshake issues an opaque receipt bound to the
 exact editor document object, R process instance, and helper instance; stale,

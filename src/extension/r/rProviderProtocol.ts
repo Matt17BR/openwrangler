@@ -121,9 +121,12 @@ export interface RProviderSessionMetadata {
   readonly schema: readonly ColumnSchema[];
 }
 
-export interface RProviderConfirmedSession {
+export interface RProviderSessionIdentity {
   readonly sessionId: string;
   readonly revision: 0;
+}
+
+export interface RProviderConfirmedSession extends RProviderSessionIdentity {
   readonly shape: { readonly rows: number; readonly columns: number };
   readonly schema: readonly ColumnSchema[];
 }
@@ -149,7 +152,7 @@ export type RProviderDispatchContext =
   | {
       readonly requestId: string;
       readonly request: RProviderCloseSessionRequest;
-      readonly session: RProviderConfirmedSession;
+      readonly session: RProviderSessionIdentity;
     };
 
 export interface RProviderSessionOpened {
@@ -304,6 +307,8 @@ export function isRProviderResponseEnvelopeForDispatch(
     case "getPage":
       return (
         "session" in context &&
+        "shape" in context.session &&
+        "schema" in context.session &&
         value.response.kind === "page" &&
         context.session.sessionId === context.request.sessionId &&
         context.session.revision === context.request.revision &&

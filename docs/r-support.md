@@ -140,12 +140,29 @@ The same private provider now performs variable discovery through that owned
 kernel object. There is still no notebook-URI lookup or fallback, and the
 discovery result is not yet connected to a public picker.
 
+`src/extension/r/rKernelDataFrameSession.ts` owns the next layer after a picker
+selection. It sends one host-identified open through the exact-kernel transport,
+adopts only the correlated confirmed metadata and first page, and retains that
+schema/shape for every later projected page. Opens have a 60-second hard
+deadline and serialized pages have independent 30-second deadlines. A timed-out
+page cannot publish a late result. Terminal close cancels the active page,
+prevents queued pages from dispatching, and then makes one fresh two-second
+attempt; a caller's already-cancelled token cannot consume that exact cleanup.
+
+A failed, cancelled, malformed, or logically rejected open is not proof that
+the provider did not register its host-known candidate. The session layer
+therefore makes one fresh close attempt with its own two-second bound. This
+cleanup carries only the exact candidate ID and revision because no confirmed
+schema exists when the open response was lost. An unknown candidate or cleanup
+transport failure is ignored so it cannot replace the original open diagnostic;
+disposing the exact-kernel provider still clears all retained sessions.
+
 The transport intentionally receives one already-owned Jupyter `Kernel` object;
 it has no URI lookup or fallback path. The user-facing IRkernel viewer remains
 disabled until an R-specific notebook bridge adds exact `NotebookDocument` and
-kernel acquisition, picker wiring, cancellation-safe failed-open cleanup,
-restart recovery, coordinator mapping, and installed-editor acceptance. This
-is transport evidence, not an R support claim.
+kernel acquisition, picker wiring, restart recovery, coordinator mapping, and
+installed-editor acceptance. This is transport evidence, not an R support
+claim.
 
 The next stacked session layer is `src/extension/r/rKernelDataFrameSession.ts`.
 It owns correlated open/page/close state above `rKernelProviderTransport.ts` and
@@ -183,8 +200,9 @@ semantics or become the source of truth.
    package allowlist, and R-only smoke test.
 2. **IRkernel viewer (in progress):** exact-kernel provider bootstrap, framing,
    bounded native variable discovery, response validation, and disposal are
-   implemented. Exact-notebook launch, picker wiring, paging coordination,
-   cancellation cleanup, recovery, and editor acceptance remain.
+   implemented. A confirmed session handle now coordinates paging, terminal
+   close, and bounded failed-open cleanup. Exact-notebook launch, picker wiring,
+   recovery, coordinator mapping, and editor acceptance remain.
 3. **Explicit session helper:** a documented helper for `.R`, `.Rmd`, and
    `.qmd` sessions with an unambiguous connection handshake.
 4. **Viewing parity:** native filtering, multi-sort, profiles, large pages,

@@ -624,10 +624,24 @@ describe("native R provider protocol guard", () => {
         {
           requestId: "close",
           request: { kind: "closeSession", sessionId: "r-session", revision: 0 },
-          session: confirmedSession
+          session: { sessionId: "r-session", revision: 0 }
         }
       )
     ).toBe(true);
+    expect(
+      isRProviderResponseEnvelopeForDispatch(
+        {
+          protocolVersion: 1,
+          requestId: "close",
+          response: { kind: "sessionClosed", sessionId: "r-session" }
+        },
+        {
+          requestId: "close",
+          request: { kind: "closeSession", sessionId: "another-session", revision: 0 },
+          session: { sessionId: "another-session", revision: 0 }
+        }
+      )
+    ).toBe(false);
   });
 
   it("rejects stale IDs, wrong projections, range drift, and contradictory typed cells", () => {

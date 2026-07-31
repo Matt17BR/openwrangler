@@ -12,7 +12,8 @@ import {
   type RProviderConfirmedSession,
   type RProviderDispatchContext,
   type RProviderRequest,
-  type RProviderResponseEnvelope
+  type RProviderResponseEnvelope,
+  type RProviderSessionIdentity
 } from "./rProviderProtocol";
 
 const R_KERNEL_OUTPUT_OVERHEAD_BYTES = 1_048_576;
@@ -55,7 +56,7 @@ export class RKernelProviderTransport {
   async dispatch(
     request: RProviderRequest,
     token: CancellationToken,
-    session?: RProviderConfirmedSession
+    session?: RProviderConfirmedSession | RProviderSessionIdentity
   ): Promise<RProviderResponseEnvelope> {
     const generation = this.generation;
     assertNotCancelled(token);
@@ -138,13 +139,25 @@ export class RKernelProviderTransport {
 export function createRProviderDispatchContext(
   requestId: string,
   request: RProviderRequest,
-  session?: RProviderConfirmedSession
+  session?: RProviderConfirmedSession | RProviderSessionIdentity
 ): RProviderDispatchContext {
-  if (request.kind === "getPage" || request.kind === "closeSession") {
-    if (session === undefined) {
-      throw new Error(`The native R ${request.kind} request requires its exact confirmed session.`);
+  if (request.kind === "getPage") {
+    if (
+      session === undefined ||
+      !("shape" in session) ||
+      !("schema" in session) ||
+      session.sessionId !== request.sessionId ||
+      session.revision !== request.revision
+    ) {
+      throw new Error("The native R getPage request requires its exact confirmed session.");
     }
     return { requestId, request, session } as RProviderDispatchContext;
+  }
+  if (request.kind === "closeSession") {
+    if (session === undefined || session.sessionId !== request.sessionId || session.revision !== request.revision) {
+      throw new Error("The native R closeSession request requires its exact session identity.");
+    }
+    return { requestId, request, session };
   }
   if (session !== undefined) {
     throw new Error(`The native R ${request.kind} request cannot carry unrelated session state.`);

@@ -58,15 +58,15 @@ claim. The provider foundation is useful only when the complete editor journey
 above it is ready. Architecture and upstream API constraints are recorded in
 [`docs/r-support.md`](r-support.md).
 
-| Surface                                             | Status  | Required evidence                                                               |
-| --------------------------------------------------- | ------- | ------------------------------------------------------------------------------- |
-| Strict native-R provider and typed pages            | Partial | R-only smoke, exact-kernel transport, and raw-type integer bounds green         |
-| IRkernel `.ipynb` variable viewer                   | Partial | Private exact-kernel discovery green; launch/recovery/editor acceptance pending |
-| Base `data.frame`, tibble, and `data.table` viewing | Planned | Native paging, filters, multi-sort, profiles, recovery                          |
-| `.R` explicit live-session helper                   | Planned | Exact-process handshake and terminal cleanup                                    |
-| `.Rmd` and `.qmd` live variables                    | Planned | Explicit helper with companion authoring extensions                             |
-| R-native cleaning and generated code                | Planned | Base/tidyverse/data.table operation parity                                      |
-| R-only packaging and cross-platform acceptance      | Planned | Python unavailable throughout package/editor gates                              |
+| Surface                                             | Status  | Required evidence                                                                                      |
+| --------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| Strict native-R provider and typed pages            | Partial | R-only smoke, exact-kernel transport, raw-type integer bounds, and owned session paging contract green |
+| IRkernel `.ipynb` variable viewer                   | Partial | Private discovery/session cleanup green; launch/recovery/editor acceptance pending                     |
+| Base `data.frame`, tibble, and `data.table` viewing | Planned | Native paging, filters, multi-sort, profiles, recovery                                                 |
+| `.R` explicit live-session helper                   | Planned | Exact-process handshake and terminal cleanup                                                           |
+| `.Rmd` and `.qmd` live variables                    | Planned | Explicit helper with companion authoring extensions                                                    |
+| R-native cleaning and generated code                | Planned | Base/tidyverse/data.table operation parity                                                             |
+| R-only packaging and cross-platform acceptance      | Planned | Python unavailable throughout package/editor gates                                                     |
 
 ## DuckDB file-backed preview matrix
 
