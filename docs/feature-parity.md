@@ -658,7 +658,7 @@ Exact text-column Insights, 2026-07-30:
 
 This closes the text-statistics sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88), not the issue's remaining workbench redesign or performance-comparison scope.
 
-Compact draft-review hierarchy, 2026-07-30:
+Compact draft-review hierarchy, 2026-07-31:
 
 - A pending cleaning operation now uses one compact **Draft review** region for the human-readable operation, exact ordered schema diff, warnings, and one **Discard** / **Apply step** action pair. The data grid remains visible instead of being displaced by a second tall editor surface.
 - Generated cleaning code appears only in the native **Code Preview** panel. Draft review and applied-step inspection no longer repeat a second inline code block, while the existing editable code-preview workflow remains unchanged.
