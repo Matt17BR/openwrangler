@@ -220,6 +220,16 @@ describe("VSIX production entry allowlist", () => {
 
     expect(inspectVsixEntries(entries).missing).toEqual(["extension/python/openwrangler_runtime/dependency_guard.py"]);
   });
+
+  it("packages only the native R provider runtime, never its tests", () => {
+    const runtime = "extension/r/openwrangler_runtime/kernel_agent.R";
+    const entries = requiredVsixEntries.filter((entry) => entry !== runtime);
+
+    expect(inspectVsixEntries(entries).missing).toEqual([runtime]);
+    expect(inspectVsixEntries([...requiredVsixEntries, "extension/r/tests/runtime_smoke.R"]).forbidden).toEqual([
+      "extension/r/tests/runtime_smoke.R"
+    ]);
+  });
 });
 
 describe("VSIX prerelease metadata validation", () => {

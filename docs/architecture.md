@@ -2,11 +2,16 @@
 
 ## Product boundaries
 
-Open Wrangler has three cooperating processes:
+Open Wrangler 1 has three cooperating processes:
 
 1. The VS Code extension host owns commands, trusted-workspace enforcement, editor and view providers, session coordination, filesystem prompts, runtime processes, and Jupyter access.
 2. Sandboxed webviews render the editor grid and auxiliary views. They receive validated state snapshots and send typed user intents; they never read files or execute Python directly.
 3. The bundled Python runtime executes dataframe queries and transformation plans in either a standalone selected interpreter or the active Jupyter kernel.
+
+Open Wrangler 2 adds a separate native-R provider boundary. Its agent is sourced
+into the exact R process and does not convert through Python or share the Python
+runtime protocol by accident. The integration surface, upstream API constraints,
+and staged capability gates are defined in [Native R support](r-support.md).
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
 

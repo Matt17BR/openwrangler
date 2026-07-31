@@ -1,5 +1,22 @@
 # Testing
 
+## Native R foundation
+
+The v2 R provider has a dependency-light smoke test that runs entirely inside R.
+It proves base dataframe paging, typed cells, strict request rejection,
+deterministic close, and source immutability:
+
+```bash
+Rscript --vanilla r/tests/runtime_smoke.R
+Rscript --vanilla r/openwrangler_runtime/kernel_agent.R --probe
+```
+
+The smoke test requires `jsonlite` but never installs it. Optional tibble and
+data.table checks run only when those packages are already present. User-facing R
+support additionally requires the staged editor acceptance in
+[`docs/r-support.md`](r-support.md); these foundation checks are not sufficient
+to advertise R compatibility.
+
 ## Automated layers
 
 - `npm run typecheck` checks the extension and webview projects independently.

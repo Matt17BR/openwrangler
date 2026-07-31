@@ -51,6 +51,23 @@ The released v1.1.1 notebook UX prepares automatic Pandas/Polars MIME formatters
 
 Inline MIME v2 output shows every captured column and pages the captured rows at 10, 20, 50, or 100 rows per page. When the output retains one canonical live-variable link, its single **Open in Open Wrangler** action opens the complete current dataframe through the exact originating notebook and kernel; it never substitutes the saved capture. An unlinked output stays readable inline and tells the user to run the cell again instead of exposing a misleading open action. The notebook-toolbar and Jupyter Variables workflows remain additional live entry points. Focused unit, renderer, provenance, provider-conflict, restart, and packaged-editor acceptance defined in `docs/testing.md` must be green before this candidate is released.
 
+## Open Wrangler 2 native-R matrix
+
+This matrix is a post-v1 roadmap gate, not part of the current stable support
+claim. The provider foundation is useful only when the complete editor journey
+above it is ready. Architecture and upstream API constraints are recorded in
+[`docs/r-support.md`](r-support.md).
+
+| Surface                                             | Status  | Required evidence                                            |
+| --------------------------------------------------- | ------- | ------------------------------------------------------------ |
+| Strict native-R provider and typed pages            | Partial | R-only smoke green; extension/kernel transport not connected |
+| IRkernel `.ipynb` variable viewer                   | Planned | Exact notebook/kernel lifecycle in VS Code and Cursor        |
+| Base `data.frame`, tibble, and `data.table` viewing | Planned | Native paging, filters, multi-sort, profiles, recovery       |
+| `.R` explicit live-session helper                   | Planned | Exact-process handshake and terminal cleanup                 |
+| `.Rmd` and `.qmd` live variables                    | Planned | Explicit helper with companion authoring extensions          |
+| R-native cleaning and generated code                | Planned | Base/tidyverse/data.table operation parity                   |
+| R-only packaging and cross-platform acceptance      | Planned | Python unavailable throughout package/editor gates           |
+
 ## DuckDB file-backed preview matrix
 
 DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither converts through Pandas, Polars, or Arrow nor installs/loads DuckDB extensions automatically. **Partial** below means the native runtime path has automated evidence but the complete installed-editor and release matrix is still pending; **Planned** means the surface is intentionally unavailable in this preview.

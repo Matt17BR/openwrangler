@@ -655,7 +655,7 @@ function isColumnSchema(value: unknown): boolean {
   );
 }
 
-function isColumnSchemaArray(value: unknown): value is ColumnSchema[] {
+export function isColumnSchemaArray(value: unknown): value is ColumnSchema[] {
   if (!Array.isArray(value)) return false;
   const identities = new Set<string>();
   return value.every((column, position) => {
@@ -1238,7 +1238,7 @@ function isByExampleProgram(
   }
 }
 
-function isGridPage(value: unknown, schema?: readonly ColumnSchema[]): boolean {
+export function isGridPage(value: unknown, schema?: readonly ColumnSchema[]): boolean {
   const candidate = exactRecord(value, ["offset", "limit", "totalRows", "columnIds", "rows"]);
   if (candidate === undefined) return false;
   const columnIds = candidate.columnIds;
@@ -1284,7 +1284,7 @@ function isUniqueNonEmptyStringArray(value: unknown): value is string[] {
   return new Set(value).size === value.length;
 }
 
-function isCellValue(value: unknown): boolean {
+export function isCellValue(value: unknown): boolean {
   const candidate = exactRecord(value, ["kind", "display", "isNull", "isNaN"], ["raw", "sign"]);
   return (
     candidate !== undefined &&

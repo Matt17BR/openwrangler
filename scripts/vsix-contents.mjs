@@ -15,7 +15,10 @@ export const allowedVsixEntryPatterns = [
   /^extension\/python\/openwrangler_runtime\/$/u,
   /^extension\/python\/openwrangler_runtime\/[^/]+\.py$/u,
   /^extension\/python\/openwrangler_runtime\/engines\/$/u,
-  /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u
+  /^extension\/python\/openwrangler_runtime\/engines\/[^/]+\.py$/u,
+  /^extension\/r\/$/u,
+  /^extension\/r\/openwrangler_runtime\/$/u,
+  /^extension\/r\/openwrangler_runtime\/kernel_agent\.R$/u
 ];
 
 export const requiredVsixEntries = [
@@ -40,7 +43,8 @@ export const requiredVsixEntries = [
   "extension/media/icon-128.png",
   "extension/python/openwrangler_runtime/dependency_guard.py",
   "extension/python/openwrangler_runtime/server.py",
-  "extension/python/openwrangler_runtime/version.py"
+  "extension/python/openwrangler_runtime/version.py",
+  "extension/r/openwrangler_runtime/kernel_agent.R"
 ];
 
 const windowsReservedBasename = /^(?:aux|com[1-9¹²³]|con|lpt[1-9¹²³]|nul|prn)$/iu;

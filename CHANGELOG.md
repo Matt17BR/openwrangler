@@ -89,6 +89,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   bounded VS Code-fork validation, and supported PySpark gates into one coherent v1.2 release instead of
   promising a continuous stream of patch packages.
 
+### Added
+
+- Established the Open Wrangler 2 native-R foundation: a strict read-only
+  in-process provider for base dataframes, tibbles, and data.tables; a stable
+  IRkernel-first integration plan; and explicit R Markdown/Quarto session
+  boundaries without Python conversion or undocumented extension APIs.
+
 ### Fixed
 
 - Installed the native dataframe runtime dependencies in the split visual/accessibility CI lane, so production-scene

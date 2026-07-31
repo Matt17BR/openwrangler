@@ -1,5 +1,12 @@
 # Releasing
 
+The v2 package allowlist includes only
+`r/openwrangler_runtime/kernel_agent.R` from the native-R tree; development
+tests are excluded. Bundling the agent is preparation, not a support claim.
+Release notes and marketplace metadata must not advertise R, R Markdown, or
+Quarto dataframe support until the corresponding staged gates in
+[`docs/r-support.md`](r-support.md) and `docs/feature-parity.md` are green.
+
 ## Version policy
 
 Numeric `0.<odd-minor>.x` releases are the only preview-channel checkpoints and require `package.json.preview` to be `true`; every other numeric release requires it to be `false`. Workflow metadata and direct stable readiness use the same numeric classifier, so an odd-minor preview cannot be published as stable and `1.0.0` cannot masquerade as a preview. The pushed-tag workflow subscribes only to numeric odd-minor `v0` preview tags. Stable publication uses the separately protected, manually dispatched `.github/workflows/stable-release.yml`, which consumes one provenance-bound artifact set after complete stable acceptance and never rebuilds it. Do not encode the channel in a hyphenated manifest version. GitHub marks preview releases as prereleases, Open VSX receives matching pre-release metadata, and the Visual Studio Marketplace receives VSCE's matching `--pre-release` marker. A public, tagged, or published `1.0.0` is allowed only after every in-scope feature-parity row is Done and all automated and manual gates pass. The narrow evidence-only bridge may temporarily carry intended `1.0.0` metadata while its exact two performance rows remain `Partial`, but its generated README states that it is not a stable release and its artifact protocol is non-promotable. Update `package.json`, `python/openwrangler_runtime/version.py`, `CHANGELOG.md`, and parity evidence in the same pull request. The Python package reads its version from `version.py`, and `npm run docs:check` rejects any extension/runtime mismatch or misleading release narrative.
