@@ -463,6 +463,18 @@ test("authoritative CI work is independently attributable before the required ag
   assert.equal(visual?.name, "Visual and accessibility");
   assert.equal(visual?.needs, undefined);
   assert.equal(
+    visual?.steps?.some(
+      (step) => step?.uses === "actions/setup-python@v6" && step?.with?.["python-version"] === "3.12"
+    ),
+    true,
+    "Runtime-backed production screenshot fixtures need the exact Python test environment."
+  );
+  assert.equal(
+    visual?.steps?.some((step) => step?.run === 'python -m pip install -e "python[dev]"'),
+    true,
+    "Visual acceptance must install the Pandas, Polars, DuckDB, and notebook fixture dependencies."
+  );
+  assert.equal(
     visual?.steps?.some((step) => step?.run === "npm run test:webview-acceptance"),
     true
   );

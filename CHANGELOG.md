@@ -59,6 +59,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Installed the native dataframe runtime dependencies in the split visual/accessibility CI lane, so production-scene
+  generation cannot fail before rendering DuckDB, Polars, Pandas, and notebook evidence or silently substitute
+  reconstructed fixture data.
 - Kept the native Activity Bar views bound to the exact visible dataframe when clicking a sidebar action moves
   keyboard focus out of the editor. Filter, sort, operation, and cleaning-step actions now reach that visible
   session, while hidden panels and stale sort identities still fail closed.

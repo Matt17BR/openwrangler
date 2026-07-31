@@ -8,7 +8,7 @@ Open Wrangler keeps correctness, security, packaging, accessibility, and native-
 | ---------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | `Fast feedback`                          | source quality               | formatting, ESLint, TypeScript, generated protocol/reference/docs, licenses, workflow structure             | none                             |
 | `Contract tests`                         | runtime and shared contracts | Python lint/types, brand and lock freshness, script, TypeScript, and Python tests                           | none                             |
-| `Visual and accessibility`               | webview UI                   | deterministic screenshots, production CSS/fonts, axe acceptance                                             | none                             |
+| `Visual and accessibility`               | webview UI                   | runtime-backed deterministic screenshots, production CSS/fonts, axe acceptance                              | none                             |
 | `Production dependency audits`           | supply chain                 | npm production advisories, Python/runtime-lock advisories                                                   | live advisory databases; no VSIX |
 | `canonical-vsix`                         | packaging                    | clean production build, allowlist, checksum-bound artifact publication                                      | produces the one PR VSIX         |
 | `Packaged VS Code (Linux)`               | Linux product acceptance     | checksum, packaged install, trusted/untrusted journeys, recovery, cleanup                                   | canonical VSIX                   |
@@ -26,6 +26,11 @@ Open Wrangler keeps correctness, security, packaging, accessibility, and native-
 The `validate` job retains the existing protected check name. It uses `always()` only so its result step executes after failed, cancelled, or skipped dependencies; `scripts/require-ci-results.mjs` then requires every blocking result to be exactly `success`. A skipped aggregate is never used as a success path. When `acceptance:remote-ssh` is present, Remote SSH is required to succeed; without the label it is required to be skipped.
 
 Cross-platform runtime matrices and CodeQL remain separate workflows and separately protected evidence. The CI aggregate does not claim to summarize a workflow it cannot depend on.
+
+The visual lane installs the same bundled-runtime development extras used to generate its synthetic protocol
+fixtures. This is intentional: the accepted scenes exercise native Pandas, Polars, and DuckDB responses rather than
+static hand-authored JSON. Missing an engine dependency is therefore a visual-fixture setup failure, not permission
+to fall back to reconstructed UI.
 
 ## Baseline and targets
 
