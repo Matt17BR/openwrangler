@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128" alt="Open Wrangler logo">
+  <img src="assets/icon.png" width="128" height="128" alt="Open Wrangler logo">
 </p>
 
 <h1 align="center">Open Wrangler</h1>
@@ -49,7 +49,7 @@ Open Wrangler requires VS Code 1.106 or newer and Python 3.10 through 3.14. It u
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its Activity Bar views, virtualized dataframe grid, header summaries, and exact revenue column profile" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/explore.png"></a>
+<a href="docs/images/readme/v1.2/explore.png"><img alt="Open Wrangler in VS Code with its Activity Bar views, virtualized dataframe grid, header summaries, and exact revenue column profile" src="docs/images/readme/v1.2/explore.png"></a>
 
 _Explore a real packaged Polars file session with Operations, Summary, Filters / Sorts, Cleaning Steps, and exact
 column profiles beside the grid._
@@ -58,8 +58,8 @@ column profiles beside the grid._
 
 <table>
   <tr>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-explore.png"><img alt="Open Wrangler Activity Bar views showing the transformation catalog and active dataframe summary" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-explore.png"></a></td>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-workflow.png"><img alt="Open Wrangler Activity Bar views showing ordered viewing sorts and separate cleaning history" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sidebar-workflow.png"></a></td>
+    <td width="50%"><a href="docs/images/readme/v1.2/gallery/sidebar-explore.png"><img alt="Open Wrangler Activity Bar views showing the transformation catalog and active dataframe summary" src="docs/images/readme/v1.2/gallery/sidebar-explore.png"></a></td>
+    <td width="50%"><a href="docs/images/readme/v1.2/gallery/sidebar-workflow.png"><img alt="Open Wrangler Activity Bar views showing ordered viewing sorts and separate cleaning history" src="docs/images/readme/v1.2/gallery/sidebar-workflow.png"></a></td>
   </tr>
   <tr>
     <td><strong>Source at a glance.</strong> Browse transformations and check backend, shape, selected column, missing cells, and duplicates beside the dataframe.</td>
@@ -79,7 +79,7 @@ column profiles beside the grid._
 Ordinary CSV and TSV opens infer the delimiter, encoding, quote style, and header automatically. Use **Import
 options** only when a file needs an explicit override.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Open Wrangler searching all 417 columns in a realistic wide dataframe, with data-type icons and the final result visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/column-search-wide.png"></a>
+<a href="docs/images/readme/v1.2/gallery/column-search-wide.png"><img alt="Open Wrangler searching all 417 columns in a realistic wide dataframe, with data-type icons and the final result visible" src="docs/images/readme/v1.2/gallery/column-search-wide.png"></a>
 
 _Search the complete schema, not a truncated first page. Type icons distinguish text, integer, number, and boolean
 columns before you navigate._
@@ -88,8 +88,8 @@ columns before you navigate._
 
 <table>
   <tr>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="An exact numeric profile with a full-height histogram bin focused and its interval and row count visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/histogram-hover.png"></a></td>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Open Wrangler Filters and Sorts sidebar with two ordered sorts and visible reorder and remove controls" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/sort-priority.png"></a></td>
+    <td width="50%"><a href="docs/images/readme/v1.2/gallery/histogram-hover.png"><img alt="An exact numeric profile with a full-height histogram bin focused and its interval and row count visible" src="docs/images/readme/v1.2/gallery/histogram-hover.png"></a></td>
+    <td width="50%"><a href="docs/images/readme/v1.2/gallery/sort-priority.png"><img alt="Open Wrangler Filters and Sorts sidebar with two ordered sorts and visible reorder and remove controls" src="docs/images/readme/v1.2/gallery/sort-priority.png"></a></td>
   </tr>
   <tr>
     <td><strong>Inspect every bin.</strong> The whole bin height is an interactive target, including visually small values, with an exact interval and row count.</td>
@@ -97,7 +97,7 @@ columns before you navigate._
   </tr>
 </table>
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars cleaning draft with ordered viewing sorts, cleaning history, a data diff, Apply and Discard controls, and executable generated code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/workflow.png"></a>
+<a href="docs/images/readme/v1.2/workflow.png"><img alt="Open Wrangler reviewing a Polars cleaning draft with ordered viewing sorts, cleaning history, a data diff, Apply and Discard controls, and executable generated code" src="docs/images/readme/v1.2/workflow.png"></a>
 
 _Viewing state and cleaning stay separate: reorderable sort priorities, applied history, a draft diff, and
 executable Polars code remain reviewable before **Apply step**._
@@ -111,8 +111,8 @@ values for wide integers and decimals; text columns expose exact empty-string an
 
 <table>
   <tr>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/export-script.png"><img alt="Open Wrangler generated Polars cleaning script saved and opened in VS Code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/export-script.png"></a></td>
-    <td width="50%"><a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened beside the unchanged source workflow" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/export-data.png"></a></td>
+    <td width="50%"><a href="docs/images/readme/v1.2/gallery/export-script.png"><img alt="Open Wrangler generated Polars cleaning script saved and opened in VS Code" src="docs/images/readme/v1.2/gallery/export-script.png"></a></td>
+    <td width="50%"><a href="docs/images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened beside the unchanged source workflow" src="docs/images/readme/v1.2/gallery/export-data.png"></a></td>
   </tr>
   <tr>
     <td><strong>Keep the code.</strong> Copy it, insert it into the originating notebook, or save a standalone Python script.</td>
@@ -133,22 +133,22 @@ The notebook toolbar can also discover supported variables and shows each engine
 Data Wrangler is installed too, choose which extension owns automatic previews with **Open Wrangler: Choose
 Notebook Preview Provider**.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="The Open Wrangler notebook variable picker identifying live DuckDB, Pandas, and Polars variables by engine and dataframe type" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-variable-picker.png"></a>
+<a href="docs/images/readme/v1.2/gallery/notebook-variable-picker.png"><img alt="The Open Wrangler notebook variable picker identifying live DuckDB, Pandas, and Polars variables by engine and dataframe type" src="docs/images/readme/v1.2/gallery/notebook-variable-picker.png"></a>
 
 _Choose a live variable from the notebook toolbar with its actual engine and dataframe type visible before the
 workbench opens._
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/notebook-pandas.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook, with paging and an Open in Open Wrangler action" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/notebook-pandas.png"></a>
+<a href="docs/images/readme/v1.2/notebook-pandas.png"><img alt="A Pandas dataframe rendered by Open Wrangler inside a real packaged VS Code Jupyter notebook, with paging and an Open in Open Wrangler action" src="docs/images/readme/v1.2/notebook-pandas.png"></a>
 
 _The portable Pandas table stays inside the notebook; **Open in Open Wrangler** reconnects to the complete,
 current live variable._
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A live native Polars notebook session in Open Wrangler with a formula-column draft and generated Polars code" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-polars-detail.png"></a>
+<a href="docs/images/readme/v1.2/gallery/notebook-polars.png"><img alt="A live native Polars notebook session in Open Wrangler with a formula-column draft and generated Polars code" src="docs/images/readme/v1.2/gallery/notebook-polars-detail.png"></a>
 
 _**Polars editing.** Preview a formula column, its added values, and executable native Polars code before applying
 the draft. Open the image for the complete packaged-editor scene._
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A live native DuckDB relation in Open Wrangler with an exact filter, two ordered sorts, paging, and column profiles" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png"></a>
+<a href="docs/images/readme/v1.2/gallery/notebook-duckdb.png"><img alt="A live native DuckDB relation in Open Wrangler with an exact filter, two ordered sorts, paging, and column profiles" src="docs/images/readme/v1.2/gallery/notebook-duckdb-detail.png"></a>
 
 _**DuckDB exploration.** Filter, profile, page, and reorder multi-column sorts against the originating relation.
 Open the image for the complete packaged-editor scene._

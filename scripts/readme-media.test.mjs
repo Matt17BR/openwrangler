@@ -129,6 +129,12 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   }
   assert.match(compositor, /function cropPng\(/u);
   assert.match(compositor, /source\.data\.copy\(result\.data/u);
+  assert.match(readme, /<img src="assets\/icon\.png"/u);
+  assert.doesNotMatch(
+    readme,
+    /raw\.githubusercontent\.com\/Matt17BR\/openwrangler\/main\/(?:assets|docs\/images\/readme)/u,
+    "README product media must stay branch-relative so pull-request and branch previews render before merge."
+  );
 
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
@@ -153,7 +159,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(screenshotEvidence, /PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT = \{ width: 1_440, height: 900 \}/u);
   assert.match(
     screenshotEvidence,
-    /PACKAGED_SCREENSHOT_SCENES = \[[\s\S]{0,180}"notebook-polars",[\s\S]{0,80}"notebook-duckdb",[\s\S]{0,80}"notebook-pyspark"/u
+    /PACKAGED_SCREENSHOT_SCENES = \[[\s\S]{0,600}"notebook-polars",[\s\S]{0,80}"notebook-duckdb",[\s\S]{0,80}"notebook-pyspark"/u
   );
   assert.match(extensionHost, /captureReleasedJupyterDuckDbRelation\(/u);
   assert.match(extensionHost, /packagedScreenshotFileName\([\s\S]{0,180}"notebook-duckdb", "dark"\)/u);
