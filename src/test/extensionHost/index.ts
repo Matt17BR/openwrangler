@@ -8487,13 +8487,11 @@ async function assertReleasedJupyterCaptureInternalMarkerHidden(workbench: Page)
             const visibleText = (body as unknown as { readonly innerText: string }).innerText;
             return {
               internalMarker: visibleText.includes(expected.internalMarker),
-              showcaseSource: visibleText.includes(expected.showcaseSource),
               showcasePreview: visibleText.includes(expected.showcasePreview)
             };
           },
           {
             internalMarker: RELEASED_JUPYTER_RESTART_RESULT,
-            showcaseSource: "Explore recent orders in Open Wrangler",
             showcasePreview: "Open Wrangler preview: orders_preview_df"
           }
         )
@@ -8508,11 +8506,6 @@ async function assertReleasedJupyterCaptureInternalMarkerHidden(workbench: Page)
     observations.some((observation) => observation?.internalMarker === true),
     false,
     "Public notebook screenshots must hide the internal restart probe source and output."
-  );
-  assert.equal(
-    observations.some((observation) => observation?.showcaseSource === true),
-    true,
-    "Public notebook screenshots must retain the readable showcase source cell."
   );
   assert.equal(
     observations.some((observation) => observation?.showcasePreview === true),

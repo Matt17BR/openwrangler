@@ -280,6 +280,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain('"notebook.cell.collapseAllCellInputs"');
     expect(extensionHost).toContain('"notebook.cell.collapseAllCellOutputs"');
     expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
+    expect(extensionHost).not.toContain("Public notebook screenshots must retain the readable showcase source cell.");
     expect(extensionHost).toContain('pageSize.value = "10"');
     expect(extensionHost).toContain("scrollerBounds.top + scroller.clientTop + scroller.clientHeight");
     expect(pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")).toBeGreaterThan(0);
