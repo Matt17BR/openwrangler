@@ -218,7 +218,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(jupyterEnvironment).not.toContain(deprecatedKernelLabel);
   });
 
-  it("keeps the README to two concise portable product views", () => {
+  it("keeps the README to a concise portable v1.2 product story", () => {
     const readme = readFileSync(resolve("README.md"), "utf8");
     const packageJson = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
       icon?: string;
@@ -234,8 +234,11 @@ describe("packaged editor screenshot evidence", () => {
     const activityIconSvg = readFileSync(resolve("assets/activity-icon.svg"), "utf8");
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
-      ["workbench.png", 1_920, 830],
-      ["notebooks.png", 1_280, 600]
+      ["explore.png", 1_440, 870],
+      ["workflow.png", 1_440, 870],
+      ["notebook-pandas.png", 1_280, 600],
+      ["gallery/notebook-polars.png", 1_440, 900],
+      ["gallery/notebook-duckdb.png", 1_440, 900]
     ] as const;
 
     expect(icon.readUInt32BE(16)).toBe(512);
@@ -286,7 +289,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(readme).not.toMatch(/\b10,?000-row\b/iu);
     for (const [name, width, height] of images) {
       expect(readme).toContain(name);
-      const png = readFileSync(resolve("docs/images/readme/v1.1", name));
+      const png = readFileSync(resolve("docs/images/readme/v1.2", name));
       expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
       expect(png.readUInt32BE(16)).toBe(width);
       expect(png.readUInt32BE(20)).toBe(height);
