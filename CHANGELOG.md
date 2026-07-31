@@ -59,6 +59,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Kept the native Activity Bar views bound to the exact visible dataframe when clicking a sidebar action moves
+  keyboard focus out of the editor. Filter, sort, operation, and cleaning-step actions now reach that visible
+  session, while hidden panels and stale sort identities still fail closed.
 - Kept an authoritative restored grid row and horizontal offset when a custom-editor snapshot and saved view hydrate
   in the same render, and through a delayed workbench layout scroll collapse, while explicit wheel, pointer, touch,
   and keyboard navigation remain user-authoritative.

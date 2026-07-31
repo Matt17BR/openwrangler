@@ -117,7 +117,8 @@ export class OpenWranglerPanel {
     this.panel.onDidChangeViewState(
       ({ webviewPanel }) => {
         if (webviewPanel.active) this.activate();
-        else this.deactivate();
+        else if (!webviewPanel.visible) this.deactivate();
+        else this.clearRendererStartupRecoveryTimer();
       },
       undefined,
       this.disposables
@@ -128,13 +129,23 @@ export class OpenWranglerPanel {
   }
 
   static sendEditorAction(message: EditorActionMessage): boolean {
-    const active = OpenWranglerPanel.activePanel;
-    if (!active?.panel.active) return false;
+    const target =
+      message.action === "changeViewSort"
+        ? OpenWranglerPanel.visiblePanelForSession(message.expectedSessionId)
+        : OpenWranglerPanel.activePanel;
+    if (!target?.panel.visible) return false;
     if (message.action === "openOperation" || message.action === "editLatest" || message.action === "selectStep") {
-      active.panel.reveal(active.panel.viewColumn, false);
+      target.panel.reveal(target.panel.viewColumn, false);
     }
-    void active.panel.webview.postMessage({ kind: "editorAction", ...message });
+    void target.panel.webview.postMessage({ kind: "editorAction", ...message });
     return true;
+  }
+
+  private static visiblePanelForSession(sessionId: string): OpenWranglerPanel | undefined {
+    const matches = [...OpenWranglerPanel.panels].filter(
+      (panel) => !panel.disposed && panel.panel.visible && panel.sessionId === sessionId
+    );
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   static async disposePanelForSession(sessionId: string): Promise<OpenWranglerResponse | undefined> {

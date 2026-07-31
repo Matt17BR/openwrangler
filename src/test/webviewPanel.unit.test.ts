@@ -109,6 +109,39 @@ describe("OpenWranglerPanel retained view state", () => {
     delete (window as unknown as { showInputBox?: unknown }).showInputBox;
   });
 
+  it("keeps native actions on the visible session after sidebar focus and clears them when hidden", async () => {
+    const setActiveSession = vi.fn();
+    const harness = createPanelHarness({ request: vi.fn(async () => openedResponse), setActiveSession });
+    await harness.open();
+    harness.posted.length = 0;
+    setActiveSession.mockClear();
+    harness.deactivate();
+
+    expect(setActiveSession).not.toHaveBeenCalledWith(undefined);
+    expect(OpenWranglerPanel.sendEditorAction({ action: "openFilters", column: "city" })).toBe(true);
+    expect(harness.posted).toEqual([{ kind: "editorAction", action: "openFilters", column: "city" }]);
+    harness.posted.length = 0;
+
+    const action = {
+      action: "changeViewSort" as const,
+      column: "city",
+      sortAction: "remove" as const,
+      expectedSessionId: "session",
+      expectedSortModelSignature: "[]",
+      expectedSortIndex: 0
+    };
+    expect(OpenWranglerPanel.sendEditorAction(action)).toBe(true);
+    expect(harness.posted).toEqual([{ kind: "editorAction", ...action }]);
+
+    harness.posted.length = 0;
+    expect(OpenWranglerPanel.sendEditorAction({ ...action, expectedSessionId: "stale-session" })).toBe(false);
+    expect(harness.posted).toEqual([]);
+
+    harness.hide();
+    expect(setActiveSession).toHaveBeenLastCalledWith(undefined);
+    expect(OpenWranglerPanel.sendEditorAction({ action: "openFilters", column: "city" })).toBe(false);
+  });
+
   it("loads the production webview as an ES module under a restrictive nonce CSP", async () => {
     const harness = createPanelHarness({ request: vi.fn(async () => openedResponse) });
     await harness.open();
@@ -191,7 +224,7 @@ describe("OpenWranglerPanel retained view state", () => {
     panelPromptMocks.showInputBox.mockClear();
     executeCommand.mockClear();
 
-    harness.deactivate();
+    harness.hide();
     const handled = await OpenWranglerPanel.changeActiveImportOptions();
 
     expect(handled).toBe(false);
@@ -4096,11 +4129,12 @@ function createPanelHarness(
   reveal: ReturnType<typeof vi.fn>;
   activate(): void;
   deactivate(): void;
+  hide(): void;
   dispose(): void;
 } {
   let listener: ((message: unknown) => Promise<void>) | undefined;
   let disposeListener: (() => void) | undefined;
-  let viewStateListener: ((event: { webviewPanel: { active: boolean } }) => void) | undefined;
+  let viewStateListener: ((event: { webviewPanel: { active: boolean; visible: boolean } }) => void) | undefined;
   const posted: unknown[] = [];
   let html = "";
   let htmlAssignmentCount = 0;
@@ -4128,6 +4162,7 @@ function createPanelHarness(
   const panel = {
     webview,
     active: options?.active ?? true,
+    visible: true,
     viewColumn: 1,
     iconPath: undefined as vscode.WebviewPanel["iconPath"],
     reveal,
@@ -4136,7 +4171,7 @@ function createPanelHarness(
       disposeListener = listener;
       return { dispose: () => undefined };
     },
-    onDidChangeViewState: (next: (event: { webviewPanel: { active: boolean } }) => void) => {
+    onDidChangeViewState: (next: (event: { webviewPanel: { active: boolean; visible: boolean } }) => void) => {
       viewStateListener = next;
       return { dispose: () => undefined };
     }
@@ -4221,10 +4256,16 @@ function createPanelHarness(
     reveal,
     activate() {
       panel.active = true;
+      panel.visible = true;
       viewStateListener?.({ webviewPanel: panel });
     },
     deactivate() {
       panel.active = false;
+      viewStateListener?.({ webviewPanel: panel });
+    },
+    hide() {
+      panel.active = false;
+      panel.visible = false;
       viewStateListener?.({ webviewPanel: panel });
     },
     dispose() {
