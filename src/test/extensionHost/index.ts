@@ -16430,8 +16430,10 @@ async function exercisePackagedExcelDependencyInstall(
     await waitFor(
       () => {
         const active = testing.activeSession();
+        // The custom editor publishes VS Code's canonical Uri.fsPath spelling;
+        // raw os.tmpdir() paths may retain different drive-letter casing on Windows.
         return (
-          active?.metadata.source.path === workbookPath &&
+          active?.metadata.source.path === workbook.fsPath &&
           active.metadata.backend === "pandas" &&
           active.metadata.shape.rows === 64 &&
           active.metadata.shape.columns === 6
@@ -16442,7 +16444,7 @@ async function exercisePackagedExcelDependencyInstall(
       () =>
         excelDependencyInstallDiagnostics(
           testing,
-          workbookPath,
+          workbook.fsPath,
           dependency.executable,
           existsSync(dependency.marker),
           existsSync(dependency.invocation)
