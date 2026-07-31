@@ -108,8 +108,8 @@ counts the complete frame, while per-page transfer safeguards are not dataframe 
 | PySpark 4.2, experimental | Not currently supported                | DataFrame                    | Viewing-only Spark queries with bounded returned results              |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
-Notebook variables are matched to their native supported dataframe type, including DuckDB relations and PySpark
-4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
+Notebook variables are matched to their native supported dataframe type, including Pandas 2 and 3, DuckDB
+relations, and PySpark 4.2 DataFrames. Polars LazyFrames collect when opened from a notebook.
 
 Python pickle files are deliberately unsupported: loading a pickle can execute arbitrary code. Convert trusted
 pickle data to Parquet, CSV, or JSONL in a controlled Python environment before opening it in Open Wrangler.

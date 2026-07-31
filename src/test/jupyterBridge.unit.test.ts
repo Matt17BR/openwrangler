@@ -928,8 +928,10 @@ describe("notebook command provenance", () => {
         truncated: false,
         variables: [
           { name: "duck_relation", type: "_duckdb.DuckDBPyRelation", backend: "duckdb" },
-          { name: "pandas_frame", type: "pandas.core.frame.DataFrame", backend: "pandas" },
-          { name: "pandas_series", type: "pandas.core.series.Series", backend: "pandas" },
+          { name: "pandas_current_frame", type: "pandas.DataFrame", backend: "pandas" },
+          { name: "pandas_current_series", type: "pandas.Series", backend: "pandas" },
+          { name: "pandas_legacy_frame", type: "pandas.core.frame.DataFrame", backend: "pandas" },
+          { name: "pandas_legacy_series", type: "pandas.core.series.Series", backend: "pandas" },
           { name: "polars_frame", type: "polars.dataframe.frame.DataFrame", backend: "polars" },
           { name: "polars_lazy", type: "polars.lazyframe.frame.LazyFrame", backend: "polars" },
           { name: "polars_series", type: "polars.series.series.Series", backend: "polars" },
@@ -969,11 +971,17 @@ describe("notebook command provenance", () => {
         detail: "_duckdb.DuckDBPyRelation · Live viewing-only session"
       }),
       expect.objectContaining({
-        label: "pandas_frame",
+        label: "pandas_current_frame",
+        description: "Pandas · DataFrame",
+        detail: "pandas.DataFrame · Live notebook session"
+      }),
+      expect.objectContaining({ label: "pandas_current_series", description: "Pandas · Series" }),
+      expect.objectContaining({
+        label: "pandas_legacy_frame",
         description: "Pandas · DataFrame",
         detail: "pandas.core.frame.DataFrame · Live notebook session"
       }),
-      expect.objectContaining({ label: "pandas_series", description: "Pandas · Series" }),
+      expect.objectContaining({ label: "pandas_legacy_series", description: "Pandas · Series" }),
       expect.objectContaining({ label: "polars_frame", description: "Polars · DataFrame" }),
       expect.objectContaining({ label: "polars_lazy", description: "Polars · LazyFrame" }),
       expect.objectContaining({ label: "polars_series", description: "Polars · Series" }),
@@ -1321,7 +1329,7 @@ function discoveryOutputs(
     variables: [
       {
         name: "frame",
-        type: "pandas.core.frame.DataFrame",
+        type: "pandas.DataFrame",
         backend: "pandas"
       }
     ]

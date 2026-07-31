@@ -15,6 +15,8 @@ const MAX_DISCOVERY_OUTPUTS = 128;
 const MAX_DISCOVERY_OUTPUT_ITEMS = 256;
 
 const NOTEBOOK_VARIABLE_TYPES = {
+  "pandas.DataFrame": { backend: "pandas", family: "Pandas", kind: "DataFrame" },
+  "pandas.Series": { backend: "pandas", family: "Pandas", kind: "Series" },
   "pandas.core.frame.DataFrame": { backend: "pandas", family: "Pandas", kind: "DataFrame" },
   "pandas.core.series.Series": { backend: "pandas", family: "Pandas", kind: "Series" },
   "polars.dataframe.frame.DataFrame": { backend: "polars", family: "Polars", kind: "DataFrame" },
@@ -242,6 +244,8 @@ def __ow_discover_variables_v1():
     import json as __ow_json
     import sys as __ow_sys
     __ow_specs = {
+        ("pandas", "DataFrame"): ("pandas.DataFrame", "pandas"),
+        ("pandas", "Series"): ("pandas.Series", "pandas"),
         ("pandas.core.frame", "DataFrame"): ("pandas.core.frame.DataFrame", "pandas"),
         ("pandas.core.series", "Series"): ("pandas.core.series.Series", "pandas"),
         ("polars.dataframe.frame", "DataFrame"): ("polars.dataframe.frame.DataFrame", "polars"),

@@ -14,6 +14,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 - Branded Open Wrangler workbench and custom-editor tabs with the theme-specific Open Wrangler action icon instead
   of inheriting a generic text or source-file glyph.
+- Restored Pandas 3 `DataFrame` and `Series` discovery in the notebook toolbar picker while retaining the Pandas 2
+  type aliases and rejecting classes that only spoof a Pandas module and type name.
 
 ## [1.1.9] - 2026-07-31
 
