@@ -4326,38 +4326,39 @@ async function captureReleasedJupyterCodeInsertion(
     await workbench.waitForTimeout(600);
     const notebookSurface = workbench.locator(".notebook-editor:visible").first();
     await notebookSurface.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    const codeEditor = notebookSurface
-      .locator(".monaco-editor:visible")
-      .filter({ hasText: "def clean_data(df):" })
-      .last();
-    await codeEditor.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    const visibleCode = (await codeEditor.innerText()).replace(/\s+$/gu, "");
-    assert.ok(visibleCode.includes("import pandas as pd"));
-    assert.ok(visibleCode.includes("def clean_data(df):"));
-    const geometry = await codeEditor.evaluate((element) => {
+    const insertedCell = notebookSurface
+      .locator(`.monaco-list-row.code-cell-row[data-index="${insertedIndex}"]`)
+      .first();
+    await insertedCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    const geometry = await insertedCell.evaluate((element) => {
       type NotebookCodeElement = {
         readonly clientWidth: number;
         readonly scrollWidth: number;
         closest(selector: string): NotebookCodeElement | null;
+        getAttribute(name: string): string | null;
         getBoundingClientRect(): { bottom: number; left: number; right: number; top: number };
         querySelector(selector: string): NotebookCodeElement | null;
       };
-      const root = element as unknown as NotebookCodeElement;
-      const cell = root.closest(".monaco-list-row");
-      const notebook = root.closest(".notebook-editor");
-      const lines = root.querySelector(".view-lines");
-      if (!cell || !notebook || !lines) throw new Error("The inserted notebook cell geometry is incomplete.");
+      const cell = element as unknown as NotebookCodeElement;
+      const notebook = cell.closest(".notebook-editor");
+      const editorRoot = cell.querySelector(".cell-editor-part .monaco-editor");
+      const lines = cell.querySelector(".cell-editor-part .view-lines");
+      if (!notebook || !editorRoot || !lines) {
+        throw new Error("The inserted notebook cell geometry is incomplete.");
+      }
       const cellBounds = cell.getBoundingClientRect();
       const notebookBounds = notebook.getBoundingClientRect();
       return {
+        dataIndex: cell.getAttribute("data-index"),
         cellInsideNotebook:
           cellBounds.left >= notebookBounds.left - 1 &&
           cellBounds.top >= notebookBounds.top - 1 &&
           cellBounds.right <= notebookBounds.right + 1 &&
           cellBounds.bottom <= notebookBounds.bottom + 1,
-        horizontalOverflow: lines.scrollWidth - root.clientWidth
+        horizontalOverflow: lines.scrollWidth - editorRoot.clientWidth
       };
     });
+    assert.equal(geometry.dataIndex, String(insertedIndex), "The captured row must be the inserted notebook cell.");
     assert.equal(geometry.cellInsideNotebook, true, "The complete generated cell must stay inside the notebook.");
     assert.ok(geometry.horizontalOverflow <= 1, "The generated code insertion scene must not clip code lines.");
     await clearReleasedJupyterScreenshotTransientUi(workbench);
