@@ -8471,26 +8471,32 @@ async function captureReleasedJupyterVariablePicker(
 }
 
 async function assertReleasedJupyterCaptureInternalMarkerHidden(workbench: Page): Promise<void> {
-  const observations = await Promise.all(
-    releasedWorkbenchFrames(workbench).map((frame) =>
-      frame
-        .locator("body")
-        .evaluate(
-          (body, expected) => {
-            const visibleText = (body as unknown as { readonly innerText: string }).innerText;
-            return {
-              internalMarker: visibleText.includes(expected.internalMarker),
-              showcasePreview: visibleText.includes(expected.showcasePreview)
-            };
-          },
-          {
-            internalMarker: RELEASED_JUPYTER_RESTART_RESULT,
-            showcasePreview: "Open Wrangler preview: orders_preview_df"
-          }
-        )
-        .catch(() => undefined)
-    )
-  );
+  const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+  let observations: Array<{ internalMarker: boolean; showcasePreview: boolean } | undefined> = [];
+  do {
+    observations = await Promise.all(
+      releasedWorkbenchFrames(workbench).map((frame) =>
+        frame
+          .locator("body")
+          .evaluate(
+            (body, expected) => {
+              const visibleText = (body as unknown as { readonly innerText: string }).innerText;
+              return {
+                internalMarker: visibleText.includes(expected.internalMarker),
+                showcasePreview: visibleText.includes(expected.showcasePreview)
+              };
+            },
+            {
+              internalMarker: RELEASED_JUPYTER_RESTART_RESULT,
+              showcasePreview: "Open Wrangler preview: orders_preview_df"
+            }
+          )
+          .catch(() => undefined)
+      )
+    );
+    if (observations.some((observation) => observation?.showcasePreview === true)) break;
+    await workbench.waitForTimeout(50);
+  } while (Date.now() < deadline);
   assert.ok(
     observations.some((observation) => observation !== undefined),
     "Notebook screenshot hygiene must inspect at least one live workbench document."

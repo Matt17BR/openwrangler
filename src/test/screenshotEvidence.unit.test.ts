@@ -284,6 +284,10 @@ describe("packaged editor screenshot evidence", () => {
     );
     expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
     expect(extensionHost).not.toContain("Public notebook screenshots must retain the readable showcase source cell.");
+    expect(extensionHost).toContain("const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;");
+    expect(extensionHost).toContain(
+      "if (observations.some((observation) => observation?.showcasePreview === true)) break;"
+    );
     expect(extensionHost).toContain('pageSize.value = "10"');
     expect(extensionHost).toContain("scrollerBounds.top + scroller.clientTop + scroller.clientHeight");
     expect(pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")).toBeGreaterThan(0);
