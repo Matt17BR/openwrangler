@@ -8219,6 +8219,20 @@ async function prepareReleasedJupyterScreenshotWorkbench(
   await clearReleasedJupyterScreenshotTransientUi(workbench);
   const visibleEditor = await showExactReleasedNotebook(notebook);
   assert.equal(visibleEditor, editor, "Notebook screenshot preparation must retain the exact originating editor.");
+  if (options.isolateShowcaseCell) {
+    const requiredCommands = [
+      "notebook.focusTop",
+      "notebook.cell.collapseCellInput",
+      "notebook.cell.collapseCellOutput"
+    ] as const;
+    const commands = new Set(await vscode.commands.getCommands(true));
+    for (const command of requiredCommands) {
+      assert.ok(commands.has(command), `Notebook screenshot isolation requires the built-in ${command} command.`);
+    }
+    await vscode.commands.executeCommand(requiredCommands[0]);
+    await vscode.commands.executeCommand(requiredCommands[1]);
+    await vscode.commands.executeCommand(requiredCommands[2]);
+  }
   const renderedCell = new vscode.NotebookRange(1, 2);
   editor.selection = renderedCell;
   editor.selections = [renderedCell];
