@@ -94,21 +94,21 @@ The real packaged-Jupyter allow path records the following behavior:
 
 ## PySpark live-notebook viewing preview matrix
 
-PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. **Partial** combines the unconditional PySpark 4.2 and Java 17 engine contract with real packaged VS Code and Cursor released-Jupyter runs for local Classic and Connect. It does not claim external-cluster, cancellation, large-partition performance, or a broader cross-platform support matrix.
+PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. **Partial** combines the unconditional PySpark 4.2 and Java 17 engine contract with real packaged VS Code and Cursor released-Jupyter runs for local Classic and Connect. A bounded 20,000-row, 23-partition skew fixture now proves native exact counting, far paging, filtering, multi-key sorting, summaries, and cleanup in both modes. This is correctness evidence, not a claim about external clusters, cancellation, large-partition performance, or a broader cross-platform support matrix.
 
-| Surface                                        | Availability             | Status  | Recorded evidence                                        | Remaining acceptance gate                                   |
-| ---------------------------------------------- | ------------------------ | ------- | -------------------------------------------------------- | ----------------------------------------------------------- |
-| Classic PySpark DataFrame detection            | Live notebook only       | Partial | Exact 4.2 adapter plus packaged VS Code/Cursor launch    | External-cluster and broader cross-platform evidence        |
-| Local Spark Connect DataFrame viewing          | Live notebook only       | Partial | Local Connect plus packaged VS Code/Cursor launch        | External or authenticated Connect server execution          |
-| Indexed, projected grid pages                  | Read-only                | Partial | Native projection plus byte/node/depth page bounds       | Large partitioned fixture and repeated performance evidence |
-| Basic/advanced filters and multi-column sorts  | Read-only                | Partial | Native expressions plus packaged filtered/sorted pages   | Full literal edge matrix and external-cluster evidence      |
-| Summaries, statistics, and distinct values     | Read-only                | Partial | Native aggregates and canonical nested-map profile keys  | Repeated resource and performance evidence                  |
-| Session cleanup                                | Owned indexed child only | Partial | Unpersist, kernel replay, and owner-session reuse green  | Cancellation and external-cluster recovery                  |
-| Cleaning operations and history                | No                       | Planned | Capabilities reject editing                              | Distributed transformation IR and native code generation    |
-| Script/notebook/data export                    | No                       | Planned | Capabilities reject export                               | Source-safe Spark-native export design                      |
-| Saved-output MIME formatter                    | No                       | Planned | `notebookOutput` is not advertised                       | Bounded distributed snapshot policy                         |
-| File sessions and automatic backend selection  | No                       | Planned | `file` is not advertised                                 | Explicit Spark source/session configuration design          |
-| VS Code/Cursor packaged and release acceptance | Both editors accepted    | Partial | Released Jupyter in both editors, restart, cleanup green | Broader OS matrix and external-cluster execution            |
+| Surface                                        | Availability             | Status  | Recorded evidence                                        | Remaining acceptance gate                                |
+| ---------------------------------------------- | ------------------------ | ------- | -------------------------------------------------------- | -------------------------------------------------------- |
+| Classic PySpark DataFrame detection            | Live notebook only       | Partial | Exact 4.2 adapter plus packaged VS Code/Cursor launch    | External-cluster and broader cross-platform evidence     |
+| Local Spark Connect DataFrame viewing          | Live notebook only       | Partial | Local Connect plus packaged VS Code/Cursor launch        | External or authenticated Connect server execution       |
+| Indexed, projected grid pages                  | Read-only                | Partial | Native bounds plus a 20k-row/23-partition skew fixture   | Repeated performance and external-cluster evidence       |
+| Basic/advanced filters and multi-column sorts  | Read-only                | Partial | Native expressions plus packaged filtered/sorted pages   | Full literal edge matrix and external-cluster evidence   |
+| Summaries, statistics, and distinct values     | Read-only                | Partial | Native aggregates and canonical nested-map profile keys  | Repeated resource and performance evidence               |
+| Session cleanup                                | Owned indexed child only | Partial | Unpersist, kernel replay, and owner-session reuse green  | Cancellation and external-cluster recovery               |
+| Cleaning operations and history                | No                       | Planned | Capabilities reject editing                              | Distributed transformation IR and native code generation |
+| Script/notebook/data export                    | No                       | Planned | Capabilities reject export                               | Source-safe Spark-native export design                   |
+| Saved-output MIME formatter                    | No                       | Planned | `notebookOutput` is not advertised                       | Bounded distributed snapshot policy                      |
+| File sessions and automatic backend selection  | No                       | Planned | `file` is not advertised                                 | Explicit Spark source/session configuration design       |
+| VS Code/Cursor packaged and release acceptance | Both editors accepted    | Partial | Released Jupyter in both editors, restart, cleanup green | Broader OS matrix and external-cluster execution         |
 
 ## Recorded acceptance evidence
 

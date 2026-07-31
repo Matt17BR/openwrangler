@@ -570,6 +570,111 @@ def test_projected_paging_filters_sorts_and_profiles_are_native_and_bounded(
     assert spark_session.range(1).count() == 1
 
 
+def test_partitioned_skewed_frame_keeps_native_far_paging_multi_sort_and_cleanup(
+    spark_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    functions = import_module("pyspark.sql.functions")
+    row_count = 20_000
+    hot_row_count = 19_400
+    partition_count = 23
+    source = (
+        spark_session.range(row_count, numPartitions=partition_count)
+        .select(
+            functions.col("id").alias("record_id"),
+            functions.when(functions.col("id") < hot_row_count, functions.lit("hot"))
+            .otherwise(functions.concat(functions.lit("tail-"), functions.col("id").cast("string")))
+            .alias("segment"),
+            functions.when(
+                (functions.col("id") % 97) == 0,
+                functions.lit(None).cast("double"),
+            )
+            .otherwise((functions.col("id") % 1_000).cast("double"))
+            .alias("score"),
+        )
+        .repartition(partition_count, "record_id")
+    )
+    assert source.select(functions.spark_partition_id().alias("partition_id")).distinct().count() == partition_count
+
+    dataframe_type = type(source)
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Partitioned PySpark viewing must never use a dataframe conversion path.")
+
+    for method_name in ("toPandas", "toArrow", "mapInPandas", "mapInArrow"):
+        if hasattr(dataframe_type, method_name):
+            monkeypatch.setattr(dataframe_type, method_name, forbidden)
+
+    engine, indexed = _open_engine(source, "partitioned-skew")
+    try:
+        assert engine.shape(indexed) == {"rows": row_count, "columns": 3}
+        far_page = engine.page(
+            indexed,
+            row_count - 12,
+            20,
+            total_rows=row_count,
+            column_projection=[(0, "record-id"), (1, "segment-id")],
+        )
+        assert far_page["columnIds"] == ["record-id", "segment-id"]
+        assert [row["rowNumber"] for row in far_page["rows"]] == list(range(row_count - 12, row_count))
+        assert [int(row["id"].rsplit(":", 1)[1]) for row in far_page["rows"]] == list(range(row_count - 12, row_count))
+
+        model = {
+            "logic": "and",
+            "filters": [
+                {
+                    "column": "segment",
+                    "type": "string",
+                    "logic": "and",
+                    "predicates": [{"operator": "equals", "value": "hot"}],
+                }
+            ],
+            "sort": [
+                {"column": "score", "direction": "asc", "nulls": "last"},
+                {"column": "record_id", "direction": "desc", "nulls": "last"},
+            ],
+        }
+        view = engine.apply_filter_model(indexed, model)
+        assert engine.shape(view) == {"rows": hot_row_count, "columns": 3}
+
+        expected_ids = sorted(
+            range(hot_row_count),
+            key=lambda value: (
+                value % 97 == 0,
+                value % 1_000 if value % 97 != 0 else 0,
+                -value,
+            ),
+        )
+        first_page = engine.page(
+            view,
+            0,
+            5,
+            total_rows=hot_row_count,
+            column_projection=[(0, "record-id")],
+        )
+        last_page = engine.page(
+            view,
+            hot_row_count - 5,
+            5,
+            total_rows=hot_row_count,
+            column_projection=[(0, "record-id")],
+        )
+        assert [row["values"][0]["raw"] for row in first_page["rows"]] == expected_ids[:5]
+        assert [row["values"][0]["raw"] for row in last_page["rows"]] == expected_ids[-5:]
+
+        score_summary = engine.summaries(view, [(2, "score-id")])[0]
+        assert score_summary["totalCount"] == hot_row_count
+        assert score_summary["nullCount"] == 200
+        assert score_summary["numeric"]["min"] == 0.0
+        assert score_summary["numeric"]["max"] == 999.0
+    finally:
+        engine.close()
+
+    # Closing Open Wrangler releases only its indexed child, not the user's
+    # Classic or Connect Spark session.
+    assert spark_session.range(1).count() == 1
+
+
 def test_numeric_histogram_is_exact_for_a_large_filtered_view(spark_session: Any) -> None:
     functions = import_module("pyspark.sql.functions")
     source = (
