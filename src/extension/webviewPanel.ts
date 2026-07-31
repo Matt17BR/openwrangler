@@ -18,6 +18,7 @@ import { ImportCancelledError, promptImportOptions } from "./files/importOptions
 
 const PANEL_RUNTIME_CLEANUP_TIMEOUT_MS = 2_000;
 const RENDERER_IMPORT_PREPARATION_TIMEOUT_MS = 1_500;
+const RENDERER_STARTUP_RECOVERY_TIMEOUT_MS = 5_000;
 const RENDERER_SYNCHRONIZATION_ACK_TIMEOUT_MS = 5_000;
 export const SESSION_BOUND_EXPORT_DATA_COMMAND = "openWrangler.internal.exportSessionData";
 
@@ -73,6 +74,8 @@ export class OpenWranglerPanel {
     | undefined;
   private pendingPreReadyImportResponse: OpenWranglerResponse | undefined;
   private unpublishedAuthoritativeSnapshot = false;
+  private rendererStartupRecoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  private rendererStartupRecoveryAttempted = false;
   private openAttemptGeneration = 0;
   private closing: Promise<OpenWranglerResponse> | undefined;
   private disposed = false;
@@ -280,6 +283,7 @@ export class OpenWranglerPanel {
     this.importChangeCancellation?.cancel();
     this.importChangeCancellation?.dispose();
     this.importChangeCancellation = undefined;
+    this.clearRendererStartupRecoveryTimer();
     this.settleRendererImportAction(undefined, undefined);
     this.settleRendererSynchronizationAcknowledgement(undefined, false);
     OpenWranglerPanel.panels.delete(this);
@@ -308,6 +312,7 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "ready") {
+      this.clearRendererStartupRecoveryTimer();
       this.rendererReady = true;
       this.invalidateRendererSynchronization();
       await this.enqueueRendererSynchronization(true);
@@ -315,6 +320,7 @@ export class OpenWranglerPanel {
     }
 
     if (decoded.kind === "requestSessionSnapshot") {
+      this.clearRendererStartupRecoveryTimer();
       this.rendererReady = true;
       this.invalidateRendererSynchronization();
       await this.enqueueRendererSynchronization(false);
@@ -331,6 +337,7 @@ export class OpenWranglerPanel {
         this.rendererHydratedSyncId = decoded.syncId;
         this.rendererViewStateLocked = false;
         this.pendingPreReadyImportResponse = undefined;
+        this.clearRendererStartupRecoveryTimer();
         this.settleRendererSynchronizationAcknowledgement(decoded.syncId, true);
         this.revealCodePreviewAfterRendererSynchronization();
       }
@@ -748,7 +755,10 @@ export class OpenWranglerPanel {
         }
         return;
       }
-      if (request.kind === "openSession") this.openResponse = response;
+      if (request.kind === "openSession") {
+        this.openResponse = response;
+        this.scheduleRendererStartupRecovery();
+      }
       if (response.kind === "sessionOpened") {
         this.invalidateRendererSynchronization();
         this.sessionId = response.metadata.sessionId;
@@ -840,7 +850,10 @@ export class OpenWranglerPanel {
         recoverable: true,
         ...viewRequestIdProperty(request)
       };
-      if (request.kind === "openSession") this.openResponse = response;
+      if (request.kind === "openSession") {
+        this.openResponse = response;
+        this.scheduleRendererStartupRecovery();
+      }
       await this.postRuntimeResponse(request, response);
       if (request.kind === "openSession" && this.rendererReady) this.scheduleRendererSynchronization(false);
     }
@@ -920,6 +933,41 @@ export class OpenWranglerPanel {
     this.rendererSynchronizationAcknowledgement = undefined;
     acknowledgement.resolve(hydrated);
     return true;
+  }
+
+  private scheduleRendererStartupRecovery(): void {
+    if (
+      this.disposed ||
+      this.rendererReady ||
+      this.rendererStartupRecoveryAttempted ||
+      this.rendererStartupRecoveryTimer ||
+      !this.openResponse ||
+      !this.panel.active
+    ) {
+      return;
+    }
+    this.rendererStartupRecoveryTimer = setTimeout(() => {
+      this.rendererStartupRecoveryTimer = undefined;
+      if (
+        this.disposed ||
+        this.rendererReady ||
+        this.rendererStartupRecoveryAttempted ||
+        !this.openResponse ||
+        !this.panel.active
+      ) {
+        return;
+      }
+      this.rendererStartupRecoveryAttempted = true;
+      this.invalidateRendererSynchronization();
+      this.panel.webview.html = this.renderHtml();
+      this.bridge.reportDiagnostic?.("Open Wrangler reloaded a renderer that did not complete its startup handshake.");
+    }, RENDERER_STARTUP_RECOVERY_TIMEOUT_MS);
+  }
+
+  private clearRendererStartupRecoveryTimer(): void {
+    if (!this.rendererStartupRecoveryTimer) return;
+    clearTimeout(this.rendererStartupRecoveryTimer);
+    this.rendererStartupRecoveryTimer = undefined;
   }
 
   private revealCodePreviewAfterRendererSynchronization(): void {
@@ -1056,6 +1104,7 @@ export class OpenWranglerPanel {
       // reachable. Do not keep treating that retired generation as ready.
       this.rendererReady = false;
       this.invalidateRendererSynchronization();
+      this.scheduleRendererStartupRecovery();
     }
   }
 
@@ -1073,9 +1122,11 @@ export class OpenWranglerPanel {
       canChangeImportOptions(this.source)
     );
     this.bridge.setActiveSession?.(this.sessionId);
+    this.scheduleRendererStartupRecovery();
   }
 
   private deactivate(): void {
+    this.clearRendererStartupRecoveryTimer();
     if (OpenWranglerPanel.activePanel !== this) return;
     OpenWranglerPanel.activePanel = undefined;
     this.bridge.setActiveSession?.(undefined);

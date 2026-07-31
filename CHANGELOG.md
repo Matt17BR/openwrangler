@@ -16,6 +16,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Recovered an active VS Code or Cursor dataframe tab when its webview never completes the initial ready
+  handshake. The extension keeps the confirmed runtime session, reloads only the renderer once after a bounded
+  grace period, and republishes the authoritative snapshot instead of leaving a blank grid.
 - Replayed notebook sessions with the runtime-confirmed effective mode. A DuckDB relation opened while the
   notebook default requests Editing is correctly normalized to Viewing once, then recovers in Viewing after a
   kernel restart instead of rejecting its valid replacement session.
