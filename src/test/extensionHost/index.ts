@@ -8220,18 +8220,24 @@ async function prepareReleasedJupyterScreenshotWorkbench(
   const visibleEditor = await showExactReleasedNotebook(notebook);
   assert.equal(visibleEditor, editor, "Notebook screenshot preparation must retain the exact originating editor.");
   if (options.isolateShowcaseCell) {
-    const requiredCommands = [
-      "notebook.focusTop",
-      "notebook.cell.collapseCellInput",
-      "notebook.cell.collapseCellOutput"
-    ] as const;
+    const requiredCommands = ["notebook.cell.collapseCellInput", "notebook.cell.collapseCellOutput"] as const;
     const commands = new Set(await vscode.commands.getCommands(true));
     for (const command of requiredCommands) {
       assert.ok(commands.has(command), `Notebook screenshot isolation requires the built-in ${command} command.`);
     }
-    await vscode.commands.executeCommand(requiredCommands[0]);
-    await vscode.commands.executeCommand(requiredCommands[1]);
-    await vscode.commands.executeCommand(requiredCommands[2]);
+    for (const internalIndex of [0, 3, 4]) {
+      const internalCell = new vscode.NotebookRange(internalIndex, internalIndex + 1);
+      editor.selection = internalCell;
+      editor.selections = [internalCell];
+      editor.revealRange(internalCell, vscode.NotebookEditorRevealType.InCenter);
+      await waitFor(
+        () => editor.visibleRanges.some((visible) => visible.start <= internalIndex && visible.end > internalIndex),
+        WORKBENCH_PLAYWRIGHT_TIMEOUT_MS,
+        `the private notebook cell ${internalIndex} to become visible before it is collapsed`
+      );
+      await vscode.commands.executeCommand(requiredCommands[0]);
+      await vscode.commands.executeCommand(requiredCommands[1]);
+    }
   }
   const renderedCell = new vscode.NotebookRange(1, 2);
   editor.selection = renderedCell;

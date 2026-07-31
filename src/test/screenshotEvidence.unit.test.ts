@@ -279,9 +279,12 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain('"# Explore recent orders in Open Wrangler\\n"');
     expect(extensionHost).not.toContain('"notebook.cell.collapseAllCellInputs"');
     expect(extensionHost).not.toContain('"notebook.cell.collapseAllCellOutputs"');
-    expect(extensionHost).toContain('"notebook.focusTop"');
     expect(extensionHost).toContain('"notebook.cell.collapseCellInput"');
     expect(extensionHost).toContain('"notebook.cell.collapseCellOutput"');
+    expect(extensionHost).toContain("for (const internalIndex of [0, 3, 4])");
+    expect(extensionHost).toContain(
+      "the private notebook cell ${internalIndex} to become visible before it is collapsed"
+    );
     expect(extensionHost).toContain(
       "The public notebook showcase cell must be visible before its media journey begins."
     );
