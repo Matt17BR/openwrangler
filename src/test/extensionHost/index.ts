@@ -693,9 +693,12 @@ export async function run(): Promise<void> {
     return;
   }
   if (phase === "platform-smoke") {
+    assert.ok(testPython, "The packaged platform smoke requires the runner-selected Python environment.");
     recordAcceptanceProgress("platform-smoke:start");
     const firstUseFixture = ensurePackagedFirstUseFixture(workspace);
     await exercisePackagedPlatformSmoke(testing, extension, firstUseFixture);
+    recordAcceptanceProgress("platform-smoke:excel-dependency-install");
+    await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
     if (process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS) {
       recordAcceptanceProgress("platform-smoke:screenshots");
       await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
@@ -790,6 +793,8 @@ export async function run(): Promise<void> {
     await capturePackagedEditorScreenshots(testing, process.env.OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS);
   }
   if (testPython && process.env.OPEN_WRANGLER_EDITOR_CDP_PORT) {
+    recordAcceptanceProgress("verify:excel-dependency-install");
+    await exercisePackagedExcelDependencyInstall(testing, workspace, testPython);
     recordAcceptanceProgress("verify:dependency-recovery");
     await exerciseDependencyMutationRecovery(
       testing,
@@ -13160,6 +13165,19 @@ async function waitForOpenWranglerWebviewButton(
   name: string,
   requireEnabled = false
 ): Promise<Locator> {
+  return (await waitForOpenWranglerWebviewAction(workbench, name, requireEnabled)).action;
+}
+
+interface OpenWranglerWebviewAction {
+  target: OpenWranglerWebviewTarget;
+  action: Locator;
+}
+
+async function waitForOpenWranglerWebviewAction(
+  workbench: Page,
+  name: string,
+  requireEnabled = false
+): Promise<OpenWranglerWebviewAction> {
   const deadline = Date.now() + OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS;
   discovery: do {
     const browser = workbench.context().browser();
@@ -13178,7 +13196,7 @@ async function waitForOpenWranglerWebviewButton(
           remainingMs,
           `the Open Wrangler ${JSON.stringify(name)} button`
         );
-        if (available) return button;
+        if (available) return { target, action: button };
       } catch (error) {
         if (Date.now() >= deadline) break discovery;
         ignoreRetiredRendererProbeFailure(workbench, browser, target.page, target.frame, error);
@@ -14278,6 +14296,12 @@ interface DependencyInstallLifecycleFixture {
   completed: string;
 }
 
+interface ExcelDependencyInstallFixture {
+  executable: string;
+  marker: string;
+  invocation: string;
+}
+
 interface DependencyGuardAcceptanceEnvironment {
   executable: string;
   executableIdentity: {
@@ -14783,6 +14807,267 @@ async function assertDependencyRecoveryDialog(dialog: Locator, executable: strin
     1,
     "The dependency-recovery modal must expose exactly one affirmative Revalidate action."
   );
+}
+
+async function exercisePackagedExcelDependencyInstall(
+  testing: TestApi,
+  workspace: vscode.Uri,
+  python: string
+): Promise<void> {
+  assert.ok(
+    process.env.OPEN_WRANGLER_EDITOR_CDP_PORT,
+    "The XLSX dependency-install journey requires the isolated native editor workbench."
+  );
+  assert.equal(
+    testing.diagnostics().sessionCount,
+    0,
+    "The XLSX dependency-install journey must start without another dataframe session."
+  );
+  assert.equal(
+    testing.runtimeRunning(),
+    false,
+    "The XLSX dependency-install journey must start without a live dataframe runtime."
+  );
+
+  const directory = mkdtempSync(path.join(tmpdir(), "openwrangler-excel-install-"));
+  const workbookPath = path.join(directory, "regional-orders.xlsx");
+  createPackagedExcelDependencyWorkbook(workbookPath, python);
+  const workbook = vscode.Uri.file(workbookPath);
+  const workbookBytes = readFileSync(workbookPath);
+  const dependency = createExcelDependencyInstallPython(directory, python);
+  const config = vscode.workspace.getConfiguration("openWrangler", workspace);
+  const originalWorkspacePythonPath = config.inspect<string>("pythonPath")?.workspaceValue;
+  const originalGlobalBackend = config.inspect<"auto" | "polars" | "duckdb" | "pandas">("defaultBackend")?.globalValue;
+  const workbench = await connectToEditorWorkbench();
+
+  try {
+    await config.update("defaultBackend", "pandas", vscode.ConfigurationTarget.Global);
+    assert.equal(
+      await vscode.commands.executeCommand("openWrangler.changeRuntime", dependency.executable),
+      dependency.executable,
+      "The public runtime command must select the disposable dependency environment."
+    );
+    assert.equal(config.inspect<string>("pythonPath")?.workspaceValue, dependency.executable);
+
+    recordAcceptanceProgress("excel-dependency-install:open");
+    await vscode.commands.executeCommand("vscode.openWith", workbook, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => {
+        const response = testing.panelOpenResponse();
+        return response?.kind === "error" && response.code === "missing_dependencies";
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the XLSX panel to report its exact missing dependency",
+      () =>
+        JSON.stringify({
+          response: testing.panelOpenResponse(),
+          coordinator: testing.diagnostics(),
+          runtimeRunning: testing.runtimeRunning(),
+          runtimeEnvironment: testing.runtimeEnvironment()
+        })
+    );
+    const missing = testing.panelOpenResponse();
+    assert.equal(missing?.kind, "error");
+    if (missing?.kind !== "error") throw new Error("The XLSX dependency error was replaced unexpectedly.");
+    assert.equal(missing.code, "missing_dependencies");
+    assert.match(missing.message, /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5\.$/u);
+    assert.doesNotMatch(missing.message, /fastexcel|polars|xlrd/iu);
+    assert.equal(testing.activeSession(), undefined);
+    assert.equal(testing.diagnostics().sessionCount, 0);
+    assert.equal(testing.runtimeRunning(), false, "Missing Excel support must fail before runtime startup.");
+    assert.equal(existsSync(dependency.marker), false, "The fake installation marker must not exist before consent.");
+    assert.equal(existsSync(dependency.invocation), false, "The private fake pip must not run before consent.");
+    assert.deepEqual(readFileSync(workbookPath), workbookBytes, "The failed XLSX open must not modify the workbook.");
+
+    const initialTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const initialInput = initialTab?.input;
+    assert.ok(initialInput instanceof vscode.TabInputCustom, "The failed XLSX open must retain its custom-editor tab.");
+    assert.equal(initialInput.viewType, "openWrangler.viewer");
+    assert.equal(initialInput.uri.toString(), workbook.toString());
+    const install = await waitForOpenWranglerWebviewAction(workbench, "Install required dependency", true);
+    const errorAlert = install.target.frame.getByRole("alert").filter({ hasText: "openpyxl>=3.1.5" }).first();
+    await errorAlert.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.match(await errorAlert.innerText(), /cannot open this source with Pandas\. Missing: openpyxl>=3\.1\.5\.$/u);
+
+    recordAcceptanceProgress("excel-dependency-install:request");
+    await withAcceptanceOperationDeadline(
+      install.action.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, noWaitAfter: true }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the XLSX error panel dependency-install action"
+    );
+    const { page: confirmationPage, dialog: confirmation } = await waitForVisibleEditorDialog(
+      workbench,
+      "Install openpyxl>=3.1.5"
+    );
+    await confirmationPage.bringToFront();
+    assert.equal(
+      await confirmation.locator(".dialog-message-text").innerText(),
+      `Install openpyxl>=3.1.5 into ${dependency.executable}?`
+    );
+    assert.equal(
+      await confirmation.locator(".dialog-message-detail").innerText(),
+      "Open Wrangler never installs packages without this confirmation."
+    );
+    const installButton = confirmation.getByRole("button", { name: "Install", exact: true });
+    assert.equal(
+      await installButton.count(),
+      1,
+      "The XLSX dependency modal must expose exactly one affirmative Install action."
+    );
+    assert.equal(await installButton.isVisible(), true, "The XLSX dependency Install action must be visible.");
+    assert.equal(await installButton.isEnabled(), true, "The XLSX dependency Install action must be enabled.");
+    await confirmationPage.mouse.move(1, 1);
+    await confirmationPage
+      .locator(".monaco-hover:visible")
+      .waitFor({ state: "hidden", timeout: 1_000 })
+      .catch(() => {});
+
+    recordAcceptanceProgress("excel-dependency-install:confirm");
+    await withAcceptanceOperationDeadline(
+      installButton.click({ timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS, noWaitAfter: true }),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the literal XLSX dependency Install confirmation"
+    );
+    await confirmation.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    await waitFor(
+      () => existsSync(dependency.marker) && existsSync(dependency.invocation),
+      WORKBENCH_OPERATION_TIMEOUT_MS,
+      "the private fake pip invocation and install marker"
+    );
+
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.source.path === workbookPath &&
+          active.metadata.backend === "pandas" &&
+          active.metadata.shape.rows === 64 &&
+          active.metadata.shape.columns === 6
+        );
+      },
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the same XLSX panel to reopen as a usable Pandas grid",
+      () =>
+        JSON.stringify({
+          response: testing.panelOpenResponse(),
+          coordinator: testing.diagnostics(),
+          runtimeRunning: testing.runtimeRunning(),
+          runtimeEnvironment: testing.runtimeEnvironment(),
+          marker: existsSync(dependency.marker),
+          invocation: existsSync(dependency.invocation)
+        })
+    );
+    const active = testing.activeSession();
+    assert.ok(active, "The confirmed XLSX dependency install must publish an active session.");
+    assert.equal(
+      vscode.window.tabGroups.activeTabGroup.activeTab,
+      initialTab,
+      "Dependency recovery must retain the exact existing custom-editor tab."
+    );
+    assert.equal(
+      vscode.window.tabGroups.activeTabGroup.activeTab?.input,
+      initialInput,
+      "Dependency recovery must retain the exact existing custom-editor input."
+    );
+    assert.equal(install.target.frame.isDetached(), false, "The original XLSX error renderer must remain attached.");
+    const sameApp = install.target.frame.locator("main.app[data-session-id]").first();
+    await sameApp.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal(
+      await sameApp.getAttribute("data-session-id"),
+      active.sessionId,
+      "The same XLSX renderer must adopt the confirmed live session."
+    );
+    const grid = sameApp.getByRole("grid", { name: `Data grid for ${active.metadata.source.label}` });
+    await grid.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal(await grid.getAttribute("aria-colcount"), "7");
+    assert.equal(await grid.getAttribute("aria-rowcount"), "65");
+    const firstCell = sameApp.locator('td[data-grid-row="0"][data-grid-column="0"]').first();
+    await firstCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal((await firstCell.innerText()).trim(), "OW-240001");
+    await firstCell.focus();
+    await firstCell.press("ArrowRight");
+    await sameApp
+      .locator('td[data-grid-row="0"][data-grid-column="1"]:focus')
+      .waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    await waitFor(
+      () => testing.panelHydrated(active.sessionId),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the recovered XLSX panel to acknowledge its live snapshot"
+    );
+    assert.equal(
+      await testing.synchronizePanel(active.sessionId),
+      true,
+      "The recovered XLSX grid must synchronize through the real renderer."
+    );
+
+    const page = await testing.request({
+      kind: "getPage",
+      sessionId: active.sessionId,
+      revision: active.metadata.revision,
+      viewRequestId: "packaged-excel-dependency-install-page",
+      offset: 0,
+      limit: 20,
+      columnOffset: 0,
+      columnLimit: 6,
+      filterModel: active.metadata.filterModel
+    });
+    assert.equal(page.kind, "page", "The recovered XLSX session must return a live page.");
+    if (page.kind !== "page") throw new Error("The recovered XLSX session did not return its grid page.");
+    assert.equal(page.page.totalRows, 64);
+    assert.deepEqual(
+      page.metadata.schema.map((column) => column.name),
+      ["order_id", "market", "revenue", "fulfilled", "order_date", "account_status"]
+    );
+    assert.deepEqual(
+      page.page.rows[0]?.values.map((cell) => cell.display),
+      ["OW-240001", "DACH", "620.5", "True", "2026-01-01", "Active"]
+    );
+
+    const invocation = JSON.parse(readFileSync(dependency.invocation, "utf8")) as Record<string, unknown>;
+    assert.deepEqual(invocation.args, ["install", "--no-input", "--no-user", "--", "openpyxl>=3.1.5"]);
+    assert.equal(invocation.pipNoInput, "1");
+    assert.equal(invocation.pipUser, "0");
+    assert.equal(invocation.pipConfigFile, process.platform === "win32" ? "nul" : devNull);
+    assert.equal(invocation.pythonPathPresent, false);
+    assert.equal(invocation.pythonHomePresent, false);
+    assert.match(path.basename(String(invocation.cwd)), /^openwrangler-pip-/u);
+    assert.equal(readFileSync(dependency.marker, "utf8"), "openpyxl>=3.1.5\n");
+    assert.deepEqual(
+      readFileSync(workbookPath),
+      workbookBytes,
+      "Installing and reprobeing XLSX support must leave the source workbook byte-identical."
+    );
+
+    recordAcceptanceProgress("excel-dependency-install:close");
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      15_000,
+      "the recovered XLSX session and private runtime to terminate"
+    );
+    assert.deepEqual(testing.diagnostics().sessions, []);
+    assert.deepEqual(
+      readFileSync(workbookPath),
+      workbookBytes,
+      "Closing the recovered XLSX grid must leave the source workbook byte-identical."
+    );
+  } finally {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors").then(undefined, () => undefined);
+    await waitFor(
+      () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+      15_000,
+      "XLSX dependency-install cleanup to release its session and runtime"
+    );
+    try {
+      await config.update("pythonPath", originalWorkspacePythonPath, vscode.ConfigurationTarget.Workspace);
+    } finally {
+      try {
+        await config.update("defaultBackend", originalGlobalBackend, vscode.ConfigurationTarget.Global);
+      } finally {
+        cleanupAcceptanceTemporaryDirectory(directory);
+      }
+    }
+  }
 }
 
 async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, python: string): Promise<void> {
@@ -16069,6 +16354,238 @@ function createDependencyIsolatedPython(directory: string, python: string, invoc
     { encoding: "utf8", flag: "wx" }
   );
   return executable;
+}
+
+function createPackagedExcelDependencyWorkbook(workbookPath: string, python: string): void {
+  execFileSync(
+    python,
+    [
+      "-I",
+      "-c",
+      [
+        "import sys",
+        "from openpyxl import Workbook",
+        "workbook = Workbook()",
+        "sheet = workbook.active",
+        "sheet.title = 'Regional orders'",
+        "sheet.append(['order_id', 'market', 'revenue', 'fulfilled', 'order_date', 'account_status'])",
+        "markets = ['DACH', 'Nordics', 'Iberia', 'France', 'Italy', 'Benelux', 'UK & Ireland']",
+        "statuses = ['Active', 'Expansion', 'Renewal review']",
+        "for index in range(64):",
+        "    sheet.append([",
+        "        f'OW-{240001 + index}',",
+        "        markets[index % len(markets)],",
+        "        round(620.5 + index * 79.19, 2),",
+        "        index % 5 != 2,",
+        "        f'2026-01-{(index % 28) + 1:02d}',",
+        "        statuses[index % len(statuses)],",
+        "    ])",
+        "workbook.save(sys.argv[1])"
+      ].join("\n"),
+      workbookPath
+    ],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  );
+  const metadata = lstatSync(workbookPath);
+  assert.ok(
+    metadata.isFile() && !metadata.isSymbolicLink() && metadata.nlink === 1,
+    "The XLSX dependency-install fixture must be one exclusively owned regular file."
+  );
+}
+
+function createExcelDependencyInstallPython(directory: string, python: string): ExcelDependencyInstallFixture {
+  const parent = JSON.parse(
+    execFileSync(
+      python,
+      [
+        "-I",
+        "-c",
+        [
+          "import importlib.metadata",
+          "import json",
+          "import sys",
+          "import sysconfig",
+          "print(json.dumps({",
+          "    'executable': sys.executable,",
+          "    'purelib': sysconfig.get_path('purelib'),",
+          "    'pandas': importlib.metadata.version('pandas'),",
+          "    'openpyxl': importlib.metadata.version('openpyxl'),",
+          "}, sort_keys=True))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as Record<string, unknown>;
+  assert.equal(
+    typeof parent.executable === "string" && path.isAbsolute(parent.executable),
+    true,
+    "The XLSX dependency fixture requires an absolute parent interpreter."
+  );
+  assert.equal(
+    typeof parent.purelib === "string" && path.isAbsolute(parent.purelib),
+    true,
+    "The XLSX dependency fixture requires an absolute parent package root."
+  );
+  assert.equal(typeof parent.pandas === "string" && parent.pandas.length > 0, true);
+  assert.equal(typeof parent.openpyxl === "string" && parent.openpyxl.length > 0, true);
+  assert.equal(
+    lstatSync(String(parent.purelib)).isDirectory(),
+    true,
+    "The XLSX dependency fixture parent package root must remain a directory."
+  );
+  assert.doesNotMatch(String(parent.purelib), /[\r\n]/u, "A Python package root must not contain line breaks.");
+
+  const environment = path.join(directory, "environment");
+  execFileSync(python, ["-m", "venv", "--without-pip", environment], {
+    stdio: "pipe",
+    timeout: 30_000,
+    windowsHide: true
+  });
+  const executable =
+    process.platform === "win32"
+      ? path.join(environment, "Scripts", "python.exe")
+      : path.join(environment, "bin", "python");
+  assert.ok(existsSync(executable), "The XLSX dependency-test environment is missing its interpreter.");
+  const sitePackages = execFileSync(
+    executable,
+    ["-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      windowsHide: true
+    }
+  ).trim();
+  assert.ok(path.isAbsolute(sitePackages), "The XLSX dependency-test environment returned invalid site-packages.");
+
+  const marker = path.join(directory, "openpyxl-installed");
+  const invocation = path.join(directory, "pip-invocation.json");
+  writeFileSync(path.join(sitePackages, "00-openwrangler-parent-packages.pth"), `${String(parent.purelib)}\n`, {
+    encoding: "utf8",
+    flag: "wx"
+  });
+  writeFileSync(
+    path.join(sitePackages, "openwrangler_dependency_gate.py"),
+    [
+      "import importlib.util as _openwrangler_importlib_util",
+      "import os as _openwrangler_os",
+      `_openwrangler_marker = ${JSON.stringify(marker)}`,
+      "_openwrangler_find_spec_original = _openwrangler_importlib_util.find_spec",
+      "def _openwrangler_find_spec(name, package=None):",
+      "    if name == 'openpyxl' and not _openwrangler_os.path.exists(_openwrangler_marker):",
+      "        return None",
+      "    return _openwrangler_find_spec_original(name, package)",
+      "_openwrangler_importlib_util.find_spec = _openwrangler_find_spec",
+      ""
+    ].join("\n"),
+    { encoding: "utf8", flag: "wx" }
+  );
+  writeFileSync(
+    path.join(sitePackages, "01-openwrangler-dependency-gate.pth"),
+    "import openwrangler_dependency_gate\n",
+    { encoding: "utf8", flag: "wx" }
+  );
+
+  const fakePipSource = [
+    "import json",
+    "import os",
+    "import sys",
+    "",
+    `marker_path = ${JSON.stringify(marker)}`,
+    `invocation_path = ${JSON.stringify(invocation)}`,
+    "expected = ['install', '--no-input', '--no-user', '--', 'openpyxl>=3.1.5']",
+    "if sys.argv[1:] != expected:",
+    "    raise SystemExit(91)",
+    "environment_keys = {key.upper() for key in os.environ}",
+    "details = {",
+    "    'args': sys.argv[1:],",
+    "    'cwd': os.getcwd(),",
+    "    'pipNoInput': os.environ.get('PIP_NO_INPUT'),",
+    "    'pipConfigFile': os.environ.get('PIP_CONFIG_FILE'),",
+    "    'pipUser': os.environ.get('PIP_USER'),",
+    "    'pythonPathPresent': 'PYTHONPATH' in environment_keys,",
+    "    'pythonHomePresent': 'PYTHONHOME' in environment_keys,",
+    "}",
+    "invocation_temporary = f'{invocation_path}.{os.getpid()}.tmp'",
+    "with open(invocation_temporary, 'x', encoding='utf-8') as stream:",
+    "    json.dump(details, stream, sort_keys=True)",
+    "    stream.flush()",
+    "    os.fsync(stream.fileno())",
+    "os.replace(invocation_temporary, invocation_path)",
+    "marker_temporary = f'{marker_path}.{os.getpid()}.tmp'",
+    "with open(marker_temporary, 'x', encoding='utf-8') as stream:",
+    "    stream.write('openpyxl>=3.1.5\\n')",
+    "    stream.flush()",
+    "    os.fsync(stream.fileno())",
+    "os.replace(marker_temporary, marker_path)",
+    ""
+  ].join("\n");
+  const pipPackage = path.join(sitePackages, "pip");
+  mkdirSync(pipPackage);
+  writeFileSync(path.join(pipPackage, "__init__.py"), "", { encoding: "utf8", flag: "wx" });
+  writeFileSync(path.join(pipPackage, "__main__.py"), fakePipSource, { encoding: "utf8", flag: "wx" });
+
+  const preflight = JSON.parse(
+    execFileSync(
+      executable,
+      [
+        "-I",
+        "-c",
+        [
+          "import importlib.metadata",
+          "import importlib.util",
+          "import json",
+          "import pip",
+          "import sys",
+          "print(json.dumps({",
+          "    'executable': sys.executable,",
+          "    'prefix': sys.prefix,",
+          "    'pandas': importlib.util.find_spec('pandas') is not None,",
+          "    'pandasVersion': importlib.metadata.version('pandas'),",
+          "    'openpyxl': importlib.util.find_spec('openpyxl') is not None,",
+          "    'pip': pip.__file__,",
+          "}, sort_keys=True))"
+        ].join("\n")
+      ],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+        windowsHide: true
+      }
+    )
+  ) as Record<string, unknown>;
+  assert.equal(
+    typeof preflight.executable === "string" && sameAcceptanceExecutable(preflight.executable, executable),
+    true,
+    "The XLSX dependency-test interpreter must report the exact selected virtual-environment executable."
+  );
+  assert.equal(
+    typeof preflight.prefix === "string" && sameAcceptanceExecutable(preflight.prefix, environment),
+    true,
+    "The XLSX dependency-test interpreter must retain its isolated virtual-environment prefix."
+  );
+  assert.equal(preflight.pandas, true, "The XLSX dependency-test environment must retain Pandas.");
+  assert.equal(preflight.pandasVersion, parent.pandas);
+  assert.equal(preflight.openpyxl, false, "The XLSX dependency-test environment must initially hide openpyxl.");
+  assert.equal(
+    typeof preflight.pip === "string" && sameAcceptanceExecutable(preflight.pip, path.join(pipPackage, "__init__.py")),
+    true,
+    "The XLSX dependency-test environment must import only its owned fake pip package."
+  );
+  assert.equal(existsSync(marker), false);
+  assert.equal(existsSync(invocation), false);
+  return { executable, marker, invocation };
 }
 
 function createDependencyInstallLifecyclePython(
