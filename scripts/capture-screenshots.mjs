@@ -514,7 +514,10 @@ writeWebviewHarness(
   {},
   "acceptance/by-example-dialog-dark-1280.png",
   {},
-  { editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" } }
+  {
+    height: 960,
+    editorAction: { kind: "editorAction", action: "openOperation", operationKind: "byExample" }
+  }
 );
 writeWebviewHarness(
   "by-example-preview.html",

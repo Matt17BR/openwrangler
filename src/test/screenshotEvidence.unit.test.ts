@@ -20,6 +20,7 @@ import {
   packagedScreenshotFileName,
   packagedFirstUseAccountNoteKind,
   packagedFirstUseFixtureCsv,
+  packagedProductFixtureCsv,
   packagedScreenshotFixtureCsv,
   packagedScreenshotRow
 } from "./extensionHost/screenshotEvidence";
@@ -51,6 +52,18 @@ describe("packaged editor screenshot evidence", () => {
     expect(lines[(explicitEmptyIndex ?? -1) + 1]).toMatch(/;""$/u);
     expect(lines[(nullIndex ?? -1) + 1]).toMatch(/;$/u);
     expect(csv).toContain("Zürich and São Paulo");
+  });
+
+  it("keeps final product scenes on a separate full-size automatically inferred dialect", () => {
+    const csv = packagedProductFixtureCsv();
+    const lines = csv.trimEnd().split("\n");
+
+    expect(lines).toHaveLength(PACKAGED_SCREENSHOT_ROW_COUNT + 1);
+    expect(lines[0]).toBe(`\uFEFF${PACKAGED_SCREENSHOT_COLUMNS.join(";")}`);
+    expect(parseDelimitedRecord(lines[1] ?? "", ";")).toEqual(packagedScreenshotRow(0));
+    expect(parseDelimitedRecord(lines.at(-1) ?? "", ";")).toEqual(
+      packagedScreenshotRow(PACKAGED_SCREENSHOT_ROW_COUNT - 1)
+    );
   });
 
   it("generates one deterministic, realistic business fixture without private data", () => {
@@ -188,6 +201,7 @@ describe("packaged editor screenshot evidence", () => {
       "explore",
       "workflow",
       "notebook-pandas",
+      "notebook-variable-picker",
       "notebook-polars",
       "notebook-duckdb",
       "notebook-pyspark"
@@ -200,6 +214,9 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-duckdb", "dark")).toBe("vscode-notebook-duckdb-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark", "dark")).toBe("vscode-notebook-pyspark-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-variable-picker", "dark")).toBe(
+      "vscode-notebook-variable-picker-dark.png"
+    );
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
 
@@ -211,6 +228,7 @@ describe("packaged editor screenshot evidence", () => {
 
     expect(extensionHost).toContain('const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)"');
     expect(extensionHost).toContain('"orders_df = pd.DataFrame({"');
+    expect(extensionHost).toContain('"orders_preview_df = orders_df.loc[:, showcase_preview_columns].copy()"');
     expect(extensionHost).toContain('"# Explore recent orders in Open Wrangler\\n"');
     expect(jupyterEnvironment).toContain('display_name: "Python 3.12 (Open Wrangler)"');
     expect(extensionHost).not.toContain(deprecatedKernelLabel);
@@ -237,9 +255,13 @@ describe("packaged editor screenshot evidence", () => {
       ["explore.png", 1_440, 870, 50_000],
       ["gallery/sidebar-explore.png", 448, 500, 50_000],
       ["gallery/sidebar-workflow.png", 448, 500, 30_000],
-      ["gallery/by-example-setup.png", 660, 625, 50_000],
-      ["gallery/by-example-preview.png", 520, 500, 20_000],
+      ["gallery/column-search-wide.png", 1_440, 865, 50_000],
       ["workflow.png", 1_440, 870, 50_000],
+      ["gallery/histogram-hover.png", 448, 480, 20_000],
+      ["gallery/sort-priority.png", 448, 480, 20_000],
+      ["gallery/export-script.png", 1_440, 870, 50_000],
+      ["gallery/export-data.png", 1_440, 870, 50_000],
+      ["gallery/notebook-variable-picker.png", 1_280, 600, 50_000],
       ["notebook-pandas.png", 1_280, 600, 50_000],
       ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
       ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000]

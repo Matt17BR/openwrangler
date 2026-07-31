@@ -1,8 +1,11 @@
 # Product gallery
 
-These scenes use deterministic, license-clean fixtures. Full-editor images come from the real packaged VSIX in
-an isolated VS Code profile; focused UI images load the same production webview bundle. Fixture dimensions show
-the captured scenario, not product row or column limits.
+These scenes use realistic, license-clean fixtures and the packaged extension. Fixture dimensions show the
+captured scenario, not product row or column limits.
+
+[Explore](#explore-in-vs-code) · [Profiles and sorts](#inspect-profiles-and-control-sort-priority) ·
+[Transform](#review-a-cleaning-workflow) · [Open files](#open-files-where-you-already-work) · [Export](#export-code-and-clean-data) ·
+[Notebooks](#notebook-workflows) · [Editors](#vscode-and-cursor)
 
 ## Explore in VS Code
 
@@ -25,13 +28,27 @@ distribution for the selected numeric column.
   </tr>
 </table>
 
+## Inspect profiles and control sort priority
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/histogram-hover.png"><img alt="An exact numeric profile with a full-height histogram bin focused and its interval and row count visible" src="images/readme/v1.2/gallery/histogram-hover.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/sort-priority.png"><img alt="The Filters and Sorts sidebar with two ordered sorts and visible reorder and remove controls" src="images/readme/v1.2/gallery/sort-priority.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Sparse bins remain easy to inspect.</strong> Keyboard focus and pointer hover use the full bin height, then expose the exact interval and row count.</td>
+    <td><strong>Compound sort order stays explicit.</strong> The latest key becomes priority 1; inline actions reorder or remove keys, while opening one edits direction and null placement.</td>
+  </tr>
+</table>
+
 ## Review a cleaning workflow
 
 ![Open Wrangler reviewing a Polars draft with two ordered viewing sorts, cleaning history, a data diff, and generated code](images/readme/v1.2/workflow.png)
 
 The newest viewing sort is priority 1, priorities remain reorderable, and neither sort becomes a cleaning step.
-The separate draft adds a column, highlights changed values, exposes Apply and Discard, and generates executable
-Polars code in the native bottom panel.
+The cleaning plan first normalizes market labels, then previews a separate projected-revenue formula. The draft
+highlights its added values, exposes Apply and Discard, and generates both executable Polars steps in the native
+bottom panel.
 
 ## Open files where you already work
 
@@ -50,7 +67,41 @@ The same command is available from the open editor tab.
 CSV and TSV inputs infer delimiter, encoding, quote style, and header automatically. **Import options** remains
 available for explicit overrides.
 
+![Open Wrangler Import options opened on the delimiter inferred from a semicolon-delimited CSV](images/readme/v1.2/gallery/import-options.png)
+
+The ordinary open path needs no questions. When a source is unusual, **Import options** starts from the detected
+configuration instead of asking the user to reconstruct it from memory.
+
+## Navigate wide schemas
+
+![Open Wrangler column search showing the final result in a realistic 417-column dataframe](images/readme/v1.2/gallery/column-search-wide.png)
+
+Column search virtualizes the complete schema and keeps type icons, full names, and keyboard position available.
+This scene intentionally navigates to item 417 of 417 to prove the list is not capped at the first 100 columns;
+417 is a deterministic fixture size, not a product limit.
+
+## Export code and clean data
+
+<table>
+  <tr>
+    <td width="50%"><a href="images/readme/v1.2/gallery/export-script.png"><img alt="A generated native Polars cleaning script saved and opened in VS Code" src="images/readme/v1.2/gallery/export-script.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened after the source workflow" src="images/readme/v1.2/gallery/export-data.png"></a></td>
+  </tr>
+  <tr>
+    <td><strong>Reusable code.</strong> The saved script contains the applied engine-native cleaning plan rather than a screenshot-only approximation.</td>
+    <td><strong>Separate output.</strong> The cleaned file opens normally while the source bytes remain unchanged.</td>
+  </tr>
+</table>
+
 ## Notebook workflows
+
+### Choose a live variable by engine
+
+![The Open Wrangler notebook variable picker identifying live DuckDB, Pandas, and Polars variables by engine and dataframe type](images/readme/v1.2/gallery/notebook-variable-picker.png)
+
+The notebook toolbar discovers supported variables from the active kernel and labels each candidate with its
+actual engine and dataframe type before launch. DataFrames and Series remain distinct, and DuckDB relations do
+not masquerade as Pandas objects.
 
 ### Pandas inline preview
 
@@ -64,8 +115,8 @@ current live variable and pages it in the workbench.
 ![A live native Polars notebook session with a formula-column draft and generated Polars code](images/readme/v1.2/gallery/notebook-polars.png)
 
 The dataframe remains in Polars while Open Wrangler pages, profiles, previews the draft, computes the diff, and
-generates native code. The README uses a pixel-exact crop of this complete scene at full content width so the
-draft values, engine badge, and generated code remain readable.
+generates native code. The added values, engine badge, and executable code stay visible together so the draft can
+be reviewed as one workflow rather than across disconnected panels.
 
 ### DuckDB live relation
 
@@ -73,8 +124,7 @@ draft values, engine badge, and generated code remain readable.
 
 The viewing-only session queries the exact originating `DuckDBPyRelation`; it does not convert through Pandas,
 Polars, or Arrow. The image shows a real filter, two reorderable sort priorities, requested profiles, and bounded
-paging. The README uses a pixel-exact crop of this complete scene at full content width so the native grid,
-engine badge, filter, and sort controls remain readable.
+paging against the live relation.
 
 ### PySpark Classic live notebook
 
@@ -82,7 +132,7 @@ engine badge, filter, and sort controls remain readable.
 
 PySpark 4.2 support is experimental and viewing-only. Filtering, sorting, paging, and requested profiling run in
 Spark; only bounded results return to the notebook runtime. File opening, cleaning, export, code insertion, and
-saved inline snapshots are not supported.
+saved inline previews are not supported.
 
 ## Rich DuckDB file types
 
@@ -90,34 +140,27 @@ saved inline snapshots are not supported.
 
 This focused production-webview scene uses a native DuckDB session over a deterministic 100,000-row Parquet
 fixture. Decimal, time-zone-aware timestamp, list, and struct values remain typed through the grid and summaries.
-The detail removes only the unused right canvas; open it for the complete 1920 × 640 source scene.
 
 ## Transform by example
 
-<table>
-  <tr>
-    <td width="50%"><a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler by-example setup with structured account-code examples" src="images/readme/v1.2/gallery/by-example-setup.png"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler by-example preview deriving country codes for unseen structured account IDs" src="images/readme/v1.2/gallery/by-example-preview.png"></a></td>
-  </tr>
-  <tr>
-    <td><strong>Teach it.</strong> Give exact source/output examples: <code>DACH-DE-00482 → DE</code> and <code>NORDICS-SE-01940 → SE</code>.</td>
-    <td><strong>Review it.</strong> Confirm the synthesized split across unseen account IDs before applying the new column.</td>
-  </tr>
-</table>
+<a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler by-example setup with structured account-code examples" src="images/readme/v1.2/gallery/by-example-setup.png"></a>
 
-## Focused interaction and accessibility states
+**Teach it.** Give exact source/output examples: `DACH-DE-00482 → DE` and `NORDICS-SE-01940 → SE`. The
+operation dialog keeps both mappings' values and outputs visible before synthesis begins.
 
-<table>
-  <tr>
-    <td width="50%"><a href="images/acceptance/operation-dialog-dark-1280.png"><img alt="Open Wrangler operation picker with searchable transformation groups" src="images/acceptance/operation-dialog-dark-1280.png"></a></td>
-    <td width="50%"><a href="images/acceptance/step-inspection-dark-1280.png"><img alt="Open Wrangler inspecting an applied cleaning step and its data diff" src="images/acceptance/step-inspection-dark-1280.png"></a></td>
-  </tr>
-  <tr>
-    <td><strong>Operation picker.</strong> Search the complete transformation catalog by task.</td>
-    <td><strong>History inspection.</strong> Select an applied step without mutating the current plan.</td>
-  </tr>
-</table>
+<a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler by-example preview deriving country codes for unseen structured account IDs" src="images/readme/v1.2/gallery/by-example-preview.png"></a>
 
-![Open Wrangler grid in a high-contrast theme](images/acceptance/grid-high-contrast-1280.png)
+**Review it.** Confirm the synthesized split across all ten unseen account IDs, the complete draft status, and the
+Apply / Discard controls before applying the new column.
 
-**High contrast.** The production UI follows VS Code theme tokens and remains keyboard accessible.
+## VS Code and Cursor
+
+![The packaged Open Wrangler workbench in an isolated Cursor profile](images/readme/v1.2/gallery/cursor-explore.png)
+
+VS Code and Cursor are release-tested from the same VSIX. Other desktop VS Code forks are expected to share the
+core extension surface but remain experimental until their marketplace, menus, notebook APIs, and packaged install
+path are validated.
+
+The automated visual and accessibility suite also covers light, dark, and high-contrast themes, 80% to 200% zoom,
+keyboard-only operation, loading and error states, empty frames, long Unicode content, and narrow and wide
+layouts. Those regression images stay in the testing record rather than presenting toy fixtures as product media.

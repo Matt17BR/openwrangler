@@ -19,6 +19,12 @@ const assets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeAsset("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600),
+  nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
+  nativeAsset("gallery/import-options.png", "vscode-import-options-dark.png", 1_440, 870),
+  nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
+  nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
+  nativeAsset("gallery/cursor-explore.png", "cursor-explore-dark.png", 1_440, 865),
+  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
@@ -46,17 +52,29 @@ const assets = [
     width: 448,
     height: 500
   }),
-  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 760, {
-    x: 520,
-    y: 68,
-    width: 660,
-    height: 625
+  nativeCrop("gallery/histogram-hover.png", "vscode-histogram-hover-dark.png", 1_440, 870, {
+    x: 992,
+    y: 160,
+    width: 448,
+    height: 480
+  }),
+  nativeCrop("gallery/sort-priority.png", "vscode-sort-priority-dark.png", 1_440, 870, {
+    x: 0,
+    y: 60,
+    width: 448,
+    height: 480
+  }),
+  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 960, {
+    x: 100,
+    y: 100,
+    width: 1_080,
+    height: 760
   }),
   acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
     x: 0,
     y: 0,
-    width: 520,
-    height: 500
+    width: 1_280,
+    height: 580
   }),
   nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
     x: 0,

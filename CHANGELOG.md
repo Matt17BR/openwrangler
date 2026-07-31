@@ -13,16 +13,23 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Packaged editor acceptance now validates its prepared Python environment before starting VS Code or Cursor, so
   unsupported Python versions and missing Pandas, Polars, DuckDB, or OpenPyXL fail during setup instead of after a
   long workbench launch.
-- Interrupted session opens now dispose their partially acquired engine and release the requested session identity,
-  including notebook interruptions during PySpark indexing.
-- Added honest, accessible progress while a live PySpark notebook session connects to its kernel, prepares the
-  bundled runtime, and builds its stable Spark view. The final stage now explains that opening scans and
-  materializes the complete frame to establish stable row positions and an exact total, and that the Spark work
-  cannot be cancelled once it starts.
+- Notebook-kernel requests now use fresh never-cancel Jupyter tokens. Host deadlines and panel disposal detach and
+  stale-ignore instead of sending a kernel-wide interrupt, because PySpark's default SIGINT handler can cancel
+  unrelated Spark jobs even when Open Wrangler is opening or paging another dataframe engine. A detached live open
+  queues one bounded close on its exact originating kernel; a correlated late response still retires that mapping.
+  Kernel and standalone runtimes now produce `unknown_session` from a typed exception carrying the exact session ID
+  rather than attempting to infer absence from an error message.
+- Added honest, accessible progress while every live notebook variable connects to its kernel, prepares the
+  bundled runtime, and opens the variable, including automatic backend detection. Only an explicitly pinned
+  PySpark open uses dedicated final-stage copy explaining that its stable view scans and materializes the complete
+  frame to establish row positions and an exact total.
 - Rebuilt the README and product gallery around exact packaged-editor scenes: native Activity Bar views, the
   filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
   sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
   demonstrated capability without presenting fixture sizes as dataframe limits.
+- Expanded the public product tour with readable Activity Bar close-ups, complete 417-column navigation, exact
+  histogram interaction, compound-sort controls, real script and cleaned-data exports, and the live notebook
+  variable picker. Every published asset is derived pixel-for-pixel from an accepted packaged-extension scene.
 - Added paired, pixel-exact Activity Bar details to the README and product gallery so first-time users can read the
   operation catalog, dataframe summary, ordered viewing state, and separate cleaning history without enlarging a
   full editor screenshot. The details are derived from the accepted packaged Explore and Workflow captures rather

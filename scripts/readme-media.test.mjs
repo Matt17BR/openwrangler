@@ -10,6 +10,12 @@ const nativeAssets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeAsset("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600),
+  nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
+  nativeAsset("gallery/import-options.png", "vscode-import-options-dark.png", 1_440, 870),
+  nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
+  nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
+  nativeAsset("gallery/cursor-explore.png", "cursor-explore-dark.png", 1_440, 865),
+  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
@@ -37,17 +43,29 @@ const nativeAssets = [
     width: 448,
     height: 500
   }),
-  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 760, {
-    x: 520,
-    y: 68,
-    width: 660,
-    height: 625
+  nativeCrop("gallery/histogram-hover.png", "vscode-histogram-hover-dark.png", 1_440, 870, {
+    x: 992,
+    y: 160,
+    width: 448,
+    height: 480
+  }),
+  nativeCrop("gallery/sort-priority.png", "vscode-sort-priority-dark.png", 1_440, 870, {
+    x: 0,
+    y: 60,
+    width: 448,
+    height: 480
+  }),
+  acceptanceCrop("gallery/by-example-setup.png", "by-example-dialog-dark-1280.png", 1_280, 960, {
+    x: 100,
+    y: 100,
+    width: 1_080,
+    height: 760
   }),
   acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
     x: 0,
     y: 0,
-    width: 520,
-    height: 500
+    width: 1_280,
+    height: 580
   }),
   nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
     x: 0,
@@ -163,30 +181,40 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "explore.png",
     "gallery/sidebar-explore.png",
     "gallery/sidebar-workflow.png",
+    "gallery/column-search-wide.png",
     "workflow.png",
-    "gallery/by-example-setup.png",
-    "gallery/by-example-preview.png",
+    "gallery/histogram-hover.png",
+    "gallery/sort-priority.png",
+    "gallery/export-script.png",
+    "gallery/export-data.png",
+    "gallery/notebook-variable-picker.png",
     "notebook-pandas.png",
     "gallery/notebook-polars-detail.png",
     "gallery/notebook-duckdb-detail.png"
   ]) {
     assert.ok(readme.includes(`docs/images/readme/v1.2/${image}`), `README must show ${image}.`);
   }
+  assert.ok(
+    !readme.includes("docs/images/readme/v1.2/gallery/by-example-setup.png"),
+    "README must link to the gallery instead of presenting the scrollable setup editor as fully expanded."
+  );
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
   assert.match(readme, /Operations, Summary, Filters \/ Sorts, Cleaning Steps/u);
   assert.match(readme, /Native Activity Bar views/u);
   assert.match(readme, /Source at a glance\./u);
   assert.match(readme, /View and plan stay separate\./u);
-  assert.match(readme, /Teach transformations by example/u);
-  assert.match(readme, /DACH-DE-00482 → DE/u);
-  assert.match(readme, /NORDICS-SE-01940 → SE/u);
-  assert.match(readme, /Confirm the generalization\./u);
+  assert.match(readme, /Inspect every bin\./u);
+  assert.match(readme, /Control compound sorts\./u);
+  assert.match(readme, /actual engine and dataframe type visible/u);
   assert.match(readme, /reorderable sort priorities, applied history, a draft diff/u);
   assert.match(
     readme,
     /portable Pandas table stays inside the notebook[\s\S]{0,140}reconnects to the complete,\s+current live variable/u
   );
-  assert.match(readme, /portable table keeps every captured column available/u);
+  assert.match(
+    readme,
+    /Notebook outputs stay compact;[\s\S]{0,180}reconnects to the complete current variable[\s\S]{0,160}saved output without its live kernel remains preview-only/u
+  );
   assert.match(readme, /Polars editing\./u);
   assert.match(readme, /DuckDB exploration\./u);
   assert.match(readme, /without converting it to Pandas, Polars, or Arrow/u);
@@ -205,7 +233,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(
     readme,
-    /File sessions,\s+cleaning, exports, code insertion, and saved inline snapshots are not supported\./u
+    /File sessions,\s+cleaning, exports, code insertion, and saved inline previews are not supported\./u
   );
   assert.match(readme, /\| v1\.2\s+\| Finish real-user interaction polish[\s\S]{0,500}#36/u);
   assert.match(readme, /\| v2\s+\| Native R data frames[\s\S]{0,200}#87/u);
@@ -216,38 +244,39 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "images/readme/v1.2/explore.png",
     "images/readme/v1.2/gallery/sidebar-explore.png",
     "images/readme/v1.2/gallery/sidebar-workflow.png",
+    "images/readme/v1.2/gallery/histogram-hover.png",
+    "images/readme/v1.2/gallery/sort-priority.png",
     "images/readme/v1.2/gallery/by-example-setup.png",
     "images/readme/v1.2/gallery/by-example-preview.png",
     "images/readme/v1.2/workflow.png",
     "images/readme/v1.2/gallery/file-title-action.png",
     "images/readme/v1.2/gallery/tab-context-menu.png",
+    "images/readme/v1.2/gallery/notebook-variable-picker.png",
     "images/readme/v1.2/notebook-pandas.png",
     "images/readme/v1.2/gallery/notebook-polars.png",
     "images/readme/v1.2/gallery/notebook-duckdb.png",
     "images/readme/v1.2/gallery/notebook-pyspark.png",
     "images/readme/v1.2/gallery/duckdb-rich-parquet.png",
-    "images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png",
-    "images/acceptance/operation-dialog-dark-1280.png",
-    "images/acceptance/step-inspection-dark-1280.png",
-    "images/acceptance/grid-high-contrast-1280.png"
+    "images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png"
   ]) {
     assert.ok(gallery.includes(image), `Gallery must include ${image}.`);
   }
-  assert.match(gallery, /Fixture dimensions show\s+the captured scenario, not product row or column limits/u);
+  assert.match(gallery, /Fixture dimensions show\s+the\s+captured scenario, not product row or column limits/u);
   assert.match(gallery, /does not convert through Pandas,\s+Polars, or Arrow/u);
   assert.match(gallery, /experimental and viewing-only/u);
-  assert.match(gallery, /Operation picker/u);
   assert.match(gallery, /Transform by example/u);
-  assert.match(gallery, /Confirm the synthesized split across unseen account IDs/u);
-  assert.match(gallery, /High contrast/u);
+  assert.match(gallery, /Confirm the synthesized split across all ten unseen account IDs/u);
   assert.match(gallery, /## Native Activity Bar views/u);
   assert.match(gallery, /Operations and Summary remain useful without opening another editor tab/u);
   assert.match(gallery, /ordered priorities and never masquerade as cleaning steps/u);
+  assert.match(gallery, /Sparse bins remain easy to inspect\./u);
+  assert.match(gallery, /Compound sort order stays explicit\./u);
+  assert.match(gallery, /Choose a live variable by engine/u);
   assert.match(gallery, /## Open files where you already work[\s\S]{0,120}### Editor title action/u);
   assert.match(gallery, /### Tab context menu/u);
   assert.match(
     gallery,
-    /href="images\/readme\/v1\.2\/gallery\/by-example-setup\.png"[\s\S]{0,500}href="images\/readme\/v1\.2\/gallery\/by-example-preview\.png"/u
+    /href="images\/readme\/v1\.2\/gallery\/by-example-setup\.png"[\s\S]{0,900}href="images\/readme\/v1\.2\/gallery\/by-example-preview\.png"/u
   );
   assert.doesNotMatch(gallery, /images\/readme\/v1\.1/u);
 
@@ -264,10 +293,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.ok(richDuckDbDetail.byteLength < 300 * 1_024);
 
   assert.match(mediaSpec, /canonical v1\.2 README and gallery contract/u);
-  assert.match(mediaSpec, /nine images in six compact sections/u);
+  assert.match(mediaSpec, /thirteen assets in ten compact visual blocks/u);
   assert.match(mediaSpec, /preserve the exact selected source pixels/u);
   assert.match(mediaSpec, /contains no unused import/u);
-  assert.match(testing, /derives fifteen assets from accepted packaged-editor and production-webview sources/u);
+  assert.match(testing, /derives twenty-three assets from accepted packaged-editor and production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
 });
 

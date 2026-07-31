@@ -17,6 +17,8 @@ export const PACKAGED_SCREENSHOT_COLUMNS = [
 ] as const;
 export const PACKAGED_SCREENSHOT_ROW_COUNT = 100_000;
 export const PACKAGED_FIRST_USE_ROW_COUNT = 10_000;
+export const PACKAGED_WIDE_SCHEMA_COLUMN_COUNT = 417;
+export const PACKAGED_WIDE_SCHEMA_ROW_COUNT = 64;
 export const PACKAGED_SCREENSHOT_VIEWPORT = { width: 1_920, height: 860 } as const;
 export const PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT = { width: 1_440, height: 900 } as const;
 export const PACKAGED_PRODUCT_VIEWPORT = { width: 1_440, height: 900 } as const;
@@ -36,6 +38,7 @@ export const PACKAGED_SCREENSHOT_SCENES = [
   "explore",
   "workflow",
   "notebook-pandas",
+  "notebook-variable-picker",
   "notebook-polars",
   "notebook-duckdb",
   "notebook-pyspark"
@@ -87,11 +90,24 @@ export function packagedScreenshotFixtureCsv(): string {
 }
 
 export function packagedFirstUseFixtureCsv(): string {
+  return packagedSemicolonFixtureCsv(PACKAGED_FIRST_USE_ROW_COUNT);
+}
+
+/**
+ * Builds the larger, realistic file used only by final product-scene capture.
+ * First-use editor journeys deliberately keep their independent 10,000-row
+ * fixture so validating launch surfaces does not inherit screenshot overhead.
+ */
+export function packagedProductFixtureCsv(): string {
+  return packagedSemicolonFixtureCsv(PACKAGED_SCREENSHOT_ROW_COUNT);
+}
+
+function packagedSemicolonFixtureCsv(rowCount: number): string {
   const delimiter = ";";
   const lines = [
     `\uFEFF${PACKAGED_SCREENSHOT_COLUMNS.map((value) => delimitedCell(value, delimiter)).join(delimiter)}`
   ];
-  for (let index = 0; index < PACKAGED_FIRST_USE_ROW_COUNT; index += 1) {
+  for (let index = 0; index < rowCount; index += 1) {
     const accountNoteKind = packagedFirstUseAccountNoteKind(index);
     lines.push(
       packagedScreenshotRow(index)
@@ -101,6 +117,89 @@ export function packagedFirstUseFixtureCsv(): string {
             : delimitedCell(value, delimiter)
         )
         .join(delimiter)
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+const WIDE_SCHEMA_LEADING_COLUMNS = [
+  "account_id",
+  "account_name",
+  "billing_country",
+  "contract_start_date",
+  "contract_end_date",
+  "customer_segment",
+  "product_family",
+  "subscription_status",
+  "annual_revenue_usd",
+  "renewal_probability",
+  "usage_score",
+  "data_quality_flag"
+] as const;
+const WIDE_SCHEMA_DOMAINS = [
+  "account",
+  "billing",
+  "contract",
+  "customer",
+  "forecast",
+  "product",
+  "quality",
+  "region",
+  "subscription",
+  "usage"
+] as const;
+const WIDE_SCHEMA_MEASURES = ["amount", "count", "date", "flag", "score", "status", "value"] as const;
+
+export function packagedWideSchemaColumns(): readonly string[] {
+  const columns: string[] = [...WIDE_SCHEMA_LEADING_COLUMNS];
+  for (let position = columns.length; position < PACKAGED_WIDE_SCHEMA_COLUMN_COUNT; position += 1) {
+    const ordinal = position + 1;
+    const domain = WIDE_SCHEMA_DOMAINS[Math.floor(position / WIDE_SCHEMA_MEASURES.length) % WIDE_SCHEMA_DOMAINS.length];
+    const measure = WIDE_SCHEMA_MEASURES[position % WIDE_SCHEMA_MEASURES.length];
+    columns.push(`${domain}_${measure}_${String(ordinal).padStart(3, "0")}`);
+  }
+  return columns;
+}
+
+export function packagedWideSchemaFixtureCsv(): string {
+  const columns = packagedWideSchemaColumns();
+  const lines = [columns.map(csvCell).join(",")];
+  for (let row = 0; row < PACKAGED_WIDE_SCHEMA_ROW_COUNT; row += 1) {
+    lines.push(
+      columns
+        .map((_, position) => {
+          if (position === 0) return `ACCT-${String(row + 1).padStart(5, "0")}`;
+          if (position === 1) return `Synthetic account ${row + 1}`;
+          if (position === 2) return ["DE", "FR", "IT", "NL", "SE", "UK"][row % 6]!;
+          if (position === 3) return isoDate(Date.UTC(2024, row % 12, 1));
+          if (position === 4) return isoDate(Date.UTC(2026, row % 12, 1));
+          if (position === 5) return ["Enterprise", "Mid-market", "Public sector"][row % 3]!;
+          if (position === 6) return ["Analytics", "Automation", "Planning"][row % 3]!;
+          if (position === 7) return ["Active", "Expansion", "Renewal review"][row % 3]!;
+          if (position === 8) return String(250_000 + row * 7_500);
+          if (position === 9) return ((row * 13) % 101).toFixed(2);
+          if (position === 10) return ((row * 17) % 101).toFixed(2);
+          if (position === 11) return row % 7 !== 0 ? "true" : "false";
+          const measure = WIDE_SCHEMA_MEASURES[position % WIDE_SCHEMA_MEASURES.length];
+          switch (measure) {
+            case "amount":
+              return (1_000 + (((row + 3) * (position + 11)) % 9_000_000) / 100).toFixed(2);
+            case "count":
+              return String(((row + 3) * (position + 11)) % 50_003);
+            case "date":
+              return isoDate(Date.UTC(2023 + (row % 4), (row + position) % 12, 1 + ((row + position) % 27)));
+            case "flag":
+              return (row + position) % 3 === 0 ? "true" : "false";
+            case "score":
+              return ((((row + 5) * (position + 7)) % 10_001) / 100).toFixed(2);
+            case "status":
+              return ["Active", "At risk", "Paused", "Review"][row % 4]!;
+            case "value":
+              return `segment-${String(((row + 1) * (position + 3)) % 97).padStart(2, "0")}`;
+          }
+        })
+        .map(csvCell)
+        .join(",")
     );
   }
   return `${lines.join("\n")}\n`;
