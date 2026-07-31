@@ -102,6 +102,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   process, and helper instance; mirrored every native-provider resource ceiling
   in the host; and replaced silent R name/value truncation with structured
   exactness-preserving diagnostics.
+- Added the first exact-IRkernel transport layer for native R: content-addressed
+  remote-kernel bootstrap, private provider retention, correlated and bounded
+  request framing, contextual response validation, cancellation preflight, and
+  deterministic disposal. The user-facing R viewer remains gated on exact
+  notebook lifecycle, recovery, and installed-editor acceptance.
 
 ### Fixed
 

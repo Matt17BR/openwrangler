@@ -19,6 +19,18 @@ requires the staged editor acceptance in
 [`docs/r-support.md`](r-support.md); these foundation checks are not sufficient
 to advertise R compatibility.
 
+The focused host-side transport contract runs with:
+
+```bash
+npx vitest run src/test/rKernelProviderTransport.unit.test.ts src/test/rProviderProtocol.unit.test.ts
+```
+
+It proves deterministic source embedding for remote kernels, exact-kernel
+ownership, single-flight bootstrap, correlated marker extraction, response-byte
+ceilings, stable Jupyter error handling, cancellation before dispatch, private
+provider disposal, and rejection of stale or contradictory responses. It does
+not substitute for the future isolated VS Code/Cursor IRkernel journey.
+
 ## Automated layers
 
 - `npm run typecheck` checks the extension and webview projects independently.

@@ -17,6 +17,17 @@ publish helper symbols in the user's R environment. R responses pass a
 request-and-confirmed-session contextual guard before coordinator state can
 observe them.
 
+The first IRkernel transport object owns one exact Jupyter `Kernel` instance and
+cannot reacquire by notebook URI. It content-addresses and embeds the reviewed
+pure-R agent, evaluates it in a private lexical environment, and retains only
+the provider in a private R option so no helper symbol enters the user's global
+environment. Requests use base64 payloads plus one randomized marker pair;
+stdout is byte-bounded before marker extraction, and the extracted JSON still
+must pass the exact request-and-confirmed-session guard. Provider disposal closes
+all native sessions and removes that option. This transport is not yet a launch
+path: exact `NotebookDocument` ownership, IRkernel acquisition, recovery, and UI
+coordination remain required before an R viewer can be exposed.
+
 Non-notebook R surfaces never become available from a boolean “connected”
 flag. The experimental helper handshake issues an opaque receipt bound to the
 exact editor document object, R process instance, and helper instance; stale,

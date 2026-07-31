@@ -88,12 +88,31 @@ packages, obtain confirmation, and install into the user-selected library. The
 required repository gate additionally pins and exercises `tibble` so none of the
 three advertised dataframe flavors can disappear behind an optional test skip.
 
+## IRkernel transport foundation
+
+`src/extension/r/rKernelProviderTransport.ts` implements the first exact-kernel
+transport layer. It embeds the reviewed agent source instead of assuming a
+remote kernel can read the extension filesystem, stores the live provider in a
+content-addressed private R option, and publishes no helper symbol into the
+user's `.GlobalEnv`. Every dispatch is base64 framed, marker isolated, bounded
+before JSON parsing, and validated against its exact request plus confirmed
+session. Disposal closes the provider and removes the private option.
+
+The transport intentionally receives one already-owned Jupyter `Kernel` object;
+it has no URI lookup or fallback path. The user-facing IRkernel viewer remains
+disabled until an R-specific notebook bridge adds exact `NotebookDocument` and
+kernel acquisition, variable discovery, cancellation-safe failed-open cleanup,
+restart recovery, coordinator mapping, and installed-editor acceptance. This is
+transport evidence, not an R support claim.
+
 ## Delivery slices
 
 1. **Foundation:** provider protocol, native serializer, capability model,
    package allowlist, and R-only smoke test.
-2. **IRkernel viewer:** exact-notebook launch, variable picker, kernel dispatch,
-   paging, cancellation, cleanup, and recovery.
+2. **IRkernel viewer (in progress):** exact-kernel provider bootstrap, framing,
+   response validation, and disposal are implemented. Exact-notebook launch,
+   variable discovery, paging coordination, cancellation cleanup, recovery, and
+   editor acceptance remain.
 3. **Explicit session helper:** a documented helper for `.R`, `.Rmd`, and
    `.qmd` sessions with an unambiguous connection handshake.
 4. **Viewing parity:** native filtering, multi-sort, profiles, large pages,
