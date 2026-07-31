@@ -521,13 +521,16 @@ class DuckDBEngine(DataFrameEngine):
                         f"SELECT min({identifier}), max({identifier}), avg({identifier}), "
                         f"median({identifier}), stddev_samp({identifier}) FROM ow WHERE {valid}",
                     )[0]
-                    numeric_summary = {
+                    numeric_summary: dict[str, Any] = {
                         "min": _finite_float(numeric[0]),
                         "max": _finite_float(numeric[1]),
                         "mean": _finite_float(numeric[2]),
                         "median": _finite_float(numeric[3]),
                         "std": _finite_float(numeric[4]),
                     }
+                    if semantic_type in {"integer", "decimal"} and numeric[0] is not None:
+                        numeric_summary["exactMin"] = normalize_cell(numeric[0])
+                        numeric_summary["exactMax"] = normalize_cell(numeric[1])
                     summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                     summary["visualization"] = _numeric_visualization(
                         connection,

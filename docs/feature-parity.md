@@ -688,6 +688,25 @@ Grid status and profile vocabulary, 2026-07-31:
 
 This completes the bounded permanent grid-status sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). Broader command-row redesign and refreshed installed-editor release evidence remain follow-up work; this does not make a parity-complete claim.
 
+Lossless integer and decimal extrema, 2026-07-31:
+
+- Protocol-v2 numeric summaries may carry a backward-compatible, paired `exactMin` / `exactMax` typed-cell
+  encoding for integer and decimal columns. Existing JSON-number fields remain available for older consumers and
+  approximate mean, median, standard deviation, and histogram math.
+- Pandas, eager and lazy Polars, DuckDB, and experimental PySpark reuse their already-computed native aggregate
+  extrema; saved notebook previews compare the bounded captured typed cells directly. Conversion-trap tests
+  prohibit Polars, DuckDB, and PySpark from detouring through another dataframe engine.
+- Column headers prefer the lossless value with an accessible full-value label and bounded visual ellipsis.
+  **Column profiles** shows the complete value with wrapping, so integers outside JavaScript's safe range and
+  high-precision decimals do not silently round.
+- Protocol, snapshot, engine, component, production-bundle screenshot, and axe regressions cover both field
+  presence and display. Validation rejects partial pairs, wrong semantic types, null/NaN cells, malformed or
+  non-canonical encodings, unsafe integers transported as numbers, and reversed extrema.
+
+This strengthens the existing **Done** dataset-summary row and advances the column-profile polish tracked in
+[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). It does not change the experimental status or
+supported surface of PySpark.
+
 Released-Jupyter argument provenance slice, 2026-07-26:
 
 - The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.

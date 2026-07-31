@@ -193,16 +193,21 @@ export function snapshotSummaries(
       .map(({ value, count }) => ({ value, count }));
 
     const standardDeviation = sampleStandardDeviation(numericValues);
+    const exactExtrema =
+      schema.type === "integer" || schema.type === "decimal" ? exactNumericExtrema(values, schema.type) : undefined;
     const numeric =
       numericValues.length === 0
         ? undefined
-        : finiteNumericSummary({
-            min: Math.min(...numericValues),
-            max: Math.max(...numericValues),
-            mean: numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length,
-            median: median(numericValues),
-            std: standardDeviation
-          });
+        : {
+            ...finiteNumericSummary({
+              min: Math.min(...numericValues),
+              max: Math.max(...numericValues),
+              mean: numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length,
+              median: median(numericValues),
+              std: standardDeviation
+            }),
+            ...exactExtrema
+          };
     const text =
       schema.type === "string"
         ? (() => {
@@ -720,7 +725,11 @@ function assertPortableDuration(text: string): void {
   }
 }
 
-function compareTypedCells(left: CellValue, right: CellValue, type: SessionMetadata["schema"][number]["type"]): number {
+export function compareTypedCells(
+  left: CellValue,
+  right: CellValue,
+  type: SessionMetadata["schema"][number]["type"]
+): number {
   switch (type) {
     case "integer":
       return compareBigInts(integerValue(left), integerValue(right));
@@ -1205,6 +1214,21 @@ function sampleStandardDeviation(values: number[]): number | undefined {
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
   const squaredDifferenceTotal = values.reduce((sum, value) => sum + (value - mean) ** 2, 0);
   return Math.sqrt(squaredDifferenceTotal / (values.length - 1));
+}
+
+function exactNumericExtrema(
+  values: CellValue[],
+  type: "integer" | "decimal"
+): Pick<NonNullable<ColumnSummary["numeric"]>, "exactMin" | "exactMax"> | undefined {
+  const [first, ...remaining] = values;
+  if (!first) return undefined;
+  let exactMin = first;
+  let exactMax = first;
+  for (const cell of remaining) {
+    if (compareTypedCells(cell, exactMin, type) < 0) exactMin = cell;
+    if (compareTypedCells(cell, exactMax, type) > 0) exactMax = cell;
+  }
+  return { exactMin, exactMax };
 }
 
 function finiteNumericSummary(

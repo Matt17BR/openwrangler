@@ -804,6 +804,41 @@ def test_duckdb_text_summaries_are_exact_native_unicode_aggregates(
         engine.close()
 
 
+def test_duckdb_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_conversion_guards(monkeypatch)
+    engine = DuckDBEngine()
+    frame = duckdb.sql(
+        """
+        SELECT * FROM (VALUES
+            (
+                CAST('-999999999999999999999999999998' AS HUGEINT),
+                CAST('-12345678901234567890.123456789012345678' AS DECIMAL(38, 18))
+            ),
+            (
+                CAST('1000000000000000000000000000003' AS HUGEINT),
+                CAST('98765432109876543210.987654321098765432' AS DECIMAL(38, 18))
+            )
+        ) AS source(wide, amount)
+        """
+    )
+
+    try:
+        summaries = engine.summaries(frame, [(0, "wide-id"), (1, "amount-id")])
+
+        assert summaries[0]["numeric"]["exactMin"]["display"] == "-999999999999999999999999999998"
+        assert summaries[0]["numeric"]["exactMax"]["display"] == "1000000000000000000000000000003"
+        assert summaries[0]["numeric"]["exactMin"]["kind"] == "integer"
+        assert summaries[0]["numeric"]["exactMax"]["kind"] == "integer"
+        assert summaries[1]["numeric"]["exactMin"]["display"] == "-12345678901234567890.123456789012345678"
+        assert summaries[1]["numeric"]["exactMax"]["display"] == "98765432109876543210.987654321098765432"
+        assert summaries[1]["numeric"]["exactMin"]["kind"] == "decimal"
+        assert summaries[1]["numeric"]["exactMax"]["kind"] == "decimal"
+    finally:
+        engine.close()
+
+
 def test_duckdb_numeric_histogram_is_exact_for_a_large_filtered_view() -> None:
     engine = DuckDBEngine()
     source = duckdb.sql(
@@ -1364,6 +1399,20 @@ def test_duckdb_file_session_preview_apply_profile_export_and_close(tmp_path: Pa
         "mean": 20.0,
         "median": 20.0,
         "std": 10.0,
+        "exactMin": {
+            "kind": "integer",
+            "raw": 10,
+            "display": "10",
+            "isNull": False,
+            "isNaN": False,
+        },
+        "exactMax": {
+            "kind": "integer",
+            "raw": 30,
+            "display": "30",
+            "isNull": False,
+            "isNaN": False,
+        },
     }
 
     destination = tmp_path / "cleaned.parquet"

@@ -4,6 +4,16 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.9] - 2026-07-31
+
+### Fixed
+
+- Preserved integer and decimal minimum/maximum values without IEEE-754 rounding in Pandas, eager and lazy
+  Polars, DuckDB, experimental PySpark, and saved notebook previews. Column headers and **Column profiles** now
+  prefer the lossless typed values while retaining the existing numeric statistics and histograms.
+- Rejected partial, malformed, type-incompatible, non-finite, or reversed exact extrema at the protocol boundary.
+  Existing protocol-v2 summaries without the additive fields remain valid.
+
 ## [1.1.8] - 2026-07-31
 
 ### Fixed

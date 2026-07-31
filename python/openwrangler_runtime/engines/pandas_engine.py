@@ -283,13 +283,19 @@ class PandasEngine(DataFrameEngine):
             }
             if semantic_type in {"integer", "float", "decimal"}:
                 numeric = series.dropna()
-                numeric_summary = {
-                    "min": _maybe_float(numeric.min()),
-                    "max": _maybe_float(numeric.max()),
-                    "mean": _maybe_float(numeric.mean()),
-                    "median": _maybe_float(numeric.median()),
-                    "std": _maybe_float(numeric.std()),
+                minimum = numeric.min()
+                maximum = numeric.max()
+                statistics = numeric.astype("float64") if semantic_type == "decimal" else numeric
+                numeric_summary: dict[str, Any] = {
+                    "min": _maybe_float(minimum),
+                    "max": _maybe_float(maximum),
+                    "mean": _maybe_float(statistics.mean()),
+                    "median": _maybe_float(statistics.median()),
+                    "std": _maybe_float(statistics.std()),
                 }
+                if semantic_type in {"integer", "decimal"} and not numeric.empty:
+                    numeric_summary["exactMin"] = normalize_cell(minimum)
+                    numeric_summary["exactMax"] = normalize_cell(maximum)
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 summary["visualization"] = numeric_visualization(numeric.tolist())
             elif semantic_type == "boolean":

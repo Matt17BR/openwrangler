@@ -192,6 +192,57 @@ def test_pandas_viewing_supports_duplicate_and_non_string_column_labels():
     ]
 
 
+def test_pandas_numeric_summaries_publish_lossless_wide_integer_and_decimal_extrema() -> None:
+    wide_values = [
+        -(10**30) + 2,
+        10**30 + 3,
+        10**30 + 1,
+    ]
+    decimal_values = [
+        Decimal("-12345678901234567890.123456789012345678"),
+        Decimal("98765432109876543210.987654321098765432"),
+    ]
+    frame = pd.DataFrame(
+        {
+            "wide": pd.Series(wide_values, dtype=object),
+            "amount": pd.Series([*decimal_values, None], dtype=object),
+        }
+    )
+
+    summaries = PandasEngine().summaries(frame)
+
+    assert summaries[0]["numeric"]["exactMin"] == {
+        "kind": "integer",
+        "raw": str(min(wide_values)),
+        "display": str(min(wide_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[0]["numeric"]["exactMax"] == {
+        "kind": "integer",
+        "raw": str(max(wide_values)),
+        "display": str(max(wide_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[1]["numeric"]["exactMin"] == {
+        "kind": "decimal",
+        "raw": str(min(decimal_values)),
+        "display": str(min(decimal_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert summaries[1]["numeric"]["exactMax"] == {
+        "kind": "decimal",
+        "raw": str(max(decimal_values)),
+        "display": str(max(decimal_values)),
+        "isNull": False,
+        "isNaN": False,
+    }
+    assert isinstance(summaries[0]["numeric"]["min"], float)
+    assert isinstance(summaries[1]["numeric"]["max"], float)
+
+
 @pytest.mark.parametrize(
     ("labels", "display_name"),
     [

@@ -588,6 +588,10 @@ describe("saved notebook snapshot model", () => {
     expect(filtered("gt", "900719925474099312345.0000000000000000001")).toEqual([3]);
     expect(snapshotSummaries(decimalMetadata, decimalRows)[0]).toMatchObject({
       distinctCount: 3,
+      numeric: {
+        exactMin: decimalCell("1.0"),
+        exactMax: decimalCell("900719925474099312345.0000000000000000002")
+      },
       topValues: [
         { value: "1.0", count: 2 },
         { value: "900719925474099312345.0000000000000000001", count: 1 },
@@ -618,6 +622,23 @@ describe("saved notebook snapshot model", () => {
       }).map((item) => item.rowNumber)
     ).toEqual([0, 1]);
     expect(snapshotDatasetStats(decimalMetadata, decimalRows).duplicateRows).toBe(1);
+  });
+
+  it("keeps wide integer snapshot extrema lossless while retaining legacy numeric statistics", () => {
+    const integerMetadata = singleColumnMetadata("integer", "Int128", 3);
+    const integerRows = [
+      row(0, integerCell("-900719925474099312345678901")),
+      row(1, integerCell("900719925474099312345678902")),
+      row(2, integerCell("900719925474099312345678901"))
+    ];
+
+    const summary = snapshotSummaries(integerMetadata, integerRows)[0];
+    expect(summary?.numeric).toMatchObject({
+      min: Number("-900719925474099312345678901"),
+      max: Number("900719925474099312345678902"),
+      exactMin: integerCell("-900719925474099312345678901"),
+      exactMax: integerCell("900719925474099312345678902")
+    });
   });
 
   it("returns an exact bounded two-dimensional page without changing captured rows", () => {

@@ -482,6 +482,113 @@ describe("protocol-v2 response validation", () => {
     }
   });
 
+  it("accepts paired lossless integer and decimal extrema and rejects incompatible or malformed pairs", () => {
+    const response = (summary: unknown): unknown => ({
+      kind: "summary",
+      revision: 3,
+      viewRequestId: "view-exact-extrema",
+      summaries: [summary]
+    });
+    const integerCell = (value: string) => ({
+      kind: "integer",
+      raw: value,
+      display: value,
+      isNull: false,
+      isNaN: false
+    });
+    const decimalCell = (value: string) => ({
+      kind: "decimal",
+      raw: value,
+      display: value,
+      isNull: false,
+      isNaN: false
+    });
+    const integerSummary = {
+      ...summaries[0],
+      numeric: {
+        ...summaries[0].numeric,
+        exactMin: integerCell("-900719925474099312345678901"),
+        exactMax: integerCell("900719925474099312345678902")
+      }
+    };
+    const decimalSummary = {
+      ...integerSummary,
+      type: "decimal" as const,
+      rawType: "Decimal(38,18)",
+      numeric: {
+        min: -1.2345678901234567,
+        max: 9.876543210987654,
+        exactMin: decimalCell("-1.234567890123456789"),
+        exactMax: decimalCell("9.876543210987654321")
+      }
+    };
+
+    expect(isOpenWranglerResponse(response(integerSummary))).toBe(true);
+    expect(isOpenWranglerResponse(response(decimalSummary))).toBe(true);
+
+    const malformedPairs = [
+      { ...integerSummary.numeric, exactMax: undefined },
+      { ...integerSummary.numeric, exactMin: undefined },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, isNull: true, kind: "null", raw: null, display: "" }
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, isNaN: true, kind: "nan", raw: null, display: "NaN" }
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, raw: 9_007_199_254_740_992, display: "9007199254740992" }
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: integerCell("900719925474099312345678903"),
+        exactMax: integerCell("900719925474099312345678902")
+      },
+      {
+        ...integerSummary.numeric,
+        exactMin: { ...integerSummary.numeric.exactMin, unexpected: true }
+      }
+    ];
+    for (const numeric of malformedPairs) {
+      expect(isOpenWranglerResponse(response({ ...integerSummary, numeric }))).toBe(false);
+    }
+
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...integerSummary,
+          type: "float",
+          rawType: "Float64"
+        })
+      )
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            ...decimalSummary.numeric,
+            exactMin: decimalCell("2.000000000000000000"),
+            exactMax: decimalCell("1.999999999999999999")
+          }
+        })
+      )
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse(
+        response({
+          ...decimalSummary,
+          numeric: {
+            ...decimalSummary.numeric,
+            exactMin: decimalCell("not-a-decimal")
+          }
+        })
+      )
+    ).toBe(false);
+  });
+
   it("accepts backward-compatible and exact text summaries while rejecting malformed metrics", () => {
     const response = (summary: unknown): unknown => ({
       kind: "summary",

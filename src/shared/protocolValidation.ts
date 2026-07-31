@@ -1,4 +1,5 @@
 import type {
+  CellValue,
   ColumnReference,
   ColumnSchema,
   ColumnSummary,
@@ -13,6 +14,7 @@ import type {
   TransformStep
 } from "./protocol.generated";
 import { PROTOCOL_VERSION } from "./protocol";
+import { compareTypedCells } from "./snapshotModel";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -1309,7 +1311,7 @@ function isColumnSummary(value: unknown): boolean {
     isNonNegativeInteger(candidate.nullCount) &&
     isNonNegativeInteger(candidate.nanCount) &&
     optional(candidate, "distinctCount", isNonNegativeInteger) &&
-    optional(candidate, "numeric", isNumericSummary) &&
+    optional(candidate, "numeric", (numeric) => isNumericSummary(numeric, candidate.type)) &&
     optional(candidate, "visualization", isColumnVisualization) &&
     isArrayOf(candidate.topValues, isValueCount)
   )) {
@@ -1342,15 +1344,72 @@ function isColumnSummaryArray(value: unknown, schema?: readonly ColumnSchema[]):
   });
 }
 
-function isNumericSummary(value: unknown): boolean {
-  const candidate = exactRecord(value, [], ["min", "max", "mean", "median", "std"]);
+function isNumericSummary(value: unknown, columnType: unknown): boolean {
+  const candidate = exactRecord(value, [], ["min", "max", "mean", "median", "std", "exactMin", "exactMax"]);
+  if (
+    candidate === undefined ||
+    !optional(candidate, "min", isFiniteNumber) ||
+    !optional(candidate, "max", isFiniteNumber) ||
+    !optional(candidate, "mean", isFiniteNumber) ||
+    !optional(candidate, "median", isFiniteNumber) ||
+    !optional(candidate, "std", isFiniteNumber)
+  ) {
+    return false;
+  }
+
+  const hasExactMin = Object.prototype.hasOwnProperty.call(candidate, "exactMin");
+  const hasExactMax = Object.prototype.hasOwnProperty.call(candidate, "exactMax");
+  if (!hasExactMin && !hasExactMax) return true;
+  if (!hasExactMin || !hasExactMax || (columnType !== "integer" && columnType !== "decimal")) return false;
+  if (
+    !isExactNumericExtremum(candidate.exactMin, columnType) ||
+    !isExactNumericExtremum(candidate.exactMax, columnType)
+  ) {
+    return false;
+  }
+
+  try {
+    return compareTypedCells(candidate.exactMin, candidate.exactMax, columnType) <= 0;
+  } catch {
+    return false;
+  }
+}
+
+function isExactNumericExtremum(value: unknown, columnType: "integer" | "decimal"): value is CellValue {
+  if (!isCellValue(value)) return false;
+  const cell = value as CellValue;
+  if (
+    cell.isNull ||
+    cell.isNaN ||
+    Object.prototype.hasOwnProperty.call(cell, "sign") ||
+    !Object.prototype.hasOwnProperty.call(cell, "raw") ||
+    cell.display.length === 0 ||
+    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS
+  ) {
+    return false;
+  }
+
+  if (columnType === "integer") {
+    if (cell.kind !== "integer") return false;
+    if (typeof cell.raw === "number") {
+      return Number.isSafeInteger(cell.raw) && cell.display === String(cell.raw);
+    }
+    if (typeof cell.raw !== "string" || !/^-?(?:0|[1-9]\d*)$/u.test(cell.raw) || cell.display !== cell.raw) {
+      return false;
+    }
+    try {
+      const integer = BigInt(cell.raw);
+      return integer < BigInt(Number.MIN_SAFE_INTEGER) || integer > BigInt(Number.MAX_SAFE_INTEGER);
+    } catch {
+      return false;
+    }
+  }
+
   return (
-    candidate !== undefined &&
-    optional(candidate, "min", isFiniteNumber) &&
-    optional(candidate, "max", isFiniteNumber) &&
-    optional(candidate, "mean", isFiniteNumber) &&
-    optional(candidate, "median", isFiniteNumber) &&
-    optional(candidate, "std", isFiniteNumber)
+    cell.kind === "decimal" &&
+    typeof cell.raw === "string" &&
+    cell.display === cell.raw &&
+    /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/u.test(cell.raw)
   );
 }
 

@@ -309,12 +309,18 @@
     "NumericSummary": {
       "type": "object",
       "additionalProperties": false,
+      "dependencies": {
+        "exactMin": ["exactMax"],
+        "exactMax": ["exactMin"]
+      },
       "properties": {
         "min": { "type": "number" },
         "max": { "type": "number" },
         "mean": { "type": "number" },
         "median": { "type": "number" },
-        "std": { "type": "number" }
+        "std": { "type": "number" },
+        "exactMin": { "$ref": "#/definitions/CellValue" },
+        "exactMax": { "$ref": "#/definitions/CellValue" }
       }
     },
     "TextSummary": {

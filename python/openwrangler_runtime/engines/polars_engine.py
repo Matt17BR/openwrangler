@@ -396,13 +396,18 @@ class PolarsEngine(DataFrameEngine):
                 if semantic_type == "float":
                     numeric_series = numeric_series.drop_nans()
                 numeric_values = numeric_series.to_list()
-                numeric_summary = {
-                    "min": _maybe_float(numeric_series.min()),
-                    "max": _maybe_float(numeric_series.max()),
+                minimum = numeric_series.min()
+                maximum = numeric_series.max()
+                numeric_summary: dict[str, Any] = {
+                    "min": _maybe_float(minimum),
+                    "max": _maybe_float(maximum),
                     "mean": _maybe_float(numeric_series.mean()),
                     "median": _maybe_float(numeric_series.median()),
                     "std": _maybe_float(numeric_series.std()),
                 }
+                if semantic_type in {"integer", "decimal"} and numeric_series.len() > 0:
+                    numeric_summary["exactMin"] = normalize_cell(minimum)
+                    numeric_summary["exactMax"] = normalize_cell(maximum)
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 summary["visualization"] = numeric_visualization(numeric_values)
             elif semantic_type == "boolean":
@@ -580,13 +585,16 @@ class PolarsEngine(DataFrameEngine):
                 "topValues": top_values,
             }
             if semantic_type in {"integer", "float", "decimal"}:
-                numeric_summary = {
+                numeric_summary: dict[str, Any] = {
                     "min": _maybe_float(metrics[f"{prefix}min"]),
                     "max": _maybe_float(metrics[f"{prefix}max"]),
                     "mean": _maybe_float(metrics[f"{prefix}mean"]),
                     "median": _maybe_float(metrics[f"{prefix}median"]),
                     "std": _maybe_float(metrics[f"{prefix}std"]),
                 }
+                if semantic_type in {"integer", "decimal"} and metrics[f"{prefix}min"] is not None:
+                    numeric_summary["exactMin"] = normalize_cell(metrics[f"{prefix}min"])
+                    numeric_summary["exactMax"] = normalize_cell(metrics[f"{prefix}max"])
                 summary["numeric"] = {key: value for key, value in numeric_summary.items() if value is not None}
                 visualization = numeric_histograms.get(column)
                 if visualization is None:  # pragma: no cover - guarded by numeric histogram construction

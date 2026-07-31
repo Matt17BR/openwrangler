@@ -25,6 +25,7 @@ import {
   scrollTopForLogicalRow
 } from "./rowScrollModel";
 import { columnTypePresentation } from "../columnTypes";
+import { numericExtremumDisplay } from "../numericSummary";
 import { NumericHistogram } from "../visualizations/NumericHistogram";
 
 interface DataGridProps {
@@ -1506,8 +1507,8 @@ function ColumnHeader({
             <div className="exactSummaryStats">
               <span>Missing {formatPercent(summary.nullCount + summary.nanCount, summary.totalCount)}</span>
               <span>Distinct {formatPercent(summary.distinctCount ?? 0, summary.totalCount)}</span>
-              {summary.numeric?.min !== undefined && <span>Min {formatInsightValue(summary.numeric.min)}</span>}
-              {summary.numeric?.max !== undefined && <span>Max {formatInsightValue(summary.numeric.max)}</span>}
+              {summary.numeric && <CompactExtremum label="Min" summary={summary.numeric} bound="min" />}
+              {summary.numeric && <CompactExtremum label="Max" summary={summary.numeric} bound="max" />}
             </div>
             <div className="summaryDistribution">
               {summary.visualization?.sampled && <span className="sampledLabel">Distribution sampled</span>}
@@ -1518,6 +1519,29 @@ function ColumnHeader({
           <span className="columnInsight emptyInsight">Profiling…</span>
         ))}
     </th>
+  );
+}
+
+function CompactExtremum({
+  label,
+  summary,
+  bound
+}: {
+  label: "Min" | "Max";
+  summary: NonNullable<ColumnSummary["numeric"]>;
+  bound: "min" | "max";
+}) {
+  const value = numericExtremumDisplay(summary, bound);
+  if (!value) return null;
+  const accessibleLabel = `${label === "Min" ? "Minimum" : "Maximum"} ${value.display}`;
+  return (
+    <span
+      className={value.exact ? "exactNumericExtremum" : undefined}
+      title={accessibleLabel}
+      aria-label={accessibleLabel}
+    >
+      {label} {value.display}
+    </span>
   );
 }
 
@@ -1630,8 +1654,4 @@ function formatPercent(value: number, total: number): string {
   if (total <= 0) return "0%";
   const percentage = (value / total) * 100;
   return `${percentage < 1 && percentage > 0 ? "<1" : Math.round(percentage).toLocaleString()}%`;
-}
-
-function formatInsightValue(value: number): string {
-  return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }

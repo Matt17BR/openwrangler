@@ -1060,6 +1060,63 @@ describe("SummaryPanel", () => {
     expect(screen.queryByRole("heading", { name: "Top values" })).not.toBeInTheDocument();
   });
 
+  it("shows full typed extrema in Column profiles with exact titles and accessible names", () => {
+    const minimum = "-12345678901234567890.123456789012345678";
+    const maximum = "98765432109876543210.987654321098765432";
+    const decimalMetadata: SessionMetadata = {
+      ...metadata,
+      shape: { rows: 2, columns: 1 },
+      filteredShape: { rows: 2, columns: 1 },
+      schema: [
+        {
+          id: "c:amount",
+          name: "amount",
+          position: 0,
+          rawType: "Decimal(38,18)",
+          type: "decimal",
+          nullable: false
+        }
+      ]
+    };
+    const decimalSummary: ColumnSummary = {
+      columnId: "c:amount",
+      column: "amount",
+      type: "decimal",
+      rawType: "Decimal(38,18)",
+      totalCount: 2,
+      nullCount: 0,
+      nanCount: 0,
+      distinctCount: 2,
+      numeric: {
+        min: Number(minimum),
+        max: Number(maximum),
+        exactMin: { kind: "decimal", raw: minimum, display: minimum, isNull: false, isNaN: false },
+        exactMax: { kind: "decimal", raw: maximum, display: maximum, isNull: false, isNaN: false }
+      },
+      visualization: {
+        kind: "numeric",
+        bins: [{ min: Number(minimum), max: Number(maximum), count: 2 }]
+      },
+      topValues: []
+    };
+
+    renderSummary({
+      metadataValue: decimalMetadata,
+      summaries: [decimalSummary],
+      selectedColumnId: "c:amount"
+    });
+
+    const minimumValue = screen.getByText("Min").nextElementSibling;
+    const maximumValue = screen.getByText("Max").nextElementSibling;
+    expect(minimumValue).toHaveTextContent(minimum);
+    expect(maximumValue).toHaveTextContent(maximum);
+    expect(minimumValue).toHaveAttribute("title", `Minimum: ${minimum}`);
+    expect(maximumValue).toHaveAttribute("title", `Maximum: ${maximum}`);
+    expect(minimumValue).toHaveAccessibleName(`Minimum ${minimum}`);
+    expect(maximumValue).toHaveAccessibleName(`Maximum ${maximum}`);
+    expect(minimumValue).toHaveClass("exactNumericExtremum");
+  });
+
   it("falls back to the first schema column and labels categorical values and the remainder", () => {
     renderSummary();
 
