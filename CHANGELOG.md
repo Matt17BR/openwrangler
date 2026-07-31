@@ -6,6 +6,10 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Split pull-request quality/contracts, visual/accessibility, production audits, packaged VS Code, native script,
+  native extension-host, and Cursor smoke into independently attributable jobs. The existing protected `validate`
+  context is now a fail-closed aggregate, so failed, cancelled, absent, or unexpectedly skipped evidence cannot
+  satisfy the merge gate.
 - Packaged editor acceptance now validates its prepared Python environment before starting VS Code or Cursor, so
   unsupported Python versions and missing Pandas, Polars, DuckDB, or OpenPyXL fail during setup instead of after a
   long workbench launch.
@@ -19,9 +23,17 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
   sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
   demonstrated capability without presenting fixture sizes as dataframe limits.
+- Added paired, pixel-exact Activity Bar details to the README and product gallery so first-time users can read the
+  operation catalog, dataframe summary, ordered viewing state, and separate cleaning history without enlarging a
+  full editor screenshot. The details are derived from the accepted packaged Explore and Workflow captures rather
+  than reconstructed UI.
+- Reframed the native Polars and DuckDB notebook evidence as full-content-width, pixel-exact details linked to the
+  complete packaged-editor scenes, so engine badges, draft code, native filters, and ordered sorts remain legible.
+  The rich DuckDB gallery detail now removes unused canvas without altering typed decimal, time-zone, list, or
+  struct evidence.
 - Replaced the generic uppercase by-example placeholder and gallery fixture with a structured account-code
   extraction, so the first example demonstrates deterministic split synthesis instead of duplicating a basic
-  casing operation.
+  casing operation. The README now places example setup and unseen-row draft review side by side.
 - Replaced the verbose workbench shape subtitle with the compact, standard `rows × columns` form while preserving
   its full accessible description and hover text. Column profiles now scroll vertically without exposing a
   misleading empty horizontal scrollbar.
@@ -47,6 +59,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Kept an authoritative restored grid row and horizontal offset when a custom-editor snapshot and saved view hydrate
+  in the same render, and through a delayed workbench layout scroll collapse, while explicit wheel, pointer, touch,
+  and keyboard navigation remain user-authoritative.
 - Removed unused `Counter` imports from ordinary Pandas, Polars, and DuckDB generated plans while retaining the
   import for one-hot encoding and multi-label binarization collision checks.
 - Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through

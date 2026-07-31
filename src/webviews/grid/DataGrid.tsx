@@ -140,10 +140,12 @@ export function DataGrid({
   const requestedOffset = useRef(page.offset);
   const logicalViewContext = viewContextId ?? `${metadata.sessionId}:${metadata.revision}`;
   const previousViewContext = useRef(logicalViewContext);
+  const appliedViewStateRestoreVersion = useRef<number | undefined>(undefined);
   const focusRequested = useRef(false);
   const preserveGridFocusAfterScroll = useRef(false);
   const programmaticViewportTarget = useRef<ProgrammaticViewportTarget | undefined>(undefined);
   const programmaticViewportWriteInProgress = useRef(false);
+  const programmaticViewportRetryAvailable = useRef(false);
   const viewportUpdatesSuspended = useRef(false);
   const viewStateRef = useRef(viewState);
   const restorationRef = useRef({ viewState, metadata, page, pageSize });
@@ -198,6 +200,7 @@ export function DataGrid({
   const writeProgrammaticViewport = useCallback(
     (scroller: HTMLDivElement, target: ProgrammaticViewportTarget): void => {
       programmaticViewportTarget.current = target;
+      programmaticViewportRetryAvailable.current = true;
       programmaticViewportWriteInProgress.current = true;
       try {
         scroller.scrollTop = target.scrollTop;
@@ -227,19 +230,34 @@ export function DataGrid({
     preserveGridFocusAfterScroll.current = false;
     const column = selectedColumnPosition(metadata.schema, viewStateRef.current.selectedColumnId);
     const selectedColumnId = metadata.schema[column]?.id;
-    setFocusedCell({ row: page.rows[0]?.rowNumber ?? page.offset, column });
+    const authoritativeRestorePending = appliedViewStateRestoreVersion.current !== viewStateRestoreVersion;
+    const firstVisibleRow = authoritativeRestorePending
+      ? Math.max(0, Math.min(viewStateRef.current.viewport.firstVisibleRow, Math.max(0, page.totalRows - 1)))
+      : page.offset;
+    setFocusedCell({
+      row: authoritativeRestorePending ? firstVisibleRow : (page.rows[0]?.rowNumber ?? page.offset),
+      column
+    });
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const scrollTop = scrollTopForLogicalRow(createRowScrollModel(page.totalRows, scroller.clientHeight), page.offset);
+    const scrollTop = scrollTopForLogicalRow(
+      createRowScrollModel(page.totalRows, scroller.clientHeight),
+      firstVisibleRow
+    );
     const scrollLeft = viewStateRef.current.viewport.scrollLeft;
-    writeProgrammaticViewport(scroller, { firstVisibleRow: page.offset, scrollTop, scrollLeft });
+    writeProgrammaticViewport(scroller, { firstVisibleRow, scrollTop, scrollLeft });
     setViewport({
       scrollLeft,
       scrollTop,
-      firstVisibleRow: page.offset,
+      firstVisibleRow,
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
+    // A host snapshot can replace the logical view and restore its confirmed
+    // viewport in the same React commit. The restore effect below owns that
+    // commit; publishing the new page offset here would queue a stale renderer
+    // update that can escape as soon as hydration is acknowledged.
+    if (authoritativeRestorePending) return;
     reportViewState({
       ...viewStateRef.current,
       ...(selectedColumnId ? { selectedColumnId } : {}),
@@ -252,6 +270,7 @@ export function DataGrid({
     page.rows,
     page.totalRows,
     reportViewState,
+    viewStateRestoreVersion,
     writeProgrammaticViewport
   ]);
 
@@ -281,6 +300,7 @@ export function DataGrid({
       width: scroller.clientWidth,
       height: scroller.clientHeight
     });
+    appliedViewStateRestoreVersion.current = viewStateRestoreVersion;
   }, [viewStateRestoreVersion, writeProgrammaticViewport]);
 
   useEffect(() => {
@@ -337,7 +357,7 @@ export function DataGrid({
       setFocusedCell((current) => ({ row, column: current.column }));
       requestPage(offset);
     };
-    const targetStillQuantized =
+    let targetStillQuantized =
       target !== undefined &&
       Math.abs(scroller.scrollTop - target.scrollTop) <= scrollQuantizationTolerance &&
       Math.abs(scroller.scrollLeft - target.scrollLeft) <= scrollQuantizationTolerance;
@@ -351,10 +371,40 @@ export function DataGrid({
       target.scrollLeft > 0 &&
       Math.abs(scroller.scrollLeft - target.scrollLeft) > scrollQuantizationTolerance &&
       (!scroller.isConnected || scroller.clientWidth <= 0 || scroller.scrollWidth <= scroller.clientWidth);
+    const targetFitsCurrentGeometry =
+      target !== undefined &&
+      target.scrollTop <= Math.max(0, scroller.scrollHeight - scroller.clientHeight) + scrollQuantizationTolerance &&
+      target.scrollLeft <= Math.max(0, scroller.scrollWidth - scroller.clientWidth) + scrollQuantizationTolerance;
+    let restorationRetried = false;
+    if (
+      target &&
+      !targetStillQuantized &&
+      (target.firstVisibleRow > 0 || target.scrollLeft > 0) &&
+      programmaticViewportRetryAvailable.current &&
+      !verticalTargetTemporarilyUnavailable &&
+      !horizontalTargetTemporarilyUnavailable &&
+      targetFitsCurrentGeometry
+    ) {
+      // Chromium can publish a delayed scroll-collapse after a renderer or
+      // workbench layout transition. Pointer, wheel, and touch input clear the
+      // target before this handler runs, so a retained target is still the
+      // host-authoritative restoration rather than a user scroll. Reapply it
+      // once against the now-available geometry instead of persisting the
+      // collapse. A later unexplained divergence is accepted so native or
+      // assistive scrolling can never become trapped behind restoration.
+      restorationRetried = true;
+      programmaticViewportRetryAvailable.current = false;
+      writeProgrammaticViewport(scroller, target);
+      programmaticViewportRetryAvailable.current = false;
+      targetStillQuantized =
+        Math.abs(scroller.scrollTop - target.scrollTop) <= scrollQuantizationTolerance &&
+        Math.abs(scroller.scrollLeft - target.scrollLeft) <= scrollQuantizationTolerance;
+    }
     if (
       target &&
       !targetStillQuantized &&
       (programmaticViewportWriteInProgress.current ||
+        restorationRetried ||
         verticalTargetTemporarilyUnavailable ||
         horizontalTargetTemporarilyUnavailable)
     ) {
@@ -380,8 +430,9 @@ export function DataGrid({
       return;
     }
     if (target && !targetStillQuantized) programmaticViewportTarget.current = undefined;
-    const scrollTop = targetStillQuantized ? target.scrollTop : scroller.scrollTop;
-    const scrollLeft = targetStillQuantized ? target.scrollLeft : scroller.scrollLeft;
+    const confirmedTarget = target && targetStillQuantized ? target : undefined;
+    const scrollTop = confirmedTarget?.scrollTop ?? scroller.scrollTop;
+    const scrollLeft = confirmedTarget?.scrollLeft ?? scroller.scrollLeft;
     const next = {
       firstVisibleRow: 0,
       scrollLeft,
@@ -389,8 +440,8 @@ export function DataGrid({
       width: scroller.clientWidth,
       height: scroller.clientHeight
     };
-    const row = targetStillQuantized
-      ? target.firstVisibleRow
+    const row = confirmedTarget
+      ? confirmedTarget.firstVisibleRow
       : logicalRowForScrollTop(createRowScrollModel(totalRows, next.height), next.scrollTop);
     next.firstVisibleRow = row;
     setViewport((current) =>
@@ -421,12 +472,13 @@ export function DataGrid({
       });
     }
     requestBlockForRow(row);
-  }, []);
+  }, [writeProgrammaticViewport]);
 
   const interruptColumnReveal = useCallback(() => {
     stopColumnRevealWakeSources.current();
     viewportUpdatesSuspended.current = false;
     programmaticViewportTarget.current = undefined;
+    programmaticViewportRetryAvailable.current = false;
     const pending = goToColumnRequestRef.current;
     if (
       pending.columnId &&

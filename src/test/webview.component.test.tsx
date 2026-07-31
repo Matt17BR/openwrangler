@@ -863,6 +863,122 @@ describe("DataGrid", () => {
     expect(props.onPage).not.toHaveBeenCalled();
   });
 
+  it("does not publish a stale page offset when a logical view and authoritative restore commit together", () => {
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} viewContextId="initial-view" />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    onViewStateChange.mockClear();
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewContextId="restored-view"
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("reapplies an authoritative viewport after an asynchronous layout scroll collapse", () => {
+    const onViewStateChange = vi.fn();
+    const onPage = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage,
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    let physicalScrollTop = 0;
+    let physicalScrollLeft = 0;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 58 },
+      clientWidth: { configurable: true, value: 320 },
+      scrollHeight: { configurable: true, value: 232 },
+      scrollWidth: { configurable: true, value: 900 },
+      scrollTop: {
+        configurable: true,
+        get: () => physicalScrollTop,
+        set: (value: number) => {
+          physicalScrollTop = value;
+        }
+      },
+      scrollLeft: {
+        configurable: true,
+        get: () => physicalScrollLeft,
+        set: (value: number) => {
+          physicalScrollLeft = value;
+        }
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    onViewStateChange.mockClear();
+
+    physicalScrollTop = 0;
+    physicalScrollLeft = 0;
+    fireEvent.scroll(scroller);
+
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(onPage).not.toHaveBeenCalled();
+
+    physicalScrollTop = 0;
+    physicalScrollLeft = 0;
+    fireEvent.scroll(scroller);
+
+    expect(scroller.scrollTop).toBe(0);
+    expect(scroller.scrollLeft).toBe(0);
+    expect(onViewStateChange).toHaveBeenCalledWith(
+      expect.objectContaining({ viewport: { firstVisibleRow: 0, scrollLeft: 0 } })
+    );
+    expect(onPage).not.toHaveBeenCalled();
+  });
+
   it("ignores a teardown scroll collapse but still accepts an explicit user scroll", () => {
     const onViewStateChange = vi.fn();
     const props = {
