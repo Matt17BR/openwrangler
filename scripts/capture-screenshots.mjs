@@ -421,6 +421,14 @@ writeWebviewHarness(
 );
 writeWebviewHarness("draft-preview.html", payloads.draft, {}, "acceptance/draft-preview-dark-1280.png");
 writeWebviewHarness(
+  "draft-preview-dark-800.html",
+  payloads.draft,
+  {},
+  "acceptance/draft-preview-dark-800.png",
+  {},
+  { width: 800 }
+);
+writeWebviewHarness(
   "step-inspection.html",
   payloads.applied,
   {},
@@ -444,6 +452,14 @@ writeWebviewHarness(
   payloads.exampleDraft,
   {},
   "acceptance/by-example-preview-dark-1280.png"
+);
+writeWebviewHarness(
+  "by-example-preview-dark-zoom-200.html",
+  payloads.exampleDraft,
+  {},
+  "acceptance/by-example-preview-dark-zoom-200.png",
+  {},
+  { zoom: 2 }
 );
 writeCodePreviewHarness("code-preview.html", payloads.draft.code, "acceptance/code-preview-dark-1280.png");
 writeWebviewHarness(

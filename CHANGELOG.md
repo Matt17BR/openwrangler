@@ -4,6 +4,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the tall inline draft pane with a compact **Draft review** strip that keeps the operation, exact
+  diff, warnings, and one **Discard** / **Apply step** action pair visible while preserving the grid at narrow
+  widths and 200% zoom.
+- Removed duplicate generated-code blocks from draft review and applied-step inspection. Native **Code Preview**
+  remains the authoritative editable surface for generated cleaning code.
+
 ## [1.1.5] - 2026-07-31
 
 ### Changed

@@ -99,6 +99,7 @@ try {
   }
   await verifyNotebookPreviewDisclosure(browser);
   await verifyCodePreviewOrigin(browser);
+  await verifyCompactDraftReview(browser);
   await verifyCleaningKeyboardShortcuts(browser);
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
@@ -195,6 +196,222 @@ async function verifyCodePreviewOrigin(browser) {
   }
   await page.close();
   console.log("Code-preview host origin and read-only behavior verified.");
+}
+
+async function verifyCompactDraftReview(browser) {
+  const cases = [
+    {
+      harness: "draft-preview.html",
+      width: 1920,
+      operation: "Formula column",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: false,
+      expectSingleRowToolbar: true
+    },
+    {
+      harness: "draft-preview.html",
+      width: 1280,
+      operation: "Formula column",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: false,
+      expectSingleRowToolbar: true
+    },
+    {
+      harness: "draft-preview-dark-800.html",
+      width: 800,
+      operation: "Formula column",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: false
+    },
+    {
+      harness: "by-example-preview.html",
+      width: 1280,
+      operation: "Transform by example",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: true,
+      expectSingleRowToolbar: true
+    },
+    {
+      harness: "by-example-preview.html",
+      width: 620,
+      operation: "Transform by example",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: true
+    },
+    {
+      harness: "by-example-preview.html",
+      width: 320,
+      operation: "Transform by example",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: true
+    },
+    {
+      harness: "by-example-preview-dark-zoom-200.html",
+      width: 1280,
+      operation: "Transform by example",
+      diff: ["+1 column", "2 values added in this block"],
+      warnings: true
+    }
+  ];
+
+  for (const { harness, width, operation, diff, warnings, expectSingleRowToolbar = false } of cases) {
+    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+
+    const reviews = page.getByRole("region", { name: "Draft review" });
+    await reviews.first().waitFor();
+    if ((await reviews.count()) !== 1) {
+      throw new Error(`${harness} did not render exactly one Draft review.`);
+    }
+    const review = reviews.first();
+    await review.getByText(operation, { exact: true }).waitFor();
+
+    const actualDiff = (await review.getByLabel("Data diff summary").locator(":scope > span").allTextContents()).map(
+      (value) => value.trim()
+    );
+    if (actualDiff.length !== diff.length || actualDiff.some((value, index) => value !== diff[index])) {
+      throw new Error(
+        `${harness} rendered the wrong draft diff: expected ${JSON.stringify(diff)}, received ${JSON.stringify(actualDiff)}.`
+      );
+    }
+
+    const payloadWarnings = await page.evaluate(() => globalThis.openWranglerSessionPayload.warnings ?? []);
+    const warningRegion = review.getByRole("alert");
+    if (!warnings) {
+      if (payloadWarnings.length !== 0 || (await warningRegion.count()) !== 0) {
+        throw new Error(`${harness} rendered a warning for an unambiguous draft.`);
+      }
+    } else {
+      if (payloadWarnings.length === 0 || (await warningRegion.count()) !== 1) {
+        throw new Error(`${harness} did not render its by-example warning exactly once.`);
+      }
+      const actualWarnings = (await warningRegion.locator(":scope > span").allTextContents()).map((value) =>
+        value.trim()
+      );
+      if (
+        actualWarnings.length !== payloadWarnings.length ||
+        actualWarnings.some((value, index) => value !== payloadWarnings[index])
+      ) {
+        throw new Error(
+          `${harness} did not preserve its exact warning text: expected ${JSON.stringify(
+            payloadWarnings
+          )}, received ${JSON.stringify(actualWarnings)}.`
+        );
+      }
+    }
+
+    for (const name of ["Discard", "Apply step"]) {
+      const buttons = page.getByRole("button", { name, exact: true });
+      if ((await buttons.count()) !== 1) {
+        throw new Error(`${harness} did not expose exactly one ${name} action.`);
+      }
+      if (!(await buttons.first().isEnabled())) {
+        throw new Error(`${harness} exposed a disabled ${name} action after the draft settled.`);
+      }
+    }
+    if (
+      (await page.locator(".draftCode").count()) !== 0 ||
+      (await page.getByLabel("Generated Python code preview").count()) !== 0
+    ) {
+      throw new Error(`${harness} duplicated generated code inside the workbench.`);
+    }
+
+    const grid = page.getByRole("grid").first();
+    await grid.waitFor();
+    await page.locator('[data-grid-row="0"]').first().waitFor();
+    const layout = await page.evaluate(() => {
+      const review = document.querySelector('[aria-label="Draft review"]');
+      const grid = document.querySelector('[role="grid"]');
+      const scroller = document.querySelector('[data-testid="data-grid-scroller"]');
+      const toolbar = document.querySelector(".toolbar");
+      const toolbarActions = document.querySelector(".toolbarActions");
+      if (!review || !grid || !scroller || !toolbar || !toolbarActions) return undefined;
+      const reviewBounds = review.getBoundingClientRect();
+      const gridBounds = grid.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = document.documentElement.clientHeight;
+      const clippedToolbarItems = [...document.querySelectorAll(".toolbar > *, .toolbarActions > *")].flatMap(
+        (element) => {
+          const bounds = element.getBoundingClientRect();
+          if (bounds.left >= -1 && bounds.right <= viewportWidth + 1) return [];
+          return [
+            {
+              element:
+                element.getAttribute("aria-label") ??
+                element.getAttribute("class") ??
+                element.textContent?.trim().slice(0, 40) ??
+                element.tagName,
+              left: bounds.left,
+              right: bounds.right
+            }
+          ];
+        }
+      );
+      const sharesRow = (elements) => {
+        const centers = elements
+          .map((element) => element.getBoundingClientRect())
+          .filter((bounds) => bounds.width > 0 && bounds.height > 0)
+          .map((bounds) => bounds.top + bounds.height / 2);
+        return centers.length > 0 && Math.max(...centers) - Math.min(...centers) <= 1;
+      };
+      const draftActions = [...review.querySelectorAll(":scope > .cleaningActions > button")].map((element) =>
+        element.getBoundingClientRect()
+      );
+      return {
+        documentOverflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - viewportWidth,
+        toolbarOverflow: Math.max(
+          toolbar.scrollWidth - toolbar.clientWidth,
+          toolbarActions.scrollWidth - toolbarActions.clientWidth
+        ),
+        clippedToolbarItems,
+        toolbarSingleRow: sharesRow([...toolbar.children]) && sharesRow([...toolbarActions.children]),
+        reviewOverflow: review.scrollWidth - review.clientWidth,
+        reviewWithinViewport:
+          reviewBounds.left >= -1 &&
+          reviewBounds.right <= viewportWidth + 1 &&
+          reviewBounds.top >= -1 &&
+          reviewBounds.bottom <= viewportHeight + 1,
+        draftActionsWithinViewport:
+          draftActions.length === 2 &&
+          draftActions.every(
+            (bounds) =>
+              bounds.width > 0 &&
+              bounds.height > 0 &&
+              bounds.left >= Math.max(0, reviewBounds.left) - 1 &&
+              bounds.right <= Math.min(viewportWidth, reviewBounds.right) + 1 &&
+              bounds.top >= Math.max(0, reviewBounds.top) - 1 &&
+              bounds.bottom <= Math.min(viewportHeight, reviewBounds.bottom) + 1
+          ),
+        gridVisible:
+          gridBounds.width > 0 &&
+          gridBounds.height > 0 &&
+          gridBounds.left < viewportWidth &&
+          gridBounds.right > 0 &&
+          gridBounds.top < viewportHeight &&
+          gridBounds.bottom > 0,
+        internalHorizontalOverflow: scroller.scrollWidth >= scroller.clientWidth
+      };
+    });
+    if (!layout) {
+      throw new Error(`${harness} did not expose the Draft review and grid layout.`);
+    }
+    if (
+      layout.documentOverflow > 1 ||
+      layout.toolbarOverflow > 1 ||
+      layout.clippedToolbarItems.length > 0 ||
+      layout.reviewOverflow > 1 ||
+      !layout.reviewWithinViewport ||
+      !layout.draftActionsWithinViewport ||
+      (expectSingleRowToolbar && !layout.toolbarSingleRow) ||
+      !layout.gridVisible ||
+      !layout.internalHorizontalOverflow
+    ) {
+      throw new Error(`${harness} at ${width}px overflowed or obscured the draft grid: ${JSON.stringify(layout)}.`);
+    }
+    await page.close();
+  }
+
+  console.log("Compact draft review, exact diff/warnings, actions, grid visibility, and narrow/zoom layout verified.");
 }
 
 async function verifyInsightsDrawerWorkflow(browser) {

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColumnSchema, GridPage, SessionMetadata, TransformStep } from "../shared/protocol";
 
@@ -122,6 +122,17 @@ describe("App draft state boundaries", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "exportData" });
   });
 
+  it("retains the compact cleaning-plan controls when applied steps exist without a draft", async () => {
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+
+    const plan = await screen.findByRole("region", { name: "Cleaning plan" });
+    expect(within(plan).getByText("1 applied step")).toBeVisible();
+    expect(within(plan).getByRole("button", { name: "Edit latest" })).toBeEnabled();
+    expect(within(plan).getByRole("button", { name: "Undo" })).toBeEnabled();
+    expect(screen.queryByRole("region", { name: "Draft review" })).toBeNull();
+  });
+
   it("uses the latest applied-step input schema for a replacement draft", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
@@ -152,7 +163,7 @@ describe("App draft state boundaries", () => {
     });
   });
 
-  it("replaces generated code, warnings, and diff after a backend-changing session replacement", async () => {
+  it("replaces warnings and diff after a backend-changing session replacement without rendering inline code", async () => {
     const draft: TransformStep = {
       id: "cast-c",
       kind: "castColumn",
@@ -174,7 +185,8 @@ describe("App draft state boundaries", () => {
       code: "# stale polars code",
       warnings: ["stale warning"]
     });
-    expect(await screen.findByText("# stale polars code")).toBeInTheDocument();
+    expect(await screen.findByText("stale warning")).toBeInTheDocument();
+    expect(screen.queryByText("# stale polars code")).toBeNull();
 
     dispatch({
       kind: "sessionOpened",
@@ -196,14 +208,15 @@ describe("App draft state boundaries", () => {
       }
     });
 
-    expect(await screen.findByText("# restored pandas code")).toBeInTheDocument();
+    const review = await screen.findByRole("region", { name: "Draft review" });
+    expect(within(review).getByText("Convert type")).toBeVisible();
     expect(screen.queryByText("# stale polars code")).toBeNull();
+    expect(screen.queryByText("# restored pandas code")).toBeNull();
     expect(screen.getByText("candidate backend warning")).toBeInTheDocument();
     expect(screen.queryByText("stale warning")).toBeNull();
     expect(screen.getByText("1 existing cell changed")).toBeInTheDocument();
-    const draftCode = document.querySelector(".draftCode");
-    expect(draftCode?.querySelector("summary")).toHaveTextContent(/Generated\s+Pandas\s*code/u);
-    expect(draftCode).not.toHaveAttribute("open");
+    expect(document.querySelector(".draftCode")).toBeNull();
+    expect(screen.queryByLabelText("Generated Python code preview")).toBeNull();
     await waitFor(() => expect(latestGridProps().beforeSchema).toEqual(committedSchema));
 
     dispatch({
@@ -211,7 +224,7 @@ describe("App draft state boundaries", () => {
       presentation: { sessionId: "session", revision: 3, code: "# stale late code" }
     });
     expect(screen.queryByText("# stale late code")).toBeNull();
-    expect(screen.getByText("# restored pandas code")).toBeInTheDocument();
+    expect(screen.getByText("candidate backend warning")).toBeInTheDocument();
   });
 
   it("uses human draft labels, reports added values, and reveals a new output column", async () => {
@@ -255,11 +268,12 @@ describe("App draft state boundaries", () => {
       code: "def clean_data(df):\n    return df"
     });
 
-    expect(await screen.findByText("Draft: Uppercase")).toBeVisible();
-    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
-    expect(screen.getByText("+1 column")).toBeVisible();
-    expect(screen.getByText("1 value added in this block")).toBeVisible();
-    expect(screen.queryByText(/0 changed cells/u)).toBeNull();
+    const review = await screen.findByRole("region", { name: "Draft review" });
+    expect(within(review).getByText("Uppercase")).toBeVisible();
+    expect(within(review).getByText("+1 column")).toBeVisible();
+    expect(within(review).getByText("1 value added in this block")).toBeVisible();
+    expect(within(review).queryByText(/0 changed cells/u)).toBeNull();
+    expect(within(review).queryByRole("alert")).toBeNull();
     await waitFor(() => {
       expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
       expect(latestGridProps().goToColumnRequestId).toBe(1);
@@ -347,8 +361,7 @@ describe("App draft state boundaries", () => {
       code: "def clean_data(df):\n    return df"
     });
 
-    expect(await screen.findByText("Draft: Uppercase")).toBeVisible();
-    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+    expect(within(await screen.findByRole("region", { name: "Draft review" })).getByText("Uppercase")).toBeVisible();
 
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     dispatch({
@@ -358,8 +371,7 @@ describe("App draft state boundaries", () => {
       revision: metadata.revision
     });
 
-    expect(screen.getByText("Draft: Uppercase")).toBeVisible();
-    expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Draft review" })).getByText("Uppercase")).toBeVisible();
     expect(screen.getByText("1 existing cell changed")).toBeVisible();
     expect(postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ kind: "rendererSynchronized", syncId: "T".repeat(32) })
@@ -379,7 +391,7 @@ describe("App draft state boundaries", () => {
         revision: 3
       })
     );
-    expect(screen.getByText("Draft: Uppercase")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "Draft review" })).getByText("Uppercase")).toBeVisible();
   });
 
   it("commits a draft before its synchronization acknowledgement and suppresses the pending recovery pull", () => {
@@ -395,8 +407,7 @@ describe("App draft state boundaries", () => {
       postMessage.mockClear();
       postMessage.mockImplementation((message) => {
         if (message?.kind !== "rendererSynchronized") return;
-        expect(screen.getByText("Draft: Uppercase")).toBeVisible();
-        expect(screen.getByText("Previewing Uppercase")).toBeVisible();
+        expect(within(screen.getByRole("region", { name: "Draft review" })).getByText("Uppercase")).toBeVisible();
       });
 
       act(() => {
@@ -523,10 +534,13 @@ describe("App draft state boundaries", () => {
 
     expect(await screen.findByRole("button", { name: "Add step" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
-    expect(screen.getByText("Draft: Convert type")).toBeVisible();
-    expect(screen.getByText("Previewing Convert type")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Apply step" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+    const review = screen.getByRole("region", { name: "Draft review" });
+    expect(within(review).getByText("Convert type")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Cleaning plan" })).toBeNull();
+    expect(within(review).getByRole("button", { name: "Apply step" })).toBeEnabled();
+    expect(within(review).getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: "Apply step" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Discard" })).toHaveLength(1);
 
     dispatch({ kind: "editorAction", action: "openOperation", operationKind: "formula" });
     expect(screen.queryByRole("dialog", { name: "Add cleaning step" })).toBeNull();
