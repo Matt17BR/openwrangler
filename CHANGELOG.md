@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Raised the minimum supported VS Code version from 1.105 to 1.106, the first stable release whose custom-editor
+  implementation renders an extension-supplied tab icon. This keeps the advertised branded Open Wrangler tab
+  contract testable instead of silently accepting the generic file icon shown by 1.105.
 - Made every numeric histogram bin use an equal-width, full-chart-height pointer and keyboard target while keeping
   its visible bar proportional to the count. Hovering or focusing even a two-pixel bar now highlights it
   immediately and shows the bin range and row count in a theme-aware tooltip.

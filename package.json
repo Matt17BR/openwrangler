@@ -28,7 +28,7 @@
     "cursor"
   ],
   "engines": {
-    "vscode": "^1.105.0"
+    "vscode": "^1.106.0"
   },
   "categories": [
     "Data Science",
@@ -752,7 +752,7 @@
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.105.0",
+    "@types/vscode": "1.106.0",
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.7",
     "@vscode/jupyter-extension": "^1.1.1",

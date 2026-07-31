@@ -2605,7 +2605,7 @@ export function writeEditorAcceptanceHarness(directory) {
       displayName: "Open Wrangler packaged test harness",
       version: "0.0.0",
       publisher: "openwrangler-tests",
-      engines: { vscode: "^1.105.0" },
+      engines: { vscode: "^1.106.0" },
       extensionKind: ["workspace"],
       main: "./extension.js",
       files: ["extension.js"],
@@ -2717,7 +2717,7 @@ export function writeFakeJupyterExtension(directory) {
       displayName: "Open Wrangler stable Jupyter API acceptance double",
       version: "0.0.0",
       publisher: "ms-toolsai",
-      engines: { vscode: "^1.105.0" },
+      engines: { vscode: "^1.106.0" },
       main: "./extension.js",
       activationEvents: []
     })

@@ -264,7 +264,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        vscode: ["1.105.0", "stable"]
+        vscode: ["1.106.0", "stable"]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

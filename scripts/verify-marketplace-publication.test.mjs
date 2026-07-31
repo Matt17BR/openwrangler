@@ -20,7 +20,7 @@ const packageJson = Object.freeze({
   publisher: "Matt17BR",
   version,
   preview: false,
-  engines: { vscode: "^1.105.0" },
+  engines: { vscode: "^1.106.0" },
   extensionKind: ["workspace"]
 });
 const defaultIconUrl =

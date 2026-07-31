@@ -801,7 +801,7 @@ test("rejects duplicate JSON keys including escaped and nested aliases", () => {
 });
 
 test("requires the complete packaged manifest to equal the source manifest", () => {
-  const source = { ...stablePackage, main: "./dist/extension/activate.js", engines: { vscode: "^1.105.0" } };
+  const source = { ...stablePackage, main: "./dist/extension/activate.js", engines: { vscode: "^1.106.0" } };
   const packaged = { ...source, main: "./dist/extension/other.js", engines: { vscode: "*" } };
   const problems = inspectStableReleaseReadiness(
     ready({
