@@ -1,0 +1,1 @@
+export const MAX_VIEW_VALUE_TEXT_CHARACTERS = 65_536;

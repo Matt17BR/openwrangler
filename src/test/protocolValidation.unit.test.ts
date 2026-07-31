@@ -14,6 +14,7 @@ import {
   isRuntimeResponseEnvelope,
   isTransformStep
 } from "../shared/protocolValidation";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 
 const capabilities = {
   editable: true,
@@ -1114,6 +1115,36 @@ describe("protocol-v2 request validation", () => {
       ).toBe(false);
     }
   );
+
+  it("bounds viewing predicate and selected-value text at the shared scalar limit", () => {
+    const request = requests.find((candidate) => candidate.kind === "getPage");
+    expect(request?.kind).toBe("getPage");
+    if (request?.kind !== "getPage") return;
+
+    const atLimit = `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}`;
+    const overLimit = `${atLimit}9`;
+    const filterModel = (value: string, secondValue: string, selectedValue: string) => ({
+      filters: [
+        {
+          column: "value",
+          type: "decimal" as const,
+          valueFilter: {
+            kind: "values" as const,
+            selectedValues: [selectedValue],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: [{ kind: "predicate" as const, operator: "between" as const, value, secondValue }]
+        }
+      ],
+      sort: []
+    });
+
+    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, atLimit, atLimit) })).toBe(true);
+    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(overLimit, atLimit, atLimit) })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, overLimit, atLimit) })).toBe(false);
+    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, atLimit, overLimit) })).toBe(false);
+  });
 
   it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {
     const requestWithOptions = (importOptions: unknown, fileName = "fixture.csv"): unknown => ({

@@ -1,6 +1,5 @@
 import type { CellValue } from "./protocol.generated";
-
-const MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS = 65_536;
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
 
 export function isExactNumericExtremumCell(value: unknown, columnType: "integer" | "decimal"): value is CellValue {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -13,7 +12,7 @@ export function isExactNumericExtremumCell(value: unknown, columnType: "integer"
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
     cell.display.length === 0 ||
-    cell.display.length > MAX_EXACT_NUMERIC_EXTREMUM_CHARACTERS
+    cell.display.length > MAX_VIEW_VALUE_TEXT_CHARACTERS
   ) {
     return false;
   }

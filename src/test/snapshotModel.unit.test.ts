@@ -10,6 +10,7 @@ import {
   snapshotPage,
   snapshotSummaries
 } from "../shared/snapshotModel";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 
 interface ViewLiteralCase {
   type: SessionMetadata["schema"][number]["type"];
@@ -146,6 +147,30 @@ describe("saved notebook snapshot model", () => {
         sort: []
       })
     ).toThrow("unsupported version");
+  });
+
+  it("bounds decimal predicate text before arbitrary-precision exponent parsing", () => {
+    const decimalMetadata = singleColumnMetadata("decimal", "Decimal", 0);
+    const atLimit = `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}`;
+    const overLimit = `${atLimit}9`;
+    const model = (value: string, secondValue: string): FilterModel => ({
+      filters: [
+        {
+          column: "value",
+          type: "decimal",
+          predicates: [{ kind: "predicate", operator: "between", value, secondValue }]
+        }
+      ],
+      sort: []
+    });
+
+    expect(() => applySnapshotFilters(decimalMetadata, [], model(atLimit, atLimit))).not.toThrow();
+    expect(() => applySnapshotFilters(decimalMetadata, [], model(overLimit, atLimit))).toThrow(
+      "cannot exceed 65,536 characters"
+    );
+    expect(() => applySnapshotFilters(decimalMetadata, [], model(atLimit, overLimit))).toThrow(
+      "cannot exceed 65,536 characters"
+    );
   });
 
   it.each<[PredicateOperator, unknown, unknown, number]>([

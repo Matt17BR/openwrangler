@@ -12,6 +12,7 @@ import type {
 import type { ColumnFilter, FilterModel, PredicateFilter } from "./filterModel";
 import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { supportsTypedViewComparison, supportsViewPredicate } from "./filterModel";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
 
 const MAX_PAGE_LIMIT = 10_000;
 const MAX_COLUMN_LIMIT = 256;
@@ -24,7 +25,6 @@ const DATE_VIEW_TEXT = /^\d{4}-\d{2}-\d{2}$/;
 const DATETIME_VIEW_TEXT = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
 const DURATION_SECONDS_TEXT = /^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$/;
 const DURATION_CLOCK_TEXT = /^(?:(-?\d+) days?, )?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/;
-const MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536;
 const MICROSECONDS_PER_DAY = 86_400_000_000n;
 const MIN_PORTABLE_DURATION_MICROSECONDS = -999_999_999n * MICROSECONDS_PER_DAY;
 const MAX_PORTABLE_DURATION_MICROSECONDS = 999_999_999n * MICROSECONDS_PER_DAY + 86_399_999_999n;
@@ -537,11 +537,11 @@ function assertSelectionCell(
     cell.isNull !== false ||
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
-    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS
+    cell.display.length > MAX_VIEW_VALUE_TEXT_CHARACTERS
   ) {
     throw new TypeError("A typed selection token cannot represent null, NaN, or unbounded text.");
   }
-  if (typeof cell.raw === "string" && cell.raw.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS) {
+  if (typeof cell.raw === "string" && cell.raw.length > MAX_VIEW_VALUE_TEXT_CHARACTERS) {
     throw new TypeError("A typed selection token contains unbounded raw text.");
   }
 
@@ -626,6 +626,11 @@ function snapshotSelectionValue(
 }
 
 function canonicalViewValue(value: unknown, type: SessionMetadata["schema"][number]["type"]): unknown {
+  if (typeof value === "string" && value.length > MAX_VIEW_VALUE_TEXT_CHARACTERS) {
+    throw new TypeError(
+      `A snapshot predicate value cannot exceed ${MAX_VIEW_VALUE_TEXT_CHARACTERS.toLocaleString("en-US")} characters.`
+    );
+  }
   if (type === "string") return String(value);
   if (type === "integer") {
     if (typeof value === "number") {

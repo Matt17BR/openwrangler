@@ -6,6 +6,7 @@ from typing import Any
 
 from .by_example import SynthesisError, normalize_by_example
 from .engines.base import is_internal_row_id_label
+from .limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 
 
 class OperationError(ValueError):
@@ -427,6 +428,15 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
                 raise OperationError(f"Filter operator {operator} requires a value.")
             if operator == "between" and "secondValue" not in predicate:
                 raise OperationError("Filter operator between requires a secondValue.")
+            for key in ("value", "secondValue"):
+                if (
+                    key in predicate
+                    and isinstance(predicate[key], str)
+                    and len(predicate[key]) > MAX_VIEW_VALUE_TEXT_CHARACTERS
+                ):
+                    raise OperationError(
+                        f"{predicate_label}.{key} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} characters."
+                    )
             normalized_predicates.append(dict(predicate))
 
         value_filter = column_filter.get("valueFilter")
@@ -444,6 +454,12 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
                 )
             if value_filter.get("kind") != "values" or not isinstance(value_filter.get("selectedValues"), list):
                 raise OperationError("Column valueFilter must contain kind 'values' and a selectedValues array.")
+            for value_index, selected_value in enumerate(value_filter["selectedValues"]):
+                if isinstance(selected_value, str) and len(selected_value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
+                    raise OperationError(
+                        "Column valueFilter.selectedValues"
+                        f"[{value_index}] must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} characters."
+                    )
             for key in ("includeNulls", "includeNaN"):
                 if not isinstance(value_filter[key], bool):
                     raise OperationError(f"Column valueFilter.{key} must be a boolean.")

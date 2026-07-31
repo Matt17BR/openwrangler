@@ -18,6 +18,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   without invalidating the remaining finite statistics or histogram.
 - Bounded the visible exact extrema in **Column profiles** while preserving the full protocol-bounded value in
   accessible names and hover titles.
+- Bounded viewing predicate and selected-value text before arbitrary-precision decimal coercion in the webview,
+  TypeScript and Python protocol decoders, and saved notebook previews.
 
 ## [1.1.8] - 2026-07-31
 

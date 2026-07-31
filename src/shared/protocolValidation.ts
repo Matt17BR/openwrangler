@@ -16,6 +16,7 @@ import type {
 import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { PROTOCOL_VERSION } from "./protocol";
 import { compareTypedCells } from "./snapshotModel";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -52,7 +53,6 @@ const CELL_KINDS = new Set([
   "unknown"
 ]);
 const DATA_BACKENDS = ["polars", "duckdb", "pandas", "pyspark"] as const;
-const MAX_TYPED_SELECTION_TEXT_CHARACTERS = 65_536;
 const OPERATION_KINDS = new Set([
   "sortRows",
   "filterRows",
@@ -704,7 +704,7 @@ function isValueFilter(value: unknown): boolean {
   return (
     candidate !== undefined &&
     candidate.kind === "values" &&
-    isArrayOf(candidate.selectedValues, isJsonValue) &&
+    isArrayOf(candidate.selectedValues, isBoundedViewValue) &&
     isBoolean(candidate.includeNulls) &&
     isBoolean(candidate.includeNaN) &&
     optional(candidate, "search", isString)
@@ -720,8 +720,8 @@ function isPredicateFilter(value: unknown): boolean {
   ) {
     return false;
   }
-  if (Object.prototype.hasOwnProperty.call(candidate, "value") && !isJsonValue(candidate.value)) return false;
-  if (Object.prototype.hasOwnProperty.call(candidate, "secondValue") && !isJsonValue(candidate.secondValue))
+  if (Object.prototype.hasOwnProperty.call(candidate, "value") && !isBoundedViewValue(candidate.value)) return false;
+  if (Object.prototype.hasOwnProperty.call(candidate, "secondValue") && !isBoundedViewValue(candidate.secondValue))
     return false;
   const nullary = new Set(["isNull", "isNotNull", "isNaN", "isNotNaN"]);
   if (!nullary.has(candidate.operator) && !Object.prototype.hasOwnProperty.call(candidate, "value")) return false;
@@ -1501,13 +1501,13 @@ function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boo
     cell.isNull !== false ||
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
-    cell.display.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS ||
+    cell.display.length > MAX_VIEW_VALUE_TEXT_CHARACTERS ||
     !Object.prototype.hasOwnProperty.call(cell, "raw") ||
     !isJsonValue(cell.raw)
   ) {
     return false;
   }
-  if (typeof cell.raw === "string" && cell.raw.length > MAX_TYPED_SELECTION_TEXT_CHARACTERS) return false;
+  if (typeof cell.raw === "string" && cell.raw.length > MAX_VIEW_VALUE_TEXT_CHARACTERS) return false;
 
   const compatibleKinds: Readonly<Record<string, readonly string[]>> = {
     string: ["string", "integer", "number", "infinity", "boolean", "decimal", "datetime", "date", "duration"],
@@ -1705,6 +1705,10 @@ function isArrayOf(value: unknown, guard: ValueGuard): boolean {
 
 function isJsonScalar(value: unknown): value is string | number | boolean | null {
   return value === null || isString(value) || isBoolean(value) || isFiniteNumber(value);
+}
+
+function isBoundedViewValue(value: unknown): boolean {
+  return isJsonValue(value) && (typeof value !== "string" || value.length <= MAX_VIEW_VALUE_TEXT_CHARACTERS);
 }
 
 function isSafeJsonNumber(value: unknown): value is number {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from openwrangler_runtime import SessionManager, __version__
+from openwrangler_runtime.limits import MAX_VIEW_VALUE_TEXT_CHARACTERS
 from openwrangler_runtime.protocol import MAX_PAGE_LIMIT, ProtocolError, decode_envelope
 
 
@@ -382,6 +383,89 @@ def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
                 "request": request,
             }
         )
+
+
+def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() -> None:
+    at_limit = f"1e{'9' * (MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}"
+    over_limit = f"{at_limit}9"
+
+    def filter_model(value: str, second_value: str, selected_value: str, *, transform: bool) -> dict[str, object]:
+        column: object = {"id": "column:0", "name": "value"} if transform else "value"
+        return {
+            "filters": [
+                {
+                    "column": column,
+                    "type": "decimal",
+                    "valueFilter": {
+                        "kind": "values",
+                        "selectedValues": [selected_value],
+                        "includeNulls": False,
+                        "includeNaN": False,
+                    },
+                    "predicates": [
+                        {
+                            "kind": "predicate",
+                            "operator": "between",
+                            "value": value,
+                            "secondValue": second_value,
+                        }
+                    ],
+                }
+            ],
+            "sort": [],
+        }
+
+    def page_envelope(value: str, second_value: str, selected_value: str) -> dict[str, object]:
+        return {
+            "protocolVersion": 2,
+            "requestId": "bounded-page",
+            "priority": "interactive",
+            "request": {
+                "kind": "getPage",
+                "sessionId": "session-1",
+                "revision": 0,
+                "viewRequestId": "view-bounded",
+                "offset": 0,
+                "limit": 200,
+                "columnOffset": 0,
+                "columnLimit": 64,
+                "filterModel": filter_model(value, second_value, selected_value, transform=False),
+            },
+        }
+
+    assert decode_envelope(page_envelope(at_limit, at_limit, at_limit))[2]["kind"] == "getPage"
+    for envelope in (
+        page_envelope(over_limit, at_limit, at_limit),
+        page_envelope(at_limit, over_limit, at_limit),
+        page_envelope(at_limit, at_limit, over_limit),
+    ):
+        with pytest.raises(ProtocolError, match="must not exceed 65,536 characters"):
+            decode_envelope(envelope)
+
+    def preview_envelope(value: str) -> dict[str, object]:
+        return {
+            "protocolVersion": 2,
+            "requestId": "bounded-preview",
+            "priority": "interactive",
+            "request": {
+                "kind": "previewStep",
+                "sessionId": "session-1",
+                "revision": 0,
+                "step": {
+                    "id": "filter",
+                    "kind": "filterRows",
+                    "params": {"filterModel": filter_model(value, at_limit, at_limit, transform=True)},
+                },
+                "offset": 0,
+                "limit": 200,
+                "columnOffset": 0,
+                "columnLimit": 64,
+            },
+        }
+
+    assert decode_envelope(preview_envelope(at_limit))[2]["step"]["kind"] == "filterRows"
+    with pytest.raises(ProtocolError, match="must not exceed 65,536 characters"):
+        decode_envelope(preview_envelope(over_limit))
 
 
 @pytest.mark.parametrize(

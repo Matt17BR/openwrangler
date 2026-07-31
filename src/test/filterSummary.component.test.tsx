@@ -4,6 +4,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
 import { SummaryPanel } from "../webviews/summary/SummaryPanel";
 
@@ -139,6 +140,8 @@ describe("FilterPanel", () => {
 
     fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
     fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
+    expect(screen.getByPlaceholderText("Value")).toHaveAttribute("maxLength", String(MAX_VIEW_VALUE_TEXT_CHARACTERS));
+    expect(screen.getByPlaceholderText("And")).toHaveAttribute("maxLength", String(MAX_VIEW_VALUE_TEXT_CHARACTERS));
     fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "10" } });
     fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
