@@ -8223,25 +8223,18 @@ async function prepareReleasedJupyterScreenshotWorkbench(
   editor.selection = renderedCell;
   editor.selections = [renderedCell];
   if (options.isolateShowcaseCell) {
-    const requiredCommands = [
-      "notebook.cell.collapseAllCellInputs",
-      "notebook.cell.collapseAllCellOutputs",
-      "notebook.cell.expandCellInput",
-      "notebook.cell.expandCellOutput"
-    ] as const;
-    const commands = new Set(await vscode.commands.getCommands(true));
-    for (const command of requiredCommands) {
-      assert.ok(commands.has(command), `Notebook screenshot isolation requires the built-in ${command} command.`);
-    }
-    await vscode.commands.executeCommand(requiredCommands[0]);
-    await vscode.commands.executeCommand(requiredCommands[1]);
-    await vscode.commands.executeCommand(requiredCommands[2]);
-    await vscode.commands.executeCommand(requiredCommands[3]);
-    assertExactVisibleReleasedNotebookEditor(notebook, editor, "after isolating the public notebook showcase cell");
+    assertExactVisibleReleasedNotebookEditor(notebook, editor, "before isolating the public notebook showcase cell");
   }
   editor.revealRange(renderedCell, vscode.NotebookEditorRevealType.AtTop);
   await workbench.waitForTimeout(600);
-  if (options.isolateShowcaseCell) await assertReleasedJupyterCaptureInternalMarkerHidden(workbench);
+  if (options.isolateShowcaseCell) {
+    assert.equal(
+      editor.visibleRanges.some((visible) => visible.start <= renderedCell.start && visible.end > renderedCell.start),
+      true,
+      "The public notebook showcase cell must be visible before its media journey begins."
+    );
+    await assertReleasedJupyterCaptureInternalMarkerHidden(workbench);
+  }
   return async () => {
     for (const { configuration, key, value } of previousSettings.reverse()) {
       await configuration.update(key, value, vscode.ConfigurationTarget.Global);

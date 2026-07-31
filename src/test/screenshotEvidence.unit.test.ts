@@ -277,8 +277,11 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain('"orders_df = pd.DataFrame({"');
     expect(extensionHost).toContain('"orders_preview_df = orders_df.loc[:, showcase_preview_columns].copy()"');
     expect(extensionHost).toContain('"# Explore recent orders in Open Wrangler\\n"');
-    expect(extensionHost).toContain('"notebook.cell.collapseAllCellInputs"');
-    expect(extensionHost).toContain('"notebook.cell.collapseAllCellOutputs"');
+    expect(extensionHost).not.toContain('"notebook.cell.collapseAllCellInputs"');
+    expect(extensionHost).not.toContain('"notebook.cell.collapseAllCellOutputs"');
+    expect(extensionHost).toContain(
+      "The public notebook showcase cell must be visible before its media journey begins."
+    );
     expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
     expect(extensionHost).not.toContain("Public notebook screenshots must retain the readable showcase source cell.");
     expect(extensionHost).toContain('pageSize.value = "10"');
