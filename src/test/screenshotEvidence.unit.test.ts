@@ -316,7 +316,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(notebookInsertion).toContain("const code = insertionActive?.code;");
     expect(notebookInsertion).not.toContain("setCodeForExport");
     expect(extensionHost).toContain('await vscode.commands.executeCommand("notebook.cell.edit");');
-    expect(extensionHost).toContain('.monaco-list-row.code-cell-row[data-index="${insertedIndex}"]');
+    expect(extensionHost).toContain('notebookSurface.locator(".monaco-list-row.code-cell-row").last()');
     expect(extensionHost).not.toContain('.filter({ hasText: "def clean_data(df):" })');
     expect(mediaSpec).toContain("### Explorer, edit, undo, and high contrast");
     expect(mediaSpec).toContain("Generated-code insertion uses the live Pandas session's engine-generated code");

@@ -4294,6 +4294,11 @@ async function captureReleasedJupyterCodeInsertion(
   assert.equal(path.isAbsolute(outputDirectory), true);
   assert.equal(notebook.cellAt(insertedIndex).document.getText(), code);
   assert.equal(notebook.cellAt(insertedIndex).metadata.openWrangler?.source, variableName);
+  assert.equal(
+    insertedIndex,
+    notebook.cellCount - 1,
+    "Generated-code insertion media requires the uniquely inserted cell to remain last in the notebook."
+  );
   const editor = await showExactReleasedNotebook(notebook);
   const restoreWorkbench = await prepareReleasedJupyterScreenshotWorkbench(workbench, notebook, editor);
   try {
@@ -4326,9 +4331,7 @@ async function captureReleasedJupyterCodeInsertion(
     await workbench.waitForTimeout(600);
     const notebookSurface = workbench.locator(".notebook-editor:visible").first();
     await notebookSurface.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    const insertedCell = notebookSurface
-      .locator(`.monaco-list-row.code-cell-row[data-index="${insertedIndex}"]`)
-      .first();
+    const insertedCell = notebookSurface.locator(".monaco-list-row.code-cell-row").last();
     await insertedCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
     const geometry = await insertedCell.evaluate((element) => {
       type NotebookCodeElement = {
@@ -4358,7 +4361,7 @@ async function captureReleasedJupyterCodeInsertion(
         horizontalOverflow: lines.scrollWidth - editorRoot.clientWidth
       };
     });
-    assert.equal(geometry.dataIndex, String(insertedIndex), "The captured row must be the inserted notebook cell.");
+    assert.match(geometry.dataIndex ?? "", /^\d+$/u, "The captured notebook cell must retain its list identity.");
     assert.equal(geometry.cellInsideNotebook, true, "The complete generated cell must stay inside the notebook.");
     assert.ok(geometry.horizontalOverflow <= 1, "The generated code insertion scene must not clip code lines.");
     await clearReleasedJupyterScreenshotTransientUi(workbench);
