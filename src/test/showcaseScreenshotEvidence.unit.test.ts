@@ -34,6 +34,10 @@ describe("wide-schema showcase evidence", () => {
 
   it("keeps final product captures full-size, varied, and geometrically complete", () => {
     const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+    const pySparkAcceptance = extensionHost.slice(
+      extensionHost.indexOf("async function exerciseReleasedPySparkJupyterExtension("),
+      extensionHost.indexOf("async function dispatchReleasedJupyterVariableAction(")
+    );
 
     expect(extensionHost).toContain("const fixture = ensurePackagedProductSceneFixture(workspace);");
     expect(extensionHost).toContain("rows: PACKAGED_SCREENSHOT_ROW_COUNT");
@@ -55,6 +59,15 @@ describe("wide-schema showcase evidence", () => {
         'await vscode.commands.executeCommand("jupyter.openVariableView");',
         extensionHost.indexOf("async function exerciseReleasedPySparkJupyterExtension(")
       )
+    );
+    expect(pySparkAcceptance).toContain(
+      'await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);'
+    );
+    expect(pySparkAcceptance).toContain(
+      "await captureReleasedJupyterPySparkPicker(workbench, testing, notebook, classicEditor, screenshotOutput);"
+    );
+    expect(extensionHost).toContain(
+      "picker = await activateReleasedNotebookVariableAction(workbench, notebook, async () => {"
     );
     expect(extensionHost).not.toContain("`${editor}-copy-code-dark.png`");
     expect(extensionHost).not.toContain("The documentation capture must cancel without writing a script.");

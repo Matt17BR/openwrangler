@@ -6,14 +6,14 @@ describe the captured scenario, not a product row or column limit.
 
 [Explore](#explore-in-vs-code) · [Open files](#open-files-where-you-already-work) ·
 [Profile and navigate](#profile-and-navigate) · [Transform](#build-and-review-a-cleaning-plan) ·
-[Export](#export-code-and-clean-data) · [Notebooks](#notebook-workflows) · [Editors](#vscode-and-cursor)
+[Export](#export-code-and-clean-data) · [Notebooks](#notebook-workflows) · [Editors](#vs-code-and-cursor)
 
 ## Explore in VS Code
 
 ![Open Wrangler in VS Code with the selected Activity Bar icon, native dataframe views, a virtualized Polars grid, header summaries, and the exact revenue profile](images/readme/v1.2/explore.png)
 
 The workbench keeps the virtualized grid, header summaries, exact profiles, and editor-native controls together.
-Only requested row and column blocks cross the runtime boundary.
+Grid cell data crosses the runtime boundary only in requested row and column blocks.
 
 ### Native Activity Bar views
 
@@ -42,10 +42,15 @@ available for explicit overrides.
 
 ![Open Wrangler Import options opened on the delimiter inferred from a semicolon-delimited CSV](images/readme/v1.2/gallery/import-options.png)
 
-The ordinary open path asks no questions. When a source is unusual, **Import options** starts from the detected
-configuration instead of asking the user to reconstruct it from memory.
+The ordinary open path asks no import-option questions. When a source is unusual, **Import options** starts from
+the detected configuration instead of asking the user to reconstruct it from memory.
 
 ## Profile and navigate
+
+![A packaged Polars file session filtered to 14,285 DACH rows with the active predicate, clear controls, and matching native Filters and Sorts state](images/readme/v1.2/filter-result.png)
+
+The result, exact row count, active predicate, and recovery controls stay visible together. The native sidebar
+mirrors the same viewing filter; neither surface adds a cleaning step or changes the source.
 
 <table>
   <tr>
@@ -90,28 +95,29 @@ Discard, and generates executable Polars code in the native bottom panel before 
 
 ![Open Wrangler inspecting the latest applied Formula column step with filters paused and history controls visible](images/readme/v1.2/gallery/applied-step-inspection.png)
 
-Selecting an applied step opens a bounded, read-only projection while the confirmed dataframe and filters remain
-unchanged. **Show confirmed data**, **Edit latest**, and **Undo** are visible here; their executed journeys remain
-separate acceptance scenarios.
+Selecting an applied step opens a bounded, read-only projection while the confirmed dataframe remains unchanged.
+Viewing filters, sorts, and profiling pause during inspection, then return exactly when **Show confirmed data** is
+selected. **Edit latest** and **Undo** remain explicit actions.
 
 ### Transform by example
 
-<a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler by-example setup with structured account-code examples" src="images/readme/v1.2/gallery/by-example-setup.png"></a>
+<a href="images/readme/v1.2/gallery/by-example-setup.png"><img alt="Open Wrangler by-example setup with structured account-code examples" src="images/readme/v1.2/gallery/by-example-setup-detail.png"></a>
 
 **Teach it.** Give exact source/output examples such as `DACH-DE-00482 → DE` and
-`NORDICS-SE-01940 → SE`. Both mappings remain visible before deterministic synthesis begins.
+`NORDICS-SE-01940 → SE`. Both mappings remain visible before deterministic synthesis begins. Open the image for
+the complete operation dialog.
 
-<a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler by-example preview deriving country codes for unseen structured account IDs" src="images/readme/v1.2/gallery/by-example-preview.png"></a>
+<a href="images/readme/v1.2/gallery/by-example-preview.png"><img alt="Open Wrangler by-example preview deriving country codes for eight unseen structured account IDs" src="images/readme/v1.2/gallery/by-example-preview-detail.png"></a>
 
-**Review it.** Confirm the synthesized split across all ten unseen account IDs and use Apply or Discard only after
-the candidate program has been previewed.
+**Review it.** Confirm the two examples and eight unseen account IDs together, then use Apply or Discard only after
+the candidate program has been previewed. Open the image for the complete draft and controls.
 
 ## Export code and clean data
 
 <table>
   <tr>
-    <td width="50%"><a href="images/readme/v1.2/gallery/export-script.png"><img alt="A generated native Polars cleaning script saved and opened in VS Code" src="images/readme/v1.2/gallery/export-script.png"></a></td>
-    <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened after the source workflow" src="images/readme/v1.2/gallery/export-data.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/export-script.png"><img alt="A generated native Polars cleaning script saved and opened in VS Code" src="images/readme/v1.2/gallery/export-script-detail.png"></a></td>
+    <td width="50%"><a href="images/readme/v1.2/gallery/export-data.png"><img alt="A separate cleaned CSV export opened after the source workflow" src="images/readme/v1.2/gallery/export-data-detail.png"></a></td>
   </tr>
   <tr>
     <td><strong>Reusable code.</strong> The saved script contains the applied engine-native cleaning plan.</td>
@@ -142,7 +148,7 @@ opens the complete current dataframe in the workbench rather than limiting explo
 The dataframe remains in Polars while Open Wrangler pages, profiles, previews the draft, computes the current
 grid-block diff, and generates native code.
 
-### DuckDB live relation
+### DuckDB live relation (experimental)
 
 ![A live native DuckDB relation with an exact filter, ordered two-key sort, paging, and column profiles](images/readme/v1.2/gallery/notebook-duckdb.png)
 
@@ -160,7 +166,7 @@ data. Filtering, sorting, paging, and requested profiling then run in Spark and 
 packaged scene validates local Classic; external or authenticated Connect remains unclaimed. File opening,
 cleaning, export, code insertion, and saved inline previews are not supported.
 
-## Rich DuckDB file types
+## Experimental DuckDB rich file types
 
 <a href="images/readme/v1.2/gallery/duckdb-rich-parquet.png"><img alt="A file-backed DuckDB Parquet source with decimal, time-zone, list, and struct columns" src="images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png"></a>
 

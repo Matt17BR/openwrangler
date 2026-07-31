@@ -36,14 +36,19 @@ export const PACKAGED_SCREENSHOT_MARKETS = [
 ] as const;
 export const PACKAGED_SCREENSHOT_SCENES = [
   "hero",
+  "file-explorer-action",
   "explore",
+  "high-contrast-explore",
   "filter-result",
   "workflow",
   "sidebar-overview",
   "operation-catalog",
   "operation-configuration",
   "applied-step-inspection",
+  "latest-step-edited",
+  "latest-step-undone",
   "notebook-pandas",
+  "notebook-code-insertion",
   "notebook-variable-picker",
   "notebook-pyspark-picker",
   "notebook-polars",
@@ -341,7 +346,7 @@ export function packagedScreenshotFeaturedColumnWidths(
 export function packagedScreenshotFileName(
   editor: string,
   scene: (typeof PACKAGED_SCREENSHOT_SCENES)[number],
-  theme: "dark" | "light"
+  theme: "dark" | "light" | "high-contrast"
 ): string {
   if (!/^[a-z][a-z0-9-]{0,31}$/u.test(editor)) {
     throw new TypeError("Screenshot editor keys must be short lowercase identifiers.");

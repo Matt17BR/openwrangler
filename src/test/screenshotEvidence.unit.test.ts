@@ -211,14 +211,19 @@ describe("packaged editor screenshot evidence", () => {
   it("keeps README scene names explicit across file and notebook workflows", () => {
     expect(PACKAGED_SCREENSHOT_SCENES).toEqual([
       "hero",
+      "file-explorer-action",
       "explore",
+      "high-contrast-explore",
       "filter-result",
       "workflow",
       "sidebar-overview",
       "operation-catalog",
       "operation-configuration",
       "applied-step-inspection",
+      "latest-step-edited",
+      "latest-step-undone",
       "notebook-pandas",
+      "notebook-code-insertion",
       "notebook-variable-picker",
       "notebook-pyspark-picker",
       "notebook-polars",
@@ -228,8 +233,23 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
     expect(packagedScreenshotFileName("vscode", "explore", "dark")).toBe("vscode-explore-dark.png");
+    expect(packagedScreenshotFileName("vscode", "file-explorer-action", "dark")).toBe(
+      "vscode-file-explorer-action-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "high-contrast-explore", "high-contrast")).toBe(
+      "vscode-high-contrast-explore-high-contrast.png"
+    );
     expect(packagedScreenshotFileName("vscode", "filter-result", "dark")).toBe("vscode-filter-result-dark.png");
     expect(packagedScreenshotFileName("vscode", "workflow", "dark")).toBe("vscode-workflow-dark.png");
+    expect(packagedScreenshotFileName("vscode", "latest-step-edited", "dark")).toBe(
+      "vscode-latest-step-edited-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "latest-step-undone", "dark")).toBe(
+      "vscode-latest-step-undone-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "notebook-code-insertion", "dark")).toBe(
+      "vscode-notebook-code-insertion-dark.png"
+    );
     expect(packagedScreenshotFileName("vscode", "notebook-pandas", "dark")).toBe("vscode-notebook-pandas-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-duckdb", "dark")).toBe("vscode-notebook-duckdb-dark.png");
@@ -248,15 +268,47 @@ describe("packaged editor screenshot evidence", () => {
     const jupyterEnvironment = readFileSync(resolve("scripts/jupyter-acceptance-environment.mjs"), "utf8");
     const deprecatedKernelLabel = ["Open Wrangler", "Acceptance"].join(" ");
     const deprecatedVariableName = ["notebook", "showcase"].join("_");
+    const pickerCapture = extensionHost.slice(
+      extensionHost.indexOf("async function captureReleasedJupyterVariablePicker"),
+      extensionHost.indexOf("async function assertReleasedJupyterCaptureInternalMarkerHidden")
+    );
 
     expect(extensionHost).toContain('const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)"');
     expect(extensionHost).toContain('"orders_df = pd.DataFrame({"');
     expect(extensionHost).toContain('"orders_preview_df = orders_df.loc[:, showcase_preview_columns].copy()"');
     expect(extensionHost).toContain('"# Explore recent orders in Open Wrangler\\n"');
+    expect(extensionHost).toContain('"notebook.cell.collapseAllCellInputs"');
+    expect(extensionHost).toContain('"notebook.cell.collapseAllCellOutputs"');
+    expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
+    expect(extensionHost).toContain('pageSize.value = "10"');
+    expect(extensionHost).toContain("scrollerBounds.top + scroller.clientTop + scroller.clientHeight");
+    expect(pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")).toBeGreaterThan(0);
+    expect(pickerCapture.indexOf("captureNotebookWorkbenchScreenshot(workbench, destination)")).toBeGreaterThan(
+      pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")
+    );
     expect(jupyterEnvironment).toContain('display_name: "Python 3.12 (Open Wrangler)"');
     expect(extensionHost).not.toContain(deprecatedKernelLabel);
     expect(extensionHost).not.toContain(deprecatedVariableName);
     expect(jupyterEnvironment).not.toContain(deprecatedKernelLabel);
+  });
+
+  it("captures the real Explorer, plan-history, insertion, and high-contrast journeys", () => {
+    const extensionHost = readFileSync(resolve("src/test/extensionHost/index.ts"), "utf8");
+    const mediaSpec = readFileSync(resolve("docs/media-spec-v1.2.md"), "utf8");
+    const testing = readFileSync(resolve("docs/testing.md"), "utf8");
+
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "file-explorer-action", "dark")');
+    expect(extensionHost).toContain("await action.click();");
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "high-contrast-explore", "high-contrast")');
+    expect(extensionHost).toContain("draft.params.value === 750");
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "latest-step-edited", "dark")');
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "latest-step-undone", "dark")');
+    expect(extensionHost).toContain('"notebook-code-insertion"');
+    expect(extensionHost).toContain("const code = active.code;");
+    expect(mediaSpec).toContain("### Explorer, edit, undo, and high contrast");
+    expect(mediaSpec).toContain("Generated-code insertion uses the live Pandas session's engine-generated code");
+    expect(mediaSpec).not.toContain("## Remaining capture backlog");
+    expect(testing).toContain("The product capture now starts from the exact 100,000-row source's native Explorer");
   });
 
   it("keeps the README to a concise portable v1.2 product story", () => {
@@ -276,6 +328,7 @@ describe("packaged editor screenshot evidence", () => {
     const viteConfig = readFileSync(resolve("vite.config.ts"), "utf8");
     const images = [
       ["explore.png", 1_440, 870, 50_000],
+      ["filter-result.png", 1_440, 852, 50_000],
       ["gallery/sidebar-explore.png", 448, 500, 50_000],
       ["gallery/sidebar-workflow.png", 448, 500, 30_000],
       ["gallery/column-search-wide.png", 1_440, 865, 50_000],
@@ -284,7 +337,7 @@ describe("packaged editor screenshot evidence", () => {
       ["gallery/sort-priority.png", 448, 480, 20_000],
       ["gallery/export-script.png", 1_440, 870, 50_000],
       ["gallery/export-data.png", 1_440, 870, 50_000],
-      ["gallery/notebook-variable-picker.png", 1_280, 600, 50_000],
+      ["gallery/notebook-variable-picker.png", 1_440, 900, 50_000],
       ["notebook-pandas.png", 1_280, 600, 50_000],
       ["gallery/operation-configuration.png", 1_280, 874, 50_000],
       ["gallery/applied-step-inspection.png", 1_440, 870, 50_000],
@@ -292,7 +345,7 @@ describe("packaged editor screenshot evidence", () => {
       ["gallery/applied-step-inspection-detail.png", 995, 320, 20_000],
       ["gallery/export-script-detail.png", 995, 230, 20_000],
       ["gallery/export-data-detail.png", 995, 344, 20_000],
-      ["gallery/notebook-variable-picker-detail.png", 602, 330, 20_000],
+      ["gallery/notebook-variable-picker-detail.png", 602, 380, 20_000],
       ["gallery/notebook-pandas-detail.png", 1_205, 370, 20_000],
       ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
       ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000]

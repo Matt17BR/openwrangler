@@ -12,9 +12,9 @@ shows the workflows behind the feature claims, and keeps the README compact enou
   explain integration.
 - Fidelity: packaged-editor capture viewports are 1440 × 900 or 1280 × 900. The native workbench chrome is then
   trimmed to accepted 1440 × 870/874 or 1280 × 600/874 assets where the runner owns deterministic outer pixels.
-  The filter-result scene is the sole row-boundary exception: it begins at 1440 × 900, measures any bottom partial
-  grid row, reduces only the viewport height by that visible intersection, rechecks the complete layout, and
-  restores 1440 × 900 immediately afterward. This keeps native bottom chrome while preventing a cut data row.
+  The filter-result, high-contrast Explore, and executed edit/undo scenes begin at 1440 × 900, measure any bottom
+  partial grid row, reduce only the viewport height by that visible intersection, recheck the complete layout, and
+  restore 1440 × 900 immediately afterward. This keeps native bottom chrome while preventing a cut data row.
   README details may select one documented, pixel-exact rectangle from a complete accepted scene; do not scale,
   mask, add device frames, or reconstruct editor UI.
 - Portability: full-scene README copies preserve every accepted source pixel and add only a standard sRGB PNG
@@ -71,17 +71,25 @@ Fixture sizes visible in these scenes are evidence, never product limits.
 
 `docs/media-gallery.md` adds:
 
+- a complete native Explorer-row context menu over the realistic 100,000-row order fixture, with exactly one
+  canonical **Open in Open Wrangler** action and the full source name visible;
 - branded file entry points cropped from the accepted 1440 × 865 editor scenes: a 1440 × 120 title strip and a
   540 × 570 tab-menu view;
 - pixel-exact sidebar details cropped from the accepted Explore and Workflow scenes, showing the operation catalog,
   dataframe summary, ordered viewing state, and separate cleaning history at a readable size;
 - a full native-sidebar overview with all four views populated, the complete catalog and configured Formula
   operation, and an applied-step inspection with its history controls visible;
-- pixel-exact by-example details cropped from accepted production-webview scenes: a 1080 × 760 complete operation
-  dialog whose real scrollable editor shows both mapping values and outputs, followed by the complete ten-row
-  draft and its Apply / Discard controls;
+- a realistic populated high-contrast Explore workbench and two executed plan-history outcomes: applying an edit
+  to the latest Formula step without appending a step, then undoing exactly that edited step while preserving the
+  earlier normalization;
+- pixel-exact by-example details cropped from accepted production-webview scenes: a readable 660 × 760 setup
+  detail linked to the complete 1080 × 760 operation dialog whose real scrollable editor shows both mapping values
+  and outputs, followed by a readable 700 × 525 result-table detail linked to the complete ten-row draft and its
+  Apply / Discard controls;
 - the full-size Pandas, Polars, and DuckDB notebook scenes, while README-specific notebook crops remain linked
   back to those complete sources;
+- the exact originating Jupyter notebook after the real **Insert into Notebook** path adds one engine-generated,
+  uniquely marked Pandas cleaning-code cell without modifying any existing cell or an active decoy notebook;
 - a clearly labeled experimental, viewing-only PySpark 4.2 scene at 1440 × 900;
 - a focused native DuckDB rich-Parquet detail with decimal, time-zone, list, and struct values, linked to its
   complete 1920 × 640 source scene;
@@ -98,15 +106,6 @@ Fixture sizes visible in these scenes are evidence, never product limits.
 
 Every caption states what the image proves and distinguishes fully supported editing, supported viewing, and
 experimental viewing-only surfaces.
-
-## Remaining capture backlog
-
-Capture these from the final packaged v1.2 candidate before publication:
-
-- an Explorer-row context screenshot that complements the editor-title and tab entry points;
-- executed applied-step edit/undo and notebook code insertion against realistic data; and
-- a realistic high-contrast workbench scene that exercises the same populated product layout rather than a toy
-  four-row harness fixture.
 
 Do not substitute the older `vscode-columns-*`, `cursor-*`, `grid-view.png`, `filter-panel.png`, `wide-grid.png`,
 or `notebook-preview.png` captures: they predate the current toolbar/sidebar presentation or do not prove the
@@ -148,6 +147,21 @@ workflow named above.
 - Show confirmed data, Edit latest, and Undo remain visible while the confirmed dataframe and filters are
   unchanged.
 
+### Explorer, edit, undo, and high contrast
+
+- The Explorer scene opens the real source as a text editor, reveals that exact row through the native Files
+  Explorer, shows its complete name, and exposes exactly one complete **Open in Open Wrangler** context action.
+- The edit scene changes the latest projected-revenue formula from `500` to `750` through the production dialog,
+  previews and applies it, retains the stable step identity and exactly two applied steps, and shows executable
+  Polars code with `pl.lit(750)`.
+- The undo scene removes exactly that edited Formula step, retains the earlier `market_upper` normalization as the
+  sole applied step, removes `projected_revenue` from schema and code, and then reconstructs the original
+  500-unit formula before export evidence continues.
+- The high-contrast scene reuses the complete 100,000-row Explore layout, populated native views, exact revenue
+  profile, and virtualized grid. It must receive real high-contrast theme tokens rather than recolored pixels.
+- Every transition proves the synthetic source bytes are unchanged; captures reject clipped sidebar rows, toolbar
+  controls, column names, context-menu items, and partial grid rows.
+
 ### Notebook engines
 
 - Pandas labels the inline output as a portable capture while the action opens the complete live variable.
@@ -157,6 +171,9 @@ workflow named above.
 - PySpark shows Experimental, Viewing only, and PySpark badges, exact profiles, and no cleaning or export controls.
 - The separate released-Jupyter PySpark picker shows the complete viewing-mode, full-frame-open, and 4.2.x
   prerequisite guidance on one fully visible `spark_classic_frame` row, then closes without selecting it.
+- Generated-code insertion uses the live Pandas session's engine-generated code, targets the exact originating
+  notebook while a different notebook is active, adds one uniquely marked cell, preserves every prior cell, then
+  returns to that exact origin and captures the complete unclipped generated cell.
 
 ## Reproduction and publication gate
 

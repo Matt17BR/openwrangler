@@ -17,6 +17,7 @@ if (unexpectedArguments.length > 0) {
 
 const assets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
+  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 852),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeAsset("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600),
   nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
@@ -24,7 +25,7 @@ const assets = [
   nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
   nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
   nativeAsset("gallery/cursor-explore.png", "cursor-explore-dark.png", 1_440, 865),
-  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600),
+  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
@@ -42,7 +43,7 @@ const assets = [
     x: 445,
     y: 28,
     width: 995,
-    height: 330
+    height: 320
   }),
   nativeCrop("gallery/export-script-detail.png", "vscode-export-code-dark.png", 1_440, 870, {
     x: 445,
@@ -54,19 +55,19 @@ const assets = [
     x: 445,
     y: 0,
     width: 995,
-    height: 370
+    height: 344
   }),
-  nativeCrop("gallery/notebook-variable-picker-detail.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600, {
-    x: 340,
-    y: 0,
+  nativeCrop("gallery/notebook-variable-picker-detail.png", "vscode-notebook-variable-picker-dark.png", 1_440, 900, {
+    x: 420,
+    y: 31,
     width: 602,
-    height: 330
+    height: 380
   }),
   nativeCrop("gallery/notebook-pandas-detail.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
     x: 52,
-    y: 178,
-    width: 440,
-    height: 300
+    y: 148,
+    width: 1_205,
+    height: 370
   }),
   nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
     x: 48,
@@ -110,11 +111,23 @@ const assets = [
     width: 1_080,
     height: 760
   }),
+  acceptanceCrop("gallery/by-example-setup-detail.png", "by-example-dialog-dark-1280.png", 1_280, 960, {
+    x: 520,
+    y: 100,
+    width: 660,
+    height: 760
+  }),
   acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
     x: 0,
     y: 0,
     width: 1_280,
-    height: 580
+    height: 760
+  }),
+  acceptanceCrop("gallery/by-example-preview-detail.png", "by-example-preview-dark-1280.png", 1_280, 760, {
+    x: 0,
+    y: 55,
+    width: 700,
+    height: 525
   }),
   nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
     x: 0,

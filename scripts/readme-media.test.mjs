@@ -8,6 +8,7 @@ const root = resolve(import.meta.dirname, "..");
 
 const nativeAssets = [
   nativeAsset("explore.png", "vscode-explore-dark.png", 1_440, 870),
+  nativeAsset("filter-result.png", "vscode-filter-result-dark.png", 1_440, 852),
   nativeAsset("workflow.png", "vscode-workflow-dark.png", 1_440, 870),
   nativeAsset("notebook-pandas.png", "vscode-notebook-pandas-dark.png", 1_280, 600),
   nativeAsset("gallery/column-search-wide.png", "vscode-column-search-wide-dark.png", 1_440, 865),
@@ -15,7 +16,7 @@ const nativeAssets = [
   nativeAsset("gallery/export-script.png", "vscode-export-code-dark.png", 1_440, 870),
   nativeAsset("gallery/export-data.png", "vscode-export-data-dark.png", 1_440, 870),
   nativeAsset("gallery/cursor-explore.png", "cursor-explore-dark.png", 1_440, 865),
-  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600),
+  nativeAsset("gallery/notebook-variable-picker.png", "vscode-notebook-variable-picker-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
@@ -33,7 +34,7 @@ const nativeAssets = [
     x: 445,
     y: 28,
     width: 995,
-    height: 330
+    height: 320
   }),
   nativeCrop("gallery/export-script-detail.png", "vscode-export-code-dark.png", 1_440, 870, {
     x: 445,
@@ -45,19 +46,19 @@ const nativeAssets = [
     x: 445,
     y: 0,
     width: 995,
-    height: 370
+    height: 344
   }),
-  nativeCrop("gallery/notebook-variable-picker-detail.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600, {
-    x: 340,
-    y: 0,
+  nativeCrop("gallery/notebook-variable-picker-detail.png", "vscode-notebook-variable-picker-dark.png", 1_440, 900, {
+    x: 420,
+    y: 31,
     width: 602,
-    height: 330
+    height: 380
   }),
   nativeCrop("gallery/notebook-pandas-detail.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
     x: 52,
-    y: 178,
-    width: 440,
-    height: 300
+    y: 148,
+    width: 1_205,
+    height: 370
   }),
   nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
     x: 48,
@@ -101,11 +102,23 @@ const nativeAssets = [
     width: 1_080,
     height: 760
   }),
+  acceptanceCrop("gallery/by-example-setup-detail.png", "by-example-dialog-dark-1280.png", 1_280, 960, {
+    x: 520,
+    y: 100,
+    width: 660,
+    height: 760
+  }),
   acceptanceCrop("gallery/by-example-preview.png", "by-example-preview-dark-1280.png", 1_280, 760, {
     x: 0,
     y: 0,
     width: 1_280,
-    height: 580
+    height: 760
+  }),
+  acceptanceCrop("gallery/by-example-preview-detail.png", "by-example-preview-dark-1280.png", 1_280, 760, {
+    x: 0,
+    y: 55,
+    width: 700,
+    height: 525
   }),
   nativeCrop("gallery/file-title-action.png", "vscode-file-title-action.png", 1_440, 865, {
     x: 0,
@@ -169,20 +182,20 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   }
   assert.match(compositor, /function cropPng\(/u);
   assert.match(compositor, /source\.data\.copy\(result\.data/u);
-  const immutableMediaReferences = [
-    ...readme.matchAll(
-      /https:\/\/(?:raw\.githubusercontent\.com\/Matt17BR\/openwrangler|github\.com\/Matt17BR\/openwrangler\/blob)\/([0-9a-f]{40})\/(assets\/icon\.png|docs\/images\/readme\/v1\.2\/[^"<]+\.png)/gu
-    )
-  ];
+  const productMediaReferences = readme
+    .split(/["']/u)
+    .map(parseProductMediaReference)
+    .filter((reference) => reference !== undefined);
+  const immutableMediaReferences = productMediaReferences.filter((reference) => /^[0-9a-f]{40}$/u.test(reference.ref));
   assert.ok(immutableMediaReferences.length > 0, "README must use immutable public product-media URLs.");
   assert.deepEqual(
-    new Set(immutableMediaReferences.map((match) => match[1])).size,
+    new Set(immutableMediaReferences.map((reference) => reference.ref)).size,
     1,
     "Every README product-media URL must use one reviewed immutable media commit."
   );
-  assert.doesNotMatch(
-    readme,
-    /(?:raw\.githubusercontent\.com\/Matt17BR\/openwrangler|github\.com\/Matt17BR\/openwrangler\/(?:blob|raw))\/(?:main|HEAD)\/(?:assets|docs\/images\/readme)/u,
+  assert.equal(
+    productMediaReferences.length,
+    immutableMediaReferences.length,
     "README product media must not drift with a moving branch."
   );
 
@@ -235,6 +248,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
 
   for (const image of [
     "explore.png",
+    "filter-result.png",
     "gallery/sidebar-explore.png",
     "gallery/sidebar-workflow.png",
     "gallery/column-search-wide.png",
@@ -264,6 +278,9 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.doesNotMatch(readme, /docs\/images\/readme\/v1\.1|docs\/images\/editor-acceptance/u);
   assert.match(readme, /Operations, Summary, Filters \/ Sorts, Cleaning Steps/u);
+  assert.match(readme, /14,285 matching rows/u);
+  assert.match(readme, /same filter appears in the native\s+sidebar/u);
+  assert.match(readme, /Open Wrangler stays inactive in Restricted Mode\./u);
   assert.match(readme, /Native Activity Bar views/u);
   assert.match(readme, /Source at a glance\./u);
   assert.match(readme, /View and plan stay separate\./u);
@@ -273,7 +290,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /reorderable sort priorities, applied history, a current-block draft\s+diff/u);
   assert.match(
     readme,
-    /Keep a portable table inline,[\s\S]{0,120}open the complete current live dataframe in the workbench/u
+    /Stay in the notebook with a portable table,[\s\S]{0,120}open the complete current live dataframe in the workbench/u
   );
   assert.match(
     readme,
@@ -288,12 +305,18 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /Inspired by <a href="https:\/\/github\.com\/microsoft\/vscode-data-wrangler"/u);
   assert.match(readme, /If Microsoft\s+Data Wrangler is installed too[\s\S]{0,180}Choose\s+Notebook Preview Provider/u);
   assert.match(readme, /\| Other VS Code desktop forks \| Experimental/u);
-  assert.match(readme, /\| DuckDB\s+\|/u);
+  assert.match(readme, /\| DuckDB, experimental\s+\|/u);
   assert.doesNotMatch(readme, /\| DuckDB, preview/u);
   assert.match(readme, /loading a pickle can execute arbitrary code/u);
+  assert.match(readme, /PySpark 4\.2\.x DataFrames can open as experimental, viewing-only live notebook sessions\./u);
+  assert.match(readme, /bridge verifies the\s+exact selected kernel before dispatch/u);
   assert.match(
     readme,
-    /PySpark 4\.2 DataFrames can open as experimental, viewing-only live notebook sessions\.[\s\S]{0,220}requested profiles stay in Spark; only bounded results return/u
+    /Opening scans the complete frame, assigns stable row positions, caches an\s+Open Wrangler-owned index/u
+  );
+  assert.match(
+    readme,
+    /filtering, sorting, paging, and requested profiles stay in Spark and return only bounded results/u
   );
   assert.match(
     readme,
@@ -301,15 +324,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   );
   assert.match(readme, /\| v1\.2\s+\| Finish real-user interaction polish[\s\S]{0,500}#36/u);
   assert.match(readme, /\| v2\s+\| Native R data frames[\s\S]{0,200}#87/u);
-  assert.match(readme, /The next public package is one coherent v1\.2 release/u);
-  assert.match(readme, /Development commits are not published as a stream of patch releases/u);
 
   for (const image of [
     "images/readme/v1.2/explore.png",
     "images/readme/v1.2/gallery/histogram-hover.png",
     "images/readme/v1.2/gallery/sort-priority.png",
     "images/readme/v1.2/gallery/by-example-setup.png",
+    "images/readme/v1.2/gallery/by-example-setup-detail.png",
     "images/readme/v1.2/gallery/by-example-preview.png",
+    "images/readme/v1.2/gallery/by-example-preview-detail.png",
     "images/readme/v1.2/workflow.png",
     "images/readme/v1.2/gallery/file-title-action.png",
     "images/readme/v1.2/gallery/tab-context-menu.png",
@@ -331,7 +354,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /does not convert through Pandas,\s+Polars, or Arrow/u);
   assert.match(gallery, /experimental and viewing-only/u);
   assert.match(gallery, /Transform by example/u);
-  assert.match(gallery, /Confirm the synthesized split across all ten unseen account IDs/u);
+  assert.match(gallery, /Confirm the two examples and eight unseen account IDs together/u);
   assert.match(gallery, /^### Native Activity Bar views$/mu);
   assert.match(gallery, /All four Open Wrangler Activity Bar views populated/u);
   assert.match(gallery, /Inspect sparse bins\./u);
@@ -345,7 +368,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(gallery, /### Tab context menu/u);
   assert.match(
     gallery,
-    /href="images\/readme\/v1\.2\/gallery\/by-example-setup\.png"[\s\S]{0,900}href="images\/readme\/v1\.2\/gallery\/by-example-preview\.png"/u
+    /href="images\/readme\/v1\.2\/gallery\/by-example-setup\.png"[\s\S]{0,300}by-example-setup-detail\.png[\s\S]{0,900}href="images\/readme\/v1\.2\/gallery\/by-example-preview\.png"[\s\S]{0,300}by-example-preview-detail\.png/u
   );
   assert.doesNotMatch(gallery, /images\/readme\/v1\.1/u);
 
@@ -422,6 +445,44 @@ function readmeCrop(destination, source, sourceWidth, sourceHeight, crop) {
     outputHeight: crop.height,
     crop
   };
+}
+
+function parseProductMediaReference(value) {
+  if (!value.startsWith("https://")) return undefined;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.username || url.password || url.port || url.search || url.hash) return undefined;
+
+  const segments = url.pathname.split("/").filter(Boolean);
+  let ref;
+  let assetSegments;
+  if (url.hostname === "raw.githubusercontent.com" && segments[0] === "Matt17BR" && segments[1] === "openwrangler") {
+    ref = segments[2];
+    assetSegments = segments.slice(3);
+  } else if (
+    url.hostname === "github.com" &&
+    segments[0] === "Matt17BR" &&
+    segments[1] === "openwrangler" &&
+    (segments[2] === "blob" || segments[2] === "raw")
+  ) {
+    ref = segments[3];
+    assetSegments = segments.slice(4);
+  } else {
+    return undefined;
+  }
+
+  const assetPath = assetSegments.join("/");
+  if (
+    assetPath !== "assets/icon.png" &&
+    !(assetPath.startsWith("docs/images/readme/v1.2/") && assetPath.endsWith(".png"))
+  ) {
+    return undefined;
+  }
+  return { assetPath, ref };
 }
 
 function cropPixels(source, crop) {
