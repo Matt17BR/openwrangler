@@ -13110,7 +13110,13 @@ async function seedVisiblePersistedPanel(testing: TestApi, fixture: vscode.Uri):
     pageSize: 200,
     mode: "editing"
   });
-  assert.equal(opened.kind, "sessionOpened");
+  assert.equal(
+    opened.kind,
+    "sessionOpened",
+    opened.kind === "error"
+      ? `The persisted-panel seed failed to open: ${opened.code}: ${opened.message}`
+      : `The persisted-panel seed returned ${opened.kind}.`
+  );
   if (opened.kind !== "sessionOpened") return;
   assert.deepEqual(opened.metadata.shape, {
     rows: PACKAGED_FIRST_USE_ROW_COUNT,
@@ -16365,8 +16371,7 @@ async function exercisePackagedExcelDependencyInstall(
     assert.equal(existsSync(dependency.invocation), false, "The private fake pip must not run before consent.");
     assert.deepEqual(readFileSync(workbookPath), workbookBytes, "The failed XLSX open must not modify the workbook.");
 
-    const initialTab = vscode.window.tabGroups.activeTabGroup.activeTab;
-    const initialInput = initialTab?.input;
+    const initialInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
     assert.ok(initialInput instanceof vscode.TabInputCustom, "The failed XLSX open must retain its custom-editor tab.");
     assert.equal(initialInput.viewType, "openWrangler.viewer");
     assert.equal(initialInput.uri.toString(), workbook.toString());
@@ -16420,6 +16425,7 @@ async function exercisePackagedExcelDependencyInstall(
       WORKBENCH_OPERATION_TIMEOUT_MS,
       "the private fake pip invocation and install marker"
     );
+    recordAcceptanceProgress("excel-dependency-install:marker-created");
 
     await waitFor(
       () => {
@@ -16445,16 +16451,30 @@ async function exercisePackagedExcelDependencyInstall(
     );
     const active = testing.activeSession();
     assert.ok(active, "The confirmed XLSX dependency install must publish an active session.");
+    recordAcceptanceProgress("excel-dependency-install:session-published");
+    const matchingTabs = vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter((tab) => {
+        const input = tab.input;
+        return (
+          input instanceof vscode.TabInputCustom &&
+          input.viewType === "openWrangler.viewer" &&
+          input.uri.toString() === workbook.toString()
+        );
+      });
     assert.equal(
-      vscode.window.tabGroups.activeTabGroup.activeTab,
-      initialTab,
-      "Dependency recovery must retain the exact existing custom-editor tab."
+      matchingTabs.length,
+      1,
+      "Dependency recovery must retain exactly one custom-editor tab for the XLSX source."
     );
-    assert.equal(
-      vscode.window.tabGroups.activeTabGroup.activeTab?.input,
-      initialInput,
-      "Dependency recovery must retain the exact existing custom-editor input."
-    );
+    const recoveredTab = matchingTabs[0];
+    assert.ok(recoveredTab, "The recovered XLSX custom-editor tab must remain available.");
+    assert.equal(recoveredTab.isActive, true, "The recovered XLSX custom-editor tab must remain active.");
+    const recoveredInput = recoveredTab.input;
+    assert.ok(recoveredInput instanceof vscode.TabInputCustom);
+    assert.equal(recoveredInput.viewType, "openWrangler.viewer");
+    assert.equal(recoveredInput.uri.toString(), workbook.toString());
+    recordAcceptanceProgress("excel-dependency-install:tab-continuity");
     assert.equal(install.target.frame.isDetached(), false, "The original XLSX error renderer must remain attached.");
     const sameApp = install.target.frame.locator("main.app[data-session-id]").first();
     await sameApp.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
@@ -18009,8 +18029,8 @@ function createExcelDependencyInstallPython(directory: string, python: string): 
     "    os.fsync(stream.fileno())",
     "os.replace(invocation_temporary, invocation_path)",
     "marker_temporary = f'{marker_path}.{os.getpid()}.tmp'",
-    "with open(marker_temporary, 'x', encoding='utf-8') as stream:",
-    "    stream.write('openpyxl>=3.1.5\\n')",
+    "with open(marker_temporary, 'xb') as stream:",
+    "    stream.write(b'openpyxl>=3.1.5\\n')",
     "    stream.flush()",
     "    os.fsync(stream.fileno())",
     "os.replace(marker_temporary, marker_path)",
