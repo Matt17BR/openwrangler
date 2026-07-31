@@ -11037,14 +11037,20 @@ async function measurePackagedSceneRowBoundary(app: Locator): Promise<{
       scrollerBounds.bottom,
       scrollerBounds.top + scroller.clientTop + scroller.clientHeight
     );
+    // VS Code can place the grid content box on fractional CSS-pixel
+    // boundaries, especially with high-contrast borders. A subpixel edge
+    // cannot expose independently readable row content in the rasterized
+    // screenshot; keep rejecting every visibly partial row beyond one CSS
+    // pixel without oscillating between adjacent integer viewport heights.
+    const boundaryTolerance = 1;
     const visibleRows = Array.from(scroller.querySelectorAll("tbody tr")).filter((row) => {
       const bounds = row.getBoundingClientRect();
       return bounds.bottom > bodyTop && bounds.top < scrollerBottom;
     });
     return {
-      partialTopRows: visibleRows.filter((row) => row.getBoundingClientRect().top < bodyTop).length,
+      partialTopRows: visibleRows.filter((row) => row.getBoundingClientRect().top < bodyTop - boundaryTolerance).length,
       partialBottomRows: visibleRows
-        .filter((row) => row.getBoundingClientRect().bottom > scrollerBottom)
+        .filter((row) => row.getBoundingClientRect().bottom > scrollerBottom + boundaryTolerance)
         .map((row) => {
           const bounds = row.getBoundingClientRect();
           return {
@@ -11096,6 +11102,7 @@ async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator
     const bodyTop = Math.max(
       ...Array.from(scroller.querySelectorAll("thead th")).map((header) => header.getBoundingClientRect().bottom)
     );
+    const boundaryTolerance = 1;
     const visibleRows = Array.from(scroller.querySelectorAll("tbody tr")).filter((row) => {
       const bounds = row.getBoundingClientRect();
       return bounds.bottom > bodyTop && bounds.top < scrollerContentBottom;
@@ -11132,7 +11139,7 @@ async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator
         .map((header) => header.getAttribute("data-column") ?? ""),
       partialRows: visibleRows.filter((row) => {
         const bounds = row.getBoundingClientRect();
-        return bounds.top < bodyTop || bounds.bottom > scrollerContentBottom;
+        return bounds.top < bodyTop - boundaryTolerance || bounds.bottom > scrollerContentBottom + boundaryTolerance;
       }).length,
       clippedCells: visibleCells
         .filter((cell) => cell.scrollWidth > cell.clientWidth + 1)
