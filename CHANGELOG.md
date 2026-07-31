@@ -19,6 +19,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   shortcut follows the same rule when invoked from that exact button, but never when invoked elsewhere.
 - Clarified the notebook guidance that a DuckDB relation remains native, while DuckDB's explicit `.df()` result is
   a real Pandas DataFrame and therefore opens with the Pandas backend.
+- Updated the public roadmap to batch the remaining interaction polish, reproducible performance comparison,
+  bounded VS Code-fork validation, and supported PySpark gates into one coherent v1.2 release instead of
+  promising a continuous stream of patch packages.
 
 ### Fixed
 
