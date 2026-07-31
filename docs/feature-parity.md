@@ -70,6 +70,26 @@ DuckDB keeps data as native lazy `DuckDBPyRelation` plans. The preview neither c
 | Runtime crash/reload/session replay          | Yes                 | Partial | Backend-keyed two-process replay and injected recovery  | Cross-platform and repeated failure-injection matrix         |
 | Runtime performance benchmark                | Diagnostic          | Partial | Opt-in direct/stdio smoke with provenance/resources     | Repeated full-size evidence; it is not a strict release gate |
 
+### Native DuckDB replacement-kernel recovery evidence
+
+Exact head `152d5cca95e4c57f0187d19bac00ed594ac04820` passed
+[released-Jupyter run 30590890283](https://github.com/Matt17BR/openwrangler/actions/runs/30590890283).
+The real packaged-Jupyter allow path records the following behavior:
+
+- Retain a 100,000-row connection-private DuckDB relation alongside concurrent Polars and Pandas sessions
+  during an actual kernel restart. Before replacement, confirm a filter, two ordered sort rules, the complete
+  ordered public schema, one selected column, a resized width, and a nonzero viewport.
+- Recreate the notebook variable in the exact observed replacement process and arm hard Pandas, Polars, and
+  Arrow conversion traps before Open Wrangler may recover. Require the same public session and viewing state
+  over a changed private runtime identity, then repeat a native numeric summary. Open Wrangler does not
+  serialize relation SQL or imply that a connection-private object survives process death. The editor profile
+  deliberately requests Editing; the runtime-confirmed DuckDB Viewing mode must be pinned for strict replay.
+- Leave both the coordinator and replacement kernel manager with zero sessions after terminal cleanup while
+  the replacement user relation and connection remain queryable. Focused exact-kernel tests also bind DuckDB
+  opens to timeout and cancellation cleanup and prove old and replacement session IDs close only on their
+  mapped kernel generations; the isolated denial phase retries a DuckDB-typed open after persisted permission
+  denial.
+
 ## PySpark live-notebook viewing preview matrix
 
 PySpark stays distributed and read-only in this preview. The user's Jupyter kernel and Spark session own the cluster; Open Wrangler neither installs/starts Spark nor stops that session. **Partial** combines the unconditional PySpark 4.2 and Java 17 engine contract with real packaged VS Code and Cursor released-Jupyter runs for local Classic and Connect. It does not claim external-cluster, cancellation, large-partition performance, or a broader cross-platform support matrix.

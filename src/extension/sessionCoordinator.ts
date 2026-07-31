@@ -499,7 +499,7 @@ export class SessionCoordinator implements vscode.Disposable {
       runtimeId: response.metadata.sessionId,
       publicRevision: response.metadata.revision,
       runtimeRevision: response.metadata.revision,
-      openRequest: { ...request, backend: response.metadata.backend },
+      openRequest: confirmedReplayOpenRequest(request, response.metadata),
       ...(backendPreference ? { backendPreference } : {}),
       ...(notebookDocument ? { notebookDocument } : {}),
       delegate,
@@ -935,7 +935,7 @@ export class SessionCoordinator implements vscode.Disposable {
     session.runtimeId = candidate.runtimeId;
     session.runtimeRevision = candidate.runtimeRevision;
     session.publicRevision = publicRevision;
-    session.openRequest = confirmedReplacementOpenRequest(candidateRequest, candidate.metadata.backend);
+    session.openRequest = confirmedReplayOpenRequest(candidateRequest, candidate.metadata);
     session.metadata = candidate.metadata;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
@@ -1972,9 +1972,16 @@ function replacementOpenRequest(
   };
 }
 
-function confirmedReplacementOpenRequest(request: OpenSessionRequest, backend: DataBackend): OpenSessionRequest {
+function confirmedReplayOpenRequest(
+  request: OpenSessionRequest,
+  metadata: Pick<SessionMetadata, "backend" | "mode">
+): OpenSessionRequest {
   const { requestedSessionId: _requestedSessionId, ...stableRequest } = request;
-  return { ...stableRequest, backend };
+  return {
+    ...stableRequest,
+    backend: metadata.backend,
+    mode: metadata.mode
+  };
 }
 
 function reconfigurationCancelled(sessionId: string): OpenWranglerResponse {

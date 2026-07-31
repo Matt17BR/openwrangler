@@ -214,6 +214,7 @@ const RELEASED_JUPYTER_SETUP_RESULT = "__OW_RELEASED_SETUP__";
 const RELEASED_JUPYTER_RESTART_RESULT = "__OW_RELEASED_RESTART__";
 const RELEASED_JUPYTER_RUNTIME_RESULT = "__OW_RELEASED_RUNTIME__";
 const RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT = "__OW_RELEASED_DUCKDB_ALIVE__";
+const RELEASED_JUPYTER_SESSION_COUNT_RESULT = "__OW_RELEASED_SESSION_COUNT__";
 const RELEASED_JUPYTER_PYSPARK_SETUP_RESULT = "__OW_RELEASED_PYSPARK_SETUP__";
 const RELEASED_JUPYTER_PYSPARK_CLOSE_RESULT = "__OW_RELEASED_PYSPARK_CLOSE__";
 const RELEASED_JUPYTER_LOCAL_KERNEL_LABEL = "Python 3.12 (Open Wrangler)";
@@ -867,6 +868,15 @@ interface ReleasedVariableExpectation {
   readonly notebookInsert?: boolean;
 }
 
+interface ReleasedDuckDbRecoverySession {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly filterModel: FilterModel;
+  readonly runtimeId: string;
+  readonly schema: SessionMetadata["schema"];
+  readonly viewState: GridViewState;
+}
+
 function isDataWranglerCoexistencePhase(phase: string): phase is DataWranglerCoexistencePhase {
   return (
     phase === "jupyter-coexist-open-select" ||
@@ -1266,6 +1276,7 @@ async function exerciseReleasedJupyterExtension(
   let notebook: vscode.NotebookDocument | undefined;
   let rendererLoadObserver: NotebookRendererLoadObserver | undefined;
   let remoteServerCollection: JupyterServerCollection | undefined;
+  let duckdbRecoverySession: ReleasedDuckDbRecoverySession | undefined;
   let failureCheckpoint: string | undefined;
   try {
     await configuration.update("notebookPreviewProvider", "disabled", vscode.ConfigurationTarget.Workspace);
@@ -1337,8 +1348,8 @@ async function exerciseReleasedJupyterExtension(
       assertExactOpenNotebookDocument(notebook, "before retrying the denied released Jupyter permission");
       await withBoundedAcceptancePromise(
         vscode.commands.executeCommand("openWrangler.launchDataViewer", {
-          name: "pandas_frame",
-          type: "DataFrame",
+          name: "duckdb_relation",
+          type: "_duckdb.DuckDBPyRelation",
           fileName: notebook.uri
         }),
         SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
@@ -1377,6 +1388,7 @@ async function exerciseReleasedJupyterExtension(
     assertReleasedJupyterKernelIdentity(initialKernel, kernelTarget, testPython);
     assert.equal(initialKernel.pid, warmKernel.pid, "The formatter must remain on the exact warmed kernel.");
     assert.equal(initialKernel.setup, setupMarker);
+    assert.equal(initialKernel.duckdbConversionGuards, true);
 
     recordAcceptanceProgress(`${phase}:proactive-mime-v2`);
     const renderedCell = new vscode.NotebookRange(1, 2);
@@ -1684,7 +1696,10 @@ async function exerciseReleasedJupyterExtension(
             predicates: [{ kind: "predicate", operator: "equals", value: "DACH" }]
           }
         ],
-        sort: [{ column: "order_id", direction: "desc", nulls: "last" }]
+        sort: [
+          { column: "order_id", direction: "desc", nulls: "last" },
+          { column: "revenue", direction: "asc", nulls: "last" }
+        ]
       };
       const filteredDuckdbPage = await testing.request({
         kind: "getPage",
@@ -1739,7 +1754,9 @@ async function exerciseReleasedJupyterExtension(
         "DuckDB user relation after Open Wrangler close"
       );
       assert.equal(duckdbAlive.count, 100_000);
+      assert.equal(duckdbAlive.connectionCount, 100_000);
       assert.equal(duckdbAlive.first, 3_400_001);
+      assert.equal(duckdbAlive.conversionGuards, true);
 
       recordAcceptanceProgress(`${phase}:duckdb-variables-action`);
       const duckdbVariablesEditor = await showExactReleasedNotebook(notebook);
@@ -1795,11 +1812,44 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(unfilteredDuckdbVariablesPage.page.totalRows, 100_000);
       assert.equal(unfilteredDuckdbVariablesPage.page.rows[0]?.values[0]?.display, "3400001");
 
-      await disposePackagedSessionPanel(
-        testing,
-        duckdbVariablesRelation.sessionId,
-        "the released-Jupyter Variables DuckDB relation session"
-      );
+      const recoveryDuckdbPage = await testing.request({
+        kind: "getPage",
+        columnOffset: 0,
+        columnLimit: 4,
+        viewRequestId: "released-jupyter-duckdb-native-recovery-view",
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: unfilteredDuckdbVariablesPage.revision,
+        offset: 0,
+        limit: 10,
+        filterModel: filteredDuckdbModel
+      });
+      assert.equal(recoveryDuckdbPage.kind, "page");
+      if (recoveryDuckdbPage.kind !== "page") {
+        throw new Error("The native DuckDB recovery view did not resolve.");
+      }
+      assert.deepEqual(recoveryDuckdbPage.metadata.filterModel, filteredDuckdbModel);
+      assert.deepEqual(recoveryDuckdbPage.metadata.filteredShape, { rows: 25_000, columns: 4 });
+      assert.equal(recoveryDuckdbPage.page.rows[0]?.values[0]?.display, "3499997");
+      assert.equal(recoveryDuckdbPage.page.rows[0]?.values[1]?.display, "DACH");
+      const duckdbDiagnostic = testing
+        .diagnostics()
+        .sessions.find((session) => session.publicId === duckdbVariablesRelation.sessionId);
+      assert.ok(duckdbDiagnostic, "The native DuckDB session must remain coordinated before kernel restart.");
+      const recoveryDuckdbRevenue = columnReference(recoveryDuckdbPage.metadata, "revenue");
+      const recoveryDuckdbViewState: GridViewState = {
+        columnWidths: { [recoveryDuckdbRevenue.id]: 310 },
+        selectedColumnId: recoveryDuckdbRevenue.id,
+        viewport: { firstVisibleRow: 123, scrollLeft: 120 }
+      };
+      await testing.updateViewState(duckdbVariablesRelation.sessionId, recoveryDuckdbViewState);
+      duckdbRecoverySession = {
+        sessionId: duckdbVariablesRelation.sessionId,
+        revision: recoveryDuckdbPage.revision,
+        filterModel: filteredDuckdbModel,
+        runtimeId: duckdbDiagnostic.runtimeId,
+        schema: recoveryDuckdbPage.metadata.schema.map((column) => ({ ...column })),
+        viewState: recoveryDuckdbViewState
+      };
     } finally {
       await configuration.update("notebookStartMode", originalNotebookStartMode, vscode.ConfigurationTarget.Workspace);
     }
@@ -1906,7 +1956,13 @@ async function exerciseReleasedJupyterExtension(
       "1",
       "released-jupyter-pandas-concurrent-recovery"
     );
-    assert.equal(testing.diagnostics().sessionCount, 2, "Both engine-native sessions must remain open before restart.");
+    const duckdbRestartSession = duckdbRecoverySession;
+    assert.ok(duckdbRestartSession, "The native DuckDB session must remain open for kernel restart recovery.");
+    assert.equal(
+      testing.diagnostics().sessionCount,
+      3,
+      "The Polars, Pandas, and DuckDB sessions must all remain open before restart."
+    );
 
     recordAcceptanceProgress(`${phase}:restart`);
     await exerciseReleasedJupyterRestartReplay(
@@ -1919,6 +1975,7 @@ async function exerciseReleasedJupyterExtension(
         revision: pandasRecoveryPage.revision,
         filterModel: pandasRecovery.metadata.filterModel
       },
+      duckdbRestartSession,
       Number(initialKernel.pid),
       setupMarker,
       phase,
@@ -1930,6 +1987,45 @@ async function exerciseReleasedJupyterExtension(
       testing,
       pandasRecovery.sessionId,
       "the recovered released-Jupyter Pandas session"
+    );
+    await disposePackagedSessionPanel(
+      testing,
+      duckdbRestartSession.sessionId,
+      "the recovered released-Jupyter DuckDB relation session"
+    );
+    const recoveredDuckdbAliveEditor = await showExactReleasedNotebook(notebook);
+    await executeReleasedNotebookCell(
+      notebook,
+      6,
+      RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT,
+      `${phase}:duckdb-replacement-relation-after-close`,
+      recoveredDuckdbAliveEditor
+    );
+    const recoveredDuckdbAlive = releasedNotebookJsonResult(
+      notebook.cellAt(6),
+      RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT,
+      "DuckDB replacement relation after Open Wrangler recovery cleanup"
+    );
+    assert.equal(recoveredDuckdbAlive.count, 100_000);
+    assert.equal(recoveredDuckdbAlive.connectionCount, 100_000);
+    assert.equal(recoveredDuckdbAlive.first, 3_400_001);
+    assert.equal(recoveredDuckdbAlive.conversionGuards, true);
+    await executeReleasedNotebookCell(
+      notebook,
+      7,
+      RELEASED_JUPYTER_SESSION_COUNT_RESULT,
+      `${phase}:replacement-runtime-session-count`,
+      await showExactReleasedNotebook(notebook)
+    );
+    const replacementRuntimeSessions = releasedNotebookJsonResult(
+      notebook.cellAt(7),
+      RELEASED_JUPYTER_SESSION_COUNT_RESULT,
+      "replacement kernel runtime sessions after terminal cleanup"
+    );
+    assert.equal(
+      replacementRuntimeSessions.count,
+      0,
+      "Terminal cleanup must leave no Open Wrangler session in the replacement kernel."
     );
     assert.equal(testing.diagnostics().sessionCount, 0);
   } catch (error) {
@@ -2830,10 +2926,15 @@ function writeReleasedJupyterNotebook(
     "duckdb_relation = duckdb_connection.table('private_duck_orders')",
     "def _open_wrangler_forbid_duckdb_conversion(*_args, **_kwargs):",
     "    raise AssertionError('DuckDB notebook acceptance forbids conversion through Pandas, Polars, or Arrow')",
+    "for _duckdb_conversion_name in ('df', 'to_df', 'fetchdf', 'pl', 'arrow'):",
+    "    setattr(duckdb.DuckDBPyRelation, _duckdb_conversion_name, _open_wrangler_forbid_duckdb_conversion)",
     `openwrangler_restart_marker = ${JSON.stringify(setupMarker)}`,
     `print(${JSON.stringify(RELEASED_JUPYTER_SETUP_RESULT)} + json.dumps({` +
       "'executable': sys.executable, 'pid': os.getpid(), " +
       "'runtime': importlib.util.find_spec('openwrangler_runtime') is not None, " +
+      "'duckdbConversionGuards': all(" +
+      "getattr(duckdb.DuckDBPyRelation, name) is _open_wrangler_forbid_duckdb_conversion " +
+      "for name in ('df', 'to_df', 'fetchdf', 'pl', 'arrow')), " +
       "'remoteRunId': os.environ.get('OPEN_WRANGLER_REMOTE_RUN_ID'), " +
       "'hostname': socket.gethostname(), " +
       `'hostExtensionVisible': os.path.exists(${JSON.stringify(hostExtensionPath)}), ` +
@@ -2904,11 +3005,7 @@ function writeReleasedJupyterNotebook(
           execution_count: null,
           metadata: {},
           outputs: [],
-          source: [
-            "for _duckdb_conversion_name in ('df', 'to_df', 'fetchdf', 'pl', 'arrow'):\n",
-            "    setattr(duckdb.DuckDBPyRelation, _duckdb_conversion_name, _open_wrangler_forbid_duckdb_conversion)\n",
-            "duckdb_relation\n"
-          ]
+          source: ["duckdb_relation\n"]
         },
         {
           cell_type: "code",
@@ -2919,7 +3016,25 @@ function writeReleasedJupyterNotebook(
             "import json\n",
             `print(${JSON.stringify(RELEASED_JUPYTER_DUCKDB_ALIVE_RESULT)} + json.dumps({` +
               "'count': duckdb_relation.aggregate('count(*) AS count').fetchone()[0], " +
-              "'first': duckdb_relation.order('order_id').limit(1).fetchone()[0]" +
+              "'connectionCount': duckdb_connection.execute(" +
+              "'SELECT count(*) FROM private_duck_orders').fetchone()[0], " +
+              "'first': duckdb_relation.order('order_id').limit(1).fetchone()[0], " +
+              "'conversionGuards': all(" +
+              "getattr(duckdb.DuckDBPyRelation, name) is _open_wrangler_forbid_duckdb_conversion " +
+              "for name in ('df', 'to_df', 'fetchdf', 'pl', 'arrow'))" +
+              "}, sort_keys=True))\n"
+          ]
+        },
+        {
+          cell_type: "code",
+          execution_count: null,
+          metadata: {},
+          outputs: [],
+          source: [
+            "import json\n",
+            "import openwrangler_runtime.kernel_agent as __ow_kernel_agent\n",
+            `print(${JSON.stringify(RELEASED_JUPYTER_SESSION_COUNT_RESULT)} + json.dumps({` +
+              "'count': len(__ow_kernel_agent._manager.sessions)" +
               "}, sort_keys=True))\n"
           ]
         }
@@ -4801,6 +4916,7 @@ async function exerciseReleasedJupyterRestartReplay(
   sessionId: string,
   applied: Extract<OpenWranglerResponse, { kind: "planUpdated" }>,
   pandas: { sessionId: string; revision: number; filterModel: FilterModel },
+  duckdb: ReleasedDuckDbRecoverySession,
   priorPid: number,
   setupMarker: string,
   phase: ReleasedJupyterPhase,
@@ -4830,6 +4946,16 @@ async function exerciseReleasedJupyterRestartReplay(
   await executeReleasedNotebookCell(notebook, 0, setupMarker, `${phase}:restart-setup-cell`);
   const restoredSetup = releasedNotebookSetupResult(notebook.cellAt(0));
   assert.equal(restoredSetup.setup, setupMarker);
+  assert.equal(
+    restoredSetup.pid,
+    replacement.pid,
+    "The recreated DuckDB relation must belong to the exact observed replacement kernel."
+  );
+  assert.equal(
+    restoredSetup.duckdbConversionGuards,
+    true,
+    "The replacement kernel must arm DuckDB conversion traps before session recovery."
+  );
   if (target.remote) {
     assert.equal(restoredSetup.remoteRunId, target.remote.runId);
     assert.equal(restoredSetup.hostname, target.remote.hostname);
@@ -4837,7 +4963,7 @@ async function exerciseReleasedJupyterRestartReplay(
   }
 
   recordAcceptanceProgress(`${phase}:restart-replay`);
-  const [polarsReplayed, pandasReplayed] = await Promise.all([
+  const [polarsReplayed, pandasReplayed, duckdbReplayed] = await Promise.all([
     testing.request({
       kind: "getPage",
       ...GRID_COLUMN_WINDOW,
@@ -4857,6 +4983,17 @@ async function exerciseReleasedJupyterRestartReplay(
       offset: 0,
       limit: 10,
       filterModel: pandas.filterModel
+    }),
+    testing.request({
+      kind: "getPage",
+      columnOffset: 0,
+      columnLimit: 4,
+      viewRequestId: "released-jupyter-duckdb-restart-replay",
+      sessionId: duckdb.sessionId,
+      revision: duckdb.revision,
+      offset: 0,
+      limit: 10,
+      filterModel: duckdb.filterModel
     })
   ]);
   assert.equal(polarsReplayed.kind, "page", "The released-Jupyter Polars plan must replay after kernel replacement.");
@@ -4884,6 +5021,73 @@ async function exerciseReleasedJupyterRestartReplay(
   if (pandasReplayed.kind !== "page") throw new Error("Released-Jupyter Pandas restart replay did not return a page.");
   assert.deepEqual(gridColumnDisplays(pandasReplayed.page, pandasReplayed.metadata.schema[0]?.id ?? ""), ["1", "2"]);
   assert.equal(pandasReplayed.metadata.backend, "pandas");
+  assert.equal(
+    duckdbReplayed.kind,
+    "page",
+    "The concurrent native DuckDB relation must recover after kernel replacement."
+  );
+  if (duckdbReplayed.kind !== "page") {
+    throw new Error("Released-Jupyter DuckDB restart replay did not return a page.");
+  }
+  assert.equal(
+    duckdbReplayed.metadata.sessionId,
+    duckdb.sessionId,
+    "DuckDB recovery must preserve the public Open Wrangler session identity."
+  );
+  assert.equal(duckdbReplayed.metadata.backend, "duckdb");
+  assert.equal(duckdbReplayed.metadata.mode, "viewing");
+  assert.deepEqual(duckdbReplayed.metadata.capabilities, {
+    editable: false,
+    lazy: false,
+    cancel: false,
+    exportCsv: false,
+    exportParquet: false,
+    notebookInsert: false
+  });
+  assert.deepEqual(duckdbReplayed.metadata.filterModel, duckdb.filterModel);
+  assert.deepEqual(duckdbReplayed.metadata.filteredShape, { rows: 25_000, columns: 4 });
+  assert.deepEqual(
+    duckdbReplayed.metadata.schema,
+    duckdb.schema,
+    "DuckDB recovery must preserve the exact ordered public schema."
+  );
+  assert.equal(duckdbReplayed.page.totalRows, 25_000);
+  assert.equal(duckdbReplayed.page.rows[0]?.values[0]?.display, "3499997");
+  assert.equal(duckdbReplayed.page.rows[0]?.values[1]?.display, "DACH");
+
+  const duckdbRevenue = columnReference(duckdbReplayed.metadata, "revenue");
+  const duckdbSummary = await testing.request({
+    kind: "getSummary",
+    sessionId: duckdb.sessionId,
+    revision: duckdbReplayed.revision,
+    viewRequestId: "released-jupyter-duckdb-restart-summary",
+    filterModel: duckdb.filterModel,
+    columnIds: [duckdbRevenue.id]
+  });
+  assert.equal(duckdbSummary.kind, "summary");
+  if (duckdbSummary.kind !== "summary") {
+    throw new Error("Released-Jupyter DuckDB restart summary did not resolve.");
+  }
+  assert.equal(duckdbSummary.summaries[0]?.totalCount, 25_000);
+  assert.equal(duckdbSummary.summaries[0]?.numeric?.min, 100.5);
+  assert.equal(duckdbSummary.summaries[0]?.numeric?.max, 5_099.94);
+  const recoveredDuckdbDiagnostic = testing
+    .diagnostics()
+    .sessions.find((session) => session.publicId === duckdb.sessionId);
+  assert.ok(recoveredDuckdbDiagnostic, "The recovered native DuckDB session must remain coordinated.");
+  assert.notEqual(
+    recoveredDuckdbDiagnostic.runtimeId,
+    duckdb.runtimeId,
+    "Kernel recovery must replace DuckDB's private runtime identity."
+  );
+  testing.setActiveSession(duckdb.sessionId);
+  const activeDuckdb = testing.activeSession();
+  assert.ok(activeDuckdb, "The recovered DuckDB session must remain selectable.");
+  assert.equal(activeDuckdb.sessionId, duckdb.sessionId);
+  assert.deepEqual(activeDuckdb.viewState, {
+    ...duckdb.viewState,
+    filterModel: duckdb.filterModel
+  });
   if (target.remote) {
     await assertReleasedRemoteRuntimeTransfer(notebook, target, hostExtensionPath, phase);
   }
@@ -12920,10 +13124,32 @@ async function exerciseLiveImportReconfiguration(
     10_000,
     "the reconfigured CSV panel to close cleanly"
   );
+  // Runtime cleanup can finish before VS Code removes the closing session tab
+  // and editor input. Opening the same URI as a custom editor during that gap
+  // can race editor resolution, especially on macOS. Require the public tab
+  // model to finish closing before the reload.
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  await waitFor(
+    () => vscode.window.tabGroups.all.every((group) => group.tabs.length === 0),
+    10_000,
+    "the reconfigured CSV session tab to close before same-source custom-editor reload"
+  );
   const conflictingDefaultBackend = changed.metadata.backend === "pandas" ? "polars" : "pandas";
   await config.update("defaultBackend", conflictingDefaultBackend, vscode.ConfigurationTarget.Global);
   try {
     await vscode.commands.executeCommand("vscode.openWith", configured, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitFor(
+      () => {
+        const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+        return (
+          input instanceof vscode.TabInputCustom &&
+          input.viewType === "openWrangler.viewer" &&
+          input.uri.toString() === configured.toString()
+        );
+      },
+      10_000,
+      "the fresh Open Wrangler custom-editor input for the confirmed source"
+    );
     await waitFor(
       () => {
         const active = testing.activeSession();
@@ -12940,7 +13166,26 @@ async function exerciseLiveImportReconfiguration(
         );
       },
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
-      "the custom editor to reload the last confirmed import options, backend, and view"
+      "the custom editor to reload the last confirmed import options, backend, and view",
+      () => {
+        const active = testing.activeSession();
+        return JSON.stringify({
+          active: Boolean(active),
+          sourceMatches: active?.metadata.source.path === configured.fsPath,
+          backendMatches: active?.metadata.backend === changed.metadata.backend,
+          importOptionsMatch:
+            active?.metadata.source.importOptions?.delimiter === ";" &&
+            active.metadata.source.importOptions.quoteChar === "'" &&
+            active.metadata.source.importOptions.hasHeader === true,
+          shapeMatches: active?.metadata.shape.rows === 80 && active.metadata.shape.columns === 8,
+          selectedColumnMatches: active?.viewState.selectedColumnId === retainedColumn.id,
+          widthsMatch:
+            active !== undefined &&
+            changed.metadata.schema.every((column) => active.viewState.columnWidths[column.id] === 640),
+          firstVisibleRowMatches: active?.viewState.viewport.firstVisibleRow === 1,
+          scrollLeftMatches: active?.viewState.viewport.scrollLeft === 23
+        });
+      }
     );
     assert.deepEqual(
       readFileSync(configured.fsPath),

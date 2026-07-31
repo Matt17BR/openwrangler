@@ -4,6 +4,24 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.5] - 2026-07-31
+
+### Changed
+
+- Made native DuckDB notebook restart/recovery part of the real packaged-Jupyter release gate. After the
+  notebook recreates a filtered, ordered multi-sort relation in the replacement kernel, Open Wrangler rebinds
+  it to the same public session, schema, and viewing state over a new private runtime; conversion traps remain
+  armed, terminal cleanup leaves no runtime session behind, and the user's replacement relation and connection
+  remain usable.
+
+### Fixed
+
+- Replayed notebook sessions with the runtime-confirmed effective mode. A DuckDB relation opened while the
+  notebook default requests Editing is correctly normalized to Viewing once, then recovers in Viewing after a
+  kernel restart instead of rejecting its valid replacement session.
+- Made same-source reload acceptance wait for VS Code to retire the prior session tab before opening the custom
+  editor. Runtime cleanup can no longer race the public editor-input lifecycle on slower macOS hosts.
+
 ## [1.1.4] - 2026-07-30
 
 ### Added
