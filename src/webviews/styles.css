@@ -201,28 +201,31 @@ textarea {
   border: 1px solid var(--vscode-panel-border);
 }
 
-.cleaningBar {
+.toolbarPlan {
   align-items: center;
-  background: var(--vscode-editorGroupHeader-tabsBackground);
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-left: 1px solid var(--vscode-panel-border);
   display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  min-height: 34px;
-  padding: 5px 10px;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 8px;
 }
 
-.cleaningSummary,
+.toolbarPlanStatus {
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  font-size: 12px;
+  gap: 5px;
+  white-space: nowrap;
+}
+
 .cleaningActions,
 .diffStats {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
-}
-
-.cleaningSummary {
-  min-width: 0;
 }
 
 .draftReview {
@@ -2022,10 +2025,17 @@ dd {
     right: auto;
   }
 
-  .cleaningBar,
   .draftReview {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .toolbarPlan {
+    border-left: 0;
+    border-top: 1px solid var(--vscode-panel-border);
+    flex-basis: 100%;
+    padding-left: 0;
+    padding-top: 6px;
   }
 
   .draftReview {
@@ -2117,9 +2127,36 @@ dd {
   th,
   td,
   .toolbar,
+  .toolbarPlan,
   .sidebar,
   .gridStatusBar {
     border-color: CanvasText;
+  }
+
+  .toolbarPlan {
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .toolbarPlanStatus {
+    color: CanvasText;
+  }
+
+  .toolbarPlan button {
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+    color: ButtonText;
+  }
+
+  .toolbarPlan button:disabled {
+    border-color: GrayText;
+    color: GrayText;
+    opacity: 1;
+  }
+
+  .toolbarPlan button:focus-visible {
+    outline-color: Highlight;
   }
 
   .gridNavigationButton,

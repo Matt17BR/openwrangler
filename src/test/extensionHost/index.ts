@@ -6052,9 +6052,9 @@ async function exercisePackagedFirstUseInteractionJourney(
     return current;
   };
   assert.equal(
-    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    await app.getByRole("group", { name: "Cleaning plan" }).count(),
     0,
-    "A new dataframe must not waste vertical space on an empty cleaning-plan bar."
+    "A new dataframe must not waste toolbar space on an empty cleaning-plan group."
   );
   await app.getByRole("button", { name: "Export", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
 
@@ -6306,9 +6306,9 @@ async function exercisePackagedFirstUseInteractionJourney(
   await draftReview.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal(await draftReview.count(), 1, "A pending operation must expose exactly one compact draft review.");
   assert.equal(
-    await app.getByRole("region", { name: "Cleaning plan" }).count(),
+    await app.getByRole("group", { name: "Cleaning plan" }).count(),
     0,
-    "A pending operation must not duplicate its controls in the applied cleaning-plan bar."
+    "A pending operation must not duplicate its controls in the applied cleaning-plan group."
   );
   await draftReview.getByText("Uppercase", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   const draftDiff = draftReview.locator('[aria-label="Data diff summary"]');
@@ -6427,7 +6427,7 @@ async function exercisePackagedFirstUseInteractionJourney(
     30_000,
     "applying the previewed uppercase step"
   );
-  const appliedPlan = app.getByRole("region", { name: "Cleaning plan" });
+  const appliedPlan = app.getByRole("group", { name: "Cleaning plan" });
   await appliedPlan.getByText("1 applied step").waitFor({ state: "visible", timeout: 10_000 });
   assert.match(testing.activeSession()?.code ?? "", /import polars as pl/u);
   assert.match(testing.activeSession()?.code ?? "", /market_upper/u);
@@ -6566,7 +6566,7 @@ async function exercisePackagedReopenAndUndoJourney(
   const reopenedApp = await exactSessionApp(reopenedTarget.frame, reopened.sessionId);
   assert.ok(reopenedApp, "The recovered session must expose its exact Open Wrangler application.");
   await reopenedApp
-    .getByRole("region", { name: "Cleaning plan" })
+    .getByRole("group", { name: "Cleaning plan" })
     .getByText("1 applied step")
     .waitFor({ state: "visible", timeout: 10_000 });
 
@@ -6585,12 +6585,12 @@ async function exercisePackagedReopenAndUndoJourney(
     30_000,
     "Undo to restore the original schema"
   );
-  const reopenedCleaningPlan = reopenedApp.getByRole("region", { name: "Cleaning plan" });
+  const reopenedCleaningPlan = reopenedApp.getByRole("group", { name: "Cleaning plan" });
   await reopenedCleaningPlan.waitFor({ state: "hidden", timeout: 10_000 });
   assert.equal(
     await reopenedCleaningPlan.count(),
     0,
-    "Undoing the only applied step must remove the empty cleaning-plan bar."
+    "Undoing the only applied step must remove the empty cleaning-plan group."
   );
   assert.deepEqual(await vscode.workspace.fs.readFile(fixture), sourceBytes);
 }
@@ -8791,7 +8791,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             const bounds = cell.getBoundingClientRect();
             return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
           });
-          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .cleaningBar, .gridStatusBar, .draftReview"));
+          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .toolbarPlan, .gridStatusBar, .draftReview"));
           const clippedControls = controls
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
@@ -11914,7 +11914,7 @@ async function visiblePersistedPanelSnapshot(
   assert.ok(active.viewState.viewport.scrollLeft > 0, "The restored horizontal viewport must remain nonzero.");
 
   assert.equal((await app.locator(".backendBadge").first().innerText()).trim(), "POLARS");
-  const cleaningPlan = app.getByRole("region", { name: "Cleaning plan" });
+  const cleaningPlan = app.getByRole("group", { name: "Cleaning plan" });
   await cleaningPlan.waitFor({ state: "visible", timeout: 10_000 });
   const appliedStepText = (await cleaningPlan.innerText()).replace(/\s+/gu, " ").trim();
   assert.match(appliedStepText, /\b1 applied step\b/u);

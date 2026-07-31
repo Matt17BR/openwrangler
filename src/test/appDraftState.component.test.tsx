@@ -115,7 +115,7 @@ describe("App draft state boundaries", () => {
       summaries: []
     });
 
-    expect(screen.queryByRole("region", { name: "Cleaning plan" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Cleaning plan" })).toBeNull();
     const exportButton = await screen.findByRole("button", { name: "Export" });
     expect(exportButton).toBeEnabled();
     fireEvent.click(exportButton);
@@ -126,7 +126,9 @@ describe("App draft state boundaries", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
 
-    const plan = await screen.findByRole("region", { name: "Cleaning plan" });
+    const plan = await screen.findByRole("group", { name: "Cleaning plan" });
+    expect(plan.closest(".toolbar")).not.toBeNull();
+    expect(document.querySelector(".cleaningBar")).toBeNull();
     expect(within(plan).getByText("1 applied step")).toBeVisible();
     expect(within(plan).getByRole("button", { name: "Edit latest" })).toBeEnabled();
     expect(within(plan).getByRole("button", { name: "Undo" })).toBeEnabled();
@@ -536,7 +538,7 @@ describe("App draft state boundaries", () => {
     expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
     const review = screen.getByRole("region", { name: "Draft review" });
     expect(within(review).getByText("Convert type")).toBeVisible();
-    expect(screen.queryByRole("region", { name: "Cleaning plan" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Cleaning plan" })).toBeNull();
     expect(within(review).getByRole("button", { name: "Apply step" })).toBeEnabled();
     expect(within(review).getByRole("button", { name: "Discard" })).toBeEnabled();
     expect(screen.getAllByRole("button", { name: "Apply step" })).toHaveLength(1);

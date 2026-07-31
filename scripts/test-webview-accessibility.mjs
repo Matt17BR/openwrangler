@@ -101,6 +101,7 @@ try {
   await verifyCodePreviewOrigin(browser);
   await verifyCompactDraftReview(browser);
   await verifyCleaningKeyboardShortcuts(browser);
+  await verifyAppliedPlanToolbarLayout(browser);
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
   await verifyInsightsDrawerWorkflow(browser);
@@ -895,16 +896,18 @@ async function verifyGridStatusBar(browser) {
   console.log("Bottom grid status, narrow/200%-zoom range visibility, Codicon navigation, and forced colors verified.");
 }
 
-async function scanPageAccessibility(page, harness) {
+async function scanPageAccessibility(page, harness, selector) {
   const result = await withTimeout(
-    page.evaluate(async () => {
-      return globalThis.axe.run(document, {
+    page.evaluate(async (contextSelector) => {
+      const context = contextSelector === undefined ? document : document.querySelector(contextSelector);
+      if (!context) throw new Error(`Missing axe context ${contextSelector}.`);
+      return globalThis.axe.run(context, {
         runOnly: {
           type: "tag",
           values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]
         }
       });
-    }),
+    }, selector),
     30_000,
     `${harness} axe scan`
   );
@@ -1030,6 +1033,145 @@ async function verifyCleaningKeyboardShortcuts(browser) {
   }
   await page.close();
   console.log("Cleaning-plan keyboard shortcuts verified.");
+}
+
+async function verifyAppliedPlanToolbarLayout(browser) {
+  const cases = [
+    { harness: "draft-preview.html", width: 1280, label: "wide" },
+    { harness: "draft-preview.html", width: 620, label: "narrow" },
+    { harness: "draft-preview.html", width: 320, label: "compact" },
+    { harness: "by-example-preview-dark-zoom-200.html", width: 1280, label: "200% zoom" },
+    { harness: "draft-preview.html", width: 620, label: "forced colors", forcedColors: true }
+  ];
+
+  for (const { harness, width, label, forcedColors = false } of cases) {
+    console.log(`Applied-plan toolbar checking: ${harness} (${label}).`);
+    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    if (forcedColors) await page.emulateMedia({ forcedColors: "active" });
+    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+    await page.getByRole("button", { name: "Apply step" }).waitFor();
+    await showAppliedStep(page);
+
+    const plan = page.getByRole("group", { name: "Cleaning plan" });
+    await plan.waitFor();
+    if ((await page.locator(".cleaningBar").count()) !== 0) {
+      throw new Error(`${harness} (${label}) retained the obsolete second cleaning-plan bar.`);
+    }
+    if (!(await plan.evaluate((element) => element.parentElement?.classList.contains("toolbarActions") === true))) {
+      throw new Error(`${harness} (${label}) did not place the named cleaning-plan group in the primary toolbar.`);
+    }
+    await plan.getByText("1 applied step", { exact: true }).waitFor();
+    for (const name of ["Edit latest", "Undo"]) {
+      const actions = plan.getByRole("button", { name, exact: true });
+      if ((await actions.count()) !== 1 || !(await actions.isEnabled())) {
+        throw new Error(`${harness} (${label}) did not expose one enabled ${name} action.`);
+      }
+    }
+
+    const layout = await page.evaluate(() => {
+      const toolbar = document.querySelector(".toolbar");
+      const toolbarActions = document.querySelector(".toolbarActions");
+      const plan = document.querySelector(".toolbarPlan");
+      const grid = document.querySelector('[role="grid"]');
+      if (!toolbar || !toolbarActions || !plan || !grid) return undefined;
+      const backendBadge = toolbar.querySelector(".backendBadge");
+      const columnSearch = toolbar.querySelector('input[placeholder="Search columns"]');
+      const viewportWidth = document.documentElement.clientWidth;
+      const toolbarBounds = toolbar.getBoundingClientRect();
+      const planBounds = plan.getBoundingClientRect();
+      const childBounds = [...plan.children].map((child) => child.getBoundingClientRect());
+      const actionLabels = [...toolbarActions.querySelectorAll("button, input")].map(
+        (element) => element.getAttribute("aria-label") ?? element.textContent?.trim() ?? ""
+      );
+      return {
+        documentOverflow: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - viewportWidth,
+        toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
+        actionOverflow: toolbarActions.scrollWidth - toolbarActions.clientWidth,
+        planOverflow: plan.scrollWidth - plan.clientWidth,
+        planContained:
+          planBounds.left >= Math.max(0, toolbarBounds.left) - 1 &&
+          planBounds.right <= Math.min(viewportWidth, toolbarBounds.right) + 1 &&
+          planBounds.top >= toolbarBounds.top - 1 &&
+          planBounds.bottom <= toolbarBounds.bottom + 1,
+        childrenContained: childBounds.every(
+          (bounds) =>
+            bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.left >= planBounds.left - 1 &&
+            bounds.right <= planBounds.right + 1 &&
+            bounds.top >= planBounds.top - 1 &&
+            bounds.bottom <= planBounds.bottom + 1
+        ),
+        gridVisible: grid.getBoundingClientRect().height > 0,
+        actionLabels,
+        forcedColorAdjust: {
+          plan: getComputedStyle(plan).forcedColorAdjust,
+          toolbar: getComputedStyle(toolbar).forcedColorAdjust,
+          backendBadge: backendBadge ? getComputedStyle(backendBadge).forcedColorAdjust : undefined,
+          columnSearch: columnSearch ? getComputedStyle(columnSearch).forcedColorAdjust : undefined
+        }
+      };
+    });
+    if (
+      !layout ||
+      layout.documentOverflow > 1 ||
+      layout.toolbarOverflow > 1 ||
+      layout.actionOverflow > 1 ||
+      layout.planOverflow > 1 ||
+      !layout.planContained ||
+      !layout.childrenContained ||
+      !layout.gridVisible
+    ) {
+      throw new Error(`${harness} (${label}) overflowed the applied-plan toolbar: ${JSON.stringify(layout)}.`);
+    }
+    if (
+      forcedColors &&
+      (layout.forcedColorAdjust.plan !== "none" ||
+        layout.forcedColorAdjust.toolbar === "none" ||
+        layout.forcedColorAdjust.backendBadge === "none" ||
+        layout.forcedColorAdjust.columnSearch === "none")
+    ) {
+      throw new Error(
+        `${harness} (${label}) leaked the cleaning-plan forced-color opt-out to toolbar siblings: ` +
+          `${JSON.stringify(layout.forcedColorAdjust)}.`
+      );
+    }
+    const addIndex = layout.actionLabels.indexOf("Add step");
+    const editIndex = layout.actionLabels.indexOf("Edit latest");
+    const undoIndex = layout.actionLabels.indexOf("Undo");
+    const exportIndex = layout.actionLabels.indexOf("Export");
+    if (!(addIndex >= 0 && addIndex < editIndex && editIndex < undoIndex && undoIndex < exportIndex)) {
+      throw new Error(
+        `${harness} (${label}) exposed an unexpected cleaning-plan tab order: ${layout.actionLabels.join(", ")}.`
+      );
+    }
+
+    const addStep = page.getByRole("button", { name: "Add step", exact: true });
+    const editLatest = plan.getByRole("button", { name: "Edit latest", exact: true });
+    const undo = plan.getByRole("button", { name: "Undo", exact: true });
+    const exportData = page.getByRole("button", { name: "Export", exact: true });
+    await addStep.focus();
+    for (const [name, target] of [
+      ["Edit latest", editLatest],
+      ["Undo", undo],
+      ["Export", exportData]
+    ]) {
+      await page.keyboard.press("Tab");
+      if (!(await target.evaluate(isActiveTab))) {
+        throw new Error(`${harness} (${label}) did not move Tab focus to ${name}.`);
+      }
+    }
+
+    await page.addScriptTag({ path: axePath });
+    await scanPageAccessibility(
+      page,
+      `${harness} (${label} applied-plan toolbar)`,
+      forcedColors ? ".toolbarPlan" : undefined
+    );
+    await page.close();
+  }
+
+  console.log("Applied cleaning-plan command row, responsive layout, forced colors, tab order, and axe verified.");
 }
 
 async function verifyStepInspectionWorkflow(browser) {

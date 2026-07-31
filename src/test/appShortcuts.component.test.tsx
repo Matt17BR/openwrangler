@@ -146,6 +146,119 @@ describe("App cleaning-plan keyboard shortcuts", () => {
       requestFrame.mockRestore();
     }
   });
+
+  it("restores focused Undo to Add step only after the last applied step is removed", async () => {
+    render(<App />);
+    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
+    dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    const undo = await screen.findByRole("button", { name: "Undo" });
+    undo.focus();
+
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      fireEvent.click(undo);
+      expect(runtimeRequestKinds()).toContain("undoStep");
+      dispatch({
+        kind: "planUpdated",
+        revision: 2,
+        metadata: { ...appliedMetadata, revision: 2, steps: [] },
+        page,
+        code: "def clean_data(df):\n"
+      });
+
+      const addStep = await screen.findByRole("button", { name: "Add step" });
+      await waitFor(() => expect(addStep).toHaveFocus());
+      expect(screen.queryByRole("group", { name: "Cleaning plan" })).toBeNull();
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("restores focused shortcut Undo to Add step only after the last applied step is removed", async () => {
+    render(<App />);
+    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
+    dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    const undo = await screen.findByRole("button", { name: "Undo" });
+    undo.focus();
+
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      fireEvent.keyDown(undo, { key: "z", ctrlKey: true, altKey: true });
+      expect(runtimeRequestKinds()).toContain("undoStep");
+      dispatch({
+        kind: "planUpdated",
+        revision: 2,
+        metadata: { ...appliedMetadata, revision: 2, steps: [] },
+        page,
+        code: "def clean_data(df):\n"
+      });
+
+      await waitFor(() => expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus());
+    } finally {
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("does not reclaim focus after the last-step undo when the webview no longer owns it", async () => {
+    render(<App />);
+    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
+    dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    const undo = await screen.findByRole("button", { name: "Undo" });
+    undo.focus();
+
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame");
+    try {
+      fireEvent.click(undo);
+      hasFocus.mockReturnValue(false);
+      requestFrame.mockClear();
+      dispatch({
+        kind: "planUpdated",
+        revision: 2,
+        metadata: { ...appliedMetadata, revision: 2, steps: [] },
+        page,
+        code: "def clean_data(df):\n"
+      });
+
+      const addStep = await screen.findByRole("button", { name: "Add step" });
+      expect(addStep).not.toHaveFocus();
+      expect(requestFrame).not.toHaveBeenCalled();
+    } finally {
+      requestFrame.mockRestore();
+      hasFocus.mockRestore();
+    }
+  });
+
+  it("does not reclaim focus after the user leaves Undo for another webview control", async () => {
+    render(<App />);
+    const appliedMetadata: SessionMetadata = { ...metadata, draftStep: undefined, steps: [step] };
+    dispatch({ kind: "sessionOpened", metadata: appliedMetadata, page, summaries: [] });
+    const undo = await screen.findByRole("button", { name: "Undo" });
+    const app = screen.getByRole("main");
+    undo.focus();
+
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const requestFrame = vi.spyOn(window, "requestAnimationFrame");
+    try {
+      fireEvent.click(undo);
+      app.focus();
+      requestFrame.mockClear();
+      dispatch({
+        kind: "planUpdated",
+        revision: 2,
+        metadata: { ...appliedMetadata, revision: 2, steps: [] },
+        page,
+        code: "def clean_data(df):\n"
+      });
+
+      expect(app).toHaveFocus();
+      expect(screen.getByRole("button", { name: "Add step" })).not.toHaveFocus();
+      expect(requestFrame).not.toHaveBeenCalled();
+    } finally {
+      requestFrame.mockRestore();
+      hasFocus.mockRestore();
+    }
+  });
 });
 
 function dispatch(data: unknown): void {

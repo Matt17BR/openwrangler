@@ -136,6 +136,7 @@ export function App() {
   const sidePanelCloseRef = useRef<HTMLButtonElement | null>(null);
   const sidePanelReturnFocus = useRef<HTMLElement | null>(null);
   const operationReturnFocus = useRef<HTMLElement | null>(null);
+  const undoPlanReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsReturnFocus = useRef<HTMLButtonElement | null>(null);
   const importOptionsFocusFrame = useRef<number | undefined>(undefined);
   const importOptionsDispatchFrame = useRef<number | undefined>(undefined);
@@ -1084,6 +1085,7 @@ export function App() {
         }
         const shouldRestoreMutation = foregroundRequest.current === "mutation";
         if (shouldRestoreMutation) {
+          undoPlanReturnFocus.current = null;
           const previous = mutationSnapshot.current;
           foregroundRequest.current = undefined;
           mutationSnapshot.current = undefined;
@@ -1117,6 +1119,7 @@ export function App() {
           }
           const shouldRestoreMutation = foregroundRequest.current === "mutation";
           if (shouldRestoreMutation) {
+            undoPlanReturnFocus.current = null;
             const previous = mutationSnapshot.current;
             foregroundRequest.current = undefined;
             mutationSnapshot.current = undefined;
@@ -1169,6 +1172,7 @@ export function App() {
         if (current?.sessionId === response.metadata.sessionId && response.metadata.revision < current.revision) {
           return;
         }
+        undoPlanReturnFocus.current = null;
         pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
@@ -1252,6 +1256,8 @@ export function App() {
       }
 
       if (response.kind === "stepPreview" || response.kind === "planUpdated") {
+        const undoReturnTarget = undoPlanReturnFocus.current;
+        undoPlanReturnFocus.current = null;
         pendingRendererSynchronizationRef.current = undefined;
         setPendingRendererSynchronization(undefined);
         acknowledgedRendererSynchronizationId.current = undefined;
@@ -1266,6 +1272,15 @@ export function App() {
         storeFailedPageRequest(undefined);
         resetViewProfiling();
         const nextMetadata = withoutDatasetStats(response.metadata);
+        const undoFocusOriginIsActive =
+          undoReturnTarget !== null &&
+          (document.activeElement === undoReturnTarget || document.activeElement === document.body);
+        const shouldRestoreUndoFocus =
+          response.kind === "planUpdated" &&
+          nextMetadata.steps.length === 0 &&
+          nextMetadata.draftStep === undefined &&
+          document.hasFocus() &&
+          undoFocusOriginIsActive;
         pruneSummaryOwners(nextMetadata);
         confirmView(nextMetadata, nextViewRequestId());
         storeMetadata(nextMetadata);
@@ -1306,6 +1321,11 @@ export function App() {
         setDraftWarnings(response.kind === "stepPreview" ? (response.warnings ?? []) : []);
         if (response.kind === "stepPreview") setOperationOpen(false);
         restartProfilingForConfirmedView();
+        if (shouldRestoreUndoFocus) {
+          scheduleWebviewFocusRestoration(() => {
+            document.querySelector<HTMLButtonElement>("[data-cleaning-plan-focus-fallback]:not(:disabled)")?.focus();
+          });
+        }
         return;
       }
 
@@ -1780,8 +1800,17 @@ export function App() {
     });
   };
 
-  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep") => {
+  const sendPlanAction = (action: "applyDraft" | "discardDraft" | "undoStep", undoReturnTarget?: HTMLButtonElement) => {
     if (!beginMutation()) return;
+    undoPlanReturnFocus.current =
+      action === "undoStep" &&
+      metadataRef.current?.steps.length === 1 &&
+      metadataRef.current.draftStep === undefined &&
+      undoReturnTarget !== undefined &&
+      document.hasFocus() &&
+      document.activeElement === undoReturnTarget
+        ? undoReturnTarget
+        : null;
     const columnWindow = desiredColumnWindow.current;
     vscode.postMessage({
       kind: "runtimeRequest",
@@ -1899,7 +1928,12 @@ export function App() {
       handled = true;
     } else if (!editableTarget && modifier && event.altKey && !event.shiftKey && key === "z") {
       if (!projectionLoading && !metadata?.draftStep && metadata?.steps.length) {
-        sendPlanAction("undoStep");
+        const activeElement = document.activeElement;
+        const undoReturnTarget =
+          activeElement instanceof HTMLButtonElement && activeElement.hasAttribute("data-cleaning-plan-undo")
+            ? activeElement
+            : undefined;
+        sendPlanAction("undoStep", undoReturnTarget);
         handled = true;
       }
     } else if (!editableTarget && modifier && event.shiftKey && !event.altKey && key === "e") {
@@ -2017,6 +2051,7 @@ export function App() {
                 <button
                   type="button"
                   data-operation-focus-fallback
+                  data-cleaning-plan-focus-fallback
                   disabled={loading || projectionLoading || importOptionsPending || !canStartOperation(metadata)}
                   aria-describedby={projectionStatusId}
                   title={
@@ -2027,6 +2062,39 @@ export function App() {
                 >
                   <span className="codicon codicon-add" aria-hidden="true" /> Add step
                 </button>
+              )}
+              {metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
+                <div className="toolbarPlan" role="group" aria-label="Cleaning plan">
+                  <span className="toolbarPlanStatus">
+                    <span className="codicon codicon-layers" aria-hidden="true" />
+                    <span>
+                      {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    disabled={loading || projectionLoading || importOptionsPending}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
+                    title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
+                    onClick={editLatestStep}
+                  >
+                    Edit latest
+                  </button>
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    data-cleaning-plan-undo
+                    disabled={loading || projectionLoading || importOptionsPending}
+                    aria-describedby={projectionStatusId}
+                    aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
+                    title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
+                    onClick={(event) => sendPlanAction("undoStep", event.currentTarget)}
+                  >
+                    <span className="codicon codicon-discard" aria-hidden="true" /> Undo
+                  </button>
+                </div>
               )}
               {(metadata.capabilities.exportCsv || metadata.capabilities.exportParquet) && (
                 <button
@@ -2139,41 +2207,6 @@ export function App() {
                 onClick={() => sendPlanAction("applyDraft")}
               >
                 Apply step
-              </button>
-            </div>
-          </section>
-        )}
-
-        {metadata && metadata.mode === "editing" && metadata.steps.length > 0 && !metadata.draftStep && (
-          <section className="cleaningBar" aria-label="Cleaning plan">
-            <div className="cleaningSummary">
-              <span className="codicon codicon-layers" aria-hidden="true" />
-              <strong>
-                {metadata.steps.length} applied {metadata.steps.length === 1 ? "step" : "steps"}
-              </strong>
-            </div>
-            <div className="cleaningActions">
-              <button
-                type="button"
-                className="secondaryButton"
-                disabled={loading || projectionLoading || importOptionsPending}
-                aria-describedby={projectionStatusId}
-                aria-keyshortcuts="Control+Shift+E Meta+Shift+E"
-                title={projectionActionTitle ?? "Edit latest step (Ctrl/Cmd+Shift+E)"}
-                onClick={editLatestStep}
-              >
-                Edit latest
-              </button>
-              <button
-                type="button"
-                className="secondaryButton"
-                disabled={loading || projectionLoading || importOptionsPending}
-                aria-describedby={projectionStatusId}
-                aria-keyshortcuts="Control+Alt+Z Meta+Alt+Z"
-                title={projectionActionTitle ?? "Undo latest step (Ctrl/Cmd+Alt+Z)"}
-                onClick={() => sendPlanAction("undoStep")}
-              >
-                <span className="codicon codicon-discard" aria-hidden="true" /> Undo
               </button>
             </div>
           </section>

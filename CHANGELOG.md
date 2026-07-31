@@ -9,6 +9,14 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Made every numeric histogram bin use an equal-width, full-chart-height pointer and keyboard target while keeping
   its visible bar proportional to the count. Hovering or focusing even a two-pixel bar now highlights it
   immediately and shows the bin range and row count in a theme-aware tooltip.
+- Consolidated applied-plan status, **Edit latest**, and **Undo** into one named cleaning-plan group in the primary
+  toolbar, removing the permanent second cleaning bar. The group wraps as one responsive command row at narrow
+  widths, 200% zoom, and forced colors while preserving visible labels, shortcuts, disabled explanations, and tab
+  order.
+- Restored keyboard focus to **Add step** only when an activated **Undo** button removes the final applied step,
+  the webview still owns focus, and that exact button remains the focus origin; host actions, shortcuts, deliberate
+  focus moves, background tabs, and failed or cancelled mutations do not reclaim focus. The advertised Undo
+  shortcut follows the same rule when invoked from that exact button, but never when invoked elsewhere.
 
 ### Fixed
 

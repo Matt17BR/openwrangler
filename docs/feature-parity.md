@@ -803,6 +803,27 @@ Complete-schema and native live-notebook UX slice, 2026-07-30:
 - The independent PySpark phase currently fails after its cleanup path and is not counted as evidence for this
   slice. Its resolution remains required before the branch can become a release candidate.
 
+Primary cleaning-plan command row, 2026-07-31:
+
+- Applied-plan status, **Edit latest**, and **Undo** now form one accessible **Cleaning plan** group inside the
+  primary toolbar. The former permanent second cleaning bar is absent, while the exact visible labels, documented
+  shortcuts, loading/projection disabled explanations, and draft ownership rules remain unchanged.
+- The group stays contiguous in DOM and keyboard order between **Add step** and **Export**, and reflows as one row
+  at narrow widths instead of displacing the grid. Production-bundle acceptance measures 1280, 620, and 320 CSS
+  pixels, effective 200% zoom, forced colors, containment, tab order, grid visibility, and axe results.
+- When a keyboard-focused **Undo** removes the final applied step, focus returns to **Add step** only if the
+  webview owned focus both when the mutation began and when the correlated response arrived, and that exact Undo
+  button remains the focus origin. The advertised shortcut follows the same restoration rule only when invoked
+  from that button. Failed, cancelled, host-originated, shortcut-originated-elsewhere, deliberately refocused, and
+  background-tab mutations do not steal focus.
+- Focused React coverage exercises the exact restoration and no-steal paths. Existing extension-host acceptance
+  locates the same named group during apply, reopen, and undo without changing runtime, protocol, persistence, or
+  cleaning-plan semantics.
+
+This completes the bounded command-row implementation in
+[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The issue remains open until the final packaged
+VS Code and Cursor visual evidence is recorded; this entry does not make a parity-complete or release claim.
+
 ## Explicitly deferred from 1.0
 
 Copilot operations, DuckDB Excel and `.duckdb` database-browsing surfaces, non-dataframe tensor/list renderers, telemetry, and vscode.dev runtime support are out of scope. They must not block the Pandas/Polars 1.0 matrix and must not be represented as supported. DuckDB notebook relations remain intentionally limited to native viewing plus their portable inline preview; cleaning, generated-code insertion, and data export are unavailable. PySpark's tracked post-parity expansion in [issue #36](https://github.com/Matt17BR/openwrangler/issues/36) is limited to the experimental read-only live-notebook matrix above. Editing, exports, saved output, cancellation, external Spark Connect execution, and large-partition performance claims remain unavailable until their distributed gates are green. Packaged VS Code/Cursor and local kernel-recovery evidence is recorded above; broader OS, external-cluster, recovery, cancellation, and performance evidence remains required before broadening that claim. Editor-tab and editor-title file launching are part of the current 1.0 surface and have the acceptance evidence recorded above; they are not a PySpark prerequisite or a separate engine expansion. Open VSX and Visual Studio Marketplace publication remain the final release priority after parity, hardening, exact-artifact acceptance, checksum, and GitHub prerelease gates, as defined in `docs/releasing.md`.
