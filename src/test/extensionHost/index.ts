@@ -8418,13 +8418,13 @@ async function captureReleasedJupyterDuckDbRelation(
     assert.ok(orderIdBox, "The DuckDB notebook media scene requires the complete order_id header.");
     assert.ok(orderDateBox, "The DuckDB notebook media scene requires the complete order_date header.");
     const dataViewportLeft = rowHeaderBox.x + rowHeaderBox.width;
-    const gridRight = gridBox.x + gridBox.width;
+    const gridContentRight = gridBox.x + measuredGrid.clientWidth;
     assert.ok(
       Math.abs(orderIdBox.x - dataViewportLeft) <= 1,
       "The DuckDB notebook media scene must begin at the complete order_id column boundary."
     );
     assert.ok(
-      Math.abs(orderDateBox.x + orderDateBox.width - gridRight) <= 1,
+      Math.abs(orderDateBox.x + orderDateBox.width - gridContentRight) <= 1,
       "The DuckDB notebook media scene must end at the complete order_date column boundary."
     );
     await assertMediaColumnTitlesUnclipped(
