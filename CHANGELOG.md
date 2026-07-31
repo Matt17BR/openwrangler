@@ -6,6 +6,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Simplified column labels throughout the cleaning-step builder: unique names now appear without redundant
+  positions, while duplicate and unnamed columns retain 1-based positions and stable identities so selections
+  remain unambiguous and accessible.
 - Split pull-request quality/contracts, visual/accessibility, production audits, packaged VS Code, native script,
   native extension-host, and Cursor smoke into independently attributable jobs. The existing protected `validate`
   context is now a fail-closed aggregate, so failed, cancelled, absent, or unexpectedly skipped evidence cannot
