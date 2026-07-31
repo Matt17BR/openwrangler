@@ -1005,10 +1005,14 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "spark_connect",
         description: "PySpark Connect · DataFrame",
-        detail:
-          "pyspark.sql.connect.dataframe.DataFrame · Requires PySpark 4.2.x · Viewing only · Opening scans, indexes, and caches the complete DataFrame"
+        detail: "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x"
       })
     ]);
+    const sparkItems = (items as readonly { description?: string; detail?: string }[]).filter((item) =>
+      item.description?.startsWith("PySpark ")
+    );
+    expect(sparkItems).toHaveLength(2);
+    expect(sparkItems.every((item) => (item.detail?.length ?? Number.POSITIVE_INFINITY) <= 80)).toBe(true);
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
     expect(notebookMocks.createPanel).toHaveBeenCalledWith(
       context,
@@ -1331,19 +1335,19 @@ describe("notebook command provenance", () => {
         `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0", extra: true })}\n${end}`,
         marker
       )
-    ).toThrow("malformed PySpark version response");
+    ).toThrow("could not verify PySpark in the selected notebook kernel");
     expect(() =>
       parsePySparkNotebookPreflightOutput(
         `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0" })}\n${end}\n${end}`,
         marker
       )
-    ).toThrow("malformed PySpark version response");
+    ).toThrow("could not verify PySpark in the selected notebook kernel");
     expect(() =>
       parsePySparkNotebookPreflightOutput(
         `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0-β" })}\n${end}`,
         marker
       )
-    ).toThrow("malformed PySpark version response");
+    ).toThrow("could not verify PySpark in the selected notebook kernel");
   });
 
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {

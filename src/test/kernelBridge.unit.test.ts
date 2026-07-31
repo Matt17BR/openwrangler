@@ -160,7 +160,7 @@ describe("kernel protocol responses", () => {
 });
 
 describe("kernel retry classification", () => {
-  it("reports generic live-variable stages and reserves Spark preparation copy for a pinned PySpark open", async () => {
+  it("reports Spark preparation for pinned and auto-detected PySpark opens", async () => {
     const kernel = fakeKernel((request) => {
       if (request.kind === "openSession") {
         return openedResponse(request.requestedSessionId!, request.backend ?? "pyspark");
@@ -195,20 +195,74 @@ describe("kernel retry classification", () => {
     expect(autoDetectedSparkStages).toEqual(["acquiringKernel", "bootstrappingRuntime", "preparingSparkView"]);
   });
 
-  it.each([
-    ["pinned", openRequest("unsupported-pinned", "pyspark")],
-    ["auto-detected", unpinnedOpenRequest("unsupported-auto")]
-  ] as const)("rejects an unsupported %s PySpark variable before runtime open dispatch", async (_label, request) => {
+  it("keeps an unpinned non-PySpark variable on the generic one-dispatch open path", async () => {
     const requests: OpenWranglerRequest[] = [];
-    const controller = controlledPySparkKernel("4.1.3", requests);
+    const controller = controlledNonPySparkKernel("pandas", requests);
     mockKernel(controller.kernel);
-    const bridge = createKernelBridge();
+    const stages: string[] = [];
 
-    await expect(bridge.request(request)).rejects.toThrow(
-      "Open Wrangler requires PySpark 4.2.x for live viewing, but the selected notebook kernel has PySpark 4.1.3."
-    );
+    await expect(
+      createKernelBridge().request(unpinnedOpenRequest("auto-pandas"), {
+        onOpenProgress: (stage) => stages.push(stage)
+      })
+    ).resolves.toMatchObject({ kind: "sessionOpened", metadata: { backend: "pandas", sessionId: "auto-pandas" } });
 
     expect(controller.preflightExecutionCount()).toBe(1);
+    expect(requests.map((request) => request.kind)).toEqual(["openSession"]);
+    expect(stages).toEqual(["acquiringKernel", "bootstrappingRuntime", "openingNotebookVariable"]);
+  });
+
+  it("rejects a pinned PySpark open when the variable is no longer a PySpark DataFrame", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controlledNonPySparkKernel("pandas", requests);
+    mockKernel(controller.kernel);
+
+    await expect(createKernelBridge().request(openRequest("stale-spark", "pyspark"))).rejects.toThrow(
+      "The selected variable is no longer a supported PySpark DataFrame. Rerun the defining cell and try again."
+    );
+    expect(controller.preflightExecutionCount()).toBe(1);
+    expect(requests).toEqual([]);
+  });
+
+  it.each([
+    ["pinned 4.1", "4.1.3", openRequest("unsupported-pinned", "pyspark")],
+    ["auto-detected 4.1", "4.1.3", unpinnedOpenRequest("unsupported-auto")],
+    ["pinned 4.20", "4.20.0", openRequest("unsupported-future-minor", "pyspark")],
+    ["auto-detected missing version", null, unpinnedOpenRequest("unsupported-missing")]
+  ] as const)(
+    "rejects an unsupported %s PySpark variable before runtime open dispatch",
+    async (_label, version, request) => {
+      const requests: OpenWranglerRequest[] = [];
+      const controller = controlledPySparkKernel(version, requests);
+      mockKernel(controller.kernel);
+      const bridge = createKernelBridge();
+
+      await expect(bridge.request(request)).rejects.toThrow("Open Wrangler requires PySpark 4.2.x");
+
+      expect(controller.preflightExecutionCount()).toBe(1);
+      expect(requests).toEqual([]);
+    }
+  );
+
+  it("rejects a malformed PySpark probe with recovery guidance and zero runtime dispatch", async () => {
+    const requests: OpenWranglerRequest[] = [];
+    let preflightExecutions = 0;
+    const controller = controllableKernel((code) => {
+      if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) {
+        preflightExecutions += 1;
+        return malformedPySparkPreflightExecution(code);
+      }
+      return kernelExecution(code, (request) => {
+        requests.push(request);
+        return initializedResponse;
+      });
+    });
+    mockKernel(controller.kernel);
+
+    await expect(createKernelBridge().request(openRequest("malformed-spark", "pyspark"))).rejects.toThrow(
+      "Restart or reselect the kernel, rerun the cell that creates the DataFrame, and try again."
+    );
+    expect(preflightExecutions).toBe(1);
     expect(requests).toEqual([]);
   });
 
@@ -1599,6 +1653,27 @@ function controlledPySparkKernel(
   return { ...controller, preflightExecutionCount: () => preflightExecutions };
 }
 
+function controlledNonPySparkKernel(
+  backend: Exclude<TestBackend, "pyspark">,
+  requests: OpenWranglerRequest[]
+): ControlledPySparkKernel {
+  let preflightExecutions = 0;
+  const controller = controllableKernel((code) => {
+    if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) {
+      preflightExecutions += 1;
+      return pySparkPreflightExecution(code, false, null);
+    }
+    return kernelExecution(code, (request) => {
+      requests.push(request);
+      if (request.kind === "openSession") {
+        return openedResponse(request.requestedSessionId!, backend);
+      }
+      return initializedResponse;
+    });
+  });
+  return { ...controller, preflightExecutionCount: () => preflightExecutions };
+}
+
 function controllableKernel(
   executeCode: (code: string, token: vscode.CancellationToken) => AsyncIterable<unknown>
 ): ControllableKernel {
@@ -1676,6 +1751,18 @@ async function* pySparkPreflightExecution(
     text: [
       `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
       JSON.stringify({ isPySpark, protocolVersion: 1, version }),
+      `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
+    ].join("\n")
+  };
+}
+
+async function* malformedPySparkPreflightExecution(code: string): AsyncIterable<unknown> {
+  const marker = code.match(/__OPEN_WRANGLER_PYSPARK_VERSION_START_([a-f0-9]{32})__/)?.[1];
+  if (!marker) throw new Error("Kernel test preflight did not contain a response marker.");
+  yield {
+    text: [
+      `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+      '{"isPySpark":true,"protocolVersion":1,"version":',
       `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
     ].join("\n")
   };

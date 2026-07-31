@@ -572,5 +572,7 @@ function oversizedDiscoveryResponse(): NotebookVariableDiscoveryError {
 }
 
 function malformedPySparkVersionResponse(): NotebookVariableDiscoveryError {
-  return new NotebookVariableDiscoveryError("Open Wrangler received a malformed PySpark version response.");
+  return new NotebookVariableDiscoveryError(
+    "Open Wrangler could not verify PySpark in the selected notebook kernel. Restart or reselect the kernel, rerun the cell that creates the DataFrame, and try again."
+  );
 }

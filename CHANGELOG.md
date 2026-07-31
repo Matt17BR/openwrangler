@@ -29,9 +29,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   Kernel and standalone runtimes now produce `unknown_session` from a typed exception carrying the exact session ID
   rather than attempting to infer absence from an error message.
 - Added honest, accessible progress while every live notebook variable connects to its kernel, prepares the
-  bundled runtime, and opens the variable, including automatic backend detection. Only an explicitly pinned
-  PySpark open uses dedicated final-stage copy explaining that its stable view scans and materializes the complete
-  frame to establish row positions and an exact total.
+  bundled runtime, and opens the variable, including automatic backend detection. Pinned and auto-detected
+  PySpark opens use dedicated final-stage copy explaining that their stable view scans, indexes, and caches the
+  complete frame to establish row positions and an exact total.
 - Rebuilt the README and product gallery around exact packaged-editor scenes: native Activity Bar views, the
   filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
   sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the
