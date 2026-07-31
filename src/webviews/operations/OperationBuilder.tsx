@@ -766,7 +766,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           </select>
         </label>
         {formulaOperandMode === "value" ? (
-          <TextField name="value" label="Numeric value" type="number" defaultValue={param("value", "0")} />
+          <TextField name="value" label="Numeric value" type="number" step="any" defaultValue={param("value", "0")} />
         ) : (
           <ColumnReferenceSelect
             name="rightColumn"
@@ -871,7 +871,15 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           emptyMessage="No text columns are available. Cast a column to text first."
         />
         <TextField name="delimiter" label="Delimiter" defaultValue={param("delimiter", ",")} required />
-        <TextField name="index" label="Part index" type="number" min={0} defaultValue={param("index", "0")} required />
+        <TextField
+          name="index"
+          label="Part index"
+          type="number"
+          min={0}
+          step={1}
+          defaultValue={param("index", "0")}
+          required
+        />
         <TextField name="newColumn" label="New column" defaultValue={param("newColumn", "split_value")} required />
       </>
     );
@@ -921,6 +929,7 @@ function OperationFields({ kind, metadata, columns, filterModel, initialStep }: 
           name="decimals"
           label="Decimal places"
           type="number"
+          step={1}
           defaultValue={param("decimals", "0")}
           required
         />
@@ -1562,7 +1571,8 @@ function TextField({
   defaultValue,
   required = false,
   type = "text",
-  min
+  min,
+  step
 }: {
   name: string;
   label: string;
@@ -1570,11 +1580,12 @@ function TextField({
   required?: boolean;
   type?: string;
   min?: number;
+  step?: number | "any";
 }) {
   return (
     <label className="formField">
       <span>{label}</span>
-      <input name={name} type={type} min={min} defaultValue={defaultValue} required={required} />
+      <input name={name} type={type} min={min} step={step} defaultValue={defaultValue} required={required} />
     </label>
   );
 }

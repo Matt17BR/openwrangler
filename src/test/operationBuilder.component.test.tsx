@@ -758,7 +758,26 @@ describe("OperationBuilder", () => {
       />
     );
 
+    const numericValue = screen.getByLabelText("Numeric value");
+    expect(numericValue).toHaveAttribute("step", "any");
     fireEvent.change(screen.getByLabelText("Left column"), { target: { value: "c:1" } });
+    fireEvent.change(numericValue, { target: { value: "1.1" } });
+    fireEvent.change(screen.getByLabelText("New column"), { target: { value: "projected_sales" } });
+    expect(numericValue).toBeValid();
+    fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+    expect(onPreview.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        kind: "formula",
+        params: {
+          leftColumn: { id: "c:1", name: "sales" },
+          operator: "add",
+          value: 1.1,
+          newColumn: "projected_sales"
+        }
+      })
+    );
+
+    onPreview.mockClear();
     fireEvent.change(screen.getByLabelText("Right operand"), { target: { value: "column" } });
     fireEvent.change(screen.getByLabelText("Right column"), { target: { value: "c:0" } });
     fireEvent.change(screen.getByLabelText("New column"), { target: { value: "ratio" } });
