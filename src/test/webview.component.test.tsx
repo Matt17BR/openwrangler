@@ -728,7 +728,7 @@ describe("DataGrid", () => {
     expect(onPage).not.toHaveBeenCalled();
   });
 
-  it("keeps authoritative widths and selection when restored scroll emits synchronously", () => {
+  it("does not replace authoritative restored state from synchronous programmatic scroll events", () => {
     const onViewStateChange = vi.fn();
     const props = {
       metadata,
@@ -773,12 +773,83 @@ describe("DataGrid", () => {
       />
     );
 
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+    expect(props.onPage).not.toHaveBeenCalled();
+  });
+
+  it("ignores a teardown scroll collapse but still accepts an explicit user scroll", () => {
+    const onViewStateChange = vi.fn();
+    const props = {
+      metadata,
+      page,
+      summaries: [],
+      pageSize: 2,
+      defaultColumnWidth: 190,
+      insightsOnOpen: false,
+      onViewStateChange,
+      onPage: vi.fn(),
+      onSortColumn: () => undefined,
+      onOpenFilter: () => undefined,
+      onVisibleSummaryColumnsChange: () => undefined
+    };
+    const { rerender } = render(<DataGrid {...props} />);
+    const scroller = screen.getByTestId("data-grid-scroller");
+    let physicalScrollTop = 0;
+    let physicalScrollLeft = 0;
+    let physicalScrollHeight = 232;
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 58 },
+      clientWidth: { configurable: true, value: 320 },
+      scrollHeight: { configurable: true, get: () => physicalScrollHeight },
+      scrollWidth: { configurable: true, value: 900 },
+      scrollTop: {
+        configurable: true,
+        get: () => physicalScrollTop,
+        set: (value: number) => {
+          physicalScrollTop = value;
+        }
+      },
+      scrollLeft: {
+        configurable: true,
+        get: () => physicalScrollLeft,
+        set: (value: number) => {
+          physicalScrollLeft = value;
+        }
+      }
+    });
+
+    rerender(
+      <DataGrid
+        {...props}
+        viewState={{
+          columnWidths: { "c:1": 280 },
+          selectedColumnId: "c:1",
+          viewport: { firstVisibleRow: 1, scrollLeft: 23 }
+        }}
+        viewStateRestoreVersion={1}
+      />
+    );
+    expect(scroller.scrollTop).toBe(29);
+    expect(scroller.scrollLeft).toBe(23);
+    onViewStateChange.mockClear();
+
+    physicalScrollHeight = 58;
+    physicalScrollTop = 0;
+    fireEvent.scroll(scroller);
+
+    expect(onViewStateChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-grid-row="1"][data-grid-column="1"]')).toHaveAttribute("tabindex", "0");
+
+    physicalScrollHeight = 232;
+    fireEvent.wheel(scroller);
+    fireEvent.scroll(scroller);
+
     expect(onViewStateChange).toHaveBeenLastCalledWith({
       columnWidths: { "c:1": 280 },
       selectedColumnId: "c:1",
-      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      viewport: { firstVisibleRow: 0, scrollLeft: 23 }
     });
-    expect(props.onPage).not.toHaveBeenCalled();
   });
 
   it("reaches the first, middle, and final rows beyond Chromium's layout ceiling", async () => {

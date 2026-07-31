@@ -12,6 +12,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   first read after a standalone runtime exit. Summary and dataset-statistics reads now share one replacement
   runtime with a concurrent foreground recovery, while a cancelled or superseded profiling request is never
   reissued and mutations retain their no-retry guarantee.
+- Preserved the last confirmed vertical grid position when macOS emits a synthetic scroll event during
+  programmatic restoration or editor teardown. A real wheel, pointer, or touch scroll still replaces the saved
+  viewport normally.
 
 ### Changed
 
