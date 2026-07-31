@@ -345,6 +345,70 @@ describe("App draft state boundaries", () => {
     await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
   });
 
+  it("reissues a pending generated-column reveal after the renderer synchronization barrier", async () => {
+    const addedColumn: ColumnSchema = {
+      id: "c:upper-pending",
+      name: "c_upper_pending",
+      position: committedSchema.length,
+      rawType: "String",
+      type: "string",
+      nullable: false
+    };
+    const draft: TransformStep = {
+      id: "upper-c-pending",
+      kind: "upperText",
+      params: { column: { id: "c:c", name: "c" }, newColumn: addedColumn.name }
+    };
+    const previewPage: GridPage = {
+      ...page,
+      columnIds: [...page.columnIds, addedColumn.id],
+      rows: page.rows.map((row) => ({
+        ...row,
+        values: [...row.values, { kind: "string", raw: "C", display: "C", isNull: false, isNaN: false }]
+      }))
+    };
+
+    render(<App />);
+    dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
+    dispatch({
+      kind: "stepPreview",
+      revision: 3,
+      metadata: {
+        ...metadata,
+        revision: 3,
+        shape: { rows: 1, columns: 3 },
+        filteredShape: { rows: 1, columns: 3 },
+        schema: [...committedSchema, addedColumn],
+        draftStep: draft
+      },
+      page: previewPage,
+      diff: { ...emptyDiff(), addedColumns: [addedColumn.name] },
+      code: "def clean_data(df):\n    return df"
+    });
+
+    await waitFor(() => {
+      expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
+      expect(latestGridProps().goToColumnRequestId).toBe(1);
+    });
+
+    // The initial DataGrid attempt can remain pending while Code Preview
+    // changes the final layout. The publication marker must give that same
+    // logical reveal a fresh identity instead of leaving it dormant.
+    dispatch({
+      kind: "rendererSynchronization",
+      syncId: "W".repeat(32),
+      sessionId: metadata.sessionId,
+      revision: 3
+    });
+    await waitFor(() => {
+      expect(latestGridProps().goToColumnId).toBe(addedColumn.id);
+      expect(latestGridProps().goToColumnRequestId).toBe(2);
+    });
+
+    act(() => latestGridProps().onGoToColumnHandled?.(2));
+    await waitFor(() => expect(latestGridProps().goToColumnId).toBeUndefined());
+  });
+
   it("does not let an older renderer snapshot erase a confirmed draft", async () => {
     const draft: TransformStep = {
       id: "upper-c",

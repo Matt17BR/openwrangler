@@ -24,6 +24,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   of inheriting a generic text or source-file glyph.
 - Restored Pandas 3 `DataFrame` and `Series` discovery in the notebook toolbar picker while retaining the Pandas 2
   type aliases and rejecting classes that only spoof a Pandas module and type name.
+- Reissued a generated-column reveal with a fresh identity after the renderer synchronization barrier, so a
+  first attempt left dormant during Code Preview layout changes no longer strands the grid on the previous
+  columns.
 
 ## [1.1.9] - 2026-07-31
 

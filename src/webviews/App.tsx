@@ -80,7 +80,6 @@ export function App() {
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
   const goToColumnRequestSequence = useRef(0);
   const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
-  const handledGoToColumnRequestId = useRef<number | undefined>(undefined);
   const [filterColumn, setFilterColumn] = useState("");
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [summaryPanelView, setSummaryPanelView] = useState<SummaryPanelView>("column");
@@ -263,9 +262,6 @@ export function App() {
   }, []);
 
   const storeGoToColumnRequest = useCallback((next: ColumnRevealRequest | undefined) => {
-    if (goToColumnRequestRef.current?.requestId !== next?.requestId) {
-      handledGoToColumnRequestId.current = undefined;
-    }
     goToColumnRequestRef.current = next;
     setGoToColumnRequest(next);
   }, []);
@@ -287,7 +283,6 @@ export function App() {
       const request = goToColumnRequestRef.current;
       if (!request || request.requestId !== requestId) return;
       if (outcome === "revealed" && request.retainUntilSynchronization) {
-        handledGoToColumnRequestId.current = requestId;
         return;
       }
       storeGoToColumnRequest(undefined);
@@ -860,11 +855,11 @@ export function App() {
             reveal?.retainUntilSynchronization?.sessionId === response.sessionId &&
             reveal.retainUntilSynchronization.revision === response.revision
           ) {
-            if (handledGoToColumnRequestId.current === reveal.requestId) {
-              requestColumnReveal(reveal.columnId);
-            } else {
-              storeGoToColumnRequest({ ...reveal, retainUntilSynchronization: undefined });
-            }
+            // The synchronization barrier can follow a Code Preview layout
+            // transition that left the first reveal attempt dormant. Always
+            // issue a fresh identity so DataGrid retries against the final
+            // committed geometry whether the earlier attempt completed or not.
+            requestColumnReveal(reveal.columnId);
           }
           // This marker is the host's publication barrier. Commit every
           // authoritative message that preceded it before allowing recovery
