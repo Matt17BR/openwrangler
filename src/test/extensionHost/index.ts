@@ -11743,8 +11743,7 @@ async function capturePackagedEditAndUndoScenes(
   );
   assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Undoing the latest step must preserve the source.");
   assert.equal(await testing.synchronizePanel(sessionId), true);
-  const revenue = columnReference(testing.activeSession()!.metadata, "revenue");
-  await fitPackagedProductSceneGrid(testing, workbench, sessionId, revenue.id);
+  await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");
   codePreview = await waitForCodePreview(workbench, "market_upper");
   sidebar = await arrangePackagedProductSidebar(workbench, "workflow");
   target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
@@ -12309,6 +12308,36 @@ async function fitPackagedProductSceneGrid(
       "The final product grid width adjustment must synchronize with its exact renderer."
     );
   }
+}
+
+async function revealPackagedProductSceneColumn(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  columnName: string
+): Promise<void> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "Product-scene column reveal requires the exact active session.");
+  assert.ok(active, "Product-scene column reveal requires one active dataframe session.");
+  const column = columnReference(active.metadata, columnName);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "Product-scene column reveal requires the exact production renderer.");
+  const search = app.getByRole("combobox", { name: "Column", exact: true });
+  const escapedColumnName = columnName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  await search.fill(columnName);
+  await app
+    .getByRole("option", { name: new RegExp(`^${escapedColumnName},`, "u") })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await search.press("Enter");
+  await waitFor(
+    () =>
+      testing.activeSession()?.viewState.selectedColumnId === column.id &&
+      (testing.activeSession()?.viewState.viewport.scrollLeft ?? 0) > 0,
+    10_000,
+    `column search to reveal ${columnName} for the packaged product scene`
+  );
 }
 
 async function addPackagedProductSceneSorts(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {

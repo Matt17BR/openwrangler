@@ -303,6 +303,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain("draft.params.value === 750");
     expect(extensionHost).toContain('packagedScreenshotFileName(editor, "latest-step-edited", "dark")');
     expect(extensionHost).toContain('packagedScreenshotFileName(editor, "latest-step-undone", "dark")');
+    expect(extensionHost).toContain(
+      'await revealPackagedProductSceneColumn(testing, workbench, sessionId, "market_upper");'
+    );
+    expect(extensionHost).toContain("const boundaryTolerance = 1;");
     expect(extensionHost).toContain('"notebook-code-insertion"');
     expect(extensionHost).toContain("const code = active.code;");
     expect(mediaSpec).toContain("### Explorer, edit, undo, and high contrast");
