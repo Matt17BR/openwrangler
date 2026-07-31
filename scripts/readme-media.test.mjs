@@ -19,6 +19,46 @@ const nativeAssets = [
   nativeAsset("gallery/notebook-polars.png", "vscode-notebook-polars-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-duckdb.png", "vscode-notebook-duckdb-dark.png", 1_440, 900),
   nativeAsset("gallery/notebook-pyspark.png", "vscode-notebook-pyspark-dark.png", 1_440, 900),
+  nativeAsset("gallery/sidebar-overview.png", "vscode-sidebar-overview-dark.png", 1_440, 874),
+  nativeAsset("gallery/operation-catalog.png", "vscode-operation-catalog-dark.png", 1_280, 874),
+  nativeAsset("gallery/operation-configuration.png", "vscode-operation-configuration-dark.png", 1_280, 874),
+  nativeAsset("gallery/applied-step-inspection.png", "vscode-applied-step-inspection-dark.png", 1_440, 870),
+  nativeCrop("gallery/operation-configuration-detail.png", "vscode-operation-configuration-dark.png", 1_280, 874, {
+    x: 744,
+    y: 170,
+    width: 510,
+    height: 605
+  }),
+  nativeCrop("gallery/applied-step-inspection-detail.png", "vscode-applied-step-inspection-dark.png", 1_440, 870, {
+    x: 445,
+    y: 28,
+    width: 995,
+    height: 330
+  }),
+  nativeCrop("gallery/export-script-detail.png", "vscode-export-code-dark.png", 1_440, 870, {
+    x: 445,
+    y: 0,
+    width: 995,
+    height: 230
+  }),
+  nativeCrop("gallery/export-data-detail.png", "vscode-export-data-dark.png", 1_440, 870, {
+    x: 445,
+    y: 0,
+    width: 995,
+    height: 370
+  }),
+  nativeCrop("gallery/notebook-variable-picker-detail.png", "vscode-notebook-variable-picker-dark.png", 1_280, 600, {
+    x: 340,
+    y: 0,
+    width: 602,
+    height: 330
+  }),
+  nativeCrop("gallery/notebook-pandas-detail.png", "vscode-notebook-pandas-dark.png", 1_280, 600, {
+    x: 52,
+    y: 178,
+    width: 440,
+    height: 300
+  }),
   nativeCrop("gallery/notebook-polars-detail.png", "vscode-notebook-polars-dark.png", 1_440, 900, {
     x: 48,
     y: 32,
@@ -129,11 +169,21 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   }
   assert.match(compositor, /function cropPng\(/u);
   assert.match(compositor, /source\.data\.copy\(result\.data/u);
-  assert.match(readme, /<img src="assets\/icon\.png"/u);
+  const immutableMediaReferences = [
+    ...readme.matchAll(
+      /https:\/\/(?:raw\.githubusercontent\.com\/Matt17BR\/openwrangler|github\.com\/Matt17BR\/openwrangler\/blob)\/([0-9a-f]{40})\/(assets\/icon\.png|docs\/images\/readme\/v1\.2\/[^"<]+\.png)/gu
+    )
+  ];
+  assert.ok(immutableMediaReferences.length > 0, "README must use immutable public product-media URLs.");
+  assert.deepEqual(
+    new Set(immutableMediaReferences.map((match) => match[1])).size,
+    1,
+    "Every README product-media URL must use one reviewed immutable media commit."
+  );
   assert.doesNotMatch(
     readme,
-    /raw\.githubusercontent\.com\/Matt17BR\/openwrangler\/main\/(?:assets|docs\/images\/readme)/u,
-    "README product media must stay branch-relative so pull-request and branch previews render before merge."
+    /(?:raw\.githubusercontent\.com\/Matt17BR\/openwrangler|github\.com\/Matt17BR\/openwrangler\/(?:blob|raw))\/(?:main|HEAD)\/(?:assets|docs\/images\/readme)/u,
+    "README product media must not drift with a moving branch."
   );
 
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
@@ -196,7 +246,15 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "gallery/notebook-variable-picker.png",
     "notebook-pandas.png",
     "gallery/notebook-polars-detail.png",
-    "gallery/notebook-duckdb-detail.png"
+    "gallery/notebook-duckdb-detail.png",
+    "gallery/operation-configuration.png",
+    "gallery/applied-step-inspection.png",
+    "gallery/operation-configuration-detail.png",
+    "gallery/applied-step-inspection-detail.png",
+    "gallery/export-script-detail.png",
+    "gallery/export-data-detail.png",
+    "gallery/notebook-variable-picker-detail.png",
+    "gallery/notebook-pandas-detail.png"
   ]) {
     assert.ok(readme.includes(`docs/images/readme/v1.2/${image}`), `README must show ${image}.`);
   }
@@ -211,11 +269,11 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.match(readme, /View and plan stay separate\./u);
   assert.match(readme, /Inspect every bin\./u);
   assert.match(readme, /Control compound sorts\./u);
-  assert.match(readme, /actual engine and dataframe type visible/u);
-  assert.match(readme, /reorderable sort priorities, applied history, a draft diff/u);
+  assert.match(readme, /labels each live variable with its dataframe type before launch/u);
+  assert.match(readme, /reorderable sort priorities, applied history, a current-block draft\s+diff/u);
   assert.match(
     readme,
-    /portable Pandas table stays inside the notebook[\s\S]{0,140}reconnects to the complete,\s+current live variable/u
+    /Keep a portable table inline,[\s\S]{0,120}open the complete current live dataframe in the workbench/u
   );
   assert.match(
     readme,
@@ -248,8 +306,6 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
 
   for (const image of [
     "images/readme/v1.2/explore.png",
-    "images/readme/v1.2/gallery/sidebar-explore.png",
-    "images/readme/v1.2/gallery/sidebar-workflow.png",
     "images/readme/v1.2/gallery/histogram-hover.png",
     "images/readme/v1.2/gallery/sort-priority.png",
     "images/readme/v1.2/gallery/by-example-setup.png",
@@ -262,21 +318,28 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
     "images/readme/v1.2/gallery/notebook-polars.png",
     "images/readme/v1.2/gallery/notebook-duckdb.png",
     "images/readme/v1.2/gallery/notebook-pyspark.png",
+    "images/readme/v1.2/gallery/sidebar-overview.png",
+    "images/readme/v1.2/gallery/operation-catalog.png",
+    "images/readme/v1.2/gallery/operation-configuration.png",
+    "images/readme/v1.2/gallery/applied-step-inspection.png",
     "images/readme/v1.2/gallery/duckdb-rich-parquet.png",
     "images/readme/v1.2/gallery/duckdb-rich-parquet-detail.png"
   ]) {
     assert.ok(gallery.includes(image), `Gallery must include ${image}.`);
   }
-  assert.match(gallery, /Fixture dimensions show\s+the\s+captured scenario, not product row or column limits/u);
+  assert.match(gallery, /Visible\s+dimensions\s+describe the captured scenario, not a product row or column limit/u);
   assert.match(gallery, /does not convert through Pandas,\s+Polars, or Arrow/u);
   assert.match(gallery, /experimental and viewing-only/u);
   assert.match(gallery, /Transform by example/u);
   assert.match(gallery, /Confirm the synthesized split across all ten unseen account IDs/u);
-  assert.match(gallery, /## Native Activity Bar views/u);
-  assert.match(gallery, /Operations and Summary remain useful without opening another editor tab/u);
-  assert.match(gallery, /ordered priorities and never masquerade as cleaning steps/u);
-  assert.match(gallery, /Sparse bins remain easy to inspect\./u);
-  assert.match(gallery, /Compound sort order stays explicit\./u);
+  assert.match(gallery, /^### Native Activity Bar views$/mu);
+  assert.match(gallery, /All four Open Wrangler Activity Bar views populated/u);
+  assert.match(gallery, /Inspect sparse bins\./u);
+  assert.match(gallery, /Control compound sorts\./u);
+  assert.match(
+    gallery,
+    /## Build and review a cleaning plan[\s\S]{0,900}operation-catalog\.png[\s\S]{0,900}operation-configuration\.png[\s\S]{0,900}workflow\.png[\s\S]{0,900}applied-step-inspection\.png/u
+  );
   assert.match(gallery, /Choose a live variable by engine/u);
   assert.match(gallery, /## Open files where you already work[\s\S]{0,120}### Editor title action/u);
   assert.match(gallery, /### Tab context menu/u);
@@ -299,10 +362,10 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.ok(richDuckDbDetail.byteLength < 300 * 1_024);
 
   assert.match(mediaSpec, /canonical v1\.2 README and gallery contract/u);
-  assert.match(mediaSpec, /thirteen assets in ten compact visual blocks/u);
+  assert.match(mediaSpec, /compact visual blocks/u);
   assert.match(mediaSpec, /preserve the exact selected source pixels/u);
   assert.match(mediaSpec, /contains no unused import/u);
-  assert.match(testing, /derives twenty-three assets from accepted packaged-editor and production-webview sources/u);
+  assert.match(testing, /compose:readme-media[\s\S]{0,160}accepted packaged-editor and\s+production-webview sources/u);
   assert.match(testing, /pixel-exact decoded output/u);
 });
 

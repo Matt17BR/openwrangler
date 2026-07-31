@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
   PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+  PACKAGED_OPERATION_DIALOG_VIEWPORT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
   PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
   PACKAGED_PRODUCT_VIEWPORT,
@@ -188,6 +189,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(PACKAGED_SCREENSHOT_VIEWPORT).toEqual({ width: 1_920, height: 860 });
     expect(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT).toEqual({ width: 1_440, height: 900 });
     expect(PACKAGED_PRODUCT_VIEWPORT).toEqual({ width: 1_440, height: 900 });
+    expect(PACKAGED_OPERATION_DIALOG_VIEWPORT).toEqual({ width: 1_280, height: 900 });
     expect(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT).toEqual({ width: 1_280, height: 700 });
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT).toEqual({ width: 1_280, height: 600 });
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width).toBe(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.width);
@@ -200,6 +202,10 @@ describe("packaged editor screenshot evidence", () => {
       "hero",
       "explore",
       "workflow",
+      "sidebar-overview",
+      "operation-catalog",
+      "operation-configuration",
+      "applied-step-inspection",
       "notebook-pandas",
       "notebook-variable-picker",
       "notebook-polars",
@@ -263,6 +269,14 @@ describe("packaged editor screenshot evidence", () => {
       ["gallery/export-data.png", 1_440, 870, 50_000],
       ["gallery/notebook-variable-picker.png", 1_280, 600, 50_000],
       ["notebook-pandas.png", 1_280, 600, 50_000],
+      ["gallery/operation-configuration.png", 1_280, 874, 50_000],
+      ["gallery/applied-step-inspection.png", 1_440, 870, 50_000],
+      ["gallery/operation-configuration-detail.png", 510, 605, 20_000],
+      ["gallery/applied-step-inspection-detail.png", 995, 330, 20_000],
+      ["gallery/export-script-detail.png", 995, 230, 20_000],
+      ["gallery/export-data-detail.png", 995, 370, 20_000],
+      ["gallery/notebook-variable-picker-detail.png", 602, 330, 20_000],
+      ["gallery/notebook-pandas-detail.png", 440, 300, 20_000],
       ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
       ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000]
     ] as const;
@@ -306,8 +320,8 @@ describe("packaged editor screenshot evidence", () => {
     expect(buildWebviews).toContain('readFileSync(resolve("media", asset))');
     expect(buildWebviews).toContain("packaged.equals(source)");
     expect(readme).not.toMatch(/<(?:picture|source)\b/iu);
-    expect(readme).toContain(
-      '<img src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/assets/icon.png" width="128" height="128"'
+    expect(readme).toMatch(
+      /<img src="https:\/\/raw\.githubusercontent\.com\/Matt17BR\/openwrangler\/[0-9a-f]{40}\/assets\/icon\.png" width="128" height="128"/u
     );
     expect(readme).not.toMatch(/<img[^>]+assets\/icon\.svg[^>]+Open Wrangler logo/iu);
     expect(readme).toContain('<h1 align="center">Open Wrangler</h1>');
