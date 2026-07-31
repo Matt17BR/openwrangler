@@ -17,6 +17,8 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   viewport normally.
 - Fetched the restored row block when an older editor initially hydrates the grid with a different page, so a
   persisted viewport can no longer remain stranded on stale rows.
+- Adopted a confirmed file session before awaiting its configuration write, so invoking **Change Import Options**
+  immediately after the grid opens can no longer cancel and reopen that same file under a second session.
 
 ### Changed
 

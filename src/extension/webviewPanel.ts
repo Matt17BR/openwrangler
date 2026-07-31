@@ -722,9 +722,6 @@ export class OpenWranglerPanel {
             }
           : undefined;
       const response = correlateViewError(request, await this.bridge.request(request, bridgeOptions));
-      if (request.kind === "openSession" && response.kind === "sessionOpened") {
-        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
-      }
       if (
         request.kind === "openSession" &&
         openAttemptGeneration !== undefined &&
@@ -766,6 +763,9 @@ export class OpenWranglerPanel {
         this.snapshot = response;
         this.snapshotViewContextId = undefined;
         if (OpenWranglerPanel.activePanel === this) this.bridge.setActiveSession?.(this.sessionId);
+      }
+      if (request.kind === "openSession" && response.kind === "sessionOpened") {
+        await this.rememberConfirmedFileImportOptions(response.metadata.source, response.metadata.backend);
       }
       if (response.kind === "page" || response.kind === "stepPreview" || response.kind === "planUpdated") {
         if (response.kind !== "page") this.invalidateRendererSynchronization();
