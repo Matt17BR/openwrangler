@@ -9,6 +9,12 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 - Simplified column labels throughout the cleaning-step builder: unique names now appear without redundant
   positions, while duplicate and unnamed columns retain 1-based positions and stable identities so selections
   remain unambiguous and accessible.
+- Pinned and auto-detected PySpark notebook launches now verify strict PySpark 4.2.x inside the bridge's exact
+  selected kernel generation immediately before runtime open dispatch. Kernel switches and restarts invalidate and
+  reprobe before session publication. Picker and opening-stage copy explicitly label the session viewing-only and
+  warn that opening scans, indexes, and caches the complete DataFrame. Focused Classic and Connect tests prove real
+  owned-cache eviction without stopping the user's session, and packaged-kernel fixtures now trap Pandas/Arrow
+  conversions. External or authenticated Connect remains experimental and is not claimed by this evidence.
 - Split pull-request quality/contracts, visual/accessibility, production audits, packaged VS Code, native script,
   native extension-host, and Cursor smoke into independently attributable jobs. The existing protected `validate`
   context is now a fail-closed aggregate, so failed, cancelled, absent, or unexpectedly skipped evidence cannot

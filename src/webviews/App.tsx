@@ -2386,9 +2386,9 @@ export function App() {
                     <strong>{sessionOpenProgressHeading(sessionOpenProgress)}</strong>
                     {sessionOpenProgress === "preparingSparkView" && (
                       <p>
-                        Open Wrangler is indexing and counting the complete PySpark DataFrame. Spark scans and
-                        materializes the frame so the grid has stable row positions and an exact row total. To protect
-                        unrelated Spark jobs, this kernel operation is allowed to finish even if you close the view.
+                        Opening scans, indexes, and caches the complete PySpark DataFrame so the grid has stable row
+                        positions and an exact row total. To protect unrelated Spark jobs, this kernel operation is
+                        allowed to finish even if you close the view.
                       </p>
                     )}
                   </>
@@ -2760,7 +2760,7 @@ function sessionOpenProgressHeading(stage: SessionOpenProgressStage): string {
     case "openingNotebookVariable":
       return "Opening the live notebook variable…";
     case "preparingSparkView":
-      return "Preparing the PySpark view…";
+      return "Preparing PySpark 4.2 (viewing only)…";
   }
 }
 

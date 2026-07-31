@@ -172,11 +172,19 @@ DuckDB relations open as native, viewing-only notebook sessions: paging, filteri
 profiles run against the exact originating relation without converting it to Pandas, Polars, or Arrow. Cleaning,
 code insertion, and data export remain unavailable for DuckDB notebook relations.
 
-PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting, paging,
-and requested profiles stay in Spark; only bounded results return to the notebook runtime. File sessions,
-cleaning, exports, code insertion, and saved inline previews are not supported. See the
-[product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#notebook-workflows) for
-the real packaged PySpark scene and the detailed capability boundary.
+PySpark 4.2.x DataFrames can open as experimental, viewing-only live notebook sessions. The live bridge checks the
+exact selected Python kernel and rejects the open before publishing a runtime session if PySpark is missing or unsupported. For Classic,
+start your own `SparkSession` with Java 17+ and `JAVA_HOME` configured. For Connect, supply an already configured
+and authenticated session; only local Connect is release-tested today. Open Wrangler does not install PySpark,
+start or authenticate a cluster, or stop your Spark session. See the
+[official PySpark setup guide](https://spark.apache.org/docs/4.2.0/api/python/getting_started/install.html).
+
+Opening is intentionally more work than fetching a first page: Spark scans the complete DataFrame, assigns stable
+row positions, caches an Open Wrangler-owned indexed child, and computes the exact row total. That can be expensive
+for a large or remote DataFrame. After opening, filtering, sorting, paging, and requested profiles stay in Spark and
+only bounded results return to the notebook runtime. File sessions, cleaning, exports, code insertion, and saved
+inline previews are not supported. The [product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md#notebook-workflows)
+shows the real packaged PySpark scene.
 
 ## Engines and formats
 
@@ -185,7 +193,7 @@ the real packaged PySpark scene and the detailed capability boundary.
 | Polars                    | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, LazyFrame, Series | Native; text and Parquet formats use lazy scans. Excel loads eagerly. |
 | Pandas                    | CSV, TSV, Parquet, JSONL/NDJSON, Excel | DataFrame, Series            | Native, including duplicate column labels                             |
 | DuckDB                    | CSV, TSV, Parquet, JSONL/NDJSON        | DuckDBPyRelation             | Native; notebook relations are viewing-only                           |
-| PySpark 4.2, experimental | Not currently supported                | DataFrame                    | Viewing-only Spark queries with bounded returned results              |
+| PySpark 4.2, experimental | Not currently supported                | DataFrame                    | Full-frame open/index/cache; then native bounded viewing results      |
 
 Automatic file selection prefers Polars, then DuckDB, then Pandas. A file backend can also be pinned in settings.
 Notebook variables are matched to their native supported dataframe type, including Pandas 2 and 3, DuckDB

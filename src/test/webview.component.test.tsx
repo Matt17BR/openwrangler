@@ -2008,15 +2008,15 @@ describe("App file import options", () => {
     expect(status).toHaveTextContent("Preparing Open Wrangler in the kernel");
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "preparingSparkView" });
-    expect(status).toHaveTextContent("Preparing the PySpark view");
-    expect(status).toHaveTextContent("indexing and counting the complete PySpark DataFrame");
+    expect(status).toHaveTextContent("Preparing PySpark 4.2 (viewing only)");
+    expect(status).toHaveTextContent("scans, indexes, and caches the complete PySpark DataFrame");
     expect(status).toHaveTextContent("stable row positions and an exact row total");
     expect(status).toHaveTextContent("protect unrelated Spark jobs");
     expect(status).toHaveTextContent("allowed to finish even if you close the view");
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "untrusted-stage" });
-    expect(status).toHaveTextContent("Preparing the PySpark view");
+    expect(status).toHaveTextContent("Preparing PySpark 4.2 (viewing only)");
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: null });
     expect(status).toHaveTextContent("Opening session");
@@ -2024,7 +2024,7 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "sessionOpenProgress", stage: "openingNotebookVariable" });
     expect(status).toHaveTextContent("Opening the live notebook variable");
-    expect(status).not.toHaveTextContent("indexing and counting");
+    expect(status).not.toHaveTextContent("scans, indexes, and caches");
     expect(screen.queryByRole("button", { name: /cancel opening/iu })).not.toBeInTheDocument();
   });
 

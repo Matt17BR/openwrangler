@@ -21,6 +21,11 @@ import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } fro
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
 import { getSetting, runtimeRequestTimeoutMs } from "../configuration";
 import { isSoleOpenNotebookDocument } from "./notebookProvenance";
+import {
+  assertSupportedPySparkNotebookPreflight,
+  buildPySparkNotebookPreflightCode,
+  parsePySparkNotebookPreflightOutput
+} from "./notebookVariableDiscovery";
 
 const NOTEBOOK_FORMATTER_REPORTING_TIMEOUT_MS = 30_000;
 
@@ -188,7 +193,6 @@ export class KernelBridge implements OpenWranglerBridge {
     if (!isCleanup) this.assertNotebookProvenance();
     const reportsNotebookOpenProgress =
       runtimeRequest.kind === "openSession" && runtimeRequest.source.kind === "notebookVariable";
-    const reportsSparkOpenProgress = reportsNotebookOpenProgress && runtimeRequest.backend === "pyspark";
     if (runtimeRequest.kind === "openSession") {
       this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
     }
@@ -231,9 +235,6 @@ export class KernelBridge implements OpenWranglerBridge {
           const observation = this.requireKernelObservation(acquired);
           requestObservation = observation;
           try {
-            if (reportsNotebookOpenProgress) {
-              reportOpenProgress(options, reportsSparkOpenProgress ? "preparingSparkView" : "openingNotebookVariable");
-            }
             if (hostDetachReason) throw new KernelRequestCancelledError();
             if (runtimeRequest.kind === "openSession") {
               this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
@@ -263,8 +264,10 @@ export class KernelBridge implements OpenWranglerBridge {
         },
         {
           retryAfterDispatch: isIdempotentKernelReadRequest(runtimeRequest),
-          shouldRetry: (_error, phase) =>
-            hostDetachReason === undefined && phase !== "acquire" && phase !== "beforeDispatch",
+          shouldRetry: (error, phase) =>
+            hostDetachReason === undefined &&
+            phase !== "acquire" &&
+            (phase !== "beforeDispatch" || error instanceof SelectedKernelChangedError),
           onBootstrapPending: (settlement) => {
             bootstrapSettlement = settlement;
             // A rejected bootstrap may be retried on a fresh lifecycle
@@ -277,10 +280,26 @@ export class KernelBridge implements OpenWranglerBridge {
               if (bootstrapSettlement === settlement) bootstrapSettlement = undefined;
             });
           },
-          beforeDispatch: () => {
-            requestObservation ??= this.kernelObservation;
+          beforeDispatch: async (acquired) => {
+            const observation = this.requireKernelObservation(acquired);
+            requestObservation = observation;
             if (hostDetachReason) throw new KernelRequestCancelledError();
             if (!isCleanup) this.assertNotebookProvenance();
+            if (reportsNotebookOpenProgress && runtimeRequest.kind === "openSession") {
+              let isPySpark = runtimeRequest.backend === "pyspark";
+              if (runtimeRequest.backend === undefined || runtimeRequest.backend === "pyspark") {
+                const variableName = runtimeRequest.source.variableName;
+                if (!variableName) {
+                  throw new Error("Open Wrangler received a notebook-variable source without a variable name.");
+                }
+                await this.assertKernelStillSelected(acquired, observation);
+                const preflight = await this.executePySparkNotebookPreflight(acquired.kernel, variableName);
+                this.requireKernelObservation(acquired);
+                await this.assertKernelStillSelected(acquired, observation);
+                isPySpark = assertSupportedPySparkNotebookPreflight(preflight, runtimeRequest.backend);
+              }
+              reportOpenProgress(options, isPySpark ? "preparingSparkView" : "openingNotebookVariable");
+            }
           }
         }
       );
@@ -479,6 +498,23 @@ export class KernelBridge implements OpenWranglerBridge {
     return parseKernelResponse(await this.executePython(kernel, framed.code), framed.marker, framed.requestId);
   }
 
+  private async executePySparkNotebookPreflight(kernel: Kernel, variableName: string) {
+    const marker = randomUUID().replaceAll("-", "");
+    const output = await this.executePython(kernel, buildPySparkNotebookPreflightCode(marker, variableName));
+    return parsePySparkNotebookPreflightOutput(output, marker);
+  }
+
+  private async assertKernelStillSelected(acquired: AcquiredKernel, observation: KernelObservation): Promise<void> {
+    this.requireKernelObservation(acquired);
+    this.assertNotebookProvenance();
+    const selected = await acquired.jupyter.kernels.getKernel(this.notebookUri);
+    this.assertNotebookProvenance();
+    this.requireKernelObservation(acquired);
+    if (selected === acquired.kernel) return;
+    this.invalidateLifecycle(observation);
+    throw new SelectedKernelChangedError();
+  }
+
   private async ensureKernelAgent(kernel: Kernel, registerNotebookFormatters: boolean): Promise<void> {
     this.assertNotebookProvenance();
     await this.executePython(
@@ -527,7 +563,7 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
     if (kernel.language.toLowerCase() !== "python") {
       throw new Error(`Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`);
     }
-    return { kernel };
+    return { jupyter: api, kernel };
   }
 
   private observeKernelStatus(acquired: AcquiredKernel): KernelObservation {
@@ -658,6 +694,7 @@ function reportOpenProgress(options: BridgeRequestOptions, stage: SessionOpenPro
 }
 
 interface AcquiredKernel {
+  readonly jupyter: Jupyter;
   readonly kernel: Kernel;
   observation?: KernelObservation;
 }
@@ -665,6 +702,13 @@ interface AcquiredKernel {
 interface KernelObservation {
   readonly kernel: Kernel;
   subscription?: vscode.Disposable;
+}
+
+class SelectedKernelChangedError extends Error {
+  constructor() {
+    super("The selected notebook kernel changed before Open Wrangler could open the live variable.");
+    this.name = "SelectedKernelChangedError";
+  }
 }
 
 interface FormatterPreparation {

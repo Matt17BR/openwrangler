@@ -2220,6 +2220,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     );
     assert.equal(classicSetup.module, "pyspark.sql.classic.dataframe");
     assert.equal(classicSetup.workerPythonPinned, true);
+    assert.deepEqual(classicSetup.conversionTraps, ["toPandas", "toArrow", "mapInPandas", "mapInArrow"]);
 
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
@@ -2390,6 +2391,7 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(connectSetup.sparkVersion, "4.2.0");
     assert.equal(connectSetup.module, "pyspark.sql.connect.dataframe");
     assert.equal(connectSetup.workerPythonPinned, true);
+    assert.deepEqual(connectSetup.conversionTraps, ["toPandas", "toArrow", "mapInPandas", "mapInArrow"]);
 
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_connect_frame", `${phase}:connect-action`);
     const connect = await waitForReleasedVariableSession(
@@ -2830,6 +2832,15 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable",
           "from pyspark.sql import SparkSession",
           "from pyspark.sql import functions as F",
+          "def _open_wrangler_forbid_local_conversion(*_args, **_kwargs):",
+          "    raise AssertionError('Open Wrangler must keep PySpark execution native')",
+          "def _open_wrangler_arm_conversion_traps(frame):",
+          "    armed = []",
+          "    for method_name in ('toPandas', 'toArrow', 'mapInPandas', 'mapInArrow'):",
+          "        if hasattr(type(frame), method_name):",
+          "            setattr(type(frame), method_name, _open_wrangler_forbid_local_conversion)",
+          "            armed.append(method_name)",
+          "    return armed",
           "spark = (SparkSession.builder",
           "    .master('local[2]')",
           "    .appName('open-wrangler-packaged-classic')",
@@ -2845,6 +2856,7 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    (3, 'alpha', 20.0),",
           "    (4, 'gamma', None),",
           "], 'record_id long, category string, amount double').repartition(2)",
+          "_open_wrangler_classic_conversion_traps = _open_wrangler_arm_conversion_traps(spark_classic_frame)",
           "def _open_wrangler_label(values, index):",
           "    return F.element_at(",
           "        F.array(*[F.lit(value) for value in values]),",
@@ -2883,6 +2895,7 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
           "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
           "    ),",
+          "    'conversionTraps': _open_wrangler_classic_conversion_traps,",
           "}, sort_keys=True))"
         ]),
         cell([
@@ -2910,6 +2923,7 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "    (3, 'alpha', 20.0),",
           "    (4, 'gamma', None),",
           "], 'record_id long, category string, amount double').repartition(2)",
+          "_open_wrangler_connect_conversion_traps = _open_wrangler_arm_conversion_traps(spark_connect_frame)",
           `print(${JSON.stringify(RELEASED_JUPYTER_PYSPARK_SETUP_RESULT)} + json.dumps({`,
           "    'sparkVersion': connect_spark.version,",
           "    'module': type(spark_connect_frame).__module__,",
@@ -2918,6 +2932,7 @@ function writeReleasedPySparkNotebook(notebookPath: string, hostExtensionPath: s
           "        os.environ.get('PYSPARK_PYTHON') == sys.executable",
           "        and os.environ.get('PYSPARK_DRIVER_PYTHON') == sys.executable",
           "    ),",
+          "    'conversionTraps': _open_wrangler_connect_conversion_traps,",
           "}, sort_keys=True))"
         ]),
         cell([

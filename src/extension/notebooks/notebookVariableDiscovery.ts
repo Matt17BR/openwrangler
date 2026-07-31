@@ -13,6 +13,10 @@ const MAX_DISCOVERY_NAME_CHARACTERS = 128;
 const MAX_DISCOVERY_OUTPUT_BYTES = 64 * 1024;
 const MAX_DISCOVERY_OUTPUTS = 128;
 const MAX_DISCOVERY_OUTPUT_ITEMS = 256;
+const PYSPARK_VERSION_PROTOCOL_VERSION = 1;
+const MAX_PYSPARK_VERSION_CHARACTERS = 64;
+const SUPPORTED_PYSPARK_VERSION =
+  /^4\.2\.[0-9]+(?:(?:a|b|rc)[0-9]+|\.dev[0-9]+)?(?:\+[0-9A-Za-z]+(?:[._-][0-9A-Za-z]+)*)?$/u;
 
 const NOTEBOOK_VARIABLE_TYPES = {
   "pandas.DataFrame": { backend: "pandas", family: "Pandas", kind: "DataFrame" },
@@ -50,6 +54,11 @@ export interface NotebookVariableDiscovery {
   readonly truncated: boolean;
 }
 
+export interface PySparkNotebookPreflight {
+  readonly isPySpark: boolean;
+  readonly version: string | null;
+}
+
 export class NotebookVariableDiscoveryError extends Error {
   constructor(message: string) {
     super(message);
@@ -57,36 +66,16 @@ export class NotebookVariableDiscoveryError extends Error {
   }
 }
 
+export class PySparkNotebookPreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PySparkNotebookPreflightError";
+  }
+}
+
 export async function discoverNotebookVariables(notebook: vscode.NotebookDocument): Promise<NotebookVariableDiscovery> {
   try {
-    assertNotebookProvenance(notebook);
-    if (!vscode.workspace.isTrusted) {
-      throw new NotebookVariableDiscoveryError("Trust this workspace before Open Wrangler inspects a notebook kernel.");
-    }
-
-    const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
-    if (!extension) {
-      throw new NotebookVariableDiscoveryError(
-        "Install or enable the VS Code Jupyter extension to discover live notebook dataframes."
-      );
-    }
-
-    const api = await revalidateAfter(extension.activate(), notebook);
-    if (!isJupyterApi(api)) {
-      throw new NotebookVariableDiscoveryError("Open Wrangler could not access the public Jupyter kernel API.");
-    }
-    const kernel = await revalidateAfter(api.kernels.getKernel(notebook.uri), notebook);
-    if (!isKernel(kernel)) {
-      throw new NotebookVariableDiscoveryError(
-        "Open Wrangler could not access the selected Jupyter kernel for this notebook."
-      );
-    }
-    if (kernel.language.toLowerCase() !== "python") {
-      throw new NotebookVariableDiscoveryError(
-        `Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`
-      );
-    }
-
+    const kernel = await resolvePythonNotebookKernel(notebook);
     return await revalidateAfter(executeDiscovery(kernel, notebook), notebook);
   } catch (error) {
     if (error instanceof NotebookVariableDiscoveryError) throw error;
@@ -118,7 +107,14 @@ async function executeDiscovery(kernel: Kernel, notebook: vscode.NotebookDocumen
     // Discovery therefore uses a never-cancel token and validates notebook
     // provenance between every output item instead of interrupting execution.
     const output = kernel.executeCode(buildNotebookVariableDiscoveryCode(marker), tokenSource.token);
-    const text = await revalidateAfter(collectBoundedKernelText(output, notebook), notebook);
+    const text = await revalidateAfter(
+      collectBoundedKernelText(
+        output,
+        notebook,
+        "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
+      ),
+      notebook
+    );
     return parseNotebookVariableDiscoveryOutput(text, marker);
   })().finally(() => {
     tokenSource.dispose();
@@ -132,7 +128,8 @@ async function executeDiscovery(kernel: Kernel, notebook: vscode.NotebookDocumen
 
 async function collectBoundedKernelText(
   output: ReturnType<Kernel["executeCode"]>,
-  notebook: vscode.NotebookDocument
+  notebook: vscode.NotebookDocument,
+  kernelErrorMessage: string
 ): Promise<string> {
   const chunks: string[] = [];
   let bytes = 0;
@@ -172,9 +169,7 @@ async function collectBoundedKernelText(
               throw malformedDiscoveryResponse();
             }
             if (item.mime === "application/vnd.code.notebook.error") {
-              throw new NotebookVariableDiscoveryError(
-                "Open Wrangler could not inspect dataframe variables in the selected notebook kernel."
-              );
+              throw new NotebookVariableDiscoveryError(kernelErrorMessage);
             }
             if (!isKernelTextMime(item.mime)) continue;
             bytes += item.data.byteLength;
@@ -194,6 +189,47 @@ async function collectBoundedKernelText(
   }
   if (firstFailure) throw firstFailure.error;
   return chunks.join("");
+}
+
+export function parsePySparkNotebookPreflightOutput(output: string, marker: string): PySparkNotebookPreflight {
+  if (!/^[a-f0-9]{32}$/.test(marker) || Buffer.byteLength(output, "utf8") > MAX_DISCOVERY_OUTPUT_BYTES) {
+    throw oversizedDiscoveryResponse();
+  }
+
+  const start = `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`;
+  const end = `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`;
+  const startIndex = output.indexOf(start);
+  const endIndex = output.indexOf(end);
+  if (
+    startIndex < 0 ||
+    endIndex <= startIndex ||
+    output.indexOf(start, startIndex + start.length) >= 0 ||
+    output.indexOf(end, endIndex + end.length) >= 0
+  ) {
+    throw malformedPySparkVersionResponse();
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.slice(startIndex + start.length, endIndex).trim());
+  } catch {
+    throw malformedPySparkVersionResponse();
+  }
+  if (
+    !isPlainRecord(parsed) ||
+    !hasExactKeys(parsed, ["isPySpark", "protocolVersion", "version"]) ||
+    parsed.protocolVersion !== PYSPARK_VERSION_PROTOCOL_VERSION ||
+    typeof parsed.isPySpark !== "boolean" ||
+    (parsed.version !== null &&
+      (typeof parsed.version !== "string" ||
+        parsed.version.length < 1 ||
+        parsed.version.length > MAX_PYSPARK_VERSION_CHARACTERS ||
+        !/^[\x20-\x7e]+$/u.test(parsed.version))) ||
+    (!parsed.isPySpark && parsed.version !== null)
+  ) {
+    throw malformedPySparkVersionResponse();
+  }
+  return { isPySpark: parsed.isPySpark, version: parsed.version as string | null };
 }
 
 export function parseNotebookVariableDiscoveryOutput(output: string, marker: string): NotebookVariableDiscovery {
@@ -341,6 +377,125 @@ del __ow_discover_variables_v1
 `;
 }
 
+export function buildPySparkNotebookPreflightCode(marker: string, variableName: string): string {
+  if (!/^[a-f0-9]{32}$/.test(marker)) {
+    throw new Error("PySpark preflight marker must be 32 lowercase hexadecimal characters.");
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variableName)) {
+    throw new Error("PySpark preflight variable name must be a Python identifier.");
+  }
+  const isolatedSource = `
+__ow_json = __ow_builtins.__import__("json")
+__ow_sys = __ow_builtins.__import__("sys")
+__ow_missing = __ow_builtins.object()
+__ow_value = __ow_user_ns.get(${JSON.stringify(variableName)}, __ow_missing)
+__ow_value_type = None if __ow_value is __ow_missing else __ow_builtins.type(__ow_value)
+__ow_is_pyspark = False
+if __ow_value is not __ow_missing:
+    for __ow_module_name in (
+        "pyspark.sql.dataframe.DataFrame",
+        "pyspark.sql.classic.dataframe.DataFrame",
+        "pyspark.sql.connect.dataframe.DataFrame",
+    ):
+        __ow_class_module = __ow_sys.modules.get(__ow_module_name.rsplit(".", 1)[0])
+        __ow_class_module_dict = None if __ow_class_module is None else __ow_class_module.__dict__
+        if (
+            __ow_builtins.isinstance(__ow_class_module_dict, dict)
+            and __ow_class_module_dict.get("DataFrame") is __ow_value_type
+        ):
+            __ow_is_pyspark = True
+            break
+__ow_version = None
+if __ow_is_pyspark:
+    __ow_module = __ow_sys.modules.get("pyspark")
+    __ow_module_dict = None if __ow_module is None else __ow_module.__dict__
+    if __ow_builtins.isinstance(__ow_module_dict, dict):
+        __ow_candidate_version = __ow_module_dict.get("__version__")
+        if (
+            __ow_builtins.isinstance(__ow_candidate_version, str)
+            and 0 < __ow_builtins.len(__ow_candidate_version) <= ${MAX_PYSPARK_VERSION_CHARACTERS}
+            and __ow_candidate_version.isascii()
+            and __ow_candidate_version.isprintable()
+        ):
+            __ow_version = __ow_candidate_version
+print("__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__")
+print(__ow_json.dumps(
+    {
+        "isPySpark": __ow_is_pyspark,
+        "protocolVersion": ${PYSPARK_VERSION_PROTOCOL_VERSION},
+        "version": __ow_version,
+    },
+    ensure_ascii=True,
+    allow_nan=False,
+    separators=(",", ":"),
+    sort_keys=True,
+))
+print("__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__")
+`;
+  const sourceLiteral = JSON.stringify(isolatedSource);
+  return `(lambda __ow_builtin_module, __ow_user_namespace: (lambda __ow_scope: __ow_builtin_module.exec(__ow_builtin_module.compile(${sourceLiteral}, "<open-wrangler-pyspark-preflight>", "exec"), __ow_scope, __ow_scope))({"__builtins__": __ow_builtin_module, "__ow_builtins": __ow_builtin_module, "__ow_user_ns": __ow_user_namespace}))((__builtins__["__import__"] if __builtins__.__class__.__name__ == "dict" else __builtins__.__import__)("builtins"), (__builtins__["globals"] if __builtins__.__class__.__name__ == "dict" else __builtins__.globals)())\n`;
+}
+
+export function assertSupportedPySparkNotebookPreflight(
+  result: PySparkNotebookPreflight,
+  expectedBackend?: DataBackend
+): boolean {
+  if (!result.isPySpark) {
+    if (expectedBackend === "pyspark") {
+      throw new PySparkNotebookPreflightError(
+        "The selected variable is no longer a supported PySpark DataFrame. Rerun the defining cell and try again."
+      );
+    }
+    return false;
+  }
+  if (result.version === null) {
+    throw new PySparkNotebookPreflightError(
+      "Open Wrangler requires PySpark 4.2.x in the selected notebook kernel. Select or start that kernel, rerun the cell that creates the PySpark DataFrame, and try again."
+    );
+  }
+  if (!isSupportedPySparkVersion(result.version)) {
+    throw new PySparkNotebookPreflightError(
+      `Open Wrangler requires PySpark 4.2.x for live viewing, but the selected notebook kernel has PySpark ${result.version}. Upgrade that kernel, restart it, and rerun the cell that creates the DataFrame.`
+    );
+  }
+  return true;
+}
+
+export function isSupportedPySparkVersion(version: string): boolean {
+  return SUPPORTED_PYSPARK_VERSION.test(version);
+}
+
+async function resolvePythonNotebookKernel(notebook: vscode.NotebookDocument): Promise<Kernel> {
+  assertNotebookProvenance(notebook);
+  if (!vscode.workspace.isTrusted) {
+    throw new NotebookVariableDiscoveryError("Trust this workspace before Open Wrangler inspects a notebook kernel.");
+  }
+
+  const extension = vscode.extensions.getExtension<Jupyter>("ms-toolsai.jupyter");
+  if (!extension) {
+    throw new NotebookVariableDiscoveryError(
+      "Install or enable the VS Code Jupyter extension to inspect live notebook dataframes."
+    );
+  }
+
+  const api = await revalidateAfter(extension.activate(), notebook);
+  if (!isJupyterApi(api)) {
+    throw new NotebookVariableDiscoveryError("Open Wrangler could not access the public Jupyter kernel API.");
+  }
+  const kernel = await revalidateAfter(api.kernels.getKernel(notebook.uri), notebook);
+  if (!isKernel(kernel)) {
+    throw new NotebookVariableDiscoveryError(
+      "Open Wrangler could not access the selected Jupyter kernel for this notebook."
+    );
+  }
+  if (kernel.language.toLowerCase() !== "python") {
+    throw new NotebookVariableDiscoveryError(
+      `Open Wrangler requires a Python notebook kernel; the selected kernel uses ${kernel.language}.`
+    );
+  }
+  return kernel;
+}
+
 function assertNotebookProvenance(notebook: vscode.NotebookDocument): void {
   if (!isSoleOpenNotebookDocument(notebook)) {
     throw new NotebookVariableDiscoveryError("The originating notebook is no longer open. Reopen it and try again.");
@@ -414,4 +569,8 @@ function oversizedDiscoveryResponse(): NotebookVariableDiscoveryError {
   return new NotebookVariableDiscoveryError(
     "Open Wrangler rejected an oversized notebook variable discovery response."
   );
+}
+
+function malformedPySparkVersionResponse(): NotebookVariableDiscoveryError {
+  return new NotebookVariableDiscoveryError("Open Wrangler received a malformed PySpark version response.");
 }

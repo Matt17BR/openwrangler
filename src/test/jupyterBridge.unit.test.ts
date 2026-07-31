@@ -20,7 +20,7 @@ const notebookMocks = vi.hoisted(() => ({
     readonly token: { isCancellationRequested: boolean };
     disposed: boolean;
   }>,
-  executeCode: vi.fn((code: string) => discoveryOutputs(code)),
+  executeCode: vi.fn((code: string) => notebookKernelOutputs(code)),
   getKernel: vi.fn(async () => ({
     language: "python",
     executeCode: notebookMocks.executeCode
@@ -201,7 +201,11 @@ vi.mock("../extension/notebooks/kernelBridge", () => ({
 
 import * as vscode from "vscode";
 import { registerNotebookCommands } from "../extension/notebooks/jupyterBridge";
-import { buildNotebookVariableDiscoveryCode } from "../extension/notebooks/notebookVariableDiscovery";
+import {
+  buildNotebookVariableDiscoveryCode,
+  buildPySparkNotebookPreflightCode,
+  parsePySparkNotebookPreflightOutput
+} from "../extension/notebooks/notebookVariableDiscovery";
 
 describe("notebook command provenance", () => {
   beforeEach(() => {
@@ -218,7 +222,7 @@ describe("notebook command provenance", () => {
     notebookMocks.kernelOrigins.length = 0;
     notebookMocks.tokenSources.length = 0;
     notebookMocks.executeCode.mockReset();
-    notebookMocks.executeCode.mockImplementation((code) => discoveryOutputs(code));
+    notebookMocks.executeCode.mockImplementation((code) => notebookKernelOutputs(code));
     notebookMocks.getKernel.mockReset();
     notebookMocks.getKernel.mockResolvedValue({
       language: "python",
@@ -279,6 +283,7 @@ describe("notebook command provenance", () => {
       },
       "pyspark"
     );
+    expect(notebookMocks.executeCode).not.toHaveBeenCalled();
   });
 
   it.each(["DuckDBPyRelation", "_duckdb.DuckDBPyRelation", "duckdb.duckdb.DuckDBPyRelation"])(
@@ -1000,7 +1005,8 @@ describe("notebook command provenance", () => {
       expect.objectContaining({
         label: "spark_connect",
         description: "PySpark Connect · DataFrame",
-        detail: "pyspark.sql.connect.dataframe.DataFrame · Live viewing-only session"
+        detail:
+          "pyspark.sql.connect.dataframe.DataFrame · Requires PySpark 4.2.x · Viewing only · Opening scans, indexes, and caches the complete DataFrame"
       })
     ]);
     expect(coordinator.createBridge.mock.calls[0]?.[1]).toBe(original);
@@ -1295,6 +1301,51 @@ describe("notebook command provenance", () => {
     expect(code).toContain("if __ow_scanned > 4096:");
   });
 
+  it("builds an isolated PySpark preflight without evaluating dataframe contents", () => {
+    const marker = "0123456789abcdef0123456789abcdef";
+    const code = buildPySparkNotebookPreflightCode(marker, "spark_frame");
+
+    expect(code).toContain("pyspark");
+    expect(code).not.toMatch(/import pyspark/u);
+    expect(code).not.toContain(".count(");
+    expect(code).not.toContain(".collect(");
+    expect(code).not.toContain("getattr(");
+    expect(code).toContain("__ow_module.__dict__");
+    expect(parsePySparkNotebookPreflightOutput(preflightText(marker, true, "4.2.0"), marker)).toEqual({
+      isPySpark: true,
+      version: "4.2.0"
+    });
+    expect(parsePySparkNotebookPreflightOutput(preflightText(marker, false, null), marker)).toEqual({
+      isPySpark: false,
+      version: null
+    });
+  });
+
+  it("fails closed on malformed PySpark version-probe envelopes", () => {
+    const marker = "0123456789abcdef0123456789abcdef";
+    const start = `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`;
+    const end = `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`;
+
+    expect(() =>
+      parsePySparkNotebookPreflightOutput(
+        `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0", extra: true })}\n${end}`,
+        marker
+      )
+    ).toThrow("malformed PySpark version response");
+    expect(() =>
+      parsePySparkNotebookPreflightOutput(
+        `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0" })}\n${end}\n${end}`,
+        marker
+      )
+    ).toThrow("malformed PySpark version response");
+    expect(() =>
+      parsePySparkNotebookPreflightOutput(
+        `${start}\n${JSON.stringify({ isPySpark: true, protocolVersion: 1, version: "4.2.0-β" })}\n${end}`,
+        marker
+      )
+    ).toThrow("malformed PySpark version response");
+  });
+
   it("does not retarget the interactive command after its captured document closes and reopens", async () => {
     const original = notebook("file:///workspace/shared.ipynb");
     const replacement = notebook("file:///workspace/shared.ipynb");
@@ -1474,6 +1525,19 @@ function discoveryOutputs(
       };
     }
   };
+}
+
+function notebookKernelOutputs(code: string): AsyncIterable<{ items: Array<{ mime: string; data: Uint8Array }> }> {
+  if (code.includes("__OPEN_WRANGLER_VARIABLES_START_")) return discoveryOutputs(code);
+  throw new Error("Expected notebook discovery code.");
+}
+
+function preflightText(marker: string, isPySpark: boolean, version: string | null): string {
+  return [
+    `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+    JSON.stringify({ isPySpark, protocolVersion: 1, version }),
+    `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
+  ].join("\n");
 }
 
 function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {

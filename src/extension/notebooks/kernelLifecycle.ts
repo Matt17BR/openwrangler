@@ -1,6 +1,6 @@
 export type KernelLifecyclePhase = "acquire" | "bootstrap" | "beforeDispatch" | "execute";
 
-export interface RestartableKernelRunOptions {
+export interface RestartableKernelRunOptions<TKernel = unknown> {
   /**
    * Execution may have reached the kernel before it failed. Retrying that phase
    * is therefore opt-in and is reserved for requests that are explicitly
@@ -10,8 +10,8 @@ export interface RestartableKernelRunOptions {
   shouldRetry?: (error: unknown, phase: KernelLifecyclePhase) => boolean;
   /** Receives the exact shared bootstrap settlement for both its owner and joiners. */
   onBootstrapPending?: (settlement: Promise<void>) => void;
-  /** Runs immediately before user code is handed to the kernel. */
-  beforeDispatch?: () => void;
+  /** Runs immediately before the authoritative request is handed to the exact acquired kernel. */
+  beforeDispatch?: (kernel: TKernel) => void | Promise<void>;
 }
 
 interface KernelGeneration<TKernel> {
@@ -52,7 +52,7 @@ export class RestartableKernel<TKernel> {
   async run<TResult>(
     bootstrap: (kernel: TKernel) => Promise<void>,
     execute: (kernel: TKernel) => Promise<TResult>,
-    options: RestartableKernelRunOptions = {}
+    options: RestartableKernelRunOptions<TKernel> = {}
   ): Promise<TResult> {
     for (let attempt = 0; ; attempt += 1) {
       let generation: KernelGeneration<TKernel> | undefined;
@@ -65,7 +65,8 @@ export class RestartableKernel<TKernel> {
         await this.ensureBootstrapped(generation, bootstrap, options.onBootstrapPending);
         this.assertCurrent(generation);
         phase = "beforeDispatch";
-        options.beforeDispatch?.();
+        await options.beforeDispatch?.(generation.kernel);
+        this.assertCurrent(generation);
         dispatched = true;
         phase = "execute";
         const result = await execute(generation.kernel);

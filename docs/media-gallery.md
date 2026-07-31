@@ -153,9 +153,12 @@ Polars, or Arrow.
 
 ![An experimental PySpark Classic notebook DataFrame with selected revenue column profiles](images/readme/v1.2/gallery/notebook-pyspark.png)
 
-PySpark 4.2 support is experimental and viewing-only. Filtering, sorting, paging, and requested profiling run in
-Spark; only bounded results return to the notebook runtime. File opening, cleaning, export, code insertion, and
-saved inline previews are not supported.
+PySpark 4.2.x support is experimental and viewing-only. The exact selected Python kernel must already contain a
+user-managed Classic or Connect session. Opening scans the complete DataFrame, assigns stable row positions, caches
+an Open Wrangler-owned indexed child, and computes the exact row total; this can be expensive on large or remote
+data. Filtering, sorting, paging, and requested profiling then run in Spark and return only bounded results. The
+packaged scene validates local Classic; external or authenticated Connect remains unclaimed. File opening,
+cleaning, export, code insertion, and saved inline previews are not supported.
 
 ## Rich DuckDB file types
 

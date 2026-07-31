@@ -1,10 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildNotebookVariableDiscoveryCode,
-  parseNotebookVariableDiscoveryOutput
+  buildPySparkNotebookPreflightCode,
+  isSupportedPySparkVersion,
+  parseNotebookVariableDiscoveryOutput,
+  parsePySparkNotebookPreflightOutput
 } from "../extension/notebooks/notebookVariableDiscovery";
 
 const DISCOVERY_MARKER = "0123456789abcdef0123456789abcdef";
@@ -61,6 +64,73 @@ legacy_series_spoof = LegacySeriesSpoof()
 `);
 
     expect(discovery).toEqual({ truncated: false, variables: [] });
+  });
+
+  it("preflights in isolated locals without mutating collisions or invoking module __getattr__", () => {
+    const probeCode = buildPySparkNotebookPreflightCode(DISCOVERY_MARKER, "spark_frame");
+    const script = `
+import sys
+import types
+import json
+
+getattr_calls = []
+pyspark_module = types.ModuleType("pyspark")
+pyspark_module.__dict__["__getattr__"] = lambda name: getattr_calls.append(name) or (_ for _ in ()).throw(AttributeError(name))
+classic_module = types.ModuleType("pyspark.sql.classic.dataframe")
+DataFrame = type("DataFrame", (), {"__module__": "pyspark.sql.classic.dataframe"})
+classic_module.__dict__["DataFrame"] = DataFrame
+sys.modules["pyspark"] = pyspark_module
+sys.modules["pyspark.sql.classic.dataframe"] = classic_module
+spark_frame = DataFrame()
+
+collision_names = (
+    "__ow_builtin_module",
+    "__ow_user_namespace",
+    "__ow_scope",
+    "__ow_json",
+    "__ow_sys",
+    "__ow_module",
+    "__ow_version",
+    "__ow_pyspark_version_v1",
+)
+for collision_name in collision_names:
+    globals()[collision_name] = "preserve:" + collision_name
+collision_before = {name: globals()[name] for name in collision_names}
+${probeCode}
+print("__OPEN_WRANGLER_PYSPARK_FACTS__" + json.dumps({
+    "collisionsPreserved": collision_before == {name: globals()[name] for name in collision_names},
+    "getattrCalls": getattr_calls,
+}, sort_keys=True))
+`;
+    const result = spawnSync(testPythonExecutable(), ["-I", "-c", script], {
+      encoding: "utf8",
+      maxBuffer: 128 * 1024,
+      timeout: 30_000,
+      windowsHide: true
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status, result.stderr).toBe(0);
+    expect(parsePySparkNotebookPreflightOutput(result.stdout, DISCOVERY_MARKER)).toEqual({
+      isPySpark: true,
+      version: null
+    });
+    const factsLine = result.stdout.split(/\r?\n/u).find((line) => line.startsWith("__OPEN_WRANGLER_PYSPARK_FACTS__"));
+    expect(factsLine).toBeDefined();
+    expect(JSON.parse(factsLine!.slice("__OPEN_WRANGLER_PYSPARK_FACTS__".length))).toEqual({
+      collisionsPreserved: true,
+      getattrCalls: []
+    });
+  });
+
+  it("matches the shared strict PySpark 4.2 version contract", () => {
+    const contract = JSON.parse(
+      readFileSync(resolve(process.cwd(), "fixtures", "pyspark-version-contract.json"), "utf8")
+    ) as { accepted: string[]; rejected: string[] };
+
+    expect(contract.accepted.every(isSupportedPySparkVersion)).toBe(true);
+    expect(contract.rejected.some(isSupportedPySparkVersion)).toBe(false);
   });
 });
 

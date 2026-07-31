@@ -192,7 +192,87 @@ describe("kernel retry classification", () => {
         onOpenProgress: (stage) => autoDetectedSparkStages.push(stage)
       })
     ).resolves.toMatchObject({ kind: "sessionOpened", metadata: { backend: "pyspark" } });
-    expect(autoDetectedSparkStages).toEqual(["acquiringKernel", "bootstrappingRuntime", "openingNotebookVariable"]);
+    expect(autoDetectedSparkStages).toEqual(["acquiringKernel", "bootstrappingRuntime", "preparingSparkView"]);
+  });
+
+  it.each([
+    ["pinned", openRequest("unsupported-pinned", "pyspark")],
+    ["auto-detected", unpinnedOpenRequest("unsupported-auto")]
+  ] as const)("rejects an unsupported %s PySpark variable before runtime open dispatch", async (_label, request) => {
+    const requests: OpenWranglerRequest[] = [];
+    const controller = controlledPySparkKernel("4.1.3", requests);
+    mockKernel(controller.kernel);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(request)).rejects.toThrow(
+      "Open Wrangler requires PySpark 4.2.x for live viewing, but the selected notebook kernel has PySpark 4.1.3."
+    );
+
+    expect(controller.preflightExecutionCount()).toBe(1);
+    expect(requests).toEqual([]);
+  });
+
+  it.each([
+    ["supported", "4.2.0", true],
+    ["unsupported", "4.3.0", false]
+  ] as const)("reacquires and reprobes kernel B after a silent A→B switch (%s)", async (_label, versionB, opens) => {
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    let currentKernel: Kernel;
+    const kernelB = controlledPySparkKernel(versionB, requestsB);
+    const kernelA = controlledPySparkKernel("4.2.0", requestsA, () => {
+      currentKernel = kernelB.kernel;
+    });
+    currentKernel = kernelA.kernel;
+    const getExtension = vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const bridge = createKernelBridge();
+    const operation = bridge.request(openRequest(`switch-${_label}`, "pyspark"));
+
+    if (opens) {
+      await expect(operation).resolves.toMatchObject({
+        kind: "sessionOpened",
+        metadata: { backend: "pyspark", sessionId: "switch-supported" }
+      });
+    } else {
+      await expect(operation).rejects.toThrow("selected notebook kernel has PySpark 4.3.0");
+    }
+
+    expect(kernelA.preflightExecutionCount()).toBe(1);
+    expect(requestsA).toEqual([]);
+    expect(kernelB.preflightExecutionCount()).toBe(1);
+    expect(requestsB.map((request) => request.kind)).toEqual(opens ? ["openSession"] : []);
+    expect(getExtension).toHaveBeenCalledTimes(2);
+  });
+
+  it("reprobes a replacement kernel after an observed restart", async () => {
+    const requestsA: OpenWranglerRequest[] = [];
+    const requestsB: OpenWranglerRequest[] = [];
+    const kernelA = controlledPySparkKernel("4.2.0", requestsA);
+    const kernelB = controlledPySparkKernel("4.2.1", requestsB);
+    let currentKernel = kernelA.kernel;
+    const getExtension = vi.spyOn(vscode.extensions, "getExtension").mockReturnValue({
+      activate: async () => ({ kernels: { getKernel: async () => currentKernel } })
+    } as never);
+    const bridge = createKernelBridge();
+
+    await expect(bridge.request(openRequest("restart-a", "pyspark"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "restart-a" }
+    });
+    currentKernel = kernelB.kernel;
+    kernelA.setStatus("restarting");
+    await expect(bridge.request(openRequest("restart-b", "pyspark"))).resolves.toMatchObject({
+      kind: "sessionOpened",
+      metadata: { sessionId: "restart-b" }
+    });
+
+    expect(kernelA.preflightExecutionCount()).toBe(1);
+    expect(kernelB.preflightExecutionCount()).toBe(1);
+    expect(requestsA.map((request) => request.kind)).toEqual(["openSession"]);
+    expect(requestsB.map((request) => request.kind)).toEqual(["openSession"]);
+    expect(getExtension).toHaveBeenCalledTimes(2);
   });
 
   it("assigns a stable host-known identity to kernel session opens", () => {
@@ -634,7 +714,7 @@ describe("kernel retry classification", () => {
       // The cleanup must not even be dispatched until the exact open has
       // settled; an early unknown_session response is not authoritative.
       expect(requests.map((request) => request.kind)).toEqual(["openSession"]);
-      expect(controller.executionTokens()).toHaveLength(2);
+      expect(controller.executionTokens()).toHaveLength(backend === "pyspark" ? 3 : 2);
       expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
       bridge.onIdle();
       expect(controller.statusListenerCount()).toBe(1);
@@ -643,7 +723,7 @@ describe("kernel retry classification", () => {
       releaseOpen.resolve();
       await vi.waitFor(() => expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]));
       expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
-      expect(controller.executionTokens()).toHaveLength(3);
+      expect(controller.executionTokens()).toHaveLength(backend === "pyspark" ? 4 : 3);
       expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
       await vi.waitFor(() => expect(controller.statusListenerCount()).toBe(0));
       expect(getExtension).toHaveBeenCalledOnce();
@@ -684,7 +764,7 @@ describe("kernel retry classification", () => {
     await rejection;
 
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "closeSession"]);
-    expect(controller.executionTokens()).toHaveLength(3);
+    expect(controller.executionTokens()).toHaveLength(4);
     expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
     releaseClose.resolve();
     vi.useRealTimers();
@@ -756,7 +836,7 @@ describe("kernel retry classification", () => {
     await vi.advanceTimersByTimeAsync(30);
     await rejection;
 
-    expect(controller.executionTokens()).toHaveLength(3);
+    expect(controller.executionTokens()).toHaveLength(4);
     expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
 
     releasePage.resolve();
@@ -766,7 +846,7 @@ describe("kernel retry classification", () => {
       sessionId: "safe-page-session"
     });
     expect(requests.map((request) => request.kind)).toEqual(["openSession", "getPage", "closeSession"]);
-    expect(controller.executionTokens()).toHaveLength(4);
+    expect(controller.executionTokens()).toHaveLength(5);
     expect(controller.executionTokens().every((token) => !token.isCancellationRequested)).toBe(true);
   });
 
@@ -1474,11 +1554,18 @@ interface ControlledFakeKernel extends ControllableKernel {
   bootstrapExecutionCount(): number;
 }
 
+interface ControlledPySparkKernel extends ControllableKernel {
+  preflightExecutionCount(): number;
+}
+
 function controlledFakeKernel(
   respond: (request: OpenWranglerRequest, requestId: string) => unknown | Promise<unknown>
 ): ControlledFakeKernel {
   let bootstrapExecutions = 0;
   const controller = controllableKernel((code) => {
+    if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) {
+      return pySparkPreflightExecution(code, true, "4.2.0");
+    }
     if (!code.includes("__ow_payload =")) bootstrapExecutions += 1;
     return kernelExecution(code, respond);
   });
@@ -1486,6 +1573,30 @@ function controlledFakeKernel(
     ...controller,
     bootstrapExecutionCount: () => bootstrapExecutions
   };
+}
+
+function controlledPySparkKernel(
+  version: string | null,
+  requests: OpenWranglerRequest[],
+  onPreflight: () => void = () => undefined
+): ControlledPySparkKernel {
+  let preflightExecutions = 0;
+  const controller = controllableKernel((code) => {
+    if (code.includes("__OPEN_WRANGLER_PYSPARK_VERSION_START_")) {
+      preflightExecutions += 1;
+      onPreflight();
+      return pySparkPreflightExecution(code, true, version);
+    }
+    return kernelExecution(code, (request) => {
+      requests.push(request);
+      if (request.kind === "openSession") {
+        return openedResponse(request.requestedSessionId!, "pyspark");
+      }
+      if (request.kind === "closeSession") return { kind: "sessionClosed", sessionId: request.sessionId };
+      return initializedResponse;
+    });
+  });
+  return { ...controller, preflightExecutionCount: () => preflightExecutions };
 }
 
 function controllableKernel(
@@ -1550,6 +1661,22 @@ async function* kernelExecution(
       `__OPEN_WRANGLER_START_${markerMatch[1]}__`,
       JSON.stringify({ protocolVersion: 2, requestId: envelope.requestId, response }),
       `__OPEN_WRANGLER_END_${markerMatch[1]}__`
+    ].join("\n")
+  };
+}
+
+async function* pySparkPreflightExecution(
+  code: string,
+  isPySpark: boolean,
+  version: string | null
+): AsyncIterable<unknown> {
+  const marker = code.match(/__OPEN_WRANGLER_PYSPARK_VERSION_START_([a-f0-9]{32})__/)?.[1];
+  if (!marker) throw new Error("Kernel test preflight did not contain a response marker.");
+  yield {
+    text: [
+      `__OPEN_WRANGLER_PYSPARK_VERSION_START_${marker}__`,
+      JSON.stringify({ isPySpark, protocolVersion: 1, version }),
+      `__OPEN_WRANGLER_PYSPARK_VERSION_END_${marker}__`
     ].join("\n")
   };
 }

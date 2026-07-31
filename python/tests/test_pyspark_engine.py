@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from datetime import datetime
 from decimal import Decimal
 from importlib import import_module
+from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -15,6 +17,21 @@ import openwrangler_runtime.engines.pyspark_engine as pyspark_engine_module
 from openwrangler_runtime.engines import EngineError, PySparkEngine
 from openwrangler_runtime.engines.base import INTERNAL_ROW_ID_PREFIX
 from openwrangler_runtime.session import SessionManager
+
+_PYSPARK_VERSION_CONTRACT = json.loads(
+    (Path(__file__).resolve().parents[2] / "fixtures" / "pyspark-version-contract.json").read_text(encoding="utf-8")
+)
+
+
+def test_strict_pyspark_version_contract() -> None:
+    assert all(
+        pyspark_engine_module._is_supported_pyspark_version(version)
+        for version in _PYSPARK_VERSION_CONTRACT["accepted"]
+    )
+    assert not any(
+        pyspark_engine_module._is_supported_pyspark_version(version)
+        for version in _PYSPARK_VERSION_CONTRACT["rejected"]
+    )
 
 
 @pytest.fixture(scope="module", params=("classic", "connect"))
@@ -341,6 +358,23 @@ def test_index_materializes_once_and_close_unpersists_once(monkeypatch: pytest.M
     engine.close()
     engine.close()
     assert indexed.unpersist_calls == 1
+
+
+def test_close_unregisters_the_real_owned_cache_without_stopping_spark(
+    spark_session: Any,
+    sample_frame: Any,
+) -> None:
+    storage_level = import_module("pyspark").StorageLevel
+    engine, indexed = _open_engine(sample_frame, "cache-release")
+    assert indexed.storageLevel != storage_level.NONE
+
+    engine.close()
+    deadline = monotonic() + 10
+    while indexed.storageLevel != storage_level.NONE and monotonic() < deadline:
+        sleep(0.05)
+
+    assert indexed.storageLevel == storage_level.NONE
+    assert spark_session.range(1).count() == 1
 
 
 def test_sorted_state_uses_live_frame_identity_not_reusable_numeric_ids(
