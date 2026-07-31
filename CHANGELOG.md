@@ -6,6 +6,15 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Changed
 
+- Packaged editor acceptance now validates its prepared Python environment before starting VS Code or Cursor, so
+  unsupported Python versions and missing Pandas, Polars, DuckDB, or OpenPyXL fail during setup instead of after a
+  long workbench launch.
+- Interrupted session opens now dispose their partially acquired engine and release the requested session identity,
+  including notebook interruptions during PySpark indexing.
+- Added honest, accessible progress while a live PySpark notebook session connects to its kernel, prepares the
+  bundled runtime, and builds its stable Spark view. The final stage now explains that opening scans and
+  materializes the complete frame to establish stable row positions and an exact total, and that the Spark work
+  cannot be cancelled once it starts.
 - Rebuilt the README and product gallery around exact packaged-editor scenes: native Activity Bar views, the
   filter/sort and cleaning workflow, file entry points, Pandas inline output, native Polars and DuckDB notebook
   sessions, experimental PySpark, focused operation flows, and accessibility states. Captions now explain the

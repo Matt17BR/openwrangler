@@ -798,6 +798,95 @@ describe("OpenWranglerPanel retained view state", () => {
     expect(OpenWranglerPanel.panelHydratedForSession(openedResponse.metadata.sessionId)).toBe(true);
   });
 
+  it("replays attempt-scoped PySpark open progress to a late renderer and clears it at the terminal response", async () => {
+    const openResult = deferred<OpenWranglerResponse>();
+    const releaseAcquiringPublication = deferred<void>();
+    let heldAcquiringPublication = false;
+    let reportProgress: BridgeRequestOptions["onOpenProgress"];
+    const request: OpenWranglerBridge["request"] = vi.fn(async (request, options): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        reportProgress = options?.onOpenProgress;
+        return openResult.promise;
+      }
+      if (request.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      return {
+        kind: "error",
+        code: "unexpected_request",
+        message: "Unexpected test request.",
+        recoverable: false
+      };
+    });
+    const bridge: OpenWranglerBridge = {
+      request
+    };
+    const harness = createPanelHarness(bridge, {
+      backend: "pyspark",
+      backendPreference: "pyspark",
+      delegateOpen: true,
+      source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
+      postMessage: async (message) => {
+        if (!heldAcquiringPublication && isSessionOpenProgressMessage(message) && message.stage === "acquiringKernel") {
+          heldAcquiringPublication = true;
+          await releaseAcquiringPublication.promise;
+        }
+        return true;
+      }
+    });
+
+    const opening = harness.open();
+    await vi.waitFor(() => expect(reportProgress).toEqual(expect.any(Function)));
+    reportProgress?.("acquiringKernel");
+    expect(harness.posted).not.toContainEqual(expect.objectContaining({ kind: "sessionOpenProgress" }));
+
+    const rendererReady = harness.receive({ kind: "ready" });
+    await vi.waitFor(() =>
+      expect(harness.posted).toContainEqual({ kind: "sessionOpenProgress", stage: "acquiringKernel" })
+    );
+    reportProgress?.("bootstrappingRuntime");
+    reportProgress?.("preparingSparkView");
+    expect(harness.posted.filter(isSessionOpenProgressMessage)).toEqual([
+      { kind: "sessionOpenProgress", stage: "acquiringKernel" }
+    ]);
+    releaseAcquiringPublication.resolve(undefined);
+    await vi.waitFor(() =>
+      expect(harness.posted.filter(isSessionOpenProgressMessage)).toEqual([
+        { kind: "sessionOpenProgress", stage: "acquiringKernel" },
+        { kind: "sessionOpenProgress", stage: "bootstrappingRuntime" },
+        { kind: "sessionOpenProgress", stage: "preparingSparkView" }
+      ])
+    );
+
+    const pysparkOpened: SessionOpenedResponse = {
+      ...openedResponse,
+      metadata: {
+        ...openedResponse.metadata,
+        backend: "pyspark",
+        mode: "viewing",
+        source: { kind: "notebookVariable", label: "spark_df", variableName: "spark_df" },
+        capabilities: { ...openedResponse.metadata.capabilities, editable: false }
+      }
+    };
+    openResult.resolve(pysparkOpened);
+    await opening;
+    await rendererReady;
+
+    expect(harness.posted.filter(isSessionOpenProgressMessage)).toEqual([
+      { kind: "sessionOpenProgress", stage: "acquiringKernel" },
+      { kind: "sessionOpenProgress", stage: "bootstrappingRuntime" },
+      { kind: "sessionOpenProgress", stage: "preparingSparkView" },
+      { kind: "sessionOpenProgress", stage: null }
+    ]);
+
+    const publishedCount = harness.posted.length;
+    reportProgress?.("acquiringKernel");
+    expect(harness.posted).toHaveLength(publishedCount);
+    harness.dispose();
+    reportProgress?.("preparingSparkView");
+    expect(harness.posted).toHaveLength(publishedCount);
+  });
+
   it("routes screenshot-evidence drafts through the live panel snapshot", async () => {
     const draft = {
       id: "screenshot-uppercase",
@@ -3931,6 +4020,11 @@ interface RendererImportRequest {
   actionId: string;
 }
 
+interface SessionOpenProgressMessage {
+  kind: "sessionOpenProgress";
+  stage: "acquiringKernel" | "bootstrappingRuntime" | "preparingSparkView" | null;
+}
+
 function latestRendererSynchronization(messages: unknown[]): RendererSynchronizationMessage {
   const synchronization = [...messages].reverse().find(isRendererSynchronizationMessage);
   if (!synchronization) throw new Error("The panel did not publish a renderer synchronization marker.");
@@ -3952,6 +4046,11 @@ function isRendererImportRequest(message: unknown): message is RendererImportReq
   if (!message || typeof message !== "object") return false;
   const candidate = message as Partial<RendererImportRequest>;
   return candidate.kind === "requestImportOptionsChange" && typeof candidate.actionId === "string";
+}
+
+function isSessionOpenProgressMessage(message: unknown): message is SessionOpenProgressMessage {
+  if (!message || typeof message !== "object") return false;
+  return (message as Partial<SessionOpenProgressMessage>).kind === "sessionOpenProgress";
 }
 
 function isSessionOpenedResponse(message: unknown): message is SessionOpenedResponse {

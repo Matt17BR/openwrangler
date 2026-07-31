@@ -1616,6 +1616,22 @@ dd {
   padding: 24px;
 }
 
+.sessionOpenStatus {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+}
+
+.sessionOpenStatus strong {
+  font-size: 13px;
+}
+
+.sessionOpenStatus p {
+  color: var(--vscode-descriptionForeground);
+  line-height: 1.45;
+  margin: 0;
+}
+
 .diffStats {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;

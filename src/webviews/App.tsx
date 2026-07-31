@@ -29,6 +29,7 @@ import {
   type FilterModel
 } from "../shared/filterModel";
 import { decodeGridViewState, emptyGridViewState, type GridViewState } from "../shared/viewState";
+import { SESSION_OPEN_PROGRESS_STAGES, type SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 import { canEditLatestStep, canStartOperation, operationByKind } from "../shared/operations";
 import { FilterPanel } from "./filters/FilterPanel";
 import { DataGrid, type VisibleColumnRange } from "./grid/DataGrid";
@@ -77,6 +78,7 @@ export function App() {
   const [mutationPending, setMutationPending] = useState(false);
   const [importOptionsPending, setImportOptionsPending] = useState(false);
   const [runtimeDependencyInstallPending, setRuntimeDependencyInstallPending] = useState(false);
+  const [sessionOpenProgress, setSessionOpenProgress] = useState<SessionOpenProgressStage | undefined>();
   const [goToColumnRequest, setGoToColumnRequest] = useState<ColumnRevealRequest | undefined>();
   const goToColumnRequestSequence = useRef(0);
   const goToColumnRequestRef = useRef<ColumnRevealRequest | undefined>(undefined);
@@ -835,6 +837,7 @@ export function App() {
         | RendererSynchronizationMessage
         | ImportOptionsStateMessage
         | RuntimeDependencyInstallStateMessage
+        | SessionOpenProgressMessage
         | SessionPresentationMessage
         | ViewStateMessage
         | StepInspectionResultMessage
@@ -843,6 +846,14 @@ export function App() {
     ) => {
       if (event.origin !== window.location.origin) return;
       const response = event.data;
+      if (response.kind === "sessionOpenProgress") {
+        if (response.stage === null) {
+          setSessionOpenProgress(undefined);
+        } else if (isSessionOpenProgressStage(response.stage)) {
+          setSessionOpenProgress(response.stage);
+        }
+        return;
+      }
       if (response.kind === "rendererSynchronization") {
         const current = metadataRef.current;
         const matchesSession =
@@ -2274,7 +2285,7 @@ export function App() {
                 Profile warning: {backgroundDiagnosticMessages.join(" ")}
               </div>
             )}
-            {loading && (
+            {loading && displayMetadata && displayPage && (
               <div className="loading" role="status" aria-live="polite">
                 Loading...
               </div>
@@ -2362,8 +2373,28 @@ export function App() {
                 onViewStateChange={inspectionMode || importOptionsPending ? () => undefined : publishGridViewState}
               />
             ) : (
-              <div className="emptyState">
-                {inspectionMode ? "Loading selected-step inspection…" : "Opening session..."}
+              <div
+                className={`emptyState${sessionOpenProgress ? " sessionOpenStatus" : ""}`}
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {inspectionMode ? (
+                  "Loading selected-step inspection…"
+                ) : sessionOpenProgress ? (
+                  <>
+                    <strong>{sessionOpenProgressHeading(sessionOpenProgress)}</strong>
+                    {sessionOpenProgress === "preparingSparkView" && (
+                      <p>
+                        Open Wrangler is indexing and counting the complete PySpark DataFrame. Spark scans and
+                        materializes the frame so the grid has stable row positions and an exact row total. Cancellation
+                        is unavailable once this Spark work starts.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  "Opening session…"
+                )}
               </div>
             )}
           </section>
@@ -2485,6 +2516,11 @@ interface ImportOptionsStateMessage {
 interface RuntimeDependencyInstallStateMessage {
   kind: "runtimeDependencyInstallState";
   busy: boolean;
+}
+
+interface SessionOpenProgressMessage {
+  kind: "sessionOpenProgress";
+  stage: unknown;
 }
 
 interface SessionPresentationMessage {
@@ -2713,6 +2749,21 @@ function draftDiffLabels(diff: DataDiff, displayedRowCount: number): string[] {
 
 function pluralize(value: number, singular: string): string {
   return value === 1 ? singular : `${singular}s`;
+}
+
+function sessionOpenProgressHeading(stage: SessionOpenProgressStage): string {
+  switch (stage) {
+    case "acquiringKernel":
+      return "Connecting to the notebook kernel…";
+    case "bootstrappingRuntime":
+      return "Preparing Open Wrangler in the kernel…";
+    case "preparingSparkView":
+      return "Preparing the PySpark view…";
+  }
+}
+
+function isSessionOpenProgressStage(value: unknown): value is SessionOpenProgressStage {
+  return typeof value === "string" && (SESSION_OPEN_PROGRESS_STAGES as readonly string[]).includes(value);
 }
 
 function pageCoversColumnWindow(metadata: SessionMetadata, page: GridPage, window: ColumnWindow): boolean {

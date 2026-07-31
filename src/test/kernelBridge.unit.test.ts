@@ -158,6 +158,33 @@ describe("kernel protocol responses", () => {
 });
 
 describe("kernel retry classification", () => {
+  it("reports the honest host-only stages for a PySpark open and no stages for another backend", async () => {
+    const kernel = fakeKernel((request) => {
+      if (request.kind === "openSession") {
+        return openedResponse(request.requestedSessionId!, request.backend ?? "polars");
+      }
+      return initializedResponse;
+    });
+    mockKernel(kernel);
+    const bridge = createKernelBridge();
+    const sparkStages: string[] = [];
+
+    await expect(
+      bridge.request(openRequest(undefined, "pyspark"), {
+        onOpenProgress: (stage) => sparkStages.push(stage)
+      })
+    ).resolves.toMatchObject({ kind: "sessionOpened", metadata: { backend: "pyspark" } });
+    expect(sparkStages).toEqual(["acquiringKernel", "bootstrappingRuntime", "preparingSparkView"]);
+
+    const polarsStages: string[] = [];
+    await expect(
+      bridge.request(openRequest(undefined, "polars"), {
+        onOpenProgress: (stage) => polarsStages.push(stage)
+      })
+    ).resolves.toMatchObject({ kind: "sessionOpened", metadata: { backend: "polars" } });
+    expect(polarsStages).toEqual([]);
+  });
+
   it("assigns a stable host-known identity to kernel session opens", () => {
     const request: OpenSessionRequest = {
       kind: "openSession",

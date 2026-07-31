@@ -10,6 +10,7 @@ import type {
 } from "../../shared/protocol";
 import { PROTOCOL_VERSION } from "../../shared/protocol";
 import { isRuntimeResponseEnvelope } from "../../shared/protocolValidation";
+import type { SessionOpenProgressStage } from "../../shared/sessionOpenProgress";
 import type { BridgeRequestOptions, OpenWranglerBridge } from "../dataBridge";
 import { KernelRequestCancelledError, RestartableKernel, withKernelTimeout } from "./kernelLifecycle";
 import { buildKernelBootstrapCode, readRuntimeFiles } from "./kernelRuntimeBundle";
@@ -109,6 +110,7 @@ export class KernelBridge implements OpenWranglerBridge {
     const isCleanup = request.kind === "closeSession";
     if (!isCleanup) this.assertNotebookProvenance();
     const runtimeRequest = withKernelSessionIdentity(request);
+    const reportsSparkOpenProgress = runtimeRequest.kind === "openSession" && runtimeRequest.backend === "pyspark";
     if (runtimeRequest.kind === "openSession") {
       this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
     }
@@ -129,11 +131,13 @@ export class KernelBridge implements OpenWranglerBridge {
     let cleanupMismatchedRuntimeId = false;
     let openKernel: Kernel | undefined;
     try {
+      if (reportsSparkOpenProgress) reportOpenProgress(options, "acquiringKernel");
       const operation = this.lifecycle.run(
         async (acquired) => {
           const observation = this.observeKernelStatus(acquired);
           requestObservation = observation;
           try {
+            if (reportsSparkOpenProgress) reportOpenProgress(options, "bootstrappingRuntime");
             await this.ensureKernelAgent(acquired.kernel, tokenSource.token, this.registerNotebookFormatters);
           } catch (error) {
             this.invalidateLifecycle(observation);
@@ -144,6 +148,7 @@ export class KernelBridge implements OpenWranglerBridge {
           const observation = this.requireKernelObservation(acquired);
           requestObservation = observation;
           try {
+            if (reportsSparkOpenProgress) reportOpenProgress(options, "preparingSparkView");
             if (runtimeRequest.kind === "openSession") {
               this.assertSessionIdentityAvailable(runtimeRequest.requestedSessionId);
               openKernel = acquired.kernel;
@@ -406,6 +411,15 @@ ${registerNotebookFormatters ? "import openwrangler_runtime.notebook as __ow_not
     if (this.retiredSessionIds.has(sessionId)) {
       throw new Error(`Open Wrangler has already retired kernel session ${sessionId}.`);
     }
+  }
+}
+
+function reportOpenProgress(options: BridgeRequestOptions, stage: SessionOpenProgressStage): void {
+  try {
+    options.onOpenProgress?.(stage);
+  } catch {
+    // Session progress is presentational. A renderer callback must never
+    // interrupt or change the outcome of a kernel request.
   }
 }
 

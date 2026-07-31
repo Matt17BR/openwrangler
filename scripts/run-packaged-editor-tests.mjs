@@ -63,6 +63,7 @@ import {
   writeRemoteJupyterAcceptanceEnvironment
 } from "./jupyter-acceptance-environment.mjs";
 import { acquirePinnedCursor } from "./cursor-acquisition.mjs";
+import { preflightPackagedEditorPython } from "./packaged-python-preflight.mjs";
 import {
   REAL_REMOTE_JUPYTER_ENV,
   remoteJupyterAcceptanceEnabled,
@@ -326,6 +327,10 @@ try {
             throw new Error(
               "Real Jupyter-extension acceptance requires OPEN_WRANGLER_TEST_PYTHON to resolve to an existing absolute interpreter."
             );
+          }
+          if (acceptanceMode !== "data-wrangler-coexistence") {
+            writeCorrelatedProgress(orchestrationProgressPath, orchestrationRunId, "setup", "setup:preflight-python");
+            preflightPackagedEditorPython(testPython);
           }
           let jupyterKernelPython;
           if (jupyterExtensionInstallTarget) {

@@ -1835,6 +1835,33 @@ describe("App file import options", () => {
     webviewPostMessage.mockClear();
   });
 
+  it("announces honest PySpark open stages without offering an ineffective cancellation action", async () => {
+    render(<App />);
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "acquiringKernel" });
+    const status = await screen.findByRole("status");
+    expect(status).toHaveAttribute("aria-live", "polite");
+    expect(status).toHaveAttribute("aria-atomic", "true");
+    expect(status).toHaveTextContent("Connecting to the notebook kernel");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "bootstrappingRuntime" });
+    expect(status).toHaveTextContent("Preparing Open Wrangler in the kernel");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "preparingSparkView" });
+    expect(status).toHaveTextContent("Preparing the PySpark view");
+    expect(status).toHaveTextContent("indexing and counting the complete PySpark DataFrame");
+    expect(status).toHaveTextContent("stable row positions and an exact row total");
+    expect(status).toHaveTextContent("Cancellation is unavailable once this Spark work starts");
+    expect(screen.queryByRole("button", { name: /cancel/iu })).not.toBeInTheDocument();
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: "untrusted-stage" });
+    expect(status).toHaveTextContent("Preparing the PySpark view");
+
+    dispatchAppMessage({ kind: "sessionOpenProgress", stage: null });
+    expect(status).toHaveTextContent("Opening session");
+    expect(status).not.toHaveTextContent("PySpark");
+  });
+
   it("labels PySpark sessions as experimental and viewing-only", async () => {
     render(<App />);
     dispatchAppMessage({

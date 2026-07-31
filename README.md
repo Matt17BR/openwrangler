@@ -106,7 +106,9 @@ code insertion, and data export remain unavailable for DuckDB notebook relations
 PySpark 4.2 DataFrames can open as experimental, viewing-only live notebook sessions. Filtering, sorting, paging,
 and requested profiles stay in Spark; only bounded results return to the notebook runtime. File sessions,
 cleaning, exports, code insertion, and saved inline snapshots are not supported. Opening currently indexes and
-counts the complete frame, while per-page transfer safeguards are not dataframe row limits. See the
+counts the complete frame, while per-page transfer safeguards are not dataframe row limits. The workbench reports
+kernel, runtime, and Spark-view preparation separately and makes clear when the Spark work can no longer be
+cancelled. See the
 [full product gallery](https://github.com/Matt17BR/openwrangler/blob/main/docs/media-gallery.md) for file entry
 points, focused operation flows, accessibility states, and the real packaged PySpark notebook capture.
 

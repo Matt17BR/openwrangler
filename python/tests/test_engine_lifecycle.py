@@ -156,6 +156,13 @@ class PageAndCloseFailingPandasEngine(CloseFailingPandasEngine):
         super().__init__(fail_at="page")
 
 
+class InterruptingOpenPandasEngine(TrackingPandasEngine):
+    def shape(self, frame: Any) -> dict[str, int]:
+        del frame
+        self.shape_calls += 1
+        raise KeyboardInterrupt
+
+
 def tracking_registry(
     created: list[TrackingPandasEngine],
     factory: Callable[[], TrackingPandasEngine] | None = None,
@@ -245,6 +252,31 @@ def test_open_failure_closes_engine_and_never_registers_session(tmp_path, fail_a
     assert len(created) == 1
     assert created[0].close_calls == 1
     assert manager.sessions == {}
+
+
+def test_interrupted_open_closes_engine_and_releases_requested_identity(tmp_path) -> None:
+    path = write_csv(tmp_path)
+    created: list[TrackingPandasEngine] = []
+    engines: list[TrackingPandasEngine] = [InterruptingOpenPandasEngine(), TrackingPandasEngine()]
+    manager = SessionManager(tracking_registry(created, factory=lambda: engines.pop(0)))
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.open_session(
+            csv_source(path),
+            backend="pandas",
+            requested_session_id="interrupted-candidate",
+        )
+
+    assert created[0].close_calls == 1
+    assert manager.sessions == {}
+    reopened = manager.open_session(
+        csv_source(path),
+        backend="pandas",
+        requested_session_id="interrupted-candidate",
+    )
+    assert reopened["metadata"]["sessionId"] == "interrupted-candidate"
+    manager.close_session("interrupted-candidate", 0)
+    assert created[1].close_calls == 1
 
 
 def test_close_all_drains_every_session_exactly_once(tmp_path) -> None:

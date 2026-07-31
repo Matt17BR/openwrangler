@@ -7,6 +7,7 @@ import type {
   SessionSource
 } from "../shared/protocol";
 import type { GridViewState } from "../shared/viewState";
+import type { SessionOpenProgressStage } from "../shared/sessionOpenProgress";
 
 export interface CancellationTokenLike {
   readonly isCancellationRequested: boolean;
@@ -28,6 +29,8 @@ export interface BridgeRequestOptions {
    * pinned for recovery while the user's logical selection remains automatic.
    */
   backendPreference?: DataBackend | "auto";
+  /** Host-only progress for an expensive live-notebook session open. */
+  onOpenProgress?: (stage: SessionOpenProgressStage) => void;
 }
 
 export interface SessionPresentation {

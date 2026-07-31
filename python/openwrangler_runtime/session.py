@@ -387,6 +387,10 @@ class SessionManager:
                 self._dispose_open_failure(session, engine)
             label = source.get("label") or source.get("path") or source.get("variableName") or "source"
             raise EngineError(f"Could not read {label}: {error}") from error
+        except BaseException:
+            if engine is not None:
+                self._dispose_open_failure(session, engine)
+            raise
         finally:
             with self._sessions_condition:
                 self._opening_session_ids.discard(session_id)
