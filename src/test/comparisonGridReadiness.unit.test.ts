@@ -280,18 +280,20 @@ function mountGrid(
   return root;
 }
 
-function setRectangle(element: Element, rectangle: DOMRectInit): void {
+type RectangleGeometry = Pick<DOMRectReadOnly, "top" | "right" | "bottom" | "left" | "width" | "height">;
+
+function setRectangle(element: Element, rectangle: RectangleGeometry): void {
   Object.defineProperty(element, "getBoundingClientRect", {
     configurable: true,
     value: () => ({
-      x: rectangle.left ?? 0,
-      y: rectangle.top ?? 0,
-      top: rectangle.top ?? 0,
-      right: rectangle.right ?? 0,
-      bottom: rectangle.bottom ?? 0,
-      left: rectangle.left ?? 0,
-      width: rectangle.width ?? 0,
-      height: rectangle.height ?? 0,
+      x: rectangle.left,
+      y: rectangle.top,
+      top: rectangle.top,
+      right: rectangle.right,
+      bottom: rectangle.bottom,
+      left: rectangle.left,
+      width: rectangle.width,
+      height: rectangle.height,
       toJSON: () => ({})
     })
   });

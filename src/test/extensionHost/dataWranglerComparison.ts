@@ -613,17 +613,31 @@ async function frameChainIsVisibleAndPointerUsable(frame: Frame): Promise<boolea
   while (current.parentFrame()) {
     const host = await current.frameElement();
     if (!(await host.isVisible())) return false;
-    const pointerUsable = await host.evaluate((element) => {
-      if (!element.isConnected) return false;
+    const pointerUsable = await host.evaluate((node) => {
+      if (!node.isConnected || !("getBoundingClientRect" in node) || typeof node.getBoundingClientRect !== "function") {
+        return false;
+      }
+      const document = node.ownerDocument;
+      if (!document) return false;
+      const element = node as typeof node & {
+        getBoundingClientRect(): {
+          readonly top: number;
+          readonly right: number;
+          readonly bottom: number;
+          readonly left: number;
+          readonly width: number;
+          readonly height: number;
+        };
+      };
       const rectangle = element.getBoundingClientRect();
-      const view = element.ownerDocument.defaultView;
+      const view = document.defaultView;
       if (!view || rectangle.width <= 0 || rectangle.height <= 0) return false;
       const left = Math.max(0, rectangle.left);
       const right = Math.min(view.innerWidth, rectangle.right);
       const top = Math.max(0, rectangle.top);
       const bottom = Math.min(view.innerHeight, rectangle.bottom);
       if (right <= left || bottom <= top) return false;
-      const hit = element.ownerDocument.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+      const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
       return hit !== null && (hit === element || element.contains(hit));
     });
     if (!pointerUsable) return false;
