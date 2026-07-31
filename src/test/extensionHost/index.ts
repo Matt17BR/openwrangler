@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import * as path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { gunzipSync } from "node:zlib";
 import * as vscode from "vscode";
 import {
@@ -8200,6 +8201,56 @@ async function captureReleasedJupyterDuckDbRelation(
     if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
     const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
+
+    // The coordinator assertions above deliberately exercise DuckDB without
+    // going through the renderer. Materialize the same view through the real
+    // UI before capturing it so the panel owns the exact page and profiling
+    // context a user would see.
+    await drawer.getByRole("tab", { name: "Filters" }).click();
+    const filterPanel = drawer.locator(".filterSortPanel").first();
+    await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+    const activeDachFilter = drawer.getByRole("button", { name: "Remove equals DACH filter from market" });
+    if ((await activeDachFilter.count()) === 0) {
+      await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
+      await filterPanel.getByLabel("Predicate operator").selectOption("equals");
+      await filterPanel.getByLabel("equals predicate value").fill("DACH");
+      await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    }
+    await activeDachFilter.waitFor({ state: "visible", timeout: 10_000 });
+
+    const orderIdHeader = app.locator('th[data-column="order_id"]');
+    const revenueHeader = app.locator('th[data-column="revenue"]');
+    for (const [header, column] of [
+      [orderIdHeader, "order_id"],
+      [revenueHeader, "revenue"]
+    ] as const) {
+      const clearSort = header.getByRole("button", { name: new RegExp(`^Clear sort for ${column};`, "u") });
+      if ((await clearSort.count()) > 0) {
+        await clearSort.click();
+        await clearSort.waitFor({ state: "hidden", timeout: 10_000 });
+      }
+    }
+    const revenueMenu = revenueHeader.locator("details.columnMenu");
+    await revenueMenu.getByLabel("Column actions for revenue").click();
+    await revenueMenu.getByRole("button", { name: "Sort ascending", exact: true }).click();
+    assert.equal(await revenueMenu.evaluate((element) => element.hasAttribute("open")), false);
+    const orderIdMenu = orderIdHeader.locator("details.columnMenu");
+    await orderIdMenu.getByLabel("Column actions for order_id").click();
+    await orderIdMenu.getByRole("button", { name: "Sort descending", exact: true }).click();
+    assert.equal(await orderIdMenu.evaluate((element) => element.hasAttribute("open")), false);
+    await waitFor(
+      () => {
+        const current = testing.activeSession();
+        return (
+          current?.metadata.filteredShape.rows === 25_000 &&
+          isDeepStrictEqual(current.metadata.filterModel, filterModel)
+        );
+      },
+      30_000,
+      "the real DuckDB filter and priority sorts to own the captured view"
+    );
+
+    await drawer.getByRole("tab", { name: "Column" }).click();
     const headerProfiles = app.getByRole("button", { name: "Header profiles", exact: true });
     await headerProfiles.waitFor({ state: "visible", timeout: 10_000 });
     if ((await headerProfiles.getAttribute("aria-pressed")) !== "true") await headerProfiles.click();
@@ -8259,7 +8310,6 @@ async function captureReleasedJupyterDuckDbRelation(
       "The DuckDB notebook screenshot must synchronize its exact four-column fit."
     );
 
-    const revenueHeader = app.locator('th[data-column="revenue"]');
     const profileDeadline = Date.now() + 60_000;
     let revenueProfile = "";
     while (Date.now() < profileDeadline) {
@@ -9474,7 +9524,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
   assert.ok(workspace, "Packaged product scenes require the isolated acceptance workspace.");
   assert.equal(workspace.scheme, "file", "Packaged product scenes require one local isolated workspace.");
-  const fixture = ensureDeterministicFirstUseFixture(workspace, "regional-orders.csv");
+  const fixture = ensureDeterministicFirstUseFixture(workspace, "orders.csv");
   const sourceBytes = readFileSync(fixture.fsPath);
   const workbench = vscode.workspace.getConfiguration("workbench");
   const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
@@ -10109,7 +10159,7 @@ async function assertPackagedExploreScene(
   });
   await summaryTree.waitFor({ state: "visible", timeout: 10_000 });
   for (const expected of [
-    /regional-orders\.csv, polars · editing/iu,
+    /orders\.csv, polars · editing/iu,
     /Shape, 10,000 × 15/u,
     /Columns, 15/u,
     /Selected column, revenue/u,
@@ -10138,8 +10188,10 @@ async function assertPackagedExploreScene(
     const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
     const drawer = appRoot.querySelector('#openwrangler-insights-panel[aria-label="Column profiles and filters"]');
     const layout = appRoot.querySelector(".layout");
+    const sourceLabel = appRoot.querySelector(".toolbarIdentity strong");
+    const shapeLabel = appRoot.querySelector(".toolbarIdentity span");
     const rowHeader = scroller?.querySelector("th.rowHeader");
-    if (!scroller || !drawer || !layout || !rowHeader) {
+    if (!scroller || !drawer || !layout || !sourceLabel || !shapeLabel || !rowHeader) {
       throw new Error("The Explore product layout is incomplete.");
     }
     const scrollerBounds = scroller.getBoundingClientRect();
@@ -10155,6 +10207,8 @@ async function assertPackagedExploreScene(
     });
     return {
       layoutOverflow: layout.scrollWidth - layout.clientWidth,
+      clippedToolbarIdentity:
+        sourceLabel.scrollWidth > sourceLabel.clientWidth + 1 || shapeLabel.scrollWidth > shapeLabel.clientWidth + 1,
       drawerOverflow: drawer.scrollWidth - drawer.clientWidth,
       drawerText: drawer.textContent ?? "",
       gridOverflow: scroller.scrollWidth - scroller.clientWidth,
@@ -10177,6 +10231,7 @@ async function assertPackagedExploreScene(
   assert.ok(measurement.gridOverflow > 0, "Explore must retain real horizontal grid virtualization.");
   assert.ok(measurement.gridScrollLeft <= 1, "Explore must begin at the first complete grid column.");
   assert.ok(measurement.layoutOverflow <= 1, "Explore must not overflow the production workspace.");
+  assert.equal(measurement.clippedToolbarIdentity, false, "Explore must show its complete source name and shape.");
   assert.ok(measurement.drawerOverflow <= 1, "Explore Column profiles must not clip horizontally.");
   assert.deepEqual(measurement.partialHeaders, []);
   assert.deepEqual(measurement.clippedTitles, []);
@@ -10246,8 +10301,10 @@ async function assertPackagedWorkflowScene(
     const review = appRoot.querySelector('.draftReview[aria-label="Draft review"]');
     const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
     const grid = scroller?.querySelector('[role="grid"]');
+    const sourceLabel = appRoot.querySelector(".toolbarIdentity strong");
+    const shapeLabel = appRoot.querySelector(".toolbarIdentity span");
     const rowHeader = scroller?.querySelector("th.rowHeader");
-    if (!layout || !review || !scroller || !grid || !rowHeader) {
+    if (!layout || !review || !scroller || !grid || !sourceLabel || !shapeLabel || !rowHeader) {
       throw new Error("The Workflow product layout is incomplete.");
     }
     const scrollerBounds = scroller.getBoundingClientRect();
@@ -10258,6 +10315,8 @@ async function assertPackagedWorkflowScene(
     });
     return {
       layoutOverflow: layout.scrollWidth - layout.clientWidth,
+      clippedToolbarIdentity:
+        sourceLabel.scrollWidth > sourceLabel.clientWidth + 1 || shapeLabel.scrollWidth > shapeLabel.clientWidth + 1,
       reviewOverflow: review.scrollWidth - review.clientWidth,
       reviewBounds: review.getBoundingClientRect(),
       appBounds: appRoot.getBoundingClientRect(),
@@ -10279,6 +10338,7 @@ async function assertPackagedWorkflowScene(
     };
   });
   assert.ok(measurement.layoutOverflow <= 1, "Workflow must not overflow the production workspace.");
+  assert.equal(measurement.clippedToolbarIdentity, false, "Workflow must show its complete source name and shape.");
   assert.ok(measurement.reviewOverflow <= 1, "Workflow Draft review must not clip controls or diff labels.");
   assert.ok(measurement.reviewBounds.left >= measurement.appBounds.left - 1);
   assert.ok(measurement.reviewBounds.right <= measurement.appBounds.right + 1);

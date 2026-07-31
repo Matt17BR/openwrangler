@@ -9,7 +9,7 @@ captures have passed packaged-editor acceptance.
 - Source: the real packaged VSIX in an isolated VS Code or Cursor profile.
 - Viewport: 1440 × 900 CSS pixels at 100% zoom. The deterministic acceptance harness removes only the
   30-pixel native test-host title strip, so the final workbench PNG is 1440 × 870 pixels.
-- Data: the deterministic 10,000-row regional-orders CSV used by the packaged first-use journey. It includes a
+- Data: the deterministic 10,000-row `orders.csv` fixture derived from the packaged first-use journey. It includes a
   UTF-8 BOM, semicolon delimiter, quoted empty strings, missing values, dates, booleans, text, and numeric
   columns. No user or private data is allowed.
 - Import: the production automatic CSV detector opens the fixture in a native Polars file session without an
@@ -34,8 +34,8 @@ The Explore scene demonstrates the extension as an editor product rather than on
 - The production grid remains usable beside the sidebar.
 - **Column profiles** is open for `revenue` and has finished loading exact Min, Max, Mean, Median, and the
   distribution.
-- Sidebar rows, drawer statistics, visible grid headers, and toolbar controls are fully contained; intentional
-  horizontal grid scrolling is not clipping.
+- Sidebar rows, drawer statistics, visible grid headers, the source name, shape, and toolbar controls are fully
+  contained; intentional horizontal grid scrolling is not clipping.
 
 ## Workflow
 
