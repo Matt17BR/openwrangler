@@ -8247,7 +8247,9 @@ async function captureReleasedJupyterDuckDbRelation(
     await drawer.getByRole("tab", { name: "Filters" }).click();
     const filterPanel = drawer.locator(".filterSortPanel").first();
     await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
-    const activeDachFilter = drawer.getByRole("button", { name: "Remove equals DACH filter from market" });
+    const activeDachFilter = drawer.getByRole("button", {
+      name: 'Remove equals "DACH" filter from market'
+    });
     if ((await activeDachFilter.count()) === 0) {
       await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
       await filterPanel.getByLabel("Predicate operator").selectOption("equals");
@@ -8393,7 +8395,7 @@ async function captureReleasedJupyterDuckDbRelation(
     const activeFilters = drawer.getByRole("region", { name: "Active filters" });
     await activeFilters.waitFor({ state: "visible", timeout: 10_000 });
     await activeFilters
-      .getByRole("button", { name: "Remove equals DACH filter from market" })
+      .getByRole("button", { name: 'Remove equals "DACH" filter from market' })
       .waitFor({ state: "visible", timeout: 10_000 });
     const sortOrder = drawer.getByRole("list", { name: "Active sort order" });
     await sortOrder.waitFor({ state: "visible", timeout: 10_000 });
