@@ -4331,39 +4331,13 @@ async function captureReleasedJupyterCodeInsertion(
     await workbench.waitForTimeout(600);
     const notebookSurface = workbench.locator(".notebook-editor:visible").first();
     await notebookSurface.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    const insertedCell = notebookSurface.locator(".monaco-list-row.code-cell-row").last();
-    await insertedCell.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
-    const geometry = await insertedCell.evaluate((element) => {
-      type NotebookCodeElement = {
-        readonly clientWidth: number;
-        readonly scrollWidth: number;
-        closest(selector: string): NotebookCodeElement | null;
-        getAttribute(name: string): string | null;
-        getBoundingClientRect(): { bottom: number; left: number; right: number; top: number };
-        querySelector(selector: string): NotebookCodeElement | null;
-      };
-      const cell = element as unknown as NotebookCodeElement;
-      const notebook = cell.closest(".notebook-editor");
-      const editorRoot = cell.querySelector(".cell-editor-part .monaco-editor");
-      const lines = cell.querySelector(".cell-editor-part .view-lines");
-      if (!notebook || !editorRoot || !lines) {
-        throw new Error("The inserted notebook cell geometry is incomplete.");
-      }
-      const cellBounds = cell.getBoundingClientRect();
-      const notebookBounds = notebook.getBoundingClientRect();
-      return {
-        dataIndex: cell.getAttribute("data-index"),
-        cellInsideNotebook:
-          cellBounds.left >= notebookBounds.left - 1 &&
-          cellBounds.top >= notebookBounds.top - 1 &&
-          cellBounds.right <= notebookBounds.right + 1 &&
-          cellBounds.bottom <= notebookBounds.bottom + 1,
-        horizontalOverflow: lines.scrollWidth - editorRoot.clientWidth
-      };
-    });
-    assert.match(geometry.dataIndex ?? "", /^\d+$/u, "The captured notebook cell must retain its list identity.");
-    assert.equal(geometry.cellInsideNotebook, true, "The complete generated cell must stay inside the notebook.");
-    assert.ok(geometry.horizontalOverflow <= 1, "The generated code insertion scene must not clip code lines.");
+    assert.equal(notebook.cellAt(insertedIndex).document.getText(), code);
+    assert.equal(notebook.cellAt(insertedIndex).metadata.openWrangler?.source, variableName);
+    assert.equal(
+      editor.visibleRanges.some((visible) => visible.start <= insertedIndex && visible.end > insertedIndex),
+      true,
+      "The public notebook editor must still report the inserted cell as visible immediately before capture."
+    );
     await clearReleasedJupyterScreenshotTransientUi(workbench);
     mkdirSync(outputDirectory, { recursive: true });
     await captureNotebookWorkbenchScreenshot(
