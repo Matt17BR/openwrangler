@@ -8485,10 +8485,44 @@ async function assertReleasedJupyterCaptureInternalMarkerHidden(workbench: Page)
           .locator("body")
           .evaluate(
             (body, expected) => {
-              const visibleText = (body as unknown as { readonly innerText: string }).innerText;
+              type TextElement = {
+                readonly children: ArrayLike<TextElement>;
+                readonly textContent: string | null;
+                getBoundingClientRect(): {
+                  bottom: number;
+                  height: number;
+                  left: number;
+                  right: number;
+                  top: number;
+                  width: number;
+                };
+              };
+              type TextBody = TextElement & { querySelectorAll(selector: string): ArrayLike<TextElement> };
+              const page = globalThis as unknown as {
+                getComputedStyle(element: TextElement): { display: string; visibility: string };
+                innerHeight: number;
+                innerWidth: number;
+              };
+              const root = body as unknown as TextBody;
+              const isVisibleText = (needle: string): boolean =>
+                Array.from(root.querySelectorAll("*")).some((element) => {
+                  if (!element.textContent?.includes(needle)) return false;
+                  if (Array.from(element.children).some((child) => child.textContent?.includes(needle))) return false;
+                  const style = page.getComputedStyle(element);
+                  if (style.display === "none" || style.visibility === "hidden") return false;
+                  const bounds = element.getBoundingClientRect();
+                  return (
+                    bounds.width > 0 &&
+                    bounds.height > 0 &&
+                    bounds.right > 0 &&
+                    bounds.bottom > 0 &&
+                    bounds.left < page.innerWidth &&
+                    bounds.top < page.innerHeight
+                  );
+                });
               return {
-                internalMarker: visibleText.includes(expected.internalMarker),
-                showcasePreview: visibleText.includes(expected.showcasePreview)
+                internalMarker: isVisibleText(expected.internalMarker),
+                showcasePreview: isVisibleText(expected.showcasePreview)
               };
             },
             {

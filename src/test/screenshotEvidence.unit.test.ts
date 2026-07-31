@@ -292,6 +292,8 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain(
       "if (observations.some((observation) => observation?.showcasePreview === true)) break;"
     );
+    expect(extensionHost).toContain("const isVisibleText = (needle: string): boolean =>");
+    expect(extensionHost).toContain("bounds.top < page.innerHeight");
     expect(extensionHost).toContain('pageSize.value = "10"');
     expect(extensionHost).toContain("scrollerBounds.top + scroller.clientTop + scroller.clientHeight");
     expect(pickerCapture.indexOf("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)")).toBeGreaterThan(0);
