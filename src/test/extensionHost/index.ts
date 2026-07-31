@@ -6038,9 +6038,9 @@ async function exercisePackagedFirstUseInteractionJourney(
   );
 
   recordAcceptanceProgress("platform-smoke:insights");
-  const insightsToggle = app.getByRole("button", { name: "Insights & filters" });
+  const insightsToggle = app.getByRole("button", { name: "Column profiles and filters" });
   await insightsToggle.click();
-  const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+  const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
   await drawer.waitFor({ state: "visible", timeout: 10_000 });
   await drawer.getByRole("heading", { name: "revenue", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
   await waitForLocatorText(
@@ -7634,10 +7634,11 @@ async function captureReleasedJupyterPolarsDraft(
     true,
     "The Polars notebook screenshot must synchronize after navigating to the draft column."
   );
-  const hideInsights = app.getByRole("button", { name: "Hide insights", exact: true });
-  await hideInsights.waitFor({ state: "visible", timeout: 10_000 });
-  await hideInsights.click();
-  await app.getByRole("button", { name: "Show insights", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  const headerProfiles = app.getByRole("button", { name: "Header profiles", exact: true });
+  await headerProfiles.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(await headerProfiles.getAttribute("aria-pressed"), "true");
+  await headerProfiles.click();
+  assert.equal(await headerProfiles.getAttribute("aria-pressed"), "false");
 
   const firstVisibleColumn = columnReference(active.metadata, "product_family");
   const firstVisibleColumnPosition = active.metadata.schema.findIndex((column) => column.id === firstVisibleColumn.id);
@@ -7893,9 +7894,9 @@ async function captureReleasedJupyterPySparkLive(
     assert.equal(await app.getByRole("button", { name: "Add step" }).count(), 0);
     assert.equal(await app.getByRole("button", { name: "Apply step" }).count(), 0);
 
-    const insightsToggle = app.getByRole("button", { name: "Insights & filters" });
+    const insightsToggle = app.getByRole("button", { name: "Column profiles and filters" });
     if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
-    const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+    const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
     await drawer.getByRole("heading", { name: "revenue" }).waitFor({ state: "visible", timeout: 10_000 });
     const insightsDeadline = Date.now() + 60_000;
@@ -8006,14 +8007,24 @@ async function captureReleasedJupyterPySparkLive(
       );
     }
 
-    if ((await app.getByRole("button", { name: "Hide insights" }).count()) > 0) {
-      throw new Error("The PySpark media scene must not enable multi-column grid profiling.");
-    }
-    const loadedRows = await app
-      .locator(".gridControls")
-      .getByText(/Loaded rows 1 to \d+ of 100,000/u)
-      .count();
-    assert.equal(loadedRows, 1, "The PySpark media scene must show the live 100,000-row source.");
+    const headerProfiles = app.getByRole("button", { name: "Header profiles", exact: true });
+    assert.equal(
+      await headerProfiles.getAttribute("aria-pressed"),
+      "false",
+      "The PySpark media scene must not enable multi-column grid profiling."
+    );
+    assert.equal(
+      await headerProfiles.getAttribute("title"),
+      "Runs Spark profiling queries for the visible columns.",
+      "The PySpark header-profile toggle must retain its explicit cost warning."
+    );
+    const loadedRows = app.getByRole("status", { name: "Visible rows" });
+    assert.equal(await loadedRows.count(), 1, "The PySpark media scene must expose one visible-row status.");
+    assert.match(
+      (await loadedRows.innerText()).trim(),
+      /^Rows 1\u2013\d+ of 100,000$/u,
+      "The PySpark media scene must show the live 100,000-row source."
+    );
     const gridBox = await gridScroller.boundingBox();
     const rowHeaderBox = await app.locator("th.rowHeader").first().boundingBox();
     const orderIdBox = await app.locator('th[data-column="order_id"]').boundingBox();
@@ -8482,9 +8493,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     const target = await waitForOpenWranglerGridTarget(capturePage, testing, sessionId);
     const app = await exactSessionApp(target.frame, sessionId);
     assert.ok(app, "Selected-column Insights requires the exact live Open Wrangler renderer.");
-    const toggle = app.getByRole("button", { name: "Insights & filters" });
+    const toggle = app.getByRole("button", { name: "Column profiles and filters" });
     if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-    const drawer = app.getByRole("complementary", { name: "Insights and filters" });
+    const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
     await drawer.waitFor({ state: "visible", timeout: 10_000 });
     await drawer.getByRole("tab", { name: "Column" }).waitFor({ state: "visible", timeout: 10_000 });
     await drawer.getByRole("heading", { name: expectedColumn }).waitFor({ state: "visible", timeout: 10_000 });
@@ -8612,7 +8623,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
             const bounds = cell.getBoundingClientRect();
             return bounds.right > scrollerBounds.left && bounds.left < scrollerBounds.right;
           });
-          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .cleaningBar, .gridControls, .draftReview"));
+          const controls = Array.from(appRoot.querySelectorAll(".toolbar, .cleaningBar, .gridStatusBar, .draftReview"));
           const clippedControls = controls
             .filter((element) => element.scrollWidth > element.clientWidth + 1)
             .map((element) => element.className);
@@ -8694,8 +8705,8 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       const appBounds = root.getBoundingClientRect();
       const toolbar = root.querySelector(".toolbar");
       const toolbarActions = root.querySelector(".toolbarActions");
-      const gridControls = root.querySelector(".gridControls");
-      if (!toolbar || !toolbarActions || !gridControls) {
+      const gridStatusBar = root.querySelector(".gridStatusBar");
+      if (!toolbar || !toolbarActions || !gridStatusBar) {
         throw new Error("Responsive screenshot controls are incomplete.");
       }
       const clippedChildren = (containerSelector: string, selector: string): string[] => {
@@ -8723,16 +8734,16 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
         appOverflow: root.scrollWidth - root.clientWidth,
         toolbarOverflow: toolbar.scrollWidth - toolbar.clientWidth,
         toolbarActionsOverflow: toolbarActions.scrollWidth - toolbarActions.clientWidth,
-        gridControlsOverflow: gridControls.scrollWidth - gridControls.clientWidth,
+        gridStatusBarOverflow: gridStatusBar.scrollWidth - gridStatusBar.clientWidth,
         clippedToolbarControls: clippedChildren(".toolbarActions", ":scope > *"),
-        clippedGridControls: clippedChildren(".gridControls", ":scope > *")
+        clippedGridStatusBar: clippedChildren(".gridStatusBar", ":scope > *")
       };
     });
     assert.ok(
       measurement.appOverflow <= 1 &&
         measurement.toolbarOverflow <= 1 &&
         measurement.toolbarActionsOverflow <= 1 &&
-        measurement.gridControlsOverflow <= 1,
+        measurement.gridStatusBarOverflow <= 1,
       `The 200% zoom layout must not overflow horizontally: ${JSON.stringify(measurement)}`
     );
     assert.deepEqual(
@@ -8741,9 +8752,9 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
       "Every toolbar action must remain completely visible at 200% zoom."
     );
     assert.deepEqual(
-      measurement.clippedGridControls,
+      measurement.clippedGridStatusBar,
       [],
-      "Every grid control must remain completely visible at 200% zoom."
+      "Every grid status control and the visible-row range must remain completely visible at 200% zoom."
     );
   }
 

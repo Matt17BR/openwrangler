@@ -619,6 +619,18 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
   const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
   const strictProjectedPages = appearance.strictProjectedPages === true;
+  const zoomViewportStyles =
+    zoom === 1
+      ? ""
+      : `
+    body {
+      height: ${100 / zoom}vh;
+      overflow: hidden;
+    }
+    #root,
+    .app {
+      height: 100%;
+    }`;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -628,7 +640,12 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   <link rel="stylesheet" href="${mediaDir}/webview.css" />
   <style>
     ${themeTokens(theme)}
-    body { background: var(--vscode-editor-background); color: var(--vscode-foreground); zoom: ${zoom}; }
+    body {
+      background: var(--vscode-editor-background);
+      color: var(--vscode-foreground);
+      zoom: ${zoom};
+    }
+    ${zoomViewportStyles}
   </style>
   <script>
     const sessionPayload = ${stringifyForInlineScript(sessionPayload)};
@@ -652,7 +669,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           ${
             openInsights
               ? `setTimeout(() => {
-            const insights = document.querySelector('button[aria-label="Insights & filters"]');
+            const insights = document.querySelector('button[aria-label="Column profiles and filters"]');
             if (insights instanceof HTMLButtonElement && insights.getAttribute("aria-expanded") !== "true") {
               insights.click();
             }

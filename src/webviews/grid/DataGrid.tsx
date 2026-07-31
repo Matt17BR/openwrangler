@@ -727,32 +727,6 @@ export function DataGrid({
 
   return (
     <div className="dataGrid">
-      <div className="gridControls" aria-live="polite">
-        <button type="button" disabled={busy || page.offset === 0} onClick={() => goToPage(page.offset - pageSize)}>
-          Previous block
-        </button>
-        <span>
-          {page.totalRows === 0
-            ? "No rows"
-            : `Loaded rows ${page.offset + 1} to ${Math.min(page.offset + page.rows.length, page.totalRows)} of ${page.totalRows.toLocaleString()}`}
-        </span>
-        <button
-          type="button"
-          disabled={busy || page.offset + pageSize >= page.totalRows}
-          onClick={() => goToPage(page.offset + pageSize)}
-        >
-          Next block
-        </button>
-        <button
-          type="button"
-          className="secondaryButton"
-          title={metadata.backend === "pyspark" ? "Runs Spark profiling queries for the visible columns." : undefined}
-          onClick={() => setShowInsights((current) => !current)}
-        >
-          {showInsights ? "Hide" : "Show"} insights
-        </button>
-      </div>
-
       {page.totalRows === 0 && metadata.schema.length === 0 && (
         <div className="emptyState" role="status">
           <strong>Empty dataset</strong>
@@ -916,6 +890,49 @@ export function DataGrid({
             )}
           </tbody>
         </table>
+      </div>
+      <div className="gridStatusBar">
+        <button
+          type="button"
+          className="gridNavigationButton"
+          aria-label="Previous block"
+          disabled={busy || page.offset === 0}
+          onClick={() => goToPage(page.offset - pageSize)}
+        >
+          <span className="codicon codicon-chevron-left" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="gridNavigationButton"
+          aria-label="Next block"
+          disabled={busy || page.offset + pageSize >= page.totalRows}
+          onClick={() => goToPage(page.offset + pageSize)}
+        >
+          <span className="codicon codicon-chevron-right" aria-hidden="true" />
+        </button>
+        <span
+          className="visibleRowsStatus"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          aria-label="Visible rows"
+        >
+          {page.totalRows === 0
+            ? "No rows"
+            : `Rows ${(page.offset + 1).toLocaleString()}\u2013${Math.min(
+                page.offset + page.rows.length,
+                page.totalRows
+              ).toLocaleString()} of ${page.totalRows.toLocaleString()}`}
+        </span>
+        <button
+          type="button"
+          className="headerProfilesButton"
+          aria-pressed={showInsights}
+          title={metadata.backend === "pyspark" ? "Runs Spark profiling queries for the visible columns." : undefined}
+          onClick={() => setShowInsights((current) => !current)}
+        >
+          Header profiles
+        </button>
       </div>
     </div>
   );

@@ -104,6 +104,7 @@ try {
   await verifyStepInspectionWorkflow(browser);
   await verifyFilterKeyboardWorkflow(browser);
   await verifyInsightsDrawerWorkflow(browser);
+  await verifyGridStatusBar(browser);
   await verifyGridKeyboardWorkflow(browser);
   await verifyWideGridPerformance(browser);
 } finally {
@@ -495,30 +496,30 @@ async function verifyInsightsDrawerWorkflow(browser) {
       );
     }
 
-    const toggle = page.getByRole("button", { name: "Insights & filters" });
+    const toggle = page.getByRole("button", { name: "Column profiles and filters" });
     if ((await toggle.getAttribute("aria-controls")) !== "openwrangler-insights-panel") {
-      throw new Error(`${harness} did not connect the Insights toggle to its drawer.`);
+      throw new Error(`${harness} did not connect the Column profiles toggle to its drawer.`);
     }
     await toggle.focus();
     await page.keyboard.press("Enter");
-    const panel = page.getByRole("complementary", { name: "Insights and filters" });
+    const panel = page.getByRole("complementary", { name: "Column profiles and filters" });
     await panel.waitFor();
     if ((await panel.getAttribute("aria-modal")) !== null) {
-      throw new Error(`${harness} incorrectly exposed the narrow Insights drawer as modal.`);
+      throw new Error(`${harness} incorrectly exposed the narrow Column profiles drawer as modal.`);
     }
     await page.getByRole("button", { name: "Close panel" }).waitFor();
     await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Close panel");
     const summaryPanel = panel.locator("section.summaryPanel");
     const tabs = summaryPanel.getByRole("tab");
     if ((await tabs.allTextContents()).map((text) => text.trim()).join(",") !== "Column,Dataset,Filters") {
-      throw new Error(`${harness} did not expose the Column, Dataset, and Filters Insights tabs.`);
+      throw new Error(`${harness} did not expose the Column, Dataset, and Filters profile tabs.`);
     }
 
     const columnTab = summaryPanel.getByRole("tab", { name: "Column" });
     const datasetTab = summaryPanel.getByRole("tab", { name: "Dataset" });
     const filtersTab = summaryPanel.getByRole("tab", { name: "Filters" });
     if ((await columnTab.getAttribute("aria-selected")) !== "true") {
-      throw new Error(`${harness} did not open Insights on the selected-column view.`);
+      throw new Error(`${harness} did not open Column profiles on the selected-column view.`);
     }
     const columnPanel = summaryPanel.getByRole("tabpanel", { name: "Column" });
     await columnPanel.getByRole("heading", { name: "value (column 1)" }).waitFor();
@@ -571,10 +572,10 @@ async function verifyInsightsDrawerWorkflow(browser) {
     await page.waitForFunction(
       () =>
         document.activeElement instanceof HTMLButtonElement &&
-        document.activeElement.getAttribute("aria-label") === "Insights & filters"
+        document.activeElement.getAttribute("aria-label") === "Column profiles and filters"
     );
     if (!(await toggle.evaluate((element) => document.activeElement === element))) {
-      throw new Error(`${harness} did not restore focus to the exact Insights opener.`);
+      throw new Error(`${harness} did not restore focus to the exact Column profiles opener.`);
     }
     await page.close();
   }
@@ -582,12 +583,12 @@ async function verifyInsightsDrawerWorkflow(browser) {
   const textPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
   const textHarness = "summary-text-dark-800.html";
   await textPage.goto(pathToFileURL(resolve(harnessDir, textHarness)).href, { waitUntil: "load" });
-  const textToggle = textPage.getByRole("button", { name: "Insights & filters" });
+  const textToggle = textPage.getByRole("button", { name: "Column profiles and filters" });
   if ((await textToggle.getAttribute("aria-expanded")) !== "true") {
     await textToggle.focus();
     await textPage.keyboard.press("Enter");
   }
-  const textPanel = textPage.getByRole("complementary", { name: "Insights and filters" });
+  const textPanel = textPage.getByRole("complementary", { name: "Column profiles and filters" });
   await textPanel.getByRole("heading", { name: "account_note" }).waitFor();
   for (const [label, value] of [
     ["Null", "1"],
@@ -612,11 +613,139 @@ async function verifyInsightsDrawerWorkflow(browser) {
   await textPage.keyboard.press("Escape");
   await textPanel.waitFor({ state: "detached" });
   if (!(await textToggle.evaluate((element) => document.activeElement === element))) {
-    throw new Error(`${textHarness} did not restore focus to the exact Insights opener.`);
+    throw new Error(`${textHarness} did not restore focus to the exact Column profiles opener.`);
   }
   await textPage.close();
 
-  console.log("Insights drawer focus, duplicate labels, and numeric/text summary-family semantics verified.");
+  console.log("Column profiles drawer focus, duplicate labels, and numeric/text summary-family semantics verified.");
+}
+
+async function verifyGridStatusBar(browser) {
+  for (const { harness, width, range } of [
+    { harness: "wide-view.html", width: 320, range: "Rows 1\u2013200 of 1,000" },
+    { harness: "grid-zoom-2.html", width: 1280, range: "Rows 1\u20134 of 4" }
+  ]) {
+    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
+    const statusBar = page.locator(".gridStatusBar");
+    await statusBar.waitFor();
+    const visibleRows = statusBar.getByRole("status", { name: "Visible rows" });
+    if ((await visibleRows.textContent())?.trim() !== range) {
+      throw new Error(`${harness} did not expose the exact visible-row range ${JSON.stringify(range)}.`);
+    }
+    if (
+      (await visibleRows.getAttribute("aria-live")) !== "polite" ||
+      (await visibleRows.getAttribute("aria-atomic")) !== "true"
+    ) {
+      throw new Error(`${harness} did not keep the visible-row range as one polite, atomic status.`);
+    }
+    const previous = statusBar.getByRole("button", { name: "Previous block" });
+    const next = statusBar.getByRole("button", { name: "Next block" });
+    if (!(await previous.isDisabled()) || (await previous.getAttribute("aria-disabled")) !== null) {
+      throw new Error(`${harness} did not use native disabled semantics for Previous block.`);
+    }
+    if ((await previous.locator(".codicon-chevron-left").count()) !== 1) {
+      throw new Error(`${harness} did not render the Previous block Codicon.`);
+    }
+    if ((await next.locator(".codicon-chevron-right").count()) !== 1) {
+      throw new Error(`${harness} did not render the Next block Codicon.`);
+    }
+    const headerProfiles = statusBar.getByRole("button", { name: "Header profiles", exact: true });
+    if ((await headerProfiles.getAttribute("aria-pressed")) !== "true") {
+      throw new Error(`${harness} did not expose the default pressed Header profiles state.`);
+    }
+    const layout = await statusBar.evaluate((bar) => {
+      const bounds = bar.getBoundingClientRect();
+      const scroller = bar.previousElementSibling;
+      const rangeStatus = bar.querySelector('[role="status"][aria-label="Visible rows"]');
+      const headerProfiles = bar.querySelector(".headerProfilesButton");
+      return {
+        position: getComputedStyle(bar).position,
+        followsScroller: scroller?.matches('[data-testid="data-grid-scroller"]') === true,
+        overflow: bar.scrollWidth - bar.clientWidth,
+        rangeClipped: rangeStatus ? rangeStatus.scrollWidth > rangeStatus.clientWidth + 1 : true,
+        headerProfilesBackground: headerProfiles ? getComputedStyle(headerProfiles).backgroundColor : "transparent",
+        clippedChildren: [...bar.children].flatMap((child) => {
+          const childBounds = child.getBoundingClientRect();
+          return childBounds.left >= bounds.left - 1 && childBounds.right <= bounds.right + 1
+            ? []
+            : [child.getAttribute("aria-label") ?? child.textContent?.trim() ?? child.tagName];
+        })
+      };
+    });
+    if (
+      layout.position === "sticky" ||
+      layout.position === "fixed" ||
+      !layout.followsScroller ||
+      layout.overflow > 1 ||
+      layout.rangeClipped ||
+      layout.headerProfilesBackground === "transparent" ||
+      layout.headerProfilesBackground === "rgba(0, 0, 0, 0)" ||
+      layout.clippedChildren.length > 0
+    ) {
+      throw new Error(`${harness} clipped, moved, or made the grid status bar sticky: ${JSON.stringify(layout)}.`);
+    }
+    await page.close();
+  }
+
+  const forcedPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
+  await forcedPage.emulateMedia({ forcedColors: "active" });
+  await forcedPage.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+  const forcedStatusBar = forcedPage.locator(".gridStatusBar");
+  await forcedStatusBar.waitFor();
+  const forcedHeaderProfiles = forcedStatusBar.getByRole("button", { name: "Header profiles", exact: true });
+  await forcedHeaderProfiles.focus();
+  const forcedStyles = await forcedStatusBar.evaluate((bar) => {
+    const navigation = [...bar.querySelectorAll(".gridNavigationButton")].map((button) => {
+      const style = getComputedStyle(button);
+      const iconBounds = button.querySelector(".codicon")?.getBoundingClientRect();
+      return {
+        borderStyle: style.borderStyle,
+        borderWidth: style.borderWidth,
+        forcedColorAdjust: style.forcedColorAdjust,
+        opacity: style.opacity,
+        iconVisible: Boolean(iconBounds && iconBounds.width > 0 && iconBounds.height > 0)
+      };
+    });
+    const header = bar.querySelector(".headerProfilesButton");
+    const headerStyle = header ? getComputedStyle(header) : undefined;
+    return {
+      navigation,
+      header: headerStyle
+        ? {
+            backgroundColor: headerStyle.backgroundColor,
+            color: headerStyle.color,
+            forcedColorAdjust: headerStyle.forcedColorAdjust,
+            outlineColor: headerStyle.outlineColor,
+            outlineStyle: headerStyle.outlineStyle,
+            outlineWidth: headerStyle.outlineWidth
+          }
+        : undefined
+    };
+  });
+  if (
+    forcedStyles.navigation.length !== 2 ||
+    forcedStyles.navigation.some(
+      ({ borderStyle, borderWidth, forcedColorAdjust, opacity, iconVisible }) =>
+        borderStyle !== "solid" ||
+        Number.parseFloat(borderWidth) < 1 ||
+        forcedColorAdjust !== "none" ||
+        opacity !== "1" ||
+        !iconVisible
+    ) ||
+    !forcedStyles.header ||
+    forcedStyles.header.backgroundColor === "transparent" ||
+    forcedStyles.header.backgroundColor === "rgba(0, 0, 0, 0)" ||
+    forcedStyles.header.color === forcedStyles.header.backgroundColor ||
+    forcedStyles.header.forcedColorAdjust !== "none" ||
+    forcedStyles.header.outlineColor === "transparent" ||
+    forcedStyles.header.outlineStyle === "none" ||
+    Number.parseFloat(forcedStyles.header.outlineWidth) < 1
+  ) {
+    throw new Error(`Forced colors did not preserve the grid status controls: ${JSON.stringify(forcedStyles)}.`);
+  }
+  await forcedPage.close();
+  console.log("Bottom grid status, narrow/200%-zoom range visibility, Codicon navigation, and forced colors verified.");
 }
 
 async function scanPageAccessibility(page, harness) {
@@ -765,7 +894,7 @@ async function verifyStepInspectionWorkflow(browser) {
   await inspection.waitFor();
   const filters = page.getByRole("button", { name: "Filters paused during inspection" });
   if (!(await filters.isDisabled())) {
-    throw new Error("Applied-step inspection did not disable filters and insights.");
+    throw new Error("Applied-step inspection did not disable filters and column profiles.");
   }
 
   const diffSummary = page.getByLabel("Selected step data diff summary");
@@ -799,7 +928,7 @@ async function verifyStepInspectionWorkflow(browser) {
   if ((await runtimeRequestCount(page, "getPage")) !== pageRequestsBeforeClear) {
     throw new Error("Clearing applied-step inspection fetched the confirmed grid again.");
   }
-  const restoredFilters = page.getByRole("button", { name: "Insights & filters" });
+  const restoredFilters = page.getByRole("button", { name: "Column profiles and filters" });
   await restoredFilters.waitFor();
   if (await restoredFilters.isDisabled()) {
     throw new Error("Clearing applied-step inspection did not restore filter controls.");
@@ -822,7 +951,7 @@ async function verifyFilterKeyboardWorkflow(browser) {
   await page.goto(pathToFileURL(resolve(harnessDir, "filter-panel.html")).href, { waitUntil: "load" });
   await page.bringToFront();
   await page.waitForFunction(() => document.hasFocus());
-  await page.getByRole("complementary", { name: "Insights and filters" }).waitFor();
+  await page.getByRole("complementary", { name: "Column profiles and filters" }).waitFor();
   await waitForRuntimeRequestCount(page, "getColumnValues", 1);
   await page.getByRole("checkbox").first().waitFor();
 
@@ -888,13 +1017,16 @@ async function verifyFilterKeyboardWorkflow(browser) {
   const close = page.getByRole("button", { name: "Close panel" });
   await close.focus();
   await page.keyboard.press("Enter");
-  await page.getByRole("complementary", { name: "Insights and filters" }).waitFor({ state: "detached" });
+  await page.getByRole("complementary", { name: "Column profiles and filters" }).waitFor({ state: "detached" });
   try {
     await page.waitForFunction(
       () => {
         const active = document.activeElement;
         if (!(active instanceof HTMLButtonElement)) return false;
-        return active.textContent?.trim() === "Filter…" || active.getAttribute("aria-label") === "Insights & filters";
+        return (
+          active.textContent?.trim() === "Filter…" ||
+          active.getAttribute("aria-label") === "Column profiles and filters"
+        );
       },
       undefined,
       { timeout: 2_000 }

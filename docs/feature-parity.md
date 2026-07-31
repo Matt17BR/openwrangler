@@ -667,6 +667,24 @@ Compact draft-review hierarchy, 2026-07-31:
 
 This completes the draft-review sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The permanent command/status row and refreshed installed-editor visual evidence remain open.
 
+Grid status and profile vocabulary, 2026-07-31:
+
+- Row-block navigation now follows the scrolling table in a slim, non-sticky status bar. Transparent Previous and
+  Next Codicon buttons retain their exact accessible names and native disabled behavior, while a separate polite,
+  atomic **Visible rows** status announces only `Rows 1\u2013200 of 100,000` or `No rows`; the escape denotes
+  the rendered U+2013 en dash.
+- The selected-column surface is now visibly **Column profiles** and exposes the encompassing accessible name
+  **Column profiles and filters**. Its established region and tab IDs, deterministic Close focus, Escape handling,
+  exact opener restoration, and Column / Dataset / Filters ownership remain unchanged.
+- Grid-header summaries remain an independent **Header profiles** toggle with a constant name and `aria-pressed`.
+  `openWrangler.insightsOnOpen` keeps its public key and behavior; PySpark still starts this toggle off and retains
+  its Spark-query cost tooltip.
+- React, production-bundle screenshot, axe, forced-colors, narrow-width, 200%-zoom, packaged-layout, and PySpark
+  media assertions cover direct status-bar placement, exact range text, Codicon presence, pressed state, and
+  unclipped controls. Historical Insights evidence above remains evidence for the behavior tested at that time.
+
+This completes the bounded permanent grid-status sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). Broader command-row redesign and refreshed installed-editor release evidence remain follow-up work; this does not make a parity-complete claim.
+
 Released-Jupyter argument provenance slice, 2026-07-26:
 
 - The variable-viewer command accepts both released Jupyter origin shapes: `IJupyterVariable.fileName` as an actual `vscode.Uri`, and the exact canonical JSON envelope produced when that URI crosses the Variables webview. The serialized form is accepted only for `fileName` after bounded component, descriptor, cache, Unicode, and exact round-trip validation; legacy `notebookUri` and `uri` fields remain real-URI-only, and multiple fields must agree exactly.

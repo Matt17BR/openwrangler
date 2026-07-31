@@ -35,7 +35,7 @@ harness so its rich Parquet fixture can be reproduced without presenting a mocke
 - Canvas: 1920 x 830 pixels
 - Source: packaged VSIX in an isolated VS Code profile
 - Data: deterministic 100,000-row, 15-column regional orders CSV with dates, categories, currency, quantities, nulls, and realistic customer and product labels
-- State: automatic CSV import, `revenue` selected, selected-column Insights visible with min, max, mean, and median
+- State: automatic CSV import, `revenue` selected, **Column profiles** visible with min, max, mean, and median
 - Composition: the same full-size packaged session in VS Code's default light and dark themes, joined at a
   straight vertical midpoint with no scaling, diagonal mask, or decorative overlay
 - Framing: extension UI dominates the image; editor chrome remains visible enough to establish VS Code context

@@ -130,6 +130,47 @@ describe("DataGrid", () => {
     expect(screen.getByRole("grid")).toHaveAttribute("aria-colcount", "3");
   });
 
+  it("keeps block navigation and the exact live range in a status bar after the scroller", () => {
+    const onPage = vi.fn();
+    render(
+      <DataGrid
+        metadata={{ ...metadata, shape: { rows: 100_000, columns: 2 }, filteredShape: { rows: 100_000, columns: 2 } }}
+        page={pageAt(0, 100_000)}
+        summaries={[]}
+        pageSize={200}
+        defaultColumnWidth={190}
+        insightsOnOpen={false}
+        onPage={onPage}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const scroller = screen.getByTestId("data-grid-scroller");
+    const statusBar = document.querySelector<HTMLElement>(".gridStatusBar");
+    if (!statusBar) throw new Error("Expected the grid status bar.");
+    expect(scroller.nextElementSibling).toBe(statusBar);
+    expect(statusBar).not.toHaveAttribute("role");
+    expect(statusBar).not.toHaveAttribute("aria-live");
+
+    const visibleRows = within(statusBar).getByRole("status", { name: "Visible rows" });
+    expect(visibleRows).toHaveTextContent("Rows 1\u2013200 of 100,000");
+    expect(visibleRows).toHaveAttribute("aria-live", "polite");
+    expect(visibleRows).toHaveAttribute("aria-atomic", "true");
+
+    const previous = within(statusBar).getByRole("button", { name: "Previous block" });
+    const next = within(statusBar).getByRole("button", { name: "Next block" });
+    expect(previous.firstElementChild).toHaveClass("codicon", "codicon-chevron-left");
+    expect(next.firstElementChild).toHaveClass("codicon", "codicon-chevron-right");
+    expect(previous).toBeDisabled();
+    expect(previous).not.toHaveAttribute("aria-disabled");
+    expect(next).toBeEnabled();
+    expect(next).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(next);
+    expect(onPage).toHaveBeenCalledWith(200);
+  });
+
   it("keeps the column name on its own row above compact metadata and actions", () => {
     render(
       <DataGrid
@@ -1255,7 +1296,7 @@ describe("DataGrid", () => {
     });
   });
 
-  it("reports the complete visible summary ownership as insights and visibility change", async () => {
+  it("reports complete visible summary ownership through the Header profiles toggle", async () => {
     const onVisibleSummaryColumnsChange = vi.fn();
     render(
       <DataGrid
@@ -1274,17 +1315,22 @@ describe("DataGrid", () => {
 
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
     onVisibleSummaryColumnsChange.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
+    const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(headerProfiles);
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
 
-    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    fireEvent.click(headerProfiles);
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
-    fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(headerProfiles);
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
     expect(onVisibleSummaryColumnsChange).toHaveBeenCalledTimes(3);
   });
 
-  it("keeps expensive PySpark insights explicit even when insights-on-open is configured", async () => {
+  it("keeps expensive PySpark header profiles explicit even when insights-on-open is configured", async () => {
     const onVisibleSummaryColumnsChange = vi.fn();
     render(
       <DataGrid
@@ -1301,11 +1347,13 @@ describe("DataGrid", () => {
       />
     );
 
-    const showInsights = screen.getByRole("button", { name: "Show insights" });
-    expect(showInsights).toHaveAttribute("title", "Runs Spark profiling queries for the visible columns.");
+    const headerProfiles = screen.getByRole("button", { name: "Header profiles" });
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "false");
+    expect(headerProfiles).toHaveAttribute("title", "Runs Spark profiling queries for the visible columns.");
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith([]));
 
-    fireEvent.click(showInsights);
+    fireEvent.click(headerProfiles);
+    expect(headerProfiles).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(onVisibleSummaryColumnsChange).toHaveBeenLastCalledWith(["c:0", "c:1"]));
   });
 
@@ -1443,7 +1491,7 @@ describe("DataGrid", () => {
       />
     );
 
-    expect(screen.getByText("No rows")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Visible rows" })).toHaveTextContent("No rows");
     expect(screen.getByRole("grid")).toHaveAttribute("aria-rowcount", "1");
 
     rerender(
@@ -1562,7 +1610,7 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "sales" });
 
-    expect(await screen.findByRole("complementary", { name: "Insights and filters" })).toBeVisible();
+    expect(await screen.findByRole("complementary", { name: "Column profiles and filters" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("combobox", { name: "Sort column" })).toHaveValue("c:1");
 
@@ -2212,7 +2260,7 @@ describe("App file import options", () => {
     render(<App />);
     dispatchAppMessage({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByRole("cell", { name: "Milan" });
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     fireEvent.click(screen.getByRole("tab", { name: "Filters" }));
     const cityHeader = document.querySelector<HTMLElement>('th[data-column="city"]');
     expect(cityHeader).not.toBeNull();
@@ -2227,7 +2275,7 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "importOptionsState", busy: true });
 
-    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Column profiles and filters" })).toBeDisabled();
     expect(cityControls.getByRole("button", { name: "Filter…" })).toBeDisabled();
     expect(cityControls.getByRole("button", { name: "Sort ascending" })).toBeDisabled();
     expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeDisabled();
@@ -2237,7 +2285,7 @@ describe("App file import options", () => {
 
     dispatchAppMessage({ kind: "importOptionsState", busy: false });
 
-    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Column profiles and filters" })).toBeEnabled();
     expect(cityControls.getByRole("button", { name: "Filter…" })).toBeEnabled();
     expect(cityControls.getByRole("button", { name: "Resize city column" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Clear all" })).toBeEnabled();

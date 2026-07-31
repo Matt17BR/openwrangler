@@ -2,7 +2,7 @@
   "name": "openwrangler",
   "displayName": "Open Wrangler",
   "description": "An open-source dataframe wrangler for VS Code-family desktop editors with native Polars, DuckDB, and Pandas support.",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "publisher": "Matt17BR",
   "license": "MIT",
   "preview": false,
@@ -457,7 +457,7 @@
           {
             "id": "explore",
             "title": "Explore without changing data",
-            "description": "Use column insights, filters, sorts, search, and the virtual grid. Viewing state remains separate from cleaning steps."
+            "description": "Use column profiles, filters, sorts, search, and the virtual grid. Viewing state remains separate from cleaning steps."
           },
           {
             "id": "clean",
@@ -670,7 +670,7 @@
         "openWrangler.insightsOnOpen": {
           "type": "boolean",
           "default": true,
-          "description": "Show progressive per-column insights when a grid opens."
+          "description": "Show progressive profiles in visible grid headers when a grid opens. PySpark always starts with header profiles off because each profile runs Spark work."
         },
         "openWrangler.filterMode": {
           "type": "string",

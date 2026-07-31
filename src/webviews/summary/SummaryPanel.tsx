@@ -32,7 +32,7 @@ export function SummaryPanel({
 
   return (
     <section className="panel summaryPanel" data-active-view={activeView}>
-      <div className="summaryViewTabs" role="tablist" aria-label="Insights view">
+      <div className="summaryViewTabs" role="tablist" aria-label="Column profiles view">
         {summaryViews.map((view) => (
           <button
             key={view}
