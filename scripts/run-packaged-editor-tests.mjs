@@ -398,7 +398,7 @@ try {
             let coexistOpenEnvironment;
             let coexistDataEnvironment;
             const workspace = resolve(profile, "Open Wrangler Demo");
-            const jupyterAllowWorkspace = resolve(profile, "Open Wrangler Jupyter Allow");
+            const jupyterAllowWorkspace = resolve(profile, "orders-analysis");
             const jupyterDenyWorkspace = resolve(profile, "Open Wrangler Jupyter Deny");
             const jupyterPySparkWorkspace = resolve(profile, "Open Wrangler Jupyter PySpark");
             const jupyterRemoteWorkspace = resolve(profile, "Open Wrangler Jupyter Remote");
