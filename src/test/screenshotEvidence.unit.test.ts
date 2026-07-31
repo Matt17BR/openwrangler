@@ -291,11 +291,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(pickerCapture).toContain('scrollIntoView({ block: "center" })');
     expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
     expect(extensionHost).not.toContain("Public notebook screenshots must retain the readable showcase source cell.");
-    expect(extensionHost).toContain("const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;");
-    expect(extensionHost).toContain(
-      "if (observations.some((observation) => observation?.showcasePreview === true)) break;"
-    );
-    expect(extensionHost).toContain("const isVisibleText = (needle: string): boolean =>");
+    expect(extensionHost).toContain('const internalMarkerVisible = await workbench.locator("body").evaluate');
     expect(extensionHost).toContain("bounds.top < page.innerHeight");
     expect(extensionHost).toContain('pageSize.value = "10"');
     expect(extensionHost).toContain("scrollerBounds.top + scroller.clientTop + scroller.clientHeight");

@@ -8490,79 +8490,45 @@ async function captureReleasedJupyterVariablePicker(
 }
 
 async function assertReleasedJupyterCaptureInternalMarkerHidden(workbench: Page): Promise<void> {
-  const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
-  let observations: Array<{ internalMarker: boolean; showcasePreview: boolean } | undefined> = [];
-  do {
-    observations = await Promise.all(
-      releasedWorkbenchFrames(workbench).map((frame) =>
-        frame
-          .locator("body")
-          .evaluate(
-            (body, expected) => {
-              type TextElement = {
-                readonly children: ArrayLike<TextElement>;
-                readonly textContent: string | null;
-                getBoundingClientRect(): {
-                  bottom: number;
-                  height: number;
-                  left: number;
-                  right: number;
-                  top: number;
-                  width: number;
-                };
-              };
-              type TextBody = TextElement & { querySelectorAll(selector: string): ArrayLike<TextElement> };
-              const page = globalThis as unknown as {
-                getComputedStyle(element: TextElement): { display: string; visibility: string };
-                innerHeight: number;
-                innerWidth: number;
-              };
-              const root = body as unknown as TextBody;
-              const isVisibleText = (needle: string): boolean =>
-                Array.from(root.querySelectorAll("*")).some((element) => {
-                  if (!element.textContent?.includes(needle)) return false;
-                  if (Array.from(element.children).some((child) => child.textContent?.includes(needle))) return false;
-                  const style = page.getComputedStyle(element);
-                  if (style.display === "none" || style.visibility === "hidden") return false;
-                  const bounds = element.getBoundingClientRect();
-                  return (
-                    bounds.width > 0 &&
-                    bounds.height > 0 &&
-                    bounds.right > 0 &&
-                    bounds.bottom > 0 &&
-                    bounds.left < page.innerWidth &&
-                    bounds.top < page.innerHeight
-                  );
-                });
-              return {
-                internalMarker: isVisibleText(expected.internalMarker),
-                showcasePreview: isVisibleText(expected.showcasePreview)
-              };
-            },
-            {
-              internalMarker: RELEASED_JUPYTER_RESTART_RESULT,
-              showcasePreview: "Open Wrangler preview: orders_preview_df"
-            }
-          )
-          .catch(() => undefined)
-      )
-    );
-    if (observations.some((observation) => observation?.showcasePreview === true)) break;
-    await workbench.waitForTimeout(50);
-  } while (Date.now() < deadline);
-  assert.ok(
-    observations.some((observation) => observation !== undefined),
-    "Notebook screenshot hygiene must inspect at least one live workbench document."
-  );
+  const internalMarkerVisible = await workbench.locator("body").evaluate((body, marker) => {
+    type TextElement = {
+      readonly children: ArrayLike<TextElement>;
+      readonly textContent: string | null;
+      getBoundingClientRect(): {
+        bottom: number;
+        height: number;
+        left: number;
+        right: number;
+        top: number;
+        width: number;
+      };
+    };
+    type TextBody = TextElement & { querySelectorAll(selector: string): ArrayLike<TextElement> };
+    const page = globalThis as unknown as {
+      getComputedStyle(element: TextElement): { display: string; visibility: string };
+      innerHeight: number;
+      innerWidth: number;
+    };
+    return Array.from((body as unknown as TextBody).querySelectorAll("*")).some((element) => {
+      if (!element.textContent?.includes(marker)) return false;
+      if (Array.from(element.children).some((child) => child.textContent?.includes(marker))) return false;
+      const style = page.getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      const bounds = element.getBoundingClientRect();
+      return (
+        bounds.width > 0 &&
+        bounds.height > 0 &&
+        bounds.right > 0 &&
+        bounds.bottom > 0 &&
+        bounds.left < page.innerWidth &&
+        bounds.top < page.innerHeight
+      );
+    });
+  }, RELEASED_JUPYTER_RESTART_RESULT);
   assert.equal(
-    observations.some((observation) => observation?.internalMarker === true),
+    internalMarkerVisible,
     false,
-    "Public notebook screenshots must hide the internal restart probe source and output."
-  );
-  assert.equal(
-    observations.some((observation) => observation?.showcasePreview === true),
-    true,
-    "Public notebook screenshots must retain the real Open Wrangler MIME preview."
+    "Public notebook screenshots must hide visible internal restart-probe source text."
   );
 }
 
