@@ -260,11 +260,46 @@ describe("DataGrid column search target", () => {
   });
 
   it("renders and completely reveals a newly appended virtualized column", async () => {
-    const frames: FrameRequestCallback[] = [];
+    let nextFrameId = 0;
+    let frameTime = 0;
+    const frames = new Map<number, FrameRequestCallback>();
     const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-      frames.push(callback);
-      return frames.length;
+      nextFrameId += 1;
+      frames.set(nextFrameId, callback);
+      return nextFrameId;
     });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frameId) => {
+      frames.delete(frameId);
+    });
+    const resizeObservers = new Map<object, ResizeObserverCallback>();
+    class ControlledResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeObservers.set(this, callback);
+      }
+
+      observe(): void {}
+      unobserve(): void {}
+
+      disconnect(): void {
+        resizeObservers.delete(this);
+      }
+    }
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    const advanceFrame = () => {
+      const pending = [...frames.entries()];
+      frames.clear();
+      frameTime += 16;
+      act(() => {
+        for (const [, callback] of pending) callback(frameTime);
+      });
+    };
+    const signalResize = () => {
+      act(() => {
+        for (const [observer, callback] of [...resizeObservers]) {
+          callback([], observer as ResizeObserver);
+        }
+      });
+    };
     try {
       const schema = Array.from({ length: 16 }, (_, position): ColumnSchema => ({
         id: `c:${position}`,
@@ -369,17 +404,28 @@ describe("DataGrid column search target", () => {
       expect(screen.queryByRole("columnheader", { name: /market_upper/u })).not.toBeInTheDocument();
 
       rerender(renderGrid(1));
-      await waitFor(() => expect(frames).toHaveLength(1));
+      await waitFor(() => expect(frames.size).toBe(1));
       expect(scroller.scrollLeft).toBe(324);
+      advanceFrame();
       expect(screen.queryByRole("columnheader", { name: /market_upper/u })).not.toBeInTheDocument();
       expect(onViewStateChange).not.toHaveBeenCalled();
+      expect(frames.size).toBe(0);
 
-      rerender(renderGrid(1, 0, 0, initialPage, { ...metadata, schema: [...schema] }));
-      await waitFor(() => expect(frames).toHaveLength(2));
-      const resumedReveal = frames.at(-1);
-      frames.length = 0;
+      // Cursor can keep the dataframe webview on its previous layout while it
+      // reveals Code Preview. A stalled request remains pending but dormant.
+      for (let frame = 0; frame < 20; frame += 1) {
+        advanceFrame();
+      }
+      expect(frames.size).toBe(0);
+      expect(scroller.scrollLeft).toBe(324);
+      expect(onViewStateChange).not.toHaveBeenCalled();
+
       layoutReady = true;
-      act(() => resumedReveal?.(performance.now()));
+      signalResize();
+      signalResize();
+      expect(frames.size).toBe(1);
+      advanceFrame();
+      expect(resizeObservers.size).toBe(0);
 
       const target = await screen.findByRole("columnheader", { name: /market_upper/u });
       expect(target).toBeVisible();
@@ -409,30 +455,77 @@ describe("DataGrid column search target", () => {
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(2, "revealed");
 
       rerender(renderGrid());
+      layoutReady = false;
+      scrollLeft = 0;
+      onViewStateChange.mockClear();
       rerender(renderGrid(3));
-      await screen.findByRole("columnheader", { name: /market_upper/u });
+      await waitFor(() => expect(frames.size).toBe(1));
+      advanceFrame();
+      expect(scroller.scrollLeft).toBe(324);
+      expect(frames.size).toBe(0);
       fireEvent.wheel(scroller);
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(3, "interrupted");
-      const handledCount = onGoToColumnHandled.mock.calls.length;
-      rerender(renderGrid(3, 0, 0, targetPage));
-      await new Promise((resolve) => window.setTimeout(resolve, 20));
-      expect(onGoToColumnHandled).toHaveBeenCalledTimes(handledCount);
+      expect(resizeObservers.size).toBe(0);
+      layoutReady = true;
+      signalResize();
+      fireEvent(window, new Event("resize"));
+      expect(frames.size).toBe(0);
+      expect(scroller.scrollLeft).toBe(324);
 
       rerender(renderGrid());
       layoutReady = false;
       scrollLeft = 0;
       onViewStateChange.mockClear();
       rerender(renderGrid(4));
-      await waitFor(() => expect(frames).toHaveLength(1));
+      await waitFor(() => expect(frames.size).toBe(1));
+      advanceFrame();
       expect(scroller.scrollLeft).toBe(324);
       expect(onViewStateChange).not.toHaveBeenCalled();
-      fireEvent.wheel(scroller);
+      expect(frames.size).toBe(0);
+      const keyboardCell = scroller.querySelector<HTMLElement>('td[data-grid-row="0"][data-grid-column="3"]');
+      expect(keyboardCell).not.toBeNull();
+      fireEvent.keyDown(keyboardCell!, { key: "ArrowLeft" });
       expect(onGoToColumnHandled).toHaveBeenLastCalledWith(4, "interrupted");
+      expect(resizeObservers.size).toBe(0);
+      const keyboardScrollLeft = scroller.scrollLeft;
+      expect(keyboardScrollLeft).toBeLessThan(324);
+
       layoutReady = true;
-      act(() => frames.shift()?.(performance.now()));
+      signalResize();
+      fireEvent(window, new Event("resize"));
+      rerender(renderGrid(4, 0, 0, targetPage));
+      for (let frame = 0; frame < 20; frame += 1) {
+        advanceFrame();
+      }
+      expect(frames.size).toBe(0);
+      expect(scroller.scrollLeft).toBe(keyboardScrollLeft);
+      expect(onViewStateChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          selectedColumnId: "c:2",
+          viewport: expect.objectContaining({ scrollLeft: keyboardScrollLeft })
+        })
+      );
+      expect(screen.queryByRole("columnheader", { name: /market_upper/u })).not.toBeInTheDocument();
+
+      rerender(renderGrid());
+      layoutReady = false;
+      scrollLeft = 0;
+      const navigablePage = { ...initialPage, totalRows: 2 };
+      rerender(renderGrid(5, 0, 0, navigablePage));
+      await waitFor(() => expect(frames.size).toBe(1));
+      advanceFrame();
+      expect(frames.size).toBe(0);
+      fireEvent.click(screen.getByRole("button", { name: "Next block" }));
+      expect(onGoToColumnHandled).toHaveBeenLastCalledWith(5, "interrupted");
+      expect(resizeObservers.size).toBe(0);
+      layoutReady = true;
+      signalResize();
+      fireEvent(window, new Event("resize"));
+      expect(frames.size).toBe(0);
       expect(scroller.scrollLeft).toBe(324);
-      expect(onViewStateChange).not.toHaveBeenCalled();
     } finally {
+      vi.unstubAllGlobals();
+      cancelFrame.mockRestore();
       requestFrame.mockRestore();
     }
   });
