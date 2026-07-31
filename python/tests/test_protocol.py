@@ -386,9 +386,6 @@ def test_view_queries_reject_duplicate_sort_columns(kind: str) -> None:
 
 
 def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() -> None:
-    at_limit = f"1e{'9' * (MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}"
-    over_limit = f"{at_limit}9"
-
     def filter_model(value: str, second_value: str, selected_value: str, *, transform: bool) -> dict[str, object]:
         column: object = {"id": "column:0", "name": "value"} if transform else "value"
         return {
@@ -433,16 +430,7 @@ def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() ->
             },
         }
 
-    assert decode_envelope(page_envelope(at_limit, at_limit, at_limit))[2]["kind"] == "getPage"
-    for envelope in (
-        page_envelope(over_limit, at_limit, at_limit),
-        page_envelope(at_limit, over_limit, at_limit),
-        page_envelope(at_limit, at_limit, over_limit),
-    ):
-        with pytest.raises(ProtocolError, match="must not exceed 65,536 characters"):
-            decode_envelope(envelope)
-
-    def preview_envelope(value: str) -> dict[str, object]:
+    def preview_envelope(value: str, second_value: str, selected_value: str) -> dict[str, object]:
         return {
             "protocolVersion": 2,
             "requestId": "bounded-preview",
@@ -454,7 +442,7 @@ def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() ->
                 "step": {
                     "id": "filter",
                     "kind": "filterRows",
-                    "params": {"filterModel": filter_model(value, at_limit, at_limit, transform=True)},
+                    "params": {"filterModel": filter_model(value, second_value, selected_value, transform=True)},
                 },
                 "offset": 0,
                 "limit": 200,
@@ -463,9 +451,31 @@ def test_protocol_bounds_view_and_transform_filter_text_at_the_shared_limit() ->
             },
         }
 
-    assert decode_envelope(preview_envelope(at_limit))[2]["step"]["kind"] == "filterRows"
-    with pytest.raises(ProtocolError, match="must not exceed 65,536 characters"):
-        decode_envelope(preview_envelope(over_limit))
+    cases = (
+        (
+            f"1e{'9' * (MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}",
+            f"1e{'9' * (MAX_VIEW_VALUE_TEXT_CHARACTERS - 1)}",
+        ),
+        ("😀" * MAX_VIEW_VALUE_TEXT_CHARACTERS, "😀" * (MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)),
+    )
+    for at_limit, over_limit in cases:
+        assert decode_envelope(page_envelope(at_limit, at_limit, at_limit))[2]["kind"] == "getPage"
+        for envelope in (
+            page_envelope(over_limit, at_limit, at_limit),
+            page_envelope(at_limit, over_limit, at_limit),
+            page_envelope(at_limit, at_limit, over_limit),
+        ):
+            with pytest.raises(ProtocolError, match="must not exceed 65,536 Unicode code points"):
+                decode_envelope(envelope)
+
+        assert decode_envelope(preview_envelope(at_limit, at_limit, at_limit))[2]["step"]["kind"] == "filterRows"
+        for envelope in (
+            preview_envelope(over_limit, at_limit, at_limit),
+            preview_envelope(at_limit, over_limit, at_limit),
+            preview_envelope(at_limit, at_limit, over_limit),
+        ):
+            with pytest.raises(ProtocolError, match="must not exceed 65,536 Unicode code points"):
+                decode_envelope(envelope)
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { FilterModel } from "../shared/filterModel";
 import type { ColumnSummary, SessionMetadata, TypedSelectionToken, ValuesResponse } from "../shared/protocol";
-import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
+import { MAX_VIEW_VALUE_TEXT_CHARACTERS, MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS } from "../shared/viewValueLimits";
 import { FilterPanel } from "../webviews/filters/FilterPanel";
 import { SummaryPanel } from "../webviews/summary/SummaryPanel";
 
@@ -140,8 +140,14 @@ describe("FilterPanel", () => {
 
     fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
     fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
-    expect(screen.getByPlaceholderText("Value")).toHaveAttribute("maxLength", String(MAX_VIEW_VALUE_TEXT_CHARACTERS));
-    expect(screen.getByPlaceholderText("And")).toHaveAttribute("maxLength", String(MAX_VIEW_VALUE_TEXT_CHARACTERS));
+    expect(screen.getByPlaceholderText("Value")).toHaveAttribute(
+      "maxLength",
+      String(MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS)
+    );
+    expect(screen.getByPlaceholderText("And")).toHaveAttribute(
+      "maxLength",
+      String(MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS)
+    );
     fireEvent.change(screen.getByPlaceholderText("Value"), { target: { value: "10" } });
     fireEvent.change(screen.getByPlaceholderText("And"), { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Add predicate" }));
@@ -172,6 +178,35 @@ describe("FilterPanel", () => {
     expect(onApply).toHaveBeenLastCalledWith({ filters: [], sort: [] });
     fireEvent.click(screen.getByRole("button", { name: "Use basic filters" }));
     expect(screen.getByRole("button", { name: "Use advanced filters" })).toBeInTheDocument();
+  });
+
+  it("preserves exactly 65,536 predicate code points and truncates BMP or non-BMP overflow", () => {
+    render(
+      <FilterPanel
+        metadata={metadata}
+        model={{ filters: [], sort: [] }}
+        values={values}
+        onApply={() => undefined}
+        onRequestValues={() => undefined}
+      />
+    );
+    const input = screen.getByPlaceholderText("Value");
+    const bmpAtLimit = "x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+
+    expect(input).toHaveAttribute("maxLength", String(MAX_VIEW_VALUE_TEXT_UTF16_CODE_UNITS));
+    fireEvent.change(input, { target: { value: `${bmpAtLimit}x` } });
+    expect(input).toHaveValue(bmpAtLimit);
+    fireEvent.change(input, { target: { value: astralAtLimit } });
+    expect(input).toHaveValue(astralAtLimit);
+    fireEvent.change(input, { target: { value: `${astralAtLimit}😀` } });
+    expect(input).toHaveValue(astralAtLimit);
+
+    fireEvent.change(screen.getByLabelText("Filter column"), { target: { value: "c:1" } });
+    fireEvent.change(screen.getByLabelText("Predicate operator"), { target: { value: "between" } });
+    const upperBound = screen.getByPlaceholderText("And");
+    fireEvent.change(upperBound, { target: { value: `${astralAtLimit}😀` } });
+    expect(upperBound).toHaveValue(astralAtLimit);
   });
 
   it("keeps deliberate multi-sort ordered, editable, individually removable, and separate from filters", () => {

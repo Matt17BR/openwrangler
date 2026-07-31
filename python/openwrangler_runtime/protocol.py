@@ -299,7 +299,7 @@ def _validate_view_filter_text(model: Mapping[str, Any]) -> None:
 
 def _validate_view_value_text(value: Any, label: str) -> None:
     if isinstance(value, str) and len(value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
-        raise ProtocolError(f"{label} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} characters.")
+        raise ProtocolError(f"{label} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points.")
 
 
 def _is_non_negative_integer(value: Any) -> bool:

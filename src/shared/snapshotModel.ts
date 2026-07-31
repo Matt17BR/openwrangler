@@ -12,7 +12,7 @@ import type {
 import type { ColumnFilter, FilterModel, PredicateFilter } from "./filterModel";
 import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { supportsTypedViewComparison, supportsViewPredicate } from "./filterModel";
-import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
+import { hasAtMostViewValueTextCodePoints, MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
 
 const MAX_PAGE_LIMIT = 10_000;
 const MAX_COLUMN_LIMIT = 256;
@@ -537,11 +537,11 @@ function assertSelectionCell(
     cell.isNull !== false ||
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
-    cell.display.length > MAX_VIEW_VALUE_TEXT_CHARACTERS
+    !hasAtMostViewValueTextCodePoints(cell.display)
   ) {
     throw new TypeError("A typed selection token cannot represent null, NaN, or unbounded text.");
   }
-  if (typeof cell.raw === "string" && cell.raw.length > MAX_VIEW_VALUE_TEXT_CHARACTERS) {
+  if (typeof cell.raw === "string" && !hasAtMostViewValueTextCodePoints(cell.raw)) {
     throw new TypeError("A typed selection token contains unbounded raw text.");
   }
 
@@ -626,9 +626,9 @@ function snapshotSelectionValue(
 }
 
 function canonicalViewValue(value: unknown, type: SessionMetadata["schema"][number]["type"]): unknown {
-  if (typeof value === "string" && value.length > MAX_VIEW_VALUE_TEXT_CHARACTERS) {
+  if (typeof value === "string" && !hasAtMostViewValueTextCodePoints(value)) {
     throw new TypeError(
-      `A snapshot predicate value cannot exceed ${MAX_VIEW_VALUE_TEXT_CHARACTERS.toLocaleString("en-US")} characters.`
+      `A snapshot predicate value cannot exceed ${MAX_VIEW_VALUE_TEXT_CHARACTERS.toLocaleString("en-US")} Unicode code points.`
     );
   }
   if (type === "string") return String(value);

@@ -435,7 +435,8 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
                     and len(predicate[key]) > MAX_VIEW_VALUE_TEXT_CHARACTERS
                 ):
                     raise OperationError(
-                        f"{predicate_label}.{key} must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} characters."
+                        f"{predicate_label}.{key} must not exceed "
+                        f"{MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points."
                     )
             normalized_predicates.append(dict(predicate))
 
@@ -458,7 +459,8 @@ def _normalize_transform_filter_model(value: Any) -> dict[str, Any]:
                 if isinstance(selected_value, str) and len(selected_value) > MAX_VIEW_VALUE_TEXT_CHARACTERS:
                     raise OperationError(
                         "Column valueFilter.selectedValues"
-                        f"[{value_index}] must not exceed {MAX_VIEW_VALUE_TEXT_CHARACTERS:,} characters."
+                        f"[{value_index}] must not exceed "
+                        f"{MAX_VIEW_VALUE_TEXT_CHARACTERS:,} Unicode code points."
                     )
             for key in ("includeNulls", "includeNaN"):
                 if not isinstance(value_filter[key], bool):

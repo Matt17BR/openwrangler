@@ -166,11 +166,67 @@ describe("saved notebook snapshot model", () => {
 
     expect(() => applySnapshotFilters(decimalMetadata, [], model(atLimit, atLimit))).not.toThrow();
     expect(() => applySnapshotFilters(decimalMetadata, [], model(overLimit, atLimit))).toThrow(
-      "cannot exceed 65,536 characters"
+      "cannot exceed 65,536 Unicode code points"
     );
     expect(() => applySnapshotFilters(decimalMetadata, [], model(atLimit, overLimit))).toThrow(
-      "cannot exceed 65,536 characters"
+      "cannot exceed 65,536 Unicode code points"
     );
+  });
+
+  it("accepts exactly 65,536 BMP or non-BMP predicate code points and rejects one more", () => {
+    const stringMetadata = singleColumnMetadata("string", "String", 0);
+    const model = (value: string): FilterModel => ({
+      filters: [
+        {
+          column: "value",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value }]
+        }
+      ],
+      sort: []
+    });
+    const cases = [
+      ["x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS), "x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)],
+      ["😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS), "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)]
+    ];
+
+    for (const [atLimit, overLimit] of cases) {
+      expect(() => applySnapshotFilters(stringMetadata, [], model(atLimit))).not.toThrow();
+      expect(() => applySnapshotFilters(stringMetadata, [], model(overLimit))).toThrow(
+        "cannot exceed 65,536 Unicode code points"
+      );
+    }
+  });
+
+  it("bounds typed snapshot-selection text by Unicode code points", () => {
+    const stringMetadata = singleColumnMetadata("string", "String", 1);
+    const atLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const overLimit = `${atLimit}😀`;
+    const token = (text: string) => ({
+      kind: "typedSelection" as const,
+      version: 1 as const,
+      columnType: "string" as const,
+      cell: stringCell(text)
+    });
+    const model = (text: string): FilterModel => ({
+      filters: [
+        {
+          column: "value",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: [token(text)],
+            includeNulls: false,
+            includeNaN: false
+          },
+          predicates: []
+        }
+      ],
+      sort: []
+    });
+
+    expect(applySnapshotFilters(stringMetadata, [row(0, stringCell(atLimit))], model(atLimit))).toHaveLength(1);
+    expect(() => applySnapshotFilters(stringMetadata, [], model(overLimit))).toThrow("unbounded");
   });
 
   it.each<[PredicateOperator, unknown, unknown, number]>([

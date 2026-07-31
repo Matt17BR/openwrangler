@@ -1,4 +1,6 @@
+import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
+import transportSchema from "../../protocol/openwrangler.v2.schema.json";
 import type {
   GridPage,
   OpenWranglerRequest,
@@ -14,7 +16,13 @@ import {
   isRuntimeResponseEnvelope,
   isTransformStep
 } from "../shared/protocolValidation";
-import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "../shared/viewValueLimits";
+import {
+  hasAtMostViewValueTextCodePoints,
+  MAX_VIEW_VALUE_TEXT_CHARACTERS,
+  truncateViewValueTextToCodePoints
+} from "../shared/viewValueLimits";
+
+const validateTransportSchema = new Ajv({ strict: false }).compile(transportSchema);
 
 const capabilities = {
   editable: true,
@@ -818,7 +826,23 @@ describe("protocol-v2 response validation", () => {
       values: [{ value: "1", count: 4, selectionValue: token }],
       hasMore: false
     };
+    const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
     expect(isOpenWranglerResponse(response)).toBe(true);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "astral",
+            count: 1,
+            selectionValue: {
+              ...token,
+              cell: { kind: "string", raw: astralAtLimit, display: astralAtLimit, isNull: false, isNaN: false }
+            }
+          }
+        ]
+      })
+    ).toBe(true);
     expect(
       isOpenWranglerResponse({
         ...response,
@@ -844,6 +868,27 @@ describe("protocol-v2 response validation", () => {
       isOpenWranglerResponse({
         ...response,
         values: [{ value: "1", count: 4, selectionValue: { ...token, version: 2 } }]
+      })
+    ).toBe(false);
+    expect(
+      isOpenWranglerResponse({
+        ...response,
+        values: [
+          {
+            value: "astral",
+            count: 1,
+            selectionValue: {
+              ...token,
+              cell: {
+                kind: "string",
+                raw: `${astralAtLimit}😀`,
+                display: `${astralAtLimit}😀`,
+                isNull: false,
+                isNaN: false
+              }
+            }
+          }
+        ]
       })
     ).toBe(false);
     expect(
@@ -1116,13 +1161,11 @@ describe("protocol-v2 request validation", () => {
     }
   );
 
-  it("bounds viewing predicate and selected-value text at the shared scalar limit", () => {
+  it("bounds viewing and transform scalar text by Unicode code points across TypeScript and JSON Schema", () => {
     const request = requests.find((candidate) => candidate.kind === "getPage");
     expect(request?.kind).toBe("getPage");
     if (request?.kind !== "getPage") return;
 
-    const atLimit = `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}`;
-    const overLimit = `${atLimit}9`;
     const filterModel = (value: string, secondValue: string, selectedValue: string) => ({
       filters: [
         {
@@ -1140,10 +1183,115 @@ describe("protocol-v2 request validation", () => {
       sort: []
     });
 
-    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, atLimit, atLimit) })).toBe(true);
-    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(overLimit, atLimit, atLimit) })).toBe(false);
-    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, overLimit, atLimit) })).toBe(false);
-    expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, atLimit, overLimit) })).toBe(false);
+    const transformStep = (value: string, secondValue: string, selectedValue: string) => ({
+      id: "filter-bounded",
+      kind: "filterRows",
+      params: {
+        filterModel: {
+          filters: [
+            {
+              column: valueReference,
+              type: "decimal",
+              valueFilter: {
+                kind: "values",
+                selectedValues: [selectedValue],
+                includeNulls: false,
+                includeNaN: false
+              },
+              predicates: [{ kind: "predicate", operator: "between", value, secondValue }]
+            }
+          ],
+          sort: []
+        }
+      }
+    });
+    const transportEnvelope = (requestValue: unknown) => ({
+      protocolVersion: 2,
+      requestId: "bounded-filter",
+      priority: "interactive",
+      request: requestValue
+    });
+    const previewRequest = (value: string, secondValue: string, selectedValue: string) => ({
+      kind: "previewStep",
+      sessionId: "session-1",
+      revision: 0,
+      step: transformStep(value, secondValue, selectedValue),
+      offset: 0,
+      limit: 200,
+      columnOffset: 0,
+      columnLimit: 64
+    });
+    const cases = [
+      {
+        label: "BMP",
+        atLimit: `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 2)}`,
+        overLimit: `1e${"9".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS - 1)}`
+      },
+      {
+        label: "non-BMP",
+        atLimit: "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS),
+        overLimit: "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS + 1)
+      }
+    ];
+
+    for (const { label, atLimit, overLimit } of cases) {
+      const validModel = filterModel(atLimit, atLimit, atLimit);
+      expect(isOpenWranglerRequest({ ...request, filterModel: validModel }), label).toBe(true);
+      expect(validateTransportSchema(transportEnvelope({ ...request, filterModel: validModel })), label).toBe(true);
+      expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(overLimit, atLimit, atLimit) }), label).toBe(
+        false
+      );
+      expect(
+        validateTransportSchema(
+          transportEnvelope({ ...request, filterModel: filterModel(overLimit, atLimit, atLimit) })
+        ),
+        label
+      ).toBe(false);
+      expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, overLimit, atLimit) }), label).toBe(
+        false
+      );
+      expect(
+        validateTransportSchema(
+          transportEnvelope({ ...request, filterModel: filterModel(atLimit, overLimit, atLimit) })
+        ),
+        label
+      ).toBe(false);
+      expect(isOpenWranglerRequest({ ...request, filterModel: filterModel(atLimit, atLimit, overLimit) }), label).toBe(
+        false
+      );
+      expect(
+        validateTransportSchema(
+          transportEnvelope({ ...request, filterModel: filterModel(atLimit, atLimit, overLimit) })
+        ),
+        label
+      ).toBe(false);
+
+      const validStep = transformStep(atLimit, atLimit, atLimit);
+      expect(isTransformStep(validStep), label).toBe(true);
+      expect(validateTransportSchema(transportEnvelope(previewRequest(atLimit, atLimit, atLimit))), label).toBe(true);
+      for (const invalidValues of [
+        [overLimit, atLimit, atLimit],
+        [atLimit, overLimit, atLimit],
+        [atLimit, atLimit, overLimit]
+      ] as const) {
+        expect(isTransformStep(transformStep(...invalidValues)), label).toBe(false);
+        expect(validateTransportSchema(transportEnvelope(previewRequest(...invalidValues))), label).toBe(false);
+      }
+    }
+  });
+
+  it("counts and truncates view-value limits without splitting Unicode code points", () => {
+    const astralAtLimit = "😀".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const astralOverLimit = `${astralAtLimit}😀`;
+    const bmpAtLimit = "x".repeat(MAX_VIEW_VALUE_TEXT_CHARACTERS);
+    const bmpOverLimit = `${bmpAtLimit}x`;
+
+    expect(hasAtMostViewValueTextCodePoints(bmpAtLimit)).toBe(true);
+    expect(hasAtMostViewValueTextCodePoints(bmpOverLimit)).toBe(false);
+    expect(hasAtMostViewValueTextCodePoints(astralAtLimit)).toBe(true);
+    expect(hasAtMostViewValueTextCodePoints(astralOverLimit)).toBe(false);
+    expect(truncateViewValueTextToCodePoints(bmpOverLimit)).toBe(bmpAtLimit);
+    expect(truncateViewValueTextToCodePoints(astralOverLimit)).toBe(astralAtLimit);
   });
 
   it("accepts exact import options with one-code-point Unicode delimiters and explicit Excel selectors", () => {

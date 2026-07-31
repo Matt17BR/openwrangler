@@ -16,7 +16,7 @@ import type {
 import { isExactNumericExtremumCell } from "./exactNumericExtrema";
 import { PROTOCOL_VERSION } from "./protocol";
 import { compareTypedCells } from "./snapshotModel";
-import { MAX_VIEW_VALUE_TEXT_CHARACTERS } from "./viewValueLimits";
+import { hasAtMostViewValueTextCodePoints } from "./viewValueLimits";
 
 type UnknownRecord = Record<string, unknown>;
 type ValueGuard = (value: unknown) => boolean;
@@ -1501,13 +1501,13 @@ function isCompatibleTypedSelectionCell(columnType: string, value: unknown): boo
     cell.isNull !== false ||
     cell.isNaN !== false ||
     typeof cell.display !== "string" ||
-    cell.display.length > MAX_VIEW_VALUE_TEXT_CHARACTERS ||
+    !hasAtMostViewValueTextCodePoints(cell.display) ||
     !Object.prototype.hasOwnProperty.call(cell, "raw") ||
     !isJsonValue(cell.raw)
   ) {
     return false;
   }
-  if (typeof cell.raw === "string" && cell.raw.length > MAX_VIEW_VALUE_TEXT_CHARACTERS) return false;
+  if (typeof cell.raw === "string" && !hasAtMostViewValueTextCodePoints(cell.raw)) return false;
 
   const compatibleKinds: Readonly<Record<string, readonly string[]>> = {
     string: ["string", "integer", "number", "infinity", "boolean", "decimal", "datetime", "date", "duration"],
@@ -1708,7 +1708,7 @@ function isJsonScalar(value: unknown): value is string | number | boolean | null
 }
 
 function isBoundedViewValue(value: unknown): boolean {
-  return isJsonValue(value) && (typeof value !== "string" || value.length <= MAX_VIEW_VALUE_TEXT_CHARACTERS);
+  return isJsonValue(value) && (typeof value !== "string" || hasAtMostViewValueTextCodePoints(value));
 }
 
 function isSafeJsonNumber(value: unknown): value is number {
