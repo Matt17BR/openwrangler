@@ -381,6 +381,65 @@ The installed-performance manifest boundary is the complete Python-produced obje
 
 Guarded installed-performance packaging tests require every VSCE source to be tracked or an exact generated output, reject both a packageable untracked runtime module and an ignored `media` extra while leaving excluded `scratch.txt` outside every read, and pin each tracked and generated input's identity, size, and SHA-256 around packaging. The sealed archive must match the pinned source inventory and every source-byte digest. Regressions substitute a tracked or generated input and add an otherwise allowlisted runtime entry only to the simulated `createVSIX` result; all fail even when a later pathname scan would look clean. Product packaging disables VSCE's GitHub issue autolinker, ordinary VSIX verification rejects source-to-package README drift, and README links stay absolute so relative-link rewriting cannot create an undocumented transformation. Final-publication tests mutate the candidate while the report receipt is read and require the joint validation to fail.
 
+## Clean-room Data Wrangler comparison feasibility smoke
+
+The optional Linux x64 smoke checks whether Open Wrangler and Microsoft Data Wrangler 1.24.2 can complete the same
+deterministic resident-cache launch/readiness journey. It is a harness feasibility check, not a performance result.
+It uses only synthetic CC0-1.0 CSV and Parquet fixtures:
+
+```bash
+npm run comparison:feasibility:smoke -- \
+  --candidate /absolute/path/openwrangler.vsix \
+  --python /absolute/path/python-comparison \
+  --out /absolute/path/data-wrangler-smoke.json
+```
+
+`--python` must name a current-user-owned, executable, non-empty, single-link regular file rather than the usual
+virtual-environment symlink. It must be CPython 3.10 through 3.14 with Pandas, PyArrow, Jupyter Core, and ipykernel
+installed. `--out` must be absent: the runner reserves the final path with one exclusive no-follow create, then
+writes, flushes, and validates only through that bound descriptor. It never replaces an existing file and never
+unlinks an output pathname after creation, so an ancestor or pathname rebind cannot turn failed-publication cleanup
+into deletion of the candidate or interpreter. If publication fails after creation, its partial or complete report
+inode is deliberately retained instead of being cleaned by pathname. The runner's filesystem-boundary tests are
+Linux-owned and self-skip on non-Linux release hosts; Ubuntu contract and release tests retain the exact coverage,
+while the pure report-contract tests remain portable.
+
+The runner acquires pinned official VS Code, installs the exact locked public Marketplace extensions into separate
+disposable extension directories, and starts one zero-window headless Ozone workbench per product. It uses fixed
+Open Wrangler-then-Data Wrangler order, removes
+desktop-display and editor-IPC routes and never falls back to the current desktop or normal profiles. Each product
+gets one untimed warm-up and one resident-cache CSV and Parquet diagnostic launch through its visible Files Explorer
+context menu. Open Wrangler's primary CSV path performs automatic import detection inside the click-to-grid
+boundary; the smoke does not answer delimiter, encoding, header, or quote prompts. The exact visible Explorer item
+must have one unambiguous basename, and cache residency is re-proven immediately before the action click.
+
+Readiness is product-neutral: a visible ARIA grid, ARIA table, or native table must appear on a post-click renderer
+surface, expose the deterministic `c00` and `c01` headers plus sentinel cells, report a non-busy state, and retain
+stable geometry across two animation frames. The launched target editor must be selected, its renderer-frame and
+sentinel cell must be pointer-usable rather than occluded, and no visible Quick Input, dialog, or modal may obstruct
+the workbench. The runner verifies source identity and SHA-256 before and after the action, exact installed-extension
+inventories before and after each product phase, the configured interpreter in the owned process tree, and terminal
+cleanup. The configured interpreter's installed Pandas/PyArrow/Jupyter/ipykernel versions are environment inventory,
+not proof of Data Wrangler's rendering backend. Backend matching remains unestablished until the publishable study in
+issue #91 can prove it without inspecting proprietary implementation. The report records public IDs and versions only.
+
+The harness never directly opens, hashes, archives, uploads, or preserves Data Wrangler package contents; VS Code
+alone installs and executes its public Marketplace package. Successful runs and failures with verified process/display
+ownership remove the complete isolated root, including both disposable extension directories. If ownership is
+uncertain, the runner fails closed, emits no report, and leaves the exact private root uninspected. No retained package
+byte may later be read, archived, uploaded, reused, or included in diagnostics.
+
+The path-free JSON report is always marked `feasibilityOnly: true` and `publishable: false`. Its one diagnostic
+duration per product and format is retained only to troubleshoot harness timeouts; it is non-comparative. These
+fixed-order observations are not release evidence, a statistical benchmark, a parity claim, or grounds for naming a
+performance winner. The report contains no screenshots, DOM dumps, raw logs, private paths, proprietary bytes, or
+serialized source/sentinel values. Any
+product-phase, process-ownership, headless-isolation, input-identity, or cleanup uncertainty prevents report
+publication. The publishable comparison tracked in [issue #91](https://github.com/Matt17BR/openwrangler/issues/91)
+still requires release-sized fixtures, ten samples per product and format, median and p95 reporting, resource and
+machine provenance, cold- and warm-cache controls, matched interaction scenarios, counterbalanced product order,
+and no trimming.
+
 ## Performance fixtures
 
 `npm run benchmark:runtime` is the canonical strict native-Polars release benchmark. It creates deterministic 100k×50 CSV and 1M×20 Parquet fixtures under ignored `tmp/performance`. Before timing, it validates exact dimensions, ordered Int64 schema, and deterministic sentinel values in every column; an invalid or partial fixture is atomically regenerated. Validation reads the source, so the harness then requires Linux to accept a per-file `posix_fadvise(POSIX_FADV_DONTNEED)` eviction before the first direct open and again immediately before the canonical stdio open. The stdio cold-source open is the release-gated first-usable-grid boundary at 3s/5s; missing eviction proof fails strict mode. Every timed open requests the first 16 columns, matching the shipped default; timed cache-miss pages rotate across real horizontal blocks, including nonzero offsets. `projectedGridColumns` records the resolved width, while the report records every sampled column offset and validates the returned stable IDs. `pageCache.maxBytes` is the maximum total retained cache weight observed during the run, not the byte size of one response. The report separately retains the first direct open and the median of later fresh-manager opens against a warm OS source cache (`warmSourceReopenMedianMs`). Direct `SessionManager` cache timing is explicitly named `directRuntimeCachedPageP95Ms` and `directRuntimeCacheMissPageP95Ms`; it is not presented as editor or transport latency. A second measurement spawns the real standalone Python runtime with the selected backend already imported, sends canonical protocol-v2 newline-delimited JSON envelopes over stdin, parses stdout envelopes, and records `stdioTransport.cacheMissPageP95Ms`. Its isolated benchmark bootstrap leaves canonical stdin/stdout behavior unchanged and wraps only the selected engine's production `header_stats` call, emitting entry and exit timestamps on stderr from Python's process-wide monotonic clock. The interactive cache-miss page is sent only after the entry event, and strict mode requires its completed write timestamp to fall inside that measured call interval; the report retains both signed timing margins around the send. A completed-before-send or otherwise unproven interval is an inconclusive release failure rather than a pass.
