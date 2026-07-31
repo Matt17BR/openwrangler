@@ -696,9 +696,9 @@ Lossless integer and decimal extrema, 2026-07-31:
 - Pandas, eager and lazy Polars, DuckDB, and experimental PySpark reuse their already-computed native aggregate
   extrema; saved notebook previews compare the bounded captured typed cells directly. Conversion-trap tests
   prohibit Polars, DuckDB, and PySpark from detouring through another dataframe engine.
-- Column headers prefer the lossless value with an accessible full-value label and bounded visual ellipsis.
-  **Column profiles** shows the complete value with wrapping, so integers outside JavaScript's safe range and
-  high-precision decimals do not silently round.
+- Column headers and **Column profiles** prefer the lossless value while bounding the visible extrema so unusually
+  long integers and decimals cannot distort the grid or drawer. The complete value remains available in the
+  tooltip and accessibility text, so values outside JavaScript's safe range never silently round or disappear.
 - Protocol, snapshot, engine, component, production-bundle screenshot, and axe regressions cover both field
   presence and display. Validation rejects partial pairs, wrong semantic types, null/NaN cells, malformed or
   non-canonical encodings, unsafe integers transported as numbers, and reversed extrema.

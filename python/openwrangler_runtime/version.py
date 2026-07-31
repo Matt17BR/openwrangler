@@ -1,3 +1,3 @@
 """Single source of truth for the bundled Python runtime version."""
 
-__version__ = "1.1.8"
+__version__ = "1.1.9"
