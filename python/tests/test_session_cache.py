@@ -559,7 +559,7 @@ def test_draft_plan_and_close_invalidate_cache_without_rebuilding_an_unchanged_d
     assert session.view_generation == 6
     assert session.committed_shape == session.source_shape == {"rows": 4, "columns": 2}
     assert session.committed_schema == session.source_schema
-    assert engine.filter_calls == 4
+    assert engine.filter_calls == 5
     assert session.page_cache
 
     manager.close_session(session_id, 5)

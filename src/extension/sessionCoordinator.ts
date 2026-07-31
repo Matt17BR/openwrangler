@@ -41,6 +41,7 @@ interface RuntimeSessionState {
   metadata: SessionMetadata;
   code: string;
   draftPresentation?: SessionPresentation["draft"];
+  draftBaseFilterModel?: FilterModel;
   viewState: PersistedViewingState;
 }
 
@@ -559,6 +560,7 @@ export class SessionCoordinator implements vscode.Disposable {
         session.metadata = clean.metadata;
         session.code = "";
         session.draftPresentation = undefined;
+        session.draftBaseFilterModel = undefined;
         session.viewState = initialViewingState(clean.metadata);
         const cleanMismatch = sessionOpenedResponseMismatch(session.openRequest, clean);
         if (cleanMismatch) {
@@ -743,7 +745,11 @@ export class SessionCoordinator implements vscode.Disposable {
       );
     }
 
-    const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
+    const persisted = persistedSessionState(
+      session.metadata,
+      gridState(session.viewState),
+      session.draftBaseFilterModel
+    );
     const previous: RuntimeSessionState = {
       publicId: session.publicId,
       runtimeId: session.runtimeId,
@@ -751,6 +757,7 @@ export class SessionCoordinator implements vscode.Disposable {
       delegate: session.delegate,
       metadata: session.metadata,
       code: session.code,
+      draftBaseFilterModel: session.draftBaseFilterModel,
       viewState: session.viewState
     };
     const candidateSessionId = randomUUID();
@@ -941,6 +948,7 @@ export class SessionCoordinator implements vscode.Disposable {
     session.metadata = candidate.metadata;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
+    session.draftBaseFilterModel = candidate.draftBaseFilterModel;
     session.viewState = candidate.viewState;
     session.recoveryRequired = false;
     session.activeViewContextId = undefined;
@@ -1368,6 +1376,12 @@ export class SessionCoordinator implements vscode.Disposable {
                   : (response.metadata.latestStepInputSchema ?? session.metadata.schema)
             }
           : undefined;
+      const nextDraftBaseFilterModel =
+        response.kind === "stepPreview"
+          ? previousFilterModel
+          : response.kind === "planUpdated"
+            ? undefined
+            : session.draftBaseFilterModel;
       const commitState = (): void => {
         if (pageRequest) {
           session.activeViewContextId = options?.viewContextId;
@@ -1386,6 +1400,7 @@ export class SessionCoordinator implements vscode.Disposable {
         if (response.kind === "stepPreview" || response.kind === "planUpdated") {
           session.code = response.code;
           session.draftPresentation = draftPresentation;
+          session.draftBaseFilterModel = nextDraftBaseFilterModel;
         }
       };
       if (pageRequest && stateChanged) {
@@ -1586,7 +1601,7 @@ export class SessionCoordinator implements vscode.Disposable {
   private async persistSession(session: CoordinatedSession): Promise<void> {
     if (!this.workspaceState || !isPersistentSession(session.openRequest.source, session.metadata.backend)) return;
     const key = persistenceKey(session.openRequest.source, session.metadata.backend);
-    const state = persistedSessionState(session.metadata, gridState(session.viewState));
+    const state = persistedSessionState(session.metadata, gridState(session.viewState), session.draftBaseFilterModel);
     const task = this.persistenceTail
       .catch(() => undefined)
       .then(async () => {
@@ -1611,7 +1626,7 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     const key = persistenceKey(session.openRequest.source, metadata.backend);
-    const state = persistedSessionState(metadata, gridState(viewState));
+    const state = persistedSessionState(metadata, gridState(viewState), session.draftBaseFilterModel);
     let committed = false;
     const task = this.persistenceTail
       .catch(() => undefined)
@@ -1673,6 +1688,7 @@ export class SessionCoordinator implements vscode.Disposable {
     assertCurrent?: () => void
   ): Promise<void> {
     session.draftPresentation = undefined;
+    session.draftBaseFilterModel = undefined;
     for (const step of cleaning.steps) {
       assertCurrent?.();
       const previewRequest: SessionBoundRequest = {
@@ -1716,8 +1732,19 @@ export class SessionCoordinator implements vscode.Disposable {
     }
 
     if (cleaning.draftStep) {
+      if (cleaning.draftBaseFilterModel) {
+        await this.restoreDraftBaseFilterModel(
+          session,
+          cleaning.draftBaseFilterModel,
+          columnOffset,
+          columnLimit,
+          options,
+          assertCurrent
+        );
+      }
       assertCurrent?.();
       const committedSchema = session.metadata.schema;
+      const confirmedDraftBaseFilterModel = session.metadata.filterModel;
       const previewRequest: SessionBoundRequest = {
         kind: "previewStep",
         sessionId: session.runtimeId,
@@ -1740,6 +1767,7 @@ export class SessionCoordinator implements vscode.Disposable {
       session.runtimeRevision = preview.revision;
       session.metadata = preview.metadata;
       session.code = preview.code;
+      session.draftBaseFilterModel = confirmedDraftBaseFilterModel;
       session.draftPresentation = {
         diff: preview.diff,
         warnings: [...(preview.warnings ?? [])],
@@ -1749,6 +1777,48 @@ export class SessionCoordinator implements vscode.Disposable {
             : (preview.metadata.latestStepInputSchema ?? committedSchema)
       };
     }
+  }
+
+  private async restoreDraftBaseFilterModel(
+    session: RuntimeSessionState,
+    filterModel: FilterModel,
+    columnOffset: number,
+    columnLimit: number,
+    options?: BridgeRequestOptions,
+    assertCurrent?: () => void
+  ): Promise<void> {
+    const request: SessionBoundRequest = {
+      kind: "getPage",
+      sessionId: session.runtimeId,
+      revision: session.runtimeRevision,
+      viewRequestId: `restore:${session.publicId}:${session.runtimeRevision}:draft-base`,
+      offset: 0,
+      limit: 1,
+      columnOffset,
+      columnLimit,
+      filterModel
+    };
+    assertCurrent?.();
+    const response = await session.delegate.request(request, options);
+    assertCurrent?.();
+    const mismatch = responseMismatch(request, response, session.runtimeId, session.metadata.schema);
+    if (mismatch) {
+      throw new RuntimeStateRestoreError(`Open Wrangler could not validate the saved draft view: ${mismatch}`);
+    }
+    if (response.kind === "error") return;
+    if (response.kind !== "page") {
+      throw new RuntimeStateRestoreError("Open Wrangler could not restore the saved draft view.");
+    }
+    session.runtimeRevision = response.revision;
+    session.metadata = response.metadata;
+    session.viewState = reconcileViewingState(
+      {
+        filterModel: response.metadata.filterModel,
+        columnWidths: {},
+        viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+      },
+      response.metadata
+    );
   }
 
   private async restoreViewingState(
@@ -1876,7 +1946,11 @@ export class SessionCoordinator implements vscode.Disposable {
   ): Promise<boolean> {
     if (!this.isLiveSession(session) || session.closing) return false;
     if (session.notebookDocument && notebookOriginMismatch(session.openRequest, session.notebookDocument)) return false;
-    const persisted = persistedSessionState(session.metadata, gridState(session.viewState));
+    const persisted = persistedSessionState(
+      session.metadata,
+      gridState(session.viewState),
+      session.draftBaseFilterModel
+    );
     const previous: RuntimeSessionState = {
       publicId: session.publicId,
       runtimeId: session.runtimeId,
@@ -1884,6 +1958,7 @@ export class SessionCoordinator implements vscode.Disposable {
       delegate: session.delegate,
       metadata: session.metadata,
       code: session.code,
+      draftBaseFilterModel: session.draftBaseFilterModel,
       viewState: session.viewState
     };
     let candidate: RuntimeSessionState | undefined;
@@ -1930,6 +2005,7 @@ export class SessionCoordinator implements vscode.Disposable {
     session.metadata = candidate.metadata;
     session.code = candidate.code;
     session.draftPresentation = candidate.draftPresentation;
+    session.draftBaseFilterModel = candidate.draftBaseFilterModel;
     session.viewState = candidate.viewState;
     this.clearPublishedStepInspection(session);
     if (publishActive && this.activeSessionId === session.publicId)

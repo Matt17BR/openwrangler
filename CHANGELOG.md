@@ -31,6 +31,11 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Preserved compatible viewing filters, selected values, predicates, searches, and ordered multi-sorts through
+  cleaning-step preview, apply, latest-step edit, discard, reload, and undo. Structural or semantic-type-changing
+  steps prune only rules that no longer resolve safely. An explicit in-draft edit remains authoritative through
+  Discard or Apply; otherwise Discard restores the persisted pre-draft view. Latest-step replacement retains the
+  original Undo receipt so immediate Undo returns to the pre-first-apply view when no later view edit intervened.
 - Branded Open Wrangler workbench and custom-editor tabs with the theme-specific Open Wrangler action icon instead
   of inheriting a generic text or source-file glyph.
 - Restored Pandas 3 `DataFrame` and `Series` discovery in the notebook toolbar picker while retaining the Pandas 2

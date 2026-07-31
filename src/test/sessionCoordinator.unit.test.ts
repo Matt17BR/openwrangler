@@ -1410,7 +1410,8 @@ describe("SessionCoordinator", () => {
           columnWidths: { "c:removed": 260 },
           selectedColumnId: "c:removed",
           viewport: { firstVisibleRow: 40, scrollLeft: 120 }
-        }
+        },
+        staleFilterModel
       )
     };
     const workspaceState = {
@@ -1524,11 +1525,176 @@ describe("SessionCoordinator", () => {
       "open",
       `preview-${appliedStep.id}`,
       "apply",
+      "page-saved",
       `preview-${draftStep.id}`,
       "page-saved",
       "page-empty"
     ]);
     expect(delegateRequest.mock.calls.filter(([request]) => request.kind === "openSession")).toHaveLength(1);
+  });
+
+  it.each([
+    { action: "discardDraft" as const, expectedAction: "discard" as const },
+    { action: "applyDraft" as const, expectedAction: "apply" as const }
+  ])("restores a persisted draft base before $expectedAction and preserves its view contract", async ({ action }) => {
+    const baseSchema: SessionMetadata["schema"] = [
+      { id: "c:market", name: "market", position: 0, rawType: "String", type: "string", nullable: false },
+      { id: "c:revenue", name: "revenue", position: 1, rawType: "Int64", type: "integer", nullable: false }
+    ];
+    const draftSchema: SessionMetadata["schema"] = [
+      { id: "c:revenue", name: "revenue", position: 0, rawType: "Int64", type: "integer", nullable: false }
+    ];
+    const step: TransformStep = {
+      id: "drop-market",
+      kind: "dropColumns",
+      params: { columns: [{ id: "c:market", name: "market" }] }
+    };
+    const draftBaseFilterModel: FilterModel = {
+      filters: [
+        {
+          column: "market",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "equals", value: "DACH" }]
+        }
+      ],
+      sort: [
+        { column: "market", direction: "asc", nulls: "last" },
+        { column: "revenue", direction: "desc", nulls: "last" }
+      ]
+    };
+    const reconciledFilterModel: FilterModel = {
+      filters: [],
+      sort: [{ column: "revenue", direction: "desc", nulls: "last" }]
+    };
+    const runtimeOpened = openedResponse("draft-receipt-runtime");
+    runtimeOpened.metadata = {
+      ...runtimeOpened.metadata,
+      shape: { rows: 5, columns: 2 },
+      filteredShape: { rows: 5, columns: 2 },
+      schema: baseSchema
+    };
+    runtimeOpened.page = { ...runtimeOpened.page, totalRows: 5, columnIds: baseSchema.map((column) => column.id) };
+    const persistedMetadata: SessionMetadata = {
+      ...runtimeOpened.metadata,
+      revision: 1,
+      shape: { rows: 5, columns: 1 },
+      filteredShape: { rows: 5, columns: 1 },
+      schema: draftSchema,
+      filterModel: reconciledFilterModel,
+      draftStep: step
+    };
+    const key = persistenceKey(openRequest.source, "polars");
+    let stored: Record<string, unknown> = {
+      [key]: persistedSessionState(
+        persistedMetadata,
+        { columnWidths: {}, viewport: { firstVisibleRow: 0, scrollLeft: 0 } },
+        draftBaseFilterModel
+      )
+    };
+    const workspaceState = {
+      get: vi.fn((storageKey: string, fallback?: unknown) => (storageKey === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async (_storageKey: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    let draftOpen = false;
+    const viewRequests: FilterModel[] = [];
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") return runtimeOpened;
+      if (request.kind === "getPage") {
+        viewRequests.push(request.filterModel);
+        const metadata = {
+          ...(draftOpen ? persistedMetadata : runtimeOpened.metadata),
+          revision: request.revision,
+          filterModel: request.filterModel
+        };
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "previewStep") {
+        draftOpen = true;
+        const metadata = { ...persistedMetadata, revision: 1 };
+        return {
+          ...stepPreviewResponse(1, step, "draft-receipt-runtime"),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "discardDraft") {
+        draftOpen = false;
+        const metadata = {
+          ...runtimeOpened.metadata,
+          revision: 2,
+          filterModel: draftBaseFilterModel
+        };
+        return {
+          ...planUpdatedResponse(2, [], "draft-receipt-runtime"),
+          action: "discard",
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "applyDraft") {
+        draftOpen = false;
+        const metadata = {
+          ...persistedMetadata,
+          revision: 2,
+          filterModel: reconciledFilterModel,
+          steps: [step],
+          draftStep: undefined
+        };
+        return {
+          ...planUpdatedResponse(2, [step], "draft-receipt-runtime"),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "closeSession") {
+        return { kind: "sessionClosed", sessionId: request.sessionId };
+      }
+      throw new Error(`Unexpected draft-receipt request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+
+    const restored = await bridge.request(openRequest);
+    if (restored.kind !== "sessionOpened") throw new Error("Expected the persisted draft to restore.");
+    expect(viewRequests).toEqual([draftBaseFilterModel, reconciledFilterModel]);
+
+    const result = await bridge.request({
+      kind: action,
+      sessionId: restored.metadata.sessionId,
+      revision: restored.metadata.revision,
+      offset: 0,
+      limit: 10,
+      ...columnWindow
+    });
+    const expectedFilterModel = action === "discardDraft" ? draftBaseFilterModel : reconciledFilterModel;
+    expect(result).toMatchObject({ kind: "planUpdated", metadata: { filterModel: expectedFilterModel } });
+    expect(stored[key]).toMatchObject({
+      cleaning: {
+        steps: action === "applyDraft" ? [step] : []
+      },
+      view: { filterModel: expectedFilterModel }
+    });
+    const savedCleaning = (stored[key] as { cleaning: { draftStep?: unknown; draftBaseFilterModel?: unknown } })
+      .cleaning;
+    expect(savedCleaning.draftStep).toBeUndefined();
+    expect(savedCleaning).not.toHaveProperty("draftBaseFilterModel");
+
+    if (result.kind === "planUpdated") {
+      await bridge.request({
+        kind: "closeSession",
+        sessionId: restored.metadata.sessionId,
+        revision: result.revision
+      });
+    }
   });
 
   it("reopens original data with an empty plan only when saved cleaning replay fails", async () => {
@@ -4522,6 +4688,163 @@ describe("SessionCoordinator", () => {
     expect(stored[persistenceKey(openRequest.source, "polars")]).toMatchObject({
       view: { filterModel: { ...changedFilter, logic: "and" } }
     });
+  });
+
+  it("publishes and persists a reconciled viewing query across preview, apply, and undo", async () => {
+    let stored: Record<string, unknown> = {};
+    const workspaceState = {
+      get: vi.fn((key: string, fallback?: unknown) => (key === SESSION_STORAGE_KEY ? stored : fallback)),
+      update: vi.fn(async (_key: string, value: Record<string, unknown>) => {
+        stored = value;
+      }),
+      keys: vi.fn(() => [SESSION_STORAGE_KEY])
+    } as unknown as Memento;
+    const schema: SessionMetadata["schema"] = [
+      { id: "c:sales", name: "sales", position: 0, rawType: "Int64", type: "integer", nullable: false },
+      { id: "c:market", name: "market", position: 1, rawType: "String", type: "string", nullable: false }
+    ];
+    const filterModel: FilterModel = {
+      logic: "and",
+      filters: [
+        {
+          column: "market",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["DACH"],
+            includeNulls: false,
+            includeNaN: false,
+            search: "da"
+          },
+          predicates: [{ kind: "predicate", operator: "contains", value: "a" }]
+        }
+      ],
+      sort: [
+        { column: "sales", direction: "desc", nulls: "last" },
+        { column: "market", direction: "asc", nulls: "first" }
+      ]
+    };
+    const metadataAt = (revision: number, steps: TransformStep[], draftStep?: TransformStep): SessionMetadata => ({
+      ...openedResponse().metadata,
+      revision,
+      shape: { rows: 20, columns: 2 },
+      filteredShape: { rows: 7, columns: 2 },
+      schema,
+      filterModel,
+      steps,
+      ...(draftStep ? { draftStep } : {})
+    });
+    const delegateRequest = vi.fn(async (request: OpenWranglerRequest): Promise<OpenWranglerResponse> => {
+      if (request.kind === "openSession") {
+        const metadata = { ...metadataAt(0, []), filterModel: { filters: [], sort: [] } };
+        return {
+          kind: "sessionOpened",
+          metadata,
+          page: projectedPage(
+            {
+              ...request,
+              kind: "getPage",
+              sessionId: "runtime-session",
+              revision: 0,
+              viewRequestId: "open",
+              offset: 0,
+              limit: request.pageSize,
+              filterModel: metadata.filterModel
+            },
+            metadata
+          ),
+          summaries: []
+        };
+      }
+      if (request.kind === "getPage") {
+        const metadata = metadataAt(request.revision, []);
+        return {
+          kind: "page",
+          revision: request.revision,
+          viewRequestId: request.viewRequestId,
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "previewStep") {
+        const metadata = metadataAt(1, [], inspectionStep);
+        return {
+          ...stepPreviewResponse(1, inspectionStep),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "applyDraft") {
+        const metadata = metadataAt(2, [inspectionStep]);
+        return {
+          ...planUpdatedResponse(2, [inspectionStep]),
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      if (request.kind === "undoStep") {
+        const metadata = metadataAt(3, []);
+        return {
+          ...planUpdatedResponse(3, []),
+          action: "undo",
+          metadata,
+          page: projectedPage(request, metadata)
+        };
+      }
+      throw new Error(`Unexpected reconciled-view request: ${request.kind}`);
+    });
+    const coordinator = new SessionCoordinator(workspaceState);
+    const bridge = coordinator.createBridge({ request: delegateRequest });
+    const opened = await bridge.request(openRequest);
+    if (opened.kind !== "sessionOpened") throw new Error("Expected the fake session to open.");
+
+    await bridge.request({
+      kind: "getPage",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      viewRequestId: "confirmed-view",
+      offset: 0,
+      limit: 100,
+      ...columnWindow,
+      filterModel
+    });
+    const preview = await bridge.request({
+      kind: "previewStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 0,
+      step: inspectionStep,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+    const key = persistenceKey(openRequest.source, "polars");
+    expect(stored[key]).toMatchObject({
+      cleaning: { draftStep: inspectionStep, draftBaseFilterModel: filterModel },
+      view: { filterModel }
+    });
+    const applied = await bridge.request({
+      kind: "applyDraft",
+      sessionId: opened.metadata.sessionId,
+      revision: 1,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+    const undone = await bridge.request({
+      kind: "undoStep",
+      sessionId: opened.metadata.sessionId,
+      revision: 2,
+      offset: 0,
+      limit: 100,
+      ...columnWindow
+    });
+
+    for (const response of [preview, applied, undone]) {
+      expect(response).toMatchObject({ metadata: { filterModel } });
+    }
+    expect(coordinator.activeSession()?.viewState.filterModel).toEqual(filterModel);
+    expect(stored[key]).toMatchObject({ view: { filterModel } });
+    expect((stored[key] as { cleaning: Record<string, unknown> }).cleaning).not.toHaveProperty("draftBaseFilterModel");
   });
 
   it("retires a session after terminal close failure without replaying or reviving it", async () => {

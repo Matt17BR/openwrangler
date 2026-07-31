@@ -1901,6 +1901,122 @@ describe("App file import options", () => {
     });
   });
 
+  it("keeps reconciled filters, value selections, predicates, and sort priority after applying a step", async () => {
+    const step: TransformStep = {
+      id: "round-sales",
+      kind: "roundNumber",
+      params: { column: { id: "c:1", name: "sales" }, decimals: 0 }
+    };
+    const filterModel: SessionMetadata["filterModel"] = {
+      logic: "and",
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          valueFilter: {
+            kind: "values",
+            selectedValues: ["Milan"],
+            includeNulls: false,
+            includeNaN: false,
+            search: "mil"
+          },
+          predicates: [{ kind: "predicate", operator: "contains", value: "il" }]
+        }
+      ],
+      sort: [
+        { column: "sales", direction: "desc", nulls: "last" },
+        { column: "city", direction: "asc", nulls: "first" }
+      ]
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, revision: 1, filterModel, draftStep: step },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "applyDraft" });
+    dispatchAppMessage({
+      kind: "planUpdated",
+      action: "apply",
+      revision: 2,
+      metadata: { ...metadata, revision: 2, filterModel, steps: [step] },
+      page,
+      code: "frame"
+    });
+
+    expect(document.querySelector<HTMLElement>('th[data-column="sales"]')).toHaveAccessibleName(
+      "sales, sorted descending, priority 1 of 2"
+    );
+    expect(document.querySelector<HTMLElement>('th[data-column="city"]')).toHaveAccessibleName(
+      "city, sorted ascending, priority 2 of 2"
+    );
+
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+    expect(await screen.findByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: 'Remove equals "Milan" filter from city' })).toBeVisible();
+    expect(screen.getByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
+    const sortOrder = screen.getByRole("list", { name: "Active sort order" });
+    expect(
+      within(sortOrder)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual([expect.stringContaining("sales"), expect.stringContaining("city")]);
+  });
+
+  it("keeps a user-edited draft view when the runtime confirms discard", async () => {
+    const step: TransformStep = {
+      id: "round-sales",
+      kind: "roundNumber",
+      params: { column: { id: "c:1", name: "sales" }, decimals: 0 }
+    };
+    const editedFilterModel: SessionMetadata["filterModel"] = {
+      filters: [
+        {
+          column: "city",
+          type: "string",
+          predicates: [{ kind: "predicate", operator: "contains", value: "il" }]
+        }
+      ],
+      sort: [
+        { column: "city", direction: "desc", nulls: "last" },
+        { column: "sales", direction: "asc", nulls: "first" }
+      ]
+    };
+    render(<App />);
+    dispatchAppMessage({
+      kind: "sessionOpened",
+      metadata: { ...metadata, revision: 1, filterModel: editedFilterModel, draftStep: step },
+      page,
+      summaries: []
+    });
+    await screen.findByRole("cell", { name: "Milan" });
+
+    dispatchAppMessage({ kind: "editorAction", action: "discardDraft" });
+    dispatchAppMessage({
+      kind: "planUpdated",
+      action: "discard",
+      revision: 2,
+      metadata: { ...metadata, revision: 2, filterModel: editedFilterModel },
+      page,
+      code: "frame"
+    });
+
+    expect(document.querySelector<HTMLElement>('th[data-column="city"]')).toHaveAccessibleName(
+      "city, sorted descending, priority 1 of 2"
+    );
+    dispatchAppMessage({ kind: "editorAction", action: "openFilters", column: "city" });
+    expect(await screen.findByRole("button", { name: 'Remove contains "il" filter from city' })).toBeVisible();
+    const sortOrder = screen.getByRole("list", { name: "Active sort order" });
+    expect(
+      within(sortOrder)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual([expect.stringContaining("city"), expect.stringContaining("sales")]);
+  });
+
   it("opens the Filters drawer from a native sort node and applies validated priority changes", async () => {
     const sortedMetadata: SessionMetadata = {
       ...metadata,

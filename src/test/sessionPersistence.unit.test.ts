@@ -119,17 +119,26 @@ describe("session persistence", () => {
   });
 
   it("round-trips only replayable plan and viewing state", () => {
-    const persisted = persistedSessionState(metadata, {
-      columnWidths: { "c:value": 240 },
-      selectedColumnId: "c:value",
-      viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
-    });
+    const draftBaseFilterModel = {
+      filters: [],
+      sort: [{ column: "value", direction: "asc" as const, nulls: "first" as const }]
+    };
+    const persisted = persistedSessionState(
+      metadata,
+      {
+        columnWidths: { "c:value": 240 },
+        selectedColumnId: "c:value",
+        viewport: { firstVisibleRow: 41, scrollLeft: 320.5 }
+      },
+      draftBaseFilterModel
+    );
     expect(decodePersistedSession(persisted)).toEqual(persisted);
     expect(persisted).not.toHaveProperty("sessionId");
     expect(persisted).not.toHaveProperty("stats");
     expect(Object.keys(persisted).sort()).toEqual(["backend", "cleaning", "view"]);
     expect(persisted.backend).toBe("polars");
     expect(persisted.cleaning.steps).toEqual(metadata.steps);
+    expect(persisted.cleaning.draftBaseFilterModel).toEqual(draftBaseFilterModel);
     expect(persisted.view).toMatchObject({
       filterModel: metadata.filterModel,
       columnWidths: { "c:value": 240 },
@@ -218,6 +227,12 @@ describe("session persistence", () => {
 
     expect(decodePersistedSession({ backend: "polars", cleaning })).toEqual(expected);
     expect(decodePersistedSession({ backend: "polars", cleaning, view: {} })).toEqual(expected);
+    expect(
+      decodePersistedSession({
+        backend: "polars",
+        cleaning: { ...cleaning, draftBaseFilterModel: { filters: "invalid", sort: [] } }
+      })
+    ).toEqual(expected);
     expect(
       decodePersistedSession({
         backend: "polars",

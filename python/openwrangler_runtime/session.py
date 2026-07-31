@@ -7,7 +7,7 @@ import tempfile
 import threading
 import uuid
 from collections import OrderedDict
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from ._column_binding import ColumnBindingError, bind_step
 from .engines import DataFrameEngine, EngineError, EngineRegistry, default_engine_registry
-from .engines.base import PageColumnProjection, SummaryColumnProjection
+from .engines.base import PageColumnProjection, SummaryColumnProjection, reconcile_view_filter_model
 from .lineage import derive_lineage, schema_with_lineage, source_lineage
 from .operations import OperationError, validate_step
 from .protocol import MAX_COLUMN_LIMIT
@@ -46,6 +46,14 @@ class _SourceChangedError(EngineError):
     """Recoverable source invalidation that must also invalidate cached pages."""
 
 
+@dataclass(frozen=True, slots=True)
+class _AppliedViewRestore:
+    step_id: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+    view_change_epoch: int
+
+
 @dataclass
 class Session:
     session_id: str
@@ -66,6 +74,8 @@ class Session:
     draft_step: dict[str, Any] | None
     draft_bound_step: dict[str, Any] | None
     draft_frame: Any | None
+    draft_base_filter_model: dict[str, Any] | None
+    draft_base_view_change_epoch: int | None
     draft_base_lineage: list[dict[str, str]] | None
     draft_base_schema: list[dict[str, Any]] | None
     draft_lineage: list[dict[str, str]] | None
@@ -78,6 +88,8 @@ class Session:
     page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
+    view_change_epoch: int
+    last_applied_view_restore: _AppliedViewRestore | None
     revision: int
     mode: str
     lock: Any
@@ -141,6 +153,8 @@ class _SessionMutationSnapshot:
     draft_step: dict[str, Any] | None
     draft_bound_step: dict[str, Any] | None
     draft_frame: Any | None
+    draft_base_filter_model: dict[str, Any] | None
+    draft_base_view_change_epoch: int | None
     draft_base_lineage: list[dict[str, str]] | None
     draft_base_schema: list[dict[str, Any]] | None
     draft_lineage: list[dict[str, str]] | None
@@ -150,6 +164,8 @@ class _SessionMutationSnapshot:
     page_cache: OrderedDict[tuple[int, int, int, int, tuple[str, ...]], _CachedPage]
     page_cache_bytes: int
     view_generation: int
+    view_change_epoch: int
+    last_applied_view_restore: _AppliedViewRestore | None
     revision: int
 
     @classmethod
@@ -168,6 +184,8 @@ class _SessionMutationSnapshot:
             draft_step=deepcopy(session.draft_step),
             draft_bound_step=deepcopy(session.draft_bound_step),
             draft_frame=session.draft_frame,
+            draft_base_filter_model=deepcopy(session.draft_base_filter_model),
+            draft_base_view_change_epoch=session.draft_base_view_change_epoch,
             draft_base_lineage=deepcopy(session.draft_base_lineage),
             draft_base_schema=deepcopy(session.draft_base_schema),
             draft_lineage=deepcopy(session.draft_lineage),
@@ -179,6 +197,8 @@ class _SessionMutationSnapshot:
             page_cache=OrderedDict(session.page_cache),
             page_cache_bytes=session.page_cache_bytes,
             view_generation=session.view_generation,
+            view_change_epoch=session.view_change_epoch,
+            last_applied_view_restore=deepcopy(session.last_applied_view_restore),
             revision=session.revision,
         )
 
@@ -196,6 +216,8 @@ class _SessionMutationSnapshot:
         session.draft_step = self.draft_step
         session.draft_bound_step = self.draft_bound_step
         session.draft_frame = self.draft_frame
+        session.draft_base_filter_model = self.draft_base_filter_model
+        session.draft_base_view_change_epoch = self.draft_base_view_change_epoch
         session.draft_base_lineage = self.draft_base_lineage
         session.draft_base_schema = self.draft_base_schema
         session.draft_lineage = self.draft_lineage
@@ -205,6 +227,8 @@ class _SessionMutationSnapshot:
         session.page_cache = self.page_cache
         session.page_cache_bytes = self.page_cache_bytes
         session.view_generation = self.view_generation
+        session.view_change_epoch = self.view_change_epoch
+        session.last_applied_view_restore = self.last_applied_view_restore
         session.revision = self.revision
 
 
@@ -310,6 +334,8 @@ class SessionManager:
                 draft_step=None,
                 draft_bound_step=None,
                 draft_frame=None,
+                draft_base_filter_model=None,
+                draft_base_view_change_epoch=None,
                 draft_base_lineage=None,
                 draft_base_schema=None,
                 draft_lineage=None,
@@ -322,6 +348,8 @@ class SessionManager:
                 page_cache=OrderedDict(),
                 page_cache_bytes=0,
                 view_generation=0,
+                view_change_epoch=0,
+                last_applied_view_restore=None,
                 revision=0,
                 mode=(
                     "viewing"
@@ -499,6 +527,8 @@ class SessionManager:
             session.draft_step = normalized
             session.draft_bound_step = bound_step
             session.draft_frame = draft
+            session.draft_base_filter_model = deepcopy(session.filter_model)
+            session.draft_base_view_change_epoch = session.view_change_epoch
             session.draft_base_lineage = base_lineage
             session.draft_base_schema = base_schema
             session.draft_lineage = draft_lineage
@@ -506,7 +536,21 @@ class SessionManager:
             session.draft_schema = draft_schema
             session.replace_step_id = replace_step_id
             session.revision += 1
-            self._refresh_filtered(session, session.filter_model)
+            reconciled_filter_model = reconcile_view_filter_model(
+                session.filter_model,
+                draft_schema,
+                diff_base_schema,
+            )
+            if reconciled_filter_model != session.filter_model:
+                if reconciled_filter_model["filters"] or reconciled_filter_model["sort"]:
+                    diff_base_view = session.engine.apply_filter_model(diff_base, reconciled_filter_model)
+                    diff_base_view_shape = (
+                        session.engine.shape(diff_base_view) if reconciled_filter_model["filters"] else diff_base_shape
+                    )
+                else:
+                    diff_base_view = diff_base
+                    diff_base_view_shape = diff_base_shape
+            self._refresh_filtered(session, reconciled_filter_model)
             preview_page = self._page(session, offset, limit, column_offset, column_limit)
             before_schema_with_lineage = schema_with_lineage(diff_base_schema, diff_base_lineage)
             before_projection = self._column_window(
@@ -659,6 +703,8 @@ class SessionManager:
                 session.draft_step is None
                 or session.draft_bound_step is None
                 or session.draft_frame is None
+                or session.draft_base_filter_model is None
+                or session.draft_base_view_change_epoch is None
                 or session.draft_base_lineage is None
                 or session.draft_base_schema is None
                 or session.draft_lineage is None
@@ -666,6 +712,11 @@ class SessionManager:
                 or session.draft_schema is None
             ):
                 raise EngineError("There is no draft step to apply.")
+            draft_step_id = session.draft_step["id"]
+            filter_model_before_draft = deepcopy(session.draft_base_filter_model)
+            view_change_epoch_before_draft = session.draft_base_view_change_epoch
+            replace_step_id = session.replace_step_id
+            previous_restore = deepcopy(session.last_applied_view_restore)
             if session.replace_step_id is None:
                 session.plan.append(session.draft_step)
                 session.bound_plan.append(session.draft_bound_step)
@@ -683,15 +734,34 @@ class SessionManager:
             session.committed_shape = session.draft_shape
             session.committed_schema = session.draft_schema
             self._clear_draft(session)
-            return self._finish_plan_change(
+            response = self._finish_plan_change(
                 session,
                 "apply",
                 offset,
                 limit,
                 column_offset,
                 column_limit,
-                reset_view=True,
+                reuse_filtered=True,
             )
+            if session.view_change_epoch == view_change_epoch_before_draft:
+                restore_before = filter_model_before_draft
+                if (
+                    replace_step_id == draft_step_id
+                    and previous_restore is not None
+                    and previous_restore.step_id == draft_step_id
+                    and previous_restore.view_change_epoch == view_change_epoch_before_draft
+                    and previous_restore.after == filter_model_before_draft
+                ):
+                    restore_before = previous_restore.before
+                session.last_applied_view_restore = _AppliedViewRestore(
+                    step_id=draft_step_id,
+                    before=deepcopy(restore_before),
+                    after=deepcopy(session.filter_model),
+                    view_change_epoch=session.view_change_epoch,
+                )
+            else:
+                session.last_applied_view_restore = None
+            return response
 
     def discard_draft(
         self,
@@ -705,8 +775,18 @@ class SessionManager:
         session = self._session(session_id)
         with self._atomic_session_read(session):
             self._assert_revision(session, revision)
-            if session.draft_step is None:
+            if (
+                session.draft_step is None
+                or session.draft_base_filter_model is None
+                or session.draft_base_view_change_epoch is None
+                or session.draft_schema is None
+            ):
                 raise EngineError("There is no draft step to discard.")
+            view_changed_during_draft = session.view_change_epoch != session.draft_base_view_change_epoch
+            filter_model = deepcopy(
+                session.filter_model if view_changed_during_draft else session.draft_base_filter_model
+            )
+            previous_schema = session.draft_schema if view_changed_during_draft else session.committed_schema
             self._clear_draft(session)
             return self._finish_plan_change(
                 session,
@@ -715,7 +795,8 @@ class SessionManager:
                 limit,
                 column_offset,
                 column_limit,
-                reset_view=False,
+                filter_model=filter_model,
+                previous_schema=previous_schema,
             )
 
     def undo_step(
@@ -736,6 +817,17 @@ class SessionManager:
                 raise EngineError("Discard the draft step before undoing an applied step.")
             if not session.plan:
                 raise EngineError("There is no applied step to undo.")
+            undone_step_id = session.plan[-1]["id"]
+            restore = session.last_applied_view_restore
+            restore_filter_model = (
+                deepcopy(restore.before)
+                if restore is not None
+                and restore.step_id == undone_step_id
+                and restore.view_change_epoch == session.view_change_epoch
+                and restore.after == session.filter_model
+                else None
+            )
+            previous_schema = session.committed_schema
             session.plan.pop()
             session.bound_plan.pop()
             session.plan_input_schemas.pop()
@@ -745,15 +837,18 @@ class SessionManager:
                 session.committed_shape,
                 session.committed_schema,
             ) = self._replay(session, session.bound_plan)
-            return self._finish_plan_change(
+            response = self._finish_plan_change(
                 session,
                 "undo",
                 offset,
                 limit,
                 column_offset,
                 column_limit,
-                reset_view=True,
+                filter_model=restore_filter_model,
+                previous_schema=None if restore_filter_model is not None else previous_schema,
             )
+            session.last_applied_view_restore = None
+            return response
 
     def export_data(
         self,
@@ -888,6 +983,7 @@ class SessionManager:
         model = self._normalize_filter_model(filter_model)
         if model != session.filter_model:
             self._refresh_filtered(session, model)
+            session.view_change_epoch += 1
         return session.filtered
 
     def _view_query_frame(self, session: Session, filter_model: Mapping[str, Any]) -> Any:
@@ -1094,12 +1190,23 @@ class SessionManager:
         column_offset: int,
         column_limit: int,
         *,
-        reset_view: bool,
+        filter_model: Mapping[str, Any] | None = None,
+        previous_schema: Sequence[Mapping[str, Any]] | None = None,
+        reuse_filtered: bool = False,
     ) -> dict[str, Any]:
-        if reset_view:
-            session.filter_model = {"logic": "and", "filters": [], "sort": []}
+        reconciled_filter_model = reconcile_view_filter_model(
+            session.filter_model if filter_model is None else filter_model,
+            session.display_schema,
+            previous_schema,
+        )
         session.revision += 1
-        self._refresh_filtered(session, session.filter_model)
+        if reuse_filtered and reconciled_filter_model == session.filter_model:
+            # Apply promotes the exact draft frame that already owns this
+            # filtered view. Retain it while still invalidating revision-bound
+            # page blocks instead of executing the same query twice.
+            self._invalidate_page_cache(session)
+        else:
+            self._refresh_filtered(session, reconciled_filter_model)
         return {
             "kind": "planUpdated",
             "action": action,
@@ -1138,6 +1245,8 @@ class SessionManager:
         session.draft_step = None
         session.draft_bound_step = None
         session.draft_frame = None
+        session.draft_base_filter_model = None
+        session.draft_base_view_change_epoch = None
         session.draft_base_lineage = None
         session.draft_base_schema = None
         session.draft_lineage = None
