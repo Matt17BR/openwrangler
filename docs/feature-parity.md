@@ -681,7 +681,10 @@ Grid status and profile vocabulary, 2026-07-31:
   its Spark-query cost tooltip.
 - React, production-bundle screenshot, axe, forced-colors, narrow-width, 200%-zoom, packaged-layout, and PySpark
   media assertions cover direct status-bar placement, exact range text, Codicon presence, pressed state, and
-  unclipped controls. Historical Insights evidence above remains evidence for the behavior tested at that time.
+  unclipped controls. Dedicated 100,000,000-row terminal fixtures prove the exact
+  `Rows 99,999,801\u2013100,000,000 of 100,000,000` range at 320 CSS pixels and 200% zoom without status-bar,
+  application, or document overflow. Historical Insights evidence above remains evidence for the behavior tested
+  at that time.
 
 This completes the bounded permanent grid-status sub-slice of [issue #88](https://github.com/Matt17BR/openwrangler/issues/88). Broader command-row redesign and refreshed installed-editor release evidence remain follow-up work; this does not make a parity-complete claim.
 

@@ -401,6 +401,16 @@ duplicateColumnPayload.metadata.schema = duplicateColumnPayload.metadata.schema.
   id: `c:source:${position}`,
   name: ["value", "value", "7", ""][position]
 }));
+const terminalRangePayload = structuredClone(payloads.wide);
+terminalRangePayload.metadata.shape.rows = 100_000_000;
+terminalRangePayload.metadata.filteredShape.rows = 100_000_000;
+terminalRangePayload.page.offset = 99_999_800;
+terminalRangePayload.page.totalRows = 100_000_000;
+terminalRangePayload.page.rows = terminalRangePayload.page.rows.map((row, index) => ({
+  ...row,
+  id: `r:${99_999_800 + index}`,
+  rowNumber: 99_999_800 + index
+}));
 
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
 writeWebviewHarness(
@@ -518,6 +528,41 @@ writeWebviewHarness(
   }
 );
 writeWebviewHarness("grid-dark-800.html", payloads.opened, {}, "acceptance/grid-dark-800.png", {}, { width: 800 });
+writeWebviewHarness(
+  "grid-terminal-range-dark-320.html",
+  terminalRangePayload,
+  {},
+  "acceptance/grid-terminal-range-dark-320.png",
+  {},
+  {
+    width: 320,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        viewport: { firstVisibleRow: 99_999_800, scrollLeft: 0 }
+      }
+    }
+  }
+);
+writeWebviewHarness(
+  "grid-terminal-range-dark-zoom-200.html",
+  terminalRangePayload,
+  {},
+  "acceptance/grid-terminal-range-dark-zoom-200.png",
+  {},
+  {
+    width: 800,
+    zoom: 2,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        viewport: { firstVisibleRow: 99_999_800, scrollLeft: 0 }
+      }
+    }
+  }
+);
 writeWebviewHarness(
   "summary-families-dark-800.html",
   payloads.summaryFamilies,

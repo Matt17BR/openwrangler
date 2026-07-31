@@ -769,6 +769,7 @@ textarea {
 }
 
 .dataGrid {
+  container-type: inline-size;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -2030,6 +2031,27 @@ dd {
 
   .operationRowActions {
     justify-content: flex-end;
+  }
+}
+
+@container (max-width: 480px) {
+  .gridStatusBar {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .visibleRowsStatus {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .headerProfilesButton {
+    justify-self: end;
+    grid-column: 3;
+    grid-row: 1;
   }
 }
 

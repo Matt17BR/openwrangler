@@ -171,6 +171,46 @@ describe("DataGrid", () => {
     expect(onPage).toHaveBeenCalledWith(200);
   });
 
+  it("keeps an exact terminal range and both status-bar actions available for very large datasets", () => {
+    const totalRows = 100_000_000;
+    const offset = totalRows - largeGridPageSize;
+    const onPage = vi.fn();
+    render(
+      <DataGrid
+        metadata={{
+          ...metadata,
+          shape: { rows: totalRows, columns: 2 },
+          filteredShape: { rows: totalRows, columns: 2 }
+        }}
+        page={pageAt(offset, totalRows)}
+        summaries={[]}
+        pageSize={largeGridPageSize}
+        defaultColumnWidth={190}
+        insightsOnOpen={true}
+        viewState={{ columnWidths: {}, viewport: { firstVisibleRow: offset, scrollLeft: 0 } }}
+        onPage={onPage}
+        onSortColumn={() => undefined}
+        onOpenFilter={() => undefined}
+        onVisibleSummaryColumnsChange={() => undefined}
+      />
+    );
+
+    const statusBar = document.querySelector<HTMLElement>(".gridStatusBar");
+    if (!statusBar) throw new Error("Expected the grid status bar.");
+    expect(within(statusBar).getByRole("status", { name: "Visible rows" })).toHaveTextContent(
+      "Rows 99,999,801\u2013100,000,000 of 100,000,000"
+    );
+    const previous = within(statusBar).getByRole("button", { name: "Previous block" });
+    const next = within(statusBar).getByRole("button", { name: "Next block" });
+    expect(previous).toBeEnabled();
+    expect(next).toBeDisabled();
+    expect(within(statusBar).getByRole("button", { name: "Header profiles" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(previous);
+    expect(onPage).toHaveBeenCalledWith(99_999_600);
+    next.click();
+    expect(onPage).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the column name on its own row above compact metadata and actions", () => {
     render(
       <DataGrid

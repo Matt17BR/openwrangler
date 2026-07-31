@@ -1836,7 +1836,12 @@ async function exerciseReleasedJupyterExtension(
       assert.ok(duckdbDiagnostic, "The native DuckDB session must remain coordinated before kernel restart.");
       const recoveryDuckdbRevenue = columnReference(recoveryDuckdbPage.metadata, "revenue");
       const recoveryDuckdbViewState: GridViewState = {
-        columnWidths: { [recoveryDuckdbRevenue.id]: 310 },
+        columnWidths: Object.fromEntries(
+          recoveryDuckdbPage.metadata.schema.map((column) => [
+            column.id,
+            column.id === recoveryDuckdbRevenue.id ? 310 : 640
+          ])
+        ),
         selectedColumnId: recoveryDuckdbRevenue.id,
         viewport: { firstVisibleRow: 123, scrollLeft: 120 }
       };

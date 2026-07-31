@@ -621,11 +621,55 @@ async function verifyInsightsDrawerWorkflow(browser) {
 }
 
 async function verifyGridStatusBar(browser) {
-  for (const { harness, width, range } of [
-    { harness: "wide-view.html", width: 320, range: "Rows 1\u2013200 of 1,000" },
-    { harness: "grid-zoom-2.html", width: 1280, range: "Rows 1\u20134 of 4" }
+  for (const { harness, width, expectedDataGridWidth, range, previousDisabled, nextDisabled, expectSecondRow } of [
+    {
+      harness: "wide-view.html",
+      width: 320,
+      expectedDataGridWidth: 320,
+      range: "Rows 1\u2013200 of 1,000",
+      previousDisabled: true,
+      nextDisabled: false,
+      expectSecondRow: true
+    },
+    {
+      harness: "grid-zoom-2.html",
+      width: 1280,
+      expectedDataGridWidth: 640,
+      range: "Rows 1\u20134 of 4",
+      previousDisabled: true,
+      nextDisabled: true,
+      expectSecondRow: false
+    },
+    {
+      harness: "grid-terminal-range-dark-320.html",
+      width: 320,
+      expectedDataGridWidth: 320,
+      range: "Rows 99,999,801\u2013100,000,000 of 100,000,000",
+      previousDisabled: false,
+      nextDisabled: true,
+      expectSecondRow: true
+    },
+    {
+      harness: "grid-terminal-range-dark-320.html",
+      width: 400,
+      expectedDataGridWidth: 400,
+      range: "Rows 99,999,801\u2013100,000,000 of 100,000,000",
+      previousDisabled: false,
+      nextDisabled: true,
+      expectSecondRow: true
+    },
+    {
+      harness: "grid-terminal-range-dark-zoom-200.html",
+      width: 800,
+      expectedDataGridWidth: 400,
+      range: "Rows 99,999,801\u2013100,000,000 of 100,000,000",
+      previousDisabled: false,
+      nextDisabled: true,
+      expectSecondRow: true
+    }
   ]) {
-    const page = await browser.newPage({ viewport: { width, height: 760 } });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width, height: 760 });
     await page.goto(pathToFileURL(resolve(harnessDir, harness)).href, { waitUntil: "load" });
     const statusBar = page.locator(".gridStatusBar");
     await statusBar.waitFor();
@@ -641,8 +685,24 @@ async function verifyGridStatusBar(browser) {
     }
     const previous = statusBar.getByRole("button", { name: "Previous block" });
     const next = statusBar.getByRole("button", { name: "Next block" });
-    if (!(await previous.isDisabled()) || (await previous.getAttribute("aria-disabled")) !== null) {
-      throw new Error(`${harness} did not use native disabled semantics for Previous block.`);
+    const actualPreviousDisabled = await previous.evaluate(
+      (button) => button instanceof HTMLButtonElement && button.disabled
+    );
+    const actualNextDisabled = await next.evaluate((button) => button instanceof HTMLButtonElement && button.disabled);
+    if (
+      actualPreviousDisabled !== previousDisabled ||
+      actualNextDisabled !== nextDisabled ||
+      (await previous.getAttribute("aria-disabled")) !== null ||
+      (await next.getAttribute("aria-disabled")) !== null
+    ) {
+      throw new Error(
+        `${harness} did not preserve exact native disabled semantics for block navigation: ${JSON.stringify({
+          actualPreviousDisabled,
+          actualNextDisabled,
+          previousDisabled,
+          nextDisabled
+        })}.`
+      );
     }
     if ((await previous.locator(".codicon-chevron-left").count()) !== 1) {
       throw new Error(`${harness} did not render the Previous block Codicon.`);
@@ -659,11 +719,41 @@ async function verifyGridStatusBar(browser) {
       const scroller = bar.previousElementSibling;
       const rangeStatus = bar.querySelector('[role="status"][aria-label="Visible rows"]');
       const headerProfiles = bar.querySelector(".headerProfilesButton");
+      const app = bar.closest(".app");
+      const dataGrid = bar.closest(".dataGrid");
+      const actions = [
+        bar.querySelector('[aria-label="Previous block"]'),
+        bar.querySelector('[aria-label="Next block"]'),
+        headerProfiles
+      ];
+      const rangeBounds = rangeStatus?.getBoundingClientRect();
+      const actionBottom = Math.max(
+        ...actions.map((action) => action?.getBoundingClientRect().bottom ?? Number.POSITIVE_INFINITY)
+      );
+      const headerProfilesBounds = headerProfiles?.getBoundingClientRect();
+      const rangeStyle = rangeStatus ? getComputedStyle(rangeStatus) : undefined;
       return {
         position: getComputedStyle(bar).position,
         followsScroller: scroller?.matches('[data-testid="data-grid-scroller"]') === true,
         overflow: bar.scrollWidth - bar.clientWidth,
-        rangeClipped: rangeStatus ? rangeStatus.scrollWidth > rangeStatus.clientWidth + 1 : true,
+        dataGridWidth: dataGrid?.clientWidth ?? Number.POSITIVE_INFINITY,
+        appOverflow: app ? app.scrollWidth - app.clientWidth : Number.POSITIVE_INFINITY,
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        rangeClipped: rangeStatus
+          ? rangeStatus.scrollWidth > rangeStatus.clientWidth + 1 ||
+            rangeStatus.scrollHeight > rangeStatus.clientHeight + 1
+          : true,
+        rangeOnSecondRow: Boolean(rangeBounds && rangeBounds.top >= actionBottom - 1),
+        rangeSingleLine: Boolean(
+          rangeStatus && rangeStyle && rangeStatus.clientHeight <= Number.parseFloat(rangeStyle.fontSize) * 1.5
+        ),
+        headerProfilesReachable: Boolean(
+          headerProfilesBounds &&
+          headerProfilesBounds.left >= bounds.left - 1 &&
+          headerProfilesBounds.right <= bounds.right + 1 &&
+          headerProfilesBounds.top >= bounds.top - 1 &&
+          headerProfilesBounds.bottom <= bounds.bottom + 1
+        ),
         headerProfilesBackground: headerProfiles ? getComputedStyle(headerProfiles).backgroundColor : "transparent",
         clippedChildren: [...bar.children].flatMap((child) => {
           const childBounds = child.getBoundingClientRect();
@@ -678,24 +768,39 @@ async function verifyGridStatusBar(browser) {
       layout.position === "fixed" ||
       !layout.followsScroller ||
       layout.overflow > 1 ||
+      layout.dataGridWidth !== expectedDataGridWidth ||
+      layout.appOverflow > 1 ||
+      layout.documentOverflow > 1 ||
       layout.rangeClipped ||
+      layout.rangeOnSecondRow !== expectSecondRow ||
+      !layout.rangeSingleLine ||
+      !layout.headerProfilesReachable ||
       layout.headerProfilesBackground === "transparent" ||
       layout.headerProfilesBackground === "rgba(0, 0, 0, 0)" ||
       layout.clippedChildren.length > 0
     ) {
       throw new Error(`${harness} clipped, moved, or made the grid status bar sticky: ${JSON.stringify(layout)}.`);
     }
+    await headerProfiles.click();
+    if ((await headerProfiles.getAttribute("aria-pressed")) !== "false") {
+      throw new Error(`${harness} did not keep Header profiles reachable as a pressed toggle.`);
+    }
     await page.close();
   }
 
-  const forcedPage = await browser.newPage({ viewport: { width: 800, height: 760 } });
+  const forcedPage = await browser.newPage();
+  await forcedPage.setViewportSize({ width: 320, height: 760 });
   await forcedPage.emulateMedia({ forcedColors: "active" });
-  await forcedPage.goto(pathToFileURL(resolve(harnessDir, "wide-view.html")).href, { waitUntil: "load" });
+  await forcedPage.goto(pathToFileURL(resolve(harnessDir, "grid-terminal-range-dark-320.html")).href, {
+    waitUntil: "load"
+  });
   const forcedStatusBar = forcedPage.locator(".gridStatusBar");
   await forcedStatusBar.waitFor();
   const forcedHeaderProfiles = forcedStatusBar.getByRole("button", { name: "Header profiles", exact: true });
   await forcedHeaderProfiles.focus();
   const forcedStyles = await forcedStatusBar.evaluate((bar) => {
+    const bounds = bar.getBoundingClientRect();
+    const app = bar.closest(".app");
     const navigation = [...bar.querySelectorAll(".gridNavigationButton")].map((button) => {
       const style = getComputedStyle(button);
       const iconBounds = button.querySelector(".codicon")?.getBoundingClientRect();
@@ -710,6 +815,13 @@ async function verifyGridStatusBar(browser) {
     const header = bar.querySelector(".headerProfilesButton");
     const headerStyle = header ? getComputedStyle(header) : undefined;
     return {
+      barOverflow: bar.scrollWidth - bar.clientWidth,
+      appOverflow: app ? app.scrollWidth - app.clientWidth : Number.POSITIVE_INFINITY,
+      documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      clippedChildren: [...bar.children].filter((child) => {
+        const childBounds = child.getBoundingClientRect();
+        return childBounds.left < bounds.left - 1 || childBounds.right > bounds.right + 1;
+      }).length,
       navigation,
       header: headerStyle
         ? {
@@ -724,6 +836,10 @@ async function verifyGridStatusBar(browser) {
     };
   });
   if (
+    forcedStyles.barOverflow > 1 ||
+    forcedStyles.appOverflow > 1 ||
+    forcedStyles.documentOverflow > 1 ||
+    forcedStyles.clippedChildren > 0 ||
     forcedStyles.navigation.length !== 2 ||
     forcedStyles.navigation.some(
       ({ borderStyle, borderWidth, forcedColorAdjust, opacity, iconVisible }) =>
