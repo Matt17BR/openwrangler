@@ -14,6 +14,12 @@ test("README media is compact, portable, and composition-verified", () => {
   const buildWebviews = readFileSync(resolve(root, "scripts", "build-webviews.mjs"), "utf8");
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
   const gallery = readFileSync(resolve(root, "docs", "media-gallery.md"), "utf8");
+  const mediaSpec = readFileSync(resolve(root, "docs", "media-spec-v1.1.md"), "utf8");
+  const extensionHost = readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8");
+  const screenshotEvidence = readFileSync(
+    resolve(root, "src", "test", "extensionHost", "screenshotEvidence.ts"),
+    "utf8"
+  );
 
   assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
@@ -51,9 +57,23 @@ test("README media is compact, portable, and composition-verified", () => {
   assert.match(packagedEditorRunner, /if \(jupyterExtensionInstallTarget\) \{/u);
   assert.match(packagedEditorRunner, /"jupyter-pyspark"/u);
   assert.match(
-    readFileSync(resolve(root, "src", "test", "extensionHost", "index.ts"), "utf8"),
+    extensionHost,
     /platform-smoke:file-action:screenshots[\s\S]{0,1500}\$\{editorKey\}-file-title-action\.png[\s\S]{0,1500}\$\{editorKey\}-tab-context-menu\.png/u
   );
+  assert.match(screenshotEvidence, /PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT = \{ width: 1_440, height: 900 \}/u);
+  assert.match(
+    screenshotEvidence,
+    /PACKAGED_SCREENSHOT_SCENES = \[[\s\S]{0,180}"notebook-polars",[\s\S]{0,80}"notebook-duckdb",[\s\S]{0,80}"notebook-pyspark"/u
+  );
+  assert.match(extensionHost, /captureReleasedJupyterDuckDbRelation\(/u);
+  assert.match(extensionHost, /packagedScreenshotFileName\([\s\S]{0,180}"notebook-duckdb", "dark"\)/u);
+  assert.match(extensionHost, /async function captureNotebookWorkbenchScreenshot\(/u);
+  assert.match(extensionHost, /A notebook workbench media scene requires the standard 1440 by 900 editor viewport/u);
+  assert.match(
+    mediaSpec,
+    /v1\.2 native notebook capture refresh[\s\S]{0,900}vscode-notebook-polars-dark\.png[\s\S]{0,600}vscode-notebook-duckdb-dark\.png[\s\S]{0,600}vscode-notebook-pyspark-dark\.png/u
+  );
+  assert.match(mediaSpec, /README[\s\S]{0,120}screenshot wall/u);
   assert.match(captureScript, /regional-orders-rich\.parquet/u);
   assert.match(captureScript, /backend="duckdb"/u);
   assert.match(captureScript, /FROM range\(100000\) AS rows\(row_id\)/u);

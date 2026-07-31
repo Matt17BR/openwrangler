@@ -78,6 +78,7 @@ import {
 } from "./releasedNotebookFailure";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
+  PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
   PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
@@ -1768,6 +1769,15 @@ async function exerciseReleasedJupyterExtension(
       assert.equal(duckdbSummary.summaries[0]?.totalCount, 25_000);
       assert.equal(duckdbSummary.summaries[0]?.numeric?.min, 100.5);
       assert.equal(duckdbSummary.summaries[0]?.numeric?.max, 5_099.94);
+      if (phase === "jupyter-allow" && screenshotOutput) {
+        await captureReleasedJupyterDuckDbRelation(
+          workbench,
+          testing,
+          duckdbRelation.sessionId,
+          filteredDuckdbModel,
+          screenshotOutput
+        );
+      }
 
       await disposePackagedSessionPanel(
         testing,
@@ -7600,6 +7610,38 @@ async function captureWorkbenchScreenshot(page: Page, destination: string, maxim
   assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 }
 
+async function captureNotebookWorkbenchScreenshot(page: Page, destination: string): Promise<void> {
+  await page.bringToFront();
+  const viewport = await page.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  assert.deepEqual(
+    viewport,
+    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+    "A notebook workbench media scene requires the standard 1440 by 900 editor viewport."
+  );
+  await page.screenshot({
+    path: destination,
+    animations: "disabled",
+    caret: "hide",
+    scale: "css",
+    timeout: 60_000
+  });
+  const image = readFileSync(destination);
+  assert.deepEqual([...image.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(
+    image.readUInt32BE(16),
+    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width,
+    "A notebook workbench media scene must retain the exact 1440-pixel editor width."
+  );
+  assert.equal(
+    image.readUInt32BE(20),
+    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.height,
+    "A notebook workbench media scene must retain the exact 900-pixel editor height."
+  );
+}
+
 async function prepareReleasedJupyterScreenshotWorkbench(
   workbench: Page,
   notebook: vscode.NotebookDocument,
@@ -7780,7 +7822,19 @@ async function captureReleasedJupyterPolarsDraft(
   outputDirectory: string
 ): Promise<void> {
   if (process.platform !== "linux") return;
-  await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+  assert.deepEqual(
+    await workbench.evaluate(() => {
+      const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+      return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+    }),
+    PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+    "The Polars notebook media scene requires the standard 1440 by 900 editor viewport."
+  );
   const active = testing.activeSession();
   assert.equal(active?.sessionId, sessionId, "The Polars notebook screenshot requires the exact live session.");
   assert.ok(active, "The Polars notebook screenshot requires one active dataframe session.");
@@ -7831,8 +7885,21 @@ async function captureReleasedJupyterPolarsDraft(
   const app = await exactSessionApp(target.frame, sessionId);
   assert.ok(app, "The Polars notebook screenshot requires the exact live Open Wrangler renderer.");
   const backendBadge = app.locator(".backendBadge").first();
+  const modeBadge = app.locator(".modeBadge").first();
   await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
+  await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
   assert.equal((await backendBadge.innerText()).trim(), "POLARS");
+  assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "EDITING");
+  const toolbarBox = await app.locator(".toolbar").boundingBox();
+  const badgeBoxes = await Promise.all([modeBadge.boundingBox(), backendBadge.boundingBox()]);
+  assert.ok(toolbarBox, "The Polars notebook media scene requires a measurable workbench toolbar.");
+  assert.ok(
+    badgeBoxes.every(
+      (badge) =>
+        badge !== null && badge.x >= toolbarBox.x && badge.x + badge.width <= toolbarBox.x + toolbarBox.width + 1
+    ),
+    "The Polars engine and editing badges must remain fully inside the workbench toolbar."
+  );
   await app.getByRole("button", { name: "Apply step" }).waitFor({ state: "visible", timeout: 10_000 });
   await app.getByRole("button", { name: "Discard" }).waitFor({ state: "visible", timeout: 10_000 });
   const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
@@ -7958,6 +8025,11 @@ async function captureReleasedJupyterPolarsDraft(
       doubleUnitsHeader.x + doubleUnitsHeader.width <= gridViewportRight + 1,
     "The complete computed double_units header must remain inside the Polars screenshot viewport."
   );
+  await assertMediaColumnTitlesUnclipped(
+    app,
+    active.metadata.schema.slice(firstVisibleColumnPosition).map((column) => column.name),
+    "The Polars notebook media scene"
+  );
   for (let index = 0; index < 3; index += 1) {
     const cell = await addedCells.nth(index).boundingBox();
     assert.ok(cell, `Computed Polars draft row ${index + 1} must have measurable geometry.`);
@@ -7979,16 +8051,317 @@ async function captureReleasedJupyterPolarsDraft(
   );
   mkdirSync(outputDirectory, { recursive: true });
   recordAcceptanceProgress("jupyter-allow:screenshot:polars");
-  await captureWorkbenchScreenshot(
+  await captureNotebookWorkbenchScreenshot(
     workbench,
     path.resolve(
       outputDirectory,
       packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-polars", "dark")
-    ),
-    760
+    )
   );
-  await workbench.setViewportSize({ width: 1_920, height: 1_080 });
+  await workbench.setViewportSize(previousViewport);
   await workbench.waitForTimeout(500);
+}
+
+async function captureReleasedJupyterDuckDbRelation(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  filterModel: FilterModel,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "DuckDB screenshot output must be one absolute directory.");
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  const previousThemeKind = vscode.window.activeColorTheme.kind;
+  const workbenchConfiguration = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const settings = [
+    { configuration: windowConfiguration, key: "autoDetectColorScheme" },
+    { configuration: windowConfiguration, key: "autoDetectHighContrast" },
+    { configuration: windowConfiguration, key: "commandCenter" },
+    { configuration: windowConfiguration, key: "title" },
+    { configuration: workbenchConfiguration, key: "colorTheme" },
+    { configuration: workbenchConfiguration, key: "statusBar.visible" },
+    { configuration: breadcrumbs, key: "enabled" }
+  ] as const;
+  const previousSettings = settings.map(({ configuration, key }) => ({
+    configuration,
+    key,
+    value: configuration.inspect(key)?.globalValue
+  }));
+
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The DuckDB notebook media scene requires the standard 1440 by 900 editor viewport."
+    );
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update(
+      "title",
+      "${activeEditorShort}${separator}Open Wrangler",
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update(
+      "colorTheme",
+      releasedJupyterScreenshotTheme(),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbenchConfiguration.update("statusBar.visible", false, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the dark DuckDB notebook screenshot theme"
+    );
+    await closeVisibleWorkbenchPart(workbench, ".part.sidebar", [
+      "workbench.action.closeSidebar",
+      "workbench.action.toggleSidebarVisibility"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+    await closeVisibleWorkbenchPart(workbench, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
+    await clearReleasedJupyterScreenshotTransientUi(workbench);
+
+    const active = testing.activeSession();
+    assert.equal(active?.sessionId, sessionId, "The DuckDB notebook screenshot requires the exact live relation.");
+    assert.ok(active, "The DuckDB notebook screenshot requires one active relation session.");
+    assert.equal(active.metadata.backend, "duckdb");
+    assert.equal(active.metadata.mode, "viewing");
+    assert.equal(active.metadata.source.kind, "notebookVariable");
+    assert.equal(active.metadata.source.variableName, "duckdb_relation");
+    assert.deepEqual(active.metadata.shape, { rows: 100_000, columns: 4 });
+    assert.deepEqual(active.metadata.filteredShape, { rows: 25_000, columns: 4 });
+    assert.deepEqual(active.metadata.filterModel, filterModel);
+    assert.deepEqual(active.metadata.steps, []);
+    assert.equal(active.metadata.draftStep, undefined);
+    assert.deepEqual(active.metadata.capabilities, {
+      editable: false,
+      lazy: false,
+      cancel: false,
+      exportCsv: false,
+      exportParquet: false,
+      notebookInsert: false
+    });
+    const revenue = columnReference(active.metadata, "revenue");
+    await testing.updateViewState(sessionId, {
+      ...active.viewState,
+      columnWidths: Object.fromEntries(active.metadata.schema.map((column) => [column.id, 230])),
+      selectedColumnId: revenue.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The DuckDB notebook screenshot must synchronize its native filtered relation."
+    );
+
+    const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The DuckDB notebook screenshot requires the exact live Open Wrangler renderer.");
+    const backendBadge = app.locator(".backendBadge").first();
+    const modeBadge = app.locator(".modeBadge").first();
+    await backendBadge.waitFor({ state: "visible", timeout: 10_000 });
+    await modeBadge.waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal((await backendBadge.innerText()).trim().toUpperCase(), "DUCKDB");
+    assert.equal((await modeBadge.innerText()).trim().toUpperCase(), "VIEWING");
+    const toolbarBox = await app.locator(".toolbar").boundingBox();
+    const badgeBoxes = await Promise.all([modeBadge.boundingBox(), backendBadge.boundingBox()]);
+    assert.ok(toolbarBox, "The DuckDB notebook media scene requires a measurable workbench toolbar.");
+    assert.ok(
+      badgeBoxes.every(
+        (badge) =>
+          badge !== null && badge.x >= toolbarBox.x && badge.x + badge.width <= toolbarBox.x + toolbarBox.width + 1
+      ),
+      "The DuckDB engine and viewing badges must remain fully inside the workbench toolbar."
+    );
+    assert.equal(await app.getByRole("button", { name: "Add step" }).count(), 0);
+    assert.equal(await app.getByRole("button", { name: "Apply step" }).count(), 0);
+    assert.equal(await app.getByRole("button", { name: "Discard" }).count(), 0);
+    assert.equal(await app.getByRole("button", { name: "Export", exact: true }).count(), 0);
+
+    const insightsToggle = app.getByRole("button", { name: "Column profiles and filters" });
+    if ((await insightsToggle.getAttribute("aria-expanded")) !== "true") await insightsToggle.click();
+    const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    const headerProfiles = app.getByRole("button", { name: "Header profiles", exact: true });
+    await headerProfiles.waitFor({ state: "visible", timeout: 10_000 });
+    if ((await headerProfiles.getAttribute("aria-pressed")) !== "true") await headerProfiles.click();
+    assert.equal(
+      await headerProfiles.getAttribute("aria-pressed"),
+      "true",
+      "The DuckDB notebook media scene must retain native visible-column profiles."
+    );
+
+    const gridScroller = app.getByTestId("data-grid-scroller");
+    const measuredGrid = await gridScroller.evaluate((element) => {
+      const scroller = element as {
+        clientWidth: number;
+        querySelector(selector: string): { getBoundingClientRect(): { width: number } } | null;
+      };
+      const rowHeader = scroller.querySelector("th.rowHeader");
+      return {
+        clientWidth: scroller.clientWidth,
+        rowHeaderWidth: rowHeader?.getBoundingClientRect().width ?? 0
+      };
+    });
+    const rowHeaderWidth = Math.round(measuredGrid.rowHeaderWidth);
+    const visibleDataWidth = measuredGrid.clientWidth - rowHeaderWidth;
+    const alignedBaseWidth = Math.floor(visibleDataWidth / active.metadata.schema.length);
+    const alignedWidthRemainder = visibleDataWidth % active.metadata.schema.length;
+    assert.ok(
+      Number.isSafeInteger(visibleDataWidth) &&
+        visibleDataWidth > 0 &&
+        rowHeaderWidth > 0 &&
+        alignedBaseWidth >= 80 &&
+        alignedBaseWidth + Number(alignedWidthRemainder > 0) <= 640,
+      `The native DuckDB grid cannot fit its complete relation schema: ${JSON.stringify({
+        ...measuredGrid,
+        rowHeaderWidth,
+        visibleDataWidth,
+        alignedBaseWidth,
+        alignedWidthRemainder
+      })}`
+    );
+    const alignedWidths = Object.fromEntries(
+      active.metadata.schema.map((column) => [
+        column.id,
+        alignedBaseWidth + Number(column.position < alignedWidthRemainder)
+      ])
+    );
+    const confirmedViewState = testing.activeSession()?.viewState;
+    assert.ok(confirmedViewState, "The DuckDB notebook screenshot requires its confirmed presentation state.");
+    await testing.updateViewState(sessionId, {
+      ...confirmedViewState,
+      columnWidths: alignedWidths,
+      selectedColumnId: revenue.id,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The DuckDB notebook screenshot must synchronize its exact four-column fit."
+    );
+
+    const revenueHeader = app.locator('th[data-column="revenue"]');
+    const profileDeadline = Date.now() + 60_000;
+    let revenueProfile = "";
+    while (Date.now() < profileDeadline) {
+      revenueProfile = await revenueHeader.innerText();
+      if (
+        /Min 100\.5/u.test(revenueProfile) &&
+        /Max 5,?099\.94/u.test(revenueProfile) &&
+        !revenueProfile.includes("Profiling")
+      ) {
+        break;
+      }
+      await workbench.waitForTimeout(50);
+    }
+    assert.match(revenueProfile, /Min 100\.5/u);
+    assert.match(revenueProfile, /Max 5,?099\.94/u);
+    assert.doesNotMatch(revenueProfile, /Profiling/u);
+
+    await drawer.getByRole("tab", { name: "Filters" }).click();
+    await drawer.getByRole("heading", { name: "Filters / Sorts" }).waitFor({ state: "visible", timeout: 10_000 });
+    const filterEditor = drawer.locator("details.filterSection").first();
+    if ((await filterEditor.getAttribute("open")) !== null) {
+      await filterEditor.locator("summary").click();
+    }
+    const activeFilters = drawer.getByRole("region", { name: "Active filters" });
+    await activeFilters.waitFor({ state: "visible", timeout: 10_000 });
+    await activeFilters
+      .getByRole("button", { name: "Remove equals DACH filter from market" })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    const sortOrder = drawer.getByRole("list", { name: "Active sort order" });
+    await sortOrder.waitFor({ state: "visible", timeout: 10_000 });
+    const sortRules = (await sortOrder.getByRole("listitem").allInnerTexts()).map((text) =>
+      text.replace(/\s+/gu, " ").trim()
+    );
+    assert.equal(sortRules.length, 2);
+    assert.match(sortRules[0] ?? "", /^1 order_id .*descending.*nulls last/u);
+    assert.match(sortRules[1] ?? "", /^2 revenue .*ascending.*nulls last/u);
+
+    const visibleRows = app.getByRole("status", { name: "Visible rows" });
+    await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
+    assert.match((await visibleRows.innerText()).trim(), /^Rows 1\u2013\d+ of 25,000$/u);
+    const gridBox = await gridScroller.boundingBox();
+    const rowHeaderBox = await app.locator("th.rowHeader").first().boundingBox();
+    const orderIdBox = await app.locator('th[data-column="order_id"]').boundingBox();
+    const orderDateBox = await app.locator('th[data-column="order_date"]').boundingBox();
+    assert.ok(gridBox, "The DuckDB notebook media scene requires a measurable grid viewport.");
+    assert.ok(rowHeaderBox, "The DuckDB notebook media scene requires a measurable row header.");
+    assert.ok(orderIdBox, "The DuckDB notebook media scene requires the complete order_id header.");
+    assert.ok(orderDateBox, "The DuckDB notebook media scene requires the complete order_date header.");
+    const dataViewportLeft = rowHeaderBox.x + rowHeaderBox.width;
+    const gridRight = gridBox.x + gridBox.width;
+    assert.ok(
+      Math.abs(orderIdBox.x - dataViewportLeft) <= 1,
+      "The DuckDB notebook media scene must begin at the complete order_id column boundary."
+    );
+    assert.ok(
+      Math.abs(orderDateBox.x + orderDateBox.width - gridRight) <= 1,
+      "The DuckDB notebook media scene must end at the complete order_date column boundary."
+    );
+    await assertMediaColumnTitlesUnclipped(
+      app,
+      active.metadata.schema.map((column) => column.name),
+      "The DuckDB notebook media scene"
+    );
+
+    const commands = new Set(await vscode.commands.getCommands(true));
+    if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+    if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+    await workbench.mouse.move(Math.floor(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width * 0.75), 40);
+    await workbench.waitForTimeout(500);
+    const transient = await workbench
+      .locator(
+        ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+          ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible, " +
+          ".monaco-hover:visible"
+      )
+      .allInnerTexts();
+    assert.deepEqual(
+      transient.map((text) => text.replace(/\s+/gu, " ").trim().slice(0, 500)),
+      [],
+      "DuckDB screenshot capture must not retain transient workbench UI."
+    );
+
+    mkdirSync(outputDirectory, { recursive: true });
+    recordAcceptanceProgress("jupyter-allow:screenshot:duckdb");
+    await captureNotebookWorkbenchScreenshot(
+      workbench,
+      path.resolve(
+        outputDirectory,
+        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-duckdb", "dark")
+      )
+    );
+  } finally {
+    for (const { configuration, key, value } of previousSettings.reverse()) {
+      await configuration.update(key, value, vscode.ConfigurationTarget.Global);
+    }
+    await workbench.setViewportSize(previousViewport);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === previousThemeKind,
+      10_000,
+      "the DuckDB notebook workbench to restore its prior color theme"
+    );
+    await workbench.waitForTimeout(500);
+  }
 }
 
 async function captureReleasedJupyterPySparkLive(
@@ -8028,7 +8401,15 @@ async function captureReleasedJupyterPySparkLive(
   }));
 
   try {
-    await workbench.setViewportSize(PACKAGED_SCREENSHOT_VIEWPORT);
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The PySpark notebook media scene requires the standard 1440 by 900 editor viewport."
+    );
     await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
     await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
@@ -8264,11 +8645,12 @@ async function captureReleasedJupyterPySparkLive(
       !nextColumnBox || nextColumnBox.x >= gridRight,
       "The PySpark media scene must not show a clipped product_family column."
     );
+    await assertMediaColumnTitlesUnclipped(app, featuredColumns, "The PySpark notebook media scene");
 
     const commands = new Set(await vscode.commands.getCommands(true));
     if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
     if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
-    await workbench.mouse.move(Math.floor(PACKAGED_SCREENSHOT_VIEWPORT.width * 0.75), 40);
+    await workbench.mouse.move(Math.floor(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT.width * 0.75), 40);
     await workbench.waitForTimeout(500);
     const transient = await workbench
       .locator(
@@ -8285,13 +8667,12 @@ async function captureReleasedJupyterPySparkLive(
 
     mkdirSync(outputDirectory, { recursive: true });
     recordAcceptanceProgress("jupyter-pyspark:screenshot:classic");
-    await captureWorkbenchScreenshot(
+    await captureNotebookWorkbenchScreenshot(
       workbench,
       path.resolve(
         outputDirectory,
         packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-pyspark", "dark")
-      ),
-      640
+      )
     );
   } finally {
     for (const { configuration, key, value } of previousSettings.reverse()) {
@@ -8304,6 +8685,34 @@ async function captureReleasedJupyterPySparkLive(
       "the PySpark notebook workbench to restore its prior color theme"
     );
     await workbench.waitForTimeout(500);
+  }
+}
+
+async function assertMediaColumnTitlesUnclipped(
+  app: Locator,
+  columnNames: readonly string[],
+  scene: string
+): Promise<void> {
+  for (const columnName of columnNames) {
+    const title = app.locator(`th[data-column="${columnName}"] .columnTitle`).first();
+    await title.waitFor({ state: "visible", timeout: 10_000 });
+    const geometry = await title.evaluate((element) => {
+      const target = element as unknown as {
+        clientWidth: number;
+        scrollWidth: number;
+        textContent: string | null;
+      };
+      return {
+        clientWidth: target.clientWidth,
+        scrollWidth: target.scrollWidth,
+        text: target.textContent?.trim() ?? ""
+      };
+    });
+    assert.equal(geometry.text, columnName, `${scene} must retain the complete ${columnName} title.`);
+    assert.ok(
+      geometry.scrollWidth <= geometry.clientWidth + 1,
+      `${scene} must not clip the ${columnName} title: ${JSON.stringify(geometry)}.`
+    );
   }
 }
 
