@@ -7073,20 +7073,23 @@ async function assertOpenWranglerTabBrandIcon(tab: Locator): Promise<void> {
       : "action-icon-dark.svg";
   const iconReferences = await tab.evaluate((root, expectedIcon) => {
     const references: Array<{ reference: string; visible: boolean; source: string }> = [];
+    const browserWindow = root.ownerDocument.defaultView;
+    if (!browserWindow) return references;
     for (const element of [root, ...root.querySelectorAll("*")]) {
       const bounds = element.getBoundingClientRect();
-      const elementStyle = getComputedStyle(element);
+      const elementStyle = browserWindow.getComputedStyle(element);
       const elementIsVisible =
         bounds.width > 0 &&
         bounds.height > 0 &&
         elementStyle.display !== "none" &&
         elementStyle.visibility !== "hidden" &&
         Number.parseFloat(elementStyle.opacity || "1") > 0;
-      if (element instanceof HTMLImageElement && element.src.includes(expectedIcon)) {
-        references.push({ reference: element.src, visible: elementIsVisible, source: "image" });
+      const imageSource = element.tagName.toLowerCase() === "img" ? element.getAttribute("src") : null;
+      if (imageSource?.includes(expectedIcon)) {
+        references.push({ reference: imageSource, visible: elementIsVisible, source: "image" });
       }
       for (const pseudo of [undefined, "::before", "::after"] as const) {
-        const style = getComputedStyle(element, pseudo);
+        const style = browserWindow.getComputedStyle(element, pseudo);
         for (const value of [style.backgroundImage, style.maskImage]) {
           if (value?.includes(expectedIcon)) {
             references.push({
