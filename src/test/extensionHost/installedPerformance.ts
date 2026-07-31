@@ -880,8 +880,14 @@ async function frameHasUsableGrid(frame: Frame, shape: { rows: number; columns: 
     if ((await cell.textContent()) !== String(row + column)) return false;
   }
   if (!(await frame.evaluate(rendererHasUsableGridGeometry, { cells: requiredCells }))) return false;
-  const insightsToggle = frame.getByRole("button", { name: "Hide insights", exact: true });
-  if ((await insightsToggle.count()) === 0 || !(await insightsToggle.isVisible())) return false;
+  const insightsToggle = frame.getByRole("button", { name: "Header profiles", exact: true });
+  if (
+    (await insightsToggle.count()) === 0 ||
+    !(await insightsToggle.isVisible()) ||
+    (await insightsToggle.getAttribute("aria-pressed")) !== "true"
+  ) {
+    return false;
+  }
   return true;
 }
 

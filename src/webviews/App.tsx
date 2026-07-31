@@ -2053,11 +2053,13 @@ export function App() {
                 ref={sidePanelToggleRef}
                 type="button"
                 className="toolbarButton"
-                aria-label={inspectionMode ? "Filters paused during inspection" : "Insights & filters"}
+                aria-label={inspectionMode ? "Filters paused during inspection" : "Column profiles and filters"}
                 aria-expanded={sidePanelOpen}
                 aria-controls="openwrangler-insights-panel"
                 disabled={inspectionMode || importOptionsPending}
-                title={inspectionMode ? "Clear the selected-step inspection to use filters and insights." : undefined}
+                title={
+                  inspectionMode ? "Clear the selected-step inspection to use filters and column profiles." : undefined
+                }
                 onClick={(event) => {
                   if (sidePanelOpenRef.current) {
                     closeSidePanel();
@@ -2070,7 +2072,7 @@ export function App() {
                   setSidePanelOpen(true);
                 }}
               >
-                {inspectionMode ? "Filters paused during inspection" : "Insights"}
+                {inspectionMode ? "Filters paused during inspection" : "Column profiles"}
               </button>
               <ColumnSearch
                 columns={(displayMetadata ?? metadata).schema}
@@ -2233,7 +2235,7 @@ export function App() {
             )}
             {backgroundDiagnosticMessages.length > 0 && (
               <div className="errorBanner" role="status" aria-label="Profiling diagnostics">
-                Insights warning: {backgroundDiagnosticMessages.join(" ")}
+                Profile warning: {backgroundDiagnosticMessages.join(" ")}
               </div>
             )}
             {loading && (
@@ -2330,9 +2332,9 @@ export function App() {
             )}
           </section>
           {sidePanelOpen && !inspectionMode && (
-            <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Insights and filters">
+            <aside id="openwrangler-insights-panel" className="sidebar" aria-label="Column profiles and filters">
               <div className="drawerHeader">
-                <strong>Insights</strong>
+                <strong>Column profiles</strong>
                 <button
                   ref={sidePanelCloseRef}
                   type="button"

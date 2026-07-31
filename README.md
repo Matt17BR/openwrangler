@@ -49,7 +49,7 @@ Open Wrangler requires Python 3.10 through 3.14. It uses your configured Python 
 - **Navigate large and wide tables efficiently.** The grid fetches bounded row and column blocks, while
   file-backed Polars sessions stay lazy where the format permits.
 
-<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"><img alt="The same Open Wrangler regional-orders session split between the default light and dark VS Code themes, with the virtualized grid and exact Revenue insights visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"></a>
+<a href="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"><img alt="The same Open Wrangler regional-orders session split between the default light and dark VS Code themes, with the virtualized grid and exact Revenue column profiles visible" src="https://raw.githubusercontent.com/Matt17BR/openwrangler/main/docs/images/readme/v1.1/workbench.png"></a>
 
 _The same packaged session in VS Code's default light and dark themes._
 
@@ -57,7 +57,7 @@ _The same packaged session in VS Code's default light and dark themes._
 
 1. Open a CSV, TSV, Parquet, JSONL/NDJSON, or Excel file and choose **Open in Open Wrangler** from the branded
    editor-toolbar action or context menu.
-2. Explore column summaries, search, filter, and sort without changing the source.
+2. Open **Column profiles**, search, filter, and sort without changing the source.
 3. Choose **Add step**, review the data diff in **Draft review** and the generated engine-specific code in
    **Code Preview**, then apply the step or discard it.
 4. Choose **Export** to save cleaned CSV or Parquet data without overwriting the source.

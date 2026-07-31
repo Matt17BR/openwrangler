@@ -199,8 +199,11 @@ describe("App progressive profiling and view correlation", () => {
       )
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
-    const drawer = screen.getByRole("complementary", { name: "Insights and filters" });
+    const profileToggle = screen.getByRole("button", { name: "Column profiles and filters" });
+    expect(profileToggle).toHaveTextContent(/^Column profiles$/u);
+    fireEvent.click(profileToggle);
+    const drawer = screen.getByRole("complementary", { name: "Column profiles and filters" });
+    expect(within(drawer).getByText("Column profiles", { selector: ".drawerHeader strong" })).toBeVisible();
     expect(within(drawer).getByRole("tab", { name: "Column" })).toHaveAttribute("aria-selected", "true");
     expect(within(drawer).getByRole("heading", { name: "duplicate (column 2)" })).toBeVisible();
     expect(within(drawer).getByText("Min").nextElementSibling).toHaveTextContent("10");
@@ -230,7 +233,7 @@ describe("App progressive profiling and view correlation", () => {
       try {
         render(<App />);
         dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
-        const toggle = await screen.findByRole("button", { name: "Insights & filters" });
+        const toggle = await screen.findByRole("button", { name: "Column profiles and filters" });
         expect(toggle).toHaveAttribute("aria-controls", "openwrangler-insights-panel");
         if (activation === "keyboard") {
           toggle.focus();
@@ -239,7 +242,7 @@ describe("App progressive profiling and view correlation", () => {
         } else {
           fireEvent.click(toggle, { detail: 1 });
         }
-        const panel = screen.getByRole("complementary", { name: "Insights and filters" });
+        const panel = screen.getByRole("complementary", { name: "Column profiles and filters" });
         expect(panel).toHaveAttribute("id", "openwrangler-insights-panel");
         expect(panel).not.toHaveAttribute("aria-modal");
         const close = screen.getByRole("button", { name: "Close panel" });
@@ -247,7 +250,7 @@ describe("App progressive profiling and view correlation", () => {
         expect(close).toHaveFocus();
 
         fireEvent.keyDown(close, { key: "Escape" });
-        expect(screen.queryByRole("complementary", { name: "Insights and filters" })).toBeNull();
+        expect(screen.queryByRole("complementary", { name: "Column profiles and filters" })).toBeNull();
         act(() => frames.shift()?.(performance.now()));
         expect(toggle).toHaveFocus();
       } finally {
@@ -279,7 +282,7 @@ describe("App progressive profiling and view correlation", () => {
 
       fireEvent.keyDown(close, { key: "Escape" });
       act(() => frames.shift()?.(performance.now()));
-      expect(screen.getByRole("button", { name: "Insights & filters" })).toHaveFocus();
+      expect(screen.getByRole("button", { name: "Column profiles and filters" })).toHaveFocus();
     } finally {
       hasFocus.mockRestore();
       requestFrame.mockRestore();
@@ -456,7 +459,7 @@ describe("App progressive profiling and view correlation", () => {
     await screen.findByText("Berlin");
     postMessage.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Filters");
     sortCityAscending();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
@@ -661,7 +664,7 @@ describe("App progressive profiling and view correlation", () => {
     await screen.findByText("Berlin");
     expect(requestsOfKind("getDatasetStats")).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Dataset");
     expect(screen.getByText("Profiling exact dataset statistics...")).toBeInTheDocument();
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
@@ -798,7 +801,7 @@ describe("App progressive profiling and view correlation", () => {
     const cityProfile = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:0");
     if (!cityProfile) throw new Error("Expected a city summary request.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Dataset");
     const stats = onlyRequest("getDatasetStats");
     dispatch({
@@ -815,17 +818,17 @@ describe("App progressive profiling and view correlation", () => {
       summaries: [citySummary]
     });
 
-    expect(await screen.findByText(/Insights warning: Exact stats failed/)).toBeInTheDocument();
+    expect(await screen.findByText(/Profile warning: Exact stats failed/)).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
-    expect(screen.queryByText(/Insights warning: Exact stats failed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Profile warning: Exact stats failed/)).not.toBeInTheDocument();
   });
 
   it("restores confirmed profiling diagnostics after a foreground mutation fails", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByText("Berlin");
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Dataset");
     const firstStats = onlyRequest("getDatasetStats");
     dispatch({
@@ -854,15 +857,15 @@ describe("App progressive profiling and view correlation", () => {
     expect(screen.getByText("Undo failed")).toBeInTheDocument();
   });
 
-  it("transfers open Column Insights ownership when the selected grid column changes", async () => {
+  it("transfers open selected-column profile ownership when the selected grid column changes", async () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
-    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Header profiles" }));
     await waitFor(() => expect(cancellationMessages().length).toBeGreaterThan(0));
 
     postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
     const cityRequest = onlyRequest("getSummary");
     expect(cityRequest.columnIds).toEqual(["c:0"]);
@@ -950,14 +953,14 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata: wideMetadata, page: widePage, summaries: [] });
     await waitFor(() => expect(requestsOfKind("getSummary").length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Header profiles" }));
     await waitFor(() => expect(cancellationMessages().length).toBeGreaterThan(0));
 
     postMessage.mockClear();
     const secondColumnCell = document.querySelector<HTMLElement>('[data-grid-row="0"][data-grid-column="1"]');
     if (!secondColumnCell) throw new Error("Expected the second visible wide-grid cell.");
     act(() => secondColumnCell.focus());
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
     const selectedSummary = onlyRequest("getSummary");
     expect(selectedSummary.columnIds).toEqual(["c:1"]);
@@ -995,7 +998,7 @@ describe("App progressive profiling and view correlation", () => {
     });
 
     postMessage.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Dataset");
     await waitFor(() => expect(requestsOfKind("getDatasetStats")).toHaveLength(1));
     const statsId = viewId(onlyRequest("getDatasetStats"));
@@ -1019,7 +1022,7 @@ describe("App progressive profiling and view correlation", () => {
             : [{ ...citySummary, columnId: "c:1", column: "sales", type: "float", rawType: "Float64" }]
       });
     }
-    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Header profiles" }));
 
     postMessage.mockClear();
     sortCityAscending();
@@ -1031,16 +1034,16 @@ describe("App progressive profiling and view correlation", () => {
       metadata: { ...metadata, filterModel: sortedPage.filterModel as FilterModel },
       page
     });
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(1));
     const drawerSummaryId = viewId(onlyRequest("getSummary"));
     expect(onlyRequest("getSummary").columnIds).toEqual(["c:0"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show insights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Header profiles" }));
     await waitFor(() => expect(requestsOfKind("getSummary")).toHaveLength(2));
     const gridOnlySummary = requestsOfKind("getSummary").find((request) => request.columnIds?.[0] === "c:1");
     if (!gridOnlySummary) throw new Error("Expected the visible grid to request the other column.");
-    fireEvent.click(screen.getByRole("button", { name: "Hide insights" }));
+    fireEvent.click(screen.getByRole("button", { name: "Header profiles" }));
     await waitFor(() => {
       const cancelledIds = cancellationMessages().flatMap((message) => message.viewRequestIds);
       expect(cancelledIds).toContain(viewId(gridOnlySummary));
@@ -1143,8 +1146,8 @@ describe("App progressive profiling and view correlation", () => {
     render(<App />);
     dispatch({ kind: "sessionOpened", metadata, page, summaries: [] });
     await screen.findByText("Berlin");
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
-    expect(screen.getByRole("complementary", { name: "Insights and filters" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
+    expect(screen.getByRole("complementary", { name: "Column profiles and filters" })).toBeInTheDocument();
 
     const frames: FrameRequestCallback[] = [];
     const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -1175,7 +1178,7 @@ describe("App progressive profiling and view correlation", () => {
     await screen.findByText("Berlin");
     postMessage.mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: "Insights & filters" }));
+    fireEvent.click(screen.getByRole("button", { name: "Column profiles and filters" }));
     selectInsightsView("Filters");
     sortCityAscending();
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));

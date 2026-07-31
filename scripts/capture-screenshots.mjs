@@ -401,6 +401,16 @@ duplicateColumnPayload.metadata.schema = duplicateColumnPayload.metadata.schema.
   id: `c:source:${position}`,
   name: ["value", "value", "7", ""][position]
 }));
+const terminalRangePayload = structuredClone(payloads.wide);
+terminalRangePayload.metadata.shape.rows = 100_000_000;
+terminalRangePayload.metadata.filteredShape.rows = 100_000_000;
+terminalRangePayload.page.offset = 99_999_800;
+terminalRangePayload.page.totalRows = 100_000_000;
+terminalRangePayload.page.rows = terminalRangePayload.page.rows.map((row, index) => ({
+  ...row,
+  id: `r:${99_999_800 + index}`,
+  rowNumber: 99_999_800 + index
+}));
 
 writeWebviewHarness("grid-view.html", payloads.opened, {}, "grid-view.png");
 writeWebviewHarness(
@@ -519,6 +529,41 @@ writeWebviewHarness(
 );
 writeWebviewHarness("grid-dark-800.html", payloads.opened, {}, "acceptance/grid-dark-800.png", {}, { width: 800 });
 writeWebviewHarness(
+  "grid-terminal-range-dark-320.html",
+  terminalRangePayload,
+  {},
+  "acceptance/grid-terminal-range-dark-320.png",
+  {},
+  {
+    width: 320,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        viewport: { firstVisibleRow: 99_999_800, scrollLeft: 0 }
+      }
+    }
+  }
+);
+writeWebviewHarness(
+  "grid-terminal-range-dark-zoom-200.html",
+  terminalRangePayload,
+  {},
+  "acceptance/grid-terminal-range-dark-zoom-200.png",
+  {},
+  {
+    width: 800,
+    zoom: 2,
+    followupMessage: {
+      kind: "viewState",
+      state: {
+        columnWidths: {},
+        viewport: { firstVisibleRow: 99_999_800, scrollLeft: 0 }
+      }
+    }
+  }
+);
+writeWebviewHarness(
   "summary-families-dark-800.html",
   payloads.summaryFamilies,
   {},
@@ -619,6 +664,18 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   const fetchColumnBlockSize = appearance.fetchColumnBlockSize ?? 16;
   const defaultColumnWidth = appearance.defaultColumnWidth ?? 190;
   const strictProjectedPages = appearance.strictProjectedPages === true;
+  const zoomViewportStyles =
+    zoom === 1
+      ? ""
+      : `
+    body {
+      height: ${100 / zoom}vh;
+      overflow: hidden;
+    }
+    #root,
+    .app {
+      height: 100%;
+    }`;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -628,7 +685,12 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
   <link rel="stylesheet" href="${mediaDir}/webview.css" />
   <style>
     ${themeTokens(theme)}
-    body { background: var(--vscode-editor-background); color: var(--vscode-foreground); zoom: ${zoom}; }
+    body {
+      background: var(--vscode-editor-background);
+      color: var(--vscode-foreground);
+      zoom: ${zoom};
+    }
+    ${zoomViewportStyles}
   </style>
   <script>
     const sessionPayload = ${stringifyForInlineScript(sessionPayload)};
@@ -652,7 +714,7 @@ function writeWebviewHarness(fileName, sessionPayload, columnValues, outputName,
           ${
             openInsights
               ? `setTimeout(() => {
-            const insights = document.querySelector('button[aria-label="Insights & filters"]');
+            const insights = document.querySelector('button[aria-label="Column profiles and filters"]');
             if (insights instanceof HTMLButtonElement && insights.getAttribute("aria-expanded") !== "true") {
               insights.click();
             }

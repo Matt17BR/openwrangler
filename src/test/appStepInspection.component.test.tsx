@@ -181,7 +181,7 @@ describe("App applied-step inspection", () => {
     expect(postMessage).toHaveBeenCalledWith({ kind: "clearStepInspection" });
     expect(screen.queryByLabelText("Selected applied-step inspection")).toBeNull();
     expect(screen.getByRole("cell", { name: "10.5" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Insights & filters" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Column profiles and filters" })).toBeEnabled();
     expect(runtimeRequests("getPage")).toHaveLength(0);
   });
 

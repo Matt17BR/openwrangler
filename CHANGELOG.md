@@ -4,6 +4,18 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ## [Unreleased]
 
+## [1.1.7] - 2026-07-31
+
+### Changed
+
+- Moved row-block navigation below the scrolling table into a slim, non-sticky status bar with transparent
+  Previous/Next Codicon buttons and one exact, always-visible row-range announcement. Narrow, 200%-zoom, high
+  contrast, and forced-colors layouts keep the status and native disabled states legible; very large terminal
+  ranges move below the actions in a calm second row instead of overflowing the grid.
+- Renamed the selected-column drawer to **Column profiles** while preserving its filter tabs, focus, Escape, and
+  stable internal relationships. The separate grid-header control is now the constant pressed **Header profiles**
+  toggle; `openWrangler.insightsOnOpen` keeps its existing key and behavior.
+
 ## [1.1.6] - 2026-07-31
 
 ### Changed
