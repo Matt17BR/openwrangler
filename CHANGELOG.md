@@ -16,6 +16,9 @@ All notable changes to Open Wrangler are documented here. The project follows Se
 
 ### Fixed
 
+- Restored host-owned column widths and selection before applying a saved grid viewport. A browser that emits a
+  synchronous scroll event during restoration can no longer combine the new viewport with stale presentation
+  state and overwrite the confirmed layout.
 - Recovered an active VS Code or Cursor dataframe tab when its webview never completes the initial ready
   handshake. The extension keeps the confirmed runtime session, reloads only the renderer once after a bounded
   grace period, and republishes the authoritative snapshot instead of leaving a blank grid.
