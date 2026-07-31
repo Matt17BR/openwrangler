@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-native-r
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -52,6 +53,7 @@ jobs:
       - run: npm ci
       - run: npm run clean
       - run: npm run build
+      - run: npm run test:r
       - run: npm run package:prepared -- --out openwrangler.vsix
       - run: npm run verify:vsix -- openwrangler.vsix
       - name: Create canonical PR checksum

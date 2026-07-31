@@ -13,10 +13,31 @@ export interface RDocumentContext {
   readonly kernelLanguage?: string;
 }
 
+declare const nativeRSessionHelperReceiptBrand: unique symbol;
+
+/**
+ * An opaque receipt proving that one helper instance was attached to one
+ * exact editor document through one exact R process.
+ *
+ * Callers cannot construct a valid receipt structurally. The module-private
+ * registry below is the authority consulted by {@link planNativeRLaunch}.
+ */
+export interface NativeRSessionHelperReceipt {
+  readonly [nativeRSessionHelperReceiptBrand]: true;
+}
+
+export interface NativeRSessionHelperBinding {
+  readonly receipt: NativeRSessionHelperReceipt;
+  readonly processIdentity: object;
+  readonly helperIdentity: object;
+}
+
 export interface NativeRLaunchContext {
   readonly document: RDocumentContext;
+  /** The exact VS Code TextDocument/NotebookDocument (or owned stand-in). */
+  readonly documentIdentity: object;
   readonly installedExtensionIds: readonly string[];
-  readonly sessionHelperConnected: boolean;
+  readonly sessionHelper?: NativeRSessionHelperBinding;
 }
 
 export interface NativeRLaunchPlan {
@@ -37,6 +58,32 @@ interface QuartoExtensionApi {
   getQuartoPath(): unknown;
   getQuartoVersion(): unknown;
   isQuartoAvailable(): unknown;
+}
+
+interface NativeRSessionHelperOrigin {
+  readonly documentIdentity: object;
+  readonly processIdentity: object;
+  readonly helperIdentity: object;
+}
+
+const nativeRSessionHelperOrigins = new WeakMap<object, NativeRSessionHelperOrigin>();
+
+export function issueNativeRSessionHelperReceipt(
+  documentIdentity: object,
+  processIdentity: object,
+  helperIdentity: object
+): NativeRSessionHelperReceipt {
+  const receipt = Object.freeze(Object.create(null)) as NativeRSessionHelperReceipt;
+  nativeRSessionHelperOrigins.set(receipt, Object.freeze({ documentIdentity, processIdentity, helperIdentity }));
+  return receipt;
+}
+
+/**
+ * Revokes a helper connection when its document, process, or helper is
+ * disposed. Revocation is idempotent and makes stale receipts fail closed.
+ */
+export function revokeNativeRSessionHelperReceipt(receipt: NativeRSessionHelperReceipt): void {
+  nativeRSessionHelperOrigins.delete(receipt);
 }
 
 export function classifyRDocument(context: RDocumentContext): RDocumentSurface | undefined {
@@ -91,7 +138,7 @@ export function planNativeRLaunch(context: NativeRLaunchContext): NativeRLaunchP
     });
   }
 
-  if (context.sessionHelperConnected) {
+  if (isExactNativeRSessionHelper(context.documentIdentity, context.sessionHelper)) {
     return Object.freeze({
       surface,
       transport: "sessionHelper",
@@ -105,11 +152,15 @@ export function planNativeRLaunch(context: NativeRLaunchContext): NativeRLaunchP
   const authoringStatus = installed.has(authoringExtension)
     ? ` ${authoringExtension} is installed, but its public API does not expose the live R environment.`
     : "";
+  const helperStatus =
+    context.sessionHelper === undefined
+      ? ""
+      : " The supplied helper receipt is stale or belongs to a different document, R process, or helper instance.";
   return Object.freeze({
     surface,
     available: false,
     missingExtensionIds: Object.freeze([]),
-    reason: `Connect the explicit Open Wrangler R-session helper before opening a live variable.${authoringStatus}`
+    reason: `Connect the explicit Open Wrangler R-session helper before opening a live variable.${authoringStatus}${helperStatus}`
   });
 }
 
@@ -156,4 +207,18 @@ function extensionOf(fileName: string | undefined): string | undefined {
   const finalSeparator = Math.max(fileName.lastIndexOf("/"), fileName.lastIndexOf("\\"));
   const finalDot = fileName.lastIndexOf(".");
   return finalDot > finalSeparator ? fileName.slice(finalDot + 1).toLowerCase() : undefined;
+}
+
+function isExactNativeRSessionHelper(
+  documentIdentity: object,
+  binding: NativeRSessionHelperBinding | undefined
+): boolean {
+  if (binding === undefined || typeof binding.receipt !== "object" || binding.receipt === null) return false;
+  const origin = nativeRSessionHelperOrigins.get(binding.receipt);
+  return (
+    origin !== undefined &&
+    origin.documentIdentity === documentIdentity &&
+    origin.processIdentity === binding.processIdentity &&
+    origin.helperIdentity === binding.helperIdentity
+  );
 }

@@ -7,13 +7,13 @@ that the current stable release supports R.
 
 ## Supported host surfaces
 
-| Surface              | Initial integration                                            | Product decision                                    |
-| -------------------- | -------------------------------------------------------------- | --------------------------------------------------- |
-| R-kernel `.ipynb`    | Stable Jupyter extension kernel API                            | First production surface                            |
-| `.R`                 | Explicit Open Wrangler helper sourced into the exact R session | Planned after the notebook viewer                   |
-| `.Rmd` and `.qmd`    | Same explicit session helper                                   | R and Quarto extensions remain authoring companions |
-| Quarto visual editor | No implicit variable access                                    | Do not replace or modify the Quarto editor          |
-| Quarto CLI           | Public path, version, and availability metadata only           | Never infer a live R session from CLI availability  |
+| Surface              | Initial integration                                            | Product decision                                   |
+| -------------------- | -------------------------------------------------------------- | -------------------------------------------------- |
+| R-kernel `.ipynb`    | Stable Jupyter extension kernel API                            | First production surface                           |
+| `.R`                 | Explicit Open Wrangler helper sourced into the exact R session | Experimental after the notebook viewer             |
+| `.Rmd` and `.qmd`    | Same explicit session helper                                   | Experimental; not a seamless integration claim     |
+| Quarto visual editor | No implicit variable access                                    | Do not replace or modify the Quarto editor         |
+| Quarto CLI           | Public path, version, and availability metadata only           | Never infer a live R session from CLI availability |
 
 The R and Quarto extensions improve authoring, preview, and rendering. Their
 currently documented extension APIs do not expose a typed live-session dataframe
@@ -21,6 +21,14 @@ contract. Open Wrangler therefore must not read vscode-R session files, invoke
 private commands, depend on undocumented IPC, or guess which R process owns a
 document. Installing either extension does not grant Open Wrangler access to an R
 environment.
+
+The current foundation does **not** open live variables from `.R`, `.Rmd`, or
+`.qmd` documents. It only defines the fail-closed connection contract needed for
+a later explicit helper. A valid helper receipt is opaque and bound to the exact
+editor document object, R process instance, and helper instance; replacement,
+disposal, cross-document reuse, or a structurally forged receipt is rejected.
+This keeps “the R extension is installed” distinct from “Open Wrangler owns a
+verified channel to this exact live session.”
 
 The Jupyter extension API is language-neutral and exposes the selected kernel
 language plus correlated code execution. That makes an IRkernel notebook the
@@ -63,10 +71,18 @@ preventing later `:=` mutations from changing the open session. Shaped,
 matrix/array, list, and raw columns are rejected until faithful nested or binary
 typed-cell encodings exist.
 
-The agent requires the user environment to contain `jsonlite`. Open Wrangler
-does not install it silently. A future dependency action must name the exact R
-executable and package, obtain confirmation, and install into the user-selected
-library.
+Producer and host enforce the same reviewed ceilings before data enters parsed
+coordinator state: raw request/response bytes, dataframe shape, schema estimate,
+page rows/columns/cells, page estimate, and individual text values. Pages contain
+at most 100,000 cells. Names and string values are exact or rejected with a
+structured diagnostic; they are never shortened with a silent ellipsis.
+
+The agent requires the user environment to contain `jsonlite`, and native
+`data.table` snapshots require `data.table`. Open Wrangler does not install
+either silently. A future dependency action must name the exact R executable and
+packages, obtain confirmation, and install into the user-selected library. The
+required repository gate additionally pins and exercises `tibble` so none of the
+three advertised dataframe flavors can disappear behind an optional test skip.
 
 ## Delivery slices
 

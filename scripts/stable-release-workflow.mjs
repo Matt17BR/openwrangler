@@ -8,7 +8,7 @@ const MAX_WORKFLOW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTRACT_BYTES = 16 * 1024 * 1024;
 const MAX_CONTRACT_DEPTH = 128;
 const MAX_CONTRACT_NODES = 200_000;
-const AUDITED_WORKFLOW_SHA256 = "1588f5e687cb20088d81e2a962b75ef2db1696f8b034a96726c1d25d98b6c439";
+const AUDITED_WORKFLOW_SHA256 = "c513fc640b7c2c5811deebe3e86c9a4d01db7e477aeb652c209b159a3bc6110a";
 const EVENT_SHA = "${{ github.sha }}";
 const RELEASE_TAG = "${{ inputs.release_tag }}";
 const ARTIFACT_ID = "${{ needs.package.outputs.artifact-id }}";
@@ -17,6 +17,7 @@ const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af8
 const UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
 const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
+const SETUP_NATIVE_R_ACTION = "./.github/actions/setup-native-r";
 const PYSPARK_COVERAGE_INSTALL = 'python -m pip install "pandas>=2.2,<3.0" "pyspark[connect]==4.2.0"';
 const PYSPARK_COVERAGE_VERIFY_RUN = `python - <<'PY'
 import pandas
@@ -276,6 +277,7 @@ function inspectPinnedActions(workflow, problems) {
   for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
     for (const step of steps(job)) {
       if (typeof step?.uses !== "string") continue;
+      if (jobName === "package" && step.uses === SETUP_NATIVE_R_ACTION) continue;
       if (!/^[^@\s]+@[0-9a-f]{40}$/u.test(step.uses)) {
         problems.push(`${jobName} action ${step.uses} must be pinned to one full commit.`);
       }

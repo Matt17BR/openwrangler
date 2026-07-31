@@ -45,6 +45,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=no)"
           git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null
           git merge-base --is-ancestor refs/remotes/origin/main "$EXPECTED_SHA"
+      - uses: ./.github/actions/setup-native-r
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22

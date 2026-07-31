@@ -48,7 +48,8 @@ function createVsix(packageJson = sourceManifest, property = previewProperty) {
     ["extension/media/icon-128.png", "icon"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
-    ["extension/python/openwrangler_runtime/version.py", '__version__ = "0.3.0"\n']
+    ["extension/python/openwrangler_runtime/version.py", '__version__ = "0.3.0"\n'],
+    ["extension/r/openwrangler_runtime/kernel_agent.R", "function() {}\n"]
   ]) {
     zip.addBuffer(Buffer.from(value), name);
   }

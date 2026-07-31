@@ -95,6 +95,13 @@ All notable changes to Open Wrangler are documented here. The project follows Se
   in-process provider for base dataframes, tibbles, and data.tables; a stable
   IRkernel-first integration plan; and explicit R Markdown/Quarto session
   boundaries without Python conversion or undocumented extension APIs.
+- Added a required native-R package gate with exact CI pins for R, `jsonlite`,
+  `tibble`, and `data.table`; ordinary packaging now fails instead of silently
+  skipping an advertised R dataframe flavor.
+- Bound experimental source-session helper receipts to the exact document, R
+  process, and helper instance; mirrored every native-provider resource ceiling
+  in the host; and replaced silent R name/value truncation with structured
+  exactness-preserving diagnostics.
 
 ### Fixed
 

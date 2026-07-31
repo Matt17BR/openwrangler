@@ -9,6 +9,7 @@ const DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SETUP_NATIVE_R_ACTION = "./.github/actions/setup-native-r";
 const SETUP_JAVA_ACTION = "actions/setup-java@f2beeb24e141e01a676f977032f5a29d81c9e27e";
 const RELEASE_ACTION = "softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65";
 const PYSPARK_COVERAGE_VERIFY_RUN = `python - <<'PY'
@@ -69,6 +70,9 @@ test -z "$(git status --porcelain --untracked-files=no)"
 git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null
 git merge-base --is-ancestor refs/remotes/origin/main "$EXPECTED_SHA"
 `
+  },
+  {
+    uses: SETUP_NATIVE_R_ACTION
   },
   {
     uses: SETUP_NODE_ACTION,
@@ -236,6 +240,7 @@ git diff-index --quiet HEAD --
 `;
 const PREVIEW_BUILD_STEPS = [
   { uses: CHECKOUT_ACTION },
+  { uses: SETUP_NATIVE_R_ACTION },
   {
     uses: SETUP_NODE_ACTION,
     with: {

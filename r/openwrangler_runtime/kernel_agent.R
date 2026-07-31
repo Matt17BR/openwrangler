@@ -16,6 +16,9 @@
 .ow_r_max_schema_estimated_bytes <- 8388608L
 .ow_r_max_text_characters <- 65536L
 .ow_r_max_request_bytes <- 1048576L
+.ow_r_max_response_bytes <- 33554432L
+.ow_r_max_shape_rows <- 2147483647
+.ow_r_max_shape_columns <- 16384L
 
 create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   if (!is.environment(target_env)) {
@@ -59,10 +62,16 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
         if (
           !is.character(payload) ||
             length(payload) != 1L ||
-            is.na(payload) ||
-            nchar(payload, type = "bytes") > .ow_r_max_request_bytes
+            is.na(payload)
         ) {
           stop("R provider payload must be one bounded JSON string.", call. = FALSE)
+        }
+        if (nchar(payload, type = "bytes") > .ow_r_max_request_bytes) {
+          .ow_stop_provider(
+            "The R provider request exceeds the bounded transport budget.",
+            code = "request_too_large",
+            recoverable = TRUE
+          )
         }
         envelope <- jsonlite::fromJSON(payload, simplifyVector = FALSE)
         if (
@@ -74,14 +83,15 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
         .ow_to_json(dispatch(envelope))
       },
       error = function(error) {
+        provider_error <- inherits(error, "open_wrangler_r_provider_error")
         .ow_to_json(list(
           protocolVersion = .ow_r_provider_protocol_version,
           requestId = request_id,
           response = list(
             kind = "error",
-            code = "invalid_request",
+            code = if (provider_error) error$code else "invalid_request",
             message = conditionMessage(error),
-            recoverable = FALSE
+            recoverable = if (provider_error) error$recoverable else FALSE
           )
         ))
       }
@@ -246,7 +256,10 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
       id = paste0("r:c:", index - 1L),
       name = .ow_column_name(value, index),
       position = index - 1L,
-      rawType = paste0(typeof(column), "<", paste(classes, collapse = ","), ">"),
+      rawType = .ow_exact_text(
+        paste0(typeof(column), "<", paste(classes, collapse = ","), ">"),
+        paste0("R column ", index, " type")
+      ),
       type = .ow_column_type(column),
       nullable = anyNA(column)
     )
@@ -255,9 +268,10 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
       256 +
       6 * (nchar(schema$name, type = "bytes") + nchar(schema$rawType, type = "bytes"))
     if (schema_cost > .ow_r_max_schema_estimated_bytes) {
-      stop(
+      .ow_stop_provider(
         "The R dataframe schema exceeds the bounded transport budget.",
-        call. = FALSE
+        code = "resource_limit",
+        recoverable = FALSE
       )
     }
     schema
@@ -290,9 +304,10 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
         cell <- .ow_cell_at(value[[column_index]], row_index)
         page_cost <<- page_cost + .ow_cell_estimated_bytes(cell)
         if (page_cost > .ow_r_max_page_estimated_bytes) {
-          stop(
+          .ow_stop_provider(
             "The requested R provider page exceeds the bounded transport budget; request a smaller window.",
-            call. = FALSE
+            code = "resource_limit",
+            recoverable = TRUE
           )
         }
         cell
@@ -344,7 +359,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     value <- as.character(value)
   }
   if (is.character(value)) {
-    text <- .ow_bound_text(value)
+    text <- .ow_exact_text(value, "R string cell")
     return(.ow_cell("string", text, text, FALSE, FALSE))
   }
   if (is.logical(value)) {
@@ -418,6 +433,26 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
 }
 
 .ow_validate_supported_dataframe <- function(value) {
+  rows <- nrow(value)
+  columns <- ncol(value)
+  if (
+    length(rows) != 1L ||
+      is.na(rows) ||
+      !is.numeric(rows) ||
+      rows < 0 ||
+      rows > .ow_r_max_shape_rows ||
+      length(columns) != 1L ||
+      is.na(columns) ||
+      !is.numeric(columns) ||
+      columns < 0 ||
+      columns > .ow_r_max_shape_columns
+  ) {
+    .ow_stop_provider(
+      "The R dataframe shape exceeds the bounded native-provider limits.",
+      code = "resource_limit",
+      recoverable = FALSE
+    )
+  }
   if (ncol(value) == 0L) {
     return(invisible(NULL))
   }
@@ -545,9 +580,10 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
 
 .ow_assert_page_window <- function(rows, columns) {
   if (as.double(rows) * as.double(columns) > .ow_r_max_page_cells) {
-    stop(
+    .ow_stop_provider(
       paste0("An R provider page may contain at most ", .ow_r_max_page_cells, " cells."),
-      call. = FALSE
+      code = "resource_limit",
+      recoverable = TRUE
     )
   }
 }
@@ -570,19 +606,33 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
 
 .ow_unknown_display <- function(value) {
   classes <- class(value)
-  .ow_bound_text(paste0("<", if (length(classes) > 0L) classes[[1]] else typeof(value), ">"))
+  .ow_exact_text(
+    paste0("<", if (length(classes) > 0L) classes[[1]] else typeof(value), ">"),
+    "R unknown cell display"
+  )
 }
 
-.ow_bound_text <- function(value) {
-  if (nchar(value, type = "chars") <= .ow_r_max_text_characters) {
-    return(value)
+.ow_exact_text <- function(value, label) {
+  if (
+    !is.character(value) ||
+      length(value) != 1L ||
+      is.na(value)
+  ) {
+    stop(paste0(label, " must be one string."), call. = FALSE)
   }
-  paste0(substr(value, 1L, .ow_r_max_text_characters - 1L), "\u2026")
+  if (nchar(value, type = "chars") > .ow_r_max_text_characters) {
+    .ow_stop_provider(
+      paste0(label, " exceeds the exact text transport limit; no value was truncated."),
+      code = "resource_limit",
+      recoverable = FALSE
+    )
+  }
+  value
 }
 
 .ow_column_name <- function(value, index) {
   name <- names(value)[[index]]
-  if (is.na(name)) "" else .ow_bound_text(name)
+  if (is.na(name)) "" else .ow_exact_text(name, paste0("R column ", index, " name"))
 }
 
 .ow_timezone <- function(value) {
@@ -608,8 +658,21 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   }
 }
 
+.ow_stop_provider <- function(message, code, recoverable) {
+  condition <- structure(
+    list(
+      message = message,
+      call = NULL,
+      code = code,
+      recoverable = isTRUE(recoverable)
+    ),
+    class = c("open_wrangler_r_provider_error", "error", "condition")
+  )
+  stop(condition)
+}
+
 .ow_to_json <- function(value) {
-  jsonlite::toJSON(
+  encoded <- jsonlite::toJSON(
     value,
     auto_unbox = TRUE,
     null = "null",
@@ -618,6 +681,14 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     POSIXt = "ISO8601",
     force = TRUE
   )
+  if (nchar(encoded, type = "bytes") > .ow_r_max_response_bytes) {
+    .ow_stop_provider(
+      "The R provider response exceeds the bounded transport budget.",
+      code = "response_too_large",
+      recoverable = TRUE
+    )
+  }
+  encoded
 }
 
 if (direct_execution) {

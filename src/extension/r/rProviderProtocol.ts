@@ -1,7 +1,20 @@
+import { Buffer } from "node:buffer";
 import type { CellValue, ColumnSchema, GridPage } from "../../shared/protocol";
 import { isColumnSchemaArray, isGridPage } from "../../shared/protocolValidation";
 
 export const R_PROVIDER_PROTOCOL_VERSION = 1 as const;
+export const R_PROVIDER_LIMITS = Object.freeze({
+  maxRequestBytes: 1_048_576,
+  maxResponseBytes: 33_554_432,
+  maxPageRows: 10_000,
+  maxPageColumns: 256,
+  maxPageCells: 100_000,
+  maxPageEstimatedBytes: 16_777_216,
+  maxSchemaEstimatedBytes: 8_388_608,
+  maxTextCodePoints: 65_536,
+  maxShapeRows: 2_147_483_647,
+  maxShapeColumns: 16_384
+});
 
 export interface RProviderInitializeRequest {
   readonly kind: "initialize";
@@ -54,7 +67,7 @@ export interface RProviderInitialized {
   readonly transport: "inProcessR";
   readonly capabilities: {
     readonly sourceKinds: readonly ["notebookVariable"];
-    readonly dataFrameClasses: readonly string[];
+    readonly dataFrameClasses: readonly ["data.frame", "tbl_df", "data.table"];
     readonly paging: true;
     readonly filtering: false;
     readonly sorting: false;
@@ -144,11 +157,77 @@ export function isRProviderResponseEnvelope(value: unknown): value is RProviderR
   if (
     envelope === undefined ||
     envelope.protocolVersion !== R_PROVIDER_PROTOCOL_VERSION ||
-    !isNonEmptyString(envelope.requestId)
+    !isNonEmptyBoundedString(envelope.requestId, 256)
   ) {
     return false;
   }
   return isRProviderResponse(envelope.response);
+}
+
+/**
+ * Parses a transport response only after applying the raw UTF-8 byte ceiling.
+ *
+ * The size check intentionally precedes JSON.parse so an untrusted R helper
+ * cannot force an unbounded parsed object allocation in the extension host.
+ */
+export function parseRProviderResponseJsonForDispatch(
+  payload: string,
+  context: RProviderDispatchContext
+): RProviderResponseEnvelope | undefined {
+  if (!isRProviderResponsePayloadWithinLimit(payload)) return undefined;
+  try {
+    const value: unknown = JSON.parse(payload);
+    return isRProviderResponseEnvelopeForDispatch(value, context) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function isRProviderRequestPayloadWithinLimit(payload: unknown): payload is string {
+  return (
+    typeof payload === "string" &&
+    Buffer.byteLength(payload, "utf8") > 0 &&
+    Buffer.byteLength(payload, "utf8") <= R_PROVIDER_LIMITS.maxRequestBytes
+  );
+}
+
+export function isRProviderResponsePayloadWithinLimit(payload: unknown): payload is string {
+  return (
+    typeof payload === "string" &&
+    Buffer.byteLength(payload, "utf8") > 0 &&
+    Buffer.byteLength(payload, "utf8") <= R_PROVIDER_LIMITS.maxResponseBytes
+  );
+}
+
+export function isRProviderTextWithinLimit(value: unknown): value is string {
+  return typeof value === "string" && hasAtMostCodePoints(value, R_PROVIDER_LIMITS.maxTextCodePoints);
+}
+
+export function isRProviderShapeWithinLimits(rows: unknown, columns: unknown): boolean {
+  return (
+    typeof rows === "number" &&
+    isSafeIntegerInRange(rows, 0, R_PROVIDER_LIMITS.maxShapeRows) &&
+    typeof columns === "number" &&
+    isSafeIntegerInRange(columns, 0, R_PROVIDER_LIMITS.maxShapeColumns)
+  );
+}
+
+export function isRProviderPageDimensionsWithinLimits(rows: unknown, columns: unknown): boolean {
+  return (
+    typeof rows === "number" &&
+    isSafeIntegerInRange(rows, 0, R_PROVIDER_LIMITS.maxPageRows) &&
+    typeof columns === "number" &&
+    isSafeIntegerInRange(columns, 0, R_PROVIDER_LIMITS.maxPageColumns) &&
+    rows * columns <= R_PROVIDER_LIMITS.maxPageCells
+  );
+}
+
+export function isRProviderSchemaEstimatedBytesWithinLimit(bytes: unknown): boolean {
+  return typeof bytes === "number" && isSafeIntegerInRange(bytes, 0, R_PROVIDER_LIMITS.maxSchemaEstimatedBytes);
+}
+
+export function isRProviderPageEstimatedBytesWithinLimit(bytes: unknown): boolean {
+  return typeof bytes === "number" && isSafeIntegerInRange(bytes, 0, R_PROVIDER_LIMITS.maxPageEstimatedBytes);
 }
 
 /**
@@ -225,7 +304,7 @@ function isInitialized(value: unknown): value is RProviderInitialized {
   if (
     candidate === undefined ||
     candidate.kind !== "initialized" ||
-    !isNonEmptyString(candidate.runtimeVersion) ||
+    !isNonEmptyBoundedString(candidate.runtimeVersion, R_PROVIDER_LIMITS.maxTextCodePoints) ||
     candidate.language !== "r" ||
     candidate.transport !== "inProcessR"
   ) {
@@ -245,9 +324,10 @@ function isInitialized(value: unknown): value is RProviderInitialized {
     capabilities.sourceKinds.length === 1 &&
     capabilities.sourceKinds[0] === "notebookVariable" &&
     Array.isArray(capabilities.dataFrameClasses) &&
-    capabilities.dataFrameClasses.length > 0 &&
-    capabilities.dataFrameClasses.every(isNonEmptyString) &&
-    new Set(capabilities.dataFrameClasses).size === capabilities.dataFrameClasses.length &&
+    capabilities.dataFrameClasses.length === 3 &&
+    capabilities.dataFrameClasses[0] === "data.frame" &&
+    capabilities.dataFrameClasses[1] === "tbl_df" &&
+    capabilities.dataFrameClasses[2] === "data.table" &&
     capabilities.paging === true &&
     capabilities.filtering === false &&
     capabilities.sorting === false &&
@@ -260,7 +340,7 @@ function isSessionOpened(value: unknown): value is RProviderSessionOpened {
   if (candidate === undefined || candidate.kind !== "sessionOpened" || !isSessionMetadata(candidate.metadata)) {
     return false;
   }
-  return isGridPage(candidate.page, candidate.metadata.schema);
+  return isBoundedGridPage(candidate.page, candidate.metadata.schema);
 }
 
 function isPage(value: unknown): value is RProviderPage {
@@ -268,16 +348,18 @@ function isPage(value: unknown): value is RProviderPage {
   return (
     candidate !== undefined &&
     candidate.kind === "page" &&
-    isNonEmptyString(candidate.sessionId) &&
+    isNonEmptyBoundedString(candidate.sessionId, 256) &&
     candidate.revision === 0 &&
-    isNonEmptyString(candidate.viewRequestId) &&
-    isGridPage(candidate.page)
+    isNonEmptyBoundedString(candidate.viewRequestId, 256) &&
+    isBoundedGridPage(candidate.page)
   );
 }
 
 function isSessionClosed(value: unknown): value is RProviderSessionClosed {
   const candidate = exactRecord(value, ["kind", "sessionId"]);
-  return candidate !== undefined && candidate.kind === "sessionClosed" && isNonEmptyString(candidate.sessionId);
+  return (
+    candidate !== undefined && candidate.kind === "sessionClosed" && isNonEmptyBoundedString(candidate.sessionId, 256)
+  );
 }
 
 function isError(value: unknown): value is RProviderError {
@@ -285,8 +367,8 @@ function isError(value: unknown): value is RProviderError {
   return (
     candidate !== undefined &&
     candidate.kind === "error" &&
-    isNonEmptyString(candidate.code) &&
-    isNonEmptyString(candidate.message) &&
+    isNonEmptyBoundedString(candidate.code, 256) &&
+    isNonEmptyBoundedString(candidate.message, R_PROVIDER_LIMITS.maxTextCodePoints) &&
     typeof candidate.recoverable === "boolean"
   );
 }
@@ -305,12 +387,12 @@ function isSessionMetadata(value: unknown): value is RProviderSessionMetadata {
   if (
     candidate === undefined ||
     candidate.providerProtocolVersion !== R_PROVIDER_PROTOCOL_VERSION ||
-    !isNonEmptyString(candidate.sessionId) ||
+    !isNonEmptyBoundedString(candidate.sessionId, 256) ||
     candidate.backend !== "r" ||
     candidate.mode !== "viewing" ||
     !isOneOf(candidate.sourceClass, ["data.frame", "tbl_df", "data.table"]) ||
     !isShape(candidate.shape) ||
-    !isColumnSchemaArray(candidate.schema)
+    !isBoundedRProviderSchema(candidate.schema)
   ) {
     return false;
   }
@@ -318,8 +400,8 @@ function isSessionMetadata(value: unknown): value is RProviderSessionMetadata {
   return (
     source !== undefined &&
     source.kind === "notebookVariable" &&
-    isNonEmptyString(source.label) &&
-    isNonEmptyString(source.variableName) &&
+    isNonEmptyBoundedString(source.label, R_PROVIDER_LIMITS.maxTextCodePoints) &&
+    isNonEmptyBoundedString(source.variableName, 1_024) &&
     candidate.shape.columns === candidate.schema.length
   );
 }
@@ -360,13 +442,13 @@ interface RProviderPageWindow {
 
 function isPageForWindow(page: GridPage, session: RProviderConfirmedSession, window: RProviderPageWindow): boolean {
   if (
-    !isNonEmptyString(session.sessionId) ||
+    !isNonEmptyBoundedString(session.sessionId, 256) ||
     session.revision !== 0 ||
     !isShape(session.shape) ||
-    !isColumnSchemaArray(session.schema) ||
+    !isBoundedRProviderSchema(session.schema) ||
     session.shape.columns !== session.schema.length ||
     !isPageWindow(window) ||
-    !isGridPage(page, session.schema) ||
+    !isBoundedGridPage(page, session.schema) ||
     page.offset !== window.offset ||
     page.limit !== window.limit ||
     page.totalRows !== session.shape.rows
@@ -403,16 +485,16 @@ function isPageForWindow(page: GridPage, session: RProviderConfirmedSession, win
 function isPageWindow(value: RProviderPageWindow): boolean {
   return (
     isSafeIntegerInRange(value.offset, 0, Number.MAX_SAFE_INTEGER) &&
-    isSafeIntegerInRange(value.limit, 1, 10_000) &&
+    isSafeIntegerInRange(value.limit, 1, R_PROVIDER_LIMITS.maxPageRows) &&
     isSafeIntegerInRange(value.columnOffset, 0, Number.MAX_SAFE_INTEGER) &&
-    isSafeIntegerInRange(value.columnLimit, 1, 256)
+    isSafeIntegerInRange(value.columnLimit, 1, R_PROVIDER_LIMITS.maxPageColumns)
   );
 }
 
 function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolean {
   const hasRaw = Object.hasOwn(cell, "raw");
   const hasSign = Object.hasOwn(cell, "sign");
-  if (!hasRaw) return false;
+  if (!hasRaw || !isRProviderTextWithinLimit(cell.display)) return false;
 
   if (cell.kind === "null") {
     return (
@@ -451,16 +533,24 @@ function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolea
       return (
         column.type === "integer" &&
         typeof cell.raw === "string" &&
+        isRProviderTextWithinLimit(cell.raw) &&
         /^-?(?:0|[1-9][0-9]*)$/u.test(cell.raw) &&
         cell.display === cell.raw &&
         !hasSign
       );
     case "string":
-      return column.type === "string" && typeof cell.raw === "string" && cell.display === cell.raw && !hasSign;
+      return (
+        column.type === "string" &&
+        typeof cell.raw === "string" &&
+        isRProviderTextWithinLimit(cell.raw) &&
+        cell.display === cell.raw &&
+        !hasSign
+      );
     case "datetime":
       return (
         column.type === "datetime" &&
         typeof cell.raw === "string" &&
+        isRProviderTextWithinLimit(cell.raw) &&
         cell.raw.length > 0 &&
         cell.display === cell.raw &&
         !hasSign
@@ -469,6 +559,7 @@ function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolea
       return (
         column.type === "date" &&
         typeof cell.raw === "string" &&
+        isRProviderTextWithinLimit(cell.raw) &&
         cell.raw.length > 0 &&
         cell.display === cell.raw &&
         !hasSign
@@ -477,6 +568,7 @@ function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolea
       return (
         column.type === "duration" &&
         typeof cell.raw === "string" &&
+        isRProviderTextWithinLimit(cell.raw) &&
         cell.raw.length > 0 &&
         cell.display === cell.raw &&
         !hasSign
@@ -490,13 +582,58 @@ function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolea
 
 function isShape(value: unknown): value is { rows: number; columns: number } {
   const candidate = exactRecord(value, ["rows", "columns"]);
-  return (
-    candidate !== undefined &&
-    Number.isSafeInteger(candidate.rows) &&
-    Number(candidate.rows) >= 0 &&
-    Number.isSafeInteger(candidate.columns) &&
-    Number(candidate.columns) >= 0
-  );
+  return candidate !== undefined && isRProviderShapeWithinLimits(candidate.rows, candidate.columns);
+}
+
+function isBoundedRProviderSchema(value: unknown): value is readonly ColumnSchema[] {
+  if (!isColumnSchemaArray(value) || value.length > R_PROVIDER_LIMITS.maxShapeColumns) return false;
+  let estimatedBytes = 1_024;
+  for (const column of value) {
+    if (
+      !isRProviderTextWithinLimit(column.id) ||
+      !isRProviderTextWithinLimit(column.name) ||
+      !isRProviderTextWithinLimit(column.rawType)
+    ) {
+      return false;
+    }
+    estimatedBytes += 256 + 6 * (Buffer.byteLength(column.name, "utf8") + Buffer.byteLength(column.rawType, "utf8"));
+    if (!isRProviderSchemaEstimatedBytesWithinLimit(estimatedBytes)) return false;
+  }
+  return true;
+}
+
+function isBoundedGridPage(value: unknown, schema?: readonly ColumnSchema[]): value is GridPage {
+  if (!isGridPage(value, schema)) return false;
+  const page = value;
+  if (
+    !isSafeIntegerInRange(page.offset, 0, R_PROVIDER_LIMITS.maxShapeRows) ||
+    !isSafeIntegerInRange(page.limit, 1, R_PROVIDER_LIMITS.maxPageRows) ||
+    !isSafeIntegerInRange(page.totalRows, 0, R_PROVIDER_LIMITS.maxShapeRows) ||
+    !isRProviderPageDimensionsWithinLimits(page.rows.length, page.columnIds.length)
+  ) {
+    return false;
+  }
+  if (!page.columnIds.every((columnId) => isNonEmptyBoundedString(columnId, R_PROVIDER_LIMITS.maxTextCodePoints))) {
+    return false;
+  }
+
+  let estimatedBytes = 1_024 + 64 * page.columnIds.length;
+  for (const row of page.rows) {
+    if (!isNonEmptyBoundedString(row.id, R_PROVIDER_LIMITS.maxTextCodePoints)) return false;
+    estimatedBytes += 128;
+    for (const cell of row.values) {
+      if (!isRProviderTextWithinLimit(cell.display)) return false;
+      const rawBytes =
+        typeof cell.raw === "string"
+          ? isRProviderTextWithinLimit(cell.raw)
+            ? Buffer.byteLength(cell.raw, "utf8")
+            : Number.POSITIVE_INFINITY
+          : 0;
+      estimatedBytes += 128 + 6 * (Buffer.byteLength(cell.display, "utf8") + rawBytes);
+      if (!isRProviderPageEstimatedBytesWithinLimit(estimatedBytes)) return false;
+    }
+  }
+  return true;
 }
 
 function isSafeIntegerInRange(value: number, minimum: number, maximum: number): boolean {
@@ -517,4 +654,17 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function isNonEmptyBoundedString(value: unknown, maximumCodePoints: number): value is string {
+  return isNonEmptyString(value) && hasAtMostCodePoints(value, maximumCodePoints);
+}
+
+function hasAtMostCodePoints(value: string, maximum: number): boolean {
+  let count = 0;
+  for (const _character of value) {
+    count += 1;
+    if (count > maximum) return false;
+  }
+  return true;
 }

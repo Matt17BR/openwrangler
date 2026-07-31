@@ -1,10 +1,21 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  R_PROVIDER_LIMITS,
   type RProviderConfirmedSession,
   type RProviderGetPageRequest,
   type RProviderOpenSessionRequest,
+  isRProviderPageDimensionsWithinLimits,
+  isRProviderPageEstimatedBytesWithinLimit,
+  isRProviderRequestPayloadWithinLimit,
+  isRProviderResponsePayloadWithinLimit,
   isRProviderResponseEnvelope,
-  isRProviderResponseEnvelopeForDispatch
+  isRProviderResponseEnvelopeForDispatch,
+  isRProviderSchemaEstimatedBytesWithinLimit,
+  isRProviderShapeWithinLimits,
+  isRProviderTextWithinLimit,
+  parseRProviderResponseJsonForDispatch
 } from "../extension/r/rProviderProtocol";
 
 const schema = [
@@ -89,6 +100,92 @@ const pageRequest: RProviderGetPageRequest = {
 };
 
 describe("native R provider protocol guard", () => {
+  it("keeps every host resource ceiling mechanically aligned with the R producer", () => {
+    const runtime = readFileSync(resolve(process.cwd(), "r", "openwrangler_runtime", "kernel_agent.R"), "utf8");
+    const mirrored = {
+      ".ow_r_max_request_bytes": R_PROVIDER_LIMITS.maxRequestBytes,
+      ".ow_r_max_response_bytes": R_PROVIDER_LIMITS.maxResponseBytes,
+      ".ow_r_max_page_rows": R_PROVIDER_LIMITS.maxPageRows,
+      ".ow_r_max_page_columns": R_PROVIDER_LIMITS.maxPageColumns,
+      ".ow_r_max_page_cells": R_PROVIDER_LIMITS.maxPageCells,
+      ".ow_r_max_page_estimated_bytes": R_PROVIDER_LIMITS.maxPageEstimatedBytes,
+      ".ow_r_max_schema_estimated_bytes": R_PROVIDER_LIMITS.maxSchemaEstimatedBytes,
+      ".ow_r_max_text_characters": R_PROVIDER_LIMITS.maxTextCodePoints,
+      ".ow_r_max_shape_rows": R_PROVIDER_LIMITS.maxShapeRows,
+      ".ow_r_max_shape_columns": R_PROVIDER_LIMITS.maxShapeColumns
+    };
+    for (const [name, value] of Object.entries(mirrored)) {
+      const escapedName = name.replaceAll(".", "\\.");
+      expect(runtime).toMatch(new RegExp(`^${escapedName} <- ${value}(?:L)?$`, "mu"));
+    }
+  });
+
+  it("enforces every raw, text, shape, page, and estimated-byte ceiling at its boundary", () => {
+    expect(isRProviderRequestPayloadWithinLimit("x".repeat(R_PROVIDER_LIMITS.maxRequestBytes))).toBe(true);
+    expect(isRProviderRequestPayloadWithinLimit("x".repeat(R_PROVIDER_LIMITS.maxRequestBytes + 1))).toBe(false);
+    expect(isRProviderResponsePayloadWithinLimit("x".repeat(R_PROVIDER_LIMITS.maxResponseBytes))).toBe(true);
+    expect(isRProviderResponsePayloadWithinLimit("x".repeat(R_PROVIDER_LIMITS.maxResponseBytes + 1))).toBe(false);
+
+    const exactText = "😀".repeat(R_PROVIDER_LIMITS.maxTextCodePoints);
+    expect(isRProviderTextWithinLimit(exactText)).toBe(true);
+    expect(isRProviderTextWithinLimit(`${exactText}😀`)).toBe(false);
+
+    expect(isRProviderShapeWithinLimits(R_PROVIDER_LIMITS.maxShapeRows, R_PROVIDER_LIMITS.maxShapeColumns)).toBe(true);
+    expect(isRProviderShapeWithinLimits(R_PROVIDER_LIMITS.maxShapeRows + 1, 1)).toBe(false);
+    expect(isRProviderShapeWithinLimits(1, R_PROVIDER_LIMITS.maxShapeColumns + 1)).toBe(false);
+
+    expect(isRProviderPageDimensionsWithinLimits(R_PROVIDER_LIMITS.maxPageRows, 10)).toBe(true);
+    expect(isRProviderPageDimensionsWithinLimits(R_PROVIDER_LIMITS.maxPageRows, 11)).toBe(false);
+    expect(isRProviderPageDimensionsWithinLimits(R_PROVIDER_LIMITS.maxPageRows + 1, 1)).toBe(false);
+    expect(isRProviderPageDimensionsWithinLimits(1, R_PROVIDER_LIMITS.maxPageColumns + 1)).toBe(false);
+
+    expect(isRProviderSchemaEstimatedBytesWithinLimit(R_PROVIDER_LIMITS.maxSchemaEstimatedBytes)).toBe(true);
+    expect(isRProviderSchemaEstimatedBytesWithinLimit(R_PROVIDER_LIMITS.maxSchemaEstimatedBytes + 1)).toBe(false);
+    expect(isRProviderPageEstimatedBytesWithinLimit(R_PROVIDER_LIMITS.maxPageEstimatedBytes)).toBe(true);
+    expect(isRProviderPageEstimatedBytesWithinLimit(R_PROVIDER_LIMITS.maxPageEstimatedBytes + 1)).toBe(false);
+  });
+
+  it("checks raw response bytes before parsing and still requires exact dispatch correlation", () => {
+    const response = JSON.stringify({
+      protocolVersion: 1,
+      requestId: "initialize",
+      response: {
+        kind: "initialized",
+        runtimeVersion: "0.1.0",
+        language: "r",
+        transport: "inProcessR",
+        capabilities: {
+          sourceKinds: ["notebookVariable"],
+          dataFrameClasses: ["data.frame", "tbl_df", "data.table"],
+          paging: true,
+          filtering: false,
+          sorting: false,
+          editing: false
+        }
+      }
+    });
+    const exact = response + " ".repeat(R_PROVIDER_LIMITS.maxResponseBytes - Buffer.byteLength(response, "utf8"));
+    expect(Buffer.byteLength(exact, "utf8")).toBe(R_PROVIDER_LIMITS.maxResponseBytes);
+    expect(
+      parseRProviderResponseJsonForDispatch(exact, {
+        requestId: "initialize",
+        request: { kind: "initialize" }
+      })?.response.kind
+    ).toBe("initialized");
+    expect(
+      parseRProviderResponseJsonForDispatch(`${exact} `, {
+        requestId: "initialize",
+        request: { kind: "initialize" }
+      })
+    ).toBeUndefined();
+    expect(
+      parseRProviderResponseJsonForDispatch(response, {
+        requestId: "stale",
+        request: { kind: "initialize" }
+      })
+    ).toBeUndefined();
+  });
+
   it("accepts the bounded native-R initialization contract", () => {
     expect(
       isRProviderResponseEnvelope({

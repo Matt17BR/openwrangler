@@ -4,8 +4,11 @@ import {
   QUARTO_EXTENSION_ID,
   R_EXTENSION_ID,
   classifyRDocument,
+  issueNativeRSessionHelperReceipt,
   planNativeRLaunch,
-  readQuartoExtensionApi
+  readQuartoExtensionApi,
+  revokeNativeRSessionHelperReceipt,
+  type NativeRSessionHelperReceipt
 } from "../extension/r/rIntegrationModel";
 
 describe("native R integration model", () => {
@@ -39,6 +42,7 @@ describe("native R integration model", () => {
   });
 
   it("uses the stable Jupyter API for an R kernel without requiring vscode-R or Quarto", () => {
+    const documentIdentity = {};
     expect(
       planNativeRLaunch({
         document: {
@@ -46,8 +50,8 @@ describe("native R integration model", () => {
           notebookType: "jupyter-notebook",
           kernelLanguage: "r"
         },
-        installedExtensionIds: [JUPYTER_EXTENSION_ID],
-        sessionHelperConnected: false
+        documentIdentity,
+        installedExtensionIds: [JUPYTER_EXTENSION_ID]
       })
     ).toEqual({
       surface: "jupyterR",
@@ -64,10 +68,11 @@ describe("native R integration model", () => {
       ["analysis.Rmd", [R_EXTENSION_ID, QUARTO_EXTENSION_ID]],
       ["analysis.qmd", [QUARTO_EXTENSION_ID]]
     ] as const) {
+      const documentIdentity = {};
       const plan = planNativeRLaunch({
         document: { kind: "text", fileName },
-        installedExtensionIds,
-        sessionHelperConnected: false
+        documentIdentity,
+        installedExtensionIds
       });
       expect(plan.available).toBe(false);
       expect(plan.transport).toBeUndefined();
@@ -78,11 +83,16 @@ describe("native R integration model", () => {
   });
 
   it("allows only an explicit helper to bridge a source-editor R session", () => {
+    const documentIdentity = {};
+    const processIdentity = {};
+    const helperIdentity = {};
+    const receipt = issueNativeRSessionHelperReceipt(documentIdentity, processIdentity, helperIdentity);
     expect(
       planNativeRLaunch({
         document: { kind: "text", fileName: "analysis.qmd" },
+        documentIdentity,
         installedExtensionIds: [QUARTO_EXTENSION_ID],
-        sessionHelperConnected: true
+        sessionHelper: { receipt, processIdentity, helperIdentity }
       })
     ).toEqual({
       surface: "quarto",
@@ -91,6 +101,44 @@ describe("native R integration model", () => {
       missingExtensionIds: [],
       reason: "Use the explicit Open Wrangler helper connected to this exact R session."
     });
+  });
+
+  it("rejects stale, forged, cross-document, cross-process, and cross-helper receipts", () => {
+    const documentIdentity = {};
+    const processIdentity = {};
+    const helperIdentity = {};
+    const receipt = issueNativeRSessionHelperReceipt(documentIdentity, processIdentity, helperIdentity);
+
+    for (const [candidateDocument, candidateReceipt, candidateProcess, candidateHelper] of [
+      [{}, receipt, processIdentity, helperIdentity],
+      [documentIdentity, receipt, {}, helperIdentity],
+      [documentIdentity, receipt, processIdentity, {}],
+      [documentIdentity, Object.freeze({}) as NativeRSessionHelperReceipt, processIdentity, helperIdentity]
+    ] as const) {
+      const plan = planNativeRLaunch({
+        document: { kind: "text", fileName: "analysis.Rmd" },
+        documentIdentity: candidateDocument,
+        installedExtensionIds: [QUARTO_EXTENSION_ID],
+        sessionHelper: {
+          receipt: candidateReceipt,
+          processIdentity: candidateProcess,
+          helperIdentity: candidateHelper
+        }
+      });
+      expect(plan.available).toBe(false);
+      expect(plan.transport).toBeUndefined();
+      expect(plan.reason).toContain("stale or belongs to a different document, R process, or helper instance");
+    }
+
+    revokeNativeRSessionHelperReceipt(receipt);
+    const stalePlan = planNativeRLaunch({
+      document: { kind: "text", fileName: "analysis.R" },
+      documentIdentity,
+      installedExtensionIds: [R_EXTENSION_ID],
+      sessionHelper: { receipt, processIdentity, helperIdentity }
+    });
+    expect(stalePlan.available).toBe(false);
+    expect(stalePlan.reason).toContain("stale or belongs to a different document, R process, or helper instance");
   });
 });
 

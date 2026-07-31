@@ -1,0 +1,22 @@
+name: Set up the pinned native R test toolchain
+description: Install and verify the exact R toolchain used by the native R provider gate.
+
+runs:
+  using: composite
+  steps:
+    - uses: r-lib/actions/setup-r@bd49c52ffe281809afa6f0fecbf37483c5dd0b93 # v2.11.3
+      with:
+        r-version: "4.5.2"
+        use-public-rspm: true
+    - uses: r-lib/actions/setup-r-dependencies@bd49c52ffe281809afa6f0fecbf37483c5dd0b93 # v2.11.3
+      with:
+        packages: |
+          any::jsonlite@2.0.0
+          any::tibble@3.3.1
+          any::data.table@1.18.2.1
+        dependencies: '"hard"'
+        cache-version: r-4.5.2-jsonlite-2.0.0-tibble-3.3.1-data-table-1.18.2.1
+        install-quarto: false
+    - name: Verify the exact native R test toolchain
+      shell: bash
+      run: Rscript --vanilla r/tests/verify_ci_toolchain.R

@@ -17,6 +17,15 @@ publish helper symbols in the user's R environment. R responses pass a
 request-and-confirmed-session contextual guard before coordinator state can
 observe them.
 
+Non-notebook R surfaces never become available from a boolean “connected”
+flag. The experimental helper handshake issues an opaque receipt bound to the
+exact editor document object, R process instance, and helper instance; stale,
+forged, cross-document, or replacement-instance receipts fail closed. The host
+checks raw response bytes before JSON parsing and then mirrors the provider's
+shape, schema, page, cell-count, estimated-byte, and text ceilings. R names and
+string values cross exactly or produce a structured resource diagnostic. There
+is no truncating compatibility path.
+
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
 
 Supported file resources share one `openWrangler.openFile` command across the Explorer menu, editor-tab menu, editor-title toolbar, and Command Palette. The handler prefers the URI supplied by the invoking menu and otherwise resolves the active text, third-party custom, or modified diff tab before falling back to the file picker. Direct targets and native-picker results both pass the same URI-scheme, enabled-format, regular-file, and existence validation before automatic import detection or runtime creation; Quick Input is reserved for the explicit **Change Import Options** recovery path. Explicit **Reopen Editor With** selection applies the same resource safety checks but deliberately remains available for a format omitted from the launch-command and picker enabled-format list. The standalone runtime resolver consumes the exact persisted source URI, preserving a `vscode-remote` scheme and authority for resource-scoped Python settings and Python-extension environment selection; only absent or malformed URI metadata falls back to a concrete file path. The title and tab-menu contributions are hidden inside Open Wrangler itself and on unsupported virtual resources. Cursor intentionally hides third-party editor-title actions unless pinned, so the manifest declaratively contributes `openWrangler.openFile` to Cursor's `cursor.general.pinnedTitleActions` default. This changes no stored setting, preserves an explicit setting override, and avoids command aliases, built-in-prefix impersonation, or activation-time editor mutation; VS Code renders the same standard `navigation` contribution directly. Cursor 3.11's normal icon-visibility toggle cannot outrank this pinned default, so a user who wants the icon hidden must explicitly configure the pinned-title-action list without this command.

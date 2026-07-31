@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - ".github/workflows/released-jupyter.yml"
+      - ".github/actions/setup-native-r/action.yml"
       - "package.json"
       - "package-lock.json"
+      - "r/**"
       - "protocol/**"
       - "fixtures/**"
       - "python/pyproject.toml"
@@ -46,6 +48,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-native-r
       - uses: actions/setup-node@v6
         with:
           node-version: 22

@@ -50,7 +50,8 @@ function releaseEntries() {
     ["extension/media/icon-128.png", "icon"],
     ["extension/python/openwrangler_runtime/dependency_guard.py", "pass\n"],
     ["extension/python/openwrangler_runtime/server.py", "pass\n"],
-    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n']
+    ["extension/python/openwrangler_runtime/version.py", '__version__ = "1.0.0"\n'],
+    ["extension/r/openwrangler_runtime/kernel_agent.R", "function() {}\n"]
   ]);
 }
 
