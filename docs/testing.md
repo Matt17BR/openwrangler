@@ -4,7 +4,8 @@
 
 The v2 R provider has a dependency-light smoke test that runs entirely inside R.
 It proves base dataframe paging, typed cells, strict request rejection,
-deterministic close, and source immutability:
+deterministic close, private loading, shaped-column rejection, and immutable
+revision-zero `data.table` snapshots:
 
 ```bash
 Rscript --vanilla r/tests/runtime_smoke.R

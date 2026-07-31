@@ -3,7 +3,10 @@
 # This file is designed to be sourced into the exact R process that owns a
 # dataframe (for example an IRkernel or an explicitly connected R session).
 # It deliberately does not use Python or convert data.frame subclasses.
+# Sourcing evaluates to one factory function; all implementation symbols remain
+# inside its private lexical environment.
 
+(function(direct_execution) {
 .ow_r_provider_protocol_version <- 1L
 .ow_r_provider_runtime_version <- "0.1.0"
 .ow_r_max_page_rows <- 10000L
@@ -28,6 +31,10 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     }
     .ow_assert_string(envelope$requestId, "requestId", max_characters = 256L)
     .ow_assert_record(envelope$request, "kind", allow_extra = TRUE)
+    .ow_assert_string(envelope$request$kind, "request.kind", max_characters = 64L)
+    if (!envelope$request$kind %in% c("initialize", "openSession", "getPage", "closeSession")) {
+      stop("Unsupported R provider request kind.", call. = FALSE)
+    }
 
     request <- envelope$request
     response <- switch(
@@ -94,6 +101,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
 
 .ow_initialize <- function(request) {
   .ow_assert_record(request, "kind")
+  .ow_assert_kind(request, "initialize")
   list(
     kind = "initialized",
     runtimeVersion = .ow_r_provider_runtime_version,
@@ -116,6 +124,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     c("kind", "source", "requestedSessionId", "pageSize", "columnOffset", "columnLimit"),
     optional = c("backend", "mode")
   )
+  .ow_assert_kind(request, "openSession")
   .ow_assert_string(request$requestedSessionId, "requestedSessionId", max_characters = 256L)
   .ow_assert_bounded_integer(request$pageSize, "pageSize", 1L, .ow_r_max_page_rows)
   .ow_assert_bounded_integer(request$columnOffset, "columnOffset", 0L, .Machine$integer.max)
@@ -141,10 +150,12 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
     stop("The requested R provider session already exists.", call. = FALSE)
   }
 
-  value <- get(source$variableName, envir = target_env, inherits = FALSE)
-  if (!is.data.frame(value)) {
+  source_value <- get(source$variableName, envir = target_env, inherits = FALSE)
+  if (!is.data.frame(source_value)) {
     stop("The selected R variable must inherit from data.frame.", call. = FALSE)
   }
+  .ow_validate_supported_dataframe(source_value)
+  value <- .ow_snapshot_source(source_value)
   metadata <- .ow_metadata(request$requestedSessionId, source, value)
   page <- .ow_page(value, request$pageSize, 0L, request$columnOffset, request$columnLimit)
   session <- list(value = value, metadata = metadata)
@@ -172,6 +183,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
       "filterModel"
     )
   )
+  .ow_assert_kind(request, "getPage")
   .ow_assert_string(request$sessionId, "sessionId", max_characters = 256L)
   .ow_assert_string(request$viewRequestId, "viewRequestId", max_characters = 256L)
   .ow_assert_bounded_integer(request$revision, "revision", 0L, 0L)
@@ -193,6 +205,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
 
 .ow_close_session <- function(request, sessions) {
   .ow_assert_record(request, c("kind", "sessionId", "revision"))
+  .ow_assert_kind(request, "closeSession")
   .ow_assert_string(request$sessionId, "sessionId", max_characters = 256L)
   .ow_assert_bounded_integer(request$revision, "revision", 0L, 0L)
   .ow_session(sessions, request$sessionId)
@@ -395,8 +408,6 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   if (is.integer(column)) return("integer")
   if (inherits(column, "integer64")) return("integer")
   if (is.double(column) && !inherits(column, "integer64")) return("float")
-  if (is.raw(column)) return("binary")
-  if (is.list(column)) return("list")
   "unknown"
 }
 
@@ -404,6 +415,71 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   if (inherits(value, "data.table")) return("data.table")
   if (inherits(value, "tbl_df")) return("tbl_df")
   "data.frame"
+}
+
+.ow_validate_supported_dataframe <- function(value) {
+  if (ncol(value) == 0L) {
+    return(invisible(NULL))
+  }
+  for (index in seq_len(ncol(value))) {
+    column <- value[[index]]
+    if (!is.null(dim(column))) {
+      stop(
+        paste0(
+          "R column ",
+          index,
+          " is shaped (matrix or array); nested encoding is not implemented yet."
+        ),
+        call. = FALSE
+      )
+    }
+    if (is.list(column)) {
+      stop(
+        paste0("R column ", index, " is a list; nested encoding is not implemented yet."),
+        call. = FALSE
+      )
+    }
+    if (is.raw(column)) {
+      stop(
+        paste0("R column ", index, " is raw; binary encoding is not implemented yet."),
+        call. = FALSE
+      )
+    }
+    supported <-
+      inherits(column, "POSIXt") ||
+      inherits(column, "Date") ||
+      inherits(column, "difftime") ||
+      inherits(column, "integer64") ||
+      is.factor(column) ||
+      is.character(column) ||
+      is.logical(column) ||
+      is.integer(column) ||
+      is.double(column)
+    if (!supported) {
+      stop(
+        paste0("R column ", index, " has an unsupported native type."),
+        call. = FALSE
+      )
+    }
+  }
+  invisible(NULL)
+}
+
+.ow_snapshot_source <- function(value) {
+  if (!inherits(value, "data.table")) {
+    return(value)
+  }
+  if (!requireNamespace("data.table", quietly = TRUE)) {
+    stop(
+      "A data.table source requires the data.table package for an immutable native snapshot.",
+      call. = FALSE
+    )
+  }
+  snapshot <- data.table::copy(value)
+  if (!data.table::is.data.table(snapshot)) {
+    stop("The native data.table snapshot did not preserve its class.", call. = FALSE)
+  }
+  snapshot
 }
 
 .ow_assert_empty_view <- function(value) {
@@ -414,6 +490,13 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
       !.ow_is_empty_array(value$sort)
   ) {
     stop("The native R foundation does not implement viewing filters or sorts yet.", call. = FALSE)
+  }
+}
+
+.ow_assert_kind <- function(request, expected) {
+  .ow_assert_string(request$kind, "request.kind", max_characters = 64L)
+  if (!identical(request$kind, expected)) {
+    stop(paste0("Expected R provider request kind '", expected, "'."), call. = FALSE)
   }
 }
 
@@ -537,7 +620,7 @@ create_open_wrangler_r_provider <- function(target_env = .GlobalEnv) {
   )
 }
 
-if (sys.nframe() == 0L) {
+if (direct_execution) {
   arguments <- commandArgs(trailingOnly = TRUE)
   if (!identical(arguments, "--probe")) {
     stop("Run this provider directly only with --probe, or source it into an exact R session.", call. = FALSE)
@@ -547,4 +630,8 @@ if (sys.nframe() == 0L) {
     '{"protocolVersion":1,"requestId":"probe","request":{"kind":"initialize"}}'
   ))
   cat("\n")
+  return(invisible(NULL))
 }
+
+create_open_wrangler_r_provider
+})(sys.nframe() == 0L)

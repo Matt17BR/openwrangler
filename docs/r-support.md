@@ -42,6 +42,27 @@ private, versioned, correlated, strict, and read-only. It supports:
 - strict rejection of filtering, sorting, editing, unknown fields, and malformed
   requests until those capabilities have native implementations.
 
+The file evaluates to one provider factory and keeps every implementation symbol
+inside that factory's private lexical environment. The future kernel loader must
+source it into a fresh private environment and retain only the returned factory:
+
+```r
+local({
+  agent_env <- new.env(parent = baseenv())
+  agent_factory <- source(agent_path, local = agent_env)$value
+  stopifnot(is.function(agent_factory), length(ls(agent_env, all.names = TRUE)) == 0L)
+  agent_factory(exact_dataframe_environment)
+})
+```
+
+Transport code must validate every response with the dispatched request ID,
+request kind, requested session/projection/range, and confirmed session
+schema/shape. A merely well-shaped response is insufficient. Revision-zero
+`data.table` sources use `data.table::copy`, retaining their native class while
+preventing later `:=` mutations from changing the open session. Shaped,
+matrix/array, list, and raw columns are rejected until faithful nested or binary
+typed-cell encodings exist.
+
 The agent requires the user environment to contain `jsonlite`. Open Wrangler
 does not install it silently. A future dependency action must name the exact R
 executable and package, obtain confirmation, and install into the user-selected
@@ -49,15 +70,15 @@ library.
 
 ## Delivery slices
 
-1. **Foundation** — provider protocol, native serializer, capability model,
+1. **Foundation:** provider protocol, native serializer, capability model,
    package allowlist, and R-only smoke test.
-2. **IRkernel viewer** — exact-notebook launch, variable picker, kernel dispatch,
+2. **IRkernel viewer:** exact-notebook launch, variable picker, kernel dispatch,
    paging, cancellation, cleanup, and recovery.
-3. **Explicit session helper** — a documented helper for `.R`, `.Rmd`, and
+3. **Explicit session helper:** a documented helper for `.R`, `.Rmd`, and
    `.qmd` sessions with an unambiguous connection handshake.
-4. **Viewing parity** — native filtering, multi-sort, profiles, large pages,
+4. **Viewing parity:** native filtering, multi-sort, profiles, large pages,
    and base/tibble/data.table equivalence.
-5. **Editing parity** — R-native transformation IR compilers and generated code
+5. **Editing parity:** R-native transformation IR compilers and generated code
    for base R, tidyverse, and data.table, delivered operation by operation.
 
 Every slice must run in an R-only test environment with Python unavailable.

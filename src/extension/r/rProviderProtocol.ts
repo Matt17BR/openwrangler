@@ -1,7 +1,51 @@
-import type { ColumnSchema, GridPage } from "../../shared/protocol";
+import type { CellValue, ColumnSchema, GridPage } from "../../shared/protocol";
 import { isColumnSchemaArray, isGridPage } from "../../shared/protocolValidation";
 
 export const R_PROVIDER_PROTOCOL_VERSION = 1 as const;
+
+export interface RProviderInitializeRequest {
+  readonly kind: "initialize";
+}
+
+export interface RProviderOpenSessionRequest {
+  readonly kind: "openSession";
+  readonly source: {
+    readonly kind: "notebookVariable";
+    readonly label: string;
+    readonly variableName: string;
+  };
+  readonly requestedSessionId: string;
+  readonly backend?: "r";
+  readonly mode?: "viewing";
+  readonly pageSize: number;
+  readonly columnOffset: number;
+  readonly columnLimit: number;
+}
+
+export interface RProviderGetPageRequest {
+  readonly kind: "getPage";
+  readonly sessionId: string;
+  readonly revision: 0;
+  readonly viewRequestId: string;
+  readonly offset: number;
+  readonly limit: number;
+  readonly columnOffset: number;
+  readonly columnLimit: number;
+  readonly filterModel: {
+    readonly logic: "and";
+    readonly filters: readonly [];
+    readonly sort: readonly [];
+  };
+}
+
+export interface RProviderCloseSessionRequest {
+  readonly kind: "closeSession";
+  readonly sessionId: string;
+  readonly revision: 0;
+}
+
+export type RProviderRequest =
+  RProviderInitializeRequest | RProviderOpenSessionRequest | RProviderGetPageRequest | RProviderCloseSessionRequest;
 
 export interface RProviderInitialized {
   readonly kind: "initialized";
@@ -32,6 +76,33 @@ export interface RProviderSessionMetadata {
   readonly shape: { readonly rows: number; readonly columns: number };
   readonly schema: readonly ColumnSchema[];
 }
+
+export interface RProviderConfirmedSession {
+  readonly sessionId: string;
+  readonly revision: 0;
+  readonly shape: { readonly rows: number; readonly columns: number };
+  readonly schema: readonly ColumnSchema[];
+}
+
+export type RProviderDispatchContext =
+  | {
+      readonly requestId: string;
+      readonly request: RProviderInitializeRequest;
+    }
+  | {
+      readonly requestId: string;
+      readonly request: RProviderOpenSessionRequest;
+    }
+  | {
+      readonly requestId: string;
+      readonly request: RProviderGetPageRequest;
+      readonly session: RProviderConfirmedSession;
+    }
+  | {
+      readonly requestId: string;
+      readonly request: RProviderCloseSessionRequest;
+      readonly session: RProviderConfirmedSession;
+    };
 
 export interface RProviderSessionOpened {
   readonly kind: "sessionOpened";
@@ -78,6 +149,56 @@ export function isRProviderResponseEnvelope(value: unknown): value is RProviderR
     return false;
   }
   return isRProviderResponse(envelope.response);
+}
+
+/**
+ * Validates a provider response against the exact request that was dispatched.
+ *
+ * Transport code must use this contextual guard rather than relying on the
+ * structural guard alone. It rejects correctly shaped but stale, misrouted, or
+ * semantically contradictory responses before they can enter coordinator state.
+ */
+export function isRProviderResponseEnvelopeForDispatch(
+  value: unknown,
+  context: RProviderDispatchContext
+): value is RProviderResponseEnvelope {
+  if (!isRProviderResponseEnvelope(value) || value.requestId !== context.requestId) {
+    return false;
+  }
+  if (value.response.kind === "error") {
+    return true;
+  }
+
+  switch (context.request.kind) {
+    case "initialize":
+      return value.response.kind === "initialized";
+    case "openSession":
+      return value.response.kind === "sessionOpened" && isOpenedResponseForRequest(value.response, context.request);
+    case "getPage":
+      return (
+        "session" in context &&
+        value.response.kind === "page" &&
+        context.session.sessionId === context.request.sessionId &&
+        context.session.revision === context.request.revision &&
+        value.response.sessionId === context.request.sessionId &&
+        value.response.revision === context.request.revision &&
+        value.response.viewRequestId === context.request.viewRequestId &&
+        isPageForWindow(value.response.page, context.session, {
+          offset: context.request.offset,
+          limit: context.request.limit,
+          columnOffset: context.request.columnOffset,
+          columnLimit: context.request.columnLimit
+        })
+      );
+    case "closeSession":
+      return (
+        "session" in context &&
+        value.response.kind === "sessionClosed" &&
+        context.session.sessionId === context.request.sessionId &&
+        context.session.revision === context.request.revision &&
+        value.response.sessionId === context.request.sessionId
+      );
+  }
 }
 
 function isRProviderResponse(value: unknown): value is RProviderResponse {
@@ -187,7 +308,7 @@ function isSessionMetadata(value: unknown): value is RProviderSessionMetadata {
     !isNonEmptyString(candidate.sessionId) ||
     candidate.backend !== "r" ||
     candidate.mode !== "viewing" ||
-    !isNonEmptyString(candidate.sourceClass) ||
+    !isOneOf(candidate.sourceClass, ["data.frame", "tbl_df", "data.table"]) ||
     !isShape(candidate.shape) ||
     !isColumnSchemaArray(candidate.schema)
   ) {
@@ -203,6 +324,170 @@ function isSessionMetadata(value: unknown): value is RProviderSessionMetadata {
   );
 }
 
+function isOpenedResponseForRequest(response: RProviderSessionOpened, request: RProviderOpenSessionRequest): boolean {
+  const metadata = response.metadata;
+  if (
+    metadata.sessionId !== request.requestedSessionId ||
+    metadata.source.kind !== request.source.kind ||
+    metadata.source.label !== request.source.label ||
+    metadata.source.variableName !== request.source.variableName
+  ) {
+    return false;
+  }
+  return isPageForWindow(
+    response.page,
+    {
+      sessionId: metadata.sessionId,
+      revision: 0,
+      shape: metadata.shape,
+      schema: metadata.schema
+    },
+    {
+      offset: 0,
+      limit: request.pageSize,
+      columnOffset: request.columnOffset,
+      columnLimit: request.columnLimit
+    }
+  );
+}
+
+interface RProviderPageWindow {
+  readonly offset: number;
+  readonly limit: number;
+  readonly columnOffset: number;
+  readonly columnLimit: number;
+}
+
+function isPageForWindow(page: GridPage, session: RProviderConfirmedSession, window: RProviderPageWindow): boolean {
+  if (
+    !isNonEmptyString(session.sessionId) ||
+    session.revision !== 0 ||
+    !isShape(session.shape) ||
+    !isColumnSchemaArray(session.schema) ||
+    session.shape.columns !== session.schema.length ||
+    !isPageWindow(window) ||
+    !isGridPage(page, session.schema) ||
+    page.offset !== window.offset ||
+    page.limit !== window.limit ||
+    page.totalRows !== session.shape.rows
+  ) {
+    return false;
+  }
+
+  const projectedColumns = session.schema.slice(
+    Math.min(window.columnOffset, session.schema.length),
+    Math.min(window.columnOffset + window.columnLimit, session.schema.length)
+  );
+  if (
+    page.columnIds.length !== projectedColumns.length ||
+    page.columnIds.some((columnId, index) => columnId !== projectedColumns[index]?.id)
+  ) {
+    return false;
+  }
+
+  const expectedRows = Math.min(window.limit, Math.max(0, session.shape.rows - window.offset));
+  if (page.rows.length !== expectedRows) {
+    return false;
+  }
+  return page.rows.every(
+    (row, rowIndex) =>
+      row.rowNumber === window.offset + rowIndex &&
+      row.id === `r:row:${window.offset + rowIndex}` &&
+      row.values.every((cell, columnIndex) => {
+        const column = projectedColumns[columnIndex];
+        return column !== undefined && isRProviderCellForColumn(cell, column);
+      })
+  );
+}
+
+function isPageWindow(value: RProviderPageWindow): boolean {
+  return (
+    isSafeIntegerInRange(value.offset, 0, Number.MAX_SAFE_INTEGER) &&
+    isSafeIntegerInRange(value.limit, 1, 10_000) &&
+    isSafeIntegerInRange(value.columnOffset, 0, Number.MAX_SAFE_INTEGER) &&
+    isSafeIntegerInRange(value.columnLimit, 1, 256)
+  );
+}
+
+function isRProviderCellForColumn(cell: CellValue, column: ColumnSchema): boolean {
+  const hasRaw = Object.hasOwn(cell, "raw");
+  const hasSign = Object.hasOwn(cell, "sign");
+  if (!hasRaw) return false;
+
+  if (cell.kind === "null") {
+    return (
+      column.nullable &&
+      cell.raw === null &&
+      cell.display === "" &&
+      cell.isNull === true &&
+      cell.isNaN === false &&
+      !hasSign
+    );
+  }
+  if (cell.isNull || cell.isNaN !== (cell.kind === "nan")) {
+    return false;
+  }
+
+  switch (cell.kind) {
+    case "nan":
+      return column.type === "float" && cell.raw === null && cell.display === "NaN" && !hasSign;
+    case "infinity":
+      return (
+        column.type === "float" &&
+        cell.raw === null &&
+        (cell.sign === -1 || cell.sign === 1) &&
+        cell.display === (cell.sign === -1 ? "-Infinity" : "Infinity")
+      );
+    case "boolean":
+      return (
+        column.type === "boolean" &&
+        typeof cell.raw === "boolean" &&
+        cell.display === (cell.raw ? "true" : "false") &&
+        !hasSign
+      );
+    case "number":
+      return column.type === "float" && typeof cell.raw === "number" && Number.isFinite(cell.raw) && !hasSign;
+    case "integer":
+      return (
+        column.type === "integer" &&
+        typeof cell.raw === "string" &&
+        /^-?(?:0|[1-9][0-9]*)$/u.test(cell.raw) &&
+        cell.display === cell.raw &&
+        !hasSign
+      );
+    case "string":
+      return column.type === "string" && typeof cell.raw === "string" && cell.display === cell.raw && !hasSign;
+    case "datetime":
+      return (
+        column.type === "datetime" &&
+        typeof cell.raw === "string" &&
+        cell.raw.length > 0 &&
+        cell.display === cell.raw &&
+        !hasSign
+      );
+    case "date":
+      return (
+        column.type === "date" &&
+        typeof cell.raw === "string" &&
+        cell.raw.length > 0 &&
+        cell.display === cell.raw &&
+        !hasSign
+      );
+    case "duration":
+      return (
+        column.type === "duration" &&
+        typeof cell.raw === "string" &&
+        cell.raw.length > 0 &&
+        cell.display === cell.raw &&
+        !hasSign
+      );
+    case "unknown":
+      return column.type === "unknown" && cell.raw === null && cell.display.length > 0 && !hasSign;
+    default:
+      return false;
+  }
+}
+
 function isShape(value: unknown): value is { rows: number; columns: number } {
   const candidate = exactRecord(value, ["rows", "columns"]);
   return (
@@ -212,6 +497,14 @@ function isShape(value: unknown): value is { rows: number; columns: number } {
     Number.isSafeInteger(candidate.columns) &&
     Number(candidate.columns) >= 0
   );
+}
+
+function isSafeIntegerInRange(value: number, minimum: number, maximum: number): boolean {
+  return Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+}
+
+function isOneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
+  return typeof value === "string" && values.some((candidate) => candidate === value);
 }
 
 function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> | undefined {

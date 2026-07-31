@@ -12,6 +12,10 @@ Open Wrangler 2 adds a separate native-R provider boundary. Its agent is sourced
 into the exact R process and does not convert through Python or share the Python
 runtime protocol by accident. The integration surface, upstream API constraints,
 and staged capability gates are defined in [Native R support](r-support.md).
+The agent evaluates to a factory with private lexical state; loading it must not
+publish helper symbols in the user's R environment. R responses pass a
+request-and-confirmed-session contextual guard before coordinator state can
+observe them.
 
 The source dataframe is immutable from Open Wrangler's perspective. A session stores a source descriptor, import options, engine, independent viewing query, committed transformation steps, optional draft step, and revision. Export is the only operation that writes data, and it always targets an explicit destination.
 

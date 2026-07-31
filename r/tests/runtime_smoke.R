@@ -5,7 +5,16 @@ if (length(file_argument) != 1L) {
 }
 test_file <- normalizePath(sub("^--file=", "", file_argument), mustWork = TRUE)
 repository_root <- normalizePath(file.path(dirname(test_file), "..", ".."), mustWork = TRUE)
-source(file.path(repository_root, "r", "openwrangler_runtime", "kernel_agent.R"), local = TRUE)
+agent_environment <- new.env(parent = baseenv())
+agent_source <- source(
+  file.path(repository_root, "r", "openwrangler_runtime", "kernel_agent.R"),
+  local = agent_environment
+)
+stopifnot(
+  is.function(agent_source$value),
+  length(ls(agent_environment, all.names = TRUE)) == 0L
+)
+create_open_wrangler_r_provider <- agent_source$value
 
 if (!requireNamespace("jsonlite", quietly = TRUE)) {
   stop("The R runtime smoke test requires jsonlite.", call. = FALSE)
@@ -94,6 +103,12 @@ stopifnot(
   identical(malformed$response$recoverable, FALSE)
 )
 
+numeric_kind <- request("numeric-kind", list(kind = 7L))
+stopifnot(
+  identical(numeric_kind$response$kind, "error"),
+  grepl("request.kind must be", numeric_kind$response$message, fixed = TRUE)
+)
+
 duplicate_field <- jsonlite::fromJSON(
   provider$dispatch_json(
     '{"protocolVersion":1,"requestId":"duplicate","request":{"kind":"initialize","kind":"initialize"}}'
@@ -174,6 +189,60 @@ if (requireNamespace("data.table", quietly = TRUE)) {
     identical(data_table_open$response$metadata$sourceClass, "data.table"),
     data.table::is.data.table(target_env$data_table_frame)
   )
+  target_env$data_table_frame[, value := value + 100L]
+  data_table_page <- request("data-table-page", list(
+    kind = "getPage",
+    sessionId = "r-data-table-smoke",
+    revision = 0L,
+    viewRequestId = "data-table-view",
+    offset = 0L,
+    limit = 2L,
+    columnOffset = 0L,
+    columnLimit = 1L,
+    filterModel = list(logic = "and", filters = list(), sort = list())
+  ))
+  stopifnot(
+    identical(data_table_page$response$page$rows[[1]]$values[[1]]$raw, "1"),
+    identical(data_table_page$response$page$rows[[2]]$values[[1]]$raw, "2"),
+    identical(target_env$data_table_frame$value, c(101L, 102L)),
+    identical(target_env$data_table_frame[1L, value], 101L)
+  )
+}
+
+unsupported_frames <- list(
+  matrix_frame = local({
+    value <- data.frame(id = 1:2)
+    value$unsupported <- I(matrix(1:4, nrow = 2L))
+    value
+  }),
+  array_frame = local({
+    value <- data.frame(id = 1:2)
+    value$unsupported <- I(array(1:8, dim = c(2L, 2L, 2L)))
+    value
+  }),
+  list_frame = I(data.frame(unsupported = I(list(1L, 2L)))),
+  raw_frame = data.frame(unsupported = as.raw(c(1L, 2L)))
+)
+for (name in names(unsupported_frames)) {
+  target_env[[name]] <- unsupported_frames[[name]]
+  session_id <- paste0("r-unsupported-", name)
+  rejected <- request(paste0(name, "-open"), list(
+    kind = "openSession",
+    source = list(kind = "notebookVariable", label = name, variableName = name),
+    requestedSessionId = session_id,
+    pageSize = 2L,
+    columnOffset = 0L,
+    columnLimit = 2L
+  ))
+  stopifnot(
+    identical(rejected$response$kind, "error"),
+    grepl("not implemented yet", rejected$response$message, fixed = TRUE)
+  )
+  rejected_close <- request(
+    paste0(name, "-close"),
+    list(kind = "closeSession", sessionId = session_id, revision = 0L)
+  )
+  stopifnot(identical(rejected_close$response$kind, "error"))
 }
 
 provider$close()

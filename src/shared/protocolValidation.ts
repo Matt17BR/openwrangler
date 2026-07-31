@@ -4,6 +4,7 @@ import type {
   ColumnSchema,
   ColumnSummary,
   FilterModel,
+  GridPage,
   OpenWranglerRequest,
   OpenWranglerResponse,
   RuntimeRequestEnvelope,
@@ -1238,7 +1239,7 @@ function isByExampleProgram(
   }
 }
 
-export function isGridPage(value: unknown, schema?: readonly ColumnSchema[]): boolean {
+export function isGridPage(value: unknown, schema?: readonly ColumnSchema[]): value is GridPage {
   const candidate = exactRecord(value, ["offset", "limit", "totalRows", "columnIds", "rows"]);
   if (candidate === undefined) return false;
   const columnIds = candidate.columnIds;
@@ -1284,7 +1285,7 @@ function isUniqueNonEmptyStringArray(value: unknown): value is string[] {
   return new Set(value).size === value.length;
 }
 
-export function isCellValue(value: unknown): boolean {
+export function isCellValue(value: unknown): value is CellValue {
   const candidate = exactRecord(value, ["kind", "display", "isNull", "isNaN"], ["raw", "sign"]);
   return (
     candidate !== undefined &&
