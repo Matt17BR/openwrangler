@@ -16440,14 +16440,13 @@ async function exercisePackagedExcelDependencyInstall(
       SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
       "the same XLSX panel to reopen as a usable Pandas grid",
       () =>
-        JSON.stringify({
-          response: testing.panelOpenResponse(),
-          coordinator: testing.diagnostics(),
-          runtimeRunning: testing.runtimeRunning(),
-          runtimeEnvironment: testing.runtimeEnvironment(),
-          marker: existsSync(dependency.marker),
-          invocation: existsSync(dependency.invocation)
-        })
+        excelDependencyInstallDiagnostics(
+          testing,
+          workbookPath,
+          dependency.executable,
+          existsSync(dependency.marker),
+          existsSync(dependency.invocation)
+        )
     );
     const active = testing.activeSession();
     assert.ok(active, "The confirmed XLSX dependency install must publish an active session.");
@@ -16574,6 +16573,53 @@ async function exercisePackagedExcelDependencyInstall(
       }
     }
   }
+}
+
+function excelDependencyInstallDiagnostics(
+  testing: TestApi,
+  expectedSourcePath: string,
+  expectedExecutable: string,
+  markerExists: boolean,
+  invocationExists: boolean
+): string {
+  const active = testing.activeSession();
+  const response = testing.panelOpenResponse();
+  const runtimeEnvironment = testing.runtimeEnvironment();
+  return JSON.stringify({
+    active:
+      active === undefined
+        ? null
+        : {
+            backend: active.metadata.backend,
+            shape: active.metadata.shape,
+            sourceMatches: active.metadata.source.path === expectedSourcePath
+          },
+    coordinator: testing.diagnostics(),
+    invocationExists,
+    markerExists,
+    response:
+      response === undefined
+        ? null
+        : response.kind === "sessionOpened"
+          ? {
+              backend: response.metadata.backend,
+              kind: response.kind,
+              shape: response.metadata.shape,
+              sourceMatches: response.metadata.source.path === expectedSourcePath
+            }
+          : response.kind === "error"
+            ? { code: response.code, kind: response.kind, recoverable: response.recoverable }
+            : { kind: response.kind },
+    runtimeEnvironment:
+      runtimeEnvironment === undefined
+        ? null
+        : {
+            executableMatches: sameAcceptanceExecutable(runtimeEnvironment.executable, expectedExecutable),
+            source: runtimeEnvironment.source,
+            version: runtimeEnvironment.version
+          },
+    runtimeRunning: testing.runtimeRunning()
+  });
 }
 
 async function exerciseDependencyInstallShutdownLifecycle(testing: TestApi, python: string): Promise<void> {
