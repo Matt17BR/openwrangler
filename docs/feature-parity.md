@@ -802,8 +802,10 @@ Complete-schema and native live-notebook UX slice, 2026-07-30:
   connection-private `DuckDBPyRelation`: base and far pages, filtered multi-sort, progressive numeric summary,
   restored view state, explicit complete unfiltered paging, authoritative close, and post-close user-relation
   reuse all stayed native. Conversion traps made any Pandas, Polars, or Arrow route fail the phase.
-- The independent PySpark phase currently fails after its cleanup path and is not counted as evidence for this
-  slice. Its resolution remains required before the branch can become a release candidate.
+- At this 2026-07-30 checkpoint, the independent PySpark phase failed after its cleanup path and was deliberately
+  excluded from the slice's evidence. That historical failure is superseded by the later never-cancel/detach
+  correction and green packaged PySpark evidence recorded in the current experimental-backend matrix above; it is
+  not a current release blocker.
 
 Primary cleaning-plan command row, 2026-07-31:
 
@@ -823,8 +825,12 @@ Primary cleaning-plan command row, 2026-07-31:
   cleaning-plan semantics.
 
 This completes the bounded command-row implementation in
-[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The issue remains open until the final packaged
-VS Code and Cursor visual evidence is recorded; this entry does not make a parity-complete or release claim.
+[issue #88](https://github.com/Matt17BR/openwrangler/issues/88). The issue closed after one exact 726,757-byte
+VSIX from source `bd6733b` (SHA-256 `1d3eba830d7b57eb95ddd5d4ac1718bc58a03de7924b49155ab37e3b5ad0f709`)
+passed the isolated zero-window packaged journey in VS Code 1.130.0 and Cursor 3.13.10, including automatic import,
+keyboard navigation, multi-sort editing, exact profiles, draft/apply/discard, native code preview, export, replay,
+Undo, Activity Bar views, dependency-decline recovery, source immutability, and terminal cleanup. This evidence
+closes that bounded post-1.0 refinement; it does not claim universal feature parity or v1.2 release readiness.
 
 ## Explicitly deferred from 1.0
 
