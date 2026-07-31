@@ -37,6 +37,7 @@ export const PACKAGED_SCREENSHOT_MARKETS = [
 export const PACKAGED_SCREENSHOT_SCENES = [
   "hero",
   "explore",
+  "filter-result",
   "workflow",
   "sidebar-overview",
   "operation-catalog",
@@ -44,6 +45,7 @@ export const PACKAGED_SCREENSHOT_SCENES = [
   "applied-step-inspection",
   "notebook-pandas",
   "notebook-variable-picker",
+  "notebook-pyspark-picker",
   "notebook-polars",
   "notebook-duckdb",
   "notebook-pyspark"

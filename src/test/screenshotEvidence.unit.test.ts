@@ -201,6 +201,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(PACKAGED_SCREENSHOT_SCENES).toEqual([
       "hero",
       "explore",
+      "filter-result",
       "workflow",
       "sidebar-overview",
       "operation-catalog",
@@ -208,6 +209,7 @@ describe("packaged editor screenshot evidence", () => {
       "applied-step-inspection",
       "notebook-pandas",
       "notebook-variable-picker",
+      "notebook-pyspark-picker",
       "notebook-polars",
       "notebook-duckdb",
       "notebook-pyspark"
@@ -215,6 +217,7 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
     expect(packagedScreenshotFileName("vscode", "explore", "dark")).toBe("vscode-explore-dark.png");
+    expect(packagedScreenshotFileName("vscode", "filter-result", "dark")).toBe("vscode-filter-result-dark.png");
     expect(packagedScreenshotFileName("vscode", "workflow", "dark")).toBe("vscode-workflow-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pandas", "dark")).toBe("vscode-notebook-pandas-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
@@ -222,6 +225,9 @@ describe("packaged editor screenshot evidence", () => {
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark", "dark")).toBe("vscode-notebook-pyspark-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-variable-picker", "dark")).toBe(
       "vscode-notebook-variable-picker-dark.png"
+    );
+    expect(packagedScreenshotFileName("vscode", "notebook-pyspark-picker", "dark")).toBe(
+      "vscode-notebook-pyspark-picker-dark.png"
     );
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });
@@ -272,11 +278,11 @@ describe("packaged editor screenshot evidence", () => {
       ["gallery/operation-configuration.png", 1_280, 874, 50_000],
       ["gallery/applied-step-inspection.png", 1_440, 870, 50_000],
       ["gallery/operation-configuration-detail.png", 510, 605, 20_000],
-      ["gallery/applied-step-inspection-detail.png", 995, 330, 20_000],
+      ["gallery/applied-step-inspection-detail.png", 995, 320, 20_000],
       ["gallery/export-script-detail.png", 995, 230, 20_000],
-      ["gallery/export-data-detail.png", 995, 370, 20_000],
+      ["gallery/export-data-detail.png", 995, 344, 20_000],
       ["gallery/notebook-variable-picker-detail.png", 602, 330, 20_000],
-      ["gallery/notebook-pandas-detail.png", 440, 300, 20_000],
+      ["gallery/notebook-pandas-detail.png", 1_205, 370, 20_000],
       ["gallery/notebook-polars-detail.png", 1_372, 758, 50_000],
       ["gallery/notebook-duckdb-detail.png", 1_372, 868, 50_000]
     ] as const;

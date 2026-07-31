@@ -244,12 +244,21 @@ Set `OPEN_WRANGLER_CAPTURE_EDITOR_SCREENSHOTS` to an absolute output directory w
 
 The same packaged scene run captures the explicit **Import options** Quick Pick on the automatically inferred
 delimiter, a complete virtualized 417-column search, the exact sparse-bin tooltip, editable compound-sort priority,
-and real export outcomes. The export journey applies the two-step plan, saves and opens `orders.clean.py`, exports
+an applied `market equals "DACH"` filter beside its native Filters / Sorts state and clear/remove controls, and real
+export outcomes. The filter scene asserts the exact filtered row count and visible values, rejects partial grid rows
+or clipped controls, then clears the condition through the production UI before the journey continues. The export
+journey applies the two-step plan, saves and opens `orders.clean.py`, exports
 `orders.cleaned.csv`, reopens the cleaned data in Open Wrangler, and reveals both files in the disposable workspace.
 It verifies 100,000 output rows, both generated columns, and byte-identical source data. The wide-schema fixture
 uses realistic numeric, text, date, and boolean fields, remains inside the clean disposable workspace, reaches item
 417 of 417, rejects the retired 100-result cap, and rejects clipped results or temporary paths. These images may
 enter the gallery only after VS Code and Cursor both capture them from the same verified candidate VSIX.
+
+The released-Jupyter variable-picker capture uses a fixed 1440 × 900 viewport and rejects every partially visible
+option row or clipped label, type description, and detail. The independent PySpark picker scene filters to
+`spark_classic_frame`, verifies the complete **Viewing only**, **Full-frame open (scan, index, cache)**, and
+**Requires PySpark 4.2.x** detail, captures exactly one visible match, and dismisses the picker without selecting or
+opening that variable.
 
 These images are release evidence for the exact VSIX supplied to that packaged-editor run. Capture them only after the candidate source is integrated and packaged; never carry an older commit's images forward as if they represented the current UI. The capture is optional and never mutates baselines automatically.
 

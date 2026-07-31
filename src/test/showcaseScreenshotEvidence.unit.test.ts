@@ -45,6 +45,11 @@ describe("wide-schema showcase evidence", () => {
     expect(extensionHost).toContain("`${editor}-export-data-dark.png`");
     expect(extensionHost).toContain("active.metadata.steps.length === 2");
     expect(extensionHost).toContain("Cleaned-data export must preserve the source bytes.");
+    expect(extensionHost).toContain('packagedScreenshotFileName(editor, "filter-result", "dark")');
+    expect(extensionHost).toContain("The filter-result grid must show only complete visible rows.");
+    expect(extensionHost).toContain('"notebook-pyspark-picker"');
+    expect(extensionHost).toContain("Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x");
+    expect(extensionHost).toContain("The notebook-variable capture must show only complete rows.");
     expect(extensionHost).not.toContain("`${editor}-copy-code-dark.png`");
     expect(extensionHost).not.toContain("The documentation capture must cancel without writing a script.");
     expect(extensionHost).toContain('operator: "add"');

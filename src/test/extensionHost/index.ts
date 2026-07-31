@@ -2222,6 +2222,10 @@ async function exerciseReleasedPySparkJupyterExtension(
     assert.equal(classicSetup.workerPythonPinned, true);
     assert.deepEqual(classicSetup.conversionTraps, ["toPandas", "toArrow", "mapInPandas", "mapInArrow"]);
 
+    if (screenshotOutput) {
+      await captureReleasedJupyterPySparkPicker(workbench, notebook, classicEditor, screenshotOutput);
+    }
+
     await dispatchReleasedJupyterVariableAction(workbench, notebook, "spark_classic_frame", `${phase}:classic-action`);
     const consent = await waitForReleasedJupyterConsent(workbench, testing);
     await consent.allow.click();
@@ -8214,12 +8218,18 @@ async function captureReleasedJupyterVariablePicker(
 ): Promise<void> {
   if (process.platform !== "linux") return;
   assert.equal(path.isAbsolute(outputDirectory), true, "Notebook screenshot output must be one absolute directory.");
-  recordAcceptanceProgress("jupyter-allow:screenshot:variable-picker");
-  const picker = await activateReleasedNotebookVariableAction(workbench, notebook);
+  const previousViewport = await workbench.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  let picker: Locator | undefined;
   try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    recordAcceptanceProgress("jupyter-allow:screenshot:variable-picker");
+    picker = await activateReleasedNotebookVariableAction(workbench, notebook);
     const rows = await Promise.all(
       ["pandas_frame", "polars_frame", "duckdb_relation"].map((variableName) =>
-        releasedJupyterQuickPickRow(picker, variableName)
+        releasedJupyterQuickPickRow(picker!, variableName)
       )
     );
     assert.equal(
@@ -8228,18 +8238,158 @@ async function captureReleasedJupyterVariablePicker(
       "The notebook-variable gallery picker must expose native Pandas, Polars, and DuckDB values together."
     );
     for (const row of rows) await row!.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    await assertReleasedNotebookVariablePickerGeometry(picker, ["pandas_frame", "polars_frame", "duckdb_relation"]);
     mkdirSync(outputDirectory, { recursive: true });
     const destination = path.resolve(
       outputDirectory,
       packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-variable-picker", "dark")
     );
-    await captureWorkbenchScreenshot(workbench, destination, PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height);
-    const screenshot = readFileSync(destination);
-    assert.equal(screenshot.readUInt32BE(16), PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width);
-    assert.equal(screenshot.readUInt32BE(20), PACKAGED_PANDAS_NOTEBOOK_OUTPUT.height);
+    await captureNotebookWorkbenchScreenshot(workbench, destination);
   } finally {
-    await workbench.keyboard.press("Escape");
-    await picker.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    if (picker && (await picker.isVisible().catch(() => false))) {
+      await picker.locator(".quick-input-box input:visible").first().press("Escape");
+      await picker.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    }
+    await workbench.setViewportSize(previousViewport);
+  }
+}
+
+async function assertReleasedNotebookVariablePickerGeometry(
+  picker: Locator,
+  requiredLabels: readonly string[]
+): Promise<void> {
+  const geometry = await picker.evaluate((element) => {
+    type PickerRect = { bottom: number; left: number; right: number; top: number };
+    type PickerElement = {
+      readonly clientWidth: number;
+      readonly scrollWidth: number;
+      readonly textContent: string | null;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): PickerRect & { height: number; width: number };
+      querySelector(selector: string): PickerElement | null;
+      querySelectorAll(selector: string): ArrayLike<PickerElement>;
+    };
+    const root = element as unknown as PickerElement;
+    const list = root.querySelector(".quick-input-list .monaco-list");
+    if (!list) throw new Error("The notebook-variable picker list viewport is unavailable.");
+    const listBounds = list.getBoundingClientRect();
+    const options = Array.from(root.querySelectorAll(".quick-input-list [role='option']")).filter((option) => {
+      const bounds = option.getBoundingClientRect();
+      return bounds.height > 0 && bounds.bottom > listBounds.top + 1 && bounds.top < listBounds.bottom - 1;
+    });
+    const labels = options.map((option) => {
+      const name = option.querySelector(".label-name");
+      return name?.textContent?.replace(/\s+/gu, " ").trim() ?? "";
+    });
+    const partiallyVisible = options
+      .filter((option) => {
+        const bounds = option.getBoundingClientRect();
+        return bounds.top < listBounds.top - 1 || bounds.bottom > listBounds.bottom + 1;
+      })
+      .map((option) => option.textContent?.replace(/\s+/gu, " ").trim() ?? "");
+    const clippedText = options.flatMap((option) =>
+      Array.from(option.querySelectorAll(".label-name, .label-description, .quick-input-list-detail"))
+        .filter((item) => item.scrollWidth > item.clientWidth + 1)
+        .map((item) => item.textContent?.replace(/\s+/gu, " ").trim() ?? "")
+    );
+    return {
+      pickerOverflow: root.scrollWidth - root.clientWidth,
+      labels,
+      partiallyVisible,
+      clippedText
+    };
+  });
+  assert.ok(geometry.pickerOverflow <= 1, "The notebook-variable picker must not overflow horizontally.");
+  assert.deepEqual(geometry.partiallyVisible, [], "The notebook-variable capture must show only complete rows.");
+  assert.deepEqual(geometry.clippedText, [], "The notebook-variable capture must not clip visible row text.");
+  for (const label of requiredLabels) {
+    assert.ok(geometry.labels.includes(label), `The notebook-variable capture must visibly include ${label}.`);
+  }
+}
+
+async function captureReleasedJupyterPySparkPicker(
+  workbench: Page,
+  notebook: vscode.NotebookDocument,
+  editor: vscode.NotebookEditor,
+  outputDirectory: string
+): Promise<void> {
+  if (process.platform !== "linux") return;
+  assert.equal(path.isAbsolute(outputDirectory), true, "PySpark screenshot output must be one absolute directory.");
+  const restoreWorkbench = await prepareReleasedJupyterScreenshotWorkbench(workbench, notebook, editor);
+  let picker: Locator | undefined;
+  try {
+    await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    assert.deepEqual(
+      await workbench.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
+      "The PySpark picker media scene requires the standard 1440 by 900 editor viewport."
+    );
+
+    recordAcceptanceProgress("jupyter-pyspark:screenshot:variable-picker");
+    picker = await activateReleasedNotebookVariableAction(workbench, notebook);
+    const input = picker.locator(".quick-input-box input:visible").first();
+    await input.fill("spark_classic_frame");
+    const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;
+    let row: Locator | undefined;
+    do {
+      row = await releasedJupyterQuickPickRow(picker, "spark_classic_frame");
+      if (row) break;
+      await workbench.waitForTimeout(50);
+    } while (Date.now() < deadline);
+    assert.ok(row, "The filtered PySpark picker must expose spark_classic_frame.");
+    await row.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    assert.equal(
+      await picker.locator(".quick-input-list [role='option']:visible").count(),
+      1,
+      "Filtering the PySpark picker must leave one unambiguous visible dataframe row."
+    );
+
+    const expectedDetail = "Viewing only · Full-frame open (scan, index, cache) · Requires PySpark 4.2.x";
+    const rowText = (await row.innerText()).replace(/\s+/gu, " ").trim();
+    assert.match(rowText, /spark_classic_frame/u);
+    assert.match(rowText, /PySpark Classic · DataFrame/u);
+    for (const phrase of ["Viewing only", "Full-frame open (scan, index, cache)", "Requires PySpark 4.2.x"]) {
+      assert.ok(rowText.includes(phrase), `The PySpark picker row must visibly explain ${phrase}.`);
+    }
+    const detail = row.getByText(expectedDetail, { exact: true }).first();
+    await detail.waitFor({ state: "visible", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+    const detailGeometry = await Promise.all([detail.boundingBox(), row.boundingBox(), picker.boundingBox()]);
+    const [detailBounds, rowBounds, pickerBounds] = detailGeometry;
+    assert.ok(detailBounds && rowBounds && pickerBounds, "The PySpark picker detail must have measurable geometry.");
+    assert.ok(
+      detailBounds.x >= rowBounds.x - 1 &&
+        detailBounds.x + detailBounds.width <= rowBounds.x + rowBounds.width + 1 &&
+        detailBounds.x >= pickerBounds.x - 1 &&
+        detailBounds.x + detailBounds.width <= pickerBounds.x + pickerBounds.width + 1,
+      "The PySpark picker detail must remain fully inside its row and picker."
+    );
+    assert.equal(
+      await detail.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+      true,
+      "The PySpark picker detail must remain horizontally unclipped."
+    );
+    await assertReleasedNotebookVariablePickerGeometry(picker, ["spark_classic_frame"]);
+
+    mkdirSync(outputDirectory, { recursive: true });
+    await captureNotebookWorkbenchScreenshot(
+      workbench,
+      path.resolve(
+        outputDirectory,
+        packagedScreenshotFileName(process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor", "notebook-pyspark-picker", "dark")
+      )
+    );
+  } finally {
+    try {
+      if (picker && (await picker.isVisible().catch(() => false))) {
+        await picker.locator(".quick-input-box input:visible").first().press("Escape");
+        await picker.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+      }
+    } finally {
+      await restoreWorkbench();
+    }
   }
 }
 
@@ -10135,6 +10285,7 @@ async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirecto
     );
     await capturePackagedImportOptionsScene(capturePage, testing, opened.sessionId, fixture, outputDirectory, editor);
     await capturePackagedHistogramInteractionScene(capturePage, profiles, outputDirectory, editor);
+    await capturePackagedFilterResultScene(capturePage, testing, opened.sessionId, outputDirectory, editor);
     await capturePackagedOperationDialogScenes(capturePage, testing, opened.sessionId, outputDirectory, editor);
 
     recordAcceptanceProgress("verify:screenshots:file-scenes:workflow");
@@ -10258,6 +10409,229 @@ async function capturePackagedHistogramInteractionScene(
     (element as unknown as { blur(): void }).blur();
   });
   await tooltip.waitFor({ state: "hidden", timeout: WORKBENCH_PLAYWRIGHT_TIMEOUT_MS });
+}
+
+async function capturePackagedFilterResultScene(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  outputDirectory: string,
+  editor: string
+): Promise<void> {
+  recordAcceptanceProgress("verify:screenshots:file-scenes:filter-result");
+  const expectedRows = Array.from({ length: PACKAGED_SCREENSHOT_ROW_COUNT }, (_, index) => index).filter(
+    (index) => packagedScreenshotRow(index)[1] === "DACH"
+  ).length;
+  assert.ok(expectedRows > 0 && expectedRows < PACKAGED_SCREENSHOT_ROW_COUNT);
+
+  try {
+    let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    let app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The filter-result scene requires the exact production renderer.");
+    const profilesToggle = app.getByRole("button", { name: "Column profiles and filters" });
+    if ((await profilesToggle.getAttribute("aria-expanded")) !== "true") await profilesToggle.click();
+    let drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+    await drawer.waitFor({ state: "visible", timeout: 10_000 });
+    await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+    let filterPanel = drawer.locator(".filterSortPanel").first();
+    await filterPanel.waitFor({ state: "visible", timeout: 10_000 });
+    await filterPanel.getByLabel("Filter column", { exact: true }).selectOption({ label: "market" });
+    await filterPanel.getByLabel("Predicate operator").selectOption("equals");
+    await filterPanel.getByLabel("equals predicate value").fill("DACH");
+    await filterPanel.getByRole("button", { name: "Add predicate", exact: true }).click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        const filter = active?.viewState.filterModel.filters[0];
+        return (
+          active?.sessionId === sessionId &&
+          active.metadata.filteredShape.rows === expectedRows &&
+          active.viewState.filterModel.filters.length === 1 &&
+          active.viewState.filterModel.sort.length === 0 &&
+          filter?.column === "market" &&
+          filter.predicates.length === 1 &&
+          filter.predicates[0]?.kind === "predicate" &&
+          filter.predicates[0].operator === "equals" &&
+          filter.predicates[0].value === "DACH"
+        );
+      },
+      30_000,
+      "the applied DACH filter to publish its exact file-session result"
+    );
+    assert.equal(await testing.synchronizePanel(sessionId), true);
+    await testing.updateViewState(sessionId, {
+      ...testing.activeSession()!.viewState,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(await testing.synchronizePanel(sessionId), true);
+
+    const sidebar = await arrangePackagedProductSidebar(workbench, "filter-result");
+    const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+    const nativeFilter = filtersTree.getByRole("treeitem", { name: /^market, 1 condition/u }).first();
+    await nativeFilter.waitFor({ state: "visible", timeout: 10_000 });
+
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, "The filter-result scene must retain its renderer after arranging the native sidebar.");
+    drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+    await drawer.getByRole("heading", { name: "Filters / Sorts", exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000
+    });
+    filterPanel = drawer.locator(".filterSortPanel").first();
+    const clearAll = filterPanel.getByRole("button", { name: "Clear all", exact: true });
+    const clearMarket = drawer.getByRole("button", { name: "Clear filter for market", exact: true });
+    const removeDach = drawer.getByRole("button", {
+      name: 'Remove equals "DACH" filter from market',
+      exact: true
+    });
+    for (const control of [clearAll, clearMarket, removeDach]) {
+      await control.waitFor({ state: "visible", timeout: 10_000 });
+    }
+    const visibleRows = app.getByRole("status", { name: "Visible rows" });
+    await visibleRows.waitFor({ state: "visible", timeout: 10_000 });
+    assert.match(
+      (await visibleRows.innerText()).trim(),
+      new RegExp(`^Rows 1\\u2013\\d+ of ${expectedRows.toLocaleString()}$`, "u")
+    );
+    await app
+      .locator('td[data-grid-row="0"][data-grid-column="1"]')
+      .filter({ hasText: "DACH" })
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await assertPackagedFilterResultGeometry(app, sidebar);
+    await clearPackagedProductSceneTransientUi(workbench);
+    mkdirSync(outputDirectory, { recursive: true });
+    await captureWorkbenchScreenshot(
+      workbench,
+      path.resolve(outputDirectory, packagedScreenshotFileName(editor, "filter-result", "dark"))
+    );
+  } finally {
+    const active = testing.activeSession();
+    if (active?.sessionId === sessionId && active.viewState.filterModel.filters.length > 0) {
+      const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+      const app = await exactSessionApp(target.frame, sessionId);
+      assert.ok(app, "Filter-result cleanup requires the exact production renderer.");
+      const drawer = app.getByRole("complementary", { name: "Column profiles and filters" });
+      if (!(await drawer.isVisible().catch(() => false))) {
+        await app.getByRole("button", { name: "Column profiles and filters" }).click();
+        await drawer.waitFor({ state: "visible", timeout: 10_000 });
+      }
+      await drawer.getByRole("tab", { name: "Filters", exact: true }).click();
+      await drawer.locator(".filterSortPanel").first().getByRole("button", { name: "Clear all", exact: true }).click();
+      await waitFor(
+        () => {
+          const current = testing.activeSession();
+          return (
+            current?.sessionId === sessionId &&
+            current.viewState.filterModel.filters.length === 0 &&
+            current.viewState.filterModel.sort.length === 0 &&
+            current.metadata.filteredShape.rows === PACKAGED_SCREENSHOT_ROW_COUNT
+          );
+        },
+        30_000,
+        "the filter-result scene to restore the complete unfiltered file session"
+      );
+      assert.equal(await testing.synchronizePanel(sessionId), true);
+      await drawer.getByRole("tab", { name: "Column", exact: true }).click();
+    }
+  }
+}
+
+async function assertPackagedFilterResultGeometry(app: Locator, sidebar: Locator): Promise<void> {
+  await assertPackagedProductSidebarGeometry(sidebar);
+  const geometry = await app.evaluate((root) => {
+    type SceneRect = { bottom: number; left: number; right: number; top: number };
+    type SceneElement = {
+      readonly clientWidth: number;
+      readonly scrollWidth: number;
+      readonly textContent: string | null;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): SceneRect & { height: number; width: number };
+      querySelector(selector: string): SceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<SceneElement>;
+    };
+    const appRoot = root as unknown as SceneElement;
+    const layout = appRoot.querySelector(".layout");
+    const drawer = appRoot.querySelector('#openwrangler-insights-panel[aria-label="Column profiles and filters"]');
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    if (!layout || !drawer || !scroller || !rowHeader) {
+      throw new Error("The filter-result layout is incomplete.");
+    }
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const drawerBounds = drawer.getBoundingClientRect();
+    const dataLeft = rowHeader.getBoundingClientRect().right;
+    const visibleRight = Math.min(scrollerBounds.right, drawerBounds.left);
+    const visibleHeaders = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
+      const bounds = header.getBoundingClientRect();
+      return bounds.right > dataLeft + 1 && bounds.left < visibleRight - 1;
+    });
+    const bodyTop = Math.max(
+      ...Array.from(scroller.querySelectorAll("thead th")).map((header) => header.getBoundingClientRect().bottom)
+    );
+    const visibleRows = Array.from(scroller.querySelectorAll("tbody tr")).filter((row) => {
+      const bounds = row.getBoundingClientRect();
+      return bounds.bottom > bodyTop + 1 && bounds.top < scrollerBounds.bottom - 1;
+    });
+    const visibleCells = Array.from(scroller.querySelectorAll("tbody td")).filter((cell) => {
+      const bounds = cell.getBoundingClientRect();
+      return (
+        bounds.right > dataLeft + 1 &&
+        bounds.left < visibleRight - 1 &&
+        bounds.bottom > bodyTop + 1 &&
+        bounds.top < scrollerBounds.bottom - 1
+      );
+    });
+    const controls = Array.from(
+      drawer.querySelectorAll(
+        '.panelHeader button, .activeFilterGroup button, .rulePillButton, select[aria-label="Filter column"], select[aria-label="Predicate operator"]'
+      )
+    ).filter((control) => control.getBoundingClientRect().height > 0);
+    return {
+      layoutOverflow: layout.scrollWidth - layout.clientWidth,
+      drawerOverflow: drawer.scrollWidth - drawer.clientWidth,
+      drawerText: drawer.textContent?.replace(/\s+/gu, " ").trim() ?? "",
+      partialHeaders: visibleHeaders
+        .filter((header) => {
+          const bounds = header.getBoundingClientRect();
+          return bounds.left < dataLeft - 1 || bounds.right > visibleRight + 1;
+        })
+        .map((header) => header.getAttribute("data-column") ?? ""),
+      clippedTitles: visibleHeaders
+        .filter((header) => {
+          const title = header.querySelector(".columnTitle");
+          return Boolean(title && title.scrollWidth > title.clientWidth + 1);
+        })
+        .map((header) => header.getAttribute("data-column") ?? ""),
+      partialRows: visibleRows.filter((row) => {
+        const bounds = row.getBoundingClientRect();
+        return bounds.top < bodyTop - 1 || bounds.bottom > scrollerBounds.bottom + 1;
+      }).length,
+      clippedCells: visibleCells
+        .filter((cell) => cell.scrollWidth > cell.clientWidth + 1)
+        .map((cell) => cell.textContent?.replace(/\s+/gu, " ").trim() ?? ""),
+      clippedControls: controls
+        .filter((control) => {
+          const bounds = control.getBoundingClientRect();
+          return (
+            control.scrollWidth > control.clientWidth + 1 ||
+            bounds.left < drawerBounds.left - 1 ||
+            bounds.right > drawerBounds.right + 1
+          );
+        })
+        .map((control) => control.textContent?.replace(/\s+/gu, " ").trim() ?? "")
+    };
+  });
+  assert.ok(geometry.layoutOverflow <= 1, "The filter-result workspace must not overflow horizontally.");
+  assert.ok(geometry.drawerOverflow <= 1, "The filter-result editor must not overflow horizontally.");
+  for (const label of ["Filters / Sorts", "Active filters", "market", 'equals "DACH"']) {
+    assert.ok(geometry.drawerText.includes(label), `The filter-result editor must visibly include ${label}.`);
+  }
+  assert.deepEqual(geometry.partialHeaders, [], "The filter-result grid must show only complete columns.");
+  assert.deepEqual(geometry.clippedTitles, [], "The filter-result grid must not clip visible column names.");
+  assert.equal(geometry.partialRows, 0, "The filter-result grid must show only complete visible rows.");
+  assert.deepEqual(geometry.clippedCells, [], "The filter-result grid must not clip visible cell values.");
+  assert.deepEqual(geometry.clippedControls, [], "The filter-result editor must not clip clear/remove controls.");
 }
 
 async function capturePackagedSortPriorityScene(
@@ -11299,7 +11673,7 @@ async function fitPackagedWorkflowFormulaDraftGrid(
 
 async function arrangePackagedProductSidebar(
   workbench: Page,
-  scene: "explore" | "workflow" | "sidebar-overview" | "operation-catalog" | "inspection"
+  scene: "explore" | "filter-result" | "workflow" | "sidebar-overview" | "operation-catalog" | "inspection"
 ): Promise<Locator> {
   await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
   if ((process.env.OPEN_WRANGLER_TEST_EDITOR ?? "vscode") !== "cursor") {
@@ -11342,7 +11716,9 @@ async function arrangePackagedProductSidebar(
       ? new Set(["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"])
       : scene === "operation-catalog"
         ? new Set(["Operations"])
-        : new Set(["Filters / Sorts", "Cleaning Steps"]);
+        : scene === "filter-result"
+          ? new Set(["Filters / Sorts"])
+          : new Set(["Filters / Sorts", "Cleaning Steps"]);
   for (const [label, treeName] of sections) {
     const tree = sidebar.getByRole("tree", { name: treeName }).first();
     const isExpanded = await tree.isVisible().catch(() => false);

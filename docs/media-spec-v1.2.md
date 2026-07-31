@@ -49,8 +49,8 @@ authoritative; do not maintain a handwritten asset count.
    separately exported cleaned file. The harness proves both were written through the real product path and that
    the source bytes never changed.
 8. `gallery/notebook-variable-picker-detail.png` and `gallery/notebook-pandas-detail.png`: two pixel-exact details
-   linked to the complete 1280 × 600 notebook scenes. The first labels live variables by engine/type; the second
-   shows the portable inline Pandas table.
+   linked to complete packaged notebook scenes. The 1440 × 900 picker labels every fully visible live-variable row
+   by engine/type; the separate 1280 × 600 Pandas scene shows the portable inline table.
 9. `gallery/notebook-polars-detail.png`: a linked pixel-exact detail at full README content width. It keeps the
    engine badge, formula draft, added values, and generated code legible.
 10. `gallery/notebook-duckdb-detail.png`: a linked pixel-exact detail at full README content width. It keeps the
@@ -85,7 +85,12 @@ Fixture sizes visible in these scenes are evidence, never product limits.
 - the automatic-import override, complete wide-schema search, real script/data export outcomes, and a current
   Cursor workbench from the same candidate VSIX;
 - focused packaged-editor details for exact histogram interaction and editable compound-sort priority;
-- the real notebook variable picker with native engine/type labels before a live launch;
+- an applied `market equals "DACH"` file-filter result beside the matching native Filters / Sorts state, individual
+  remove control, and Clear all control;
+- the real 1440 × 900 notebook variable picker with native engine/type labels and no partially visible option row
+  before a live launch;
+- a separate real Jupyter picker filtered to `spark_classic_frame`, with complete **Viewing only**, **Full-frame
+  open (scan, index, cache)**, and **Requires PySpark 4.2.x** guidance, dismissed without opening the variable;
 - focused production-webview captures for a realistic by-example setup and its generalized result.
 
 Every caption states what the image proves and distinguishes fully supported editing, supported viewing, and
@@ -121,6 +126,14 @@ workflow named above.
 - Code Preview starts with `import polars as pl`, contains the market normalization and revenue projection, and
   contains no unused import.
 
+### Viewing filters
+
+- The deterministic orders fixture applies `market equals "DACH"` through the production filter drawer.
+- The grid reports the exact filtered row count, and every visible market cell is `DACH`.
+- The native **Filters / Sorts** view mirrors the same condition and keeps both individual removal and **Clear all**
+  controls visible without clipping.
+- Cleanup clears the filter through the real UI and restores the complete 100,000-row source view.
+
 ### Operation catalog and history
 
 - The catalog shows grouped operations and leaves the dataframe and plan unchanged.
@@ -137,6 +150,8 @@ workflow named above.
 - DuckDB shows Viewing and DuckDB badges, the native relation shape, a real filter, ordered two-key sort, visible
   profiles, and no cleaning or export controls.
 - PySpark shows Experimental, Viewing only, and PySpark badges, exact profiles, and no cleaning or export controls.
+- The separate released-Jupyter PySpark picker shows the complete viewing-mode, full-frame-open, and 4.2.x
+  prerequisite guidance on one fully visible `spark_classic_frame` row, then closes without selecting it.
 
 ## Reproduction and publication gate
 
