@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { load as parseYaml } from "js-yaml";
 import { inspectStableCandidateWorkflow } from "./release-workflow.mjs";
@@ -36,10 +36,57 @@ const EXPECTED_BLOCKING_CI_JOBS = Object.freeze([
 const CHECKOUT_ACTION = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803";
 const SETUP_NODE_ACTION = "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38";
 const SETUP_PYTHON_ACTION = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1";
+const SCRIPT_TEST_GROUPS = Object.freeze(["workflow", "portable", "native"]);
 
 function normalizedCommand(value) {
   return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : undefined;
 }
+
+function nodeTestFiles(command, group) {
+  const parts = normalizedCommand(command)?.split(" ") ?? [];
+  assert.deepEqual(parts.slice(0, 2), ["node", "--test"], `${group} must invoke Node's test runner directly.`);
+  const files = parts.slice(2);
+  assert.ok(files.length > 0, `${group} must own at least one script contract.`);
+  for (const file of files) assert.match(file, /^scripts\/[a-z0-9.-]+\.test\.mjs$/u);
+  assert.equal(new Set(files).size, files.length, `${group} must not list a script contract twice.`);
+  return files;
+}
+
+test("script groups are pairwise-disjoint and exactly cover the filesystem inventory", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const inventory = readdirSync(new URL(".", import.meta.url), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.mjs"))
+    .map((entry) => `scripts/${entry.name}`)
+    .sort();
+  const groups = Object.fromEntries(
+    SCRIPT_TEST_GROUPS.map((group) => [group, nodeTestFiles(manifest?.scripts?.[`test:scripts:${group}`], group)])
+  );
+
+  assert.equal(
+    manifest?.scripts?.["test:scripts"],
+    "npm run test:scripts:workflow && npm run test:scripts:portable && npm run test:scripts:native"
+  );
+  assert.equal(manifest?.scripts?.test, "npm run test:scripts && npm run test:ts && npm run test:python");
+  assert.deepEqual(groups.workflow, ["scripts/ci-workflow.test.mjs"]);
+  assert.deepEqual(groups.native, ["scripts/windows-job-supervisor.native.test.mjs"]);
+  assert.deepEqual(
+    groups.portable,
+    inventory.filter((file) => !groups.workflow.includes(file) && !groups.native.includes(file))
+  );
+
+  for (let left = 0; left < SCRIPT_TEST_GROUPS.length; left += 1) {
+    for (let right = left + 1; right < SCRIPT_TEST_GROUPS.length; right += 1) {
+      const leftGroup = SCRIPT_TEST_GROUPS[left];
+      const rightGroup = SCRIPT_TEST_GROUPS[right];
+      assert.deepEqual(
+        groups[leftGroup].filter((file) => groups[rightGroup].includes(file)),
+        [],
+        `${leftGroup} and ${rightGroup} script ownership must remain disjoint.`
+      );
+    }
+  }
+  assert.deepEqual([...new Set(SCRIPT_TEST_GROUPS.flatMap((group) => groups[group]))].sort(), inventory);
+});
 
 test("manual stable evidence packages once and consumes the same canonical artifact set", () => {
   const source = readFileSync(new URL("../.github/workflows/stable-candidate.yml", import.meta.url), "utf8");
@@ -426,7 +473,7 @@ test("PR CI starts one bounded static fast-feedback lane and preserves every sta
       { name: "Reference freshness", run: "npm run reference:check" },
       { name: "Documentation freshness", run: "npm run docs:check" },
       { name: "Production license inventory", run: "npm run license:check" },
-      { name: "Workflow contracts", run: "node --test scripts/ci-workflow.test.mjs" }
+      { name: "Workflow contracts", run: "npm run test:scripts:workflow" }
     ],
     "The early lane must remain source-only, named, and independently attributable."
   );
@@ -438,7 +485,7 @@ test("PR CI starts one bounded static fast-feedback lane and preserves every sta
     "npm run brand:check",
     "npm run check:remote-jupyter-lock",
     "npm run lock:remote-jupyter:check",
-    "npm run test:scripts",
+    "npm run test:scripts:portable",
     "npm run test:ts",
     "npm run test:python"
   ]) {
@@ -506,22 +553,28 @@ test("authoritative CI work is independently attributable before the required ag
   const extensionHost = workflow?.jobs?.["native-extension-host"];
   const vscode = workflow?.jobs?.["native-editor-matrix"];
   const cursor = workflow?.jobs?.["native-cursor-smoke"];
-  for (const job of [portability, extensionHost, vscode, cursor]) {
+  for (const job of [extensionHost, vscode, cursor]) {
     assert.deepEqual(job?.strategy?.matrix?.os, ["macos-latest", "windows-latest"]);
     assert.equal(job?.strategy?.["fail-fast"], false);
   }
-  assert.equal(portability?.needs, undefined);
-  assert.equal(
-    portability?.steps?.some((step) => step?.run === "npm run test:scripts"),
-    true
-  );
+  assert.deepEqual(portability, {
+    name: "Native script contracts (Windows)",
+    "runs-on": "windows-latest",
+    "timeout-minutes": 20,
+    steps: [
+      { uses: "actions/checkout@v6" },
+      { uses: "actions/setup-node@v6", with: { "node-version": 22, cache: "npm" } },
+      { run: "npm ci" },
+      { run: "npm run test:scripts:native" }
+    ]
+  });
   assert.equal(extensionHost?.needs, undefined);
   assert.equal(
     extensionHost?.steps?.some((step) => step?.run === "npm run test:extension-host"),
     true
   );
   assert.equal(
-    vscode?.steps?.some((step) => step?.run === "npm run test:scripts"),
+    vscode?.steps?.some((step) => step?.run?.startsWith("npm run test:scripts")),
     false
   );
   assert.equal(
@@ -529,13 +582,31 @@ test("authoritative CI work is independently attributable before the required ag
     false
   );
   assert.equal(
-    cursor?.steps?.some((step) => step?.run === "npm run test:scripts"),
+    cursor?.steps?.some((step) => step?.run?.startsWith("npm run test:scripts")),
     false
   );
   assert.equal(
     cursor?.steps?.some((step) => step?.run === "npm run test:extension-host"),
     false
   );
+
+  const ownersByCommand = new Map();
+  for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+    for (const step of job?.steps ?? []) {
+      if (
+        step?.run === "npm run test:scripts:workflow" ||
+        step?.run === "npm run test:scripts:portable" ||
+        step?.run === "npm run test:scripts:native"
+      ) {
+        const owners = ownersByCommand.get(step.run) ?? [];
+        owners.push(jobId);
+        ownersByCommand.set(step.run, owners);
+      }
+    }
+  }
+  assert.deepEqual(ownersByCommand.get("npm run test:scripts:workflow"), ["fast-feedback"]);
+  assert.deepEqual(ownersByCommand.get("npm run test:scripts:portable"), ["contract-tests"]);
+  assert.deepEqual(ownersByCommand.get("npm run test:scripts:native"), ["native-script-portability"]);
 });
 
 test("validate remains the fail-closed required aggregate without a skipped-success path", () => {

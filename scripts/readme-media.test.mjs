@@ -88,7 +88,7 @@ test("v1.2 README media preserves exact packaged-editor scenes and tells the com
   assert.equal(packageJson.scripts?.["compose:readme-media"], "node scripts/compose-readme-media.mjs");
   assert.equal(packageJson.scripts?.["verify:readme-media"], "node scripts/compose-readme-media.mjs --verify");
   assert.match(packageJson.scripts?.["test:webview-acceptance"] ?? "", /npm run verify:readme-media/u);
-  assert.match(packageJson.scripts?.["test:scripts"] ?? "", /scripts\/readme-media\.test\.mjs/u);
+  assert.match(packageJson.scripts?.["test:scripts:portable"] ?? "", /scripts\/readme-media\.test\.mjs/u);
   for (const asset of [
     "action-icon-dark.svg",
     "action-icon-light.svg",

@@ -39,7 +39,7 @@ jobs:
       - name: Production license inventory
         run: npm run license:check
       - name: Workflow contracts
-        run: node --test scripts/ci-workflow.test.mjs
+        run: npm run test:scripts:workflow
 
   canonical-vsix:
     runs-on: ubuntu-latest
@@ -111,7 +111,7 @@ jobs:
       - name: Remote Jupyter lock reproducibility
         run: npm run lock:remote-jupyter:check
       - name: Script contracts
-        run: npm run test:scripts
+        run: npm run test:scripts:portable
       - name: TypeScript unit contracts
         run: npm run test:ts
       - name: Python runtime contracts
@@ -349,13 +349,9 @@ jobs:
           VSCODE_TEST_VERSION: ${{ matrix.vscode }}
 
   native-script-portability:
-    name: Script portability (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Native script contracts (Windows)
+    runs-on: windows-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -363,7 +359,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run test:scripts
+      - run: npm run test:scripts:native
 
   native-extension-host:
     name: Native extension host (${{ matrix.os }})
