@@ -282,6 +282,10 @@ describe("packaged editor screenshot evidence", () => {
     expect(extensionHost).toContain(
       "The public notebook showcase cell must be visible before its media journey begins."
     );
+    expect(pickerCapture).toContain(
+      'waitForNotebookRendererButton(workbench, "orders_preview_df", "Open in Open Wrangler")'
+    );
+    expect(pickerCapture).toContain('scrollIntoView({ block: "center" })');
     expect(extensionHost).toContain("assertReleasedJupyterCaptureInternalMarkerHidden(workbench)");
     expect(extensionHost).not.toContain("Public notebook screenshots must retain the readable showcase source cell.");
     expect(extensionHost).toContain("const deadline = Date.now() + WORKBENCH_PLAYWRIGHT_TIMEOUT_MS;");

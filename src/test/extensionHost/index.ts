@@ -8233,7 +8233,6 @@ async function prepareReleasedJupyterScreenshotWorkbench(
       true,
       "The public notebook showcase cell must be visible before its media journey begins."
     );
-    await assertReleasedJupyterCaptureInternalMarkerHidden(workbench);
   }
   return async () => {
     for (const { configuration, key, value } of previousSettings.reverse()) {
@@ -8440,6 +8439,12 @@ async function captureReleasedJupyterVariablePicker(
   let picker: Locator | undefined;
   try {
     await workbench.setViewportSize(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT);
+    const previewButton = await waitForNotebookRendererButton(workbench, "orders_preview_df", "Open in Open Wrangler");
+    await previewButton.evaluate((element) => {
+      (element as { scrollIntoView(options: { block: string }): void }).scrollIntoView({ block: "center" });
+    });
+    await assertReleasedJupyterCaptureInternalMarkerHidden(workbench);
+    await previewButton.dispose();
     recordAcceptanceProgress("jupyter-allow:screenshot:variable-picker");
     picker = await activateReleasedNotebookVariableAction(workbench, notebook);
     const rows = await Promise.all(
