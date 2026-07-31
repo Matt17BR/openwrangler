@@ -4,8 +4,10 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   PACKAGED_FIRST_USE_ROW_COUNT,
+  PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
   PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
+  PACKAGED_PRODUCT_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_DATA_PROVENANCE,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
@@ -171,6 +173,8 @@ describe("packaged editor screenshot evidence", () => {
 
   it("uses a readable notebook README viewport without changing the full workbench capture", () => {
     expect(PACKAGED_SCREENSHOT_VIEWPORT).toEqual({ width: 1_920, height: 860 });
+    expect(PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT).toEqual({ width: 1_440, height: 900 });
+    expect(PACKAGED_PRODUCT_VIEWPORT).toEqual({ width: 1_440, height: 900 });
     expect(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT).toEqual({ width: 1_280, height: 700 });
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT).toEqual({ width: 1_280, height: 600 });
     expect(PACKAGED_PANDAS_NOTEBOOK_OUTPUT.width).toBe(PACKAGED_PANDAS_NOTEBOOK_VIEWPORT.width);
@@ -179,11 +183,22 @@ describe("packaged editor screenshot evidence", () => {
   });
 
   it("keeps README scene names explicit across file and notebook workflows", () => {
-    expect(PACKAGED_SCREENSHOT_SCENES).toEqual(["hero", "notebook-pandas", "notebook-polars", "notebook-pyspark"]);
+    expect(PACKAGED_SCREENSHOT_SCENES).toEqual([
+      "hero",
+      "explore",
+      "workflow",
+      "notebook-pandas",
+      "notebook-polars",
+      "notebook-duckdb",
+      "notebook-pyspark"
+    ]);
     expect(packagedScreenshotFileName("vscode", "hero", "dark")).toBe("vscode-hero-dark.png");
     expect(packagedScreenshotFileName("vscode", "hero", "light")).toBe("vscode-hero-light.png");
+    expect(packagedScreenshotFileName("vscode", "explore", "dark")).toBe("vscode-explore-dark.png");
+    expect(packagedScreenshotFileName("vscode", "workflow", "dark")).toBe("vscode-workflow-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pandas", "dark")).toBe("vscode-notebook-pandas-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-polars", "dark")).toBe("vscode-notebook-polars-dark.png");
+    expect(packagedScreenshotFileName("vscode", "notebook-duckdb", "dark")).toBe("vscode-notebook-duckdb-dark.png");
     expect(packagedScreenshotFileName("vscode", "notebook-pyspark", "dark")).toBe("vscode-notebook-pyspark-dark.png");
     expect(() => packagedScreenshotFileName("../outside", "hero", "dark")).toThrow(TypeError);
   });

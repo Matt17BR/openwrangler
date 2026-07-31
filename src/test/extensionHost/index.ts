@@ -81,6 +81,7 @@ import {
   PACKAGED_NOTEBOOK_WORKBENCH_VIEWPORT,
   PACKAGED_PANDAS_NOTEBOOK_OUTPUT,
   PACKAGED_PANDAS_NOTEBOOK_VIEWPORT,
+  PACKAGED_PRODUCT_VIEWPORT,
   PACKAGED_SCREENSHOT_COLUMNS,
   PACKAGED_SCREENSHOT_FEATURED_COLUMNS,
   PACKAGED_SCREENSHOT_ROW_COUNT,
@@ -8964,6 +8965,7 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     );
     rmSync(fixtureDirectory, { recursive: true, force: true });
   }
+  await capturePackagedFileWorkflowScenes(testing, outputDirectory);
   recordAcceptanceProgress("verify:screenshots:complete");
 
   async function captureTheme(
@@ -9465,6 +9467,908 @@ async function capturePackagedEditorScreenshots(testing: TestApi, outputDirector
     const preferred = candidates.find((theme) => /default|modern/i.test(theme.label ?? theme.id ?? ""));
     return preferred?.id ?? preferred?.label ?? candidates[0]?.id ?? candidates[0]?.label ?? fallback;
   }
+}
+
+async function capturePackagedFileWorkflowScenes(testing: TestApi, outputDirectory: string): Promise<void> {
+  if (process.platform !== "linux") return;
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+  assert.ok(workspace, "Packaged product scenes require the isolated acceptance workspace.");
+  assert.equal(workspace.scheme, "file", "Packaged product scenes require one local isolated workspace.");
+  const fixture = ensureDeterministicFirstUseFixture(workspace, "regional-orders.csv");
+  const sourceBytes = readFileSync(fixture.fsPath);
+  const workbench = vscode.workspace.getConfiguration("workbench");
+  const breadcrumbs = vscode.workspace.getConfiguration("breadcrumbs");
+  const windowConfiguration = vscode.workspace.getConfiguration("window");
+  const scm = vscode.workspace.getConfiguration("scm");
+  const originalTheme = workbench.get<string>("colorTheme");
+  const originalStatusBarVisible = workbench.get<boolean>("statusBar.visible");
+  const originalBreadcrumbsEnabled = breadcrumbs.get<boolean>("enabled");
+  const originalZoom = windowConfiguration.get<number>("zoomLevel");
+  const originalCommandCenter = windowConfiguration.get<boolean>("commandCenter");
+  const originalAutoDetectColorScheme = windowConfiguration.get<boolean>("autoDetectColorScheme");
+  const originalAutoDetectHighContrast = windowConfiguration.get<boolean>("autoDetectHighContrast");
+  const originalScmCountBadge = scm.get<string>("countBadge");
+  const editor = process.env.OPEN_WRANGLER_TEST_EDITOR ?? "editor";
+  const capturePage = await connectToEditorWorkbench();
+  const originalViewport = await capturePage.evaluate(() => {
+    const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+    return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+  });
+  let sessionId: string | undefined;
+
+  try {
+    recordAcceptanceProgress("verify:screenshots:file-scenes:prepare");
+    await capturePage.setViewportSize(PACKAGED_PRODUCT_VIEWPORT);
+    assert.deepEqual(
+      await capturePage.evaluate(() => {
+        const pageWindow = globalThis as unknown as { innerHeight: number; innerWidth: number };
+        return { width: pageWindow.innerWidth, height: pageWindow.innerHeight };
+      }),
+      PACKAGED_PRODUCT_VIEWPORT,
+      "Packaged file scenes require the standard 1440 by 900 product viewport."
+    );
+    await workbench.update(
+      "colorTheme",
+      contributedProductSceneTheme(editor, "vs-dark", "Default Dark Modern"),
+      vscode.ConfigurationTarget.Global
+    );
+    await workbench.update("statusBar.visible", true, vscode.ConfigurationTarget.Global);
+    await breadcrumbs.update("enabled", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("zoomLevel", 0, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("commandCenter", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectColorScheme", false, vscode.ConfigurationTarget.Global);
+    await windowConfiguration.update("autoDetectHighContrast", false, vscode.ConfigurationTarget.Global);
+    await scm.update("countBadge", "off", vscode.ConfigurationTarget.Global);
+    await waitFor(
+      () => vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark,
+      10_000,
+      "the packaged product-scene dark theme"
+    );
+    await closeVisibleWorkbenchPart(capturePage, ".part.auxiliarybar", [
+      "workbench.action.closeAuxiliaryBar",
+      "workbench.action.toggleAuxiliaryBar"
+    ]);
+    await closeVisibleWorkbenchPart(capturePage, ".part.panel", [
+      "workbench.action.closePanel",
+      "workbench.action.togglePanel"
+    ]);
+    await clearPackagedProductSceneTransientUi(capturePage);
+
+    recordAcceptanceProgress("verify:screenshots:file-scenes:open");
+    await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+    await vscode.commands.executeCommand("vscode.openWith", fixture, "openWrangler.viewer", vscode.ViewColumn.One);
+    await waitForAutomaticDelimitedImport(capturePage, testing, fixture, "verify:screenshots:file-scenes:import");
+    await waitFor(
+      () => testing.activeSession()?.metadata.source.uri === fixture.toString(),
+      SESSION_OPEN_ACCEPTANCE_TIMEOUT_MS,
+      "the deterministic first-use fixture to open for packaged product scenes"
+    );
+    const opened = testing.activeSession();
+    assert.ok(opened, "Packaged product scenes require one active first-use session.");
+    sessionId = opened.sessionId;
+    assert.equal(opened.metadata.backend, "polars");
+    assert.deepEqual(opened.metadata.shape, {
+      rows: PACKAGED_FIRST_USE_ROW_COUNT,
+      columns: PACKAGED_SCREENSHOT_COLUMNS.length
+    });
+    assert.deepEqual(opened.metadata.source.importOptions, {
+      delimiter: ";",
+      encoding: "utf-8",
+      quoteChar: '"',
+      hasHeader: true
+    });
+    await waitFor(
+      () => testing.panelHydrated(opened.sessionId),
+      OPEN_WRANGLER_WEBVIEW_DISCOVERY_TIMEOUT_MS,
+      "the first-use product-scene panel to hydrate"
+    );
+    assert.equal(
+      await testing.synchronizePanel(opened.sessionId),
+      true,
+      "The first-use product scene must synchronize with its exact renderer."
+    );
+
+    const revenue = columnReference(opened.metadata, "revenue");
+    let target = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
+    let app = await exactSessionApp(target.frame, opened.sessionId);
+    assert.ok(app, "The Explore scene requires the exact production Open Wrangler renderer.");
+    const columnSearch = app.getByRole("combobox", { name: "Column", exact: true });
+    await columnSearch.fill("revenue");
+    await app.getByRole("option", { name: "revenue, Number column", exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000
+    });
+    await columnSearch.press("Enter");
+    await waitFor(
+      () => testing.activeSession()?.viewState.selectedColumnId === revenue.id,
+      10_000,
+      "the Explore scene to select revenue through the production column search"
+    );
+    const profilesToggle = app.getByRole("button", { name: "Column profiles and filters" });
+    if ((await profilesToggle.getAttribute("aria-expanded")) !== "true") await profilesToggle.click();
+    let profiles = app.getByRole("complementary", { name: "Column profiles and filters" });
+    await profiles.waitFor({ state: "visible", timeout: 10_000 });
+    await waitForLocatorText(
+      profiles,
+      (text) => {
+        const normalized = text.toLowerCase();
+        return (
+          !normalized.includes("profiling selected column") &&
+          ["exact statistics", "min", "max", "mean", "median", "distribution"].every((label) =>
+            normalized.includes(label)
+          )
+        );
+      },
+      30_000,
+      "the initial complete Explore revenue profile"
+    );
+    await profiles.getByRole("tab", { name: "Dataset", exact: true }).click();
+    await waitFor(
+      () => testing.activeSession()?.metadata.stats !== undefined,
+      30_000,
+      "the Explore sidebar to receive exact dataset statistics"
+    );
+    await profiles.getByRole("tab", { name: "Column", exact: true }).click();
+    await waitForLocatorText(
+      profiles,
+      (text) => {
+        const normalized = text.toLowerCase();
+        return (
+          !normalized.includes("profiling selected column") &&
+          ["exact statistics", "min", "max", "mean", "median", "distribution"].every((label) =>
+            normalized.includes(label)
+          )
+        );
+      },
+      30_000,
+      "the complete Explore revenue profile"
+    );
+    const exploreSidebar = await arrangePackagedProductSidebar(capturePage, "explore");
+    await fitPackagedProductSceneGrid(testing, capturePage, opened.sessionId, revenue.id);
+    await assertPackagedExploreScene(capturePage, testing, opened.sessionId, exploreSidebar);
+    await clearPackagedProductSceneTransientUi(capturePage);
+    recordAcceptanceProgress("verify:screenshots:file-scenes:explore");
+    mkdirSync(outputDirectory, { recursive: true });
+    await captureWorkbenchScreenshot(
+      capturePage,
+      path.resolve(outputDirectory, packagedScreenshotFileName(editor, "explore", "dark"))
+    );
+
+    recordAcceptanceProgress("verify:screenshots:file-scenes:workflow");
+    target = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
+    app = await exactSessionApp(target.frame, opened.sessionId);
+    assert.ok(app, "The Workflow scene requires the exact production Open Wrangler renderer.");
+    profiles = app.getByRole("complementary", { name: "Column profiles and filters" });
+    await profiles.getByRole("button", { name: "Close panel" }).click();
+    await profiles.waitFor({ state: "hidden", timeout: 10_000 });
+    await fitPackagedProductSceneGrid(testing, capturePage, opened.sessionId, revenue.id);
+    target = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
+    app = await exactSessionApp(target.frame, opened.sessionId);
+    assert.ok(app, "The Workflow scene must retain its renderer before adding its first cleaning step.");
+    await previewUppercaseMarket(app, testing, "market_upper");
+    target = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
+    app = await exactSessionApp(target.frame, opened.sessionId);
+    assert.ok(app, "The Workflow scene must retain its renderer while applying its first cleaning step.");
+    await app
+      .getByRole("region", { name: "Draft review" })
+      .getByRole("button", { name: "Apply step", exact: true })
+      .click();
+    await waitFor(
+      () => {
+        const active = testing.activeSession();
+        return (
+          active?.metadata.steps.length === 1 &&
+          active.metadata.draftStep === undefined &&
+          active.metadata.schema.some((column) => column.name === "market_upper")
+        );
+      },
+      30_000,
+      "the Workflow scene's applied uppercase step"
+    );
+    await addPackagedProductSceneSorts(testing, capturePage, opened.sessionId);
+    target = await waitForOpenWranglerGridTarget(capturePage, testing, opened.sessionId);
+    app = await exactSessionApp(target.frame, opened.sessionId);
+    assert.ok(app, "The Workflow scene must retain its renderer after adding ordered sorts.");
+    await previewUppercaseMarket(app, testing, "market_label");
+    await fitPackagedWorkflowDraftGrid(testing, capturePage, opened.sessionId);
+    const codePreview = await waitForCodePreview(capturePage, "market_label");
+    const visibleCode = await codePreview.innerText();
+    assert.match(visibleCode, /import polars as pl/u);
+    assert.match(visibleCode, /market_upper/u);
+    assert.match(visibleCode, /market_label/u);
+    const workflowSidebar = await arrangePackagedProductSidebar(capturePage, "workflow");
+    await assertPackagedWorkflowScene(capturePage, testing, opened.sessionId, workflowSidebar, codePreview);
+    await clearPackagedProductSceneTransientUi(capturePage);
+    await captureWorkbenchScreenshot(
+      capturePage,
+      path.resolve(outputDirectory, packagedScreenshotFileName(editor, "workflow", "dark"))
+    );
+    assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Product-scene capture must not modify its source.");
+  } finally {
+    try {
+      if (sessionId && testing.diagnostics().sessionCount > 0) {
+        await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+        await waitFor(
+          () => testing.diagnostics().sessionCount === 0 && !testing.runtimeRunning(),
+          15_000,
+          "the packaged product-scene session and runtime to close"
+        );
+      }
+      assert.deepEqual(readFileSync(fixture.fsPath), sourceBytes, "Product-scene cleanup must preserve its source.");
+    } finally {
+      await workbench.update("colorTheme", originalTheme, vscode.ConfigurationTarget.Global);
+      await workbench.update("statusBar.visible", originalStatusBarVisible, vscode.ConfigurationTarget.Global);
+      await breadcrumbs.update("enabled", originalBreadcrumbsEnabled, vscode.ConfigurationTarget.Global);
+      await windowConfiguration.update("zoomLevel", originalZoom, vscode.ConfigurationTarget.Global);
+      await windowConfiguration.update("commandCenter", originalCommandCenter, vscode.ConfigurationTarget.Global);
+      await windowConfiguration.update(
+        "autoDetectColorScheme",
+        originalAutoDetectColorScheme,
+        vscode.ConfigurationTarget.Global
+      );
+      await windowConfiguration.update(
+        "autoDetectHighContrast",
+        originalAutoDetectHighContrast,
+        vscode.ConfigurationTarget.Global
+      );
+      await scm.update("countBadge", originalScmCountBadge, vscode.ConfigurationTarget.Global);
+      await capturePage.setViewportSize(originalViewport);
+    }
+  }
+}
+
+function contributedProductSceneTheme(editor: string, uiTheme: string, fallback: string): string {
+  const themes = vscode.extensions.all.flatMap(
+    (extension) =>
+      (extension.packageJSON.contributes?.themes ?? []) as Array<{
+        id?: string;
+        label?: string;
+        uiTheme?: string;
+      }>
+  );
+  const candidates = themes.filter((theme) => theme.uiTheme === uiTheme);
+  if (editor === "cursor") {
+    const cursorTheme = candidates.find((theme) => theme.label === "Cursor Dark");
+    if (cursorTheme) return cursorTheme.id ?? cursorTheme.label ?? fallback;
+  }
+  const preferred = candidates.find((theme) => /default|modern/i.test(theme.label ?? theme.id ?? ""));
+  return preferred?.id ?? preferred?.label ?? candidates[0]?.id ?? candidates[0]?.label ?? fallback;
+}
+
+async function fitPackagedProductSceneGrid(
+  testing: TestApi,
+  workbench: Page,
+  sessionId: string,
+  selectedColumnId: string
+): Promise<void> {
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "Product-scene grid fitting requires the exact active session.");
+  assert.ok(active, "Product-scene grid fitting requires one active dataframe session.");
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "Product-scene grid fitting requires the exact production renderer.");
+  const dimensions = await app.locator('[data-testid="data-grid-scroller"]').evaluate((scroller) => {
+    const rowHeader = scroller.querySelector("th.rowHeader");
+    if (!rowHeader) throw new Error("The product-scene row header is unavailable.");
+    const drawer = scroller.ownerDocument.querySelector(
+      '#openwrangler-insights-panel[aria-label="Column profiles and filters"]'
+    );
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const drawerBounds = drawer?.getBoundingClientRect();
+    const visibleRight =
+      drawerBounds &&
+      drawerBounds.width > 0 &&
+      drawerBounds.left > scrollerBounds.left &&
+      drawerBounds.left < scrollerBounds.right
+        ? drawerBounds.left
+        : scrollerBounds.right;
+    return {
+      visibleWidth: visibleRight - scrollerBounds.left,
+      rowHeaderWidth: rowHeader.getBoundingClientRect().width
+    };
+  });
+  const available = Math.floor(dimensions.visibleWidth - dimensions.rowHeaderWidth);
+  assert.ok(available >= 510, "The 1440-pixel product viewport must fit three complete featured columns.");
+  const orderWidth = Math.max(160, Math.floor(available * 0.28));
+  const marketWidth = Math.max(150, Math.floor(available * 0.28));
+  const revenueWidth = available - orderWidth - marketWidth;
+  assert.ok(revenueWidth >= 200, "The product viewport must retain a readable revenue profile column.");
+  const widthsByName = {
+    order_id: orderWidth,
+    market: marketWidth,
+    revenue: revenueWidth
+  } as const;
+  let columnWidths = Object.fromEntries(
+    active.metadata.schema
+      .filter((column) => column.name in widthsByName)
+      .map((column) => [column.id, widthsByName[column.name as keyof typeof widthsByName]])
+  );
+  await testing.updateViewState(sessionId, {
+    ...active.viewState,
+    columnWidths,
+    selectedColumnId,
+    viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The fitted product grid must synchronize with its exact renderer."
+  );
+  const revenue = columnReference(active.metadata, "revenue");
+  const trailingGap = await app.evaluate((root, columnName) => {
+    type ProductSceneElement = {
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): { left: number; right: number; width: number };
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const appRoot = root as unknown as ProductSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const drawer = appRoot.querySelector('#openwrangler-insights-panel[aria-label="Column profiles and filters"]');
+    const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+      (candidate) => candidate.getAttribute("data-column") === columnName
+    );
+    if (!scroller || !header) throw new Error("The product-scene grid fit geometry is incomplete.");
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const drawerBounds = drawer?.getBoundingClientRect();
+    const visibleRight =
+      drawerBounds &&
+      drawerBounds.width > 0 &&
+      drawerBounds.left > scrollerBounds.left &&
+      drawerBounds.left < scrollerBounds.right
+        ? drawerBounds.left
+        : scrollerBounds.right;
+    return visibleRight - header.getBoundingClientRect().right;
+  }, revenue.name);
+  if (Math.abs(trailingGap) > 1) {
+    const adjusted = (columnWidths[revenue.id] ?? revenueWidth) + Math.floor(trailingGap);
+    assert.ok(adjusted >= 200 && adjusted <= 640, "The fitted revenue column must remain readable.");
+    columnWidths = { ...columnWidths, [revenue.id]: adjusted };
+    await testing.updateViewState(sessionId, {
+      ...testing.activeSession()!.viewState,
+      columnWidths,
+      selectedColumnId,
+      viewport: { firstVisibleRow: 0, scrollLeft: 0 }
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The final product grid width adjustment must synchronize with its exact renderer."
+    );
+  }
+}
+
+async function addPackagedProductSceneSorts(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  for (const column of ["market", "revenue"] as const) {
+    const app = await exactSessionApp(target.frame, sessionId);
+    assert.ok(app, `The ${column} product-scene sort requires the exact production renderer.`);
+    const search = app.getByRole("combobox", { name: "Column", exact: true });
+    await search.fill(column);
+    await app
+      .getByRole("option", { name: new RegExp(`^${column},`, "u") })
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
+    await search.press("Enter");
+    await waitFor(
+      () =>
+        testing.activeSession()?.viewState.selectedColumnId ===
+        columnReference(testing.activeSession()!.metadata, column).id,
+      10_000,
+      `column search to reveal ${column} for the product-scene sort`
+    );
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+    const frame = target.frame;
+    const menu = frame.locator(`th[data-column="${column}"] details.columnMenu`).first();
+    await menu.waitFor({ state: "visible", timeout: 10_000 });
+    await menu.getByLabel(`Column actions for ${column}`).click();
+    await menu.getByRole("button", { name: "Sort descending", exact: true }).click();
+    assert.equal(
+      await menu.evaluate((element) => element.hasAttribute("open")),
+      false,
+      `The ${column} quick-sort menu must close before capture.`
+    );
+    await waitFor(
+      () => testing.activeSession()?.viewState.filterModel.sort[0]?.column === column,
+      10_000,
+      `${column} to become the newest product-scene sort`
+    );
+    target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  }
+  assert.deepEqual(testing.activeSession()?.viewState.filterModel.sort, [
+    { column: "revenue", direction: "desc", nulls: "last" },
+    { column: "market", direction: "desc", nulls: "last" }
+  ]);
+}
+
+async function fitPackagedWorkflowDraftGrid(testing: TestApi, workbench: Page, sessionId: string): Promise<void> {
+  let target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  let app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The Workflow draft fit requires the exact production renderer.");
+  const search = app.getByRole("combobox", { name: "Column", exact: true });
+  await search.fill("market_label");
+  await app
+    .getByRole("option", { name: /^market_label,/u })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await search.press("Enter");
+  const active = testing.activeSession();
+  assert.equal(active?.sessionId, sessionId, "The Workflow draft fit requires the exact active session.");
+  assert.ok(active, "The Workflow draft fit requires one active dataframe session.");
+  const marketLabel = columnReference(active.metadata, "market_label");
+  await waitFor(
+    () =>
+      testing.activeSession()?.viewState.selectedColumnId === marketLabel.id &&
+      (testing.activeSession()?.viewState.viewport.scrollLeft ?? 0) > 0,
+    10_000,
+    "column search to reveal the Workflow draft output"
+  );
+  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The Workflow draft fit must retain the exact production renderer.");
+  const dimensions = await app.locator('[data-testid="data-grid-scroller"]').evaluate((scroller) => {
+    const rowHeader = scroller.querySelector("th.rowHeader");
+    if (!rowHeader) throw new Error("The Workflow draft row header is unavailable.");
+    return {
+      clientWidth: scroller.clientWidth,
+      rowHeaderWidth: rowHeader.getBoundingClientRect().width
+    };
+  });
+  const available = Math.floor(dimensions.clientWidth - dimensions.rowHeaderWidth);
+  assert.ok(available >= 840, "The 1440-pixel Workflow viewport must fit five complete comparison columns.");
+  const names = ["priority", "renewal_date", "account_note", "market_upper", "market_label"] as const;
+  const widths = [
+    Math.floor(available * 0.16),
+    Math.floor(available * 0.19),
+    Math.floor(available * 0.24),
+    Math.floor(available * 0.19)
+  ];
+  widths.push(available - widths.reduce((sum, width) => sum + width, 0));
+  assert.ok(
+    widths.every((width) => width >= 140),
+    "Every Workflow comparison column must remain readable."
+  );
+  const current = testing.activeSession()!;
+  let columnWidths = {
+    ...current.viewState.columnWidths,
+    ...Object.fromEntries(names.map((name, index) => [columnReference(current.metadata, name).id, widths[index]!]))
+  };
+  await testing.updateViewState(sessionId, {
+    ...current.viewState,
+    columnWidths,
+    selectedColumnId: marketLabel.id
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The fitted Workflow draft grid must synchronize with its exact renderer."
+  );
+  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The Workflow draft viewport alignment requires the exact production renderer.");
+  const alignment = await app.evaluate((root, firstColumnName) => {
+    type ProductSceneRect = { left: number; width: number };
+    type ProductSceneElement = {
+      readonly scrollLeft: number;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): ProductSceneRect;
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const appRoot = root as unknown as ProductSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    const firstHeader = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+      (candidate) => candidate.getAttribute("data-column") === firstColumnName
+    );
+    if (!scroller || !rowHeader || !firstHeader) {
+      throw new Error("The Workflow draft viewport-alignment geometry is incomplete.");
+    }
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const firstBounds = firstHeader.getBoundingClientRect();
+    return {
+      currentScrollLeft: scroller.scrollLeft,
+      offset: firstBounds.left - (scrollerBounds.left + rowHeader.getBoundingClientRect().width)
+    };
+  }, names[0]);
+  const alignedScrollLeft = Math.max(0, Math.round(alignment.currentScrollLeft + alignment.offset));
+  await testing.updateViewState(sessionId, {
+    ...testing.activeSession()!.viewState,
+    columnWidths,
+    selectedColumnId: marketLabel.id,
+    viewport: {
+      ...testing.activeSession()!.viewState.viewport,
+      scrollLeft: alignedScrollLeft
+    }
+  });
+  assert.equal(
+    await testing.synchronizePanel(sessionId),
+    true,
+    "The aligned Workflow draft viewport must synchronize with its exact renderer."
+  );
+  target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "The final Workflow draft width adjustment requires the exact production renderer.");
+  const trailingGap = await app.evaluate((root, columnName) => {
+    type ProductSceneElement = {
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): { right: number };
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const appRoot = root as unknown as ProductSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const header = Array.from(appRoot.querySelectorAll("th[data-column]")).find(
+      (candidate) => candidate.getAttribute("data-column") === columnName
+    );
+    if (!scroller || !header) throw new Error("The Workflow draft fit geometry is incomplete.");
+    return scroller.getBoundingClientRect().right - header.getBoundingClientRect().right;
+  }, marketLabel.name);
+  if (Math.abs(trailingGap) > 1) {
+    const adjusted = (columnWidths[marketLabel.id] ?? widths.at(-1)!) + Math.floor(trailingGap);
+    assert.ok(adjusted >= 140 && adjusted <= 640, "The fitted Workflow output column must remain readable.");
+    columnWidths = { ...columnWidths, [marketLabel.id]: adjusted };
+    await testing.updateViewState(sessionId, {
+      ...testing.activeSession()!.viewState,
+      columnWidths,
+      selectedColumnId: marketLabel.id
+    });
+    assert.equal(
+      await testing.synchronizePanel(sessionId),
+      true,
+      "The final Workflow output-column width adjustment must synchronize with its exact renderer."
+    );
+  }
+}
+
+async function arrangePackagedProductSidebar(workbench: Page, scene: "explore" | "workflow"): Promise<Locator> {
+  await vscode.commands.executeCommand("workbench.view.extension.openWrangler");
+  const activityAction = workbench.getByRole("tab", { name: /Open Wrangler/iu }).first();
+  await activityAction.waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(
+    await activityAction.evaluate((element) => {
+      const selected = element.getAttribute("aria-selected") ?? element.getAttribute("aria-checked");
+      return selected === "true" || element.getAttribute("class")?.includes("checked") === true;
+    }),
+    true,
+    "The packaged product scene must visibly select the native Open Wrangler Activity Bar item."
+  );
+  const sidebar = workbench.locator(".part.sidebar:visible").first();
+  await sidebar.waitFor({ state: "visible", timeout: 10_000 });
+  await ensurePackagedProductSidebarWidth(workbench, sidebar);
+  const sections = [
+    ["Operations", /Operations/u],
+    ["Summary", /Summary/u],
+    ["Filters / Sorts", /Filters\s*\/\s*Sorts/u],
+    ["Cleaning Steps", /Cleaning Steps/u]
+  ] as const;
+  for (const [label] of sections) {
+    await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+  }
+  const expanded =
+    scene === "explore"
+      ? new Set(["Operations", "Summary", "Filters / Sorts", "Cleaning Steps"])
+      : new Set(["Filters / Sorts", "Cleaning Steps"]);
+  for (const [label, treeName] of sections) {
+    const tree = sidebar.getByRole("tree", { name: treeName }).first();
+    const isExpanded = await tree.isVisible().catch(() => false);
+    if (isExpanded !== expanded.has(label)) {
+      await sidebar.getByText(label, { exact: true }).first().click();
+      if (expanded.has(label)) await tree.waitFor({ state: "visible", timeout: 10_000 });
+      else await tree.waitFor({ state: "hidden", timeout: 10_000 });
+    }
+  }
+  for (const [label] of sections) {
+    await sidebar.getByText(label, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+  }
+  return sidebar;
+}
+
+async function ensurePackagedProductSidebarWidth(workbench: Page, sidebar: Locator): Promise<void> {
+  const targetWidth = 400;
+  const initial = await sidebar.boundingBox();
+  assert.ok(initial, "The packaged product scene requires measurable native sidebar geometry.");
+  if (initial.width >= targetWidth - 2) return;
+  const boundaryX = Math.floor(initial.x + initial.width);
+  const boundaryY = Math.floor(initial.y + initial.height / 2);
+  await workbench.mouse.move(boundaryX, boundaryY);
+  await workbench.mouse.down();
+  await workbench.mouse.move(Math.floor(initial.x + targetWidth), boundaryY, { steps: 8 });
+  await workbench.mouse.up();
+  assert.equal(
+    await pollAcceptanceCondition(
+      async () => {
+        const current = await sidebar.boundingBox();
+        return Boolean(current && current.width >= targetWidth - 2);
+      },
+      { timeoutMs: 3_000, intervalMs: 50 }
+    ),
+    true,
+    "The packaged product scene must widen the native sidebar enough to show complete descriptions."
+  );
+}
+
+async function assertPackagedExploreScene(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  sidebar: Locator
+): Promise<void> {
+  const summaryTree = sidebar.getByRole("tree", { name: /Summary/u }).first();
+  const operationsTree = sidebar.getByRole("tree", { name: /Operations/u }).first();
+  const filtersTree = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+  const stepsTree = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
+  await operationsTree.getByRole("treeitem").first().waitFor({ state: "visible", timeout: 10_000 });
+  await filtersTree.getByRole("treeitem", { name: /No filters or sorts/u }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await stepsTree.getByRole("treeitem", { name: /Original data/u }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await summaryTree.waitFor({ state: "visible", timeout: 10_000 });
+  for (const expected of [
+    /regional-orders\.csv, polars · editing/iu,
+    /Shape, 10,000 × 15/u,
+    /Columns, 15/u,
+    /Selected column, revenue/u,
+    /^Missing cells, (?!Profiling)/u,
+    /^Duplicate rows, (?!Profiling)/u
+  ]) {
+    await summaryTree.getByRole("treeitem", { name: expected }).waitFor({ state: "visible", timeout: 10_000 });
+  }
+  await assertPackagedProductSidebarGeometry(sidebar);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "Explore geometry requires the exact production renderer.");
+  const measurement = await app.evaluate((root) => {
+    type ProductSceneRect = { left: number; right: number; width: number };
+    type ProductSceneElement = {
+      readonly clientWidth: number;
+      readonly scrollLeft: number;
+      readonly scrollWidth: number;
+      readonly textContent: string | null;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): ProductSceneRect;
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const appRoot = root as unknown as ProductSceneElement;
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const drawer = appRoot.querySelector('#openwrangler-insights-panel[aria-label="Column profiles and filters"]');
+    const layout = appRoot.querySelector(".layout");
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    if (!scroller || !drawer || !layout || !rowHeader) {
+      throw new Error("The Explore product layout is incomplete.");
+    }
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const dataLeft = rowHeader.getBoundingClientRect().right;
+    const drawerBounds = drawer.getBoundingClientRect();
+    const visibleRight =
+      drawerBounds.width > 0 && drawerBounds.left > scrollerBounds.left && drawerBounds.left < scrollerBounds.right
+        ? drawerBounds.left
+        : scrollerBounds.right;
+    const visibleHeaders = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
+      const bounds = header.getBoundingClientRect();
+      return bounds.right > dataLeft + 1 && bounds.left < visibleRight - 1;
+    });
+    return {
+      layoutOverflow: layout.scrollWidth - layout.clientWidth,
+      drawerOverflow: drawer.scrollWidth - drawer.clientWidth,
+      drawerText: drawer.textContent ?? "",
+      gridOverflow: scroller.scrollWidth - scroller.clientWidth,
+      gridScrollLeft: scroller.scrollLeft,
+      partialHeaders: visibleHeaders
+        .filter((header) => {
+          const bounds = header.getBoundingClientRect();
+          return bounds.left < dataLeft - 1 || bounds.right > visibleRight + 1;
+        })
+        .map((header) => header.getAttribute("data-column") ?? ""),
+      clippedTitles: visibleHeaders
+        .filter((header) => {
+          const title = header.querySelector(".columnTitle");
+          return Boolean(title && title.scrollWidth > title.clientWidth + 1);
+        })
+        .map((header) => header.getAttribute("data-column") ?? ""),
+      visibleColumns: visibleHeaders.map((header) => header.getAttribute("data-column") ?? "")
+    };
+  });
+  assert.ok(measurement.gridOverflow > 0, "Explore must retain real horizontal grid virtualization.");
+  assert.ok(measurement.gridScrollLeft <= 1, "Explore must begin at the first complete grid column.");
+  assert.ok(measurement.layoutOverflow <= 1, "Explore must not overflow the production workspace.");
+  assert.ok(measurement.drawerOverflow <= 1, "Explore Column profiles must not clip horizontally.");
+  assert.deepEqual(measurement.partialHeaders, []);
+  assert.deepEqual(measurement.clippedTitles, []);
+  assert.deepEqual(measurement.visibleColumns, ["order_id", "market", "revenue"]);
+  for (const label of ["Exact statistics", "Min", "Max", "Mean", "Median", "Distribution"]) {
+    assert.ok(measurement.drawerText.includes(label), `Explore Column profiles must show ${label}.`);
+  }
+  assert.equal(
+    await workbench.locator(".part.panel:visible").count(),
+    0,
+    "Explore must keep the native bottom panel closed."
+  );
+}
+
+async function assertPackagedWorkflowScene(
+  workbench: Page,
+  testing: TestApi,
+  sessionId: string,
+  sidebar: Locator,
+  codePreview: Locator
+): Promise<void> {
+  assert.deepEqual(testing.activeSession()?.viewState.filterModel.sort, [
+    { column: "revenue", direction: "desc", nulls: "last" },
+    { column: "market", direction: "desc", nulls: "last" }
+  ]);
+  const filters = sidebar.getByRole("tree", { name: /Filters\s*\/\s*Sorts/u }).first();
+  const steps = sidebar.getByRole("tree", { name: /Cleaning Steps/u }).first();
+  await filters.getByRole("treeitem", { name: /^revenue, Priority 1 · Descending · nulls last/u }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  await filters.getByRole("treeitem", { name: /^market, Priority 2 · Descending · nulls last/u }).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  for (const expected of [/Original data/u, /1\. Uppercase/u, /Draft · Uppercase/u]) {
+    await steps.getByRole("treeitem", { name: expected }).first().waitFor({ state: "visible", timeout: 10_000 });
+  }
+  await assertPackagedProductSidebarGeometry(sidebar);
+  const target = await waitForOpenWranglerGridTarget(workbench, testing, sessionId);
+  const app = await exactSessionApp(target.frame, sessionId);
+  assert.ok(app, "Workflow geometry requires the exact production renderer.");
+  const review = app.getByRole("region", { name: "Draft review" });
+  await review.waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByText("Uppercase", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await review
+    .locator('[aria-label="Data diff summary"]')
+    .getByText("+1 column", { exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByRole("button", { name: "Discard", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  await review.getByRole("button", { name: "Apply step", exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+  assert.equal(testing.activeSession()?.metadata.steps.length, 1);
+  assert.equal(testing.activeSession()?.metadata.draftStep?.kind, "upperText");
+  const measurement = await app.evaluate((root) => {
+    type ProductSceneRect = { bottom: number; height: number; left: number; right: number; top: number; width: number };
+    type ProductSceneElement = {
+      readonly clientWidth: number;
+      readonly scrollLeft: number;
+      readonly scrollWidth: number;
+      getAttribute(name: string): string | null;
+      getBoundingClientRect(): ProductSceneRect;
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const appRoot = root as unknown as ProductSceneElement;
+    const layout = appRoot.querySelector(".layout");
+    const review = appRoot.querySelector('.draftReview[aria-label="Draft review"]');
+    const scroller = appRoot.querySelector('[data-testid="data-grid-scroller"]');
+    const grid = scroller?.querySelector('[role="grid"]');
+    const rowHeader = scroller?.querySelector("th.rowHeader");
+    if (!layout || !review || !scroller || !grid || !rowHeader) {
+      throw new Error("The Workflow product layout is incomplete.");
+    }
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const dataLeft = rowHeader.getBoundingClientRect().right;
+    const visibleHeaders = Array.from(appRoot.querySelectorAll("th[data-column]")).filter((header) => {
+      const bounds = header.getBoundingClientRect();
+      return bounds.right > dataLeft + 1 && bounds.left < scrollerBounds.right - 1;
+    });
+    return {
+      layoutOverflow: layout.scrollWidth - layout.clientWidth,
+      reviewOverflow: review.scrollWidth - review.clientWidth,
+      reviewBounds: review.getBoundingClientRect(),
+      appBounds: appRoot.getBoundingClientRect(),
+      gridVisible: grid.getBoundingClientRect().height > 0,
+      gridScrollLeft: scroller.scrollLeft,
+      partialHeaders: visibleHeaders
+        .filter((header) => {
+          const bounds = header.getBoundingClientRect();
+          return bounds.left < dataLeft - 1 || bounds.right > scrollerBounds.right + 1;
+        })
+        .map((header) => header.getAttribute("data-column") ?? ""),
+      clippedTitles: visibleHeaders
+        .filter((header) => {
+          const title = header.querySelector(".columnTitle");
+          return Boolean(title && title.scrollWidth > title.clientWidth + 1);
+        })
+        .map((header) => header.getAttribute("data-column") ?? ""),
+      visibleColumns: visibleHeaders.map((header) => header.getAttribute("data-column") ?? "")
+    };
+  });
+  assert.ok(measurement.layoutOverflow <= 1, "Workflow must not overflow the production workspace.");
+  assert.ok(measurement.reviewOverflow <= 1, "Workflow Draft review must not clip controls or diff labels.");
+  assert.ok(measurement.reviewBounds.left >= measurement.appBounds.left - 1);
+  assert.ok(measurement.reviewBounds.right <= measurement.appBounds.right + 1);
+  assert.equal(measurement.gridVisible, true);
+  assert.ok(measurement.gridScrollLeft > 0, "Workflow must reveal the draft's added columns.");
+  assert.deepEqual(measurement.partialHeaders, []);
+  assert.deepEqual(measurement.clippedTitles, []);
+  assert.ok(measurement.visibleColumns.includes("market_upper"));
+  assert.ok(measurement.visibleColumns.includes("market_label"));
+  const code = await codePreview.innerText();
+  assert.match(code, /import polars as pl/u);
+  assert.match(code, /market_upper/u);
+  assert.match(code, /market_label/u);
+  assert.equal(await codePreview.isVisible(), true, "Workflow must keep the generated Polars code visible.");
+  const codeBounds = await codePreview.boundingBox();
+  assert.ok(codeBounds && codeBounds.width > 0 && codeBounds.height > 0, "Workflow Code Preview must remain legible.");
+  assert.equal(await workbench.locator(".part.panel:visible").count(), 1, "Workflow must keep its native panel open.");
+}
+
+async function assertPackagedProductSidebarGeometry(sidebar: Locator): Promise<void> {
+  const geometry = await sidebar.evaluate((root) => {
+    type ProductSceneRect = { left: number; right: number };
+    type ProductSceneElement = {
+      readonly clientWidth: number;
+      readonly scrollWidth: number;
+      readonly textContent: string | null;
+      getBoundingClientRect(): ProductSceneRect & { height: number };
+      querySelector(selector: string): ProductSceneElement | null;
+      querySelectorAll(selector: string): ArrayLike<ProductSceneElement>;
+    };
+    const sidebarRoot = root as unknown as ProductSceneElement;
+    const bounds = sidebarRoot.getBoundingClientRect();
+    const headings = Array.from(sidebarRoot.querySelectorAll(".pane-header")).filter(
+      (heading) => heading.getBoundingClientRect().height > 0
+    );
+    const treeLabels = Array.from(
+      sidebarRoot.querySelectorAll(".monaco-list-row .label-name, .monaco-list-row .label-description")
+    ).filter(
+      (label) => label.getBoundingClientRect().height > 0 && Boolean(label.textContent?.replace(/\s+/gu, " ").trim())
+    );
+    return {
+      headingCount: headings.length,
+      clippedHeadings: headings
+        .filter((heading) => {
+          const item = heading.querySelector(".title");
+          const itemBounds = item?.getBoundingClientRect();
+          return Boolean(
+            !item ||
+            !itemBounds ||
+            item.scrollWidth > item.clientWidth + 1 ||
+            itemBounds.left < bounds.left - 1 ||
+            itemBounds.right > bounds.right + 1
+          );
+        })
+        .map((heading) => heading.textContent?.replace(/\s+/gu, " ").trim() ?? ""),
+      clippedRows: treeLabels
+        .filter((label) => {
+          const labelBounds = label.getBoundingClientRect();
+          return (
+            label.scrollWidth > label.clientWidth + 1 ||
+            labelBounds.left < bounds.left - 1 ||
+            labelBounds.right > bounds.right + 1
+          );
+        })
+        .map((label) => label.textContent?.replace(/\s+/gu, " ").trim() ?? "")
+    };
+  });
+  assert.ok(geometry.headingCount >= 4, "The Open Wrangler sidebar must show all four native view headings.");
+  assert.deepEqual(geometry.clippedHeadings, []);
+  assert.deepEqual(geometry.clippedRows, []);
+}
+
+async function clearPackagedProductSceneTransientUi(workbench: Page): Promise<void> {
+  const commands = new Set(await vscode.commands.getCommands(true));
+  if (commands.has("notifications.clearAll")) await vscode.commands.executeCommand("notifications.clearAll");
+  if (commands.has("notifications.hideList")) await vscode.commands.executeCommand("notifications.hideList");
+  await workbench.mouse.move(Math.floor(PACKAGED_PRODUCT_VIEWPORT.width * 0.72), 34);
+  const transient = workbench.locator(
+    ".quick-input-widget:visible, .monaco-dialog-box:visible, .context-view.monaco-menu-container:visible, " +
+      ".notifications-toasts .notification-toast:visible, .notifications-center .notification-list-item:visible, " +
+      ".monaco-hover:visible"
+  );
+  assert.equal(
+    await pollAcceptanceCondition(async () => (await transient.count()) === 0, {
+      timeoutMs: 3_000,
+      intervalMs: 50
+    }),
+    true,
+    "Packaged product-scene capture must not retain transient workbench UI."
+  );
 }
 
 async function exercisePackagedNotebookFlows(testing: TestApi): Promise<void> {
